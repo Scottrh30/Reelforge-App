@@ -1,19 +1,17 @@
 use crate::playback::Playback;
 use crate::timeline::TimelineView;
-use egui::{Key, KeyboardShortcut, Modifiers, TextureHandle, TextureOptions};
+use egui::{Key, KeyboardShortcut, Modifiers};
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use crate::audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use reelforge_core::undo::{delete_group, split_group, AddClip, Batch, ImportMedia, SetLink};
+use crate::preview::Preview;
+use reelforge_core::undo::{delete_group, split_group, AddClip, Batch, ImportMedia, SetClipVisual, SetLink};
 use reelforge_core::*;
-use reelforge_media::{FrameSource, MixClip};
+use reelforge_media::MixClip;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Preview frames are decoded at most at this size; the export path (later)
-/// will decode at full resolution.
-const PREVIEW_MAX: (u32, u32) = (1920, 1080);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tab {
@@ -38,11 +36,11 @@ pub struct EditorState {
     pub timeline: TimelineView,
     pub status: String,
     pub project_path: Option<PathBuf>,
-    sources: HashMap<MediaId, Result<FrameSource, String>>,
-    pub viewer_tex: Option<TextureHandle>,
-    viewer_key: Option<(MediaId, Time, u64)>,
-    /// Whether the viewer currently shows the exact frame for the playhead.
-    pub viewer_exact: bool,
+    /// Decoders + GPU compositor producing the viewer image.
+    pub preview: Preview,
+    /// A transform being changed interactively: the clip and its value before the gesture.
+    /// Committed as one undo step when the mouse is released.
+    visual_edit: Option<(ClipId, (Transform, BlendMode))>,
     /// Bumped on every project change so the audio mixer can be resynced.
     rev: u64,
     mixed_rev: u64,
@@ -74,7 +72,8 @@ impl ReelforgeApp {
                 None
             }
         };
-        let mut app = Self { dock, state: EditorState::new(Playback::with_audio(audio)) };
+        let preview = Preview::new(cc.wgpu_render_state.clone());
+        let mut app = Self { dock, state: EditorState::new(Playback::with_audio(audio), preview) };
         app.state.status = "Import media with File → Import, or drop files onto the window.".into();
 
         // `reelforge clip1.mp4 clip2.mov …` imports the files and lays them out on the timeline.
@@ -107,7 +106,10 @@ impl eframe::App for ReelforgeApp {
         let seq = &st.project.sequences[0];
         let (rate, end) = (seq.frame_rate, seq.duration());
         st.playback.tick(rate, end);
-        st.update_viewer_frame(&ctx);
+        st.preview.update(&st.project, st.playback.playhead, st.playback.playing);
+        if let Some(e) = st.preview.error.take() {
+            st.status = e;
+        }
 
         egui::Panel::top("menu").show(ui, |ui| st.menu_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| {
@@ -134,10 +136,15 @@ impl eframe::App for ReelforgeApp {
                 .show_inside(ui, st);
         });
 
+        // A slider/gizmo gesture ends when the mouse is released and no text field is being typed in.
+        if st.visual_edit.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
+            st.commit_visual_edit();
+        }
+
         // Keep animating while playing or while waiting on a seek to land.
         if st.playback.playing {
             ctx.request_repaint();
-        } else if !st.viewer_exact {
+        } else if !st.preview.exact {
             ctx.request_repaint_after(std::time::Duration::from_millis(15));
         }
     }
@@ -178,7 +185,7 @@ impl egui_dock::TabViewer for EditorState {
 }
 
 impl EditorState {
-    fn new(playback: Playback) -> Self {
+    fn new(playback: Playback, preview: Preview) -> Self {
         let (waveform_tx, waveform_rx) = unbounded();
         Self {
             project: Project::new(),
@@ -188,10 +195,8 @@ impl EditorState {
             timeline: TimelineView::default(),
             status: String::new(),
             project_path: None,
-            sources: HashMap::new(),
-            viewer_tex: None,
-            viewer_key: None,
-            viewer_exact: true,
+            preview,
+            visual_edit: None,
             rev: 1,
             mixed_rev: 0,
             waveforms: HashMap::new(),
@@ -203,8 +208,9 @@ impl EditorState {
     /// A blank editor that keeps the audio device and viewer texture.
     fn fresh(&mut self) -> EditorState {
         self.playback.pause();
-        let mut st = EditorState::new(Playback::with_audio(self.playback.audio.take()));
-        st.viewer_tex = self.viewer_tex.take();
+        let mut preview = std::mem::replace(&mut self.preview, Preview::new(None));
+        preview.reset();
+        let mut st = EditorState::new(Playback::with_audio(self.playback.audio.take()), preview);
         st.status = "New project".into();
         st
     }
@@ -212,7 +218,6 @@ impl EditorState {
     /// Mark the project as changed (resyncs audio).
     pub fn touch(&mut self) {
         self.rev += 1;
-        self.viewer_key = None;
     }
 
     pub fn seq(&self) -> &Sequence {
@@ -226,6 +231,7 @@ impl EditorState {
     }
 
     pub fn undo(&mut self) {
+        self.commit_visual_edit();
         match self.undo.undo(&mut self.project) {
             Some(n) => self.status = format!("Undo: {n}"),
             None => self.status = "Nothing to undo".into(),
@@ -340,7 +346,7 @@ impl EditorState {
         for track in targets {
             let id = ClipId(self.project.alloc_id());
             first.get_or_insert(id);
-            let clip = Clip { id, media: media_id, timeline_start: start, source_in: Time::ZERO, duration, link };
+            let clip = Clip::new(id, media_id, start, Time::ZERO, duration, link);
             cmds.push(Box::new(AddClip { seq: 0, track, clip }));
         }
         self.execute(Box::new(Batch { name: "Add clip".into(), cmds }));
@@ -568,46 +574,40 @@ impl EditorState {
 
     // ---- Viewer ----------------------------------------------------------------
 
-    /// Find the frame for the playhead and upload it to the viewer texture if it changed.
-    fn update_viewer_frame(&mut self, ctx: &egui::Context) {
-        let seq = &self.project.sequences[0];
-        let t = self.playback.playhead;
-        let Some(clip) = seq.top_video_clip_at(t) else {
-            self.viewer_key = None;
-            self.viewer_exact = true;
-            return;
-        };
-        let Some(media) = self.project.media.iter().find(|m| m.id == clip.media) else { return };
-        let src_t = clip.source_time(t);
+    // ---- Interactive transform edits --------------------------------------------
 
-        let slot = self
-            .sources
-            .entry(media.id)
-            .or_insert_with(|| FrameSource::open(&media.path, Some(PREVIEW_MAX)).map_err(|e| format!("{e:#}")));
-        let src = match slot {
-            Ok(s) => s,
-            Err(e) => {
-                self.status = format!("Can't decode {}: {e}", media.name);
-                self.viewer_key = None;
-                return;
-            }
-        };
-        if let Some(frame) = src.frame_at(src_t) {
-            let key = (media.id, frame.pts, frame.generation);
-            if self.viewer_key != Some(key) {
-                let img = egui::ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &frame.rgba);
-                match &mut self.viewer_tex {
-                    Some(tex) => tex.set(img, TextureOptions::LINEAR),
-                    None => self.viewer_tex = Some(ctx.load_texture("viewer", img, TextureOptions::LINEAR)),
-                }
-                self.viewer_key = Some(key);
-            }
-        }
-        self.viewer_exact = src.is_exact(src_t);
+    /// Current transform and blend mode of a clip.
+    pub fn visual(&self, id: ClipId) -> Option<(Transform, BlendMode)> {
+        self.seq().find_clip(id).map(|(_, c)| (c.transform, c.blend))
     }
 
-    pub fn viewer_has_frame(&self) -> bool {
-        self.viewer_key.is_some() && self.viewer_tex.is_some()
+    /// Change a clip's look live (no undo entry yet); see [`Self::commit_visual_edit`].
+    pub fn set_visual_live(&mut self, id: ClipId, v: (Transform, BlendMode)) {
+        let Some(before) = self.visual(id) else { return };
+        if before == v {
+            return;
+        }
+        match self.visual_edit {
+            Some((pending, _)) if pending == id => {}
+            Some(_) => {
+                self.commit_visual_edit();
+                self.visual_edit = Some((id, before));
+            }
+            None => self.visual_edit = Some((id, before)),
+        }
+        if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
+            (c.transform, c.blend) = v;
+        }
+    }
+
+    /// Turn the pending live edit into one undoable command.
+    pub fn commit_visual_edit(&mut self) {
+        let Some((id, old)) = self.visual_edit.take() else { return };
+        if let Some(new) = self.visual(id) {
+            if new != old {
+                self.execute(Box::new(SetClipVisual { seq: 0, id, old, new }));
+            }
+        }
     }
 }
 

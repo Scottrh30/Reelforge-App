@@ -1,7 +1,7 @@
 # Reelforge
 
-A HitFilm-style video editor and compositor, written in Rust. Phases 1–2 are done: a working
-editor with synced audio playback.
+A HitFilm-style video editor and compositor, written in Rust. Phases 1–3 are done: a working
+editor with synced audio and a GPU compositor.
 
 What works now:
 
@@ -20,8 +20,16 @@ What works now:
   delete together. **Edit → Unlink audio/video** separates them
 - Audio waveforms on clips; per-track mute (**M**) and show/hide (eye) buttons
 
-Not yet: compositing of multiple layers (the viewer shows the topmost visible video clip),
-volume/pan controls, effects, keyframes, export. See the roadmap at the bottom.
+- **GPU compositor**: every visible video track is blended into the frame on the GPU
+  (wgpu), in linear light with float precision
+- **Per-clip transform** in the Controls panel: position, scale (with a lock for uniform
+  scaling), rotation, opacity, and **blend modes** (Normal, Add, Multiply, Screen), plus
+  Reset / Fit / Fill buttons. Clips sit at their native pixel size by default, like HitFilm
+- **On-canvas editing**: click a layer in the Viewer to select it, drag to move it. Each
+  gesture (a drag, or a slider move) is one undo step
+
+Not yet: keyframes (transforms are constant across a clip), effects, volume/pan, export.
+See the roadmap at the bottom.
 
 ## Layout
 
@@ -31,6 +39,8 @@ crates/
            No FFmpeg, no GPU, fully unit-tested.
   media/   FFmpeg probing, threaded video decoder + FrameSource ("give me the frame at time t"),
            AudioReader (random-access resampled audio), Mixer (renders the timeline's audio).
+  render/  wgpu compositor: transformed layers, blend modes, linear-light float pipeline,
+           pixel readback. No egui dependency, so export can use it headless.
   app/     eframe/egui desktop app (wgpu renderer), egui_dock panels, timeline, viewer,
            cpal audio engine.
 ```
@@ -116,6 +126,7 @@ want to distribute a closed-source app.
 | Ctrl+I | Import media |
 | Ctrl+S | Save project |
 | Ctrl + mouse wheel | Zoom timeline |
+| Click / drag in Viewer | Select / move a layer |
 
 ## How the pieces fit
 
@@ -127,6 +138,17 @@ want to distribute a closed-source app.
   bounded channel, so it stays a few frames ahead and blocks when the UI stops reading.
   Seeks carry a generation number so stale frames get dropped. `FrameSource` turns this into
   random access: the UI calls `frame_at(t)` every repaint and never blocks.
+- **Compositor** (`crates/render`): each layer's decoded frame is uploaded as an
+  `Rgba8UnormSrgb` texture (cached, re-uploaded only when the frame changes), drawn as a
+  transformed quad into an `Rgba16Float` target with a fixed-function blend state per blend
+  mode (premultiplied alpha), then encoded to sRGB. So a 50% fade between red and blue is
+  computed in linear light, the way HitFilm and other compositors do it. The app shares
+  eframe's wgpu device and shows the output texture directly in the Viewer, with no CPU copy.
+  The same transform math (`crates/core/src/transform.rs`) drives the GPU and the on-canvas
+  gizmo, so they always agree.
+- **Decoders are per clip** (`app/src/preview.rs`), so two clips of the same file at different
+  times don't fight over one decoder. While playing, decoders for cuts in the next 1.5 s are
+  opened early; idle ones close after 4 s.
 - **Audio engine** (`app/src/audio.rs`): a mixer thread renders the timeline into 1024-frame
   blocks with `Mixer` and queues ~130 ms ahead; the cpal callback (realtime: no locks, no
   decoding) copies blocks to the device and publishes which timeline sample is reaching the
@@ -139,12 +161,10 @@ want to distribute a closed-source app.
 ## Roadmap
 
 1. ~~Player and editor shell~~
-2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms~~ ← you are here
+2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms~~
    (still to add: clip/track volume and pan, audio scrubbing, fades)
-3. **Compositor**: replace "show the topmost clip" with a wgpu render graph — upload each
-   visible layer as a texture, apply transform/opacity/blend modes in WGSL, render to an
-   `Rgba16Float` target in linear light. egui's `egui_wgpu::Callback` lets you draw that
-   straight into the viewer.
+3. ~~Compositor: layers, transforms, opacity, blend modes, viewer gizmo~~ ← you are here
+   (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes)
 4. **Export**: render the sequence offline frame by frame through the same compositor and
    encode with FFmpeg (`ffmpeg-next` encoder API).
 5. **Effects + keyframes**: `EffectInstance { params: Vec<AnimatedParam> }` on clips, each

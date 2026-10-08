@@ -5,6 +5,7 @@ mod app;
 mod audio;
 mod panels;
 mod playback;
+mod preview;
 mod timeline;
 
 fn main() -> eframe::Result<()> {

@@ -2,6 +2,7 @@
 
 use crate::project::*;
 use crate::time::Time;
+use crate::transform::{BlendMode, Transform};
 
 pub trait Command: Send {
     fn name(&self) -> &str;
@@ -202,6 +203,8 @@ impl Command for SplitClip {
             source_in: clip.source_in + left,
             duration: clip.duration - left,
             link: clip.link.and(self.new_link),
+            transform: clip.transform,
+            blend: clip.blend,
         };
         clip.duration = left;
         s.tracks[ti].clips.push(right);
@@ -216,6 +219,38 @@ impl Command for SplitClip {
         if let Some((_, c)) = s.find_clip_mut(self.id) {
             *c = orig;
         }
+    }
+}
+
+/// Change a clip's transform and/or blend mode.
+///
+/// Interactive edits (dragging a slider or the layer in the viewer) change the
+/// clip live, then push one of these with the pre-drag value as `old` when the
+/// drag ends, so the whole gesture is a single undo step.
+pub struct SetClipVisual {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: (Transform, BlendMode),
+    pub new: (Transform, BlendMode),
+}
+
+impl SetClipVisual {
+    fn set(&self, p: &mut Project, v: (Transform, BlendMode)) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            (c.transform, c.blend) = v;
+        }
+    }
+}
+
+impl Command for SetClipVisual {
+    fn name(&self) -> &str {
+        if self.old.1 != self.new.1 { "Change blend mode" } else { "Change transform" }
+    }
+    fn apply(&mut self, p: &mut Project) {
+        self.set(p, self.new);
+    }
+    fn undo(&mut self, p: &mut Project) {
+        self.set(p, self.old);
     }
 }
 
@@ -315,16 +350,10 @@ pub fn move_group(p: &Project, seq: usize, id: ClipId, to: (usize, Time)) -> Res
 mod tests {
     use super::*;
     use crate::time::Time;
+    use crate::transform::{BlendMode, Transform};
 
     fn clip(id: u64, start: f64, dur: f64) -> Clip {
-        Clip {
-            id: ClipId(id),
-            media: MediaId(1),
-            timeline_start: Time::from_secs_f64(start),
-            source_in: Time::ZERO,
-            duration: Time::from_secs_f64(dur),
-            link: None,
-        }
+        Clip::new(ClipId(id), MediaId(1), Time::from_secs_f64(start), Time::ZERO, Time::from_secs_f64(dur), None)
     }
 
     fn linked_pair(p: &mut Project, u: &mut UndoStack) {
@@ -415,6 +444,32 @@ mod tests {
         assert_eq!(p.sequences[0].tracks[1].clips[0].timeline_start, to.1);
         u.undo(&mut p);
         assert_eq!(p.sequences[0].tracks[0].clips[0].timeline_start, Time::ZERO);
+    }
+
+    #[test]
+    fn visual_change_undo_and_split_inherits() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(1001, 0.0, 4.0) }));
+        let t = Transform { position: [10.0, 5.0], scale: [0.5, 0.5], rotation: 15.0, opacity: 0.4 };
+        let old = (Transform::default(), BlendMode::Normal);
+        u.execute(&mut p, Box::new(SetClipVisual { seq: 0, id: ClipId(1001), old, new: (t, BlendMode::Screen) }));
+        let cmd = split_group(&mut p, 0, ClipId(1001), Time::from_secs_f64(2.0)).unwrap();
+        u.execute(&mut p, cmd);
+        for c in &p.sequences[0].tracks[0].clips {
+            assert_eq!((c.transform, c.blend), (t, BlendMode::Screen), "both halves keep the look");
+        }
+        u.undo(&mut p);
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks[0].clips[0].transform, Transform::default());
+    }
+
+    #[test]
+    fn old_projects_load_with_default_transform() {
+        let json = r#"{"id":5,"media":1,"timeline_start":0,"source_in":0,"duration":100}"#;
+        let c: Clip = serde_json::from_str(json).unwrap();
+        assert_eq!(c.transform, Transform::default());
+        assert_eq!(c.blend, BlendMode::Normal);
     }
 
     #[test]

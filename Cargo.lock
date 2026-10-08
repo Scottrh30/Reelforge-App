@@ -3088,6 +3088,7 @@ dependencies = [
  "log",
  "reelforge-core",
  "reelforge-media",
+ "reelforge-render",
  "rfd",
  "serde_json",
 ]
@@ -3097,6 +3098,7 @@ name = "reelforge-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3108,6 +3110,16 @@ dependencies = [
  "ffmpeg-next",
  "log",
  "reelforge-core",
+]
+
+[[package]]
+name = "reelforge-render"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "pollster 0.4.0",
+ "reelforge-core",
+ "wgpu",
 ]
 
 [[package]]

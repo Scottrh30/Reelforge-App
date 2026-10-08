@@ -1,0 +1,12 @@
+[package]
+name = "reelforge-render"
+description = "wgpu layer compositor."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reelforge-core.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+log.workspace = true

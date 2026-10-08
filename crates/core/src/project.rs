@@ -1,6 +1,7 @@
 //! Project data model. Serializable, renderer-agnostic.
 
 use crate::time::{FrameRate, Rational, Time};
+use crate::transform::{BlendMode, Transform};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -63,9 +64,19 @@ pub struct Clip {
     /// and delete together.
     #[serde(default)]
     pub link: Option<u64>,
+    /// Position/scale/rotation/opacity on the frame (video clips).
+    #[serde(default)]
+    pub transform: Transform,
+    #[serde(default)]
+    pub blend: BlendMode,
 }
 
 impl Clip {
+    /// A clip with default transform and blend mode.
+    pub fn new(id: ClipId, media: MediaId, timeline_start: Time, source_in: Time, duration: Time, link: Option<u64>) -> Self {
+        Self { id, media, timeline_start, source_in, duration, link, transform: Transform::default(), blend: BlendMode::Normal }
+    }
+
     pub fn timeline_end(&self) -> Time {
         self.timeline_start + self.duration
     }
@@ -128,6 +139,17 @@ impl Sequence {
     }
     pub fn duration(&self) -> Time {
         self.tracks.iter().map(Track::end).max().unwrap_or(Time::ZERO)
+    }
+
+    /// Visible video clips at `t`, bottom layer first (compositing order).
+    pub fn video_layers_at(&self, t: Time) -> Vec<(usize, &Clip)> {
+        self.tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, tr)| tr.kind == TrackKind::Video && !tr.muted)
+            .filter_map(|(i, tr)| tr.clip_at(t).map(|c| (i, c)))
+            .filter(|(_, c)| c.transform.opacity > 0.0)
+            .collect()
     }
     /// Topmost visible video clip at `t` — what the viewer should show until
     /// a real compositor blends all layers.

@@ -5,8 +5,10 @@
 
 pub mod project;
 pub mod time;
+pub mod transform;
 pub mod undo;
 
 pub use project::*;
 pub use time::{FrameRate, Rational, Time};
+pub use transform::{Affine2, BlendMode, Transform};
 pub use undo::{Command, UndoStack};

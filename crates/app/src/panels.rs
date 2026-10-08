@@ -51,25 +51,75 @@ pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
 pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     let transport_h = 34.0;
     let avail = ui.available_size() - Vec2::new(0.0, transport_h);
-    let (seq_w, seq_h) = (st.seq().width as f32, st.seq().height as f32);
+    let frame_px = [st.seq().width as f32, st.seq().height as f32];
 
     // Letterbox the sequence frame into the panel.
-    let scale = (avail.x / seq_w).min(avail.y / seq_h).max(0.01);
-    let frame_size = Vec2::new(seq_w * scale, seq_h * scale);
-    let (area, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), avail.y.max(1.0)), Sense::hover());
-    let frame_rect = egui::Rect::from_center_size(area.center(), frame_size);
+    let scale = (avail.x / frame_px[0]).min(avail.y / frame_px[1]).max(0.01);
+    let (area, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), avail.y.max(1.0)), Sense::click_and_drag());
+    let frame_rect = egui::Rect::from_center_size(area.center(), Vec2::new(frame_px[0], frame_px[1]) * scale);
     let painter = ui.painter_at(area);
     painter.rect_filled(area, 0.0, Color32::from_gray(18));
     painter.rect_filled(frame_rect, 0.0, Color32::BLACK);
+    if let Some(tex) = st.preview.texture() {
+        painter.image(tex, frame_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+    }
 
-    if st.viewer_has_frame() {
-        if let Some(tex) = &st.viewer_tex {
-            // Fit the decoded frame inside the sequence frame (no scaling to fill yet).
-            let ts = tex.size_vec2();
-            let s = (frame_rect.width() / ts.x).min(frame_rect.height() / ts.y);
-            let r = egui::Rect::from_center_size(frame_rect.center(), ts * s);
-            painter.image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+    // Screen <-> frame pixel mapping.
+    let to_screen = |[x, y]: [f32; 2]| frame_rect.min + Vec2::new(x, y) * scale;
+    let to_frame = |p: egui::Pos2| {
+        let v = (p - frame_rect.min) / scale;
+        [v.x, v.y]
+    };
+
+    // Visible layers at the playhead, top first, with their native sizes.
+    let t = st.playback.playhead;
+    let layers: Vec<(reelforge_core::ClipId, [f32; 2], reelforge_core::Transform)> = st
+        .seq()
+        .video_layers_at(t)
+        .into_iter()
+        .rev()
+        .filter_map(|(_, c)| {
+            let v = st.project.media(c.media)?.info.video.as_ref()?;
+            Some((c.id, [v.width as f32, v.height as f32], c.transform))
+        })
+        .collect();
+
+    // Click a layer in the viewer to select it (topmost hit wins), like HitFilm.
+    if resp.clicked() || resp.drag_started() {
+        if let Some(p) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()) {
+            let f = to_frame(p);
+            let hit = layers.iter().find(|(_, size, tr)| tr.hit(*size, frame_px, f)).map(|(id, ..)| *id);
+            let keep = st.selection.is_some_and(|sel| layers.iter().any(|(id, size, tr)| *id == sel && tr.hit(*size, frame_px, f)));
+            if !keep {
+                st.selection = hit;
+            }
         }
+    }
+
+    // Drag the selected layer to move it.
+    let selected = st.selection.and_then(|id| layers.iter().find(|(lid, ..)| *lid == id).copied());
+    if let Some((id, size, tr)) = selected {
+        if resp.dragged() && !st.playback.playing {
+            let d = resp.drag_delta() / scale;
+            if d != Vec2::ZERO {
+                if let Some((mut t2, blend)) = st.visual(id) {
+                    t2.position[0] += d.x;
+                    t2.position[1] += d.y;
+                    st.set_visual_live(id, (t2, blend));
+                }
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+        }
+        // Bounding box + centre handle.
+        let corners = st.visual(id).map(|(t2, _)| t2).unwrap_or(tr).corners(size, frame_px).map(to_screen);
+        let gold = Color32::from_rgb(255, 196, 64);
+        let clip_painter = ui.painter_at(area);
+        clip_painter.add(egui::Shape::closed_line(corners.to_vec(), egui::Stroke::new(1.5, gold)));
+        for c in corners {
+            clip_painter.rect_filled(egui::Rect::from_center_size(c, Vec2::splat(6.0)), 1.0, gold);
+        }
+        let centre = egui::pos2((corners[0].x + corners[2].x) / 2.0, (corners[0].y + corners[2].y) / 2.0);
+        clip_painter.circle_stroke(centre, 5.0, egui::Stroke::new(1.5, gold));
     }
 
     transport(ui, st);
@@ -100,7 +150,7 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState) {
         ui.label(RichText::new(st.playback.playhead.timecode(rate)).monospace().size(15.0));
         ui.weak(format!("/ {}", end.timecode(rate)));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if !st.viewer_exact {
+            if !st.preview.exact {
                 ui.spinner();
             }
         });
@@ -137,8 +187,10 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.monospace(clip.source_in.timecode(rate));
                 ui.end_row();
             });
-            ui.add_space(6.0);
-            ui.weak("Effects, transforms and keyframes will live here (roadmap phase 4).");
+            if st.seq().tracks[ti].kind == reelforge_core::TrackKind::Video {
+                ui.add_space(10.0);
+                transform_controls(ui, st, &clip);
+            }
         }
         None => {
             ui.weak("Select a clip on the timeline.");
@@ -178,6 +230,89 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
             });
         ui.end_row();
     });
+}
+
+/// Position / scale / rotation / opacity / blend for a video clip.
+/// Edits apply live and become one undo step when the mouse is released.
+fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
+    use reelforge_core::{BlendMode, Transform};
+    let Some((mut t, mut blend)) = st.visual(clip.id) else { return };
+    let before = (t, blend);
+    let native = st
+        .project
+        .media(clip.media)
+        .and_then(|m| m.info.video.as_ref())
+        .map(|v| [v.width as f32, v.height as f32])
+        .unwrap_or([1.0, 1.0]);
+    let frame = [st.seq().width as f32, st.seq().height as f32];
+    let lock_id = egui::Id::new("scale_lock");
+    let mut lock = ui.data_mut(|d| *d.get_persisted_mut_or(lock_id, true));
+
+    ui.heading("Transform");
+    egui::Grid::new("transform").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.weak("Position");
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut t.position[0]).speed(1.0).prefix("X ").fixed_decimals(1));
+            ui.add(egui::DragValue::new(&mut t.position[1]).speed(1.0).prefix("Y ").fixed_decimals(1));
+        });
+        ui.end_row();
+
+        ui.weak("Scale");
+        ui.horizontal(|ui| {
+            let mut sx = t.scale[0] * 100.0;
+            let mut sy = t.scale[1] * 100.0;
+            let rx = ui.add(egui::DragValue::new(&mut sx).speed(0.5).suffix(" %").range(-10000.0..=10000.0).fixed_decimals(1));
+            let ry = ui.add(egui::DragValue::new(&mut sy).speed(0.5).suffix(" %").range(-10000.0..=10000.0).fixed_decimals(1));
+            if lock {
+                if rx.changed() {
+                    sy = sx;
+                } else if ry.changed() {
+                    sx = sy;
+                }
+            }
+            t.scale = [sx / 100.0, sy / 100.0];
+            ui.toggle_value(&mut lock, "🔒").on_hover_text("Keep X and Y scale equal");
+        });
+        ui.end_row();
+
+        ui.weak("Rotation");
+        ui.add(egui::DragValue::new(&mut t.rotation).speed(0.5).suffix("°").fixed_decimals(1));
+        ui.end_row();
+
+        ui.weak("Opacity");
+        let mut o = t.opacity * 100.0;
+        ui.add(egui::Slider::new(&mut o, 0.0..=100.0).suffix(" %").fixed_decimals(0));
+        t.opacity = o / 100.0;
+        ui.end_row();
+
+        ui.weak("Blend");
+        egui::ComboBox::from_id_salt("blend").selected_text(blend.label()).show_ui(ui, |ui| {
+            for m in BlendMode::ALL {
+                ui.selectable_value(&mut blend, m, m.label());
+            }
+        });
+        ui.end_row();
+    });
+    ui.horizontal(|ui| {
+        if ui.button("Reset").clicked() {
+            t = Transform::default();
+        }
+        if ui.button("Fit").on_hover_text("Scale to fit inside the frame").clicked() {
+            let k = Transform::fit_scale(native, frame, false);
+            t.scale = [k, k];
+            t.position = [0.0, 0.0];
+        }
+        if ui.button("Fill").on_hover_text("Scale to cover the whole frame").clicked() {
+            let k = Transform::fit_scale(native, frame, true);
+            t.scale = [k, k];
+            t.position = [0.0, 0.0];
+        }
+    });
+    ui.data_mut(|d| d.insert_persisted(lock_id, lock));
+
+    if (t, blend) != before {
+        st.set_visual_live(clip.id, (t, blend));
+    }
 }
 
 fn format_duration(t: Time) -> String {
