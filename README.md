@@ -1,7 +1,7 @@
 # Reelforge
 
-A HitFilm-style video editor and compositor, written in Rust. This is **phase 1**: a working
-editor shell you can build on.
+A HitFilm-style video editor and compositor, written in Rust. Phases 1–2 are done: a working
+editor with synced audio playback.
 
 What works now:
 
@@ -13,9 +13,15 @@ What works now:
   razor split (`S`), delete (`Del`), scrub, zoom (`Ctrl` + scroll), pan (scroll)
 - Undo/redo for every edit (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z`)
 - Save/open projects (`.rfproj`, JSON)
+- **Audio playback** through your default output device, mixed from all audio tracks
+  (any format FFmpeg decodes, resampled to the device rate)
+- **A/V sync**: the audio device is the master clock; video follows what's reaching the speakers
+- **Linked clips**: footage with sound lands as a video clip + audio clip that move, split and
+  delete together. **Edit → Unlink audio/video** separates them
+- Audio waveforms on clips; per-track mute (**M**) and show/hide (eye) buttons
 
-Not yet: audio playback, compositing of multiple layers (the viewer shows the topmost video
-clip), effects, keyframes, export. See the roadmap at the bottom.
+Not yet: compositing of multiple layers (the viewer shows the topmost visible video clip),
+volume/pan controls, effects, keyframes, export. See the roadmap at the bottom.
 
 ## Layout
 
@@ -23,13 +29,16 @@ clip), effects, keyframes, export. See the roadmap at the bottom.
 crates/
   core/    Engine-agnostic project model: rational Time, Sequence/Track/Clip, undo commands.
            No FFmpeg, no GPU, fully unit-tested.
-  media/   FFmpeg probing + threaded decoder + FrameSource ("give me the frame at time t").
-  app/     eframe/egui desktop app (wgpu renderer), egui_dock panels, timeline, viewer.
+  media/   FFmpeg probing, threaded video decoder + FrameSource ("give me the frame at time t"),
+           AudioReader (random-access resampled audio), Mixer (renders the timeline's audio).
+  app/     eframe/egui desktop app (wgpu renderer), egui_dock panels, timeline, viewer,
+           cpal audio engine.
 ```
 
 ## Building on Windows 10/11
 
 You need three things: Rust, LLVM (for FFmpeg bindgen), and FFmpeg *shared* dev libraries.
+Audio output uses WASAPI through `cpal`, which needs nothing extra on Windows.
 
 ### 1. Rust
 
@@ -92,6 +101,7 @@ want to distribute a closed-source app.
 | `could not find native static library avcodec` / link errors | `FFMPEG_DIR` must point at the folder containing `lib\avcodec.lib`. Use a *shared* build, not "essentials" static exe-only zips. |
 | App exits immediately with `STATUS_DLL_NOT_FOUND` (0xc0000135) | FFmpeg `bin` folder isn't on `PATH`; or copy its DLLs next to the exe. |
 | Black viewer for a file | Check the status bar; the codec may be unsupported by your FFmpeg build. |
+| Status bar shows "🔇 no audio device" | No default output device was found at startup (e.g. headphones unplugged). Playback still works on the system clock; restart the app after connecting a device. |
 
 ## Keyboard shortcuts
 
@@ -117,14 +127,20 @@ want to distribute a closed-source app.
   bounded channel, so it stays a few frames ahead and blocks when the UI stops reading.
   Seeks carry a generation number so stale frames get dropped. `FrameSource` turns this into
   random access: the UI calls `frame_at(t)` every repaint and never blocks.
-- **Playback clock** (`app/src/playback.rs`) derives the playhead from wall-clock time since
-  Play was pressed, so speed is right even if the UI drops repaints.
+- **Audio engine** (`app/src/audio.rs`): a mixer thread renders the timeline into 1024-frame
+  blocks with `Mixer` and queues ~130 ms ahead; the cpal callback (realtime: no locks, no
+  decoding) copies blocks to the device and publishes which timeline sample is reaching the
+  speakers, corrected for output latency. Play/stop bump a generation number so stale blocks
+  are dropped instantly on seek.
+- **Playback clock** (`app/src/playback.rs`) reads that position, so video is slaved to audio.
+  With no device, or if audio fails to start within 500 ms, it falls back to wall-clock time.
+  The status bar shows which clock is in use.
 
 ## Roadmap
 
-1. ~~Player and editor shell~~ ← you are here
-2. **Audio**: decode with FFmpeg (or `symphonia`), mix tracks, output with `cpal`, and make the
-   audio clock the master clock for A/V sync.
+1. ~~Player and editor shell~~
+2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms~~ ← you are here
+   (still to add: clip/track volume and pan, audio scrubbing, fades)
 3. **Compositor**: replace "show the topmost clip" with a wgpu render graph — upload each
    visible layer as a texture, apply transform/opacity/blend modes in WGSL, render to an
    `Rgba16Float` target in linear light. egui's `egui_wgpu::Callback` lets you draw that

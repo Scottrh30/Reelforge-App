@@ -3,11 +3,15 @@
 //! The UI never touches FFmpeg directly. It asks a [`FrameSource`] for "the frame
 //! at time t" every repaint, and the source keeps a decoder thread running ahead.
 
+pub mod audio;
 pub mod decoder;
+pub mod mixer;
 pub mod probe;
 pub mod source;
 
+pub use audio::{waveform_peaks, AudioReader};
 pub use decoder::{DecoderHandle, VideoFrame};
+pub use mixer::{MixClip, Mixer};
 pub use probe::probe;
 pub use source::FrameSource;
 

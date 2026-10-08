@@ -2,7 +2,7 @@
 
 use crate::app::EditorState;
 use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
-use reelforge_core::undo::MoveClip;
+use reelforge_core::undo::move_group;
 use reelforge_core::{ClipId, MediaId, Time, TrackKind};
 
 const RULER_H: f32 = 26.0;
@@ -106,28 +106,76 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     }
 
     // ---- Tracks and clips ----
+    let selected_group: Vec<ClipId> = st.selection.map(|id| st.seq().link_group(id).iter().map(|(_, c)| c.id).collect()).unwrap_or_default();
+    let mut mute_clicked = None;
     for (row, &ti) in rows.iter().enumerate() {
         let tr = &st.seq().tracks[ti];
         let r = row_rect(row);
         painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color));
         let header = Rect::from_min_size(r.min, Vec2::new(HEADER_W, TRACK_H));
         painter.rect_filled(header, 0.0, visuals.panel_fill);
-        painter.text(header.left_center() + Vec2::new(8.0, 0.0), Align2::LEFT_CENTER, &tr.name, FontId::proportional(13.0), visuals.text_color());
+        let name_color = if tr.muted { visuals.weak_text_color() } else { visuals.text_color() };
+        painter.text(header.left_center() + Vec2::new(8.0, -8.0), Align2::LEFT_CENTER, &tr.name, FontId::proportional(13.0), name_color);
+
+        // Mute toggle ("M" for audio, eye for video), HitFilm-style.
+        let btn = Rect::from_min_size(header.left_center() + Vec2::new(8.0, 3.0), Vec2::new(22.0, 16.0));
+        let label = if tr.kind == TrackKind::Audio { "M" } else { "👁" };
+        let bresp = ui.interact(btn, egui::Id::new(("mute", ti)), Sense::click());
+        let on = if tr.kind == TrackKind::Audio { tr.muted } else { !tr.muted };
+        let fill = if on { Color32::from_rgb(200, 150, 40) } else { visuals.widgets.inactive.bg_fill };
+        painter.rect_filled(btn, 3.0, if bresp.hovered() { fill.gamma_multiply(1.3) } else { fill });
+        painter.text(btn.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), if on { Color32::BLACK } else { visuals.text_color() });
+        if bresp.on_hover_text(if tr.kind == TrackKind::Audio { "Mute track" } else { "Show/hide track" }).clicked() {
+            mute_clicked = Some(ti);
+        }
 
         for clip in &tr.clips {
             let dragging = matches!(&st.timeline.drag, Some(Drag::Clip { id, .. }) if *id == clip.id);
             let cr = clip_rect(&m, r, clip.timeline_start, clip.duration);
-            let Some(vis) = cr.intersect(lanes).is_positive().then(|| cr.intersect(lanes)) else { continue };
+            if !cr.intersect(lanes).is_positive() {
+                continue;
+            }
+            let vis = cr.intersect(lanes);
             let base = if tr.kind == TrackKind::Video { Color32::from_rgb(54, 96, 160) } else { Color32::from_rgb(52, 130, 84) };
-            let fill = if dragging { base.gamma_multiply(0.35) } else { base };
+            let mut fill = if dragging { base.gamma_multiply(0.35) } else { base };
+            if tr.muted {
+                fill = fill.gamma_multiply(0.45);
+            }
             painter.rect_filled(vis, 4.0, fill);
-            if st.selection == Some(clip.id) {
-                painter.rect_stroke(vis, 4.0, Stroke::new(2.0, Color32::from_rgb(255, 196, 64)), StrokeKind::Inside);
+
+            // Waveform on audio clips: peaks mirrored around the centre line.
+            if tr.kind == TrackKind::Audio {
+                if let Some(peaks) = st.waveforms.get(&clip.media) {
+                    let wf = painter.with_clip_rect(vis.shrink(1.0));
+                    let mid = vis.center().y + 6.0;
+                    let half = (vis.height() - 18.0) / 2.0;
+                    let src0 = clip.source_in.as_secs_f64();
+                    let color = Color32::from_rgba_unmultiplied(200, 255, 210, 150);
+                    let mut x = vis.left().max(cr.left());
+                    while x < vis.right() {
+                        let t = src0 + ((x - cr.left()) / m.pps) as f64;
+                        let i0 = (t * crate::app::WAVEFORM_RATE as f64) as usize;
+                        let i1 = ((t + 1.0 / m.pps as f64) * crate::app::WAVEFORM_RATE as f64).ceil() as usize;
+                        let peak = peaks.get(i0..i1.max(i0 + 1).min(peaks.len())).map_or(0.0, |s| s.iter().cloned().fold(0.0, f32::max));
+                        let h = (peak.sqrt() * half).max(0.5); // sqrt: quiet passages stay visible
+                        wf.line_segment([Pos2::new(x, mid - h), Pos2::new(x, mid + h)], Stroke::new(1.0, color));
+                        x += 1.0;
+                    }
+                }
+            }
+
+            if selected_group.contains(&clip.id) {
+                let primary = st.selection == Some(clip.id);
+                let w = if primary { 2.0 } else { 1.0 };
+                painter.rect_stroke(vis, 4.0, Stroke::new(w, Color32::from_rgb(255, 196, 64)), StrokeKind::Inside);
             }
             let name = st.project.media(clip.media).map(|m| m.name.as_str()).unwrap_or("?");
             let text_painter = painter.with_clip_rect(vis.shrink(2.0));
             text_painter.text(vis.left_top() + Vec2::new(6.0, 4.0), Align2::LEFT_TOP, name, FontId::proportional(12.0), Color32::WHITE);
         }
+    }
+    if let Some(ti) = mute_clicked {
+        st.toggle_mute(ti);
     }
 
     // Ghost of the clip being dragged.
@@ -135,7 +183,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         if let Some(clip) = st.seq().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == *id) {
             if let Some(row) = rows.iter().position(|&t| t == to.0) {
                 let gr = clip_rect(&m, row_rect(row), to.1, clip.duration).intersect(lanes);
-                let ok = !overlaps(st, to.0, to.1, clip.duration, Some(*id));
+                let ok = move_group(&st.project, 0, *id, *to).is_ok();
                 let c = if ok { Color32::from_white_alpha(70) } else { Color32::from_rgba_unmultiplied(220, 60, 60, 90) };
                 painter.rect_filled(gr, 4.0, c);
             }
@@ -190,12 +238,10 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
 
     if resp.drag_stopped() {
         if let Some(Drag::Clip { id, from, to, .. }) = st.timeline.drag.take() {
-            let dur = st.seq().tracks[from.0].clips.iter().find(|c| c.id == id).map(|c| c.duration).unwrap_or_default();
             if to != from {
-                if overlaps(st, to.0, to.1, dur, Some(id)) {
-                    st.status = "Can't move there: it would overlap another clip".into();
-                } else {
-                    st.execute(Box::new(MoveClip { seq: 0, id, from, to }));
+                match move_group(&st.project, 0, id, to) {
+                    Ok(cmd) => st.execute(cmd),
+                    Err(why) => st.status = format!("Can't move there: {why}"),
                 }
             }
         }
@@ -247,12 +293,4 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
 
 fn clip_rect(m: &Mapping, row: Rect, start: Time, dur: Time) -> Rect {
     Rect::from_min_max(Pos2::new(m.x(start), row.top() + 3.0), Pos2::new(m.x(start + dur), row.bottom() - 3.0))
-}
-
-fn overlaps(st: &EditorState, track: usize, start: Time, dur: Time, ignore: Option<ClipId>) -> bool {
-    st.seq().tracks[track]
-        .clips
-        .iter()
-        .filter(|c| Some(c.id) != ignore)
-        .any(|c| start < c.timeline_end() && c.timeline_start < start + dur)
 }

@@ -2,11 +2,14 @@ use crate::playback::Playback;
 use crate::timeline::TimelineView;
 use egui::{Key, KeyboardShortcut, Modifiers, TextureHandle, TextureOptions};
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
-use reelforge_core::undo::{AddClip, ImportMedia, RemoveClip, SplitClip};
+use crate::audio::AudioEngine;
+use crossbeam_channel::{unbounded, Receiver, Sender};
+use reelforge_core::undo::{delete_group, split_group, AddClip, Batch, ImportMedia, SetLink};
 use reelforge_core::*;
-use reelforge_media::FrameSource;
+use reelforge_media::{FrameSource, MixClip};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Preview frames are decoded at most at this size; the export path (later)
 /// will decode at full resolution.
@@ -40,7 +43,17 @@ pub struct EditorState {
     viewer_key: Option<(MediaId, Time, u64)>,
     /// Whether the viewer currently shows the exact frame for the playhead.
     pub viewer_exact: bool,
+    /// Bumped on every project change so the audio mixer can be resynced.
+    rev: u64,
+    mixed_rev: u64,
+    /// Audio peak envelopes for drawing, computed in the background (100 per second).
+    pub waveforms: HashMap<MediaId, Arc<Vec<f32>>>,
+    waveform_tx: Sender<(MediaId, Vec<f32>)>,
+    waveform_rx: Receiver<(MediaId, Vec<f32>)>,
 }
+
+/// Waveform resolution: peaks per second of audio.
+pub const WAVEFORM_RATE: u32 = 100;
 
 impl ReelforgeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -54,22 +67,15 @@ impl ReelforgeApp {
         let [viewer, _bin] = tree.split_left(top, 0.18, vec![Tab::MediaBin]);
         tree.split_right(viewer, 0.76, vec![Tab::Inspector]);
 
-        let mut app = Self {
-            dock,
-            state: EditorState {
-                project: Project::new(),
-                undo: UndoStack::default(),
-                playback: Playback::default(),
-                selection: None,
-                timeline: TimelineView::default(),
-                status: "Import media with File → Import, or drop files onto the window.".into(),
-                project_path: None,
-                sources: HashMap::new(),
-                viewer_tex: None,
-                viewer_key: None,
-                viewer_exact: true,
-            },
+        let audio = match AudioEngine::new() {
+            Ok(a) => Some(a),
+            Err(e) => {
+                log::warn!("audio output unavailable, playing silently: {e:#}");
+                None
+            }
         };
+        let mut app = Self { dock, state: EditorState::new(Playback::with_audio(audio)) };
+        app.state.status = "Import media with File → Import, or drop files onto the window.".into();
 
         // `reelforge clip1.mp4 clip2.mov …` imports the files and lays them out on the timeline.
         let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
@@ -96,6 +102,7 @@ impl eframe::App for ReelforgeApp {
         }
 
         st.handle_shortcuts(&ctx);
+        st.sync_background();
 
         let seq = &st.project.sequences[0];
         let (rate, end) = (seq.frame_rate, seq.duration());
@@ -109,6 +116,12 @@ impl eframe::App for ReelforgeApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let seq = &st.project.sequences[0];
                     ui.weak(format!("{}×{} @ {:.3} fps", seq.width, seq.height, seq.frame_rate.fps()));
+                    ui.separator();
+                    match &st.playback.audio {
+                        Some(a) => ui.weak(format!("🔊 {} Hz · {}", a.rate, st.playback.clock_name())),
+                        None => ui.weak("🔇 no audio device"),
+                    }
+                    .on_hover_text(st.playback.audio.as_ref().map(|a| a.device_name.clone()).unwrap_or_default());
                 });
             });
         });
@@ -165,6 +178,43 @@ impl egui_dock::TabViewer for EditorState {
 }
 
 impl EditorState {
+    fn new(playback: Playback) -> Self {
+        let (waveform_tx, waveform_rx) = unbounded();
+        Self {
+            project: Project::new(),
+            undo: UndoStack::default(),
+            playback,
+            selection: None,
+            timeline: TimelineView::default(),
+            status: String::new(),
+            project_path: None,
+            sources: HashMap::new(),
+            viewer_tex: None,
+            viewer_key: None,
+            viewer_exact: true,
+            rev: 1,
+            mixed_rev: 0,
+            waveforms: HashMap::new(),
+            waveform_tx,
+            waveform_rx,
+        }
+    }
+
+    /// A blank editor that keeps the audio device and viewer texture.
+    fn fresh(&mut self) -> EditorState {
+        self.playback.pause();
+        let mut st = EditorState::new(Playback::with_audio(self.playback.audio.take()));
+        st.viewer_tex = self.viewer_tex.take();
+        st.status = "New project".into();
+        st
+    }
+
+    /// Mark the project as changed (resyncs audio).
+    pub fn touch(&mut self) {
+        self.rev += 1;
+        self.viewer_key = None;
+    }
+
     pub fn seq(&self) -> &Sequence {
         &self.project.sequences[0]
     }
@@ -172,6 +222,7 @@ impl EditorState {
     pub fn execute(&mut self, cmd: Box<dyn Command>) {
         self.status = cmd.name().to_owned();
         self.undo.execute(&mut self.project, cmd);
+        self.touch();
     }
 
     pub fn undo(&mut self) {
@@ -196,7 +247,7 @@ impl EditorState {
                 self.selection = None;
             }
         }
-        self.viewer_key = None; // force a texture refresh
+        self.touch();
     }
 
     // ---- Media ----------------------------------------------------------------
@@ -221,7 +272,9 @@ impl EditorState {
                 Ok(info) => {
                     let id = MediaId(self.project.alloc_id());
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.execute(Box::new(ImportMedia(MediaAsset { id, path: path.clone(), name, info })));
+                    let asset = MediaAsset { id, path: path.clone(), name, info };
+                    self.compute_waveform(&asset);
+                    self.execute(Box::new(ImportMedia(asset)));
                     ok += 1;
                 }
                 Err(e) => self.status = format!("Could not import {}: {e:#}", path.display()),
@@ -237,11 +290,12 @@ impl EditorState {
         if media.info.duration > Time::ZERO { media.info.duration } else { Time::from_secs_f64(5.0) }
     }
 
-    /// Place media on a track at `at` (or after the last clip if that overlaps).
+    /// Place media on the timeline at `at` (or after existing clips if that overlaps).
+    ///
+    /// Footage with sound becomes a linked pair: video on a video track, audio
+    /// on an audio track, moving and splitting together (unlink via Edit menu).
     pub fn add_to_timeline(&mut self, media_id: MediaId, track: Option<usize>, at: Option<Time>) {
         let Some(media) = self.project.media(media_id).cloned() else { return };
-        let is_video = media.info.video.is_some();
-        let want = if is_video { TrackKind::Video } else { TrackKind::Audio };
 
         // First clip in an empty sequence: match the sequence to the footage, like HitFilm does.
         if self.seq().duration() == Time::ZERO {
@@ -250,28 +304,47 @@ impl EditorState {
                 s.width = v.width;
                 s.height = v.height;
                 s.frame_rate = v.frame_rate;
+                self.touch();
             }
         }
 
         let seq = self.seq();
-        let track = track
-            .filter(|&t| seq.tracks.get(t).is_some_and(|tr| tr.kind == want))
-            .or_else(|| seq.tracks.iter().position(|tr| tr.kind == want));
-        let Some(track) = track else { return };
+        let pick = |kind: TrackKind| {
+            track
+                .filter(|&t| seq.tracks.get(t).is_some_and(|tr| tr.kind == kind))
+                .or_else(|| seq.tracks.iter().position(|tr| tr.kind == kind))
+        };
+        let mut targets = Vec::new();
+        if media.info.video.is_some() {
+            targets.extend(pick(TrackKind::Video));
+        }
+        if media.info.audio.is_some() {
+            targets.extend(pick(TrackKind::Audio));
+        }
+        if targets.is_empty() {
+            self.status = format!("{} has no video or audio track to place", media.name);
+            return;
+        }
 
         let rate = seq.frame_rate;
         let duration = Self::clip_duration(&media).snap(rate);
-        let tr = &seq.tracks[track];
-        let mut start = at.unwrap_or_else(|| tr.end()).max(Time::ZERO).snap(rate);
-        let overlaps = |s: Time| tr.clips.iter().any(|c| s < c.timeline_end() && c.timeline_start < s + duration);
-        if overlaps(start) {
-            start = tr.end();
+        let free_end = targets.iter().map(|&t| seq.tracks[t].end()).max().unwrap_or_default();
+        let mut start = at.unwrap_or(free_end).max(Time::ZERO).snap(rate);
+        if targets.iter().any(|&t| seq.overlaps(t, start, duration, &[])) {
+            start = free_end;
         }
 
-        let id = ClipId(self.project.alloc_id());
-        let clip = Clip { id, media: media_id, timeline_start: start, source_in: Time::ZERO, duration };
-        self.execute(Box::new(AddClip { seq: 0, track, clip }));
-        self.selection = Some(id);
+        let link = (targets.len() > 1).then(|| self.project.alloc_id());
+        let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+        let mut first = None;
+        for track in targets {
+            let id = ClipId(self.project.alloc_id());
+            first.get_or_insert(id);
+            let clip = Clip { id, media: media_id, timeline_start: start, source_in: Time::ZERO, duration, link };
+            cmds.push(Box::new(AddClip { seq: 0, track, clip }));
+        }
+        self.execute(Box::new(Batch { name: "Add clip".into(), cmds }));
+        self.selection = first;
     }
 
     pub fn split_at_playhead(&mut self) {
@@ -285,18 +358,84 @@ impl EditorState {
             .filter(|id| all().filter(splittable).any(|c| c.id == *id))
             .or_else(|| seq.top_video_clip_at(t).filter(splittable).map(|c| c.id))
             .or_else(|| all().find(splittable).map(|c| c.id));
-        match target {
-            Some(id) => {
-                let new_id = ClipId(self.project.alloc_id());
-                self.execute(Box::new(SplitClip::new(0, id, t, new_id)));
-            }
+        match target.and_then(|id| split_group(&mut self.project, 0, id, t)) {
+            Some(cmd) => self.execute(cmd),
             None => self.status = "No clip under the playhead to split".into(),
         }
     }
 
     pub fn delete_selection(&mut self) {
         if let Some(id) = self.selection.take() {
-            self.execute(Box::new(RemoveClip::new(0, id)));
+            let cmd = delete_group(&self.project, 0, id);
+            self.execute(cmd);
+        }
+    }
+
+    pub fn selection_is_linked(&self) -> bool {
+        self.selection.is_some_and(|id| self.seq().link_group(id).len() > 1)
+    }
+
+    pub fn unlink_selection(&mut self) {
+        let Some(id) = self.selection else { return };
+        let ids: Vec<ClipId> = self.seq().link_group(id).iter().map(|(_, c)| c.id).collect();
+        if ids.len() > 1 {
+            self.execute(Box::new(SetLink::new(0, ids, None)));
+        }
+    }
+
+    pub fn toggle_mute(&mut self, track: usize) {
+        let tr = &mut self.project.sequences[0].tracks[track];
+        tr.muted = !tr.muted;
+        self.status = format!("{} {}", tr.name, if tr.muted { "muted" } else { "unmuted" });
+        self.touch();
+    }
+
+    /// Decode a peak envelope for drawing, off the UI thread.
+    fn compute_waveform(&self, media: &MediaAsset) {
+        if media.info.audio.is_none() || self.waveforms.contains_key(&media.id) {
+            return;
+        }
+        let (id, path, tx) = (media.id, media.path.clone(), self.waveform_tx.clone());
+        std::thread::spawn(move || match reelforge_media::waveform_peaks(&path, WAVEFORM_RATE) {
+            Ok(p) => {
+                let _ = tx.send((id, p));
+            }
+            Err(e) => log::warn!("waveform for {}: {e:#}", path.display()),
+        });
+    }
+
+    /// Audio clips for the mixer, in the engine's sample rate.
+    fn mix_clips(&self, rate: u32) -> Vec<MixClip> {
+        let sr = FrameRate::new(rate as i64, 1);
+        self.seq()
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio && !t.muted)
+            .flat_map(|t| &t.clips)
+            .filter_map(|c| {
+                let m = self.project.media(c.media)?;
+                Some(MixClip {
+                    id: c.id,
+                    path: m.path.clone(),
+                    start: c.timeline_start.to_frame(sr),
+                    source_in: c.source_in.to_frame(sr),
+                    len: c.duration.to_frame(sr),
+                    gain: 1.0,
+                })
+            })
+            .collect()
+    }
+
+    /// Per-frame housekeeping: push edits to the audio engine, collect finished waveforms.
+    fn sync_background(&mut self) {
+        if self.rev != self.mixed_rev {
+            if let Some(a) = &self.playback.audio {
+                a.set_clips(self.mix_clips(a.rate));
+            }
+            self.mixed_rev = self.rev;
+        }
+        while let Ok((id, peaks)) = self.waveform_rx.try_recv() {
+            self.waveforms.insert(id, Arc::new(peaks));
         }
     }
 
@@ -327,24 +466,12 @@ impl EditorState {
             Ok(p) => {
                 *self = EditorState { project: p, project_path: Some(path.clone()), ..self.fresh() };
                 self.status = format!("Opened {}", path.display());
+                let media: Vec<_> = self.project.media.clone();
+                for m in &media {
+                    self.compute_waveform(m);
+                }
             }
             Err(e) => self.status = format!("Open failed: {e:#}"),
-        }
-    }
-
-    fn fresh(&mut self) -> EditorState {
-        EditorState {
-            project: Project::new(),
-            undo: UndoStack::default(),
-            playback: Playback::default(),
-            selection: None,
-            timeline: TimelineView::default(),
-            status: "New project".into(),
-            project_path: None,
-            sources: HashMap::new(),
-            viewer_tex: self.viewer_tex.take(),
-            viewer_key: None,
-            viewer_exact: true,
         }
     }
 
@@ -381,6 +508,9 @@ impl EditorState {
                 }
                 if ui.add_enabled(self.selection.is_some(), egui::Button::new("Delete clip          Del")).clicked() {
                     self.delete_selection();
+                }
+                if ui.add_enabled(self.selection_is_linked(), egui::Button::new("Unlink audio/video")).clicked() {
+                    self.unlink_selection();
                 }
             });
         });

@@ -45,6 +45,28 @@ impl UndoStack {
 
 // ---- Concrete commands -------------------------------------------------------
 
+/// Several commands that undo/redo as one step.
+pub struct Batch {
+    pub name: String,
+    pub cmds: Vec<Box<dyn Command>>,
+}
+
+impl Command for Batch {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn apply(&mut self, p: &mut Project) {
+        for c in &mut self.cmds {
+            c.apply(p);
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        for c in self.cmds.iter_mut().rev() {
+            c.undo(p);
+        }
+    }
+}
+
 pub struct ImportMedia(pub MediaAsset);
 
 impl Command for ImportMedia {
@@ -150,12 +172,14 @@ pub struct SplitClip {
     pub id: ClipId,
     pub at: Time,
     pub new_id: ClipId,
+    /// Link id for the right-hand half, so the halves of linked clips stay linked to each other.
+    pub new_link: Option<u64>,
     original: Option<Clip>,
 }
 
 impl SplitClip {
     pub fn new(seq: usize, id: ClipId, at: Time, new_id: ClipId) -> Self {
-        Self { seq, id, at, new_id, original: None }
+        Self { seq, id, at, new_id, new_link: None, original: None }
     }
 }
 
@@ -177,6 +201,7 @@ impl Command for SplitClip {
             timeline_start: self.at,
             source_in: clip.source_in + left,
             duration: clip.duration - left,
+            link: clip.link.and(self.new_link),
         };
         clip.duration = left;
         s.tracks[ti].clips.push(right);
@@ -194,6 +219,98 @@ impl Command for SplitClip {
     }
 }
 
+/// Set (or clear) the link id of a set of clips.
+pub struct SetLink {
+    pub seq: usize,
+    pub ids: Vec<ClipId>,
+    pub link: Option<u64>,
+    old: Vec<Option<u64>>,
+}
+
+impl SetLink {
+    pub fn new(seq: usize, ids: Vec<ClipId>, link: Option<u64>) -> Self {
+        Self { seq, ids, link, old: Vec::new() }
+    }
+}
+
+impl Command for SetLink {
+    fn name(&self) -> &str {
+        if self.link.is_some() { "Link clips" } else { "Unlink clips" }
+    }
+    fn apply(&mut self, p: &mut Project) {
+        let s = &mut p.sequences[self.seq];
+        self.old = self.ids.iter().map(|id| s.find_clip_mut(*id).and_then(|(_, c)| std::mem::replace(&mut c.link, self.link))).collect();
+    }
+    fn undo(&mut self, p: &mut Project) {
+        let s = &mut p.sequences[self.seq];
+        for (id, old) in self.ids.iter().zip(&self.old) {
+            if let Some((_, c)) = s.find_clip_mut(*id) {
+                c.link = *old;
+            }
+        }
+    }
+}
+
+// ---- Group operations (respecting links) -------------------------------------
+
+/// Split `id` and everything linked to it at `at`. `None` if nothing can be split there.
+pub fn split_group(p: &mut Project, seq: usize, id: ClipId, at: Time) -> Option<Box<dyn Command>> {
+    let targets: Vec<ClipId> = p.sequences[seq]
+        .link_group(id)
+        .into_iter()
+        .filter(|(_, c)| c.contains(at) && c.timeline_start < at)
+        .map(|(_, c)| c.id)
+        .collect();
+    if targets.is_empty() {
+        return None;
+    }
+    let new_link = Some(p.alloc_id());
+    let cmds = targets
+        .into_iter()
+        .map(|cid| {
+            let mut c = SplitClip::new(seq, cid, at, ClipId(p.alloc_id()));
+            c.new_link = new_link;
+            Box::new(c) as Box<dyn Command>
+        })
+        .collect();
+    Some(Box::new(Batch { name: "Split clip".into(), cmds }))
+}
+
+pub fn delete_group(p: &Project, seq: usize, id: ClipId) -> Box<dyn Command> {
+    let cmds = p.sequences[seq]
+        .link_group(id)
+        .into_iter()
+        .map(|(_, c)| Box::new(RemoveClip::new(seq, c.id)) as Box<dyn Command>)
+        .collect();
+    Box::new(Batch { name: "Delete clip".into(), cmds })
+}
+
+/// Move `id` to `(track, start)`; linked clips shift by the same time but stay on their tracks.
+pub fn move_group(p: &Project, seq: usize, id: ClipId, to: (usize, Time)) -> Result<Box<dyn Command>, &'static str> {
+    let s = &p.sequences[seq];
+    let group = s.link_group(id);
+    let Some(&(_, lead)) = group.iter().find(|(_, c)| c.id == id) else { return Err("clip not found") };
+    let delta = to.1.0 - lead.timeline_start.0;
+    let ignore: Vec<ClipId> = group.iter().map(|(_, c)| c.id).collect();
+    let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+    for (ti, c) in &group {
+        let (track, start) = if c.id == id { to } else { (*ti, Time(c.timeline_start.0 + delta)) };
+        if start < Time::ZERO {
+            return Err("can't move before the start of the timeline");
+        }
+        if s.tracks[track].kind != s.tracks[*ti].kind {
+            return Err("clips can only move to a track of the same kind");
+        }
+        if s.overlaps(track, start, c.duration, &ignore) {
+            return Err("it would overlap another clip");
+        }
+        if (track, start) != (*ti, c.timeline_start) {
+            cmds.push(Box::new(MoveClip { seq, id: c.id, from: (*ti, c.timeline_start), to: (track, start) }));
+        }
+    }
+    Ok(Box::new(Batch { name: "Move clip".into(), cmds }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,7 +323,67 @@ mod tests {
             timeline_start: Time::from_secs_f64(start),
             source_in: Time::ZERO,
             duration: Time::from_secs_f64(dur),
+            link: None,
         }
+    }
+
+    fn linked_pair(p: &mut Project, u: &mut UndoStack) {
+        let mut v = clip(1001, 0.0, 10.0);
+        let mut a = clip(1002, 0.0, 10.0);
+        v.link = Some(99);
+        a.link = Some(99);
+        u.execute(p, Box::new(AddClip { seq: 0, track: 0, clip: v }));
+        u.execute(p, Box::new(AddClip { seq: 0, track: 2, clip: a }));
+    }
+
+    #[test]
+    fn linked_split_move_delete() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        linked_pair(&mut p, &mut u);
+
+        let cmd = split_group(&mut p, 0, ClipId(1001), Time::from_secs_f64(4.0)).unwrap();
+        u.execute(&mut p, cmd);
+        let s = &p.sequences[0];
+        assert_eq!(s.tracks[0].clips.len(), 2);
+        assert_eq!(s.tracks[2].clips.len(), 2);
+        // Right halves are linked to each other, not to the left halves.
+        let (rv, ra) = (&s.tracks[0].clips[1], &s.tracks[2].clips[1]);
+        assert_eq!(rv.link, ra.link);
+        assert_ne!(rv.link, Some(99));
+        let right_video = rv.id;
+
+        // Moving the right video half drags its audio along.
+        let cmd = move_group(&p, 0, right_video, (1, Time::from_secs_f64(20.0))).unwrap();
+        u.execute(&mut p, cmd);
+        let s = &p.sequences[0];
+        assert_eq!(s.tracks[1].clips[0].timeline_start, Time::from_secs_f64(20.0));
+        assert_eq!(s.tracks[2].clips[1].timeline_start, Time::from_secs_f64(20.0));
+
+        // Video can't go on an audio track.
+        assert!(move_group(&p, 0, right_video, (2, Time::from_secs_f64(30.0))).is_err());
+
+        let cmd = delete_group(&p, 0, ClipId(1001));
+        u.execute(&mut p, cmd);
+        assert_eq!(p.sequences[0].tracks[0].clips.len(), 0);
+        assert_eq!(p.sequences[0].tracks[2].clips.len(), 1);
+
+        // Undo everything back to the original pair.
+        while u.can_undo() {
+            u.undo(&mut p);
+        }
+        assert!(p.sequences[0].duration() == Time::ZERO);
+    }
+
+    #[test]
+    fn move_rejects_overlap_of_linked_partner() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        linked_pair(&mut p, &mut u);
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 2, clip: clip(1003, 12.0, 5.0) }));
+        // Video lands on empty space, but its audio would hit clip 3.
+        assert!(move_group(&p, 0, ClipId(1001), (0, Time::from_secs_f64(5.0))).is_err());
+        assert!(move_group(&p, 0, ClipId(1001), (0, Time::from_secs_f64(17.0))).is_ok());
     }
 
     #[test]

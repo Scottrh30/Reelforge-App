@@ -59,6 +59,10 @@ pub struct Clip {
     /// Where in the source file playback begins.
     pub source_in: Time,
     pub duration: Time,
+    /// Clips sharing a link id (e.g. a video clip and its audio) move, split
+    /// and delete together.
+    #[serde(default)]
+    pub link: Option<u64>,
 }
 
 impl Clip {
@@ -134,6 +138,33 @@ impl Sequence {
             .filter(|tr| tr.kind == TrackKind::Video && !tr.muted)
             .find_map(|tr| tr.clip_at(t))
     }
+    pub fn find_clip(&self, id: ClipId) -> Option<(usize, &Clip)> {
+        self.tracks.iter().enumerate().find_map(|(i, tr)| tr.clips.iter().find(|c| c.id == id).map(|c| (i, c)))
+    }
+
+    /// `id` plus every clip linked to it, as `(track, clip)`.
+    pub fn link_group(&self, id: ClipId) -> Vec<(usize, &Clip)> {
+        let Some((ti, clip)) = self.find_clip(id) else { return Vec::new() };
+        match clip.link {
+            None => vec![(ti, clip)],
+            Some(l) => self
+                .tracks
+                .iter()
+                .enumerate()
+                .flat_map(|(i, tr)| tr.clips.iter().filter(move |c| c.link == Some(l)).map(move |c| (i, c)))
+                .collect(),
+        }
+    }
+
+    /// Would `[start, start+dur)` on `track` overlap any clip not in `ignore`?
+    pub fn overlaps(&self, track: usize, start: Time, dur: Time, ignore: &[ClipId]) -> bool {
+        self.tracks[track]
+            .clips
+            .iter()
+            .filter(|c| !ignore.contains(&c.id))
+            .any(|c| start < c.timeline_end() && c.timeline_start < start + dur)
+    }
+
     pub fn find_clip_mut(&mut self, id: ClipId) -> Option<(usize, &mut Clip)> {
         self.tracks.iter_mut().enumerate().find_map(|(i, tr)| {
             tr.clips.iter_mut().find(|c| c.id == id).map(|c| (i, c))
