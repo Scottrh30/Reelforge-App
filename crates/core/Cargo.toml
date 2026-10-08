@@ -1,0 +1,9 @@
+[package]
+name = "reelforge-core"
+description = "Engine-agnostic project model: time, sequences, clips, undo."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true

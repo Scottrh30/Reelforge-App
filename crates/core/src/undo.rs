@@ -1,0 +1,253 @@
+//! Command pattern undo/redo. Every edit to the project goes through here.
+
+use crate::project::*;
+use crate::time::Time;
+
+pub trait Command: Send {
+    fn name(&self) -> &str;
+    fn apply(&mut self, project: &mut Project);
+    fn undo(&mut self, project: &mut Project);
+}
+
+#[derive(Default)]
+pub struct UndoStack {
+    done: Vec<Box<dyn Command>>,
+    undone: Vec<Box<dyn Command>>,
+}
+
+impl UndoStack {
+    pub fn execute(&mut self, project: &mut Project, mut cmd: Box<dyn Command>) {
+        cmd.apply(project);
+        self.done.push(cmd);
+        self.undone.clear();
+    }
+    pub fn undo(&mut self, project: &mut Project) -> Option<String> {
+        let mut cmd = self.done.pop()?;
+        cmd.undo(project);
+        let name = cmd.name().to_owned();
+        self.undone.push(cmd);
+        Some(name)
+    }
+    pub fn redo(&mut self, project: &mut Project) -> Option<String> {
+        let mut cmd = self.undone.pop()?;
+        cmd.apply(project);
+        let name = cmd.name().to_owned();
+        self.done.push(cmd);
+        Some(name)
+    }
+    pub fn can_undo(&self) -> bool {
+        !self.done.is_empty()
+    }
+    pub fn can_redo(&self) -> bool {
+        !self.undone.is_empty()
+    }
+}
+
+// ---- Concrete commands -------------------------------------------------------
+
+pub struct ImportMedia(pub MediaAsset);
+
+impl Command for ImportMedia {
+    fn name(&self) -> &str {
+        "Import media"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        p.media.push(self.0.clone());
+    }
+    fn undo(&mut self, p: &mut Project) {
+        p.media.retain(|m| m.id != self.0.id);
+    }
+}
+
+pub struct AddClip {
+    pub seq: usize,
+    pub track: usize,
+    pub clip: Clip,
+}
+
+impl Command for AddClip {
+    fn name(&self) -> &str {
+        "Add clip"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        let tr = &mut p.sequences[self.seq].tracks[self.track];
+        tr.clips.push(self.clip.clone());
+        tr.sort();
+    }
+    fn undo(&mut self, p: &mut Project) {
+        p.sequences[self.seq].tracks[self.track].clips.retain(|c| c.id != self.clip.id);
+    }
+}
+
+pub struct RemoveClip {
+    pub seq: usize,
+    pub id: ClipId,
+    removed: Option<(usize, Clip)>,
+}
+
+impl RemoveClip {
+    pub fn new(seq: usize, id: ClipId) -> Self {
+        Self { seq, id, removed: None }
+    }
+}
+
+impl Command for RemoveClip {
+    fn name(&self) -> &str {
+        "Delete clip"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        for (ti, tr) in p.sequences[self.seq].tracks.iter_mut().enumerate() {
+            if let Some(i) = tr.clips.iter().position(|c| c.id == self.id) {
+                self.removed = Some((ti, tr.clips.remove(i)));
+                return;
+            }
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some((ti, clip)) = self.removed.take() {
+            let tr = &mut p.sequences[self.seq].tracks[ti];
+            tr.clips.push(clip);
+            tr.sort();
+        }
+    }
+}
+
+/// Move a clip in time and/or to another track. Built from a drag's start and end.
+pub struct MoveClip {
+    pub seq: usize,
+    pub id: ClipId,
+    pub from: (usize, Time),
+    pub to: (usize, Time),
+}
+
+impl MoveClip {
+    fn place(p: &mut Project, seq: usize, id: ClipId, (track, start): (usize, Time)) {
+        let s = &mut p.sequences[seq];
+        let Some((cur, _)) = s.find_clip_mut(id) else { return };
+        let i = s.tracks[cur].clips.iter().position(|c| c.id == id).unwrap();
+        let mut clip = s.tracks[cur].clips.remove(i);
+        clip.timeline_start = start;
+        s.tracks[track].clips.push(clip);
+        s.tracks[track].sort();
+    }
+}
+
+impl Command for MoveClip {
+    fn name(&self) -> &str {
+        "Move clip"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        Self::place(p, self.seq, self.id, self.to);
+    }
+    fn undo(&mut self, p: &mut Project) {
+        Self::place(p, self.seq, self.id, self.from);
+    }
+}
+
+/// Razor: split one clip into two at sequence time `at`.
+pub struct SplitClip {
+    pub seq: usize,
+    pub id: ClipId,
+    pub at: Time,
+    pub new_id: ClipId,
+    original: Option<Clip>,
+}
+
+impl SplitClip {
+    pub fn new(seq: usize, id: ClipId, at: Time, new_id: ClipId) -> Self {
+        Self { seq, id, at, new_id, original: None }
+    }
+}
+
+impl Command for SplitClip {
+    fn name(&self) -> &str {
+        "Split clip"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        let s = &mut p.sequences[self.seq];
+        let Some((ti, clip)) = s.find_clip_mut(self.id) else { return };
+        if !clip.contains(self.at) || clip.timeline_start == self.at {
+            return;
+        }
+        self.original = Some(clip.clone());
+        let left = self.at - clip.timeline_start;
+        let right = Clip {
+            id: self.new_id,
+            media: clip.media,
+            timeline_start: self.at,
+            source_in: clip.source_in + left,
+            duration: clip.duration - left,
+        };
+        clip.duration = left;
+        s.tracks[ti].clips.push(right);
+        s.tracks[ti].sort();
+    }
+    fn undo(&mut self, p: &mut Project) {
+        let Some(orig) = self.original.take() else { return };
+        let s = &mut p.sequences[self.seq];
+        for tr in &mut s.tracks {
+            tr.clips.retain(|c| c.id != self.new_id);
+        }
+        if let Some((_, c)) = s.find_clip_mut(self.id) {
+            *c = orig;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::time::Time;
+
+    fn clip(id: u64, start: f64, dur: f64) -> Clip {
+        Clip {
+            id: ClipId(id),
+            media: MediaId(1),
+            timeline_start: Time::from_secs_f64(start),
+            source_in: Time::ZERO,
+            duration: Time::from_secs_f64(dur),
+        }
+    }
+
+    #[test]
+    fn split_then_undo_restores() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(10, 0.0, 10.0) }));
+        u.execute(&mut p, Box::new(SplitClip::new(0, ClipId(10), Time::from_secs_f64(4.0), ClipId(11))));
+
+        let clips = &p.sequences[0].tracks[0].clips;
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[1].source_in, Time::from_secs_f64(4.0));
+        assert_eq!(clips[0].duration + clips[1].duration, Time::from_secs_f64(10.0));
+
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks[0].clips, vec![clip(10, 0.0, 10.0)]);
+        u.redo(&mut p);
+        assert_eq!(p.sequences[0].tracks[0].clips.len(), 2);
+    }
+
+    #[test]
+    fn move_across_tracks_and_undo() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(1, 0.0, 2.0) }));
+        let to = (1, Time::from_secs_f64(5.0));
+        u.execute(&mut p, Box::new(MoveClip { seq: 0, id: ClipId(1), from: (0, Time::ZERO), to }));
+        assert!(p.sequences[0].tracks[0].clips.is_empty());
+        assert_eq!(p.sequences[0].tracks[1].clips[0].timeline_start, to.1);
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks[0].clips[0].timeline_start, Time::ZERO);
+    }
+
+    #[test]
+    fn remove_and_undo() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 1, clip: clip(7, 1.0, 1.0) }));
+        u.execute(&mut p, Box::new(RemoveClip::new(0, ClipId(7))));
+        assert!(p.sequences[0].tracks[1].clips.is_empty());
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks[1].clips.len(), 1);
+    }
+}
