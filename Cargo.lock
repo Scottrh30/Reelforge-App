@@ -3087,6 +3087,7 @@ dependencies = [
  "env_logger",
  "log",
  "reelforge-core",
+ "reelforge-export",
  "reelforge-media",
  "reelforge-render",
  "rfd",
@@ -3099,6 +3100,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "reelforge-export"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "reelforge-core",
+ "reelforge-media",
+ "reelforge-render",
 ]
 
 [[package]]

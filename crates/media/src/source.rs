@@ -101,6 +101,11 @@ impl FrameSource {
             if self.is_exact(t) || Instant::now() >= deadline {
                 return self.current.clone();
             }
+            // Past the end of the stream: nothing newer is coming, so the last frame is the answer.
+            if self.decoder.reached_eof(self.generation) && self.decoder.frames.is_empty() && self.ahead.is_empty() {
+                self.pending_seek = None;
+                return self.current.clone();
+            }
             if let Ok(f) = self.decoder.frames.recv_timeout(Duration::from_millis(20)) {
                 if f.generation == self.generation {
                     self.ahead.push_back(f);

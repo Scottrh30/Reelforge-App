@@ -56,6 +56,11 @@ impl Preview {
         self.gpu.as_ref().and_then(|g| g.texture)
     }
 
+    /// The GPU device/queue shared with egui, for offline work like export.
+    pub fn gpu(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.gpu.as_ref().map(|g| (g.render_state.device.clone(), g.render_state.queue.clone()))
+    }
+
     /// Forget all decoders (new/opened project). Keeps the GPU side.
     pub fn reset(&mut self) {
         self.slots.clear();

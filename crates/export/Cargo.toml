@@ -1,0 +1,15 @@
+[package]
+name = "reelforge-export"
+description = "Offline rendering of a sequence to a movie file."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reelforge-core.workspace = true
+reelforge-media.workspace = true
+reelforge-render.workspace = true
+anyhow.workspace = true
+log.workspace = true
+
+[dev-dependencies]

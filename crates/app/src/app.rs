@@ -7,7 +7,6 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::preview::Preview;
 use reelforge_core::undo::{delete_group, split_group, AddClip, Batch, ImportMedia, SetClipVisual, SetLink};
 use reelforge_core::*;
-use reelforge_media::MixClip;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,6 +23,7 @@ pub enum Tab {
 pub struct ReelforgeApp {
     dock: DockState<Tab>,
     state: EditorState,
+    export: crate::export_ui::ExportUi,
 }
 
 /// Everything the panels read and edit. Separate from the dock layout so
@@ -41,6 +41,8 @@ pub struct EditorState {
     /// A transform being changed interactively: the clip and its value before the gesture.
     /// Committed as one undo step when the mouse is released.
     visual_edit: Option<(ClipId, (Transform, BlendMode))>,
+    /// Set by the menu/shortcut; the app opens the export dialog.
+    pub export_requested: bool,
     /// Bumped on every project change so the audio mixer can be resynced.
     rev: u64,
     mixed_rev: u64,
@@ -73,7 +75,7 @@ impl ReelforgeApp {
             }
         };
         let preview = Preview::new(cc.wgpu_render_state.clone());
-        let mut app = Self { dock, state: EditorState::new(Playback::with_audio(audio), preview) };
+        let mut app = Self { dock, state: EditorState::new(Playback::with_audio(audio), preview), export: Default::default() };
         app.state.status = "Import media with File → Import, or drop files onto the window.".into();
 
         // `reelforge clip1.mp4 clip2.mov …` imports the files and lays them out on the timeline.
@@ -111,7 +113,10 @@ impl eframe::App for ReelforgeApp {
             st.status = e;
         }
 
-        egui::Panel::top("menu").show(ui, |ui| st.menu_bar(ui));
+        if std::mem::take(&mut st.export_requested) {
+            self.export.open(st);
+        }
+        egui::Panel::top("menu").show(ui, |ui| st.menu_bar(ui, self.export.is_running()));
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&st.status);
@@ -135,6 +140,8 @@ impl eframe::App for ReelforgeApp {
                 .show_leaf_collapse_buttons(false)
                 .show_inside(ui, st);
         });
+
+        self.export.show(&ctx, st);
 
         // A slider/gizmo gesture ends when the mouse is released and no text field is being typed in.
         if st.visual_edit.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
@@ -197,6 +204,7 @@ impl EditorState {
             project_path: None,
             preview,
             visual_edit: None,
+            export_requested: false,
             rev: 1,
             mixed_rev: 0,
             waveforms: HashMap::new(),
@@ -410,33 +418,11 @@ impl EditorState {
         });
     }
 
-    /// Audio clips for the mixer, in the engine's sample rate.
-    fn mix_clips(&self, rate: u32) -> Vec<MixClip> {
-        let sr = FrameRate::new(rate as i64, 1);
-        self.seq()
-            .tracks
-            .iter()
-            .filter(|t| t.kind == TrackKind::Audio && !t.muted)
-            .flat_map(|t| &t.clips)
-            .filter_map(|c| {
-                let m = self.project.media(c.media)?;
-                Some(MixClip {
-                    id: c.id,
-                    path: m.path.clone(),
-                    start: c.timeline_start.to_frame(sr),
-                    source_in: c.source_in.to_frame(sr),
-                    len: c.duration.to_frame(sr),
-                    gain: 1.0,
-                })
-            })
-            .collect()
-    }
-
     /// Per-frame housekeeping: push edits to the audio engine, collect finished waveforms.
     fn sync_background(&mut self) {
         if self.rev != self.mixed_rev {
             if let Some(a) = &self.playback.audio {
-                a.set_clips(self.mix_clips(a.rate));
+                a.set_clips(reelforge_export::mix_clips(&self.project, a.rate));
             }
             self.mixed_rev = self.rev;
         }
@@ -481,7 +467,7 @@ impl EditorState {
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui) {
+    fn menu_bar(&mut self, ui: &mut egui::Ui, exporting: bool) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("New project").clicked() {
@@ -499,6 +485,10 @@ impl EditorState {
                 ui.separator();
                 if ui.button("Import media…      Ctrl+I").clicked() {
                     self.import_dialog();
+                }
+                ui.separator();
+                if ui.add_enabled(!exporting, egui::Button::new("Export…               Ctrl+M")).clicked() {
+                    self.export_requested = true;
                 }
             });
             ui.menu_button("Edit", |ui| {
@@ -528,10 +518,19 @@ impl EditorState {
         }
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
         let cmd_shift = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
-        let (redo, undo, save, import) = ctx.input_mut(|i| {
+        let (redo, undo, save, import, export) = ctx.input_mut(|i| {
             let redo = i.consume_shortcut(&cmd_shift(Key::Z)) || i.consume_shortcut(&cmd(Key::Y));
-            (redo, i.consume_shortcut(&cmd(Key::Z)), i.consume_shortcut(&cmd(Key::S)), i.consume_shortcut(&cmd(Key::I)))
+            (
+                redo,
+                i.consume_shortcut(&cmd(Key::Z)),
+                i.consume_shortcut(&cmd(Key::S)),
+                i.consume_shortcut(&cmd(Key::I)),
+                i.consume_shortcut(&cmd(Key::M)),
+            )
         });
+        if export {
+            self.export_requested = true;
+        }
         if redo {
             self.redo();
         }

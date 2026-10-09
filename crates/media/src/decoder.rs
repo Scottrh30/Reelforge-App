@@ -13,6 +13,7 @@ use ffmpeg_next as ff;
 use ff::software::scaling::{context::Context as Scaler, flag::Flags};
 use reelforge_core::{Rational, Time};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -46,6 +47,8 @@ pub struct DecoderHandle {
     pub path: PathBuf,
     /// Nominal duration of one frame (from the stream's average frame rate).
     pub frame_duration: Time,
+    /// Generation in which the decoder ran out of frames (`u64::MAX`: not yet).
+    eof: Arc<AtomicU64>,
 }
 
 impl DecoderHandle {
@@ -59,11 +62,13 @@ impl DecoderHandle {
         let (frame_tx, frame_rx) = bounded(queue.max(1));
         let (ready_tx, ready_rx) = bounded::<Result<Time>>(1);
         let owned = path.to_owned();
+        let eof = Arc::new(AtomicU64::new(u64::MAX));
+        let eof_thread = eof.clone();
         // FFmpeg contexts aren't `Send`, so the decoder is opened on its own thread.
         let thread = std::thread::Builder::new()
             .name(format!("decode:{}", path.file_name().unwrap_or_default().to_string_lossy()))
             .spawn(move || {
-                let state = match DecodeState::open(&owned, max_size) {
+                let state = match DecodeState::open(&owned, max_size, eof_thread) {
                     Ok(s) => {
                         let _ = ready_tx.send(Ok(s.frame_dur));
                         s
@@ -78,7 +83,13 @@ impl DecoderHandle {
                 }
             })?;
         let frame_duration = ready_rx.recv().map_err(|_| anyhow!("decoder thread died"))??;
-        Ok(Self { cmd: cmd_tx, frames: frame_rx, thread: Some(thread), path: path.to_owned(), frame_duration })
+        Ok(Self { cmd: cmd_tx, frames: frame_rx, thread: Some(thread), path: path.to_owned(), frame_duration, eof })
+    }
+
+    /// Has the decoder delivered everything it will for seek `generation`?
+    /// (All of its frames may still be sitting in the channel.)
+    pub fn reached_eof(&self, generation: u64) -> bool {
+        self.eof.load(Ordering::Acquire) == generation
     }
 
     pub fn seek(&self, to: Time, generation: u64) {
@@ -97,6 +108,8 @@ impl Drop for DecoderHandle {
     }
 }
 
+type ScalerKey = (ff::format::Pixel, u32, u32, ff::util::color::Space, ff::util::color::Range);
+
 struct DecodeState {
     ictx: ff::format::context::Input,
     decoder: ff::decoder::Video,
@@ -105,10 +118,13 @@ struct DecodeState {
     start_pts: i64,
     frame_dur: Time,
     max_size: Option<(u32, u32)>,
-    scaler: Option<(Scaler, (ff::format::Pixel, u32, u32))>,
+    scaler: Option<(Scaler, ScalerKey)>,
     generation: u64,
     /// After a seek, drop frames that end before this time (decoding from the keyframe).
     discard_before: Option<Time>,
+    /// Last frame skipped while pre-rolling, so a seek past the end still shows the final frame.
+    held: Option<(ff::frame::Video, Time)>,
+    eof: Arc<AtomicU64>,
 }
 
 enum Flow {
@@ -118,7 +134,7 @@ enum Flow {
 }
 
 impl DecodeState {
-    fn open(path: &Path, max_size: Option<(u32, u32)>) -> Result<Self> {
+    fn open(path: &Path, max_size: Option<(u32, u32)>, eof: Arc<AtomicU64>) -> Result<Self> {
         let ictx = ff::format::input(path).with_context(|| format!("cannot open {}", path.display()))?;
         let st = ictx.streams().best(ff::media::Type::Video).ok_or_else(|| anyhow!("no video stream"))?;
         let stream_index = st.index();
@@ -151,6 +167,8 @@ impl DecodeState {
             scaler: None,
             generation: 0,
             discard_before: None,
+            held: None,
+            eof,
         })
     }
 
@@ -189,6 +207,14 @@ impl DecodeState {
                     Flow::Restart => continue 'outer,
                     Flow::Continue => {}
                 }
+                // Seeked past the last frame: deliver the final frame instead of nothing.
+                if let (Some(_), Some((frame, pts))) = (self.discard_before.take(), self.held.take()) {
+                    let f = self.convert(&frame, pts)?;
+                    if out.send(f).is_err() {
+                        return Ok(());
+                    }
+                }
+                self.eof.store(self.generation, Ordering::Release);
                 match cmds.recv() {
                     Ok(cmd) => {
                         if let Flow::Stop = self.handle(cmd) {
@@ -214,6 +240,7 @@ impl DecodeState {
                 }
                 self.decoder.flush();
                 self.discard_before = Some(to);
+                self.held = None;
                 Flow::Restart
             }
         }
@@ -228,9 +255,14 @@ impl DecodeState {
 
             if let Some(target) = self.discard_before {
                 if pts + self.frame_dur <= target {
-                    continue; // pre-roll from the keyframe; skip the expensive conversion
+                    // Pre-roll from the keyframe: skip the expensive conversion, but keep the
+                    // frame (by swapping buffers, no copy) in case the stream ends here.
+                    let held = self.held.take().map(|(f, _)| f).unwrap_or_else(ff::frame::Video::empty);
+                    self.held = Some((std::mem::replace(&mut decoded, held), pts));
+                    continue;
                 }
                 self.discard_before = None;
+                self.held = None;
             }
 
             let frame = self.convert(&decoded, pts)?;
@@ -248,9 +280,12 @@ impl DecodeState {
     fn convert(&mut self, src: &ff::frame::Video, pts: Time) -> Result<VideoFrame> {
         let (sw, sh, fmt) = (src.width(), src.height(), src.format());
         let (dw, dh) = fit(sw, sh, self.max_size);
-        let key = (fmt, sw, sh);
+        let space = crate::color::effective_space(src.color_space(), sh);
+        let range = src.color_range();
+        let key = (fmt, sw, sh, space, range);
         if self.scaler.as_ref().map(|(_, k)| *k != key).unwrap_or(true) {
-            let s = Scaler::get(fmt, sw, sh, ff::format::Pixel::RGBA, dw, dh, Flags::BILINEAR)?;
+            let mut s = Scaler::get(fmt, sw, sh, ff::format::Pixel::RGBA, dw, dh, Flags::BILINEAR)?;
+            crate::color::configure(&mut s, space, range, true);
             self.scaler = Some((s, key));
         }
         let mut rgba = ff::frame::Video::empty();

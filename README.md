@@ -1,7 +1,7 @@
 # Reelforge
 
-A HitFilm-style video editor and compositor, written in Rust. Phases 1–3 are done: a working
-editor with synced audio and a GPU compositor.
+A HitFilm-style video editor and compositor, written in Rust. Phases 1–4 are done: a working
+editor with synced audio, a GPU compositor, and export to MP4.
 
 What works now:
 
@@ -28,7 +28,16 @@ What works now:
 - **On-canvas editing**: click a layer in the Viewer to select it, drag to move it. Each
   gesture (a drag, or a slider move) is one undo step
 
-Not yet: keyframes (transforms are constant across a clip), effects, volume/pan, export.
+- **Export** (**File → Export…**, `Ctrl+M`): renders the whole timeline to H.264 + AAC in
+  MP4, MOV or MKV, at full, half or quarter resolution, with three quality levels. It runs in
+  the background with a progress bar, time remaining, and Cancel; you can keep editing
+  meanwhile. Export waits for every exact frame at full resolution and uses the same compositor
+  and mixer as playback, so the file matches what you saw and heard
+- Colour-accurate decoding: BT.709/BT.601 and full/limited range are read from each file
+  (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
+
+Not yet: keyframes (transforms are constant across a clip), effects, volume/pan, in/out
+range for export.
 See the roadmap at the bottom.
 
 ## Layout
@@ -37,10 +46,12 @@ See the roadmap at the bottom.
 crates/
   core/    Engine-agnostic project model: rational Time, Sequence/Track/Clip, undo commands.
            No FFmpeg, no GPU, fully unit-tested.
-  media/   FFmpeg probing, threaded video decoder + FrameSource ("give me the frame at time t"),
+  media/   FFmpeg probing, MovieWriter (H.264/AAC encoder + muxer), threaded video decoder + FrameSource ("give me the frame at time t"),
            AudioReader (random-access resampled audio), Mixer (renders the timeline's audio).
   render/  wgpu compositor: transformed layers, blend modes, linear-light float pipeline,
            pixel readback. No egui dependency, so export can use it headless.
+  export/  Offline render: exact frames -> compositor -> MovieWriter (media crate), with
+           progress/cancel. Runs headless (tests use it without a window).
   app/     eframe/egui desktop app (wgpu renderer), egui_dock panels, timeline, viewer,
            cpal audio engine.
 ```
@@ -103,6 +114,11 @@ Copy `target\release\reelforge.exe` together with the DLLs from `C:\ffmpeg\bin`
 into one folder. Note that BtbN's `gpl` builds are GPL-licensed; use an `lgpl` build if you
 want to distribute a closed-source app.
 
+**Export and FFmpeg builds:** export prefers `libx264`, which is in the `gpl` builds. LGPL builds
+don't include it, so Reelforge falls back, in order, to NVIDIA (`h264_nvenc`), Intel
+(`h264_qsv`), AMD (`h264_amf`) or Windows Media Foundation (`h264_mf`) hardware encoders, and
+finally MPEG-4 Part 2. The export result window says which encoder was used.
+
 ### Troubleshooting
 
 | Symptom | Fix |
@@ -111,6 +127,7 @@ want to distribute a closed-source app.
 | `could not find native static library avcodec` / link errors | `FFMPEG_DIR` must point at the folder containing `lib\avcodec.lib`. Use a *shared* build, not "essentials" static exe-only zips. |
 | App exits immediately with `STATUS_DLL_NOT_FOUND` (0xc0000135) | FFmpeg `bin` folder isn't on `PATH`; or copy its DLLs next to the exe. |
 | Black viewer for a file | Check the status bar; the codec may be unsupported by your FFmpeg build. |
+| Export fails with "no usable H.264/MPEG-4 video encoder" | Your FFmpeg build has no H.264 encoder that works on this PC. Use a `gpl` build (it includes libx264). |
 | Status bar shows "🔇 no audio device" | No default output device was found at startup (e.g. headphones unplugged). Playback still works on the system clock; restart the app after connecting a device. |
 
 ## Keyboard shortcuts
@@ -125,6 +142,7 @@ want to distribute a closed-source app.
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+I | Import media |
 | Ctrl+S | Save project |
+| Ctrl+M | Export |
 | Ctrl + mouse wheel | Zoom timeline |
 | Click / drag in Viewer | Select / move a layer |
 
@@ -149,6 +167,13 @@ want to distribute a closed-source app.
 - **Decoders are per clip** (`app/src/preview.rs`), so two clips of the same file at different
   times don't fight over one decoder. While playing, decoders for cuts in the next 1.5 s are
   opened early; idle ones close after 4 s.
+- **Export** (`crates/export`): for each output frame it asks every visible clip's decoder
+  for the exact frame (blocking; decoders run ahead on their own threads), composites at the
+  sequence size on the GPU, reads the pixels back, and hands them to `MovieWriter`, which
+  converts RGB to BT.709 YUV and encodes. Audio is mixed in step with the video, exactly the
+  samples belonging to each frame, so the two can't drift. Encoders use closed GOPs with a
+  keyframe every ~2 s, so exported files scrub well when re-imported. A cancelled or failed
+  export deletes its partial file.
 - **Audio engine** (`app/src/audio.rs`): a mixer thread renders the timeline into 1024-frame
   blocks with `Mixer` and queues ~130 ms ahead; the cpal callback (realtime: no locks, no
   decoding) copies blocks to the device and publishes which timeline sample is reaching the
@@ -163,10 +188,10 @@ want to distribute a closed-source app.
 1. ~~Player and editor shell~~
 2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms~~
    (still to add: clip/track volume and pan, audio scrubbing, fades)
-3. ~~Compositor: layers, transforms, opacity, blend modes, viewer gizmo~~ ← you are here
+3. ~~Compositor: layers, transforms, opacity, blend modes, viewer gizmo~~
    (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes)
-4. **Export**: render the sequence offline frame by frame through the same compositor and
-   encode with FFmpeg (`ffmpeg-next` encoder API).
+4. ~~Export to H.264/AAC with progress and cancel~~ ← you are here
+   (still to add: in/out range, ProRes/DNxHR for intermediates, PNG sequences, an export queue)
 5. **Effects + keyframes**: `EffectInstance { params: Vec<AnimatedParam> }` on clips, each
    effect a WGSL pass, a curve editor in the Controls panel.
 6. **Composite shots**, masks, chroma key, tracking, 3D camera/lights, GPU particles.
