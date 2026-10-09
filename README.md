@@ -56,6 +56,20 @@ What works now:
   together). It stops at the end of the media, at neighbouring clips, and at a one-frame
   minimum; the viewer shows the frame at the edge while you drag. Still images can be stretched
   to any length. Edges snap to other clips (Alt to disable)
+- **Ripple and roll trims**: three trim tools in the corner of the timeline (or press **V**, **B**,
+  **N**). The edge under the pointer lights up in the tool's colour.
+  - **Select (V)**: a plain trim, as above.
+  - **Ripple (B)**: trimming an edge moves every later clip on every track, so nothing drifts out
+    of sync and no gap opens or overlap appears. Trimming a start edge keeps the clip where it is
+    and pulls everything after it back. If a clip on another track straddles the edit and
+    would be overlapped, the trim stops there.
+  - **Roll (N)**: drag the cut between two touching clips: one gets longer, the other shorter, and
+    nothing else on the timeline moves. It's limited by the spare media on both sides. Linked
+    audio rolls along with its video.
+  - The status bar shows the change, how many clips shifted, and when a limit has been reached.
+    Each trim is one undo step.
+- **Ripple delete** (**Shift+Del** or **Edit → Ripple delete**): removes the selected clip and
+  closes the gap it leaves on all tracks
 - **Cross-dissolves**: **Edit → Cross-dissolve at playhead** (`Ctrl+D`) adds a 1 s dissolve at
   the nearest cut between two touching video clips; adjust it with "Dissolve in" in the Controls
   panel. Like audio crossfades it uses the spare media either side of the cut. The dissolve is
@@ -75,7 +89,7 @@ What works now:
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
 Not yet: effects (colour correction, blur, chroma key…), other transition types (wipes, dip to
-black), ripple/roll trimming, a curve editor for keyframes, an in/out range for export.
+black), slip/slide edits, a curve editor for keyframes, an in/out range for export.
 See the roadmap at the bottom.
 
 ## Layout
@@ -185,7 +199,9 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
 | Ctrl+click volume line | Add a volume keyframe |
 | Double-click / Alt+click keyframe | Delete it |
 | Alt while dragging a clip or edge | Don't snap |
-| Drag a clip edge | Trim |
+| Drag a clip edge | Trim (ripple / roll with those tools) |
+| V / B / N | Select / Ripple / Roll trim tool |
+| Shift+Del | Ripple delete (close the gap) |
 | Ctrl+D | Add/remove cross-dissolve at the nearest video cut |
 | Ctrl + mouse wheel | Zoom timeline |
 | Click / drag in Viewer | Select / move a layer |
@@ -233,6 +249,12 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
   `(1−u)·A + u·B` over whatever is underneath.
 - **Trimming** (`undo::trim_range` / `trim_group`) computes the allowed range for the whole
   linked group up front, so the edge simply stops at a limit instead of failing.
+- **Ripple and roll** (`core/src/edit.rs`): `plan_trim` turns a drag into a `TrimPlan`: the
+  clamped delta plus the `(before, after)` timing of every clip that changes. A ripple's lower
+  bound comes from `shift_limit`, which finds, for each track, how far its later clips can slide
+  back before they hit something fixed. While you drag, the app keeps a snapshot of every clip's
+  timing and re-plans from it each frame, so the result depends only on where the pointer is
+  now. On release the changes become a single batch of `SetClipTiming` commands.
 - **Volume automation** is stored as `(source time, dB)` keys and interpolated linearly in dB
   (what sounds like an even ramp). `mix_clips` converts keys to sample offsets per clip, so the
   mixer applies them sample-accurately in both playback and export.
@@ -262,9 +284,9 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
    volume keyframes, crossfades, meters~~
    (still to add: per-track meters, audio effects like EQ/compressor, keyframed pan)
 3. ~~Compositor: layers, transforms, opacity, blend modes, viewer gizmo, keyframes,
-   cross-dissolves, trimming~~
+   cross-dissolves, trimming, ripple/roll trims, ripple delete~~
    (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes,
-   a keyframe curve editor)
+   a keyframe curve editor, slip/slide tools, track locking to exclude tracks from a ripple)
 4. ~~Export to H.264/AAC with progress and cancel~~ ← you are here
    (still to add: in/out range, ProRes/DNxHR for intermediates, PNG sequences, an export queue)
 5. **Effects**: `EffectInstance { params: Vec<Curve<…>> }` on clips (reusing the keyframe

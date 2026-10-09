@@ -5,6 +5,7 @@
 
 pub mod anim;
 pub mod audio;
+pub mod edit;
 pub mod project;
 pub mod time;
 pub mod transform;
@@ -12,6 +13,7 @@ pub mod undo;
 
 pub use anim::{Curve, Interp, Key, Prop, TransformAnim};
 pub use audio::{ClipAudio, TrackAudio, VolumeKey};
+pub use edit::{TrimMode, TrimPlan};
 pub use project::*;
 pub use time::{FrameRate, Rational, Time};
 pub use transform::{Affine2, BlendMode, Transform};

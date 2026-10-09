@@ -6,9 +6,10 @@ use crate::audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::preview::Preview;
 use reelforge_core::undo::{
-    delete_group, split_group, trim_range, trimmed, AddClip, Batch, Edge, ImportMedia, SetClipAudio, SetClipTiming, SetClipVisual, SetDissolve,
+    delete_group, split_group, AddClip, Batch, Edge, ImportMedia, SetClipAudio, SetClipTiming, SetClipVisual, SetDissolve,
     SetLink, SetTrackAudio, Timing,
 };
+use reelforge_core::edit::{plan_trim, ripple_delete};
 use reelforge_core::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -567,6 +568,9 @@ impl EditorState {
                 if ui.add_enabled(self.selection.is_some(), egui::Button::new("Delete clip          Del")).clicked() {
                     self.delete_selection();
                 }
+                if ui.add_enabled(self.selection.is_some(), egui::Button::new("Ripple delete   Shift+Del")).clicked() {
+                    self.ripple_delete_selected();
+                }
                 if ui.add_enabled(self.selection_is_linked(), egui::Button::new("Unlink audio/video")).clicked() {
                     self.unlink_selection();
                 }
@@ -646,9 +650,29 @@ impl EditorState {
                 Key::End => self.playback.seek(end),
                 Key::S => self.split_at_playhead(),
                 Key::Delete | Key::Backspace => self.delete_selection(),
+                Key::V => self.set_trim_mode(TrimMode::Normal),
+                Key::B => self.set_trim_mode(TrimMode::Ripple),
+                Key::N => self.set_trim_mode(TrimMode::Roll),
                 _ => {}
             }
         }
+        let ripple_del = ctx.input(|i| {
+            i.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { key: Key::Delete | Key::Backspace, pressed: true, modifiers, .. } if modifiers.shift && !modifiers.command && !modifiers.alt)
+            })
+        });
+        if ripple_del {
+            self.ripple_delete_selected();
+        }
+    }
+
+    pub fn set_trim_mode(&mut self, mode: TrimMode) {
+        self.timeline.mode = mode;
+        self.status = match mode {
+            TrimMode::Normal => "Select tool (V): dragging an edge trims just that clip".into(),
+            TrimMode::Ripple => "Ripple tool (B): trimming an edge moves everything after it".into(),
+            TrimMode::Roll => "Roll tool (N): dragging a cut moves it between the two clips".into(),
+        };
     }
 
     // ---- Viewer ----------------------------------------------------------------
@@ -690,25 +714,43 @@ impl EditorState {
         }
     }
 
-    /// Trim `edge` of `id` (and its linked clips) live, `delta` from where the
-    /// gesture started. `start` holds the timings from before the gesture.
-    /// Returns the delta actually applied (clamped to what's possible).
-    pub fn trim_live(&mut self, id: ClipId, edge: Edge, delta: Time, start: &[(ClipId, Timing)]) -> Time {
-        self.begin_live(LiveEdit::Timing(id, start.to_vec()));
-        // Measure limits from the original state, so the result doesn't depend on drag history.
-        self.restore_timings(start);
-        let Some((lo, hi)) = trim_range(&self.project, 0, id, edge) else { return Time::ZERO };
-        let d = delta.max(lo).min(hi);
-        let ids: Vec<ClipId> = start.iter().map(|(c, _)| *c).collect();
-        for cid in ids {
-            let new = self.seq().find_clip(cid).map(|(_, c)| trimmed(&self.project, c, edge, d));
-            if let (Some(new), Some((ti, c))) = (new, self.project.sequences[0].find_clip_mut(cid)) {
-                (c.timeline_start, c.source_in, c.duration) = new;
-                self.project.sequences[0].tracks[ti].sort();
-            }
+    /// Trim `edge` of `id` live in `mode` (normal, ripple or roll), `delta` from
+    /// where the gesture started. `snapshot` holds the timings of every clip in
+    /// the sequence from before the gesture: each call starts again from there,
+    /// so the result never depends on the drag's history. Returns what was done.
+    pub fn trim_live(&mut self, id: ClipId, edge: Edge, mode: TrimMode, delta: Time, snapshot: &[(ClipId, Timing)]) -> Option<TrimPlan> {
+        self.begin_live(LiveEdit::Timing(id, snapshot.to_vec(), mode));
+        self.restore_timings(snapshot);
+        let plan = plan_trim(&self.project, 0, id, edge, mode, delta);
+        if let Some(plan) = &plan {
+            plan.apply(&mut self.project, 0);
         }
         self.touch();
-        d
+        plan
+    }
+
+    /// Timings of every clip in the sequence (a snapshot to restore during a live trim).
+    pub fn all_timings(&self) -> Vec<(ClipId, Timing)> {
+        self.seq().tracks.iter().flat_map(|t| &t.clips).map(|c| (c.id, (c.timeline_start, c.source_in, c.duration))).collect()
+    }
+
+    /// Delete the selected clip (and its linked clips) and close the gap it leaves.
+    pub fn ripple_delete_selected(&mut self) {
+        self.commit_live_edit();
+        let Some(id) = self.selection else { return };
+        match ripple_delete(&self.project, 0, id) {
+            Some((cmd, closed)) => {
+                self.execute(cmd);
+                self.selection = None;
+                let rate = self.seq().frame_rate;
+                self.status = if closed > Time::ZERO {
+                    format!("Ripple delete: closed a {} gap", closed.timecode(rate))
+                } else {
+                    "Ripple delete: deleted (another clip spans the gap, so nothing could move up)".into()
+                };
+            }
+            None => self.status = "Nothing to delete".into(),
+        }
     }
 
     fn restore_timings(&mut self, start: &[(ClipId, Timing)]) {
@@ -718,10 +760,6 @@ impl EditorState {
                 self.project.sequences[0].tracks[ti].sort();
             }
         }
-    }
-
-    pub fn timings(&self, id: ClipId) -> Vec<(ClipId, Timing)> {
-        self.seq().link_group(id).iter().map(|(_, c)| (c.id, (c.timeline_start, c.source_in, c.duration))).collect()
     }
 
     pub fn set_dissolve_live(&mut self, id: ClipId, d: Time) {
@@ -766,7 +804,7 @@ impl EditorState {
                 let new = self.seq().find_clip(id).map(|(_, c)| c.dissolve_in).filter(|n| *n != old);
                 new.map(|new| Box::new(SetDissolve { seq: 0, id, old, new }) as _)
             }
-            LiveEdit::Timing(_, start) => {
+            LiveEdit::Timing(_, start, mode) => {
                 let cmds: Vec<Box<dyn Command>> = start
                     .into_iter()
                     .filter_map(|(cid, old)| {
@@ -779,7 +817,12 @@ impl EditorState {
                     None
                 } else {
                     // The project already has the new timings: apply() re-sets them, which is harmless.
-                    Some(Box::new(Batch { name: "Trim clip".into(), cmds }) as _)
+                    let name = match mode {
+                        TrimMode::Normal => "Trim clip",
+                        TrimMode::Ripple => "Ripple trim",
+                        TrimMode::Roll => "Roll edit",
+                    };
+                    Some(Box::new(Batch { name: name.into(), cmds }) as _)
                 }
             }
             LiveEdit::ClipAudio(id, old) => self.clip_audio(id).filter(|n| *n != old).map(|new| Box::new(SetClipAudio { seq: 0, id, old, new }) as _),
@@ -797,8 +840,8 @@ impl EditorState {
 /// An interactive edit in progress: what's being changed and its value before the gesture.
 enum LiveEdit {
     Visual(ClipId, ClipVisual),
-    /// Trimming a clip (keyed by the clip grabbed): timings of it and its linked clips before.
-    Timing(ClipId, Vec<(ClipId, Timing)>),
+    /// Trimming a clip (keyed by the clip grabbed): timings of every clip before, and the trim mode.
+    Timing(ClipId, Vec<(ClipId, Timing)>, TrimMode),
     Dissolve(ClipId, Time),
     ClipAudio(ClipId, ClipAudio),
     TrackAudio(usize, TrackAudio),
@@ -808,7 +851,7 @@ impl LiveEdit {
     fn same_target(&self, other: &LiveEdit) -> bool {
         match (self, other) {
             (LiveEdit::Visual(a, _), LiveEdit::Visual(b, _)) => a == b,
-            (LiveEdit::Timing(a, _), LiveEdit::Timing(b, _)) => a == b,
+            (LiveEdit::Timing(a, ..), LiveEdit::Timing(b, ..)) => a == b,
             (LiveEdit::Dissolve(a, _), LiveEdit::Dissolve(b, _)) => a == b,
             (LiveEdit::ClipAudio(a, _), LiveEdit::ClipAudio(b, _)) => a == b,
             (LiveEdit::TrackAudio(a, _), LiveEdit::TrackAudio(b, _)) => a == b,

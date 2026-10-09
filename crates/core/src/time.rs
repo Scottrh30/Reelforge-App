@@ -151,6 +151,12 @@ impl Sub for Time {
         Time(self.0 - o.0)
     }
 }
+impl std::ops::Neg for Time {
+    type Output = Time;
+    fn neg(self) -> Time {
+        Time(-self.0)
+    }
+}
 impl fmt::Display for Time {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:.3}s", self.as_secs_f64())
