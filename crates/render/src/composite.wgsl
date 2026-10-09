@@ -43,3 +43,10 @@ fn fs_layer(in: VsOut) -> @location(0) vec4<f32> {
     let a = c.a * layer.opacity;
     return vec4(c.rgb * a, a); // premultiplied
 }
+
+// For a pre-composited, premultiplied group (a dissolve rendered into its own
+// float target): no extra premultiply, just the group's overall opacity.
+@fragment
+fn fs_layer_premul(in: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(layer_tex, layer_sampler, in.uv) * layer.opacity;
+}

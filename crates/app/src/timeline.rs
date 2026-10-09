@@ -2,7 +2,7 @@
 
 use crate::app::EditorState;
 use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
-use reelforge_core::undo::move_group;
+use reelforge_core::undo::{move_group, Edge, Timing};
 use reelforge_core::audio::{db_to_gain, fade_curve, MAX_DB, MIN_DB};
 use reelforge_core::ClipAudio;
 use reelforge_core::{ClipId, MediaId, Time, TrackKind};
@@ -33,7 +33,13 @@ enum Drag {
     VolKey { id: ClipId, index: usize },
     /// Dragging the volume line up/down: the clip's audio before the drag, and where it started.
     VolLine { id: ClipId, start_y: f32, orig: ClipAudio },
+    /// Trimming an edge: the clip grabbed, which edge, where that edge was, and
+    /// the timings of it and its linked clips before the drag.
+    Trim { id: ClipId, edge: Edge, edge_at: Time, start: Vec<(ClipId, Timing)> },
 }
+
+/// How close (px) to a clip's edge counts as grabbing it for trimming.
+const TRIM_PX: f32 = 6.0;
 
 enum VolHit {
     Key(ClipId, usize),
@@ -276,6 +282,18 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 }
             }
 
+            // Transform keyframes: small diamonds along the bottom of video clips.
+            if tr.kind == TrackKind::Video && clip.anim.is_animated() {
+                let kp = painter.with_clip_rect(vis);
+                for at in clip.anim.key_times() {
+                    let x = cr.left() + ((at - clip.source_in).as_secs_f64() as f32) * m.pps;
+                    let c = Pos2::new(x, cr.bottom() - 7.0);
+                    let r = 4.0;
+                    let d = vec![c + Vec2::new(0.0, -r), c + Vec2::new(r, 0.0), c + Vec2::new(0.0, r), c + Vec2::new(-r, 0.0)];
+                    kp.add(egui::Shape::convex_polygon(d, Color32::from_rgb(255, 210, 80), Stroke::new(1.0, Color32::from_black_alpha(160))));
+                }
+            }
+
             if selected_group.contains(&clip.id) {
                 let primary = st.selection == Some(clip.id);
                 let w = if primary { 2.0 } else { 1.0 };
@@ -292,7 +310,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
 
     // Crossfades: a block with an X over the overlap; a red tick where one was
     // asked for but there's no spare media to make it.
-    for x in st.project.crossfades(0) {
+    for x in st.project.transitions(0) {
         let Some(row) = rows.iter().position(|&t| t == x.track) else { continue };
         let r = row_rect(row);
         if x.is_empty() {
@@ -382,9 +400,40 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         ((db_to_y(c.audio.volume_db_at(src), cr) - p.y).abs() <= 4.0).then_some(VolHit::Line(c.id))
     };
 
+    // Clip edges, for trimming. On audio clips the top strip belongs to the fade handles.
+    let hit_edge = |st: &EditorState, p: Pos2| -> Option<(ClipId, Edge)> {
+        if p.x < m.x0 {
+            return None;
+        }
+        let ti = row_at(p.y)?;
+        let row = rows.iter().position(|&t| t == ti)?;
+        let r = row_rect(row);
+        let tr = &st.seq().tracks[ti];
+        if tr.kind == TrackKind::Audio && p.y < r.top() + 3.0 + FADE_HANDLE + 4.0 {
+            return None;
+        }
+        let mut best: Option<(f32, ClipId, Edge)> = None;
+        for c in &tr.clips {
+            for (x, edge) in [(m.x(c.timeline_start), Edge::Start), (m.x(c.timeline_end()), Edge::End)] {
+                // Grab from inside the clip so two touching clips are both reachable.
+                let inside = match edge {
+                    Edge::Start => p.x >= x - 1.0,
+                    Edge::End => p.x <= x + 1.0,
+                };
+                let d = (p.x - x).abs();
+                if inside && d <= TRIM_PX && best.is_none_or(|(bd, ..)| d < bd) {
+                    best = Some((d, c.id, edge));
+                }
+            }
+        }
+        best.map(|(_, id, e)| (id, e))
+    };
+
     if let Some(p) = resp.hover_pos() {
         if st.timeline.drag.is_none() {
-            if hit_fade(st, p).is_some() {
+            if hit_fade(st, p).is_none() && hit_edge(st, p).is_some() {
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeColumn);
+            } else if hit_fade(st, p).is_some() {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
             } else {
                 match hit_vol(st, p) {
@@ -403,11 +452,19 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         // Hit-test where the button went down, not where the drag threshold was crossed.
         let origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
         if let Some(p) = origin {
-            let vol = if hit_fade(st, p).is_none() { hit_vol(st, p) } else { None };
+            let edge = if hit_fade(st, p).is_none() { hit_edge(st, p) } else { None };
+            let vol = if hit_fade(st, p).is_none() && edge.is_none() { hit_vol(st, p) } else { None };
             st.timeline.drag = match (hit_fade(st, p), vol) {
                 (Some((id, out)), _) => {
                     st.selection = Some(id);
                     Some(Drag::Fade { id, out })
+                }
+                (None, _) if edge.is_some() => {
+                    let (id, edge) = edge.unwrap();
+                    st.selection = Some(id);
+                    let c = st.seq().find_clip(id).map(|(_, c)| c.clone()).unwrap();
+                    let edge_at = if edge == Edge::Start { c.timeline_start } else { c.timeline_end() };
+                    Some(Drag::Trim { id, edge, edge_at, start: st.timings(id) })
                 }
                 (None, Some(VolHit::Key(id, index))) => {
                     st.selection = Some(id);
@@ -490,8 +547,30 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 }
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
             }
+            if let Some(Drag::Trim { id, edge, edge_at, start }) = &st.timeline.drag {
+                let (id, edge, edge_at, start) = (*id, *edge, *edge_at, start.clone());
+                let mut to = m.t(p.x).snap(rate);
+                if !ui.input(|i| i.modifiers.alt) {
+                    to = snap_point(st, &start, to, &m);
+                }
+                let applied = st.trim_live(id, edge, to - edge_at, &start);
+                // Show the frame at the edge being trimmed in the viewer.
+                let shown = edge_at + applied;
+                st.playback.seek(if edge == Edge::End { (shown - rate.frame_duration()).max(Time::ZERO) } else { shown });
+                if let Some((_, c)) = st.seq().find_clip(id) {
+                    st.status = format!(
+                        "Trim {}: {:+.2} s  (in {} · out {} · length {})",
+                        if edge == Edge::Start { "start" } else { "end" },
+                        applied.as_secs_f64(),
+                        c.source_in.timecode(rate),
+                        (c.source_in + c.duration).timecode(rate),
+                        c.duration.timecode(rate)
+                    );
+                }
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeColumn);
+            }
             let target = st.timeline.drag.as_ref().map(|d| match d {
-                Drag::Scrub | Drag::Fade { .. } | Drag::VolKey { .. } | Drag::VolLine { .. } => None,
+                Drag::Scrub | Drag::Fade { .. } | Drag::VolKey { .. } | Drag::VolLine { .. } | Drag::Trim { .. } => None,
                 Drag::Clip { id, from, grab, .. } => {
                     let kind = st.seq().tracks[from.0].kind;
                     let ti = row_at(p.y).filter(|&t| st.seq().tracks[t].kind == kind).unwrap_or(from.0);
@@ -565,10 +644,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
 
     if resp.clicked() && !handled {
         if let Some(p) = pointer {
+            let on_ruler = p.y < rect.top() + RULER_H;
             match hit_clip(st, p) {
                 Some((_, id, _)) => st.selection = Some(id),
+                // The ruler only moves the playhead; empty track space also deselects.
                 None if p.x >= m.x0 => {
-                    st.selection = None;
+                    if !on_ruler {
+                        st.selection = None;
+                    }
                     st.playback.seek(m.t(p.x).snap(rate));
                 }
                 None => {}
@@ -630,6 +713,28 @@ fn snap_clip(st: &EditorState, id: ClipId, start: Time, m: &Mapping) -> Time {
         }
     }
     best.map_or(start, |(_, s)| s)
+}
+
+/// Snap a trimmed edge to other clips' edges or the start of the timeline (ignoring
+/// the clips being trimmed). Not the playhead: it follows the edge while trimming.
+fn snap_point(st: &EditorState, trimming: &[(ClipId, Timing)], t: Time, m: &Mapping) -> Time {
+    let ids: Vec<ClipId> = trimming.iter().map(|(c, _)| *c).collect();
+    let mut best: Option<(f32, Time)> = None;
+    let targets = st
+        .seq()
+        .tracks
+        .iter()
+        .flat_map(|tr| &tr.clips)
+        .filter(|c| !ids.contains(&c.id))
+        .flat_map(|c| [c.timeline_start, c.timeline_end()])
+        .chain([Time::ZERO]);
+    for target in targets {
+        let d = (m.x(target) - m.x(t)).abs();
+        if d <= SNAP_PX && best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, target));
+        }
+    }
+    best.map_or(t, |(_, x)| x)
 }
 
 fn clip_rect(m: &Mapping, row: Rect, start: Time, dur: Time) -> Rect {

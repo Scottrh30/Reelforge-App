@@ -124,3 +124,57 @@ fn resizing_the_frame_bumps_output_generation() {
     assert_eq!(c.output_generation, g + 1);
     assert_eq!(c.read_output().unwrap().len(), 32 * 16 * 4);
 }
+
+use reelforge_render::DrawItem;
+
+fn full(key: u64, pixels: &[u8], frame: [u32; 2]) -> LayerInput<'_> {
+    layer(key, pixels, [1, 1], [frame[0] as f32, frame[1] as f32], Transform::default(), BlendMode::Normal)
+}
+
+#[test]
+fn full_frame_dissolve_mixes_in_linear_light() {
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    let blue = solid(1, 1, [0, 0, 255, 255]);
+    for (mix, want) in [(0.0, [255, 0, 0]), (0.5, [188, 0, 188]), (1.0, [0, 0, 255])] {
+        c.render_items([16, 16], &[DrawItem::Dissolve { from: full(1, &red, [16, 16]), to: full(2, &blue, [16, 16]), mix }]);
+        let got = px(&c.read_output().unwrap(), 16, 8, 8);
+        assert!(near(got, want), "mix {mix}: got {got:?}, want {want:?}");
+    }
+}
+
+#[test]
+fn dissolve_between_small_layers_has_no_midpoint_dip() {
+    let Some(mut c) = setup() else { return };
+    let gray = solid(1, 1, [188, 188, 188, 255]); // 0.5 linear
+    let white = solid(1, 1, [255, 255, 255, 255]);
+    // A centred 8x8; B the same size shifted right by 4, so they half overlap.
+    let a = layer(2, &white, [1, 1], [8.0, 8.0], Transform::default(), BlendMode::Normal);
+    let b = layer(3, &white, [1, 1], [8.0, 8.0], Transform { position: [4.0, 0.0], ..Default::default() }, BlendMode::Normal);
+    c.render_items([32, 32], &[DrawItem::Layer(full(1, &gray, [32, 32])), DrawItem::Dissolve { from: a, to: b, mix: 0.5 }]);
+    let img = c.read_output().unwrap();
+    // Where both cover: 0.5·white + 0.5·white = white (a naive A-then-B fade would darken this).
+    assert!(near(px(&img, 32, 17, 16), [255, 255, 255]), "overlap: {:?}", px(&img, 32, 17, 16));
+    // Only A: 0.5·white + 0.5·gray(0.5) = 0.75 linear -> 225.
+    assert!(near(px(&img, 32, 13, 16), [225, 225, 225]), "A only: {:?}", px(&img, 32, 13, 16));
+    // Only B: same.
+    assert!(near(px(&img, 32, 21, 16), [225, 225, 225]), "B only: {:?}", px(&img, 32, 21, 16));
+    // Untouched background.
+    assert!(near(px(&img, 32, 2, 2), [188, 188, 188]));
+}
+
+#[test]
+fn layers_after_a_dissolve_still_composite_on_top() {
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    let blue = solid(1, 1, [0, 0, 255, 255]);
+    let green = solid(1, 1, [0, 255, 0, 255]);
+    let top = layer(9, &green, [1, 1], [4.0, 4.0], Transform::default(), BlendMode::Normal);
+    c.render_items([16, 16], &[
+        DrawItem::Dissolve { from: full(1, &red, [16, 16]), to: full(2, &blue, [16, 16]), mix: 0.5 },
+        DrawItem::Layer(top),
+    ]);
+    let img = c.read_output().unwrap();
+    assert!(near(px(&img, 16, 8, 8), [0, 255, 0]), "green on top");
+    assert!(near(px(&img, 16, 1, 1), [188, 0, 188]), "dissolve underneath");
+}

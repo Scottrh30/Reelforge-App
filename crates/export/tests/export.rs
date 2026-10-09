@@ -327,3 +327,59 @@ fn crossfade_without_spare_media_falls_back_to_a_cut() {
     let around = rms(&mix[(3.8 * 48_000.0) as usize * 2..(4.2 * 48_000.0) as usize * 2]);
     assert!((around / steady - 1.0).abs() < 0.05, "plain cut keeps the level");
 }
+
+fn solid_clip(name: &str, colour: &str, size: &str) -> Option<PathBuf> {
+    ffmpeg(name, &["-f", "lavfi", "-i", &format!("color=c={colour}:s={size}:r=25:d=4"), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "25"])
+}
+
+#[test]
+fn exported_dissolve_and_keyframed_motion() {
+    let (Some(red), Some(blue), Some(white)) = (
+        solid_clip("rf_red.mp4", "red", "640x360"),
+        solid_clip("rf_blue.mp4", "blue", "640x360"),
+        solid_clip("rf_white_small.mp4", "white", "64x64"),
+    ) else {
+        return;
+    };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &red));
+    p.media.push(asset(2, &blue));
+    p.media.push(asset(3, &white));
+    let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+    // V1: red (source 0–2) then blue (source 1–3), 1 s dissolve centred on the 2 s cut.
+    let a = Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(2.0), None);
+    let mut b = Clip::new(ClipId(2), MediaId(2), s(2.0), s(1.0), s(2.0), None);
+    b.dissolve_in = s(1.0);
+    // V2: a white square sliding from x = -200 to +200 over the first 2 s.
+    let mut w = Clip::new(ClipId(3), MediaId(3), s(0.0), s(0.0), s(4.0), None);
+    w.anim.position.set(s(0.0), [-200.0, 0.0]);
+    w.anim.position.set(s(2.0), [200.0, 0.0]);
+    seq.tracks[0].clips = vec![a, b];
+    seq.tracks[1].clips = vec![w];
+    p.sequences = vec![seq];
+
+    let out = std::env::temp_dir().join("rf_export_dissolve.mp4");
+    let mut st = settings(out.clone());
+    st.end = s(4.0);
+    st.include_audio = false;
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+
+    let rate = FrameRate::new(25, 1);
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let mut pixel = |frame: i64, x: u32, y: u32| {
+        let f = dec.frame_at_blocking(Time::from_frame(frame, rate), Duration::from_secs(5)).unwrap();
+        let i = ((y * 640 + x) * 4) as usize;
+        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+    };
+    let close = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 6);
+    // Corner (away from the square): red, mid-dissolve purple (linear-light 50/50), then blue.
+    assert!(close(pixel(25, 10, 10), [254, 0, 0]), "{:?}", pixel(25, 10, 10));
+    assert!(close(pixel(50, 10, 10), [188, 0, 188]), "mid-dissolve: {:?}", pixel(50, 10, 10));
+    assert!(close(pixel(75, 10, 10), [0, 0, 254]), "{:?}", pixel(75, 10, 10));
+    // Square centre at t = 1 s is x = 320 (frame centre); at t = 0.5 s it's 320 - 100.
+    assert!(close(pixel(25, 320, 180), [255, 255, 255]), "square at centre at 1 s");
+    assert!(close(pixel(12, 320 - 100 + 3, 180), [255, 255, 255]), "square at x-100 at 0.5 s");
+    assert!(!close(pixel(12, 320, 180), [255, 255, 255]), "and not yet at the centre");
+}

@@ -8,9 +8,9 @@
 //! callback that can also cancel.
 
 use anyhow::{anyhow, Context as _, Result};
-use reelforge_core::{ClipId, FrameRate, Project, Time, TrackKind};
+use reelforge_core::{ClipId, FrameRate, Project, Time, TrackKind, VideoItem};
 use reelforge_media::{FrameSource, MixClip, Mixer, MovieWriter, Quality, WriterSettings};
-use reelforge_render::{wgpu, Compositor, LayerInput};
+use reelforge_render::{wgpu, Compositor, DrawItem, LayerInput};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -189,39 +189,65 @@ pub fn export_sequence(
     for (n, i) in (first..last).enumerate() {
         let t = Time::from_frame(i, rate);
 
-        // Exact frame for every visible layer.
-        let mut frames = Vec::new();
-        for (_, clip) in seq.video_layers_at(t) {
-            let Some(media) = project.media(clip.media) else { continue };
-            let Some(v) = &media.info.video else { continue };
-            let src = match sources.entry(clip.id) {
+        // Exact frame for every visible layer (two per dissolve), with keyframes applied.
+        struct Gathered {
+            key: u64,
+            media: reelforge_core::MediaId,
+            size: [f32; 2],
+            transform: reelforge_core::Transform,
+            blend: reelforge_core::BlendMode,
+            frame: reelforge_media::VideoFrame,
+        }
+        let mut gather = |l: &reelforge_core::Layer| -> Result<Option<Gathered>> {
+            let Some(media) = project.media(l.clip.media) else { return Ok(None) };
+            let Some(v) = &media.info.video else { return Ok(None) };
+            let src = match sources.entry(l.clip.id) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(e) => e.insert(
-                    FrameSource::open(&media.path, None).with_context(|| format!("opening {}", media.name))?,
-                ),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(FrameSource::open(&media.path, None).with_context(|| format!("opening {}", media.name))?)
+                }
             };
             let frame = src
-                .frame_at_blocking(clip.source_time(t), FRAME_TIMEOUT)
-                .ok_or_else(|| anyhow!("{} produced no frame at {}", media.name, clip.source_time(t)))?;
-            frames.push((clip.id, media.id, [v.width as f32, v.height as f32], clip.transform, clip.blend, frame));
+                .frame_at_blocking(l.source_time, FRAME_TIMEOUT)
+                .ok_or_else(|| anyhow!("{} produced no frame at {}", media.name, l.source_time))?;
+            Ok(Some(Gathered { key: l.clip.id.0, media: media.id, size: [v.width as f32, v.height as f32], transform: l.transform, blend: l.blend, frame }))
+        };
+        enum Item {
+            Single(Gathered),
+            Dissolve(Gathered, Gathered, f32),
         }
-        let inputs: Vec<LayerInput> = frames
+        let mut items = Vec::new();
+        for item in project.video_layers_at(0, t) {
+            match item {
+                VideoItem::Single(l) => items.extend(gather(&l)?.map(Item::Single)),
+                VideoItem::Dissolve { from, to, mix } => match (gather(&from)?, gather(&to)?) {
+                    (Some(a), Some(b)) => items.push(Item::Dissolve(a, b, mix)),
+                    (Some(one), None) | (None, Some(one)) => items.push(Item::Single(one)),
+                    (None, None) => {}
+                },
+            }
+        }
+        fn input(g: &Gathered) -> LayerInput<'_> {
+            let mut h = DefaultHasher::new();
+            (g.media, g.frame.pts, g.frame.generation).hash(&mut h);
+            LayerInput {
+                key: g.key,
+                content_id: h.finish(),
+                pixels: &g.frame.rgba,
+                pixel_size: [g.frame.width, g.frame.height],
+                layer_size: g.size,
+                transform: g.transform,
+                blend: g.blend,
+            }
+        }
+        let draw: Vec<DrawItem> = items
             .iter()
-            .map(|(id, media, size, transform, blend, f)| {
-                let mut h = DefaultHasher::new();
-                (media, f.pts, f.generation).hash(&mut h);
-                LayerInput {
-                    key: id.0,
-                    content_id: h.finish(),
-                    pixels: &f.rgba,
-                    pixel_size: [f.width, f.height],
-                    layer_size: *size,
-                    transform: *transform,
-                    blend: *blend,
-                }
+            .map(|i| match i {
+                Item::Single(g) => DrawItem::Layer(input(g)),
+                Item::Dissolve(a, b, mix) => DrawItem::Dissolve { from: input(a), to: input(b), mix: *mix },
             })
             .collect();
-        compositor.render(frame_size, &inputs);
+        compositor.render_items(frame_size, &draw);
         let rgba = compositor.read_output().ok_or_else(|| anyhow!("GPU readback failed"))?;
         writer.write_video(&rgba)?;
 
@@ -235,7 +261,12 @@ pub fn export_sequence(
         }
 
         // Close decoders for clips that are finished.
-        sources.retain(|id, _| seq.find_clip(*id).is_some_and(|(_, c)| c.timeline_end() > t));
+        // (A clip stays needed past its end while it dissolves into the next one.)
+        let dissolves = project.dissolves(0);
+        sources.retain(|id, _| {
+            let tail = dissolves.iter().find(|x| x.left == *id).map_or(Time::ZERO, |x| x.after);
+            seq.find_clip(*id).is_some_and(|(_, c)| c.timeline_end() + tail > t)
+        });
         compositor.retain_layers(|k| sources.contains_key(&ClipId(k)));
 
         let p = Progress { done: n as u64 + 1, total, elapsed: started.elapsed() };

@@ -3,7 +3,6 @@
 use crate::project::*;
 use crate::audio::{ClipAudio, TrackAudio};
 use crate::time::Time;
-use crate::transform::{BlendMode, Transform};
 
 pub trait Command: Send {
     fn name(&self) -> &str;
@@ -209,6 +208,9 @@ impl Command for SplitClip {
             // The fade-in and any crossfade stay on the left half, the fade-out goes
             // right. Volume keys are anchored to source time, so both halves keep them.
             audio: ClipAudio { fade_in: Time::ZERO, crossfade_in: Time::ZERO, ..clip.audio.clone() },
+            // Transform keys are source-anchored too; a dissolve stays on the left half.
+            anim: clip.anim.clone(),
+            dissolve_in: Time::ZERO,
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;
@@ -237,21 +239,84 @@ impl Command for SplitClip {
 pub struct SetClipVisual {
     pub seq: usize,
     pub id: ClipId,
-    pub old: (Transform, BlendMode),
-    pub new: (Transform, BlendMode),
+    pub old: ClipVisual,
+    pub new: ClipVisual,
 }
 
 impl SetClipVisual {
-    fn set(&self, p: &mut Project, v: (Transform, BlendMode)) {
+    fn set(&self, p: &mut Project, v: &ClipVisual) {
         if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
-            (c.transform, c.blend) = v;
+            c.set_visual(v.clone());
         }
     }
 }
 
 impl Command for SetClipVisual {
     fn name(&self) -> &str {
-        if self.old.1 != self.new.1 { "Change blend mode" } else { "Change transform" }
+        if self.old.blend != self.new.blend {
+            "Change blend mode"
+        } else if self.old.anim != self.new.anim {
+            "Change keyframes"
+        } else {
+            "Change transform"
+        }
+    }
+    fn apply(&mut self, p: &mut Project) {
+        self.set(p, &self.new);
+    }
+    fn undo(&mut self, p: &mut Project) {
+        self.set(p, &self.old);
+    }
+}
+
+/// Set the cross-dissolve into a video clip.
+pub struct SetDissolve {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: Time,
+    pub new: Time,
+}
+
+impl Command for SetDissolve {
+    fn name(&self) -> &str {
+        "Change cross-dissolve"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.dissolve_in = self.new;
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.dissolve_in = self.old;
+        }
+    }
+}
+
+/// Where a clip sits: `(timeline_start, source_in, duration)`.
+pub type Timing = (Time, Time, Time);
+
+/// Set a clip's position, source in-point and length (trimming).
+pub struct SetClipTiming {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: Timing,
+    pub new: Timing,
+}
+
+impl SetClipTiming {
+    fn set(&self, p: &mut Project, (start, src, dur): Timing) {
+        let s = &mut p.sequences[self.seq];
+        if let Some((ti, c)) = s.find_clip_mut(self.id) {
+            (c.timeline_start, c.source_in, c.duration) = (start, src, dur);
+            s.tracks[ti].sort();
+        }
+    }
+}
+
+impl Command for SetClipTiming {
+    fn name(&self) -> &str {
+        "Trim clip"
     }
     fn apply(&mut self, p: &mut Project) {
         self.set(p, self.new);
@@ -259,6 +324,83 @@ impl Command for SetClipVisual {
     fn undo(&mut self, p: &mut Project) {
         self.set(p, self.old);
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    Start,
+    End,
+}
+
+/// How far `edge` of `id` (and the clips linked to it) can move, as
+/// `(earliest, latest)` deltas. Limited by the media available, a minimum
+/// length of one frame, and the neighbouring clips on each track.
+pub fn trim_range(p: &Project, seq: usize, id: ClipId, edge: Edge) -> Option<(Time, Time)> {
+    let s = &p.sequences[seq];
+    let frame = s.frame_rate.frame_duration();
+    let group = s.link_group(id);
+    if group.is_empty() {
+        return None;
+    }
+    let ids: Vec<ClipId> = group.iter().map(|(_, c)| c.id).collect();
+    let (mut lo, mut hi) = (Time(i64::MIN / 4), Time(i64::MAX / 4));
+    for (ti, c) in &group {
+        let still = p.is_still(c.media);
+        let others = s.tracks[*ti].clips.iter().filter(|o| !ids.contains(&o.id));
+        match edge {
+            Edge::Start => {
+                if !still {
+                    lo = lo.max(Time(-c.source_in.0));
+                }
+                lo = lo.max(Time(-c.timeline_start.0)); // not before 0
+                hi = hi.min(c.duration - frame);
+                for o in others.filter(|o| o.timeline_end() <= c.timeline_start) {
+                    lo = lo.max(o.timeline_end() - c.timeline_start);
+                }
+            }
+            Edge::End => {
+                lo = lo.max(frame - c.duration);
+                if !still {
+                    let media_len = p.media(c.media).map(|m| m.info.duration).unwrap_or(Time::ZERO);
+                    hi = hi.min(media_len - (c.source_in + c.duration));
+                }
+                for o in others.filter(|o| o.timeline_start >= c.timeline_end()) {
+                    hi = hi.min(o.timeline_start - c.timeline_end());
+                }
+            }
+        }
+    }
+    (lo <= hi).then_some((lo, hi))
+}
+
+/// New timing for a clip after moving `edge` by `delta` (already within range).
+pub fn trimmed(p: &Project, c: &Clip, edge: Edge, delta: Time) -> Timing {
+    match edge {
+        Edge::Start => {
+            let src = if p.is_still(c.media) { c.source_in } else { c.source_in + delta };
+            (c.timeline_start + delta, src, c.duration - delta)
+        }
+        Edge::End => (c.timeline_start, c.source_in, c.duration + delta),
+    }
+}
+
+/// Trim `id` and its linked clips by `delta` (clamped to what's allowed).
+pub fn trim_group(p: &Project, seq: usize, id: ClipId, edge: Edge, delta: Time) -> Option<Box<dyn Command>> {
+    let (lo, hi) = trim_range(p, seq, id, edge)?;
+    let d = delta.max(lo).min(hi);
+    if d == Time::ZERO {
+        return None;
+    }
+    let s = &p.sequences[seq];
+    let cmds = s
+        .link_group(id)
+        .into_iter()
+        .map(|(_, c)| {
+            let old = (c.timeline_start, c.source_in, c.duration);
+            Box::new(SetClipTiming { seq, id: c.id, old, new: trimmed(p, c, edge, d) }) as Box<dyn Command>
+        })
+        .collect();
+    Some(Box::new(Batch { name: "Trim clip".into(), cmds }))
 }
 
 /// Change a clip's volume, pan or fades (live-edited like [`SetClipVisual`]).
@@ -411,6 +553,7 @@ mod tests {
     use crate::time::Time;
     use crate::audio::{ClipAudio, TrackAudio};
     use crate::transform::{BlendMode, Transform};
+    use crate::{MediaInfo, Prop, VideoStreamInfo, FrameRate, Rational};
 
     fn clip(id: u64, start: f64, dur: f64) -> Clip {
         Clip::new(ClipId(id), MediaId(1), Time::from_secs_f64(start), Time::ZERO, Time::from_secs_f64(dur), None)
@@ -512,8 +655,9 @@ mod tests {
         let mut u = UndoStack::default();
         u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(1001, 0.0, 4.0) }));
         let t = Transform { position: [10.0, 5.0], scale: [0.5, 0.5], rotation: 15.0, opacity: 0.4 };
-        let old = (Transform::default(), BlendMode::Normal);
-        u.execute(&mut p, Box::new(SetClipVisual { seq: 0, id: ClipId(1001), old, new: (t, BlendMode::Screen) }));
+        let old = ClipVisual::default();
+        let new = ClipVisual { transform: t, blend: BlendMode::Screen, anim: Default::default() };
+        u.execute(&mut p, Box::new(SetClipVisual { seq: 0, id: ClipId(1001), old, new }));
         let cmd = split_group(&mut p, 0, ClipId(1001), Time::from_secs_f64(2.0)).unwrap();
         u.execute(&mut p, cmd);
         for c in &p.sequences[0].tracks[0].clips {
@@ -577,6 +721,86 @@ mod tests {
         assert_eq!(c.audio, ClipAudio::default());
         let t: Track = serde_json::from_str(r#"{"name":"A1","kind":"Audio","clips":[],"muted":false}"#).unwrap();
         assert_eq!(t.audio, TrackAudio::default());
+    }
+
+    fn video_media(id: u64, secs: f64) -> MediaAsset {
+        MediaAsset {
+            id: MediaId(id),
+            path: format!("{id}.mp4").into(),
+            name: String::new(),
+            info: MediaInfo {
+                duration: Time::from_secs_f64(secs),
+                video: Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: "h264".into(), time_base: Rational::new(1, 30) }),
+                audio: None,
+                container: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn trimming_respects_media_neighbours_and_minimum_length() {
+        let s = Time::from_secs_f64;
+        let mut p = Project::new(); // 30 fps sequence
+        p.media.push(video_media(1, 10.0));
+        let mut a = Clip::new(ClipId(1), MediaId(1), s(2.0), s(1.0), s(3.0), None); // source 1–4 at 2–5
+        a.link = Some(7);
+        let mut a_audio = a.clone();
+        a_audio.id = ClipId(2);
+        let b = Clip::new(ClipId(3), MediaId(1), s(6.0), s(0.0), s(2.0), None); // next clip at 6
+        p.sequences[0].tracks[0].clips = vec![a, b];
+        p.sequences[0].tracks[2].clips = vec![a_audio];
+
+        let frame = Time::from_frame(1, FrameRate::new(30, 1));
+        // Start edge: back to source 0 (−1 s), forward to leave one frame.
+        assert_eq!(trim_range(&p, 0, ClipId(1), Edge::Start), Some((s(-1.0), s(3.0) - frame)));
+        // End edge: up to the next clip at 6 s (+1 s) on the video track.
+        assert_eq!(trim_range(&p, 0, ClipId(1), Edge::End).map(|r| r.1), Some(s(1.0)));
+
+        // Trimming either linked clip trims both, clamped at the limit.
+        let mut u = UndoStack::default();
+        let cmd = trim_group(&p, 0, ClipId(2), Edge::End, s(5.0)).unwrap();
+        u.execute(&mut p, cmd);
+        for (track, id) in [(0, ClipId(1)), (2, ClipId(2))] {
+            let c = p.sequences[0].tracks[track].clips.iter().find(|c| c.id == id).unwrap();
+            assert_eq!(c.timeline_end(), s(6.0), "clamped to the neighbour");
+        }
+        let cmd = trim_group(&p, 0, ClipId(1), Edge::Start, s(-0.5)).unwrap();
+        u.execute(&mut p, cmd);
+        let c = &p.sequences[0].tracks[0].clips[0];
+        assert_eq!((c.timeline_start, c.source_in, c.duration), (s(1.5), s(0.5), s(4.5)), "start trim moves the in-point too");
+        u.undo(&mut p);
+        u.undo(&mut p);
+        let c = &p.sequences[0].tracks[0].clips[0];
+        assert_eq!((c.timeline_start, c.source_in, c.duration), (s(2.0), s(1.0), s(3.0)));
+    }
+
+    #[test]
+    fn stills_can_be_extended_freely() {
+        let s = Time::from_secs_f64;
+        let mut p = Project::new();
+        p.media.push(video_media(1, 0.0)); // a still image
+        p.sequences[0].tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), s(1.0), s(0.0), s(5.0), None)];
+        let (lo, hi) = trim_range(&p, 0, ClipId(1), Edge::End).unwrap();
+        assert!(hi > s(1000.0) && lo < Time::ZERO);
+        let (lo, _) = trim_range(&p, 0, ClipId(1), Edge::Start).unwrap();
+        assert_eq!(lo, s(-1.0), "only limited by the start of the timeline");
+    }
+
+    #[test]
+    fn split_keeps_keyframes_and_dissolve_on_the_left() {
+        let s = Time::from_secs_f64;
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        let mut c = clip(1001, 0.0, 4.0);
+        c.anim.rotation.set(s(1.0), 10.0);
+        c.dissolve_in = s(0.5);
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: c }));
+        let _ = Prop::Rotation;
+        let cmd = split_group(&mut p, 0, ClipId(1001), s(2.0)).unwrap();
+        u.execute(&mut p, cmd);
+        let cl = &p.sequences[0].tracks[0].clips;
+        assert!(cl.iter().all(|c| c.anim.rotation.0.len() == 1));
+        assert_eq!((cl[0].dissolve_in, cl[1].dissolve_in), (s(0.5), Time::ZERO));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::app::EditorState;
 use egui::{Align, Color32, Layout, RichText, Sense, Vec2};
+use reelforge_core::{ClipVisual, Prop, Transform};
 use reelforge_core::{MediaId, Time};
 
 pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
@@ -74,13 +75,14 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     // Visible layers at the playhead, top first, with their native sizes.
     let t = st.playback.playhead;
     let layers: Vec<(reelforge_core::ClipId, [f32; 2], reelforge_core::Transform)> = st
-        .seq()
-        .video_layers_at(t)
-        .into_iter()
+        .project
+        .video_layers_at(0, t)
+        .iter()
         .rev()
-        .filter_map(|(_, c)| {
+        .flat_map(|item| item.layers().into_iter().rev().map(|l| (l.clip, l.transform)).collect::<Vec<_>>())
+        .filter_map(|(c, tr)| {
             let v = st.project.media(c.media)?.info.video.as_ref()?;
-            Some((c.id, [v.width as f32, v.height as f32], c.transform))
+            Some((c.id, [v.width as f32, v.height as f32], tr))
         })
         .collect();
 
@@ -102,16 +104,22 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
         if resp.dragged() && !st.playback.playing {
             let d = resp.drag_delta() / scale;
             if d != Vec2::ZERO {
-                if let Some((mut t2, blend)) = st.visual(id) {
-                    t2.position[0] += d.x;
-                    t2.position[1] += d.y;
-                    st.set_visual_live(id, (t2, blend));
+                let clip = st.seq().find_clip(id).map(|(_, c)| c.clone());
+                if let (Some(mut v), Some(clip)) = (st.visual(id), clip) {
+                    let shown = clip.transform_at(t);
+                    let mut moved = shown;
+                    moved.position[0] += d.x;
+                    moved.position[1] += d.y;
+                    // Keyed if position is animated (adds/updates a key at the playhead).
+                    apply_transform_edit(&mut v, &shown, &moved, clip.source_time(t), clip.contains(t));
+                    st.set_visual_live(id, v);
                 }
             }
             ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
         }
         // Bounding box + centre handle.
-        let corners = st.visual(id).map(|(t2, _)| t2).unwrap_or(tr).corners(size, frame_px).map(to_screen);
+        let now = st.seq().find_clip(id).map(|(_, c)| c.transform_at(t)).unwrap_or(tr);
+        let corners = now.corners(size, frame_px).map(to_screen);
         let gold = Color32::from_rgb(255, 196, 64);
         let clip_painter = ui.painter_at(area);
         clip_painter.add(egui::Shape::closed_line(corners.to_vec(), egui::Stroke::new(1.5, gold)));
@@ -190,6 +198,7 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
             if st.seq().tracks[ti].kind == reelforge_core::TrackKind::Video {
                 ui.add_space(10.0);
                 transform_controls(ui, st, &clip);
+                dissolve_control(ui, st, &clip);
             }
             // Audio controls for this clip, or for the audio linked to a selected video clip.
             let audio_clip = st
@@ -245,12 +254,47 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
     });
 }
 
-/// Position / scale / rotation / opacity / blend for a video clip.
-/// Edits apply live and become one undo step when the mouse is released.
+/// Write an edit made to the *displayed* (evaluated) transform back to the clip:
+/// animated properties get a keyframe at source time `src` (only if `can_key`,
+/// i.e. the playhead is on the clip); static ones change the clip's base value.
+pub fn apply_transform_edit(v: &mut ClipVisual, shown: &Transform, edited: &Transform, src: Time, can_key: bool) {
+    for p in Prop::ALL {
+        let changed = match p {
+            Prop::Position => shown.position != edited.position,
+            Prop::Scale => shown.scale != edited.scale,
+            Prop::Rotation => shown.rotation != edited.rotation,
+            Prop::Opacity => shown.opacity != edited.opacity,
+        };
+        if !changed {
+            continue;
+        }
+        if v.anim.prop_animated(p) {
+            if can_key {
+                v.anim.set_key(p, src, edited);
+            }
+        } else {
+            match p {
+                Prop::Position => v.transform.position = edited.position,
+                Prop::Scale => v.transform.scale = edited.scale,
+                Prop::Rotation => v.transform.rotation = edited.rotation,
+                Prop::Opacity => v.transform.opacity = edited.opacity,
+            }
+        }
+    }
+}
+
+/// Position / scale / rotation / opacity / blend for a video clip, each with a
+/// keyframe button. Edits apply live and become one undo step on release.
 fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
-    use reelforge_core::{BlendMode, Transform};
-    let Some((mut t, mut blend)) = st.visual(clip.id) else { return };
-    let before = (t, blend);
+    use reelforge_core::{BlendMode, Interp};
+    let Some(mut v) = st.visual(clip.id) else { return };
+    let before = v.clone();
+    let playhead = st.playback.playhead;
+    let in_clip = clip.contains(playhead);
+    let src = clip.source_time(playhead.max(clip.timeline_start).min(clip.timeline_end()));
+    let to_timeline = |at: Time| clip.timeline_start + (at - clip.source_in);
+    let shown = v.anim.eval(&v.transform, src);
+    let mut t = shown;
     let native = st
         .project
         .media(clip.media)
@@ -260,61 +304,120 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
     let frame = [st.seq().width as f32, st.seq().height as f32];
     let lock_id = egui::Id::new("scale_lock");
     let mut lock = ui.data_mut(|d| *d.get_persisted_mut_or(lock_id, true));
+    let mut toggles: Vec<Prop> = Vec::new();
+    let mut reset = false;
+    let mut seek = None;
+    let anim = v.anim.clone();
+    // A keyframed property can only be edited with the playhead on the clip.
+    let editable = |p: Prop| !anim.prop_animated(p) || in_clip;
+    let key_btn = |ui: &mut egui::Ui, p: Prop, toggles: &mut Vec<Prop>| {
+        let here = in_clip && anim.has_key(p, src);
+        let tip = if here { "Remove this keyframe" } else if anim.prop_animated(p) { "Add a keyframe at the playhead" } else { "Start animating: add a keyframe at the playhead" };
+        if key_button(ui, here, in_clip).on_hover_text(tip).clicked() {
+            toggles.push(p);
+        }
+    };
 
     ui.heading("Transform");
-    egui::Grid::new("transform").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+    egui::Grid::new("transform").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.weak("Position");
-        ui.horizontal(|ui| {
-            ui.add(egui::DragValue::new(&mut t.position[0]).speed(1.0).prefix("X ").fixed_decimals(1));
-            ui.add(egui::DragValue::new(&mut t.position[1]).speed(1.0).prefix("Y ").fixed_decimals(1));
+        key_btn(ui, Prop::Position, &mut toggles);
+        ui.add_enabled_ui(editable(Prop::Position), |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut t.position[0]).speed(1.0).prefix("X ").fixed_decimals(1));
+                ui.add(egui::DragValue::new(&mut t.position[1]).speed(1.0).prefix("Y ").fixed_decimals(1));
+            });
         });
         ui.end_row();
 
         ui.weak("Scale");
-        ui.horizontal(|ui| {
-            let mut sx = t.scale[0] * 100.0;
-            let mut sy = t.scale[1] * 100.0;
-            let rx = ui.add(egui::DragValue::new(&mut sx).speed(0.5).suffix(" %").range(-10000.0..=10000.0).fixed_decimals(1));
-            let ry = ui.add(egui::DragValue::new(&mut sy).speed(0.5).suffix(" %").range(-10000.0..=10000.0).fixed_decimals(1));
-            // Write back only on a real change: x*100/100 isn't always exact in f32,
-            // and a phantom change would create an undo step every frame.
-            if rx.changed() {
-                t.scale[0] = sx / 100.0;
-                if lock {
-                    t.scale[1] = t.scale[0];
+        key_btn(ui, Prop::Scale, &mut toggles);
+        ui.add_enabled_ui(editable(Prop::Scale), |ui| {
+            ui.horizontal(|ui| {
+                let mut sx = t.scale[0] * 100.0;
+                let mut sy = t.scale[1] * 100.0;
+                let rx = ui.add(egui::DragValue::new(&mut sx).speed(0.5).suffix(" %").range(-10000.0..=10000.0).fixed_decimals(1));
+                let ry = ui.add(egui::DragValue::new(&mut sy).speed(0.5).suffix(" %").range(-10000.0..=10000.0).fixed_decimals(1));
+                // Write back only on a real change: x*100/100 isn't always exact in f32,
+                // and a phantom change would create an undo step every frame.
+                if rx.changed() {
+                    t.scale[0] = sx / 100.0;
+                    if lock {
+                        t.scale[1] = t.scale[0];
+                    }
+                } else if ry.changed() {
+                    t.scale[1] = sy / 100.0;
+                    if lock {
+                        t.scale[0] = t.scale[1];
+                    }
                 }
-            } else if ry.changed() {
-                t.scale[1] = sy / 100.0;
-                if lock {
-                    t.scale[0] = t.scale[1];
-                }
-            }
-            ui.toggle_value(&mut lock, "🔒").on_hover_text("Keep X and Y scale equal");
+                ui.toggle_value(&mut lock, "🔒").on_hover_text("Keep X and Y scale equal");
+            });
         });
         ui.end_row();
 
         ui.weak("Rotation");
-        ui.add(egui::DragValue::new(&mut t.rotation).speed(0.5).suffix("°").fixed_decimals(1));
+        key_btn(ui, Prop::Rotation, &mut toggles);
+        ui.add_enabled_ui(editable(Prop::Rotation), |ui| {
+            ui.add(egui::DragValue::new(&mut t.rotation).speed(0.5).suffix("°").fixed_decimals(1));
+        });
         ui.end_row();
 
         ui.weak("Opacity");
-        let mut o = t.opacity * 100.0;
-        if ui.add(egui::Slider::new(&mut o, 0.0..=100.0).suffix(" %").fixed_decimals(0)).changed() {
-            t.opacity = o / 100.0;
-        }
-        ui.end_row();
-
-        ui.weak("Blend");
-        egui::ComboBox::from_id_salt("blend").selected_text(blend.label()).show_ui(ui, |ui| {
-            for m in BlendMode::ALL {
-                ui.selectable_value(&mut blend, m, m.label());
+        key_btn(ui, Prop::Opacity, &mut toggles);
+        ui.add_enabled_ui(editable(Prop::Opacity), |ui| {
+            let mut o = t.opacity * 100.0;
+            if ui.add(egui::Slider::new(&mut o, 0.0..=100.0).suffix(" %").fixed_decimals(0)).changed() {
+                t.opacity = o / 100.0;
             }
         });
         ui.end_row();
+
+        ui.weak("Blend");
+        ui.label("");
+        egui::ComboBox::from_id_salt("blend").selected_text(v.blend.label()).show_ui(ui, |ui| {
+            for m in BlendMode::ALL {
+                ui.selectable_value(&mut v.blend, m, m.label());
+            }
+        });
+        ui.end_row();
+
+        // Keyframe navigation and interpolation.
+        let times: Vec<Time> = v.anim.key_times().into_iter().map(to_timeline).collect();
+        if !times.is_empty() {
+            ui.weak("Keyframes");
+            ui.label("");
+            ui.horizontal(|ui| {
+                let prev = times.iter().rev().copied().find(|k| *k < playhead);
+                let next = times.iter().copied().find(|k| *k > playhead);
+                if ui.add_enabled(prev.is_some(), egui::Button::new("◀")).on_hover_text("Previous keyframe").clicked() {
+                    seek = prev;
+                }
+                if ui.add_enabled(next.is_some(), egui::Button::new("▶")).on_hover_text("Next keyframe").clicked() {
+                    seek = next;
+                }
+                if let Some(mut interp) = v.anim.interp_at(src).filter(|_| in_clip) {
+                    let old = interp;
+                    egui::ComboBox::from_id_salt("interp").selected_text(interp.label()).width(70.0).show_ui(ui, |ui| {
+                        for i in Interp::ALL {
+                            ui.selectable_value(&mut interp, i, i.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("How the keyframe(s) here move towards the next one");
+                    if interp != old {
+                        v.anim.set_interp_at(src, interp);
+                    }
+                } else {
+                    ui.weak(format!("{} keyframe time(s)", times.len()));
+                }
+            });
+            ui.end_row();
+        }
     });
     ui.horizontal(|ui| {
-        if ui.button("Reset").clicked() {
-            t = Transform::default();
+        if ui.button("Reset").on_hover_text("Default transform; removes transform keyframes").clicked() {
+            reset = true;
         }
         if ui.button("Fit").on_hover_text("Scale to fit inside the frame").clicked() {
             let k = Transform::fit_scale(native, frame, false);
@@ -329,9 +432,69 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
     });
     ui.data_mut(|d| d.insert_persisted(lock_id, lock));
 
-    if (t, blend) != before {
-        st.set_visual_live(clip.id, (t, blend));
+    if reset {
+        v.transform = Transform::default();
+        v.anim = Default::default();
+    } else {
+        apply_transform_edit(&mut v, &shown, &t, src, in_clip);
+        let now = v.anim.eval(&v.transform, src);
+        for p in toggles {
+            if v.anim.has_key(p, src) {
+                // Removing the last key: keep the current value so nothing jumps.
+                let last = match p {
+                    Prop::Position => v.anim.position.0.len() == 1,
+                    Prop::Scale => v.anim.scale.0.len() == 1,
+                    Prop::Rotation => v.anim.rotation.0.len() == 1,
+                    Prop::Opacity => v.anim.opacity.0.len() == 1,
+                };
+                if last {
+                    let mut base = v.transform;
+                    let cur = now;
+                    match p {
+                        Prop::Position => base.position = cur.position,
+                        Prop::Scale => base.scale = cur.scale,
+                        Prop::Rotation => base.rotation = cur.rotation,
+                        Prop::Opacity => base.opacity = cur.opacity,
+                    }
+                    v.transform = base;
+                }
+                v.anim.remove_key(p, src);
+            } else {
+                v.anim.set_key(p, src, &now);
+            }
+        }
     }
+    if v != before {
+        st.set_visual_live(clip.id, v);
+    }
+    if let Some(t) = seek {
+        st.playback.seek(t);
+    }
+}
+
+/// "Dissolve in" length for a video clip that touches the one before it.
+fn dissolve_control(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
+    let Some(left_dur) = st.project.clip_before(0, clip.id).and_then(|id| st.seq().find_clip(id).map(|(_, c)| c.duration)) else { return };
+    let rate = st.seq().frame_rate;
+    let x = st.project.crossfade_into(0, clip.id);
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.weak("Dissolve in");
+        let mut secs = clip.dissolve_in.as_secs_f64();
+        let limit = left_dur.min(clip.duration).as_secs_f64();
+        if ui
+            .add(egui::DragValue::new(&mut secs).speed(0.01).range(0.0..=limit).suffix(" s").fixed_decimals(2))
+            .on_hover_text("Cross-dissolve from the clip before this one (Ctrl+D)")
+            .changed()
+        {
+            st.set_dissolve_live(clip.id, Time::from_secs_f64(secs).snap(rate));
+        }
+        if let Some(x) = x.filter(|x| x.len() < x.requested) {
+            let msg = if x.is_empty() { "no spare media: plain cut".to_string() } else { format!("only {:.2} s of spare media", x.len().as_secs_f64()) };
+            ui.colored_label(ui.visuals().warn_fg_color, msg)
+                .on_hover_text("A dissolve shows the outgoing clip past its end and the incoming one before its start. Trim the clips to leave unused media at the cut.");
+        }
+    });
 }
 
 /// A button showing a keyframe diamond: filled when there's a key at the playhead.

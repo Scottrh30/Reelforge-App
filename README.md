@@ -52,6 +52,21 @@ What works now:
   none at all it stays a plain cut (red marker on the timeline)
 - **Audio meters**: a Meters panel next to the timeline shows the master output: peak and RMS per
   channel, a 1.5 s peak-hold line with its value, and clip lights that stay lit until you click
+- **Trimming**: drag either edge of a clip to shorten or lengthen it (linked audio/video trim
+  together). It stops at the end of the media, at neighbouring clips, and at a one-frame
+  minimum; the viewer shows the frame at the edge while you drag. Still images can be stretched
+  to any length. Edges snap to other clips (Alt to disable)
+- **Cross-dissolves**: **Edit → Cross-dissolve at playhead** (`Ctrl+D`) adds a 1 s dissolve at
+  the nearest cut between two touching video clips; adjust it with "Dissolve in" in the Controls
+  panel. Like audio crossfades it uses the spare media either side of the cut. The dissolve is
+  rendered correctly in linear light: no brightness dip at the midpoint, even for clips that
+  don't fill the frame
+- **Video keyframes**: Position, Scale, Rotation and Opacity each have a keyframe button in the
+  Controls panel. Click it to start animating that property at the playhead; after that, changing
+  the value (or dragging the layer in the Viewer) sets a keyframe at the playhead. Previous/next
+  keyframe buttons, and an interpolation choice per keyframe: **Linear**, **Ease** (smooth start
+  and stop) or **Hold** (jump). Keyframes appear as diamonds along the bottom of the clip, and
+  move, split and trim with it
 - **Snapping**: dragged clips snap to other clips' edges, the playhead and the start of the
   timeline (hold **Alt** to move freely)
 - **Audio scrubbing**: hear the audio while dragging the playhead or stepping frames with
@@ -59,8 +74,8 @@ What works now:
 - Colour-accurate decoding: BT.709/BT.601 and full/limited range are read from each file
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
-Not yet: keyframes for video properties (transforms are constant across a clip), effects,
-video transitions (cross-dissolve), trimming clip edges by dragging, an in/out range for export.
+Not yet: effects (colour correction, blur, chroma key…), other transition types (wipes, dip to
+black), ripple/roll trimming, a curve editor for keyframes, an in/out range for export.
 See the roadmap at the bottom.
 
 ## Layout
@@ -169,7 +184,9 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
 | Ctrl+Shift+D | Add/remove audio crossfade at the nearest cut |
 | Ctrl+click volume line | Add a volume keyframe |
 | Double-click / Alt+click keyframe | Delete it |
-| Alt while dragging a clip | Don't snap |
+| Alt while dragging a clip or edge | Don't snap |
+| Drag a clip edge | Trim |
+| Ctrl+D | Add/remove cross-dissolve at the nearest video cut |
 | Ctrl + mouse wheel | Zoom timeline |
 | Click / drag in Viewer | Select / move a layer |
 
@@ -207,6 +224,15 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
   track settings are folded into one gain + per-channel balance per clip by
   `reelforge_export::mix_clips`, which feeds both playback and export, so they can't
   disagree. Mono sources play at full level on both channels.
+- **Keyframes** (`crates/core/src/anim.rs`): one curve per property, keys anchored to source
+  time. `Project::video_layers_at(seq, t)` evaluates everything for a moment in time (which
+  clips are visible, their keyframed transforms, and any dissolve in progress with its mix
+  amount), and both the viewer and export render from that, so they always agree.
+- **Dissolves** render as a group in the compositor: both clips are summed, weighted 1−mix and
+  mix, into a scratch float target, which is then composited over the frame. That's exactly
+  `(1−u)·A + u·B` over whatever is underneath.
+- **Trimming** (`undo::trim_range` / `trim_group`) computes the allowed range for the whole
+  linked group up front, so the edge simply stops at a limit instead of failing.
 - **Volume automation** is stored as `(source time, dB)` keys and interpolated linearly in dB
   (what sounds like an even ramp). `mix_clips` converts keys to sample offsets per clip, so the
   mixer applies them sample-accurately in both playback and export.
@@ -235,11 +261,13 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
 2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms, volume/pan, fades, scrubbing,
    volume keyframes, crossfades, meters~~
    (still to add: per-track meters, audio effects like EQ/compressor, keyframed pan)
-3. ~~Compositor: layers, transforms, opacity, blend modes, viewer gizmo~~
-   (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes)
+3. ~~Compositor: layers, transforms, opacity, blend modes, viewer gizmo, keyframes,
+   cross-dissolves, trimming~~
+   (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes,
+   a keyframe curve editor)
 4. ~~Export to H.264/AAC with progress and cancel~~ ← you are here
    (still to add: in/out range, ProRes/DNxHR for intermediates, PNG sequences, an export queue)
-5. **Effects + keyframes**: `EffectInstance { params: Vec<AnimatedParam> }` on clips, each
-   effect a WGSL pass, a curve editor in the Controls panel.
+5. **Effects**: `EffectInstance { params: Vec<Curve<…>> }` on clips (reusing the keyframe
+   curves), each effect a WGSL pass between decode and composite.
 6. **Composite shots**, masks, chroma key, tracking, 3D camera/lights, GPU particles.
 7. **Performance**: proxy media, a GPU-resident frame cache, hardware decode (`d3d11va`).

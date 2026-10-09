@@ -5,7 +5,10 @@ use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use crate::audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::preview::Preview;
-use reelforge_core::undo::{delete_group, split_group, AddClip, Batch, ImportMedia, SetClipAudio, SetClipVisual, SetLink, SetTrackAudio};
+use reelforge_core::undo::{
+    delete_group, split_group, trim_range, trimmed, AddClip, Batch, Edge, ImportMedia, SetClipAudio, SetClipTiming, SetClipVisual, SetDissolve,
+    SetLink, SetTrackAudio, Timing,
+};
 use reelforge_core::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -405,13 +408,14 @@ impl EditorState {
         }
     }
 
-    /// Add (or remove) a 1 s audio crossfade at the cut nearest the playhead:
-    /// the selected clip's cut if it has one, otherwise any audio cut within 1 s.
-    pub fn toggle_crossfade_at_playhead(&mut self) {
+    /// Add (or remove) a 1 s transition at the cut nearest the playhead on tracks
+    /// of `kind`: an audio crossfade or a video cross-dissolve. Prefers the
+    /// selected clip's cut, otherwise any matching cut within 1 s.
+    pub fn toggle_transition_at_playhead(&mut self, kind: TrackKind) {
         let t = self.playback.playhead;
         let seq = self.seq();
         let mut cuts: Vec<(Time, ClipId)> = Vec::new(); // (distance, incoming clip)
-        for tr in seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
+        for tr in seq.tracks.iter().filter(|t| t.kind == kind) {
             for pair in tr.clips.windows(2) {
                 if pair[0].timeline_end() == pair[1].timeline_start {
                     let d = Time((pair[1].timeline_start.0 - t.0).abs());
@@ -427,26 +431,32 @@ impl EditorState {
             .min_by_key(|(d, _)| *d)
             .or_else(|| cuts.iter().filter(|(d, _)| *d <= Time(Time::TICKS_PER_SECOND)).min_by_key(|(d, _)| *d))
             .map(|(_, id)| *id);
+        let what = if kind == TrackKind::Audio { "Crossfade" } else { "Cross-dissolve" };
         let Some(id) = pick else {
-            self.status = "No cut between two audio clips near the playhead".into();
+            self.status = format!("No cut between two {} clips near the playhead", if kind == TrackKind::Audio { "audio" } else { "video" });
             return;
         };
-        let Some(old) = self.clip_audio(id) else { return };
-        let mut new = old.clone();
-        new.crossfade_in = if old.crossfade_in > Time::ZERO { Time::ZERO } else { Time::from_secs_f64(1.0).snap(self.seq().frame_rate) };
-        self.execute(Box::new(SetClipAudio { seq: 0, id, old, new }));
-        self.selection = Some(id);
-        if let Some(x) = self.project.crossfade_into(0, id) {
-            self.status = if x.is_empty() {
-                "Crossfade added, but there's no spare media at the cut, so it plays as a plain cut".into()
-            } else if x.len() < x.requested {
-                format!("Crossfade added: {:.2} s (limited by spare media)", x.len().as_secs_f64())
-            } else {
-                format!("Crossfade added: {:.2} s", x.len().as_secs_f64())
-            };
-        } else {
-            self.status = "Crossfade removed".into();
+        let one_sec = Time::from_secs_f64(1.0).snap(self.seq().frame_rate);
+        match kind {
+            TrackKind::Audio => {
+                let Some(old) = self.clip_audio(id) else { return };
+                let mut new = old.clone();
+                new.crossfade_in = if old.crossfade_in > Time::ZERO { Time::ZERO } else { one_sec };
+                self.execute(Box::new(SetClipAudio { seq: 0, id, old, new }));
+            }
+            TrackKind::Video => {
+                let Some(old) = self.seq().find_clip(id).map(|(_, c)| c.dissolve_in) else { return };
+                let new = if old > Time::ZERO { Time::ZERO } else { one_sec };
+                self.execute(Box::new(SetDissolve { seq: 0, id, old, new }));
+            }
         }
+        self.selection = Some(id);
+        self.status = match self.project.crossfade_into(0, id) {
+            Some(x) if x.is_empty() => format!("{what} added, but there's no spare media at the cut, so it plays as a plain cut"),
+            Some(x) if x.len() < x.requested => format!("{what} added: {:.2} s (limited by spare media)", x.len().as_secs_f64()),
+            Some(x) => format!("{what} added: {:.2} s", x.len().as_secs_f64()),
+            None => format!("{what} removed"),
+        };
     }
 
     pub fn toggle_mute(&mut self, track: usize) {
@@ -560,8 +570,11 @@ impl EditorState {
                 if ui.add_enabled(self.selection_is_linked(), egui::Button::new("Unlink audio/video")).clicked() {
                     self.unlink_selection();
                 }
+                if ui.button("Cross-dissolve at playhead     Ctrl+D").clicked() {
+                    self.toggle_transition_at_playhead(TrackKind::Video);
+                }
                 if ui.button("Audio crossfade at playhead   Ctrl+Shift+D").clicked() {
-                    self.toggle_crossfade_at_playhead();
+                    self.toggle_transition_at_playhead(TrackKind::Audio);
                 }
                 ui.separator();
                 ui.checkbox(&mut self.playback.scrub_audio, "Audio scrubbing")
@@ -576,9 +589,14 @@ impl EditorState {
         }
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
         let cmd_shift = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
+        // Check Ctrl+Shift+D before Ctrl+D (egui matches Ctrl+D loosely otherwise).
         let crossfade = ctx.input_mut(|i| i.consume_shortcut(&cmd_shift(Key::D)));
         if crossfade {
-            self.toggle_crossfade_at_playhead();
+            self.toggle_transition_at_playhead(TrackKind::Audio);
+        }
+        let dissolve = ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::D)));
+        if dissolve {
+            self.toggle_transition_at_playhead(TrackKind::Video);
         }
         let (redo, undo, save, import, export) = ctx.input_mut(|i| {
             let redo = i.consume_shortcut(&cmd_shift(Key::Z)) || i.consume_shortcut(&cmd(Key::Y));
@@ -640,9 +658,9 @@ impl EditorState {
     // These change the project live while the mouse is held, then become a single
     // undo step when it's released (see `commit_live_edit`).
 
-    /// Current transform and blend mode of a clip.
-    pub fn visual(&self, id: ClipId) -> Option<(Transform, BlendMode)> {
-        self.seq().find_clip(id).map(|(_, c)| (c.transform, c.blend))
+    /// Current transform, blend mode and keyframes of a clip.
+    pub fn visual(&self, id: ClipId) -> Option<ClipVisual> {
+        self.seq().find_clip(id).map(|(_, c)| c.visual())
     }
 
     pub fn clip_audio(&self, id: ClipId) -> Option<ClipAudio> {
@@ -661,14 +679,59 @@ impl EditorState {
         }
     }
 
-    pub fn set_visual_live(&mut self, id: ClipId, v: (Transform, BlendMode)) {
+    pub fn set_visual_live(&mut self, id: ClipId, v: ClipVisual) {
         let Some(before) = self.visual(id) else { return };
         if before == v {
             return;
         }
         self.begin_live(LiveEdit::Visual(id, before));
         if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
-            (c.transform, c.blend) = v;
+            c.set_visual(v);
+        }
+    }
+
+    /// Trim `edge` of `id` (and its linked clips) live, `delta` from where the
+    /// gesture started. `start` holds the timings from before the gesture.
+    /// Returns the delta actually applied (clamped to what's possible).
+    pub fn trim_live(&mut self, id: ClipId, edge: Edge, delta: Time, start: &[(ClipId, Timing)]) -> Time {
+        self.begin_live(LiveEdit::Timing(id, start.to_vec()));
+        // Measure limits from the original state, so the result doesn't depend on drag history.
+        self.restore_timings(start);
+        let Some((lo, hi)) = trim_range(&self.project, 0, id, edge) else { return Time::ZERO };
+        let d = delta.max(lo).min(hi);
+        let ids: Vec<ClipId> = start.iter().map(|(c, _)| *c).collect();
+        for cid in ids {
+            let new = self.seq().find_clip(cid).map(|(_, c)| trimmed(&self.project, c, edge, d));
+            if let (Some(new), Some((ti, c))) = (new, self.project.sequences[0].find_clip_mut(cid)) {
+                (c.timeline_start, c.source_in, c.duration) = new;
+                self.project.sequences[0].tracks[ti].sort();
+            }
+        }
+        self.touch();
+        d
+    }
+
+    fn restore_timings(&mut self, start: &[(ClipId, Timing)]) {
+        for (cid, (a, b, c)) in start {
+            if let Some((ti, clip)) = self.project.sequences[0].find_clip_mut(*cid) {
+                (clip.timeline_start, clip.source_in, clip.duration) = (*a, *b, *c);
+                self.project.sequences[0].tracks[ti].sort();
+            }
+        }
+    }
+
+    pub fn timings(&self, id: ClipId) -> Vec<(ClipId, Timing)> {
+        self.seq().link_group(id).iter().map(|(_, c)| (c.id, (c.timeline_start, c.source_in, c.duration))).collect()
+    }
+
+    pub fn set_dissolve_live(&mut self, id: ClipId, d: Time) {
+        let Some(before) = self.seq().find_clip(id).map(|(_, c)| c.dissolve_in) else { return };
+        if before == d {
+            return;
+        }
+        self.begin_live(LiveEdit::Dissolve(id, before));
+        if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
+            c.dissolve_in = d;
         }
     }
 
@@ -699,6 +762,26 @@ impl EditorState {
         let Some(edit) = self.live_edit.take() else { return };
         let cmd: Option<Box<dyn Command>> = match edit {
             LiveEdit::Visual(id, old) => self.visual(id).filter(|n| *n != old).map(|new| Box::new(SetClipVisual { seq: 0, id, old, new }) as _),
+            LiveEdit::Dissolve(id, old) => {
+                let new = self.seq().find_clip(id).map(|(_, c)| c.dissolve_in).filter(|n| *n != old);
+                new.map(|new| Box::new(SetDissolve { seq: 0, id, old, new }) as _)
+            }
+            LiveEdit::Timing(_, start) => {
+                let cmds: Vec<Box<dyn Command>> = start
+                    .into_iter()
+                    .filter_map(|(cid, old)| {
+                        let (_, c) = self.seq().find_clip(cid)?;
+                        let new = (c.timeline_start, c.source_in, c.duration);
+                        (new != old).then(|| Box::new(SetClipTiming { seq: 0, id: cid, old, new }) as Box<dyn Command>)
+                    })
+                    .collect();
+                if cmds.is_empty() {
+                    None
+                } else {
+                    // The project already has the new timings: apply() re-sets them, which is harmless.
+                    Some(Box::new(Batch { name: "Trim clip".into(), cmds }) as _)
+                }
+            }
             LiveEdit::ClipAudio(id, old) => self.clip_audio(id).filter(|n| *n != old).map(|new| Box::new(SetClipAudio { seq: 0, id, old, new }) as _),
             LiveEdit::TrackAudio(track, old) => {
                 let new = self.seq().tracks.get(track).map(|t| t.audio).filter(|n| *n != old);
@@ -713,7 +796,10 @@ impl EditorState {
 
 /// An interactive edit in progress: what's being changed and its value before the gesture.
 enum LiveEdit {
-    Visual(ClipId, (Transform, BlendMode)),
+    Visual(ClipId, ClipVisual),
+    /// Trimming a clip (keyed by the clip grabbed): timings of it and its linked clips before.
+    Timing(ClipId, Vec<(ClipId, Timing)>),
+    Dissolve(ClipId, Time),
     ClipAudio(ClipId, ClipAudio),
     TrackAudio(usize, TrackAudio),
 }
@@ -722,6 +808,8 @@ impl LiveEdit {
     fn same_target(&self, other: &LiveEdit) -> bool {
         match (self, other) {
             (LiveEdit::Visual(a, _), LiveEdit::Visual(b, _)) => a == b,
+            (LiveEdit::Timing(a, _), LiveEdit::Timing(b, _)) => a == b,
+            (LiveEdit::Dissolve(a, _), LiveEdit::Dissolve(b, _)) => a == b,
             (LiveEdit::ClipAudio(a, _), LiveEdit::ClipAudio(b, _)) => a == b,
             (LiveEdit::TrackAudio(a, _), LiveEdit::TrackAudio(b, _)) => a == b,
             _ => false,

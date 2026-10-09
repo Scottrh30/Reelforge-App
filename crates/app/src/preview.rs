@@ -3,9 +3,9 @@
 //! the GPU (shared with egui) into a texture the viewer panel draws.
 
 use eframe::egui_wgpu::{self, wgpu};
-use reelforge_core::{ClipId, MediaId, Project, Time};
+use reelforge_core::{ClipId, MediaId, Project, Time, VideoItem};
 use reelforge_media::{FrameSource, VideoFrame};
-use reelforge_render::{Compositor, LayerInput};
+use reelforge_render::{Compositor, DrawItem, LayerInput};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -80,7 +80,7 @@ impl Preview {
         let seq = &project.sequences[0];
         let frame_size = [seq.width.max(2), seq.height.max(2)];
 
-        // Gather the frame for every visible layer.
+        // Gather the frame for every visible layer (two per dissolve).
         struct Gathered {
             key: u64,
             frame: VideoFrame,
@@ -89,43 +89,59 @@ impl Preview {
             transform: reelforge_core::Transform,
             blend: reelforge_core::BlendMode,
         }
-        let mut layers = Vec::new();
+        enum Item {
+            Single(Gathered),
+            Dissolve(Gathered, Gathered, f32),
+        }
+        let mut items = Vec::new();
         let mut exact = true;
         self.error = None;
-        for (_, clip) in seq.video_layers_at(t) {
-            let Some(media) = project.media(clip.media) else { continue };
-            let Some(v) = &media.info.video else { continue };
-            let src_t = clip.source_time(t);
-            let slot = Self::slot(&mut self.slots, clip.id, &media.path);
-            let src = match &mut slot.source {
+        let mut gather = |l: &reelforge_core::Layer, slots: &mut HashMap<ClipId, Slot>, error: &mut Option<String>| -> Option<Gathered> {
+            let media = project.media(l.clip.media)?;
+            let v = media.info.video.as_ref()?;
+            let src = match &mut Self::slot(slots, l.clip.id, &media.path).source {
                 Ok(s) => s,
                 Err(e) => {
-                    self.error = Some(format!("Can't decode {}: {e}", media.name));
-                    continue;
+                    *error = Some(format!("Can't decode {}: {e}", media.name));
+                    return None;
                 }
             };
-            let frame = src.frame_at(src_t).cloned();
-            exact &= src.is_exact(src_t);
-            if let Some(frame) = frame {
-                layers.push(Gathered {
-                    key: clip.id.0,
-                    frame,
-                    media: media.id,
-                    layer_size: [v.width as f32, v.height as f32],
-                    transform: clip.transform,
-                    blend: clip.blend,
-                });
+            let frame = src.frame_at(l.source_time).cloned();
+            exact &= src.is_exact(l.source_time);
+            Some(Gathered {
+                key: l.clip.id.0,
+                frame: frame?,
+                media: media.id,
+                layer_size: [v.width as f32, v.height as f32],
+                transform: l.transform,
+                blend: l.blend,
+            })
+        };
+        for item in project.video_layers_at(0, t) {
+            match item {
+                VideoItem::Single(l) => items.extend(gather(&l, &mut self.slots, &mut self.error).map(Item::Single)),
+                VideoItem::Dissolve { from, to, mix } => {
+                    match (gather(&from, &mut self.slots, &mut self.error), gather(&to, &mut self.slots, &mut self.error)) {
+                        (Some(a), Some(b)) => items.push(Item::Dissolve(a, b, mix)),
+                        (Some(one), None) | (None, Some(one)) => items.push(Item::Single(one)),
+                        (None, None) => {}
+                    }
+                }
             }
         }
         self.exact = exact;
 
-        // Warm up decoders for cuts coming up soon, so the first frame is ready on time.
+        // Warm up decoders for cuts coming up soon (including the early start of an
+        // incoming dissolve), so the first frame is ready on time.
         if playing {
             for tr in seq.tracks.iter().filter(|tr| tr.kind == reelforge_core::TrackKind::Video && !tr.muted) {
-                for clip in tr.clips.iter().filter(|c| c.timeline_start > t && c.timeline_start <= t + PREFETCH) {
-                    if let Some(media) = project.media(clip.media) {
-                        if let Ok(src) = &mut Self::slot(&mut self.slots, clip.id, &media.path).source {
-                            src.frame_at(clip.source_in);
+                for clip in tr.clips.iter() {
+                    let shows_at = clip.timeline_start - clip.dissolve_in;
+                    if shows_at > t && shows_at <= t + PREFETCH {
+                        if let Some(media) = project.media(clip.media) {
+                            if let Ok(src) = &mut Self::slot(&mut self.slots, clip.id, &media.path).source {
+                                src.frame_at(clip.source_time(shows_at).max(Time::ZERO));
+                            }
                         }
                     }
                 }
@@ -138,12 +154,22 @@ impl Preview {
         // Skip the GPU work if nothing that affects the picture changed.
         let mut h = DefaultHasher::new();
         frame_size.hash(&mut h);
-        for l in &layers {
-            (l.key, l.media, l.frame.pts, l.frame.generation).hash(&mut h);
+        let hash_layer = |l: &Gathered, h: &mut DefaultHasher| {
+            (l.key, l.media, l.frame.pts, l.frame.generation).hash(h);
             for f in l.transform.position.iter().chain(&l.transform.scale).chain([&l.transform.rotation, &l.transform.opacity]) {
-                f.to_bits().hash(&mut h);
+                f.to_bits().hash(h);
             }
-            l.blend.hash(&mut h);
+            l.blend.hash(h);
+        };
+        for item in &items {
+            match item {
+                Item::Single(l) => hash_layer(l, &mut h),
+                Item::Dissolve(a, b, mix) => {
+                    hash_layer(a, &mut h);
+                    hash_layer(b, &mut h);
+                    mix.to_bits().hash(&mut h);
+                }
+            }
         }
         let signature = h.finish();
         if signature == self.last_signature && gpu.texture.is_some() {
@@ -151,23 +177,27 @@ impl Preview {
         }
         self.last_signature = signature;
 
-        let inputs: Vec<LayerInput> = layers
+        fn input(l: &Gathered) -> LayerInput<'_> {
+            let mut ch = DefaultHasher::new();
+            (l.media, l.frame.pts, l.frame.generation).hash(&mut ch);
+            LayerInput {
+                key: l.key,
+                content_id: ch.finish(),
+                pixels: &l.frame.rgba,
+                pixel_size: [l.frame.width, l.frame.height],
+                layer_size: l.layer_size,
+                transform: l.transform,
+                blend: l.blend,
+            }
+        }
+        let draw: Vec<DrawItem> = items
             .iter()
-            .map(|l| {
-                let mut ch = DefaultHasher::new();
-                (l.media, l.frame.pts, l.frame.generation).hash(&mut ch);
-                LayerInput {
-                    key: l.key,
-                    content_id: ch.finish(),
-                    pixels: &l.frame.rgba,
-                    pixel_size: [l.frame.width, l.frame.height],
-                    layer_size: l.layer_size,
-                    transform: l.transform,
-                    blend: l.blend,
-                }
+            .map(|i| match i {
+                Item::Single(l) => DrawItem::Layer(input(l)),
+                Item::Dissolve(a, b, mix) => DrawItem::Dissolve { from: input(a), to: input(b), mix: *mix },
             })
             .collect();
-        gpu.compositor.render(frame_size, &inputs);
+        gpu.compositor.render_items(frame_size, &draw);
         let slots = &self.slots;
         gpu.compositor.retain_layers(|k| slots.contains_key(&ClipId(k)));
 

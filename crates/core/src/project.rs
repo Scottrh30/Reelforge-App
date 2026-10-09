@@ -1,5 +1,6 @@
 //! Project data model. Serializable, renderer-agnostic.
 
+use crate::anim::TransformAnim;
 use crate::audio::{ClipAudio, TrackAudio};
 use crate::time::{FrameRate, Rational, Time};
 use crate::transform::{BlendMode, Transform};
@@ -11,8 +12,6 @@ pub struct MediaId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ClipId(pub u64);
-
-
 
 /// What we learned about a file when importing it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,6 +74,21 @@ pub struct Clip {
     /// Volume, pan and fades (audio clips).
     #[serde(default)]
     pub audio: ClipAudio,
+    /// Keyframes for transform properties (video clips).
+    #[serde(default)]
+    pub anim: TransformAnim,
+    /// Length of a cross-dissolve from the clip that ends exactly where this one
+    /// starts on the same video track (0 = a plain cut).
+    #[serde(default)]
+    pub dissolve_in: Time,
+}
+
+/// Everything about how a video clip looks, edited and undone as one unit.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClipVisual {
+    pub transform: Transform,
+    pub blend: BlendMode,
+    pub anim: TransformAnim,
 }
 
 impl Clip {
@@ -90,7 +104,22 @@ impl Clip {
             transform: Transform::default(),
             blend: BlendMode::Normal,
             audio: ClipAudio::default(),
+            anim: TransformAnim::default(),
+            dissolve_in: Time::ZERO,
         }
+    }
+
+    pub fn visual(&self) -> ClipVisual {
+        ClipVisual { transform: self.transform, blend: self.blend, anim: self.anim.clone() }
+    }
+
+    pub fn set_visual(&mut self, v: ClipVisual) {
+        (self.transform, self.blend, self.anim) = (v.transform, v.blend, v.anim);
+    }
+
+    /// The (possibly animated) transform at sequence time `t`.
+    pub fn transform_at(&self, t: Time) -> Transform {
+        self.anim.eval(&self.transform, self.source_time(t))
     }
 
     pub fn timeline_end(&self) -> Time {
@@ -160,16 +189,6 @@ impl Sequence {
         self.tracks.iter().map(Track::end).max().unwrap_or(Time::ZERO)
     }
 
-    /// Visible video clips at `t`, bottom layer first (compositing order).
-    pub fn video_layers_at(&self, t: Time) -> Vec<(usize, &Clip)> {
-        self.tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, tr)| tr.kind == TrackKind::Video && !tr.muted)
-            .filter_map(|(i, tr)| tr.clip_at(t).map(|c| (i, c)))
-            .filter(|(_, c)| c.transform.opacity > 0.0)
-            .collect()
-    }
     /// Topmost visible video clip at `t` — what the viewer should show until
     /// a real compositor blends all layers.
     pub fn top_video_clip_at(&self, t: Time) -> Option<&Clip> {
@@ -213,6 +232,35 @@ impl Sequence {
     }
 }
 
+/// One clip as it should be drawn at a moment in time.
+#[derive(Clone, Copy, Debug)]
+pub struct Layer<'a> {
+    pub track: usize,
+    pub clip: &'a Clip,
+    /// Where to read the media (may be outside the clip's range during a dissolve).
+    pub source_time: Time,
+    /// Transform with keyframes applied.
+    pub transform: Transform,
+    pub blend: BlendMode,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum VideoItem<'a> {
+    Single(Layer<'a>),
+    /// Cross-dissolve: `mix` goes 0 → 1 from all-`from` to all-`to`.
+    Dissolve { from: Layer<'a>, to: Layer<'a>, mix: f32 },
+}
+
+impl<'a> VideoItem<'a> {
+    /// Layers involved, bottom first.
+    pub fn layers(&self) -> Vec<&Layer<'a>> {
+        match self {
+            VideoItem::Single(l) => vec![l],
+            VideoItem::Dissolve { from, to, .. } => vec![from, to],
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Project {
     pub media: Vec<MediaAsset>,
@@ -220,11 +268,13 @@ pub struct Project {
     next_id: u64,
 }
 
-/// A crossfade between two adjacent clips on an audio track, resolved against
-/// the media actually available beyond each clip's edges.
+/// A transition between two adjacent clips on one track (an audio crossfade or
+/// a video cross-dissolve), resolved against the media actually available
+/// beyond each clip's edges.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Crossfade {
     pub track: usize,
+    pub kind: TrackKind,
     pub left: ClipId,
     pub right: ClipId,
     /// Where the clips touch.
@@ -266,31 +316,83 @@ pub fn crossfade_extents(d: Time, left_spare: Time, right_spare: Time) -> (Time,
 }
 
 impl Project {
-    /// Every crossfade on audio tracks of sequence `seq`.
-    pub fn crossfades(&self, seq: usize) -> Vec<Crossfade> {
+    /// Is this a still image (no meaningful source time, unlimited length)?
+    pub fn is_still(&self, id: MediaId) -> bool {
+        self.media(id).is_some_and(|m| m.info.video.is_some() && m.info.duration <= Time::ZERO)
+    }
+
+    /// Every transition in sequence `seq`: crossfades on audio tracks and
+    /// cross-dissolves on video tracks.
+    pub fn transitions(&self, seq: usize) -> Vec<Crossfade> {
         let s = &self.sequences[seq];
         let mut out = Vec::new();
-        for (ti, tr) in s.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio) {
+        for (ti, tr) in s.tracks.iter().enumerate() {
             for pair in tr.clips.windows(2) {
                 let (l, r) = (&pair[0], &pair[1]);
-                if l.timeline_end() != r.timeline_start || r.audio.crossfade_in <= Time::ZERO {
+                let wanted = match tr.kind {
+                    TrackKind::Audio => r.audio.crossfade_in,
+                    TrackKind::Video => r.dissolve_in,
+                };
+                if l.timeline_end() != r.timeline_start || wanted <= Time::ZERO {
                     continue;
                 }
                 // Overlap can't run past the far end of either clip.
-                let requested = r.audio.crossfade_in.min(l.duration).min(r.duration);
-                let media_len = self.media(l.media).map(|m| m.info.duration).unwrap_or(Time::ZERO);
-                let left_spare = (media_len - (l.source_in + l.duration)).min(r.duration);
-                let right_spare = r.source_in.min(l.duration);
+                let requested = wanted.min(l.duration).min(r.duration);
+                let left_spare = if self.is_still(l.media) {
+                    r.duration
+                } else {
+                    let media_len = self.media(l.media).map(|m| m.info.duration).unwrap_or(Time::ZERO);
+                    (media_len - (l.source_in + l.duration)).min(r.duration)
+                };
+                let right_spare = if self.is_still(r.media) { l.duration } else { r.source_in.min(l.duration) };
                 let (after, before) = crossfade_extents(requested, left_spare, right_spare);
-                out.push(Crossfade { track: ti, left: l.id, right: r.id, cut: r.timeline_start, after, before, requested });
+                out.push(Crossfade { track: ti, kind: tr.kind, left: l.id, right: r.id, cut: r.timeline_start, after, before, requested });
             }
         }
         out
     }
 
-    /// The crossfade into clip `right`, if it has one.
+    /// Audio crossfades only.
+    pub fn crossfades(&self, seq: usize) -> Vec<Crossfade> {
+        self.transitions(seq).into_iter().filter(|x| x.kind == TrackKind::Audio).collect()
+    }
+
+    /// Video cross-dissolves only.
+    pub fn dissolves(&self, seq: usize) -> Vec<Crossfade> {
+        self.transitions(seq).into_iter().filter(|x| x.kind == TrackKind::Video).collect()
+    }
+
+    /// The transition into clip `right`, if it has one.
     pub fn crossfade_into(&self, seq: usize, right: ClipId) -> Option<Crossfade> {
-        self.crossfades(seq).into_iter().find(|x| x.right == right)
+        self.transitions(seq).into_iter().find(|x| x.right == right)
+    }
+
+    /// What's visible at `t`, bottom track first: one layer per video track, or
+    /// a dissolve between two clips where a transition is in progress.
+    pub fn video_layers_at(&self, seq: usize, t: Time) -> Vec<VideoItem<'_>> {
+        let s = &self.sequences[seq];
+        let dissolves = self.dissolves(seq);
+        fn layer<'a>(p: &Project, track: usize, c: &'a Clip, t: Time) -> Layer<'a> {
+            let source_time = if p.is_still(c.media) { Time::ZERO } else { c.source_time(t) };
+            Layer { track, clip: c, source_time, transform: c.transform_at(t), blend: c.blend }
+        }
+        let mut out = Vec::new();
+        for (ti, tr) in s.tracks.iter().enumerate() {
+            if tr.kind != TrackKind::Video || tr.muted {
+                continue;
+            }
+            if let Some(x) = dissolves.iter().find(|x| x.track == ti && !x.is_empty() && t >= x.start() && t < x.end()) {
+                let (Some((_, a)), Some((_, b))) = (s.find_clip(x.left), s.find_clip(x.right)) else { continue };
+                let mix = (t - x.start()).0 as f32 / x.len().0 as f32;
+                out.push(VideoItem::Dissolve { from: layer(self, ti, a, t), to: layer(self, ti, b, t), mix });
+            } else if let Some(c) = tr.clip_at(t) {
+                let l = layer(self, ti, c, t);
+                if l.transform.opacity > 0.0 {
+                    out.push(VideoItem::Single(l));
+                }
+            }
+        }
+        out
     }
 
     /// The clip that ends exactly where `id` starts on the same track (a crossfade candidate).
@@ -366,5 +468,49 @@ mod crossfade_tests {
         p.sequences[0].tracks[a1].clips[1].timeline_start = secs(4.5);
         assert!(p.crossfades(0).is_empty());
         assert_eq!(p.clip_before(0, ClipId(11)), None);
+    }
+
+    #[test]
+    fn video_layers_dissolve_between_adjacent_clips() {
+        let mut p = Project::new();
+        let mut m = media(1, 10.0);
+        m.info.video = Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: String::new(), time_base: Rational::new(1, 30) });
+        p.media.push(m);
+        // A: source 0–4 at 0–4. B: source 5–9 at 4–8, 1 s dissolve (both have spare media).
+        let mut a = Clip::new(ClipId(10), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
+        a.anim.rotation.set(secs(0.0), 0.0);
+        a.anim.rotation.set(secs(4.0), 40.0);
+        let mut b = Clip::new(ClipId(11), MediaId(1), secs(4.0), secs(5.0), secs(4.0), None);
+        b.dissolve_in = secs(1.0);
+        p.sequences[0].tracks[0].clips = vec![a, b];
+
+        assert_eq!(p.dissolves(0).len(), 1);
+        assert!(p.crossfades(0).is_empty(), "video transitions aren't audio crossfades");
+
+        let at = |s: f64| p.video_layers_at(0, secs(s));
+        match at(2.0).as_slice() {
+            [VideoItem::Single(l)] => {
+                assert_eq!(l.clip.id, ClipId(10));
+                assert_eq!(l.transform.rotation, 20.0, "keyframes applied");
+            }
+            other => panic!("{other:?}"),
+        }
+        match at(3.75).as_slice() {
+            [VideoItem::Dissolve { from, to, mix }] => {
+                assert_eq!((from.clip.id, to.clip.id), (ClipId(10), ClipId(11)));
+                assert!((mix - 0.25).abs() < 1e-4);
+                assert_eq!(to.source_time, secs(4.75), "incoming clip reads its spare media before its in-point");
+            }
+            other => panic!("{other:?}"),
+        }
+        match at(4.25).as_slice() {
+            [VideoItem::Dissolve { from, mix, .. }] => {
+                assert!((mix - 0.75).abs() < 1e-4);
+                assert_eq!(from.source_time, secs(4.25), "outgoing clip plays on past its out-point");
+                assert_eq!(from.transform.rotation, 40.0, "holds its last keyframe");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(at(4.6).as_slice(), [VideoItem::Single(l)] if l.clip.id == ClipId(11)));
     }
 }
