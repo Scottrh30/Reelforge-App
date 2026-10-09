@@ -155,3 +155,39 @@ fn mono_sources_play_at_full_level_on_both_sides() {
     let want = 0.125 / 2f32.sqrt();
     assert!((rms(&l) - want).abs() < 0.01, "rms {} want {want}", rms(&l));
 }
+
+#[test]
+fn mixer_follows_volume_keyframes() {
+    let Some(path) = make_clip() else { return };
+    let r = RATE as i64;
+    let mut m = Mixer::new(RATE);
+    // 0 dB at 0 s ramping to -20 dB at 1 s, then held.
+    m.set_clips(vec![MixClip { volume_keys: vec![(0, 0.0), (r, -20.0)], ..MixClip::plain(ClipId(1), path, 0, 0, 3 * r) }]);
+    let mut out = vec![0.0; 3 * RATE as usize * 2];
+    for (i, chunk) in out.chunks_mut(1024 * 2).enumerate() {
+        m.render(i as i64 * 1024, chunk);
+    }
+    let level = |a: f64, b: f64| rms(&out[(a * RATE as f64) as usize * 2..(b * RATE as f64) as usize * 2]);
+    let db = |x: f32| 20.0 * (x / (0.125 / 2f32.sqrt())).log10(); // relative to the unprocessed tone
+    assert!((db(level(0.475, 0.525)) - -10.0).abs() < 1.0, "halfway in dB at 0.5 s: {}", db(level(0.475, 0.525)));
+    assert!((db(level(2.0, 2.5)) - -20.0).abs() < 0.5, "held at the last key: {}", db(level(2.0, 2.5)));
+}
+
+#[test]
+fn wav_without_channel_mask_is_not_silent() {
+    // ffmpeg writes mono WAVs from lavfi with an unknown channel layout.
+    let path = std::env::temp_dir().join("reelforge_nomask.wav");
+    let ok = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2"])
+        .arg(&path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        return;
+    }
+    let mut r = AudioReader::open(&path, RATE).unwrap();
+    let mut buf = vec![0.0f32; 4800 * 2];
+    r.read(24_000, &mut buf);
+    assert!((rms(&buf) - 0.125 / 2f32.sqrt()).abs() < 0.005, "rms {}", rms(&buf));
+}

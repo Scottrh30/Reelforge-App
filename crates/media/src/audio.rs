@@ -166,6 +166,13 @@ impl AudioReader {
                 let at = ts as i128 * self.time_base.num as i128 * self.out_rate as i128 / self.time_base.den as i128;
                 self.buf_start = Some(at as i64);
             }
+            // Many files (e.g. WAVs without a channel mask) report an unknown layout.
+            // swresample rejects frames whose layout doesn't match its setup, so
+            // give mono/stereo (and anything inconsistent) the standard layout.
+            let ch = frame.channels();
+            if ch <= 2 || frame.channel_layout().channels() != ch as i32 {
+                frame.set_channel_layout(ChannelLayout::default(ch as i32));
+            }
             if let Err(e) = self.resample(&frame) {
                 log::warn!("resample failed: {e}");
             }

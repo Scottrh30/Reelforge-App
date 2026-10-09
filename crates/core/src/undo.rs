@@ -206,8 +206,9 @@ impl Command for SplitClip {
             link: clip.link.and(self.new_link),
             transform: clip.transform,
             blend: clip.blend,
-            // The fade-in stays on the left half, the fade-out on the right.
-            audio: ClipAudio { fade_in: Time::ZERO, ..clip.audio },
+            // The fade-in and any crossfade stay on the left half, the fade-out goes
+            // right. Volume keys are anchored to source time, so both halves keep them.
+            audio: ClipAudio { fade_in: Time::ZERO, crossfade_in: Time::ZERO, ..clip.audio.clone() },
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;
@@ -270,16 +271,24 @@ pub struct SetClipAudio {
 
 impl Command for SetClipAudio {
     fn name(&self) -> &str {
-        if (self.old.fade_in, self.old.fade_out) != (self.new.fade_in, self.new.fade_out) { "Change fade" } else { "Change clip audio" }
+        if self.old.crossfade_in != self.new.crossfade_in {
+            "Change crossfade"
+        } else if self.old.volume_keys != self.new.volume_keys {
+            "Change volume keyframes"
+        } else if (self.old.fade_in, self.old.fade_out) != (self.new.fade_in, self.new.fade_out) {
+            "Change fade"
+        } else {
+            "Change clip audio"
+        }
     }
     fn apply(&mut self, p: &mut Project) {
         if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
-            c.audio = self.new;
+            c.audio = self.new.clone();
         }
     }
     fn undo(&mut self, p: &mut Project) {
         if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
-            c.audio = self.old;
+            c.audio = self.old.clone();
         }
     }
 }
@@ -520,7 +529,15 @@ mod tests {
         let mut p = Project::new();
         let mut u = UndoStack::default();
         let mut c = clip(1001, 0.0, 10.0);
-        c.audio = ClipAudio { volume_db: -6.0, pan: 0.3, fade_in: Time::from_secs_f64(1.0), fade_out: Time::from_secs_f64(2.0) };
+        c.audio = ClipAudio {
+            volume_db: -6.0,
+            pan: 0.3,
+            fade_in: Time::from_secs_f64(1.0),
+            fade_out: Time::from_secs_f64(2.0),
+            crossfade_in: Time::from_secs_f64(0.5),
+            ..Default::default()
+        };
+        c.audio.set_key(Time::from_secs_f64(3.0), -10.0);
         u.execute(&mut p, Box::new(AddClip { seq: 0, track: 2, clip: c }));
         let cmd = split_group(&mut p, 0, ClipId(1001), Time::from_secs_f64(5.0)).unwrap();
         u.execute(&mut p, cmd);
@@ -528,6 +545,8 @@ mod tests {
         assert_eq!((clips[0].audio.fade_in, clips[0].audio.fade_out), (Time::from_secs_f64(1.0), Time::ZERO));
         assert_eq!((clips[1].audio.fade_in, clips[1].audio.fade_out), (Time::ZERO, Time::from_secs_f64(2.0)));
         assert!(clips.iter().all(|c| c.audio.volume_db == -6.0 && c.audio.pan == 0.3), "levels carry over");
+        assert!(clips.iter().all(|c| c.audio.volume_keys.len() == 1), "both halves keep the keys");
+        assert_eq!((clips[0].audio.crossfade_in, clips[1].audio.crossfade_in), (Time::from_secs_f64(0.5), Time::ZERO));
         u.undo(&mut p);
         assert_eq!(p.sequences[0].tracks[2].clips[0].audio.fade_out, Time::from_secs_f64(2.0));
     }
@@ -538,7 +557,7 @@ mod tests {
         let mut u = UndoStack::default();
         u.execute(&mut p, Box::new(AddClip { seq: 0, track: 2, clip: clip(1001, 0.0, 4.0) }));
         let new = ClipAudio { volume_db: -12.0, ..Default::default() };
-        u.execute(&mut p, Box::new(SetClipAudio { seq: 0, id: ClipId(1001), old: ClipAudio::default(), new }));
+        u.execute(&mut p, Box::new(SetClipAudio { seq: 0, id: ClipId(1001), old: ClipAudio::default(), new: new.clone() }));
         let t = TrackAudio { volume_db: 3.0, pan: -1.0 };
         u.execute(&mut p, Box::new(SetTrackAudio { seq: 0, track: 2, old: TrackAudio::default(), new: t }));
         assert_eq!(p.sequences[0].tracks[2].audio, t);

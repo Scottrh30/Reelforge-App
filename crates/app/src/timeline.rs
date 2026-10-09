@@ -3,7 +3,8 @@
 use crate::app::EditorState;
 use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use reelforge_core::undo::move_group;
-use reelforge_core::audio::{db_to_gain, fade_curve};
+use reelforge_core::audio::{db_to_gain, fade_curve, MAX_DB, MIN_DB};
+use reelforge_core::ClipAudio;
 use reelforge_core::{ClipId, MediaId, Time, TrackKind};
 
 const RULER_H: f32 = 26.0;
@@ -28,6 +29,36 @@ enum Drag {
     Clip { id: ClipId, grab: Time, from: (usize, Time), to: (usize, Time) },
     /// Dragging an audio clip's fade-in (`out == false`) or fade-out handle.
     Fade { id: ClipId, out: bool },
+    /// Dragging one volume keyframe (index into the clip's keys).
+    VolKey { id: ClipId, index: usize },
+    /// Dragging the volume line up/down: the clip's audio before the drag, and where it started.
+    VolLine { id: ClipId, start_y: f32, orig: ClipAudio },
+}
+
+enum VolHit {
+    Key(ClipId, usize),
+    Line(ClipId),
+}
+
+/// Vertical band of an audio clip used by the volume line (below the name/handles).
+fn vol_band(cr: Rect) -> (f32, f32) {
+    (cr.top() + 18.0, cr.bottom() - 4.0)
+}
+
+fn db_to_y(db: f32, cr: Rect) -> f32 {
+    let (top, bottom) = vol_band(cr);
+    let f = ((db - MIN_DB) / (MAX_DB - MIN_DB)).clamp(0.0, 1.0);
+    bottom - f * (bottom - top)
+}
+
+fn y_to_db(y: f32, cr: Rect) -> f32 {
+    let (top, bottom) = vol_band(cr);
+    (MIN_DB + (bottom - y) / (bottom - top).max(1.0) * (MAX_DB - MIN_DB)).clamp(MIN_DB, MAX_DB)
+}
+
+/// Snap to whole tenths of a dB, and to 0 dB when close, so values are easy to hit.
+fn tidy_db(db: f32) -> f32 {
+    if db.abs() < 0.6 { 0.0 } else { (db * 10.0).round() / 10.0 }
 }
 
 /// Fade handle size and how close the pointer must be to grab one.
@@ -152,11 +183,12 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             // Waveform on audio clips: peaks mirrored around the centre line,
             // scaled by clip + track volume and the fades, so it shows what you'll hear.
             let (fade_in, fade_out) = clip.audio.clamped_fades(clip.duration);
-            let level = db_to_gain(clip.audio.volume_db) * db_to_gain(tr.audio.volume_db);
+            let track_gain = db_to_gain(tr.audio.volume_db);
             let envelope = |x: f32| {
                 let into = ((x - cr.left()) / m.pps).max(0.0);
                 let left = ((cr.right() - x) / m.pps).max(0.0);
-                let mut g = level;
+                let src = clip.source_in + Time::from_secs_f64(into as f64);
+                let mut g = track_gain * db_to_gain(clip.audio.volume_db_at(src));
                 if fade_in > Time::ZERO {
                     g *= fade_curve(into / fade_in.as_secs_f64() as f32);
                 }
@@ -214,6 +246,36 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 }
             }
 
+            // Volume line ("rubber band"): flat at the clip volume, or through its keyframes.
+            if tr.kind == TrackKind::Audio {
+                let vp = painter.with_clip_rect(vis);
+                let line_col = Color32::from_rgb(255, 210, 80);
+                let x_of_src = |t: Time| cr.left() + ((t - clip.source_in).as_secs_f64() as f32) * m.pps;
+                let mut pts = vec![Pos2::new(cr.left(), db_to_y(clip.audio.volume_db_at(clip.source_in), cr))];
+                for k in &clip.audio.volume_keys {
+                    let x = x_of_src(k.at);
+                    if x > cr.left() && x < cr.right() {
+                        pts.push(Pos2::new(x, db_to_y(k.db, cr)));
+                    }
+                }
+                pts.push(Pos2::new(cr.right(), db_to_y(clip.audio.volume_db_at(clip.source_in + clip.duration), cr)));
+                vp.add(egui::Shape::line(pts, Stroke::new(1.5, line_col)));
+                for (i, k) in clip.audio.volume_keys.iter().enumerate() {
+                    let c = Pos2::new(x_of_src(k.at), db_to_y(k.db, cr));
+                    if c.x < cr.left() - 4.0 || c.x > cr.right() + 4.0 {
+                        continue;
+                    }
+                    let hot = matches!(&st.timeline.drag, Some(Drag::VolKey { id, index }) if *id == clip.id && *index == i);
+                    let r = 4.5;
+                    let diamond = vec![c + Vec2::new(0.0, -r), c + Vec2::new(r, 0.0), c + Vec2::new(0.0, r), c + Vec2::new(-r, 0.0)];
+                    vp.add(egui::Shape::convex_polygon(
+                        diamond,
+                        if hot { Color32::from_rgb(255, 196, 64) } else { line_col },
+                        Stroke::new(1.0, Color32::from_black_alpha(160)),
+                    ));
+                }
+            }
+
             if selected_group.contains(&clip.id) {
                 let primary = st.selection == Some(clip.id);
                 let w = if primary { 2.0 } else { 1.0 };
@@ -226,6 +288,28 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     }
     if let Some(ti) = mute_clicked {
         st.toggle_mute(ti);
+    }
+
+    // Crossfades: a block with an X over the overlap; a red tick where one was
+    // asked for but there's no spare media to make it.
+    for x in st.project.crossfades(0) {
+        let Some(row) = rows.iter().position(|&t| t == x.track) else { continue };
+        let r = row_rect(row);
+        if x.is_empty() {
+            let cx = m.x(x.cut);
+            painter.with_clip_rect(lanes).line_segment([Pos2::new(cx, r.top() + 3.0), Pos2::new(cx, r.bottom() - 3.0)], Stroke::new(3.0, Color32::from_rgb(220, 60, 60)));
+            continue;
+        }
+        let xr = Rect::from_min_max(Pos2::new(m.x(x.start()), r.top() + 3.0), Pos2::new(m.x(x.end()), r.bottom() - 3.0));
+        let xp = painter.with_clip_rect(lanes);
+        xp.rect_filled(xr, 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 40));
+        xp.rect_stroke(xr, 3.0, Stroke::new(1.0, Color32::from_white_alpha(160)), StrokeKind::Inside);
+        let s = Stroke::new(1.2, Color32::from_white_alpha(200));
+        xp.line_segment([xr.left_top(), xr.right_bottom()], s);
+        xp.line_segment([xr.left_bottom(), xr.right_top()], s);
+        if xr.width() > 34.0 {
+            xp.text(xr.center_bottom() - Vec2::new(0.0, 2.0), Align2::CENTER_BOTTOM, format!("{:.1}s", x.len().as_secs_f64()), FontId::proportional(10.0), Color32::WHITE);
+        }
     }
 
     // Ghost of the clip being dragged.
@@ -278,9 +362,40 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             }
         })
     };
+    // Volume keys and line on audio clips.
+    let hit_vol = |st: &EditorState, p: Pos2| -> Option<VolHit> {
+        let ti = row_at(p.y)?;
+        let tr = &st.seq().tracks[ti];
+        if tr.kind != TrackKind::Audio || p.x < m.x0 {
+            return None;
+        }
+        let row = rows.iter().position(|&t| t == ti)?;
+        let c = tr.clip_at(m.t(p.x))?;
+        let cr = clip_rect(&m, row_rect(row), c.timeline_start, c.duration);
+        let x_of_src = |t: Time| cr.left() + ((t - c.source_in).as_secs_f64() as f32) * m.pps;
+        if let Some(i) = c.audio.volume_keys.iter().position(|k| {
+            (x_of_src(k.at) - p.x).abs() <= 6.0 && (db_to_y(k.db, cr) - p.y).abs() <= 6.0
+        }) {
+            return Some(VolHit::Key(c.id, i));
+        }
+        let src = c.source_time(m.t(p.x));
+        ((db_to_y(c.audio.volume_db_at(src), cr) - p.y).abs() <= 4.0).then_some(VolHit::Line(c.id))
+    };
+
     if let Some(p) = resp.hover_pos() {
-        if st.timeline.drag.is_none() && hit_fade(st, p).is_some() {
-            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        if st.timeline.drag.is_none() {
+            if hit_fade(st, p).is_some() {
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            } else {
+                match hit_vol(st, p) {
+                    Some(VolHit::Key(..)) => ui.ctx().set_cursor_icon(CursorIcon::Grab),
+                    Some(VolHit::Line(_)) => {
+                        let ctrl = ui.input(|i| i.modifiers.command);
+                        ui.ctx().set_cursor_icon(if ctrl { CursorIcon::Crosshair } else { CursorIcon::ResizeVertical });
+                    }
+                    None => {}
+                }
+            }
         }
     }
 
@@ -288,12 +403,22 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         // Hit-test where the button went down, not where the drag threshold was crossed.
         let origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
         if let Some(p) = origin {
-            st.timeline.drag = match hit_fade(st, p) {
-                Some((id, out)) => {
+            let vol = if hit_fade(st, p).is_none() { hit_vol(st, p) } else { None };
+            st.timeline.drag = match (hit_fade(st, p), vol) {
+                (Some((id, out)), _) => {
                     st.selection = Some(id);
                     Some(Drag::Fade { id, out })
                 }
-                None => match hit_clip(st, p) {
+                (None, Some(VolHit::Key(id, index))) => {
+                    st.selection = Some(id);
+                    Some(Drag::VolKey { id, index })
+                }
+                (None, Some(VolHit::Line(id))) if !ui.input(|i| i.modifiers.command) => {
+                    st.selection = Some(id);
+                    let orig = st.clip_audio(id).unwrap_or_default();
+                    Some(Drag::VolLine { id, start_y: p.y, orig })
+                }
+                _ => match hit_clip(st, p) {
                 Some((ti, id, start)) => {
                     st.selection = Some(id);
                     Some(Drag::Clip { id, grab: m.t(p.x) - start, from: (ti, start), to: (ti, start) })
@@ -309,7 +434,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         if let Some(p) = pointer {
             if let Some(Drag::Fade { id, out }) = st.timeline.drag {
                 if let Some((_, c)) = st.seq().find_clip(id) {
-                    let mut a = c.audio;
+                    let mut a = c.audio.clone();
                     let (fi, fo) = a.clamped_fades(c.duration);
                     let t = m.t(p.x).snap(rate);
                     if out {
@@ -323,12 +448,57 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 }
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
             }
+            if let Some(Drag::VolKey { id, index }) = st.timeline.drag {
+                if let Some((ti, c)) = st.seq().find_clip(id) {
+                    if let Some(row) = rows.iter().position(|&t| t == ti) {
+                        let cr = clip_rect(&m, row_rect(row), c.timeline_start, c.duration);
+                        let mut a = c.audio.clone();
+                        let frame = rate.frame_duration();
+                        // Stay between the neighbouring keys and inside the clip.
+                        let lo = if index > 0 { a.volume_keys[index - 1].at + frame } else { c.source_in };
+                        let hi = a.volume_keys.get(index + 1).map(|k| k.at - frame).unwrap_or(c.source_in + c.duration);
+                        let t = c.source_time(m.t(p.x).snap(rate)).max(lo).min(hi.max(lo));
+                        let db = tidy_db(y_to_db(p.y, cr));
+                        if let Some(k) = a.volume_keys.get_mut(index) {
+                            (k.at, k.db) = (t, db);
+                        }
+                        st.status = format!("Volume key: {db:+.1} dB at {}", (c.timeline_start + (t - c.source_in)).timecode(rate));
+                        st.set_clip_audio_live(id, a);
+                    }
+                }
+                ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+            }
+            if let Some(Drag::VolLine { id, start_y, orig }) = &st.timeline.drag {
+                let (id, start_y, orig) = (*id, *start_y, orig.clone());
+                if let Some((ti, c)) = st.seq().find_clip(id) {
+                    if let Some(row) = rows.iter().position(|&t| t == ti) {
+                        let cr = clip_rect(&m, row_rect(row), c.timeline_start, c.duration);
+                        let delta = y_to_db(p.y, cr) - y_to_db(start_y, cr);
+                        let mut a = orig.clone();
+                        if a.is_animated() {
+                            // Shift the whole automation curve.
+                            for k in &mut a.volume_keys {
+                                k.db = tidy_db((k.db + delta).clamp(MIN_DB, MAX_DB));
+                            }
+                            st.status = format!("Volume keys {delta:+.1} dB");
+                        } else {
+                            a.volume_db = tidy_db((orig.volume_db + delta).clamp(MIN_DB, MAX_DB));
+                            st.status = format!("Clip volume: {:+.1} dB", a.volume_db);
+                        }
+                        st.set_clip_audio_live(id, a);
+                    }
+                }
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+            }
             let target = st.timeline.drag.as_ref().map(|d| match d {
-                Drag::Scrub | Drag::Fade { .. } => None,
-                Drag::Clip { from, grab, .. } => {
+                Drag::Scrub | Drag::Fade { .. } | Drag::VolKey { .. } | Drag::VolLine { .. } => None,
+                Drag::Clip { id, from, grab, .. } => {
                     let kind = st.seq().tracks[from.0].kind;
                     let ti = row_at(p.y).filter(|&t| st.seq().tracks[t].kind == kind).unwrap_or(from.0);
-                    let start = Time(m.t(p.x).0 - grab.0).max(Time::ZERO).snap(rate);
+                    let mut start = Time(m.t(p.x).0 - grab.0).max(Time::ZERO).snap(rate);
+                    if !ui.input(|i| i.modifiers.alt) {
+                        start = snap_clip(st, *id, start, &m);
+                    }
                     Some((ti, start))
                 }
             });
@@ -355,7 +525,45 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         st.timeline.drag = None;
     }
 
-    if resp.clicked() {
+    // Ctrl+click the volume line to add a keyframe; Alt+click or double-click one to delete it.
+    let (ctrl, alt) = ui.input(|i| (i.modifiers.command, i.modifiers.alt));
+    let mut handled = false;
+    if resp.clicked() || resp.double_clicked() {
+        if let Some(p) = pointer {
+            match hit_vol(st, p) {
+                Some(VolHit::Key(id, index)) if alt || resp.double_clicked() => {
+                    if let Some(mut a) = st.clip_audio(id) {
+                        a.volume_keys.remove(index);
+                        st.set_clip_audio_live(id, a);
+                        st.commit_live_edit();
+                    }
+                    st.selection = Some(id);
+                    handled = true;
+                }
+                Some(VolHit::Line(id)) if ctrl => {
+                    if let Some((_, c)) = st.seq().find_clip(id) {
+                        let mut a = c.audio.clone();
+                        let src = c.source_time(m.t(p.x).snap(rate));
+                        if !a.is_animated() {
+                            // First key: the curve starts from the current constant volume.
+                            a.set_key(src, a.volume_db);
+                        } else {
+                            let db = a.volume_db_at(src);
+                            a.set_key(src, db);
+                        }
+                        st.set_clip_audio_live(id, a);
+                        st.commit_live_edit();
+                        st.status = "Added volume keyframe".into();
+                    }
+                    st.selection = Some(id);
+                    handled = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if resp.clicked() && !handled {
         if let Some(p) = pointer {
             match hit_clip(st, p) {
                 Some((_, id, _)) => st.selection = Some(id),
@@ -396,6 +604,32 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             st.timeline.scroll = (st.playback.playhead.as_secs_f64() as f32) - 20.0 / m.pps;
         }
     }
+}
+
+/// Snap distance in pixels for clip moves.
+const SNAP_PX: f32 = 8.0;
+
+/// Snap a dragged clip so its start or end lands on another clip's edge, the
+/// playhead, or zero, if one is within `SNAP_PX`. Clips linked to it are ignored.
+fn snap_clip(st: &EditorState, id: ClipId, start: Time, m: &Mapping) -> Time {
+    let seq = st.seq();
+    let Some((_, clip)) = seq.find_clip(id) else { return start };
+    let group: Vec<ClipId> = seq.link_group(id).iter().map(|(_, c)| c.id).collect();
+    let mut targets = vec![Time::ZERO, st.playback.playhead];
+    for c in seq.tracks.iter().flat_map(|t| &t.clips).filter(|c| !group.contains(&c.id)) {
+        targets.push(c.timeline_start);
+        targets.push(c.timeline_end());
+    }
+    let mut best: Option<(f32, Time)> = None;
+    for t in targets {
+        for (edge, new_start) in [(start, t), (start + clip.duration, Time(t.0 - clip.duration.0))] {
+            let d = (m.x(edge) - m.x(t)).abs();
+            if d <= SNAP_PX && best.is_none_or(|(bd, _)| d < bd) && new_start >= Time::ZERO {
+                best = Some((d, new_start));
+            }
+        }
+    }
+    best.map_or(start, |(_, s)| s)
 }
 
 fn clip_rect(m: &Mapping, row: Rect, start: Time, dur: Time) -> Rect {

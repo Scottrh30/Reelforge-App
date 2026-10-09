@@ -23,7 +23,7 @@ use cpal::{FromSample, OutputCallbackInfo, SampleFormat, SizedSample};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
 use reelforge_core::{FrameRate, Time};
 use reelforge_media::{MixClip, Mixer};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::*};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering::*};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -62,6 +62,11 @@ struct Shared {
     /// Last sample handed to the device; the clock never extrapolates past it.
     written_sample: AtomicI64,
     epoch: Instant,
+    /// Highest sample peak and per-callback RMS per channel since the UI last
+    /// read them, as f32 bits. Non-negative floats order like their bit patterns,
+    /// so `fetch_max` on the bits is a lock-free float max.
+    peak: [AtomicU32; 2],
+    rms: [AtomicU32; 2],
 }
 
 pub struct AudioEngine {
@@ -92,6 +97,8 @@ impl AudioEngine {
             clock_nanos: AtomicI64::new(0),
             written_sample: AtomicI64::new(0),
             epoch: Instant::now(),
+            peak: [AtomicU32::new(0), AtomicU32::new(0)],
+            rms: [AtomicU32::new(0), AtomicU32::new(0)],
         });
         let (cmd_tx, cmd_rx) = bounded(64);
         let (block_tx, block_rx) = bounded::<Block>(QUEUE_BLOCKS);
@@ -130,6 +137,13 @@ impl AudioEngine {
         self.generation += 1;
         self.shared.generation.store(self.generation, Release);
         let _ = self.cmd.send(Cmd::Stop);
+    }
+
+    /// Peak and RMS (linear, per channel) of everything played since the last call.
+    pub fn take_levels(&self) -> ([f32; 2], [f32; 2]) {
+        let take = |a: &AtomicU32| f32::from_bits(a.swap(0, AcqRel));
+        let s = &self.shared;
+        ([take(&s.peak[0]), take(&s.peak[1])], [take(&s.rms[0]), take(&s.rms[1])])
     }
 
     /// Play a short snippet at `at` (call while paused, whenever the playhead moves).
@@ -255,6 +269,7 @@ where
         let generation = shared.generation.load(Acquire);
         let mut first: Option<i64> = None;
         let mut last: Option<i64> = None;
+        let (mut peak, mut sumsq, mut frames) = ([0.0f32; 2], [0.0f32; 2], 0usize);
 
         for frame in data.chunks_mut(channels) {
             // Make sure we have a current, non-stale, non-exhausted block.
@@ -285,6 +300,11 @@ where
                 }
                 None => (0.0, 0.0),
             };
+            for (c, v) in [l, r].into_iter().enumerate() {
+                peak[c] = peak[c].max(v.abs());
+                sumsq[c] += v * v;
+            }
+            frames += 1;
             match channels {
                 1 => frame[0] = T::from_sample(0.5 * (l + r)),
                 _ => {
@@ -294,6 +314,13 @@ where
                         *c = T::from_sample(0.0f32);
                     }
                 }
+            }
+        }
+
+        if frames > 0 {
+            for c in 0..2 {
+                shared.peak[c].fetch_max(peak[c].to_bits(), AcqRel);
+                shared.rms[c].fetch_max((sumsq[c] / frames as f32).sqrt().to_bits(), AcqRel);
             }
         }
 

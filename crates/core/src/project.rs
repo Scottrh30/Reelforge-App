@@ -12,6 +12,8 @@ pub struct MediaId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ClipId(pub u64);
 
+
+
 /// What we learned about a file when importing it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaInfo {
@@ -218,7 +220,86 @@ pub struct Project {
     next_id: u64,
 }
 
+/// A crossfade between two adjacent clips on an audio track, resolved against
+/// the media actually available beyond each clip's edges.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crossfade {
+    pub track: usize,
+    pub left: ClipId,
+    pub right: ClipId,
+    /// Where the clips touch.
+    pub cut: Time,
+    /// How far the outgoing clip plays on past the cut (its spare media).
+    pub after: Time,
+    /// How far the incoming clip starts before the cut (its spare media).
+    pub before: Time,
+    /// What was asked for; `after + before` can be less if there's not enough spare media.
+    pub requested: Time,
+}
+
+impl Crossfade {
+    pub fn start(&self) -> Time {
+        self.cut - self.before
+    }
+    pub fn end(&self) -> Time {
+        self.cut + self.after
+    }
+    pub fn len(&self) -> Time {
+        self.after + self.before
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == Time::ZERO
+    }
+}
+
+/// Split a requested crossfade `d` across the cut, centred if both sides have
+/// enough spare media, otherwise leaning on whichever side has more.
+/// `left_spare`: media after the outgoing clip's end. `right_spare`: media before
+/// the incoming clip's start. Returns `(after, before)`.
+pub fn crossfade_extents(d: Time, left_spare: Time, right_spare: Time) -> (Time, Time) {
+    let d = d.max(Time::ZERO);
+    let (ls, rs) = (left_spare.max(Time::ZERO), right_spare.max(Time::ZERO));
+    let mut before = Time(d.0 / 2).min(rs);
+    let after = (d - before).min(ls);
+    before = (d - after).min(rs);
+    (after, before)
+}
+
 impl Project {
+    /// Every crossfade on audio tracks of sequence `seq`.
+    pub fn crossfades(&self, seq: usize) -> Vec<Crossfade> {
+        let s = &self.sequences[seq];
+        let mut out = Vec::new();
+        for (ti, tr) in s.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio) {
+            for pair in tr.clips.windows(2) {
+                let (l, r) = (&pair[0], &pair[1]);
+                if l.timeline_end() != r.timeline_start || r.audio.crossfade_in <= Time::ZERO {
+                    continue;
+                }
+                // Overlap can't run past the far end of either clip.
+                let requested = r.audio.crossfade_in.min(l.duration).min(r.duration);
+                let media_len = self.media(l.media).map(|m| m.info.duration).unwrap_or(Time::ZERO);
+                let left_spare = (media_len - (l.source_in + l.duration)).min(r.duration);
+                let right_spare = r.source_in.min(l.duration);
+                let (after, before) = crossfade_extents(requested, left_spare, right_spare);
+                out.push(Crossfade { track: ti, left: l.id, right: r.id, cut: r.timeline_start, after, before, requested });
+            }
+        }
+        out
+    }
+
+    /// The crossfade into clip `right`, if it has one.
+    pub fn crossfade_into(&self, seq: usize, right: ClipId) -> Option<Crossfade> {
+        self.crossfades(seq).into_iter().find(|x| x.right == right)
+    }
+
+    /// The clip that ends exactly where `id` starts on the same track (a crossfade candidate).
+    pub fn clip_before(&self, seq: usize, id: ClipId) -> Option<ClipId> {
+        let s = &self.sequences[seq];
+        let (ti, c) = s.find_clip(id)?;
+        s.tracks[ti].clips.iter().find(|o| o.timeline_end() == c.timeline_start).map(|o| o.id)
+    }
+
     pub fn new() -> Self {
         Self {
             media: Vec::new(),
@@ -233,5 +314,57 @@ impl Project {
     }
     pub fn media(&self, id: MediaId) -> Option<&MediaAsset> {
         self.media.iter().find(|m| m.id == id)
+    }
+}
+
+#[cfg(test)]
+mod crossfade_tests {
+    use super::*;
+
+    fn secs(s: f64) -> Time {
+        Time::from_secs_f64(s)
+    }
+
+    #[test]
+    fn extents_centre_when_possible_and_lean_otherwise() {
+        assert_eq!(crossfade_extents(secs(1.0), secs(5.0), secs(5.0)), (secs(0.5), secs(0.5)));
+        // Outgoing clip has only 0.2 s of spare media: the incoming side covers the rest.
+        assert_eq!(crossfade_extents(secs(1.0), secs(0.2), secs(5.0)), (secs(0.2), secs(0.8)));
+        assert_eq!(crossfade_extents(secs(1.0), secs(5.0), secs(0.1)), (secs(0.9), secs(0.1)));
+        assert_eq!(crossfade_extents(secs(1.0), Time::ZERO, Time::ZERO), (Time::ZERO, Time::ZERO));
+    }
+
+    fn media(id: u64, dur: f64) -> MediaAsset {
+        MediaAsset {
+            id: MediaId(id),
+            path: format!("{id}.wav").into(),
+            name: String::new(),
+            info: MediaInfo { duration: secs(dur), video: None, audio: None, container: String::new() },
+        }
+    }
+
+    #[test]
+    fn project_resolves_crossfades_against_available_media() {
+        let mut p = Project::new();
+        p.media.push(media(1, 10.0));
+        p.media.push(media(2, 10.0));
+        let a1 = 2; // audio track index in a new sequence
+        // A: source 0..4 (6 s spare after). B: source 0.3..5.3 (0.3 s spare before).
+        let a = Clip::new(ClipId(10), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
+        let mut b = Clip::new(ClipId(11), MediaId(2), secs(4.0), secs(0.3), secs(5.0), None);
+        b.audio.crossfade_in = secs(1.0);
+        p.sequences[0].tracks[a1].clips = vec![a, b];
+        let x = p.crossfades(0);
+        assert_eq!(x.len(), 1);
+        let x = x[0];
+        assert_eq!((x.left, x.right, x.cut), (ClipId(10), ClipId(11), secs(4.0)));
+        assert_eq!((x.before, x.after), (secs(0.3), secs(0.7)));
+        assert_eq!((x.start(), x.end()), (secs(3.7), secs(4.7)));
+        assert_eq!(p.clip_before(0, ClipId(11)), Some(ClipId(10)));
+
+        // Moving B away from A turns it back into a plain clip.
+        p.sequences[0].tracks[a1].clips[1].timeline_start = secs(4.5);
+        assert!(p.crossfades(0).is_empty());
+        assert_eq!(p.clip_before(0, ClipId(11)), None);
     }
 }

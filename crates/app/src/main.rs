@@ -4,6 +4,7 @@
 mod app;
 mod audio;
 mod export_ui;
+mod meters;
 mod panels;
 mod playback;
 mod preview;

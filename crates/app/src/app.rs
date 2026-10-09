@@ -18,6 +18,7 @@ pub enum Tab {
     Viewer,
     Inspector,
     Timeline,
+    Meters,
 }
 
 pub struct ReelforgeApp {
@@ -41,6 +42,7 @@ pub struct EditorState {
     /// A transform being changed interactively: the clip and its value before the gesture.
     /// Committed as one undo step when the mouse is released.
     live_edit: Option<LiveEdit>,
+    pub meters: crate::meters::Meters,
     /// Set by the menu/shortcut; the app opens the export dialog.
     pub export_requested: bool,
     /// Bumped on every project change so the audio mixer can be resynced.
@@ -63,7 +65,8 @@ impl ReelforgeApp {
         let mut dock = DockState::new(vec![Tab::Viewer]);
         let tree = dock.main_surface_mut();
         // `fraction` is the share kept by the original node (the viewer).
-        let [top, _timeline] = tree.split_below(NodeIndex::root(), 0.6, vec![Tab::Timeline]);
+        let [top, timeline] = tree.split_below(NodeIndex::root(), 0.6, vec![Tab::Timeline]);
+        tree.split_right(timeline, 0.93, vec![Tab::Meters]);
         let [viewer, _bin] = tree.split_left(top, 0.18, vec![Tab::MediaBin]);
         tree.split_right(viewer, 0.76, vec![Tab::Inspector]);
 
@@ -171,6 +174,7 @@ impl egui_dock::TabViewer for EditorState {
             Tab::Viewer => "Viewer",
             Tab::Inspector => "Controls",
             Tab::Timeline => "Editor Timeline",
+            Tab::Meters => "Meters",
         }
         .into()
     }
@@ -181,6 +185,7 @@ impl egui_dock::TabViewer for EditorState {
             Tab::Viewer => crate::panels::viewer(ui, self),
             Tab::Inspector => crate::panels::inspector(ui, self),
             Tab::Timeline => crate::timeline::show(ui, self),
+            Tab::Meters => crate::meters::show(ui, self),
         }
     }
 
@@ -205,6 +210,7 @@ impl EditorState {
             project_path: None,
             preview,
             live_edit: None,
+            meters: Default::default(),
             export_requested: false,
             rev: 1,
             mixed_rev: 0,
@@ -399,6 +405,50 @@ impl EditorState {
         }
     }
 
+    /// Add (or remove) a 1 s audio crossfade at the cut nearest the playhead:
+    /// the selected clip's cut if it has one, otherwise any audio cut within 1 s.
+    pub fn toggle_crossfade_at_playhead(&mut self) {
+        let t = self.playback.playhead;
+        let seq = self.seq();
+        let mut cuts: Vec<(Time, ClipId)> = Vec::new(); // (distance, incoming clip)
+        for tr in seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
+            for pair in tr.clips.windows(2) {
+                if pair[0].timeline_end() == pair[1].timeline_start {
+                    let d = Time((pair[1].timeline_start.0 - t.0).abs());
+                    cuts.push((d, pair[1].id));
+                }
+            }
+        }
+        let selected: Vec<ClipId> = self.selection.map(|id| seq.link_group(id).iter().map(|(_, c)| c.id).collect()).unwrap_or_default();
+        let preferred = cuts.iter().filter(|(_, id)| {
+            selected.contains(id) || self.project.clip_before(0, *id).is_some_and(|l| selected.contains(&l))
+        });
+        let pick = preferred
+            .min_by_key(|(d, _)| *d)
+            .or_else(|| cuts.iter().filter(|(d, _)| *d <= Time(Time::TICKS_PER_SECOND)).min_by_key(|(d, _)| *d))
+            .map(|(_, id)| *id);
+        let Some(id) = pick else {
+            self.status = "No cut between two audio clips near the playhead".into();
+            return;
+        };
+        let Some(old) = self.clip_audio(id) else { return };
+        let mut new = old.clone();
+        new.crossfade_in = if old.crossfade_in > Time::ZERO { Time::ZERO } else { Time::from_secs_f64(1.0).snap(self.seq().frame_rate) };
+        self.execute(Box::new(SetClipAudio { seq: 0, id, old, new }));
+        self.selection = Some(id);
+        if let Some(x) = self.project.crossfade_into(0, id) {
+            self.status = if x.is_empty() {
+                "Crossfade added, but there's no spare media at the cut, so it plays as a plain cut".into()
+            } else if x.len() < x.requested {
+                format!("Crossfade added: {:.2} s (limited by spare media)", x.len().as_secs_f64())
+            } else {
+                format!("Crossfade added: {:.2} s", x.len().as_secs_f64())
+            };
+        } else {
+            self.status = "Crossfade removed".into();
+        }
+    }
+
     pub fn toggle_mute(&mut self, track: usize) {
         let tr = &mut self.project.sequences[0].tracks[track];
         tr.muted = !tr.muted;
@@ -510,6 +560,9 @@ impl EditorState {
                 if ui.add_enabled(self.selection_is_linked(), egui::Button::new("Unlink audio/video")).clicked() {
                     self.unlink_selection();
                 }
+                if ui.button("Audio crossfade at playhead   Ctrl+Shift+D").clicked() {
+                    self.toggle_crossfade_at_playhead();
+                }
                 ui.separator();
                 ui.checkbox(&mut self.playback.scrub_audio, "Audio scrubbing")
                     .on_hover_text("Hear audio while dragging the playhead or stepping frames");
@@ -523,6 +576,10 @@ impl EditorState {
         }
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
         let cmd_shift = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
+        let crossfade = ctx.input_mut(|i| i.consume_shortcut(&cmd_shift(Key::D)));
+        if crossfade {
+            self.toggle_crossfade_at_playhead();
+        }
         let (redo, undo, save, import, export) = ctx.input_mut(|i| {
             let redo = i.consume_shortcut(&cmd_shift(Key::Z)) || i.consume_shortcut(&cmd(Key::Y));
             (
@@ -589,7 +646,7 @@ impl EditorState {
     }
 
     pub fn clip_audio(&self, id: ClipId) -> Option<ClipAudio> {
-        self.seq().find_clip(id).map(|(_, c)| c.audio)
+        self.seq().find_clip(id).map(|(_, c)| c.audio.clone())
     }
 
     /// Start (or continue) a live edit; commits a different pending edit first.

@@ -28,22 +28,100 @@ pub fn fade_curve(x: f32) -> f32 {
     (x.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2).sin()
 }
 
+/// A volume keyframe. Anchored to the clip's *source* time, so keys stay on the
+/// same sound when the clip is moved, trimmed or split.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VolumeKey {
+    pub at: Time,
+    pub db: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClipAudio {
+    /// Constant volume, used when there are no keyframes.
     pub volume_db: f32,
     pub pan: f32,
     pub fade_in: Time,
     pub fade_out: Time,
+    /// Volume automation, sorted by `at`. When non-empty it replaces `volume_db`.
+    pub volume_keys: Vec<VolumeKey>,
+    /// Length of an equal-power crossfade with the clip that ends exactly where
+    /// this one starts on the same track (0 = a plain cut).
+    pub crossfade_in: Time,
 }
 
 impl Default for ClipAudio {
     fn default() -> Self {
-        Self { volume_db: 0.0, pan: 0.0, fade_in: Time::ZERO, fade_out: Time::ZERO }
+        Self { volume_db: 0.0, pan: 0.0, fade_in: Time::ZERO, fade_out: Time::ZERO, volume_keys: Vec::new(), crossfade_in: Time::ZERO }
+    }
+}
+
+/// Volume in dB at `x` along a sorted keyframe list: linear in dB between keys
+/// (sounds even), held flat before the first and after the last.
+pub fn interpolate_db(keys: &[(i64, f32)], x: i64) -> f32 {
+    match keys {
+        [] => 0.0,
+        [(_, db)] => *db,
+        _ => {
+            let i = keys.partition_point(|(k, _)| *k <= x);
+            if i == 0 {
+                return keys[0].1;
+            }
+            if i == keys.len() {
+                return keys[i - 1].1;
+            }
+            let ((x0, d0), (x1, d1)) = (keys[i - 1], keys[i]);
+            if x1 == x0 {
+                return d1;
+            }
+            d0 + (d1 - d0) * ((x - x0) as f32 / (x1 - x0) as f32)
+        }
     }
 }
 
 impl ClipAudio {
+    pub fn is_animated(&self) -> bool {
+        !self.volume_keys.is_empty()
+    }
+
+    /// Volume (dB) at source time `t`.
+    pub fn volume_db_at(&self, t: Time) -> f32 {
+        let keys = &self.volume_keys;
+        if keys.is_empty() {
+            return self.volume_db;
+        }
+        // Same maths as `interpolate_db`, without building a temporary list.
+        let i = keys.partition_point(|k| k.at <= t);
+        if i == 0 {
+            return keys[0].db;
+        }
+        if i == keys.len() {
+            return keys[i - 1].db;
+        }
+        let (a, b) = (keys[i - 1], keys[i]);
+        if b.at == a.at {
+            return b.db;
+        }
+        a.db + (b.db - a.db) * ((t.0 - a.at.0) as f32 / (b.at.0 - a.at.0) as f32)
+    }
+
+    /// Add a key at source time `at`, replacing one already there.
+    pub fn set_key(&mut self, at: Time, db: f32) {
+        let db = db.clamp(MIN_DB, MAX_DB);
+        match self.volume_keys.iter_mut().find(|k| k.at == at) {
+            Some(k) => k.db = db,
+            None => {
+                let i = self.volume_keys.partition_point(|k| k.at < at);
+                self.volume_keys.insert(i, VolumeKey { at, db });
+            }
+        }
+    }
+
+    pub fn key_index_at(&self, at: Time) -> Option<usize> {
+        self.volume_keys.iter().position(|k| k.at == at)
+    }
+
     /// Fades limited so they fit in a clip of `duration` (and can't overlap).
     pub fn clamped_fades(&self, duration: Time) -> (Time, Time) {
         let d = duration.max(Time::ZERO);
@@ -121,6 +199,33 @@ mod tests {
             let inn = ClipAudio::fade_at(i, 100, 20, 0);
             assert!((out * out + inn * inn - 1.0).abs() < 0.02);
         }
+    }
+
+    #[test]
+    fn keyframes_interpolate_in_db_and_hold_at_the_ends() {
+        let mut a = ClipAudio::default();
+        assert_eq!(a.volume_db_at(Time(5)), 0.0);
+        a.volume_db = -3.0;
+        assert_eq!(a.volume_db_at(Time(5)), -3.0, "no keys: constant volume");
+        a.set_key(Time(200), -20.0);
+        a.set_key(Time(100), 0.0);
+        a.set_key(Time(300), -20.0);
+        assert_eq!(a.volume_keys.iter().map(|k| k.at.0).collect::<Vec<_>>(), vec![100, 200, 300], "kept sorted");
+        assert_eq!(a.volume_db_at(Time(0)), 0.0, "held before the first key");
+        assert_eq!(a.volume_db_at(Time(150)), -10.0, "linear in dB");
+        assert_eq!(a.volume_db_at(Time(250)), -20.0);
+        assert_eq!(a.volume_db_at(Time(9999)), -20.0, "held after the last key");
+        a.set_key(Time(200), -6.0);
+        assert_eq!(a.volume_keys.len(), 3, "same time replaces");
+        a.set_key(Time(400), 99.0);
+        assert_eq!(a.volume_keys[3].db, MAX_DB, "clamped");
+    }
+
+    #[test]
+    fn old_clip_audio_loads_without_new_fields() {
+        let a: ClipAudio = serde_json::from_str(r#"{"volume_db":-3.0,"pan":0.0,"fade_in":0,"fade_out":0}"#).unwrap();
+        assert!(a.volume_keys.is_empty());
+        assert_eq!(a.crossfade_in, Time::ZERO);
     }
 
     #[test]

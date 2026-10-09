@@ -86,12 +86,17 @@ pub fn frame_range(rate: FrameRate, start: Time, end: Time) -> (i64, i64) {
     (first, last.max(first))
 }
 
-/// The audio clips of sequence 0 as the mixer wants them, at `rate`, with clip
-/// and track volume/pan folded together and fades converted to samples.
-/// Used for both playback and export, so they always sound the same.
+/// The audio clips of sequence 0 as the mixer wants them, at `rate`.
+///
+/// Folds clip and track volume/pan together, converts fades and volume
+/// keyframes to samples, and resolves crossfades: the outgoing clip is extended
+/// past the cut into its spare media and the incoming one starts early, each
+/// with an equal-power ramp across the overlap. Used for both playback and
+/// export, so they always sound the same.
 pub fn mix_clips(project: &Project, rate: u32) -> Vec<MixClip> {
     use reelforge_core::audio::{balance, db_to_gain};
     let sr = FrameRate::new(rate as i64, 1);
+    let crossfades = project.crossfades(0);
     project.sequences[0]
         .tracks
         .iter()
@@ -99,20 +104,40 @@ pub fn mix_clips(project: &Project, rate: u32) -> Vec<MixClip> {
         .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
         .filter_map(|(t, c)| {
             let m = project.media(c.media)?;
-            let gain = db_to_gain(c.audio.volume_db) * db_to_gain(t.audio.volume_db);
             let [cl, cr] = balance(c.audio.pan);
             let [tl, tr] = balance(t.audio.pan);
-            let (fin, fout) = c.audio.clamped_fades(c.duration);
+            let (mut fin, mut fout) = c.audio.clamped_fades(c.duration);
+            let (mut start, mut source_in, mut end) = (c.timeline_start, c.source_in, c.timeline_end());
+            // A crossfade replaces the plain fade on that edge.
+            if let Some(x) = crossfades.iter().find(|x| x.right == c.id && !x.is_empty()) {
+                start = start - x.before;
+                source_in = source_in - x.before;
+                fin = x.len();
+            }
+            if let Some(x) = crossfades.iter().find(|x| x.left == c.id && !x.is_empty()) {
+                end = end + x.after;
+                fout = x.len();
+            }
+            let track_gain = db_to_gain(t.audio.volume_db);
+            let (gain, volume_keys) = if c.audio.is_animated() {
+                let s0 = source_in.to_frame(sr);
+                let keys = c.audio.volume_keys.iter().map(|k| (k.at.to_frame(sr) - s0, k.db)).collect();
+                (track_gain, keys)
+            } else {
+                (db_to_gain(c.audio.volume_db) * track_gain, Vec::new())
+            };
+            let start_s = start.to_frame(sr);
             Some(MixClip {
                 id: c.id,
                 path: m.path.clone(),
-                start: c.timeline_start.to_frame(sr),
-                source_in: c.source_in.to_frame(sr),
-                len: c.duration.to_frame(sr),
+                start: start_s,
+                source_in: source_in.to_frame(sr),
+                len: end.to_frame(sr) - start_s,
                 gain,
                 balance: [cl * tl, cr * tr],
                 fade_in: fin.to_frame(sr),
                 fade_out: fout.to_frame(sr),
+                volume_keys,
             })
         })
         .filter(|c| c.gain > 0.0)

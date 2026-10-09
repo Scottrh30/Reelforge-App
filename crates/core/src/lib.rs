@@ -9,7 +9,7 @@ pub mod time;
 pub mod transform;
 pub mod undo;
 
-pub use audio::{ClipAudio, TrackAudio};
+pub use audio::{ClipAudio, TrackAudio, VolumeKey};
 pub use project::*;
 pub use time::{FrameRate, Rational, Time};
 pub use transform::{Affine2, BlendMode, Transform};

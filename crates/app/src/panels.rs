@@ -334,6 +334,24 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
     }
 }
 
+/// A button showing a keyframe diamond: filled when there's a key at the playhead.
+/// (Painted rather than a text glyph, which the default font doesn't have.)
+fn key_button(ui: &mut egui::Ui, filled: bool, enabled: bool) -> egui::Response {
+    let size = Vec2::new(24.0, ui.spacing().interact_size.y);
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let visuals = if enabled { ui.style().interact(&resp) } else { &ui.style().visuals.widgets.noninteractive };
+    ui.painter().rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+    let c = rect.center();
+    let r = 5.0;
+    let pts = vec![c + Vec2::new(0.0, -r), c + Vec2::new(r, 0.0), c + Vec2::new(0.0, r), c + Vec2::new(-r, 0.0)];
+    let gold = Color32::from_rgb(255, 210, 80);
+    let col = if !enabled { ui.visuals().weak_text_color() } else if filled { gold } else { visuals.fg_stroke.color };
+    let fill = if filled && enabled { gold } else { Color32::TRANSPARENT };
+    ui.painter().add(egui::Shape::convex_polygon(pts, fill, egui::Stroke::new(1.3, col)));
+    resp
+}
+
 /// Volume slider in dB where the bottom of the range means silent.
 fn volume_slider(ui: &mut egui::Ui, db: &mut f32) -> egui::Response {
     use reelforge_core::audio::{MAX_DB, MIN_DB};
@@ -367,12 +385,63 @@ fn pan_slider(ui: &mut egui::Ui, pan: &mut f32) {
 
 fn clip_audio_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
     let Some(mut a) = st.clip_audio(clip.id) else { return };
-    let before = a;
+    let before = a.clone();
     let rate = st.seq().frame_rate;
+    let playhead = st.playback.playhead;
+    let in_clip = clip.contains(playhead);
+    let src = clip.source_time(playhead.max(clip.timeline_start).min(clip.timeline_end()));
+    let to_timeline = |at: Time| clip.timeline_start + (at - clip.source_in);
+    let mut seek = None;
+    // Crossfade with the clip that ends where this one starts, if any.
+    let before_clip = st.project.clip_before(0, clip.id).and_then(|id| st.seq().find_clip(id).map(|(_, c)| c.duration));
+    let xfade = st.project.crossfade_into(0, clip.id);
+
     ui.heading("Audio");
     egui::Grid::new("clip_audio").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.weak("Volume");
-        volume_slider(ui, &mut a.volume_db);
+        if a.is_animated() {
+            // With keyframes, the slider shows/edits the value at the playhead (adding a key there).
+            let mut db = a.volume_db_at(src);
+            let r = ui.add_enabled_ui(in_clip, |ui| volume_slider(ui, &mut db)).inner;
+            if r.changed() && in_clip {
+                a.set_key(src, db);
+            }
+        } else {
+            volume_slider(ui, &mut a.volume_db);
+        }
+        ui.end_row();
+
+        ui.weak("Keyframes");
+        ui.horizontal(|ui| {
+            let prev = a.volume_keys.iter().rev().map(|k| to_timeline(k.at)).find(|t| *t < playhead);
+            let next = a.volume_keys.iter().map(|k| to_timeline(k.at)).find(|t| *t > playhead);
+            if ui.add_enabled(prev.is_some(), egui::Button::new("◀")).on_hover_text("Previous keyframe").clicked() {
+                seek = prev;
+            }
+            let here = a.key_index_at(src).filter(|_| in_clip);
+            let tip = if here.is_some() { "Remove the keyframe at the playhead" } else { "Add a volume keyframe at the playhead" };
+            if key_button(ui, here.is_some(), in_clip).on_hover_text(tip).clicked() {
+                match here {
+                    Some(i) => {
+                        a.volume_keys.remove(i);
+                    }
+                    None => {
+                        let db = a.volume_db_at(src);
+                        a.set_key(src, db);
+                    }
+                }
+            }
+            if ui.add_enabled(next.is_some(), egui::Button::new("▶")).on_hover_text("Next keyframe").clicked() {
+                seek = next;
+            }
+            if a.is_animated() {
+                ui.weak(format!("{}", a.volume_keys.len()));
+                if ui.small_button("Clear").on_hover_text("Remove all keyframes, keeping the level at the playhead").clicked() {
+                    a.volume_db = a.volume_db_at(src);
+                    a.volume_keys.clear();
+                }
+            }
+        });
         ui.end_row();
         ui.weak("Pan");
         pan_slider(ui, &mut a.pan);
@@ -388,12 +457,37 @@ fn clip_audio_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge
             }
             ui.end_row();
         }
+
+        if let Some(left_dur) = before_clip {
+            ui.weak("Crossfade in");
+            ui.horizontal(|ui| {
+                let mut secs = a.crossfade_in.as_secs_f64();
+                let limit = left_dur.min(clip.duration).as_secs_f64();
+                if ui
+                    .add(egui::DragValue::new(&mut secs).speed(0.01).range(0.0..=limit).suffix(" s").fixed_decimals(2))
+                    .on_hover_text("Equal-power crossfade with the clip before this one (Ctrl+Shift+D)")
+                    .changed()
+                {
+                    a.crossfade_in = Time::from_secs_f64(secs).snap(rate);
+                }
+                if let Some(x) = xfade.filter(|x| x.len() < x.requested) {
+                    let msg = if x.is_empty() { "no spare media: plain cut".to_string() } else { format!("only {:.2} s of spare media", x.len().as_secs_f64()) };
+                    ui.colored_label(ui.visuals().warn_fg_color, msg).on_hover_text(
+                        "A crossfade plays the outgoing clip past its end and the incoming one before its start. Trim the clips to leave unused media at the cut.",
+                    );
+                }
+            });
+            ui.end_row();
+        }
     });
     if ui.button("Reset audio").clicked() {
         a = reelforge_core::ClipAudio::default();
     }
     if a != before {
         st.set_clip_audio_live(clip.id, a);
+    }
+    if let Some(t) = seek {
+        st.playback.seek(t);
     }
 }
 

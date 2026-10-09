@@ -5,6 +5,7 @@
 //! serves realtime playback (via the engine thread) and offline export.
 
 use crate::audio::{AudioReader, CHANNELS};
+use reelforge_core::audio::{db_to_gain, interpolate_db};
 use reelforge_core::{ClipAudio, ClipId};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,15 +23,19 @@ pub struct MixClip {
     pub gain: f32,
     /// Per-channel multipliers from clip pan × track pan (see `reelforge_core::audio::balance`).
     pub balance: [f32; 2],
-    /// Fade lengths, in samples.
+    /// Fade lengths, in samples (equal-power; also used for crossfades).
     pub fade_in: i64,
     pub fade_out: i64,
+    /// Volume automation as `(offset from start, dB)`, sorted. When non-empty,
+    /// the clip's level follows it (multiplied by `gain`, which then carries
+    /// only the track volume).
+    pub volume_keys: Vec<(i64, f32)>,
 }
 
 impl MixClip {
     /// A clip at unity gain, centred, without fades.
     pub fn plain(id: ClipId, path: PathBuf, start: i64, source_in: i64, len: i64) -> Self {
-        Self { id, path, start, source_in, len, gain: 1.0, balance: [1.0, 1.0], fade_in: 0, fade_out: 0 }
+        Self { id, path, start, source_in, len, gain: 1.0, balance: [1.0, 1.0], fade_in: 0, fade_out: 0, volume_keys: Vec::new() }
     }
 }
 
@@ -88,11 +93,15 @@ impl Mixer {
             let dst = &mut out[(s - pos) as usize * CHANNELS..][..n];
             let [bl, br] = clip.balance;
             let fading = clip.fade_in > 0 || clip.fade_out > 0;
+            let animated = !clip.volume_keys.is_empty();
             for (k, (d, v)) in dst.chunks_exact_mut(CHANNELS).zip(self.scratch.chunks_exact(CHANNELS)).enumerate() {
                 let mut g = clip.gain;
+                let offset = s - clip.start + k as i64;
                 if fading {
-                    let offset = s - clip.start + k as i64;
                     g *= ClipAudio::fade_at(offset, clip.len, clip.fade_in, clip.fade_out);
+                }
+                if animated {
+                    g *= db_to_gain(interpolate_db(&clip.volume_keys, offset));
                 }
                 d[0] += v[0] * g * bl;
                 d[1] += v[1] * g * br;

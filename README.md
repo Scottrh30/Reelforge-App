@@ -38,13 +38,29 @@ What works now:
   are heard immediately during playback and are included in exports
 - **Fades on the timeline**: drag the small handles at the top corners of an audio clip; the
   fade curve is drawn on the clip and the waveform follows volume and fades
+- **Volume keyframes** (automation): each audio clip shows a yellow volume line. **Ctrl+click**
+  it to add a keyframe, drag keyframes to move them (time and level), **double-click** or
+  **Alt+click** one to delete it, and drag the line itself to raise/lower the whole clip. The
+  Controls panel has previous/next keyframe buttons, a diamond to add/remove a keyframe at the
+  playhead, and Clear. Keyframes are tied to the clip's source audio, so they move, split and
+  trim with it
+- **Audio crossfades**: **Edit → Audio crossfade at playhead** (`Ctrl+Shift+D`) adds a 1 s
+  equal-power crossfade at the nearest cut between two touching audio clips (press again to
+  remove); its length is editable in the Controls panel ("Crossfade in"). A crossfade plays the
+  outgoing clip past its end and the incoming one before its start, so it needs unused media
+  either side of the cut; if there isn't enough it's shortened (and the panel says so), and with
+  none at all it stays a plain cut (red marker on the timeline)
+- **Audio meters**: a Meters panel next to the timeline shows the master output: peak and RMS per
+  channel, a 1.5 s peak-hold line with its value, and clip lights that stay lit until you click
+- **Snapping**: dragged clips snap to other clips' edges, the playhead and the start of the
+  timeline (hold **Alt** to move freely)
 - **Audio scrubbing**: hear the audio while dragging the playhead or stepping frames with
   ←/→ (toggle in **Edit → Audio scrubbing**)
 - Colour-accurate decoding: BT.709/BT.601 and full/limited range are read from each file
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
-Not yet: keyframes (transforms and volume are constant across a clip, apart from fades),
-effects, crossfade transitions, an in/out range for export.
+Not yet: keyframes for video properties (transforms are constant across a clip), effects,
+video transitions (cross-dissolve), trimming clip edges by dragging, an in/out range for export.
 See the roadmap at the bottom.
 
 ## Layout
@@ -150,6 +166,10 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
 | Ctrl+I | Import media |
 | Ctrl+S | Save project |
 | Ctrl+M | Export |
+| Ctrl+Shift+D | Add/remove audio crossfade at the nearest cut |
+| Ctrl+click volume line | Add a volume keyframe |
+| Double-click / Alt+click keyframe | Delete it |
+| Alt while dragging a clip | Don't snap |
 | Ctrl + mouse wheel | Zoom timeline |
 | Click / drag in Viewer | Select / move a layer |
 
@@ -187,6 +207,16 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
   track settings are folded into one gain + per-channel balance per clip by
   `reelforge_export::mix_clips`, which feeds both playback and export, so they can't
   disagree. Mono sources play at full level on both channels.
+- **Volume automation** is stored as `(source time, dB)` keys and interpolated linearly in dB
+  (what sounds like an even ramp). `mix_clips` converts keys to sample offsets per clip, so the
+  mixer applies them sample-accurately in both playback and export.
+- **Crossfades** (`Project::crossfades`) are resolved from each clip's spare media: the overlap
+  is centred on the cut when both sides have enough, otherwise it leans on whichever side does.
+  `mix_clips` then extends the two clips into that overlap and gives them matching equal-power
+  ramps, which keeps the loudness constant across the transition for different material.
+- **Meters** read peak and RMS from the audio callback itself (lock-free: per-channel atomic
+  float maximums that the UI swaps out each frame), so they show exactly what reaches the
+  device, including scrubbing.
 - **Scrubbing**: while paused, every playhead move asks the engine for a 60 ms snippet with
   4 ms de-click ramps. The mixer only renders the next snippet when the device is about to run
   dry, always at the newest position, so fast drags stay responsive.
@@ -202,8 +232,9 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
 ## Roadmap
 
 1. ~~Player and editor shell~~
-2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms, volume/pan, fades, scrubbing~~
-   (still to add: audio meters, crossfades, keyframed volume)
+2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms, volume/pan, fades, scrubbing,
+   volume keyframes, crossfades, meters~~
+   (still to add: per-track meters, audio effects like EQ/compressor, keyframed pan)
 3. ~~Compositor: layers, transforms, opacity, blend modes, viewer gizmo~~
    (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes)
 4. ~~Export to H.264/AAC with progress and cancel~~ ← you are here
