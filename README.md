@@ -33,11 +33,18 @@ What works now:
   the background with a progress bar, time remaining, and Cancel; you can keep editing
   meanwhile. Export waits for every exact frame at full resolution and uses the same compositor
   and mixer as playback, so the file matches what you saw and heard
+- **Audio levels**: per-clip volume (dB), pan and fade-in/out, plus per-track volume and pan,
+  in the Controls panel (select an audio clip, or a video clip with linked audio). Changes
+  are heard immediately during playback and are included in exports
+- **Fades on the timeline**: drag the small handles at the top corners of an audio clip; the
+  fade curve is drawn on the clip and the waveform follows volume and fades
+- **Audio scrubbing**: hear the audio while dragging the playhead or stepping frames with
+  ←/→ (toggle in **Edit → Audio scrubbing**)
 - Colour-accurate decoding: BT.709/BT.601 and full/limited range are read from each file
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
-Not yet: keyframes (transforms are constant across a clip), effects, volume/pan, in/out
-range for export.
+Not yet: keyframes (transforms and volume are constant across a clip, apart from fades),
+effects, crossfade transitions, an in/out range for export.
 See the roadmap at the bottom.
 
 ## Layout
@@ -174,6 +181,15 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
   samples belonging to each frame, so the two can't drift. Encoders use closed GOPs with a
   keyframe every ~2 s, so exported files scrub well when re-imported. A cancelled or failed
   export deletes its partial file.
+- **Audio levels** (`crates/core/src/audio.rs`): volume is stored in dB (−60 dB = silent);
+  pan is a balance control, so centre leaves a stereo source untouched and turning one way
+  only turns the other side down. Fades use an equal-power (quarter-sine) curve. Clip and
+  track settings are folded into one gain + per-channel balance per clip by
+  `reelforge_export::mix_clips`, which feeds both playback and export, so they can't
+  disagree. Mono sources play at full level on both channels.
+- **Scrubbing**: while paused, every playhead move asks the engine for a 60 ms snippet with
+  4 ms de-click ramps. The mixer only renders the next snippet when the device is about to run
+  dry, always at the newest position, so fast drags stay responsive.
 - **Audio engine** (`app/src/audio.rs`): a mixer thread renders the timeline into 1024-frame
   blocks with `Mixer` and queues ~130 ms ahead; the cpal callback (realtime: no locks, no
   decoding) copies blocks to the device and publishes which timeline sample is reaching the
@@ -186,8 +202,8 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
 ## Roadmap
 
 1. ~~Player and editor shell~~
-2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms~~
-   (still to add: clip/track volume and pan, audio scrubbing, fades)
+2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms, volume/pan, fades, scrubbing~~
+   (still to add: audio meters, crossfades, keyframed volume)
 3. ~~Compositor: layers, transforms, opacity, blend modes, viewer gizmo~~
    (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes)
 4. ~~Export to H.264/AAC with progress and cancel~~ ← you are here

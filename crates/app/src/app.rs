@@ -5,7 +5,7 @@ use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use crate::audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::preview::Preview;
-use reelforge_core::undo::{delete_group, split_group, AddClip, Batch, ImportMedia, SetClipVisual, SetLink};
+use reelforge_core::undo::{delete_group, split_group, AddClip, Batch, ImportMedia, SetClipAudio, SetClipVisual, SetLink, SetTrackAudio};
 use reelforge_core::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,7 +40,7 @@ pub struct EditorState {
     pub preview: Preview,
     /// A transform being changed interactively: the clip and its value before the gesture.
     /// Committed as one undo step when the mouse is released.
-    visual_edit: Option<(ClipId, (Transform, BlendMode))>,
+    live_edit: Option<LiveEdit>,
     /// Set by the menu/shortcut; the app opens the export dialog.
     pub export_requested: bool,
     /// Bumped on every project change so the audio mixer can be resynced.
@@ -108,6 +108,7 @@ impl eframe::App for ReelforgeApp {
         let seq = &st.project.sequences[0];
         let (rate, end) = (seq.frame_rate, seq.duration());
         st.playback.tick(rate, end);
+        st.playback.scrub_if_moved();
         st.preview.update(&st.project, st.playback.playhead, st.playback.playing);
         if let Some(e) = st.preview.error.take() {
             st.status = e;
@@ -144,8 +145,8 @@ impl eframe::App for ReelforgeApp {
         self.export.show(&ctx, st);
 
         // A slider/gizmo gesture ends when the mouse is released and no text field is being typed in.
-        if st.visual_edit.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
-            st.commit_visual_edit();
+        if st.live_edit.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
+            st.commit_live_edit();
         }
 
         // Keep animating while playing or while waiting on a seek to land.
@@ -203,7 +204,7 @@ impl EditorState {
             status: String::new(),
             project_path: None,
             preview,
-            visual_edit: None,
+            live_edit: None,
             export_requested: false,
             rev: 1,
             mixed_rev: 0,
@@ -219,6 +220,7 @@ impl EditorState {
         let mut preview = std::mem::replace(&mut self.preview, Preview::new(None));
         preview.reset();
         let mut st = EditorState::new(Playback::with_audio(self.playback.audio.take()), preview);
+        st.playback.scrub_audio = self.playback.scrub_audio;
         st.status = "New project".into();
         st
     }
@@ -239,7 +241,7 @@ impl EditorState {
     }
 
     pub fn undo(&mut self) {
-        self.commit_visual_edit();
+        self.commit_live_edit();
         match self.undo.undo(&mut self.project) {
             Some(n) => self.status = format!("Undo: {n}"),
             None => self.status = "Nothing to undo".into(),
@@ -508,6 +510,9 @@ impl EditorState {
                 if ui.add_enabled(self.selection_is_linked(), egui::Button::new("Unlink audio/video")).clicked() {
                     self.unlink_selection();
                 }
+                ui.separator();
+                ui.checkbox(&mut self.playback.scrub_audio, "Audio scrubbing")
+                    .on_hover_text("Hear audio while dragging the playhead or stepping frames");
             });
         });
     }
@@ -573,39 +578,96 @@ impl EditorState {
 
     // ---- Viewer ----------------------------------------------------------------
 
-    // ---- Interactive transform edits --------------------------------------------
+    // ---- Interactive edits (sliders, gizmo, fade handles) ------------------------
+    //
+    // These change the project live while the mouse is held, then become a single
+    // undo step when it's released (see `commit_live_edit`).
 
     /// Current transform and blend mode of a clip.
     pub fn visual(&self, id: ClipId) -> Option<(Transform, BlendMode)> {
         self.seq().find_clip(id).map(|(_, c)| (c.transform, c.blend))
     }
 
-    /// Change a clip's look live (no undo entry yet); see [`Self::commit_visual_edit`].
+    pub fn clip_audio(&self, id: ClipId) -> Option<ClipAudio> {
+        self.seq().find_clip(id).map(|(_, c)| c.audio)
+    }
+
+    /// Start (or continue) a live edit; commits a different pending edit first.
+    fn begin_live(&mut self, edit: LiveEdit) {
+        match &self.live_edit {
+            Some(pending) if pending.same_target(&edit) => {}
+            Some(_) => {
+                self.commit_live_edit();
+                self.live_edit = Some(edit);
+            }
+            None => self.live_edit = Some(edit),
+        }
+    }
+
     pub fn set_visual_live(&mut self, id: ClipId, v: (Transform, BlendMode)) {
         let Some(before) = self.visual(id) else { return };
         if before == v {
             return;
         }
-        match self.visual_edit {
-            Some((pending, _)) if pending == id => {}
-            Some(_) => {
-                self.commit_visual_edit();
-                self.visual_edit = Some((id, before));
-            }
-            None => self.visual_edit = Some((id, before)),
-        }
+        self.begin_live(LiveEdit::Visual(id, before));
         if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
             (c.transform, c.blend) = v;
         }
     }
 
+    pub fn set_clip_audio_live(&mut self, id: ClipId, a: ClipAudio) {
+        let Some(before) = self.clip_audio(id) else { return };
+        if before == a {
+            return;
+        }
+        self.begin_live(LiveEdit::ClipAudio(id, before));
+        if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
+            c.audio = a;
+        }
+        self.touch(); // the mixer hears it immediately
+    }
+
+    pub fn set_track_audio_live(&mut self, track: usize, a: TrackAudio) {
+        let before = self.seq().tracks[track].audio;
+        if before == a {
+            return;
+        }
+        self.begin_live(LiveEdit::TrackAudio(track, before));
+        self.project.sequences[0].tracks[track].audio = a;
+        self.touch();
+    }
+
     /// Turn the pending live edit into one undoable command.
-    pub fn commit_visual_edit(&mut self) {
-        let Some((id, old)) = self.visual_edit.take() else { return };
-        if let Some(new) = self.visual(id) {
-            if new != old {
-                self.execute(Box::new(SetClipVisual { seq: 0, id, old, new }));
+    pub fn commit_live_edit(&mut self) {
+        let Some(edit) = self.live_edit.take() else { return };
+        let cmd: Option<Box<dyn Command>> = match edit {
+            LiveEdit::Visual(id, old) => self.visual(id).filter(|n| *n != old).map(|new| Box::new(SetClipVisual { seq: 0, id, old, new }) as _),
+            LiveEdit::ClipAudio(id, old) => self.clip_audio(id).filter(|n| *n != old).map(|new| Box::new(SetClipAudio { seq: 0, id, old, new }) as _),
+            LiveEdit::TrackAudio(track, old) => {
+                let new = self.seq().tracks.get(track).map(|t| t.audio).filter(|n| *n != old);
+                new.map(|new| Box::new(SetTrackAudio { seq: 0, track, old, new }) as _)
             }
+        };
+        if let Some(cmd) = cmd {
+            self.execute(cmd);
+        }
+    }
+}
+
+/// An interactive edit in progress: what's being changed and its value before the gesture.
+enum LiveEdit {
+    Visual(ClipId, (Transform, BlendMode)),
+    ClipAudio(ClipId, ClipAudio),
+    TrackAudio(usize, TrackAudio),
+}
+
+impl LiveEdit {
+    fn same_target(&self, other: &LiveEdit) -> bool {
+        match (self, other) {
+            (LiveEdit::Visual(a, _), LiveEdit::Visual(b, _)) => a == b,
+            (LiveEdit::ClipAudio(a, _), LiveEdit::ClipAudio(b, _)) => a == b,
+            (LiveEdit::TrackAudio(a, _), LiveEdit::TrackAudio(b, _)) => a == b,
+            _ => false,
         }
     }
 }

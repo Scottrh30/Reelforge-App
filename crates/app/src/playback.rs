@@ -20,11 +20,25 @@ pub struct Playback {
     pub audio: Option<AudioEngine>,
     /// Set when the audio clock didn't start in time for this play.
     wall_clock: bool,
+    /// Hear audio when the playhead moves while paused (dragging, frame stepping).
+    pub scrub_audio: bool,
+    last_heard: Time,
 }
 
 impl Playback {
     pub fn with_audio(audio: Option<AudioEngine>) -> Self {
-        Self { audio, ..Default::default() }
+        Self { audio, scrub_audio: true, ..Default::default() }
+    }
+
+    /// Call once per UI frame: plays a scrub snippet if the paused playhead moved.
+    pub fn scrub_if_moved(&mut self) {
+        let moved = self.playhead != self.last_heard;
+        self.last_heard = self.playhead;
+        if moved && !self.playing && self.scrub_audio {
+            if let Some(a) = &self.audio {
+                a.scrub(self.playhead);
+            }
+        }
     }
 
     pub fn clock_name(&self) -> &'static str {

@@ -3,6 +3,7 @@
 use crate::app::EditorState;
 use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use reelforge_core::undo::move_group;
+use reelforge_core::audio::{db_to_gain, fade_curve};
 use reelforge_core::{ClipId, MediaId, Time, TrackKind};
 
 const RULER_H: f32 = 26.0;
@@ -25,7 +26,12 @@ impl Default for TimelineView {
 enum Drag {
     Scrub,
     Clip { id: ClipId, grab: Time, from: (usize, Time), to: (usize, Time) },
+    /// Dragging an audio clip's fade-in (`out == false`) or fade-out handle.
+    Fade { id: ClipId, out: bool },
 }
+
+/// Fade handle size and how close the pointer must be to grab one.
+const FADE_HANDLE: f32 = 7.0;
 
 /// Maps between seconds and screen x for the current view.
 struct Mapping {
@@ -143,7 +149,22 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             }
             painter.rect_filled(vis, 4.0, fill);
 
-            // Waveform on audio clips: peaks mirrored around the centre line.
+            // Waveform on audio clips: peaks mirrored around the centre line,
+            // scaled by clip + track volume and the fades, so it shows what you'll hear.
+            let (fade_in, fade_out) = clip.audio.clamped_fades(clip.duration);
+            let level = db_to_gain(clip.audio.volume_db) * db_to_gain(tr.audio.volume_db);
+            let envelope = |x: f32| {
+                let into = ((x - cr.left()) / m.pps).max(0.0);
+                let left = ((cr.right() - x) / m.pps).max(0.0);
+                let mut g = level;
+                if fade_in > Time::ZERO {
+                    g *= fade_curve(into / fade_in.as_secs_f64() as f32);
+                }
+                if fade_out > Time::ZERO {
+                    g *= fade_curve(left / fade_out.as_secs_f64() as f32);
+                }
+                g
+            };
             if tr.kind == TrackKind::Audio {
                 if let Some(peaks) = st.waveforms.get(&clip.media) {
                     let wf = painter.with_clip_rect(vis.shrink(1.0));
@@ -157,10 +178,39 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                         let i0 = (t * crate::app::WAVEFORM_RATE as f64) as usize;
                         let i1 = ((t + 1.0 / m.pps as f64) * crate::app::WAVEFORM_RATE as f64).ceil() as usize;
                         let peak = peaks.get(i0..i1.max(i0 + 1).min(peaks.len())).map_or(0.0, |s| s.iter().cloned().fold(0.0, f32::max));
-                        let h = (peak.sqrt() * half).max(0.5); // sqrt: quiet passages stay visible
+                        let h = ((peak * envelope(x)).min(1.0).sqrt() * half).max(0.5); // sqrt: quiet passages stay visible
                         wf.line_segment([Pos2::new(x, mid - h), Pos2::new(x, mid + h)], Stroke::new(1.0, color));
                         x += 1.0;
                     }
+                }
+            }
+
+            // Fades: shade the faded-out area above the curve, plus a draggable handle.
+            if tr.kind == TrackKind::Audio {
+                let fp = painter.with_clip_rect(vis);
+                let shade = Color32::from_black_alpha(110);
+                for (len, out) in [(fade_in, false), (fade_out, true)] {
+                    let w = len.as_secs_f64() as f32 * m.pps;
+                    if w >= 1.0 {
+                        let steps = (w / 3.0).clamp(4.0, 64.0) as usize;
+                        let mut curve = Vec::with_capacity(steps + 1);
+                        for k in 0..=steps {
+                            let u = k as f32 / steps as f32;
+                            let x = if out { cr.right() - w + u * w } else { cr.left() + u * w };
+                            let g = if out { fade_curve(1.0 - u) } else { fade_curve(u) };
+                            curve.push(Pos2::new(x, cr.bottom() - g * cr.height()));
+                        }
+                        // Shaded region between the curve and the clip's top edge.
+                        for pair in curve.windows(2) {
+                            let quad = vec![pair[0], pair[1], Pos2::new(pair[1].x, cr.top()), Pos2::new(pair[0].x, cr.top())];
+                            fp.add(egui::Shape::convex_polygon(quad, shade, Stroke::NONE));
+                        }
+                        fp.add(egui::Shape::line(curve, Stroke::new(1.5, Color32::from_rgb(255, 230, 150))));
+                    }
+                    let hx = if out { cr.right() - w } else { cr.left() + w };
+                    let handle = Rect::from_center_size(Pos2::new(hx, cr.top() + FADE_HANDLE / 2.0 + 1.0), Vec2::splat(FADE_HANDLE));
+                    let hot = matches!(&st.timeline.drag, Some(Drag::Fade { id, out: o }) if *id == clip.id && *o == out);
+                    fp.rect_filled(handle, 1.5, if hot { Color32::from_rgb(255, 196, 64) } else { Color32::from_white_alpha(200) });
                 }
             }
 
@@ -201,25 +251,80 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         st.seq().tracks[ti].clip_at(t).map(|c| (ti, c.id, c.timeline_start))
     };
 
+    // Fade handles sit on the top edge of audio clips, at the end of each fade.
+    let hit_fade = |st: &EditorState, p: Pos2| -> Option<(ClipId, bool)> {
+        let ti = row_at(p.y)?;
+        let tr = &st.seq().tracks[ti];
+        if tr.kind != TrackKind::Audio || p.x < m.x0 {
+            return None;
+        }
+        let row = rows.iter().position(|&t| t == ti)?;
+        let r = row_rect(row);
+        let top = r.top() + 3.0;
+        if (p.y - top) > FADE_HANDLE + 4.0 {
+            return None;
+        }
+        tr.clips.iter().find_map(|c| {
+            let (fi, fo) = c.audio.clamped_fades(c.duration);
+            let hin = m.x(c.timeline_start + fi);
+            let hout = m.x(c.timeline_end() - fo);
+            let near = |x: f32| (p.x - x).abs() <= FADE_HANDLE;
+            if near(hin) && p.x >= m.x(c.timeline_start) - 1.0 {
+                Some((c.id, false))
+            } else if near(hout) && p.x <= m.x(c.timeline_end()) + 1.0 {
+                Some((c.id, true))
+            } else {
+                None
+            }
+        })
+    };
+    if let Some(p) = resp.hover_pos() {
+        if st.timeline.drag.is_none() && hit_fade(st, p).is_some() {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        }
+    }
+
     if resp.drag_started() {
         // Hit-test where the button went down, not where the drag threshold was crossed.
         let origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
         if let Some(p) = origin {
-            st.timeline.drag = match hit_clip(st, p) {
+            st.timeline.drag = match hit_fade(st, p) {
+                Some((id, out)) => {
+                    st.selection = Some(id);
+                    Some(Drag::Fade { id, out })
+                }
+                None => match hit_clip(st, p) {
                 Some((ti, id, start)) => {
                     st.selection = Some(id);
                     Some(Drag::Clip { id, grab: m.t(p.x) - start, from: (ti, start), to: (ti, start) })
                 }
                 None if p.x >= m.x0 => Some(Drag::Scrub),
                 None => None,
+                },
             };
         }
     }
 
     if resp.dragged() {
         if let Some(p) = pointer {
+            if let Some(Drag::Fade { id, out }) = st.timeline.drag {
+                if let Some((_, c)) = st.seq().find_clip(id) {
+                    let mut a = c.audio;
+                    let (fi, fo) = a.clamped_fades(c.duration);
+                    let t = m.t(p.x).snap(rate);
+                    if out {
+                        a.fade_out = (c.timeline_end() - t).max(Time::ZERO).min(c.duration - fi);
+                    } else {
+                        a.fade_in = (t - c.timeline_start).max(Time::ZERO).min(c.duration - fo);
+                    }
+                    let secs = if out { a.fade_out } else { a.fade_in }.as_secs_f64();
+                    st.set_clip_audio_live(id, a);
+                    st.status = format!("Fade {}: {:.2} s", if out { "out" } else { "in" }, secs);
+                }
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            }
             let target = st.timeline.drag.as_ref().map(|d| match d {
-                Drag::Scrub => None,
+                Drag::Scrub | Drag::Fade { .. } => None,
                 Drag::Clip { from, grab, .. } => {
                     let kind = st.seq().tracks[from.0].kind;
                     let ti = row_at(p.y).filter(|&t| st.seq().tracks[t].kind == kind).unwrap_or(from.0);
@@ -232,7 +337,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 (Some(Drag::Clip { to, .. }), Some(Some(t))) => *to = t,
                 _ => {}
             }
-            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+            if matches!(st.timeline.drag, Some(Drag::Clip { .. })) {
+                ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+            }
         }
     }
 

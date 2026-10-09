@@ -5,7 +5,7 @@
 //! serves realtime playback (via the engine thread) and offline export.
 
 use crate::audio::{AudioReader, CHANNELS};
-use reelforge_core::ClipId;
+use reelforge_core::{ClipAudio, ClipId};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -18,7 +18,20 @@ pub struct MixClip {
     /// Offset into the source, in samples.
     pub source_in: i64,
     pub len: i64,
+    /// Linear gain (clip volume × track volume).
     pub gain: f32,
+    /// Per-channel multipliers from clip pan × track pan (see `reelforge_core::audio::balance`).
+    pub balance: [f32; 2],
+    /// Fade lengths, in samples.
+    pub fade_in: i64,
+    pub fade_out: i64,
+}
+
+impl MixClip {
+    /// A clip at unity gain, centred, without fades.
+    pub fn plain(id: ClipId, path: PathBuf, start: i64, source_in: i64, len: i64) -> Self {
+        Self { id, path, start, source_in, len, gain: 1.0, balance: [1.0, 1.0], fade_in: 0, fade_out: 0 }
+    }
 }
 
 pub struct Mixer {
@@ -73,8 +86,16 @@ impl Mixer {
             self.scratch.resize(n, 0.0);
             reader.read(clip.source_in + (s - clip.start), &mut self.scratch);
             let dst = &mut out[(s - pos) as usize * CHANNELS..][..n];
-            for (d, v) in dst.iter_mut().zip(&self.scratch) {
-                *d += v * clip.gain;
+            let [bl, br] = clip.balance;
+            let fading = clip.fade_in > 0 || clip.fade_out > 0;
+            for (k, (d, v)) in dst.chunks_exact_mut(CHANNELS).zip(self.scratch.chunks_exact(CHANNELS)).enumerate() {
+                let mut g = clip.gain;
+                if fading {
+                    let offset = s - clip.start + k as i64;
+                    g *= ClipAudio::fade_at(offset, clip.len, clip.fade_in, clip.fade_out);
+                }
+                d[0] += v[0] * g * bl;
+                d[1] += v[1] * g * br;
             }
         }
         for v in out.iter_mut() {

@@ -195,3 +195,34 @@ fn cancelling_stops_and_removes_the_file() {
     assert!(err.is::<Cancelled>(), "{err:#}");
     assert!(!out.exists(), "partial file should be deleted");
 }
+
+#[test]
+fn exported_audio_follows_volume_pan_and_fades() {
+    use reelforge_core::{ClipAudio, TrackAudio};
+    let (Some(a), Some(b)) = (clip_a(), clip_b()) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let out = std::env::temp_dir().join("rf_export_levels.mp4");
+    let mut p = project(&a, &b);
+    {
+        let tr = &mut p.sequences[0].tracks[2];
+        tr.audio = TrackAudio { volume_db: -6.0206, pan: 1.0 }; // half level, hard right
+        // 0.5 s fade-in: the beep at 0.5 s (clip start) is almost silent, the one at 1.5 s isn't.
+        tr.clips[0].audio = ClipAudio { fade_in: Time::from_secs_f64(0.5), ..Default::default() };
+    }
+    export_sequence(&p, &settings(out.clone()), &device, &queue, |_| true).unwrap();
+    let mut r = AudioReader::open(&out, 48_000).unwrap();
+    let mut beep = |from: f64| {
+        let mut buf = vec![0.0f32; 4000 * 2];
+        r.read((from * 48_000.0) as i64, &mut buf);
+        let l: Vec<f32> = buf.chunks(2).map(|c| c[0]).collect();
+        let rr: Vec<f32> = buf.chunks(2).map(|c| c[1]).collect();
+        (rms(&l), rms(&rr))
+    };
+    let (l1, r1) = beep(0.505);
+    let (l2, r2) = beep(1.505);
+    assert!(l2 < 0.005, "hard right: left channel silent ({l2})");
+    // Unfaded beep: 0.5 amplitude sine (rms ~0.354) at -6 dB -> ~0.177.
+    assert!((r2 - 0.177).abs() < 0.03, "track volume halves the level ({r2})");
+    assert!(r1 < 0.25 * r2, "beep inside the fade-in is much quieter ({r1} vs {r2})");
+    let _ = l1;
+}

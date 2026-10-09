@@ -1,5 +1,6 @@
 //! Project data model. Serializable, renderer-agnostic.
 
+use crate::audio::{ClipAudio, TrackAudio};
 use crate::time::{FrameRate, Rational, Time};
 use crate::transform::{BlendMode, Transform};
 use serde::{Deserialize, Serialize};
@@ -69,12 +70,25 @@ pub struct Clip {
     pub transform: Transform,
     #[serde(default)]
     pub blend: BlendMode,
+    /// Volume, pan and fades (audio clips).
+    #[serde(default)]
+    pub audio: ClipAudio,
 }
 
 impl Clip {
     /// A clip with default transform and blend mode.
     pub fn new(id: ClipId, media: MediaId, timeline_start: Time, source_in: Time, duration: Time, link: Option<u64>) -> Self {
-        Self { id, media, timeline_start, source_in, duration, link, transform: Transform::default(), blend: BlendMode::Normal }
+        Self {
+            id,
+            media,
+            timeline_start,
+            source_in,
+            duration,
+            link,
+            transform: Transform::default(),
+            blend: BlendMode::Normal,
+            audio: ClipAudio::default(),
+        }
     }
 
     pub fn timeline_end(&self) -> Time {
@@ -96,11 +110,14 @@ pub struct Track {
     /// Kept sorted by `timeline_start`, non-overlapping.
     pub clips: Vec<Clip>,
     pub muted: bool,
+    /// Track volume and pan, applied on top of each clip's (audio tracks).
+    #[serde(default)]
+    pub audio: TrackAudio,
 }
 
 impl Track {
     pub fn new(name: impl Into<String>, kind: TrackKind) -> Self {
-        Self { name: name.into(), kind, clips: Vec::new(), muted: false }
+        Self { name: name.into(), kind, clips: Vec::new(), muted: false, audio: TrackAudio::default() }
     }
     pub fn clip_at(&self, t: Time) -> Option<&Clip> {
         self.clips.iter().find(|c| c.contains(t))

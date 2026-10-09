@@ -3,11 +3,13 @@
 //! Nothing in here knows about FFmpeg, wgpu or egui. Keeping the project model
 //! pure makes it easy to test, serialize, and drive from a headless renderer later.
 
+pub mod audio;
 pub mod project;
 pub mod time;
 pub mod transform;
 pub mod undo;
 
+pub use audio::{ClipAudio, TrackAudio};
 pub use project::*;
 pub use time::{FrameRate, Rational, Time};
 pub use transform::{Affine2, BlendMode, Transform};

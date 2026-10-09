@@ -74,7 +74,7 @@ fn mixer_places_clips_on_timeline() {
     let mut mixer = Mixer::new(RATE);
     let r = RATE as i64;
     // Clip plays source 0.5 s..2.5 s at timeline 1 s..3 s.
-    mixer.set_clips(vec![MixClip { id: ClipId(1), path: path.clone(), start: r, source_in: r / 2, len: 2 * r, gain: 1.0 }]);
+    mixer.set_clips(vec![MixClip::plain(ClipId(1), path.clone(), r, r / 2, 2 * r)]);
 
     let mut out = vec![0.0; 4 * RATE as usize * 2];
     // Render in blocks like the engine does.
@@ -90,13 +90,13 @@ fn mixer_places_clips_on_timeline() {
 
     // Gain 0 and a second overlapping clip sum correctly.
     mixer.set_clips(vec![
-        MixClip { id: ClipId(1), path: path.clone(), start: 0, source_in: 0, len: r, gain: 0.5 },
-        MixClip { id: ClipId(2), path, start: 0, source_in: 0, len: r, gain: 0.5 },
+        MixClip { gain: 0.5, ..MixClip::plain(ClipId(1), path.clone(), 0, 0, r) },
+        MixClip { gain: 0.5, ..MixClip::plain(ClipId(2), path, 0, 0, r) },
     ]);
     let mut a = vec![0.0; 4096 * 2];
     mixer.render(r / 2, &mut a);
     let mut solo = Mixer::new(RATE);
-    solo.set_clips(vec![MixClip { id: ClipId(9), path: make_clip().unwrap(), start: 0, source_in: 0, len: r, gain: 1.0 }]);
+    solo.set_clips(vec![MixClip::plain(ClipId(9), make_clip().unwrap(), 0, 0, r)]);
     let mut b = vec![0.0; 4096 * 2];
     solo.render(r / 2, &mut b);
     let err = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
@@ -109,4 +109,49 @@ fn waveform_has_expected_length_and_level() {
     let peaks = waveform_peaks(&path, 50).unwrap();
     assert!((peaks.len() as i32 - 200).abs() <= 3, "{} buckets for 4 s at 50/s", peaks.len());
     assert!(peaks[100] > 0.05);
+}
+
+#[test]
+fn mixer_applies_gain_balance_and_fades() {
+    let Some(path) = make_clip() else { return };
+    let r = RATE as i64;
+    let render = |clip: MixClip, from: f64, to: f64| {
+        let mut m = Mixer::new(RATE);
+        m.set_clips(vec![clip]);
+        let mut out = vec![0.0; ((to - from) * RATE as f64) as usize * 2];
+        m.render((from * RATE as f64) as i64, &mut out);
+        out
+    };
+    let base = || MixClip::plain(ClipId(1), path.clone(), 0, 0, 3 * r);
+    let left = |s: &[f32]| s.chunks(2).map(|c| c[0]).collect::<Vec<_>>();
+    let right = |s: &[f32]| s.chunks(2).map(|c| c[1]).collect::<Vec<_>>();
+
+    let unity = rms(&render(base(), 1.0, 1.5));
+    let half = rms(&render(MixClip { gain: 0.5, ..base() }, 1.0, 1.5));
+    assert!((half / unity - 0.5).abs() < 0.01, "gain 0.5 halves the level ({half} vs {unity})");
+
+    let panned = render(MixClip { balance: [1.0, 0.0], ..base() }, 1.0, 1.5);
+    assert!(rms(&right(&panned)) < 1e-6, "hard left: right channel silent");
+    assert!((rms(&left(&panned)) - unity).abs() < 0.01, "left channel untouched");
+
+    // 1 s fade-in and 1 s fade-out on a 3 s clip.
+    let faded = MixClip { fade_in: r, fade_out: r, ..base() };
+    let lvl = |a: f64, b: f64| rms(&render(faded.clone(), a, b));
+    assert!(lvl(0.0, 0.1) < 0.2 * unity, "starts near silence");
+    assert!(lvl(0.0, 0.1) < lvl(0.45, 0.55) && lvl(0.45, 0.55) < lvl(0.9, 1.0), "rises");
+    assert!((lvl(1.2, 1.8) - unity).abs() < 0.01, "full level in the middle");
+    assert!(lvl(2.9, 3.0) < 0.2 * unity, "ends near silence");
+}
+
+#[test]
+fn mono_sources_play_at_full_level_on_both_sides() {
+    let Some(path) = make_clip() else { return }; // mono 440 Hz, amplitude 1/8 (lavfi sine default)
+    let mut r = AudioReader::open(&path, RATE).unwrap();
+    let mut buf = vec![0.0f32; 48_000 * 2];
+    r.read(RATE as i64, &mut buf);
+    let l: Vec<f32> = buf.chunks(2).map(|c| c[0]).collect();
+    let rr: Vec<f32> = buf.chunks(2).map(|c| c[1]).collect();
+    assert_eq!(l, rr, "both channels identical");
+    let want = 0.125 / 2f32.sqrt();
+    assert!((rms(&l) - want).abs() < 0.01, "rms {} want {want}", rms(&l));
 }

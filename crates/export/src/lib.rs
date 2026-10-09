@@ -86,25 +86,36 @@ pub fn frame_range(rate: FrameRate, start: Time, end: Time) -> (i64, i64) {
     (first, last.max(first))
 }
 
-/// The audio clips of sequence 0 as the mixer wants them, at `rate`.
+/// The audio clips of sequence 0 as the mixer wants them, at `rate`, with clip
+/// and track volume/pan folded together and fades converted to samples.
+/// Used for both playback and export, so they always sound the same.
 pub fn mix_clips(project: &Project, rate: u32) -> Vec<MixClip> {
+    use reelforge_core::audio::{balance, db_to_gain};
     let sr = FrameRate::new(rate as i64, 1);
     project.sequences[0]
         .tracks
         .iter()
         .filter(|t| t.kind == TrackKind::Audio && !t.muted)
-        .flat_map(|t| &t.clips)
-        .filter_map(|c| {
+        .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
+        .filter_map(|(t, c)| {
             let m = project.media(c.media)?;
+            let gain = db_to_gain(c.audio.volume_db) * db_to_gain(t.audio.volume_db);
+            let [cl, cr] = balance(c.audio.pan);
+            let [tl, tr] = balance(t.audio.pan);
+            let (fin, fout) = c.audio.clamped_fades(c.duration);
             Some(MixClip {
                 id: c.id,
                 path: m.path.clone(),
                 start: c.timeline_start.to_frame(sr),
                 source_in: c.source_in.to_frame(sr),
                 len: c.duration.to_frame(sr),
-                gain: 1.0,
+                gain,
+                balance: [cl * tl, cr * tr],
+                fade_in: fin.to_frame(sr),
+                fade_out: fout.to_frame(sr),
             })
         })
+        .filter(|c| c.gain > 0.0)
         .collect()
 }
 

@@ -23,7 +23,11 @@ pub struct AudioReader {
     time_base: Rational,
     start_pts: i64,
     out_rate: u32,
+    /// Resampler and the input it was made for; output channels are 1 for mono sources.
     resampler: Option<(Resampler, (ff::format::Sample, u32, u16))>,
+    /// Channels the resampler outputs: mono is kept mono and duplicated in `push`,
+    /// so it plays at full level on both sides (FFmpeg's upmix would drop it 3 dB).
+    resampled_channels: usize,
     /// Decoded, resampled interleaved stereo samples.
     buf: VecDeque<f32>,
     /// Output-rate sample index of `buf[0]`; `None` right after a seek until a frame lands.
@@ -48,6 +52,7 @@ impl AudioReader {
             start_pts,
             out_rate,
             resampler: None,
+            resampled_channels: CHANNELS,
             buf: VecDeque::new(),
             buf_start: Some(0),
             eof: false,
@@ -175,21 +180,23 @@ impl AudioReader {
             if layout.channels() != frame.channels() as i32 {
                 layout = ChannelLayout::default(frame.channels() as i32);
             }
+            let out_channels = if frame.channels() == 1 { 1 } else { CHANNELS };
             let r = Resampler::get(
                 frame.format(),
                 layout,
                 frame.rate(),
                 ff::format::Sample::F32(ff::format::sample::Type::Packed),
-                ChannelLayout::default(CHANNELS as i32),
+                ChannelLayout::default(out_channels as i32),
                 self.out_rate,
             )?;
             self.resampler = Some((r, key));
+            self.resampled_channels = out_channels;
         }
         let capacity = frame.samples() * self.out_rate as usize / frame.rate().max(1) as usize + 256;
         let mut out = ff::frame::Audio::new(
             ff::format::Sample::F32(ff::format::sample::Type::Packed),
             capacity,
-            ChannelLayout::default(CHANNELS as i32),
+            ChannelLayout::default(self.resampled_channels as i32),
         );
         self.resampler.as_mut().unwrap().0.run(frame, &mut out)?;
         self.push(&out);
@@ -201,7 +208,7 @@ impl AudioReader {
         let mut out = ff::frame::Audio::new(
             ff::format::Sample::F32(ff::format::sample::Type::Packed),
             4096,
-            ChannelLayout::default(CHANNELS as i32),
+            ChannelLayout::default(self.resampled_channels as i32),
         );
         if r.flush(&mut out).is_ok() {
             self.push(&out);
@@ -209,9 +216,14 @@ impl AudioReader {
     }
 
     fn push(&mut self, out: &ff::frame::Audio) {
-        let n = out.samples() * CHANNELS;
-        let bytes = &out.data(0)[..n * 4];
-        self.buf.extend(bytes.chunks_exact(4).map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]])));
+        let ch = self.resampled_channels;
+        let bytes = &out.data(0)[..out.samples() * ch * 4];
+        let samples = bytes.chunks_exact(4).map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]));
+        if ch == 1 {
+            self.buf.extend(samples.flat_map(|v| [v, v]));
+        } else {
+            self.buf.extend(samples);
+        }
     }
 }
 

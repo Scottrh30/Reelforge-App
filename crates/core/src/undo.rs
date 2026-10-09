@@ -1,6 +1,7 @@
 //! Command pattern undo/redo. Every edit to the project goes through here.
 
 use crate::project::*;
+use crate::audio::{ClipAudio, TrackAudio};
 use crate::time::Time;
 use crate::transform::{BlendMode, Transform};
 
@@ -196,7 +197,7 @@ impl Command for SplitClip {
         }
         self.original = Some(clip.clone());
         let left = self.at - clip.timeline_start;
-        let right = Clip {
+        let mut right = Clip {
             id: self.new_id,
             media: clip.media,
             timeline_start: self.at,
@@ -205,8 +206,13 @@ impl Command for SplitClip {
             link: clip.link.and(self.new_link),
             transform: clip.transform,
             blend: clip.blend,
+            // The fade-in stays on the left half, the fade-out on the right.
+            audio: ClipAudio { fade_in: Time::ZERO, ..clip.audio },
         };
         clip.duration = left;
+        clip.audio.fade_out = Time::ZERO;
+        clip.audio.fade_in = clip.audio.fade_in.min(left);
+        right.audio.fade_out = right.audio.fade_out.min(right.duration);
         s.tracks[ti].clips.push(right);
         s.tracks[ti].sort();
     }
@@ -251,6 +257,50 @@ impl Command for SetClipVisual {
     }
     fn undo(&mut self, p: &mut Project) {
         self.set(p, self.old);
+    }
+}
+
+/// Change a clip's volume, pan or fades (live-edited like [`SetClipVisual`]).
+pub struct SetClipAudio {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: ClipAudio,
+    pub new: ClipAudio,
+}
+
+impl Command for SetClipAudio {
+    fn name(&self) -> &str {
+        if (self.old.fade_in, self.old.fade_out) != (self.new.fade_in, self.new.fade_out) { "Change fade" } else { "Change clip audio" }
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.audio = self.new;
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.audio = self.old;
+        }
+    }
+}
+
+/// Change a track's volume or pan.
+pub struct SetTrackAudio {
+    pub seq: usize,
+    pub track: usize,
+    pub old: TrackAudio,
+    pub new: TrackAudio,
+}
+
+impl Command for SetTrackAudio {
+    fn name(&self) -> &str {
+        "Change track audio"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        p.sequences[self.seq].tracks[self.track].audio = self.new;
+    }
+    fn undo(&mut self, p: &mut Project) {
+        p.sequences[self.seq].tracks[self.track].audio = self.old;
     }
 }
 
@@ -350,6 +400,7 @@ pub fn move_group(p: &Project, seq: usize, id: ClipId, to: (usize, Time)) -> Res
 mod tests {
     use super::*;
     use crate::time::Time;
+    use crate::audio::{ClipAudio, TrackAudio};
     use crate::transform::{BlendMode, Transform};
 
     fn clip(id: u64, start: f64, dur: f64) -> Clip {
@@ -465,11 +516,48 @@ mod tests {
     }
 
     #[test]
+    fn split_keeps_fade_in_left_and_fade_out_right() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        let mut c = clip(1001, 0.0, 10.0);
+        c.audio = ClipAudio { volume_db: -6.0, pan: 0.3, fade_in: Time::from_secs_f64(1.0), fade_out: Time::from_secs_f64(2.0) };
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 2, clip: c }));
+        let cmd = split_group(&mut p, 0, ClipId(1001), Time::from_secs_f64(5.0)).unwrap();
+        u.execute(&mut p, cmd);
+        let clips = &p.sequences[0].tracks[2].clips;
+        assert_eq!((clips[0].audio.fade_in, clips[0].audio.fade_out), (Time::from_secs_f64(1.0), Time::ZERO));
+        assert_eq!((clips[1].audio.fade_in, clips[1].audio.fade_out), (Time::ZERO, Time::from_secs_f64(2.0)));
+        assert!(clips.iter().all(|c| c.audio.volume_db == -6.0 && c.audio.pan == 0.3), "levels carry over");
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks[2].clips[0].audio.fade_out, Time::from_secs_f64(2.0));
+    }
+
+    #[test]
+    fn clip_and_track_audio_commands_undo() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 2, clip: clip(1001, 0.0, 4.0) }));
+        let new = ClipAudio { volume_db: -12.0, ..Default::default() };
+        u.execute(&mut p, Box::new(SetClipAudio { seq: 0, id: ClipId(1001), old: ClipAudio::default(), new }));
+        let t = TrackAudio { volume_db: 3.0, pan: -1.0 };
+        u.execute(&mut p, Box::new(SetTrackAudio { seq: 0, track: 2, old: TrackAudio::default(), new: t }));
+        assert_eq!(p.sequences[0].tracks[2].audio, t);
+        assert_eq!(p.sequences[0].tracks[2].clips[0].audio.volume_db, -12.0);
+        u.undo(&mut p);
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks[2].audio, TrackAudio::default());
+        assert_eq!(p.sequences[0].tracks[2].clips[0].audio, ClipAudio::default());
+    }
+
+    #[test]
     fn old_projects_load_with_default_transform() {
         let json = r#"{"id":5,"media":1,"timeline_start":0,"source_in":0,"duration":100}"#;
         let c: Clip = serde_json::from_str(json).unwrap();
         assert_eq!(c.transform, Transform::default());
         assert_eq!(c.blend, BlendMode::Normal);
+        assert_eq!(c.audio, ClipAudio::default());
+        let t: Track = serde_json::from_str(r#"{"name":"A1","kind":"Audio","clips":[],"muted":false}"#).unwrap();
+        assert_eq!(t.audio, TrackAudio::default());
     }
 
     #[test]

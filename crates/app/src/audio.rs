@@ -10,6 +10,12 @@
 //!
 //! Video follows that published position, which is what keeps picture and
 //! sound in sync even if the UI hitches.
+//!
+//! While paused, moving the playhead *scrubs*: the mixer renders a short
+//! snippet (~60 ms, faded at both ends so there are no clicks) at the new
+//! position. Snippets queue back to back but the mixer only renders the next
+//! one when the device has nearly run out, always for the latest position, so
+//! fast drags stay responsive instead of building up a backlog.
 
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -24,17 +30,24 @@ use std::time::Instant;
 const BLOCK_FRAMES: usize = 1024;
 /// Blocks queued between mixer and device (~128 ms at 48 kHz).
 const QUEUE_BLOCKS: usize = 6;
+/// Length of one scrub snippet.
+const SCRUB_SECS: f64 = 0.06;
+/// De-click ramps at each end of a scrub snippet.
+const SCRUB_RAMP_SECS: f64 = 0.004;
 
 struct Block {
     generation: u64,
     start: i64,
-    data: Vec<f32>, // interleaved stereo
+    data: Vec<f32>, // interleaved stereo; usually BLOCK_FRAMES long, scrub snippets vary
+    /// Scrub audio doesn't drive the playback clock.
+    scrub: bool,
 }
 
 enum Cmd {
     Play { from: i64, generation: u64 },
     Stop,
     Clips(Vec<MixClip>),
+    Scrub { at: i64, generation: u64 },
 }
 
 /// State the callback publishes for the UI.
@@ -119,6 +132,12 @@ impl AudioEngine {
         let _ = self.cmd.send(Cmd::Stop);
     }
 
+    /// Play a short snippet at `at` (call while paused, whenever the playhead moves).
+    pub fn scrub(&self, at: Time) {
+        let at = at.to_frame(self.sample_rate());
+        let _ = self.cmd.try_send(Cmd::Scrub { at, generation: self.generation });
+    }
+
     pub fn set_clips(&self, clips: Vec<MixClip>) {
         let _ = self.cmd.send(Cmd::Clips(clips));
     }
@@ -141,22 +160,38 @@ impl AudioEngine {
 }
 
 fn mixer_thread(mut mixer: Mixer, cmds: Receiver<Cmd>, out: Sender<Block>) {
+    let rate = mixer.rate() as f64;
     // (generation, next sample) while playing.
     let mut playing: Option<(u64, i64)> = None;
+    // Latest scrub request not yet rendered.
+    let mut scrub: Option<(u64, i64)> = None;
     loop {
         let Some((generation, pos)) = playing else {
+            if let Some((generation, at)) = scrub {
+                // Render only when the device is about to run dry, for the newest position.
+                if out.len() <= 1 {
+                    let _ = out.send(scrub_snippet(&mut mixer, at, generation, rate));
+                    scrub = None;
+                    continue;
+                }
+                match cmds.recv_timeout(std::time::Duration::from_millis(4)) {
+                    Ok(cmd) => handle_idle(cmd, &mut mixer, &mut playing, &mut scrub),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    Err(_) => return,
+                }
+                continue;
+            }
             match cmds.recv() {
-                Ok(Cmd::Play { from, generation }) => playing = Some((generation, from)),
-                Ok(Cmd::Stop) => {}
-                Ok(Cmd::Clips(c)) => mixer.set_clips(c),
+                Ok(cmd) => handle_idle(cmd, &mut mixer, &mut playing, &mut scrub),
                 Err(_) => return,
             }
             continue;
         };
+        scrub = None;
 
         let mut data = vec![0.0; BLOCK_FRAMES * 2];
         mixer.render(pos, &mut data);
-        let mut block = Some(Block { generation, start: pos, data });
+        let mut block = Some(Block { generation, start: pos, data, scrub: false });
         // Wait for room in the queue, staying responsive to commands.
         while let Some(b) = block.take() {
             select! {
@@ -167,18 +202,44 @@ fn mixer_thread(mut mixer: Mixer, cmds: Receiver<Cmd>, out: Sender<Block>) {
                 recv(cmds) -> cmd => match cmd {
                     Ok(Cmd::Play { from, generation }) => playing = Some((generation, from)),
                     Ok(Cmd::Stop) => playing = None,
+                    Ok(Cmd::Scrub { .. }) => {} // ignored while playing
                     Ok(Cmd::Clips(c)) => {
                         mixer.set_clips(c);
                         // Re-render this block with the new edit and keep going.
                         let mut data = vec![0.0; BLOCK_FRAMES * 2];
                         mixer.render(pos, &mut data);
-                        block = Some(Block { generation, start: pos, data });
+                        block = Some(Block { generation, start: pos, data, scrub: false });
                     }
                     Err(_) => return,
                 },
             }
         }
     }
+}
+
+fn handle_idle(cmd: Cmd, mixer: &mut Mixer, playing: &mut Option<(u64, i64)>, scrub: &mut Option<(u64, i64)>) {
+    match cmd {
+        Cmd::Play { from, generation } => *playing = Some((generation, from)),
+        Cmd::Stop => *scrub = None,
+        Cmd::Clips(c) => mixer.set_clips(c),
+        Cmd::Scrub { at, generation } => *scrub = Some((generation, at)), // newest wins
+    }
+}
+
+/// A short slice of the mix at `at`, ramped in and out so back-to-back snippets don't click.
+fn scrub_snippet(mixer: &mut Mixer, at: i64, generation: u64, rate: f64) -> Block {
+    let n = (SCRUB_SECS * rate) as usize;
+    let ramp = ((SCRUB_RAMP_SECS * rate) as usize).max(1);
+    let mut data = vec![0.0; n * 2];
+    mixer.render(at, &mut data);
+    for i in 0..ramp.min(n / 2) {
+        let g = 0.5 - 0.5 * (std::f32::consts::PI * i as f32 / ramp as f32).cos();
+        for k in [i, n - 1 - i] {
+            data[k * 2] *= g;
+            data[k * 2 + 1] *= g;
+        }
+    }
+    Block { generation, start: at, data, scrub: true }
 }
 
 fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, blocks: Receiver<Block>, shared: Arc<Shared>) -> Result<cpal::Stream>
@@ -199,7 +260,7 @@ where
             // Make sure we have a current, non-stale, non-exhausted block.
             loop {
                 match &current {
-                    Some(b) if b.generation == generation && offset < BLOCK_FRAMES => break,
+                    Some(b) if b.generation == generation && offset * 2 < b.data.len() => break,
                     _ => {}
                 }
                 current = None;
@@ -213,9 +274,11 @@ where
 
             let (l, r) = match &current {
                 Some(b) => {
-                    let pos = b.start + offset as i64;
-                    first.get_or_insert(pos);
-                    last = Some(pos);
+                    if !b.scrub {
+                        let pos = b.start + offset as i64;
+                        first.get_or_insert(pos);
+                        last = Some(pos);
+                    }
                     let lr = (b.data[offset * 2], b.data[offset * 2 + 1]);
                     offset += 1;
                     lr

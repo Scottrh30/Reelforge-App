@@ -191,6 +191,19 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.add_space(10.0);
                 transform_controls(ui, st, &clip);
             }
+            // Audio controls for this clip, or for the audio linked to a selected video clip.
+            let audio_clip = st
+                .seq()
+                .link_group(clip.id)
+                .into_iter()
+                .find(|(t, _)| st.seq().tracks[*t].kind == reelforge_core::TrackKind::Audio)
+                .map(|(t, c)| (t, c.clone()));
+            if let Some((ati, aclip)) = audio_clip {
+                ui.add_space(10.0);
+                clip_audio_controls(ui, st, &aclip);
+                ui.add_space(10.0);
+                track_audio_controls(ui, st, ati);
+            }
         }
         None => {
             ui.weak("Select a clip on the timeline.");
@@ -263,14 +276,19 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
             let mut sy = t.scale[1] * 100.0;
             let rx = ui.add(egui::DragValue::new(&mut sx).speed(0.5).suffix(" %").range(-10000.0..=10000.0).fixed_decimals(1));
             let ry = ui.add(egui::DragValue::new(&mut sy).speed(0.5).suffix(" %").range(-10000.0..=10000.0).fixed_decimals(1));
-            if lock {
-                if rx.changed() {
-                    sy = sx;
-                } else if ry.changed() {
-                    sx = sy;
+            // Write back only on a real change: x*100/100 isn't always exact in f32,
+            // and a phantom change would create an undo step every frame.
+            if rx.changed() {
+                t.scale[0] = sx / 100.0;
+                if lock {
+                    t.scale[1] = t.scale[0];
+                }
+            } else if ry.changed() {
+                t.scale[1] = sy / 100.0;
+                if lock {
+                    t.scale[0] = t.scale[1];
                 }
             }
-            t.scale = [sx / 100.0, sy / 100.0];
             ui.toggle_value(&mut lock, "🔒").on_hover_text("Keep X and Y scale equal");
         });
         ui.end_row();
@@ -281,8 +299,9 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
 
         ui.weak("Opacity");
         let mut o = t.opacity * 100.0;
-        ui.add(egui::Slider::new(&mut o, 0.0..=100.0).suffix(" %").fixed_decimals(0));
-        t.opacity = o / 100.0;
+        if ui.add(egui::Slider::new(&mut o, 0.0..=100.0).suffix(" %").fixed_decimals(0)).changed() {
+            t.opacity = o / 100.0;
+        }
         ui.end_row();
 
         ui.weak("Blend");
@@ -312,6 +331,87 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
 
     if (t, blend) != before {
         st.set_visual_live(clip.id, (t, blend));
+    }
+}
+
+/// Volume slider in dB where the bottom of the range means silent.
+fn volume_slider(ui: &mut egui::Ui, db: &mut f32) -> egui::Response {
+    use reelforge_core::audio::{MAX_DB, MIN_DB};
+    ui.add(
+        egui::Slider::new(db, MIN_DB..=MAX_DB)
+            .fixed_decimals(1)
+            .custom_formatter(|v, _| if v <= MIN_DB as f64 { "-∞ dB".into() } else { format!("{v:+.1} dB") })
+            .custom_parser(|s| {
+                let t = s.trim().trim_end_matches("dB").trim();
+                if t.starts_with("-∞") || t.eq_ignore_ascii_case("-inf") { Some(MIN_DB as f64) } else { t.parse().ok() }
+            }),
+    )
+    .on_hover_text("Double-click the number to type a value")
+}
+
+/// Pan slider, -100 (left) .. +100 (right).
+fn pan_slider(ui: &mut egui::Ui, pan: &mut f32) {
+    let mut p = *pan * 100.0;
+    let r = ui.add(egui::Slider::new(&mut p, -100.0..=100.0).fixed_decimals(0).custom_formatter(|v, _| match v.round() as i32 {
+        0 => "C".into(),
+        n if n < 0 => format!("L{}", -n),
+        n => format!("R{n}"),
+    }));
+    if r.double_clicked() {
+        *pan = 0.0;
+    } else if r.changed() {
+        *pan = p / 100.0;
+    }
+    r.on_hover_text("Double-click to centre");
+}
+
+fn clip_audio_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
+    let Some(mut a) = st.clip_audio(clip.id) else { return };
+    let before = a;
+    let rate = st.seq().frame_rate;
+    ui.heading("Audio");
+    egui::Grid::new("clip_audio").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.weak("Volume");
+        volume_slider(ui, &mut a.volume_db);
+        ui.end_row();
+        ui.weak("Pan");
+        pan_slider(ui, &mut a.pan);
+        ui.end_row();
+        let max = clip.duration.as_secs_f64();
+        for (label, value, other) in [("Fade in", &mut a.fade_in, before.fade_out), ("Fade out", &mut a.fade_out, before.fade_in)] {
+            ui.weak(label);
+            let mut secs = value.as_secs_f64();
+            let limit = (max - other.as_secs_f64()).max(0.0);
+            // Only write back on a real change: a float round trip mustn't create phantom edits.
+            if ui.add(egui::DragValue::new(&mut secs).speed(0.01).range(0.0..=limit).suffix(" s").fixed_decimals(2)).changed() {
+                *value = Time::from_secs_f64(secs).snap(rate);
+            }
+            ui.end_row();
+        }
+    });
+    if ui.button("Reset audio").clicked() {
+        a = reelforge_core::ClipAudio::default();
+    }
+    if a != before {
+        st.set_clip_audio_live(clip.id, a);
+    }
+}
+
+fn track_audio_controls(ui: &mut egui::Ui, st: &mut EditorState, track: usize) {
+    let tr = &st.seq().tracks[track];
+    let mut a = tr.audio;
+    let before = a;
+    ui.heading(format!("Track: {}", tr.name));
+    egui::Grid::new("track_audio").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.weak("Volume");
+        volume_slider(ui, &mut a.volume_db);
+        ui.end_row();
+        ui.weak("Pan");
+        pan_slider(ui, &mut a.pan);
+        ui.end_row();
+    });
+    if a != before {
+        st.set_track_audio_live(track, a);
     }
 }
 
