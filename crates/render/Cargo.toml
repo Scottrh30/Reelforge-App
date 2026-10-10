@@ -10,3 +10,6 @@ reelforge-core.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 log.workspace = true
+ab_glyph.workspace = true
+ttf-parser.workspace = true
+epaint_default_fonts.workspace = true

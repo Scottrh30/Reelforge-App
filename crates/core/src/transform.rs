@@ -102,16 +102,31 @@ impl Transform {
 
     /// Frame-pixel corners of a `layer`-sized layer: top-left, top-right, bottom-right, bottom-left.
     pub fn corners(&self, layer: [f32; 2], frame: [f32; 2]) -> [[f32; 2]; 4] {
-        let m = self.matrix(frame);
-        let (hw, hh) = (layer[0] / 2.0, layer[1] / 2.0);
-        [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(|p| m.apply(p))
+        self.rect_corners(Self::full_rect(layer), frame)
     }
 
     /// Is frame point `p` inside the layer?
     pub fn hit(&self, layer: [f32; 2], frame: [f32; 2], p: [f32; 2]) -> bool {
+        self.hit_rect(Self::full_rect(layer), frame, p)
+    }
+
+    /// A whole `layer`-sized layer as a layer-local rectangle `[x0, y0, x1, y1]`.
+    pub fn full_rect(layer: [f32; 2]) -> [f32; 4] {
+        [-layer[0] / 2.0, -layer[1] / 2.0, layer[0] / 2.0, layer[1] / 2.0]
+    }
+
+    /// Frame-pixel corners of part of a layer, given in layer-local pixels
+    /// (origin at the layer centre), e.g. just the text of a title.
+    pub fn rect_corners(&self, r: [f32; 4], frame: [f32; 2]) -> [[f32; 2]; 4] {
+        let m = self.matrix(frame);
+        [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]].map(|p| m.apply(p))
+    }
+
+    /// Is frame point `p` inside that part of the layer?
+    pub fn hit_rect(&self, r: [f32; 4], frame: [f32; 2], p: [f32; 2]) -> bool {
         let Some(inv) = self.matrix(frame).inverse() else { return false };
         let [x, y] = inv.apply(p);
-        x.abs() <= layer[0] / 2.0 && y.abs() <= layer[1] / 2.0
+        x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]
     }
 
     /// Uniform scale that fits (`fill = false`) or covers (`fill = true`) the frame.

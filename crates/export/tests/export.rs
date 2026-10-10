@@ -432,3 +432,42 @@ fn exports_the_marked_range_with_keyframed_effects() {
     // Its last frame (1.96 s) is almost grey.
     assert!(close(pixel(24), [131, 126, 126]), "nearly grey at the end: {:?}", pixel(24));
 }
+
+#[test]
+fn exports_titles_with_their_transform_and_effects() {
+    use reelforge_core::{Effect, EffectKind, TitleSpec};
+    let Some(red) = solid_clip("rf_red.mp4", "red", "640x360") else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &red));
+    let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+    seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(2.0), None)];
+    // A white box title (no text) moved 100 px right and fading out over its second second.
+    let spec = TitleSpec { text: "".into(), background: true, background_color: [255, 255, 255, 255], background_padding: 30.0, shadow: false, ..TitleSpec::default() };
+    let mut t = Clip::new_title(ClipId(2), s(0.0), s(2.0), TitleSpec { text: "I".into(), color: [255, 255, 255, 255], size: 40.0, ..spec });
+    t.transform.position = [100.0, 0.0];
+    t.anim.opacity.set(s(1.0), 1.0);
+    t.anim.opacity.set(s(2.0), 0.0);
+    t.effects.push(Effect::new(EffectKind::Vignette)); // effects apply to titles too (centre unaffected)
+    seq.tracks[1].clips = vec![t];
+    p.sequences = vec![seq];
+
+    let out = std::env::temp_dir().join("rf_export_title.mp4");
+    let mut st = settings(out.clone());
+    st.include_audio = false;
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    let rate = FrameRate::new(25, 1);
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let mut pixel = |frame: i64, x: u32, y: u32| {
+        let f = dec.frame_at_blocking(Time::from_frame(frame, rate), Duration::from_secs(5)).unwrap();
+        let i = ((y * 640 + x) * 4) as usize;
+        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+    };
+    let close = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 10);
+    // The white box is centred 100 px right of the frame centre, and only there.
+    assert!(close(pixel(10, 420, 180), [255, 255, 255]), "{:?}", pixel(10, 420, 180));
+    assert!(close(pixel(10, 200, 180), [254, 0, 0]), "{:?}", pixel(10, 200, 180));
+    // Half-way through the fade (t = 1.5 s) it's 50% over red, in linear light.
+    assert!(close(pixel(37, 420, 180), [255, 188, 188]), "{:?}", pixel(37, 420, 180));
+}

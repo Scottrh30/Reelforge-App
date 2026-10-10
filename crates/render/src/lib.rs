@@ -28,6 +28,8 @@ use std::collections::HashMap;
 
 pub use wgpu;
 
+pub mod text;
+
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// Gamma-encoded 8-bit, which is what egui expects for user textures.

@@ -7,8 +7,9 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::preview::Preview;
 use reelforge_core::undo::{
     delete_group, split_group, AddClip, Batch, Edge, ImportMedia, SetClipAudio, SetClipTiming, SetClipVisual, SetDissolve,
-    SetLink, SetTrackAudio, Timing,
+    SetLink, SetTrackAudio, Timing, AddTrack, RemoveTrack, RenameTrack, SetTitle,
 };
+use reelforge_render::text::FontEntry;
 use reelforge_core::edit::{plan_trim, ripple_delete};
 use reelforge_core::*;
 use std::collections::HashMap;
@@ -56,6 +57,8 @@ pub struct EditorState {
     mixed_rev: u64,
     /// Audio peak envelopes for drawing, computed in the background (100 per second).
     pub waveforms: HashMap<MediaId, Arc<Vec<f32>>>,
+    /// Installed fonts for titles, found in the background at startup (`None` until then).
+    fonts: Arc<std::sync::Mutex<Option<Arc<Vec<FontEntry>>>>>,
     waveform_tx: Sender<(MediaId, Vec<f32>)>,
     waveform_rx: Receiver<(MediaId, Vec<f32>)>,
 }
@@ -228,6 +231,16 @@ impl EditorState {
             rev: 1,
             mixed_rev: 0,
             waveforms: HashMap::new(),
+            fonts: {
+                let slot = Arc::new(std::sync::Mutex::new(None));
+                let fill = slot.clone();
+                std::thread::spawn(move || {
+                    let found = Arc::new(reelforge_render::text::system_fonts());
+                    log::info!("found {} font faces", found.len());
+                    *fill.lock().unwrap() = Some(found);
+                });
+                slot
+            },
             waveform_tx,
             waveform_rx,
         }
@@ -240,6 +253,7 @@ impl EditorState {
         preview.reset();
         let mut st = EditorState::new(Playback::with_audio(self.playback.audio.take()), preview);
         st.playback.scrub_audio = self.playback.scrub_audio;
+        st.fonts = self.fonts.clone(); // no need to scan again
         st.status = "New project".into();
         st
     }
@@ -412,6 +426,89 @@ impl EditorState {
         self.selection = None;
         let cmd = delete_group(&self.project, 0, id);
         self.execute(cmd);
+    }
+
+    /// Installed fonts, once the background scan has finished.
+    pub fn fonts(&self) -> Option<Arc<Vec<FontEntry>>> {
+        self.fonts.lock().unwrap().clone()
+    }
+
+    // ---- Tracks ---------------------------------------------------------------
+
+    pub fn add_track(&mut self, kind: TrackKind) {
+        self.commit_live_edit();
+        let cmd = AddTrack::new(&self.project, 0, kind);
+        self.execute(Box::new(cmd));
+    }
+
+    pub fn delete_track(&mut self, index: usize) {
+        self.commit_live_edit();
+        match RemoveTrack::new(&self.project, 0, index) {
+            Ok(cmd) => {
+                let name = self.seq().tracks[index].name.clone();
+                let clips = self.seq().tracks[index].clips.len();
+                self.execute(Box::new(cmd));
+                self.validate_selection();
+                self.status = match clips {
+                    0 => format!("Deleted {name}"),
+                    n => format!("Deleted {name} and its {n} clip{} (Ctrl+Z to undo)", if n == 1 { "" } else { "s" }),
+                };
+            }
+            Err(why) => self.status = format!("Can't delete that track: {why}"),
+        }
+    }
+
+    pub fn rename_track(&mut self, index: usize, name: String) {
+        let Some(old) = self.seq().tracks.get(index).map(|t| t.name.clone()) else { return };
+        if name.is_empty() || name == old {
+            return;
+        }
+        self.execute(Box::new(RenameTrack { seq: 0, index, old, new: name }));
+    }
+
+    // ---- Titles ---------------------------------------------------------------
+
+    /// Add a 5 s title at the playhead on the top video track that has room
+    /// (a new video track if none does), and select it.
+    pub fn add_title(&mut self) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let rate = s.frame_rate;
+        let start = self.playback.playhead.snap(rate);
+        let dur = Time::from_secs_f64(5.0).snap(rate);
+        let mut spec = TitleSpec::for_frame(s.height);
+        if let Some(fonts) = self.fonts() {
+            spec.font = reelforge_render::text::default_title_font(&fonts);
+        }
+        let free = (0..s.tracks.len())
+            .rev()
+            .find(|&t| s.tracks[t].kind == TrackKind::Video && !s.tracks[t].locked && !s.overlaps(t, start, dur, &[]));
+        let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+        let track = match free {
+            Some(t) => t,
+            None => {
+                let add = AddTrack::new(&self.project, 0, TrackKind::Video);
+                let t = add.index;
+                cmds.push(Box::new(add));
+                t
+            }
+        };
+        let id = ClipId(self.project.alloc_id());
+        cmds.push(Box::new(AddClip { seq: 0, track, clip: Clip::new_title(id, start, dur, spec) }));
+        self.execute(Box::new(Batch { name: "Add title".into(), cmds }));
+        self.selection = Some(id);
+        self.status = "Added a title: type its text in the Controls panel".into();
+    }
+
+    pub fn set_title_live(&mut self, id: ClipId, spec: TitleSpec) {
+        let Some(before) = self.seq().find_clip(id).and_then(|(_, c)| c.title.clone()) else { return };
+        if before == spec {
+            return;
+        }
+        self.begin_live(LiveEdit::Title(id, before));
+        if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
+            c.title = Some(spec);
+        }
     }
 
     pub fn toggle_lock(&mut self, track: usize) {
@@ -640,6 +737,18 @@ impl EditorState {
                 if ui.add_enabled(self.selection_is_linked(), egui::Button::new("Unlink audio/video")).clicked() {
                     self.unlink_selection();
                 }
+                if ui.button("Add title at playhead        Ctrl+T").clicked() {
+                    self.add_title();
+                }
+                ui.menu_button("Tracks", |ui| {
+                    if ui.button("Add video track").clicked() {
+                        self.add_track(TrackKind::Video);
+                    }
+                    if ui.button("Add audio track").clicked() {
+                        self.add_track(TrackKind::Audio);
+                    }
+                    ui.weak("Right-click a track header to rename or delete it");
+                });
                 if ui.button("Cross-dissolve at playhead     Ctrl+D").clicked() {
                     self.toggle_transition_at_playhead(TrackKind::Video);
                 }
@@ -678,6 +787,9 @@ impl EditorState {
         let dissolve = ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::D)));
         if dissolve {
             self.toggle_transition_at_playhead(TrackKind::Video);
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::T))) {
+            self.add_title();
         }
         let (redo, undo, save, import, export) = ctx.input_mut(|i| {
             let redo = i.consume_shortcut(&cmd_shift(Key::Z)) || i.consume_shortcut(&cmd(Key::Y));
@@ -910,6 +1022,10 @@ impl EditorState {
                     Some(Box::new(Batch { name: mode.undo_name().into(), cmds }) as _)
                 }
             }
+            LiveEdit::Title(id, old) => {
+                let new = self.seq().find_clip(id).and_then(|(_, c)| c.title.clone()).filter(|n| *n != old);
+                new.map(|new| Box::new(SetTitle { seq: 0, id, old, new }) as _)
+            }
             LiveEdit::ClipAudio(id, old) => self.clip_audio(id).filter(|n| *n != old).map(|new| Box::new(SetClipAudio { seq: 0, id, old, new }) as _),
             LiveEdit::TrackAudio(track, old) => {
                 let new = self.seq().tracks.get(track).map(|t| t.audio).filter(|n| *n != old);
@@ -928,6 +1044,7 @@ enum LiveEdit {
     /// Trimming a clip (keyed by the clip grabbed): timings of every clip before, and the trim mode.
     Timing(ClipId, Vec<(ClipId, Timing)>, TrimMode),
     Dissolve(ClipId, Time),
+    Title(ClipId, TitleSpec),
     ClipAudio(ClipId, ClipAudio),
     TrackAudio(usize, TrackAudio),
 }
@@ -938,6 +1055,7 @@ impl LiveEdit {
             (LiveEdit::Visual(a, _), LiveEdit::Visual(b, _)) => a == b,
             (LiveEdit::Timing(a, ..), LiveEdit::Timing(b, ..)) => a == b,
             (LiveEdit::Dissolve(a, _), LiveEdit::Dissolve(b, _)) => a == b,
+            (LiveEdit::Title(a, _), LiveEdit::Title(b, _)) => a == b,
             (LiveEdit::ClipAudio(a, _), LiveEdit::ClipAudio(b, _)) => a == b,
             (LiveEdit::TrackAudio(a, _), LiveEdit::TrackAudio(b, _)) => a == b,
             _ => false,

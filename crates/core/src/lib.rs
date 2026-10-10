@@ -10,6 +10,7 @@ pub mod edit;
 pub mod effects;
 pub mod project;
 pub mod time;
+pub mod title;
 pub mod transform;
 pub mod undo;
 
@@ -20,5 +21,6 @@ pub use edit::{TrimMode, TrimPlan};
 pub use effects::{Effect, EffectKind, EffectValues, Param, ParamSpec};
 pub use project::*;
 pub use time::{FrameRate, Rational, Time};
+pub use title::{FontChoice, TextAlign, TitleSpec};
 pub use transform::{Affine2, BlendMode, Transform};
 pub use undo::{Command, UndoStack};

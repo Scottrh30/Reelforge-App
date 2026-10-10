@@ -3128,9 +3128,12 @@ dependencies = [
 name = "reelforge-render"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
+ "epaint_default_fonts",
  "log",
  "pollster 0.4.0",
  "reelforge-core",
+ "ttf-parser",
  "wgpu",
 ]
 

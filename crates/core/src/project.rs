@@ -4,12 +4,18 @@ use crate::anim::TransformAnim;
 use crate::audio::{ClipAudio, TrackAudio};
 use crate::effects::{eval_stack, Effect, EffectValues};
 use crate::time::{FrameRate, Rational, Time};
+use crate::title::TitleSpec;
 use crate::transform::{BlendMode, Transform};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct MediaId(pub u64);
+
+impl MediaId {
+    /// The "media" of clips whose picture is generated (titles): no file behind it.
+    pub const GENERATED: MediaId = MediaId(0);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ClipId(pub u64);
@@ -85,6 +91,9 @@ pub struct Clip {
     /// Effects applied to the layer, top of the list first (video clips).
     #[serde(default)]
     pub effects: Vec<Effect>,
+    /// For a title clip: the text and how it looks (its media is `MediaId::GENERATED`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<TitleSpec>,
 }
 
 /// Everything about how a video clip looks, edited and undone as one unit.
@@ -112,6 +121,20 @@ impl Clip {
             anim: TransformAnim::default(),
             dissolve_in: Time::ZERO,
             effects: Vec::new(),
+            title: None,
+        }
+    }
+
+    /// A title clip on a video track.
+    pub fn new_title(id: ClipId, timeline_start: Time, duration: Time, spec: TitleSpec) -> Self {
+        Self { title: Some(spec), ..Self::new(id, MediaId::GENERATED, timeline_start, Time::ZERO, duration, None) }
+    }
+
+    /// What to call the clip in the UI: the media name, or a title's first line.
+    pub fn display_name<'a>(&'a self, p: &'a Project) -> std::borrow::Cow<'a, str> {
+        match &self.title {
+            Some(t) => std::borrow::Cow::Owned(t.label()),
+            None => std::borrow::Cow::Borrowed(p.media(self.media).map(|m| m.name.as_str()).unwrap_or("<missing media>")),
         }
     }
 
@@ -221,6 +244,21 @@ impl Sequence {
     /// Is `id`, or any clip linked to it, on a locked track? Such clips can't be edited.
     pub fn is_locked(&self, id: ClipId) -> bool {
         self.link_group(id).iter().any(|(ti, _)| self.tracks[*ti].locked)
+    }
+
+    /// Where a new track of `kind` goes: video tracks stack on top of the
+    /// other video tracks (before the audio ones), audio tracks go last.
+    pub fn new_track_index(&self, kind: TrackKind) -> usize {
+        match kind {
+            TrackKind::Video => self.tracks.iter().rposition(|t| t.kind == TrackKind::Video).map_or(0, |i| i + 1),
+            TrackKind::Audio => self.tracks.len(),
+        }
+    }
+
+    /// "Video 3", "Audio 2"…: the first name of that pattern not already used.
+    pub fn next_track_name(&self, kind: TrackKind) -> String {
+        let base = if kind == TrackKind::Video { "Video" } else { "Audio" };
+        (1..).map(|n| format!("{base} {n}")).find(|name| !self.tracks.iter().any(|t| &t.name == name)).unwrap()
     }
 
     /// Topmost visible video clip at `t` — what the viewer should show until
@@ -354,7 +392,7 @@ pub fn crossfade_extents(d: Time, left_spare: Time, right_spare: Time) -> (Time,
 impl Project {
     /// Is this a still image (no meaningful source time, unlimited length)?
     pub fn is_still(&self, id: MediaId) -> bool {
-        self.media(id).is_some_and(|m| m.info.video.is_some() && m.info.duration <= Time::ZERO)
+        id == MediaId::GENERATED || self.media(id).is_some_and(|m| m.info.video.is_some() && m.info.duration <= Time::ZERO)
     }
 
     /// Every transition in sequence `seq`: crossfades on audio tracks and

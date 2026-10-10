@@ -28,6 +28,10 @@ cpal = "0.18"
 # Must match the wgpu version egui-wgpu uses, so the app can share eframe's device.
 wgpu = "30"
 pollster = "0.4"
+# Text titles: glyph outlines and rasterising (both already used by egui).
+ab_glyph = "0.2"
+ttf-parser = "0.25"
+epaint_default_fonts = "0.36"
 
 [profile.dev]
 # Decoding and scaling are painfully slow unoptimized; optimize deps even in debug.

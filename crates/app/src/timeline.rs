@@ -8,6 +8,8 @@ use reelforge_core::ClipAudio;
 use reelforge_core::{ClipId, MediaId, Time, TrackKind, TrimMode};
 
 const RULER_H: f32 = 26.0;
+/// Height of the row under the tracks with the "add track" buttons.
+const ADD_ROW_H: f32 = 34.0;
 const TRACK_H: f32 = 52.0;
 const HEADER_W: f32 = 124.0;
 
@@ -17,12 +19,24 @@ pub struct TimelineView {
     pub scroll: f32,
     /// What dragging a clip edge does: a plain trim, a ripple, or a roll.
     pub mode: TrimMode,
+    /// Pixels scrolled off the top of the track area.
+    pub vscroll: f32,
+    /// A track name being edited: (track, text, focus requested yet).
+    renaming: Option<(usize, String, bool)>,
     drag: Option<Drag>,
+}
+
+/// Track-header actions, applied after drawing.
+enum TrackAction {
+    Add(TrackKind),
+    Delete(usize),
+    StartRename(usize),
+    Rename(usize, String),
 }
 
 impl Default for TimelineView {
     fn default() -> Self {
-        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, drag: None }
+        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None }
     }
 }
 
@@ -101,12 +115,20 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     let tracks = &st.seq().tracks;
     let mut rows: Vec<usize> = (0..tracks.len()).filter(|&i| tracks[i].kind == TrackKind::Video).rev().collect();
     rows.extend((0..tracks.len()).filter(|&i| tracks[i].kind == TrackKind::Audio));
+    // The track area below the ruler scrolls vertically when the tracks don't fit.
+    let body = Rect::from_min_max(Pos2::new(rect.left(), rect.top() + RULER_H), rect.max);
+    let max_vscroll = (rows.len() as f32 * TRACK_H + ADD_ROW_H - body.height()).max(0.0);
+    st.timeline.vscroll = st.timeline.vscroll.clamp(0.0, max_vscroll);
+    let vscroll = st.timeline.vscroll;
     let row_rect = |row: usize| {
-        let y = rect.top() + RULER_H + row as f32 * TRACK_H;
+        let y = body.top() + row as f32 * TRACK_H - vscroll;
         Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), TRACK_H))
     };
     let row_at = |y: f32| -> Option<usize> {
-        let r = ((y - rect.top() - RULER_H) / TRACK_H).floor();
+        if y < body.top() {
+            return None;
+        }
+        let r = ((y - body.top() + vscroll) / TRACK_H).floor();
         (r >= 0.0 && (r as usize) < rows.len()).then(|| rows[r as usize])
     };
 
@@ -122,93 +144,41 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 st.timeline.scroll = (anchor - (p.x - m.x0) / st.timeline.px_per_sec).max(0.0);
             }
         }
-        let dx = if scroll.x != 0.0 { scroll.x } else { scroll.y };
-        if dx != 0.0 {
-            st.timeline.scroll = (st.timeline.scroll - dx / st.timeline.px_per_sec).max(0.0);
+        // The wheel scrolls through the tracks when they don't all fit (Shift+wheel or a
+        // sideways scroll moves along the timeline); otherwise it moves along the timeline.
+        let shift = ui.input(|i| i.modifiers.shift);
+        if scroll.y != 0.0 && scroll.x == 0.0 && max_vscroll > 0.0 && !shift {
+            st.timeline.vscroll = (st.timeline.vscroll - scroll.y).clamp(0.0, max_vscroll);
+        } else {
+            let dx = if scroll.x != 0.0 { scroll.x } else { scroll.y };
+            if dx != 0.0 {
+                st.timeline.scroll = (st.timeline.scroll - dx / st.timeline.px_per_sec).max(0.0);
+            }
         }
     }
     let m = Mapping { x0: rect.left() + HEADER_W, pps: st.timeline.px_per_sec, scroll: st.timeline.scroll };
     let lanes = Rect::from_min_max(Pos2::new(m.x0, rect.top()), rect.max);
 
-    // ---- Background, ruler ----
+    // ---- Background and time grid (the ruler itself is drawn last, on top) ----
     let visuals = ui.visuals().clone();
     painter.rect_filled(rect, 0.0, visuals.extreme_bg_color);
     let ruler = Rect::from_min_size(Pos2::new(m.x0, rect.top()), Vec2::new(lanes.width(), RULER_H));
-    painter.rect_filled(ruler, 0.0, visuals.faint_bg_color);
-
     let step = [1.0 / rate.fps() as f32, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0]
         .into_iter()
         .find(|s| s * m.pps >= 80.0)
         .unwrap_or(1200.0);
-    let first = (m.scroll / step).floor() as i64;
-    let last = ((m.scroll + lanes.width() / m.pps) / step).ceil() as i64;
-    for i in first..=last {
-        let t = Time::from_secs_f64((i as f32 * step) as f64);
-        let x = m.x(t);
-        if x < m.x0 {
-            continue;
-        }
-        painter.line_segment([Pos2::new(x, ruler.bottom() - 8.0), Pos2::new(x, ruler.bottom())], Stroke::new(1.0, visuals.weak_text_color()));
-        painter.line_segment([Pos2::new(x, ruler.bottom()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, visuals.faint_bg_color));
-        painter.text(Pos2::new(x + 3.0, ruler.top() + 3.0), Align2::LEFT_TOP, t.timecode(rate), FontId::monospace(10.0), visuals.weak_text_color());
+    let ticks: Vec<(Time, f32)> = {
+        let first = (m.scroll / step).floor() as i64;
+        let last = ((m.scroll + lanes.width() / m.pps) / step).ceil() as i64;
+        (first..=last).map(|i| Time::from_secs_f64((i as f32 * step) as f64)).map(|t| (t, m.x(t))).filter(|(_, x)| *x >= m.x0).collect()
+    };
+    for (_, x) in &ticks {
+        painter.line_segment([Pos2::new(*x, ruler.bottom()), Pos2::new(*x, rect.bottom())], Stroke::new(1.0, visuals.faint_bg_color));
     }
-
-    // ---- In/out marks: highlight the range on the ruler, dim outside it ----
-    let (mark_in, mark_out) = (st.seq().in_point, st.seq().out_point);
-    if mark_in.is_some() || mark_out.is_some() {
-        let lp = painter.with_clip_rect(lanes);
-        let xi = mark_in.map_or(lanes.left(), |t| m.x(t));
-        let xo = mark_out.map_or(lanes.right(), |t| m.x(t));
-        let blue = Color32::from_rgb(80, 150, 255);
-        lp.rect_filled(Rect::from_x_y_ranges(xi..=xo, ruler.bottom() - 7.0..=ruler.bottom()), 0.0, blue.gamma_multiply(0.7));
-        let shade = Color32::from_black_alpha(70);
-        let below = ruler.bottom()..=rect.bottom();
-        if xi > lanes.left() {
-            lp.rect_filled(Rect::from_x_y_ranges(lanes.left()..=xi, below.clone()), 0.0, shade);
-        }
-        if xo < lanes.right() {
-            lp.rect_filled(Rect::from_x_y_ranges(xo..=lanes.right(), below), 0.0, shade);
-        }
-        // Brackets: [ at the in point, ] at the out point.
-        let bracket = |x: f32, dir: f32| {
-            let s = Stroke::new(2.0, blue);
-            let (top, bot) = (ruler.top() + 2.0, ruler.bottom());
-            lp.line_segment([Pos2::new(x, top), Pos2::new(x, bot)], s);
-            lp.line_segment([Pos2::new(x, top), Pos2::new(x + 5.0 * dir, top)], s);
-            lp.line_segment([Pos2::new(x, bot), Pos2::new(x + 5.0 * dir, bot)], s);
-        };
-        if mark_in.is_some() {
-            bracket(xi, 1.0);
-        }
-        if mark_out.is_some() {
-            bracket(xo, -1.0);
-        }
-    }
-
-    // ---- Tool buttons in the corner above the track headers ----
-    let mut picked = None;
-    for (i, mode) in TrimMode::ALL.into_iter().enumerate() {
-        let (label, key, tip) = match mode {
-            TrimMode::Normal => ("Sel", "V", "Select / trim: dragging an edge changes just that clip"),
-            TrimMode::Ripple => ("Rip", "B", "Ripple: trimming an edge moves every later clip, on all unlocked tracks, to keep them butted up"),
-            TrimMode::Roll => ("Roll", "N", "Roll: drag a cut between two clips; one gets longer, the other shorter, nothing else moves"),
-            TrimMode::Slip => ("Slip", "Y", "Slip: drag a clip to change which part of its media it shows; it stays where it is"),
-            TrimMode::Slide => ("Slide", "U", "Slide: drag a clip along the timeline; the clips either side get longer/shorter to fit"),
-        };
-        let w = (HEADER_W - 6.0) / TrimMode::ALL.len() as f32;
-        let b = Rect::from_min_size(rect.left_top() + Vec2::new(3.0 + i as f32 * w, 4.0), Vec2::new(w - 2.0, RULER_H - 8.0));
-        let bresp = ui.interact(b, egui::Id::new(("trim_tool", i)), Sense::click());
-        let on = st.timeline.mode == mode;
-        let fill = if on { mode_color(mode) } else { visuals.widgets.inactive.bg_fill };
-        painter.rect_filled(b, 3.0, if bresp.hovered() { fill.gamma_multiply(1.25) } else { fill });
-        painter.text(b.center(), Align2::CENTER_CENTER, label, FontId::proportional(10.0), if on { Color32::BLACK } else { visuals.text_color() });
-        if bresp.on_hover_text(format!("{tip}\nShortcut: {key}")).clicked() {
-            picked = Some(mode);
-        }
-    }
-    if let Some(mode) = picked {
-        st.set_trim_mode(mode);
-    }
+    // Everything from here until the ruler is drawn stays inside the track area.
+    let full_painter = painter.clone();
+    let painter = painter.with_clip_rect(body);
+    let mut track_action: Option<TrackAction> = None;
 
     // ---- Tracks and clips ----
     let selected_group: Vec<ClipId> = st.selection.map(|id| st.seq().link_group(id).iter().map(|(_, c)| c.id).collect()).unwrap_or_default();
@@ -220,13 +190,63 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color));
         let header = Rect::from_min_size(r.min, Vec2::new(HEADER_W, TRACK_H));
         painter.rect_filled(header, 0.0, visuals.panel_fill);
-        let name_color = if tr.muted { visuals.weak_text_color() } else { visuals.text_color() };
-        painter.text(header.left_center() + Vec2::new(8.0, -8.0), Align2::LEFT_CENTER, &tr.name, FontId::proportional(13.0), name_color);
+        let name_rect = Rect::from_min_size(header.min + Vec2::new(4.0, 4.0), Vec2::new(HEADER_W - 8.0, 20.0));
+        // Only fully visible headers take clicks (a half-hidden one sits under the ruler).
+        let header_visible = body.contains_rect(header);
+        if header_visible {
+            // Right-click for the track menu; double-click the name to rename.
+            let hresp = ui.interact(header, egui::Id::new(("track_header", ti)), Sense::click());
+            if hresp.double_clicked() && name_rect.contains(hresp.interact_pointer_pos().unwrap_or_default()) {
+                track_action = Some(TrackAction::StartRename(ti));
+            }
+            let kind = tr.kind;
+            hresp.on_hover_text("Right-click for track options · double-click the name to rename").context_menu(|ui| {
+                if ui.button("Rename track…").clicked() {
+                    track_action = Some(TrackAction::StartRename(ti));
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Add video track").clicked() {
+                    track_action = Some(TrackAction::Add(TrackKind::Video));
+                    ui.close();
+                }
+                if ui.button("Add audio track").clicked() {
+                    track_action = Some(TrackAction::Add(TrackKind::Audio));
+                    ui.close();
+                }
+                ui.separator();
+                let what = if kind == TrackKind::Video { "Delete video track" } else { "Delete audio track" };
+                if ui.button(what).clicked() {
+                    track_action = Some(TrackAction::Delete(ti));
+                    ui.close();
+                }
+            });
+        }
+        let renaming = matches!(&st.timeline.renaming, Some((t, ..)) if *t == ti);
+        if renaming && header_visible {
+            if let Some((_, text, focused)) = &mut st.timeline.renaming {
+                let edit = ui.put(name_rect, egui::TextEdit::singleline(text).font(FontId::proportional(13.0)));
+                if !*focused {
+                    edit.request_focus();
+                    *focused = true;
+                }
+                let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+                if escape {
+                    st.timeline.renaming = None;
+                } else if edit.lost_focus() || enter {
+                    track_action = Some(TrackAction::Rename(ti, text.trim().to_string()));
+                }
+            }
+        } else {
+            let name_color = if tr.muted { visuals.weak_text_color() } else { visuals.text_color() };
+            painter.with_clip_rect(name_rect).text(header.left_center() + Vec2::new(8.0, -8.0), Align2::LEFT_CENTER, &tr.name, FontId::proportional(13.0), name_color);
+        }
+        let tr = &st.seq().tracks[ti];
 
         // Mute toggle ("M" for audio, eye for video), HitFilm-style.
         let btn = Rect::from_min_size(header.left_center() + Vec2::new(8.0, 3.0), Vec2::new(22.0, 16.0));
         let label = if tr.kind == TrackKind::Audio { "M" } else { "👁" };
-        let bresp = ui.interact(btn, egui::Id::new(("mute", ti)), Sense::click());
+        let bresp = ui.interact(btn, egui::Id::new(("mute", ti)), if header_visible { Sense::click() } else { Sense::hover() });
         let on = if tr.kind == TrackKind::Audio { tr.muted } else { !tr.muted };
         let fill = if on { Color32::from_rgb(200, 150, 40) } else { visuals.widgets.inactive.bg_fill };
         painter.rect_filled(btn, 3.0, if bresp.hovered() { fill.gamma_multiply(1.3) } else { fill });
@@ -236,7 +256,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         }
         // Lock toggle: a painted padlock (the font has no lock glyph).
         let lbtn = Rect::from_min_size(btn.right_top() + Vec2::new(4.0, 0.0), Vec2::new(22.0, 16.0));
-        let lresp = ui.interact(lbtn, egui::Id::new(("lock", ti)), Sense::click());
+        let lresp = ui.interact(lbtn, egui::Id::new(("lock", ti)), if header_visible { Sense::click() } else { Sense::hover() });
         let lfill = if tr.locked { Color32::from_rgb(220, 90, 70) } else { visuals.widgets.inactive.bg_fill };
         painter.rect_filled(lbtn, 3.0, if lresp.hovered() { lfill.gamma_multiply(1.3) } else { lfill });
         let ink = if tr.locked { Color32::BLACK } else { visuals.text_color() };
@@ -267,7 +287,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 continue;
             }
             let vis = cr.intersect(lanes);
-            let base = if tr.kind == TrackKind::Video { Color32::from_rgb(54, 96, 160) } else { Color32::from_rgb(52, 130, 84) };
+            let base = if clip.title.is_some() {
+                Color32::from_rgb(122, 78, 170) // titles: purple, like generated media in HitFilm
+            } else if tr.kind == TrackKind::Video {
+                Color32::from_rgb(54, 96, 160)
+            } else {
+                Color32::from_rgb(52, 130, 84)
+            };
             let mut fill = if dragging { base.gamma_multiply(0.35) } else { base };
             if tr.muted {
                 fill = fill.gamma_multiply(0.45);
@@ -390,7 +416,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 let w = if primary { 2.0 } else { 1.0 };
                 painter.rect_stroke(vis, 4.0, Stroke::new(w, Color32::from_rgb(255, 196, 64)), StrokeKind::Inside);
             }
-            let name = st.project.media(clip.media).map(|m| m.name.as_str()).unwrap_or("?");
+            let name = clip.display_name(&st.project);
+            let name = if clip.title.is_some() { format!("T  {name}") } else { name.into_owned() };
             let text_painter = painter.with_clip_rect(vis.shrink(2.0));
             text_painter.text(vis.left_top() + Vec2::new(6.0, 4.0), Align2::LEFT_TOP, name, FontId::proportional(12.0), Color32::WHITE);
         }
@@ -400,6 +427,29 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     }
     if let Some(ti) = lock_clicked {
         st.toggle_lock(ti);
+    }
+
+    // "Add track" buttons under the last track.
+    let add_top = row_rect(rows.len()).top();
+    for (i, (kind, label, tip)) in [
+        (TrackKind::Video, "+ Video", "Add a video track (on top of the other video tracks)"),
+        (TrackKind::Audio, "+ Audio", "Add an audio track"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let w = (HEADER_W - 12.0) / 2.0;
+        let b = Rect::from_min_size(Pos2::new(rect.left() + 4.0 + i as f32 * (w + 4.0), add_top + 7.0), Vec2::new(w, 20.0));
+        if !body.contains_rect(b) {
+            continue;
+        }
+        let bresp = ui.interact(b, egui::Id::new(("add_track", i)), Sense::click());
+        let fill = visuals.widgets.inactive.bg_fill;
+        painter.rect_filled(b, 3.0, if bresp.hovered() { fill.gamma_multiply(1.4) } else { fill });
+        painter.text(b.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.5), visuals.text_color());
+        if bresp.on_hover_text(tip).clicked() {
+            track_action = Some(TrackAction::Add(kind));
+        }
     }
 
     // Crossfades: a block with an X over the overlap; a red tick where one was
@@ -902,6 +952,73 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         }
     }
 
+    // ---- Ruler (on top of tracks scrolled up under it) ----
+    let painter = full_painter;
+    painter.rect_filled(Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.top() + RULER_H)), 0.0, visuals.extreme_bg_color);
+    painter.rect_filled(ruler, 0.0, visuals.faint_bg_color);
+    for (t, x) in &ticks {
+        painter.line_segment([Pos2::new(*x, ruler.bottom() - 8.0), Pos2::new(*x, ruler.bottom())], Stroke::new(1.0, visuals.weak_text_color()));
+        painter.text(Pos2::new(x + 3.0, ruler.top() + 3.0), Align2::LEFT_TOP, t.timecode(rate), FontId::monospace(10.0), visuals.weak_text_color());
+    }
+
+    // ---- In/out marks: highlight the range on the ruler, dim outside it ----
+    let (mark_in, mark_out) = (st.seq().in_point, st.seq().out_point);
+    if mark_in.is_some() || mark_out.is_some() {
+        let lp = painter.with_clip_rect(lanes);
+        let lb = lp.with_clip_rect(Rect::from_min_max(Pos2::new(lanes.left(), body.top()), lanes.max));
+        let xi = mark_in.map_or(lanes.left(), |t| m.x(t));
+        let xo = mark_out.map_or(lanes.right(), |t| m.x(t));
+        let blue = Color32::from_rgb(80, 150, 255);
+        lp.rect_filled(Rect::from_x_y_ranges(xi..=xo, ruler.bottom() - 7.0..=ruler.bottom()), 0.0, blue.gamma_multiply(0.7));
+        let shade = Color32::from_black_alpha(70);
+        let below = ruler.bottom()..=rect.bottom();
+        if xi > lanes.left() {
+            lb.rect_filled(Rect::from_x_y_ranges(lanes.left()..=xi, below.clone()), 0.0, shade);
+        }
+        if xo < lanes.right() {
+            lb.rect_filled(Rect::from_x_y_ranges(xo..=lanes.right(), below), 0.0, shade);
+        }
+        // Brackets: [ at the in point, ] at the out point.
+        let bracket = |x: f32, dir: f32| {
+            let s = Stroke::new(2.0, blue);
+            let (top, bot) = (ruler.top() + 2.0, ruler.bottom());
+            lp.line_segment([Pos2::new(x, top), Pos2::new(x, bot)], s);
+            lp.line_segment([Pos2::new(x, top), Pos2::new(x + 5.0 * dir, top)], s);
+            lp.line_segment([Pos2::new(x, bot), Pos2::new(x + 5.0 * dir, bot)], s);
+        };
+        if mark_in.is_some() {
+            bracket(xi, 1.0);
+        }
+        if mark_out.is_some() {
+            bracket(xo, -1.0);
+        }
+    }
+
+    // ---- Tool buttons in the corner above the track headers ----
+    let mut picked = None;
+    for (i, mode) in TrimMode::ALL.into_iter().enumerate() {
+        let (label, key, tip) = match mode {
+            TrimMode::Normal => ("Sel", "V", "Select / trim: dragging an edge changes just that clip"),
+            TrimMode::Ripple => ("Rip", "B", "Ripple: trimming an edge moves every later clip, on all unlocked tracks, to keep them butted up"),
+            TrimMode::Roll => ("Roll", "N", "Roll: drag a cut between two clips; one gets longer, the other shorter, nothing else moves"),
+            TrimMode::Slip => ("Slip", "Y", "Slip: drag a clip to change which part of its media it shows; it stays where it is"),
+            TrimMode::Slide => ("Slide", "U", "Slide: drag a clip along the timeline; the clips either side get longer/shorter to fit"),
+        };
+        let w = (HEADER_W - 6.0) / TrimMode::ALL.len() as f32;
+        let b = Rect::from_min_size(rect.left_top() + Vec2::new(3.0 + i as f32 * w, 4.0), Vec2::new(w - 2.0, RULER_H - 8.0));
+        let bresp = ui.interact(b, egui::Id::new(("trim_tool", i)), Sense::click());
+        let on = st.timeline.mode == mode;
+        let fill = if on { mode_color(mode) } else { visuals.widgets.inactive.bg_fill };
+        painter.rect_filled(b, 3.0, if bresp.hovered() { fill.gamma_multiply(1.25) } else { fill });
+        painter.text(b.center(), Align2::CENTER_CENTER, label, FontId::proportional(10.0), if on { Color32::BLACK } else { visuals.text_color() });
+        if bresp.on_hover_text(format!("{tip}\nShortcut: {key}")).clicked() {
+            picked = Some(mode);
+        }
+    }
+    if let Some(mode) = picked {
+        st.set_trim_mode(mode);
+    }
+
     // ---- Playhead (drawn last, on top) ----
     let px = m.x(st.playback.playhead);
     if px >= m.x0 {
@@ -909,6 +1026,27 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         painter.line_segment([Pos2::new(px, rect.top()), Pos2::new(px, rect.bottom())], Stroke::new(1.5, red));
         let tri = vec![Pos2::new(px - 6.0, rect.top()), Pos2::new(px + 6.0, rect.top()), Pos2::new(px, rect.top() + 9.0)];
         painter.add(egui::Shape::convex_polygon(tri, red, Stroke::NONE));
+    }
+
+    // Track changes last, once nothing else this frame refers to the old track list.
+    match track_action {
+        Some(TrackAction::Add(kind)) => {
+            st.add_track(kind);
+            // Make sure the new track is in view.
+            if kind == TrackKind::Audio {
+                st.timeline.vscroll = f32::MAX;
+            }
+        }
+        Some(TrackAction::Delete(ti)) => st.delete_track(ti),
+        Some(TrackAction::StartRename(ti)) => {
+            let name = st.seq().tracks.get(ti).map(|t| t.name.clone()).unwrap_or_default();
+            st.timeline.renaming = Some((ti, name, false));
+        }
+        Some(TrackAction::Rename(ti, name)) => {
+            st.timeline.renaming = None;
+            st.rename_track(ti, name);
+        }
+        None => {}
     }
 
     // Keep the playhead visible while playing.

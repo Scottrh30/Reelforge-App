@@ -183,6 +183,8 @@ pub fn export_sequence(
 
     let mut compositor = Compositor::new(device, queue);
     let mut sources: HashMap<ClipId, FrameSource> = HashMap::new();
+    // Rasterised titles, by clip: (content hash, image).
+    let mut titles: HashMap<ClipId, (u64, reelforge_media::VideoFrame)> = HashMap::new();
     let mut audio_pos = Time::from_frame(first, rate).to_frame(sr);
     let mut audio_buf = Vec::new();
 
@@ -200,6 +202,20 @@ pub fn export_sequence(
             frame: reelforge_media::VideoFrame,
         }
         let mut gather = |l: &reelforge_core::Layer| -> Result<Option<Gathered>> {
+            if let Some(spec) = &l.clip.title {
+                let hash = spec.content_hash(frame_size);
+                let frame = match titles.get(&l.clip.id) {
+                    Some((h, f)) if *h == hash => f.clone(),
+                    _ => {
+                        let r = reelforge_render::text::render_title(spec, frame_size);
+                        let f = reelforge_media::VideoFrame { pts: Time::ZERO, width: r.width, height: r.height, rgba: r.rgba, generation: hash };
+                        titles.insert(l.clip.id, (hash, f.clone()));
+                        f
+                    }
+                };
+                let size = [frame_size[0] as f32, frame_size[1] as f32];
+                return Ok(Some(Gathered { key: l.clip.id.0, media: reelforge_core::MediaId::GENERATED, size, transform: l.transform, blend: l.blend, effects: l.effects.clone(), frame }));
+            }
             let Some(media) = project.media(l.clip.media) else { return Ok(None) };
             let Some(v) = &media.info.video else { return Ok(None) };
             let src = match sources.entry(l.clip.id) {
@@ -269,7 +285,8 @@ pub fn export_sequence(
             let tail = dissolves.iter().find(|x| x.left == *id).map_or(Time::ZERO, |x| x.after);
             seq.find_clip(*id).is_some_and(|(_, c)| c.timeline_end() + tail > t)
         });
-        compositor.retain_layers(|k| sources.contains_key(&ClipId(k)));
+        titles.retain(|id, _| seq.find_clip(*id).is_some_and(|(_, c)| c.timeline_end() > t));
+        compositor.retain_layers(|k| sources.contains_key(&ClipId(k)) || titles.contains_key(&ClipId(k)));
 
         let p = Progress { done: n as u64 + 1, total, elapsed: started.elapsed() };
         if !on_progress(p) {

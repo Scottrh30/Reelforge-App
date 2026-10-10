@@ -9,6 +9,7 @@ use reelforge_render::{Compositor, DrawItem, LayerInput};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Preview frames are decoded at most at this size; export will decode at full resolution.
@@ -17,6 +18,34 @@ const PREVIEW_MAX: (u32, u32) = (1920, 1080);
 const PREFETCH: Time = Time(Time::TICKS_PER_SECOND * 3 / 2);
 /// Close decoders for clips that haven't been needed for this long.
 const IDLE_CLOSE: Duration = Duration::from_secs(4);
+
+/// A rasterised title, kept until its look (or the frame size) changes.
+struct TitleCache {
+    hash: u64,
+    frame: VideoFrame,
+    bounds: Option<[f32; 4]>,
+    missing_font: bool,
+    last_used: Instant,
+}
+
+/// Rasterise `spec` (or reuse the cached image) for clip `id`.
+fn title_frame(titles: &mut HashMap<ClipId, TitleCache>, id: ClipId, spec: &reelforge_core::TitleSpec, frame: [u32; 2]) -> VideoFrame {
+    let hash = spec.content_hash(frame);
+    let entry = titles.entry(id).or_insert_with(|| TitleCache {
+        hash: hash ^ 1,
+        frame: VideoFrame { pts: Time::ZERO, width: 0, height: 0, rgba: Arc::from(Vec::new()), generation: 0 },
+        bounds: None,
+        missing_font: false,
+        last_used: Instant::now(),
+    });
+    if entry.hash != hash {
+        let r = reelforge_render::text::render_title(spec, frame);
+        entry.frame = VideoFrame { pts: Time::ZERO, width: r.width, height: r.height, rgba: r.rgba, generation: hash };
+        (entry.hash, entry.bounds, entry.missing_font) = (hash, r.bounds, r.missing_font);
+    }
+    entry.last_used = Instant::now();
+    entry.frame.clone()
+}
 
 struct Slot {
     source: Result<FrameSource, String>,
@@ -34,6 +63,7 @@ pub struct Preview {
     /// One decoder per clip (not per file), so two clips from the same file
     /// at different times don't fight over one decoder.
     slots: HashMap<ClipId, Slot>,
+    titles: HashMap<ClipId, TitleCache>,
     gpu: Option<Gpu>,
     /// Hash of everything that went into the last render; skip identical frames.
     last_signature: u64,
@@ -48,7 +78,7 @@ impl Preview {
             let compositor = Compositor::new(&rs.device, &rs.queue);
             Gpu { render_state: rs, compositor, texture: None, registered_generation: 0 }
         });
-        Self { slots: HashMap::new(), gpu, last_signature: 0, exact: true, error: None }
+        Self { slots: HashMap::new(), titles: HashMap::new(), gpu, last_signature: 0, exact: true, error: None }
     }
 
     /// The composited frame, ready to draw with `egui::Image`/`painter.image`.
@@ -61,9 +91,21 @@ impl Preview {
         self.gpu.as_ref().map(|g| (g.render_state.device.clone(), g.render_state.queue.clone()))
     }
 
+    /// Where a title's text is on its frame-sized canvas (`[x0, y0, x1, y1]`),
+    /// once it has been drawn. Used to select titles by clicking their text.
+    pub fn title_bounds(&self, id: ClipId) -> Option<[f32; 4]> {
+        self.titles.get(&id).and_then(|t| t.bounds)
+    }
+
+    /// True if a title's font file couldn't be loaded (the built-in font was used).
+    pub fn title_missing_font(&self, id: ClipId) -> bool {
+        self.titles.get(&id).is_some_and(|t| t.missing_font)
+    }
+
     /// Forget all decoders (new/opened project). Keeps the GPU side.
     pub fn reset(&mut self) {
         self.slots.clear();
+        self.titles.clear();
         self.last_signature = 0;
     }
 
@@ -97,7 +139,19 @@ impl Preview {
         let mut items = Vec::new();
         let mut exact = true;
         self.error = None;
-        let mut gather = |l: &reelforge_core::Layer, slots: &mut HashMap<ClipId, Slot>, error: &mut Option<String>| -> Option<Gathered> {
+        let mut gather = |l: &reelforge_core::Layer, slots: &mut HashMap<ClipId, Slot>, titles: &mut HashMap<ClipId, TitleCache>, error: &mut Option<String>| -> Option<Gathered> {
+            if let Some(spec) = &l.clip.title {
+                // Titles are drawn on a canvas the size of the frame, so 100% is their natural size.
+                return Some(Gathered {
+                    key: l.clip.id.0,
+                    frame: title_frame(titles, l.clip.id, spec, frame_size),
+                    media: MediaId::GENERATED,
+                    layer_size: [frame_size[0] as f32, frame_size[1] as f32],
+                    transform: l.transform,
+                    blend: l.blend,
+                    effects: l.effects.clone(),
+                });
+            }
             let media = project.media(l.clip.media)?;
             let v = media.info.video.as_ref()?;
             let src = match &mut Self::slot(slots, l.clip.id, &media.path).source {
@@ -121,9 +175,12 @@ impl Preview {
         };
         for item in project.video_layers_at(0, t) {
             match item {
-                VideoItem::Single(l) => items.extend(gather(&l, &mut self.slots, &mut self.error).map(Item::Single)),
+                VideoItem::Single(l) => items.extend(gather(&l, &mut self.slots, &mut self.titles, &mut self.error).map(Item::Single)),
                 VideoItem::Dissolve { from, to, mix } => {
-                    match (gather(&from, &mut self.slots, &mut self.error), gather(&to, &mut self.slots, &mut self.error)) {
+                    match (
+                        gather(&from, &mut self.slots, &mut self.titles, &mut self.error),
+                        gather(&to, &mut self.slots, &mut self.titles, &mut self.error),
+                    ) {
                         (Some(a), Some(b)) => items.push(Item::Dissolve(a, b, mix)),
                         (Some(one), None) | (None, Some(one)) => items.push(Item::Single(one)),
                         (None, None) => {}
@@ -150,6 +207,7 @@ impl Preview {
             }
         }
         self.slots.retain(|_, s| s.last_used.elapsed() < IDLE_CLOSE);
+        self.titles.retain(|_, t| t.last_used.elapsed() < IDLE_CLOSE);
 
         let Some(gpu) = &mut self.gpu else { return };
 
@@ -207,8 +265,8 @@ impl Preview {
             })
             .collect();
         gpu.compositor.render_items(frame_size, &draw);
-        let slots = &self.slots;
-        gpu.compositor.retain_layers(|k| slots.contains_key(&ClipId(k)));
+        let (slots, titles) = (&self.slots, &self.titles);
+        gpu.compositor.retain_layers(|k| slots.contains_key(&ClipId(k)) || titles.contains_key(&ClipId(k)));
 
         // Hand the output texture to egui (re-register after a resize).
         let view = gpu.compositor.output_view().expect("rendered");

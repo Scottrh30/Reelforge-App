@@ -8,6 +8,9 @@ pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
         if ui.button("➕ Import…").clicked() {
             st.import_dialog();
         }
+        if ui.button("T  New title").on_hover_text("Add a text title at the playhead (Ctrl+T)").clicked() {
+            st.add_title();
+        }
         ui.weak(format!("{} item(s)", st.project.media.len()));
     });
     ui.separator();
@@ -74,15 +77,22 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
 
     // Visible layers at the playhead, top first, with their native sizes.
     let t = st.playback.playhead;
-    let layers: Vec<(reelforge_core::ClipId, [f32; 2], reelforge_core::Transform)> = st
+    // Each as the layer-local rectangle that counts as "the layer": the whole
+    // picture for footage, just the text (and its box) for a title.
+    let layers: Vec<(reelforge_core::ClipId, [f32; 4], reelforge_core::Transform)> = st
         .project
         .video_layers_at(0, t)
         .iter()
         .rev()
         .flat_map(|item| item.layers().into_iter().rev().map(|l| (l.clip, l.transform)).collect::<Vec<_>>())
         .filter_map(|(c, tr)| {
+            if c.title.is_some() {
+                let b = st.preview.title_bounds(c.id)?;
+                let (hw, hh) = (frame_px[0] / 2.0, frame_px[1] / 2.0);
+                return Some((c.id, [b[0] - hw, b[1] - hh, b[2] - hw, b[3] - hh], tr));
+            }
             let v = st.project.media(c.media)?.info.video.as_ref()?;
-            Some((c.id, [v.width as f32, v.height as f32], tr))
+            Some((c.id, Transform::full_rect([v.width as f32, v.height as f32]), tr))
         })
         .collect();
 
@@ -90,8 +100,8 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     if resp.clicked() || resp.drag_started() {
         if let Some(p) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()) {
             let f = to_frame(p);
-            let hit = layers.iter().find(|(_, size, tr)| tr.hit(*size, frame_px, f)).map(|(id, ..)| *id);
-            let keep = st.selection.is_some_and(|sel| layers.iter().any(|(id, size, tr)| *id == sel && tr.hit(*size, frame_px, f)));
+            let hit = layers.iter().find(|(_, r, tr)| tr.hit_rect(*r, frame_px, f)).map(|(id, ..)| *id);
+            let keep = st.selection.is_some_and(|sel| layers.iter().any(|(id, r, tr)| *id == sel && tr.hit_rect(*r, frame_px, f)));
             if !keep {
                 st.selection = hit;
             }
@@ -100,7 +110,7 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
 
     // Drag the selected layer to move it.
     let selected = st.selection.and_then(|id| layers.iter().find(|(lid, ..)| *lid == id).copied());
-    if let Some((id, size, tr)) = selected {
+    if let Some((id, lrect, tr)) = selected {
         if resp.dragged() && !st.playback.playing {
             let d = resp.drag_delta() / scale;
             if d != Vec2::ZERO {
@@ -119,7 +129,7 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
         }
         // Bounding box + centre handle.
         let now = st.seq().find_clip(id).map(|(_, c)| c.transform_at(t)).unwrap_or(tr);
-        let corners = now.corners(size, frame_px).map(to_screen);
+        let corners = now.rect_corners(lrect, frame_px).map(to_screen);
         let gold = Color32::from_rgb(255, 196, 64);
         let clip_painter = ui.painter_at(area);
         clip_painter.add(egui::Shape::closed_line(corners.to_vec(), egui::Stroke::new(1.5, gold)));
@@ -178,7 +188,11 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
             let media = st.project.media(clip.media);
             egui::Grid::new("clip_props").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                 ui.weak("Media");
-                ui.label(media.map(|m| m.name.as_str()).unwrap_or("<missing>"));
+                if clip.title.is_some() {
+                    ui.label("Title (generated)");
+                } else {
+                    ui.label(media.map(|m| m.name.as_str()).unwrap_or("<missing>"));
+                }
                 ui.end_row();
                 ui.weak("Track");
                 ui.label(&st.seq().tracks[ti].name);
@@ -201,6 +215,10 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.colored_label(ui.visuals().warn_fg_color, "On a locked track: unlock it to make changes.");
             }
             ui.add_enabled_ui(!locked, |ui| {
+                if clip.title.is_some() {
+                    ui.add_space(10.0);
+                    title_controls(ui, st, &clip);
+                }
                 if st.seq().tracks[ti].kind == reelforge_core::TrackKind::Video {
                     ui.add_space(10.0);
                     transform_controls(ui, st, &clip);
@@ -478,6 +496,156 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
     }
     if let Some(t) = seek {
         st.playback.seek(t);
+    }
+}
+
+/// An sRGBA colour swatch button; writes back only on a real change (the
+/// round trip through egui's premultiplied colour isn't always exact).
+fn color_button(ui: &mut egui::Ui, c: &mut [u8; 4]) -> bool {
+    let mut col = Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+    let changed = egui::widgets::color_picker::color_edit_button_srgba(ui, &mut col, egui::widgets::color_picker::Alpha::OnlyBlend).changed();
+    if changed {
+        *c = col.to_srgba_unmultiplied();
+    }
+    changed
+}
+
+/// Text, font and styling of a title clip. Edits show immediately; a typing
+/// session or a slider drag is one undo step.
+fn title_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
+    use reelforge_core::TextAlign;
+    let Some(before) = clip.title.clone() else { return };
+    let mut t = before.clone();
+    let fonts = st.fonts();
+
+    ui.heading("Text");
+    ui.add(egui::TextEdit::multiline(&mut t.text).desired_rows(3).desired_width(f32::INFINITY).hint_text("Type the title…"));
+
+    egui::Grid::new("title_style").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+        ui.weak("Font");
+        ui.horizontal(|ui| {
+            let filter_id = egui::Id::new("font_filter");
+            let mut filter: String = ui.data_mut(|d| d.get_temp(filter_id).unwrap_or_default());
+            egui::ComboBox::from_id_salt("title_font").width(190.0).selected_text(t.font.name.clone()).height(360.0).show_ui(ui, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Search fonts…").desired_width(170.0)).request_focus();
+                let f = filter.to_lowercase();
+                if "built-in".contains(&f) || f.is_empty() {
+                    let b = reelforge_core::FontChoice::builtin();
+                    if ui.selectable_label(t.font.path.is_none(), &b.name).clicked() {
+                        t.font = b;
+                    }
+                }
+                match &fonts {
+                    Some(list) => {
+                        for e in list.iter().filter(|e| f.is_empty() || e.name().to_lowercase().contains(&f)).take(400) {
+                            let on = t.font.path.as_ref() == Some(&e.path) && t.font.index == e.index;
+                            if ui.selectable_label(on, e.name()).clicked() {
+                                t.font = e.choice();
+                            }
+                        }
+                    }
+                    None => {
+                        ui.weak("Looking for installed fonts…");
+                    }
+                }
+            });
+            ui.data_mut(|d| d.insert_temp(filter_id, filter));
+        });
+        ui.end_row();
+        if st.preview.title_missing_font(clip.id) {
+            ui.label("");
+            ui.colored_label(ui.visuals().warn_fg_color, "Font file not found: using the built-in font");
+            ui.end_row();
+        }
+
+        ui.weak("Size");
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut t.size).speed(0.5).range(4.0..=2000.0).suffix(" px").fixed_decimals(0));
+            color_button(ui, &mut t.color);
+        });
+        ui.end_row();
+
+        ui.weak("Align");
+        ui.horizontal(|ui| {
+            for a in TextAlign::ALL {
+                ui.selectable_value(&mut t.align, a, a.label());
+            }
+        });
+        ui.end_row();
+
+        ui.weak("Spacing");
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut t.line_spacing).speed(0.01).range(0.5..=4.0).prefix("lines ×").fixed_decimals(2));
+            ui.add(egui::DragValue::new(&mut t.letter_spacing).speed(0.1).range(-50.0..=200.0).prefix("letters ").suffix(" px").fixed_decimals(1));
+        });
+        ui.end_row();
+
+        ui.weak("Outline");
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut t.outline).speed(0.1).range(0.0..=100.0).suffix(" px").fixed_decimals(1));
+            color_button(ui, &mut t.outline_color);
+        });
+        ui.end_row();
+
+        ui.weak("Shadow");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut t.shadow, "");
+            ui.add_enabled_ui(t.shadow, |ui| {
+                ui.add(egui::DragValue::new(&mut t.shadow_distance).speed(0.2).range(0.0..=500.0).suffix(" px").fixed_decimals(0))
+                    .on_hover_text("Distance");
+                ui.add(egui::DragValue::new(&mut t.shadow_angle).speed(1.0).range(-360.0..=360.0).suffix("°").fixed_decimals(0))
+                    .on_hover_text("Direction (0° = right, 90° = down)");
+                ui.add(egui::DragValue::new(&mut t.shadow_softness).speed(0.2).range(0.0..=200.0).prefix("soft ").fixed_decimals(0));
+                color_button(ui, &mut t.shadow_color);
+            });
+        });
+        ui.end_row();
+
+        ui.weak("Box");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut t.background, "").on_hover_text("A filled rectangle behind the text");
+            ui.add_enabled_ui(t.background, |ui| {
+                ui.add(egui::DragValue::new(&mut t.background_padding).speed(0.2).range(0.0..=500.0).prefix("padding ").suffix(" px").fixed_decimals(0));
+                color_button(ui, &mut t.background_color);
+            });
+        });
+        ui.end_row();
+    });
+
+    // Quick placement presets (they set the clip's position).
+    let mut place: Option<[f32; 2]> = None;
+    ui.horizontal(|ui| {
+        ui.weak("Place:");
+        if ui.button("Centre").clicked() {
+            place = Some([0.0, 0.0]);
+        }
+        let frame = [st.seq().width as f32, st.seq().height as f32];
+        let bounds = st.preview.title_bounds(clip.id);
+        if ui.add_enabled(bounds.is_some(), egui::Button::new("Lower third")).on_hover_text("Bottom left, inside the title-safe area").clicked() {
+            if let Some(b) = bounds {
+                // Left edge at 10% of the width, bottom edge at 85% of the height.
+                place = Some([frame[0] * 0.10 - b[0], frame[1] * 0.85 - b[3]]);
+            }
+        }
+        if ui.add_enabled(bounds.is_some(), egui::Button::new("Top")).clicked() {
+            if let Some(b) = bounds {
+                place = Some([0.0, frame[1] * 0.10 - b[1]]);
+            }
+        }
+    });
+
+    if t != before {
+        st.set_title_live(clip.id, t);
+    }
+    if let Some(pos) = place {
+        if let Some(mut v) = st.visual(clip.id) {
+            let shown = clip.transform_at(st.playback.playhead);
+            let mut moved = shown;
+            moved.position = pos;
+            let src = clip.source_time(st.playback.playhead.max(clip.timeline_start).min(clip.timeline_end()));
+            apply_transform_edit(&mut v, &shown, &moved, src, clip.contains(st.playback.playhead));
+            st.set_visual_live(clip.id, v);
+        }
     }
 }
 

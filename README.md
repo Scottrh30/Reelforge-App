@@ -96,6 +96,19 @@ What works now:
   - Turn each effect on or off, reorder (applied top to bottom) or remove it. Every parameter
     has a keyframe button and works like the transform properties. The viewer and export use
     the same GPU passes, so exports match what you see
+- **Tracks**: as many video and audio tracks as you need. **+ Video** / **+ Audio** under the
+  track headers (or **Edit → Tracks**) add one; new video tracks go on top. Right-click a
+  header to rename, add or delete a track (deleting takes its clips with it, and can be undone);
+  double-click a track's name to rename it. When the tracks don't fit, the mouse wheel scrolls
+  through them (Shift+wheel moves along the timeline)
+- **Text titles** (**Edit → Add title at playhead**, `Ctrl+T`, or **New title** in the Media
+  panel): a 5 s title on the top free video track (a new track is made if none has room).
+  In the Controls panel: multi-line text, any installed font (with a search box), size, colour,
+  alignment, line and letter spacing, outline, soft drop shadow (distance, angle, softness,
+  colour) and a background box for lower thirds, plus one-click **Centre / Lower third / Top**
+  placement. Titles are ordinary layers, so the transform, keyframes, effects, dissolves and
+  blend modes all work on them; click the text in the Viewer to select and drag it. Titles are
+  purple on the timeline and can be any length
 - **Curves panel** (a tab next to the Editor Timeline): a value graph of the selected clip's
   keyframes. Pick channels on the left (position X/Y, scale X/Y, rotation, opacity and every
   effect parameter). **Drag** a key to change its time and value (**Shift** changes only the
@@ -123,7 +136,8 @@ What works now:
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
 Not yet: more effects (sharpen, levels/curves, glow, masks…), other transition types (wipes,
-dip to black), Bézier handles in the curve editor, keyframed audio pan.
+dip to black), Bézier handles in the curve editor, keyframed audio pan, animated text
+(per-letter reveals), and reordering tracks by dragging.
 See the roadmap at the bottom.
 
 ## Layout
@@ -256,6 +270,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | V / B / N | Select / Ripple / Roll trim tool |
 | Y / U | Slip / Slide tool (drag a clip) |
 | I / O | Mark in / out at the playhead |
+| Ctrl+T | Add a title at the playhead |
 | Alt+X | Clear in/out |
 | Shift+Del | Ripple delete (close the gap) |
 | Ctrl+D | Add/remove cross-dissolve at the nearest video cut |
@@ -323,6 +338,18 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   textures kept per layer. The result is drawn with the pre-multiplied pipeline, including
   inside dissolve groups. The blur radius is converted from frame pixels to texels, so a proxy-
   sized preview and a full-size export blur by the same visible amount.
+- **Titles** (`core/src/title.rs`, `render/src/text.rs`): a title is a clip with a
+  `TitleSpec` and no media (`MediaId::GENERATED`, treated like a still). The text is laid out
+  with `ab_glyph` and rasterised on the CPU onto a transparent canvas the size of the frame:
+  the fill coverage, an outline from a Euclidean distance transform of it (round at any
+  width), a shadow made from the silhouette offset with bilinear sampling and softened by three
+  box-blur passes (≈ a Gaussian), and the box, composited in that order. The viewer and export
+  cache the image by a hash of the spec, so it's only redrawn when the title changes, and from
+  there it's just another layer to the GPU compositor. Installed fonts are found once, in the
+  background, by reading each font file's name table.
+- **Tracks** are added and removed with `AddTrack` / `RemoveTrack` commands (the removed track
+  and its clips are kept for undo). Deleting a track is refused if it would orphan linked clips
+  on another track, or leave the sequence without a video or audio track.
 - **Curves** (`core/src/channels.rs`, `app/src/curves.rs`): `Channel` addresses any keyframeable
   number on a clip (a transform component or an effect parameter), with uniform get/set/move
   operations, so the curve editor doesn't care what it's editing. A drag re-applies the move
@@ -367,4 +394,6 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    correction, Gaussian blur, chroma key, vignette. Next: levels/curves, sharpen, glow, LUTs,
    an effects browser, and effects that reach outside the layer (drop shadow, glow).
 6. **Composite shots**, masks, tracking, 3D camera/lights, GPU particles.
+   (Text titles and track management are done; next for titles: animated text presets,
+   per-letter animation, title templates.)
 7. **Performance**: proxy media, a GPU-resident frame cache, hardware decode (`d3d11va`).

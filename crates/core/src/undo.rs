@@ -213,6 +213,7 @@ impl Command for SplitClip {
             dissolve_in: Time::ZERO,
             // Effect keys are source-anchored as well.
             effects: clip.effects.clone(),
+            title: clip.title.clone(),
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;
@@ -489,6 +490,132 @@ impl Command for SetLink {
             if let Some((_, c)) = s.find_clip_mut(*id) {
                 c.link = *old;
             }
+        }
+    }
+}
+
+// ---- Tracks -------------------------------------------------------------------
+
+/// Insert a new track at `index`.
+pub struct AddTrack {
+    pub seq: usize,
+    pub index: usize,
+    pub track: Track,
+}
+
+impl AddTrack {
+    /// A new empty track of `kind`, named and placed like an editor would.
+    pub fn new(p: &Project, seq: usize, kind: TrackKind) -> Self {
+        let s = &p.sequences[seq];
+        Self { seq, index: s.new_track_index(kind), track: Track::new(s.next_track_name(kind), kind) }
+    }
+}
+
+impl Command for AddTrack {
+    fn name(&self) -> &str {
+        if self.track.kind == TrackKind::Video { "Add video track" } else { "Add audio track" }
+    }
+    fn apply(&mut self, p: &mut Project) {
+        let tracks = &mut p.sequences[self.seq].tracks;
+        tracks.insert(self.index.min(tracks.len()), self.track.clone());
+    }
+    fn undo(&mut self, p: &mut Project) {
+        let tracks = &mut p.sequences[self.seq].tracks;
+        if self.index < tracks.len() {
+            tracks.remove(self.index);
+        }
+    }
+}
+
+/// Delete a track and everything on it.
+pub struct RemoveTrack {
+    pub seq: usize,
+    pub index: usize,
+    removed: Option<Track>,
+}
+
+impl RemoveTrack {
+    /// Refuses to remove the last video or the last audio track.
+    pub fn new(p: &Project, seq: usize, index: usize) -> Result<Self, &'static str> {
+        let s = &p.sequences[seq];
+        let Some(t) = s.tracks.get(index) else { return Err("no such track") };
+        if s.tracks.iter().filter(|o| o.kind == t.kind).count() <= 1 {
+            return Err(if t.kind == TrackKind::Video { "a sequence needs at least one video track" } else { "a sequence needs at least one audio track" });
+        }
+        if t.locked {
+            return Err("the track is locked");
+        }
+        // Clips linked to ones on this track would be left half-deleted; unlink first.
+        let ids: Vec<ClipId> = t.clips.iter().map(|c| c.id).collect();
+        let linked_elsewhere = t.clips.iter().any(|c| s.link_group(c.id).iter().any(|(ti, o)| *ti != index && !ids.contains(&o.id)));
+        if linked_elsewhere {
+            return Err("it has clips linked to clips on other tracks (delete or unlink those first)");
+        }
+        Ok(Self { seq, index, removed: None })
+    }
+}
+
+impl Command for RemoveTrack {
+    fn name(&self) -> &str {
+        "Delete track"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        let tracks = &mut p.sequences[self.seq].tracks;
+        if self.index < tracks.len() {
+            self.removed = Some(tracks.remove(self.index));
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some(t) = self.removed.take() {
+            let tracks = &mut p.sequences[self.seq].tracks;
+            tracks.insert(self.index.min(tracks.len()), t);
+        }
+    }
+}
+
+pub struct RenameTrack {
+    pub seq: usize,
+    pub index: usize,
+    pub old: String,
+    pub new: String,
+}
+
+impl Command for RenameTrack {
+    fn name(&self) -> &str {
+        "Rename track"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some(t) = p.sequences[self.seq].tracks.get_mut(self.index) {
+            t.name = self.new.clone();
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some(t) = p.sequences[self.seq].tracks.get_mut(self.index) {
+            t.name = self.old.clone();
+        }
+    }
+}
+
+/// Change a title clip's text and styling (live-edited like [`SetClipVisual`]).
+pub struct SetTitle {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: crate::title::TitleSpec,
+    pub new: crate::title::TitleSpec,
+}
+
+impl Command for SetTitle {
+    fn name(&self) -> &str {
+        if self.old.text != self.new.text { "Edit title text" } else { "Change title style" }
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.title = Some(self.new.clone());
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.title = Some(self.old.clone());
         }
     }
 }
@@ -826,5 +953,87 @@ mod tests {
         assert!(p.sequences[0].tracks[1].clips.is_empty());
         u.undo(&mut p);
         assert_eq!(p.sequences[0].tracks[1].clips.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod track_tests {
+    use super::*;
+    use crate::title::TitleSpec;
+
+    fn s(x: f64) -> Time {
+        Time::from_secs_f64(x)
+    }
+
+    #[test]
+    fn add_rename_remove_tracks_with_undo() {
+        let mut p = Project::new(); // V1, V2, A1
+        let mut u = UndoStack::default();
+        let v = AddTrack::new(&p, 0, TrackKind::Video);
+        assert_eq!((v.index, v.track.name.as_str()), (2, "Video 3"), "new video tracks go on top of the video tracks");
+        u.execute(&mut p, Box::new(v));
+        let a = AddTrack::new(&p, 0, TrackKind::Audio);
+        u.execute(&mut p, Box::new(a));
+        let names: Vec<&str> = p.sequences[0].tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Video 1", "Video 2", "Video 3", "Audio 1", "Audio 2"]);
+
+        u.execute(&mut p, Box::new(RenameTrack { seq: 0, index: 2, old: "Video 3".into(), new: "Titles".into() }));
+        assert_eq!(p.sequences[0].tracks[2].name, "Titles");
+        assert_eq!(p.sequences[0].next_track_name(TrackKind::Video), "Video 3", "the freed name is reused");
+
+        // Delete V2 with a clip on it; undo brings both back.
+        p.sequences[0].tracks[1].clips.push(Clip::new(ClipId(7), MediaId(1), s(0.0), s(0.0), s(1.0), None));
+        let cmd = RemoveTrack::new(&p, 0, 1).unwrap();
+        u.execute(&mut p, Box::new(cmd));
+        assert_eq!(p.sequences[0].tracks.len(), 4);
+        assert!(p.sequences[0].find_clip(ClipId(7)).is_none());
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks[1].name, "Video 2");
+        assert!(p.sequences[0].find_clip(ClipId(7)).is_some());
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks[2].name, "Video 3");
+        u.undo(&mut p);
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks.len(), 3);
+    }
+
+    #[test]
+    fn track_removal_guards() {
+        let mut p = Project::new();
+        assert!(RemoveTrack::new(&p, 0, 2).is_err(), "last audio track");
+        assert!(RemoveTrack::new(&p, 0, 0).is_ok());
+        p.sequences[0].tracks[0].locked = true;
+        assert!(RemoveTrack::new(&p, 0, 0).is_err(), "locked");
+        p.sequences[0].tracks[0].locked = false;
+        // A linked pair across V1 and A1: deleting V1 would orphan the audio.
+        let mut v = Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(1.0), Some(5));
+        p.sequences[0].tracks[0].clips.push(v.clone());
+        v.id = ClipId(2);
+        p.sequences[0].tracks[2].clips.push(v);
+        assert!(RemoveTrack::new(&p, 0, 0).is_err());
+    }
+
+    #[test]
+    fn titles_behave_like_stills() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        let t = Clip::new_title(ClipId(3), s(1.0), s(2.0), TitleSpec::default());
+        assert!(p.is_still(t.media));
+        p.sequences[0].tracks[1].clips.push(t);
+        // Can be stretched to any length (no media limit) and split, keeping the text.
+        let (_, hi) = trim_range(&p, 0, ClipId(3), Edge::End).unwrap();
+        assert!(hi > s(1000.0));
+        let cmd = split_group(&mut p, 0, ClipId(3), s(2.0)).unwrap();
+        u.execute(&mut p, cmd);
+        assert!(p.sequences[0].tracks[1].clips.iter().all(|c| c.title.as_ref().is_some_and(|t| t.text == "Title")));
+        // Editing the text is undoable.
+        let old = TitleSpec::default();
+        let new = TitleSpec { text: "Hello".into(), ..old.clone() };
+        u.execute(&mut p, Box::new(SetTitle { seq: 0, id: ClipId(3), old, new }));
+        assert_eq!(p.sequences[0].find_clip(ClipId(3)).unwrap().1.display_name(&p), "Hello");
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].find_clip(ClipId(3)).unwrap().1.title.as_ref().unwrap().text, "Title");
+        // Titles show up as layers like any video clip.
+        assert_eq!(p.video_layers_at(0, s(1.5)).len(), 1);
     }
 }
