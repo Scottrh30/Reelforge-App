@@ -88,6 +88,7 @@ impl Preview {
             layer_size: [f32; 2],
             transform: reelforge_core::Transform,
             blend: reelforge_core::BlendMode,
+            effects: Vec<reelforge_core::EffectValues>,
         }
         enum Item {
             Single(Gathered),
@@ -115,6 +116,7 @@ impl Preview {
                 layer_size: [v.width as f32, v.height as f32],
                 transform: l.transform,
                 blend: l.blend,
+                effects: l.effects.clone(),
             })
         };
         for item in project.video_layers_at(0, t) {
@@ -160,6 +162,12 @@ impl Preview {
                 f.to_bits().hash(h);
             }
             l.blend.hash(h);
+            for e in &l.effects {
+                e.kind.hash(h);
+                for v in e.values {
+                    v.to_bits().hash(h);
+                }
+            }
         };
         for item in &items {
             match item {
@@ -188,6 +196,7 @@ impl Preview {
                 layer_size: l.layer_size,
                 transform: l.transform,
                 blend: l.blend,
+                effects: l.effects.clone(),
             }
         }
         let draw: Vec<DrawItem> = items

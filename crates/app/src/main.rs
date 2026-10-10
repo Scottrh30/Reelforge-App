@@ -3,6 +3,7 @@
 
 mod app;
 mod audio;
+mod curves;
 mod export_ui;
 mod meters;
 mod panels;

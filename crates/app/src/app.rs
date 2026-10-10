@@ -22,6 +22,7 @@ pub enum Tab {
     Viewer,
     Inspector,
     Timeline,
+    Curves,
     Meters,
 }
 
@@ -39,6 +40,7 @@ pub struct EditorState {
     pub playback: Playback,
     pub selection: Option<ClipId>,
     pub timeline: TimelineView,
+    pub curves: crate::curves::CurveView,
     pub status: String,
     pub project_path: Option<PathBuf>,
     /// Decoders + GPU compositor producing the viewer image.
@@ -69,7 +71,7 @@ impl ReelforgeApp {
         let mut dock = DockState::new(vec![Tab::Viewer]);
         let tree = dock.main_surface_mut();
         // `fraction` is the share kept by the original node (the viewer).
-        let [top, timeline] = tree.split_below(NodeIndex::root(), 0.6, vec![Tab::Timeline]);
+        let [top, timeline] = tree.split_below(NodeIndex::root(), 0.6, vec![Tab::Timeline, Tab::Curves]);
         tree.split_right(timeline, 0.93, vec![Tab::Meters]);
         let [viewer, _bin] = tree.split_left(top, 0.18, vec![Tab::MediaBin]);
         tree.split_right(viewer, 0.76, vec![Tab::Inspector]);
@@ -85,9 +87,12 @@ impl ReelforgeApp {
         let mut app = Self { dock, state: EditorState::new(Playback::with_audio(audio), preview), export: Default::default() };
         app.state.status = "Import media with File → Import, or drop files onto the window.".into();
 
+        // `reelforge project.rfproj` opens a project (e.g. double-clicked in Explorer);
         // `reelforge clip1.mp4 clip2.mov …` imports the files and lays them out on the timeline.
         let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-        if !args.is_empty() {
+        if let Some(proj) = args.iter().find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("rfproj"))) {
+            app.state.open_project_path(proj.clone());
+        } else if !args.is_empty() {
             app.state.import(&args);
             let ids: Vec<MediaId> = app.state.project.media.iter().map(|m| m.id).collect();
             for id in ids {
@@ -178,6 +183,7 @@ impl egui_dock::TabViewer for EditorState {
             Tab::Viewer => "Viewer",
             Tab::Inspector => "Controls",
             Tab::Timeline => "Editor Timeline",
+            Tab::Curves => "Curves",
             Tab::Meters => "Meters",
         }
         .into()
@@ -189,6 +195,7 @@ impl egui_dock::TabViewer for EditorState {
             Tab::Viewer => crate::panels::viewer(ui, self),
             Tab::Inspector => crate::panels::inspector(ui, self),
             Tab::Timeline => crate::timeline::show(ui, self),
+            Tab::Curves => crate::curves::show(ui, self),
             Tab::Meters => crate::meters::show(ui, self),
         }
     }
@@ -210,6 +217,7 @@ impl EditorState {
             playback,
             selection: None,
             timeline: TimelineView::default(),
+            curves: Default::default(),
             status: String::new(),
             project_path: None,
             preview,
@@ -335,10 +343,14 @@ impl EditorState {
         }
 
         let seq = self.seq();
+        if track.is_some_and(|t| seq.tracks.get(t).is_some_and(|tr| tr.locked)) {
+            self.status = LOCKED.into();
+            return;
+        }
         let pick = |kind: TrackKind| {
             track
                 .filter(|&t| seq.tracks.get(t).is_some_and(|tr| tr.kind == kind))
-                .or_else(|| seq.tracks.iter().position(|tr| tr.kind == kind))
+                .or_else(|| seq.tracks.iter().position(|tr| tr.kind == kind && !tr.locked))
         };
         let mut targets = Vec::new();
         if media.info.video.is_some() {
@@ -377,7 +389,7 @@ impl EditorState {
         let t = self.playback.playhead;
         let seq = self.seq();
         // A cut exactly on a clip's first frame would produce an empty clip.
-        let splittable = |c: &&Clip| c.contains(t) && c.timeline_start < t;
+        let splittable = |c: &&Clip| c.contains(t) && c.timeline_start < t && !seq.is_locked(c.id);
         let all = || seq.tracks.iter().flat_map(|tr| &tr.clips);
         let target = self
             .selection
@@ -391,10 +403,59 @@ impl EditorState {
     }
 
     pub fn delete_selection(&mut self) {
-        if let Some(id) = self.selection.take() {
-            let cmd = delete_group(&self.project, 0, id);
-            self.execute(cmd);
+        let Some(id) = self.selection else { return };
+        if self.seq().is_locked(id) {
+            self.status = LOCKED.into();
+            return;
         }
+        self.selection = None;
+        let cmd = delete_group(&self.project, 0, id);
+        self.execute(cmd);
+    }
+
+    pub fn toggle_lock(&mut self, track: usize) {
+        self.commit_live_edit();
+        let tr = &mut self.project.sequences[0].tracks[track];
+        tr.locked = !tr.locked;
+        self.status = if tr.locked {
+            format!("{} locked: its clips can't be edited and ripple edits leave it alone", tr.name)
+        } else {
+            format!("{} unlocked", tr.name)
+        };
+        self.touch();
+    }
+
+    // ---- In/out marks ------------------------------------------------------------
+
+    pub fn mark_in(&mut self) {
+        let t = self.playback.playhead;
+        let s = &mut self.project.sequences[0];
+        s.in_point = Some(t);
+        if s.out_point.is_some_and(|o| o <= t) {
+            s.out_point = None;
+        }
+        self.status = format!("In point: {}", t.timecode(s.frame_rate));
+        self.touch();
+    }
+
+    /// The out point is placed after the frame under the playhead, so that frame is included.
+    pub fn mark_out(&mut self) {
+        let s = &mut self.project.sequences[0];
+        let rate = s.frame_rate;
+        let t = self.playback.playhead.snap(rate) + rate.frame_duration();
+        s.out_point = Some(t);
+        if s.in_point.is_some_and(|i| i >= t) {
+            s.in_point = None;
+        }
+        self.status = format!("Out point: {} (includes the frame at the playhead)", t.timecode(rate));
+        self.touch();
+    }
+
+    pub fn clear_marks(&mut self) {
+        let s = &mut self.project.sequences[0];
+        (s.in_point, s.out_point) = (None, None);
+        self.status = "In/out points cleared".into();
+        self.touch();
     }
 
     pub fn selection_is_linked(&self) -> bool {
@@ -517,6 +578,10 @@ impl EditorState {
 
     fn open_project(&mut self) {
         let Some(path) = rfd::FileDialog::new().add_filter("Reelforge project", &["rfproj"]).pick_file() else { return };
+        self.open_project_path(path);
+    }
+
+    pub fn open_project_path(&mut self, path: PathBuf) {
         match load_project(&path) {
             Ok(p) => {
                 *self = EditorState { project: p, project_path: Some(path.clone()), ..self.fresh() };
@@ -579,6 +644,17 @@ impl EditorState {
                 }
                 if ui.button("Audio crossfade at playhead   Ctrl+Shift+D").clicked() {
                     self.toggle_transition_at_playhead(TrackKind::Audio);
+                }
+                ui.separator();
+                if ui.button("Mark in             I").clicked() {
+                    self.mark_in();
+                }
+                if ui.button("Mark out            O").clicked() {
+                    self.mark_out();
+                }
+                let marked = self.seq().in_point.is_some() || self.seq().out_point.is_some();
+                if ui.add_enabled(marked, egui::Button::new("Clear in/out        Alt+X")).clicked() {
+                    self.clear_marks();
                 }
                 ui.separator();
                 ui.checkbox(&mut self.playback.scrub_audio, "Audio scrubbing")
@@ -653,6 +729,10 @@ impl EditorState {
                 Key::V => self.set_trim_mode(TrimMode::Normal),
                 Key::B => self.set_trim_mode(TrimMode::Ripple),
                 Key::N => self.set_trim_mode(TrimMode::Roll),
+                Key::Y => self.set_trim_mode(TrimMode::Slip),
+                Key::U => self.set_trim_mode(TrimMode::Slide),
+                Key::I => self.mark_in(),
+                Key::O => self.mark_out(),
                 _ => {}
             }
         }
@@ -664,6 +744,9 @@ impl EditorState {
         if ripple_del {
             self.ripple_delete_selected();
         }
+        if ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::ALT, Key::X))) {
+            self.clear_marks();
+        }
     }
 
     pub fn set_trim_mode(&mut self, mode: TrimMode) {
@@ -672,6 +755,8 @@ impl EditorState {
             TrimMode::Normal => "Select tool (V): dragging an edge trims just that clip".into(),
             TrimMode::Ripple => "Ripple tool (B): trimming an edge moves everything after it".into(),
             TrimMode::Roll => "Roll tool (N): dragging a cut moves it between the two clips".into(),
+            TrimMode::Slip => "Slip tool (Y): drag a clip to change which part of its media it shows".into(),
+            TrimMode::Slide => "Slide tool (U): drag a clip to move it between its neighbours, which adjust to fit".into(),
         };
     }
 
@@ -738,6 +823,10 @@ impl EditorState {
     pub fn ripple_delete_selected(&mut self) {
         self.commit_live_edit();
         let Some(id) = self.selection else { return };
+        if self.seq().is_locked(id) {
+            self.status = LOCKED.into();
+            return;
+        }
         match ripple_delete(&self.project, 0, id) {
             Some((cmd, closed)) => {
                 self.execute(cmd);
@@ -817,12 +906,7 @@ impl EditorState {
                     None
                 } else {
                     // The project already has the new timings: apply() re-sets them, which is harmless.
-                    let name = match mode {
-                        TrimMode::Normal => "Trim clip",
-                        TrimMode::Ripple => "Ripple trim",
-                        TrimMode::Roll => "Roll edit",
-                    };
-                    Some(Box::new(Batch { name: name.into(), cmds }) as _)
+                    Some(Box::new(Batch { name: mode.undo_name().into(), cmds }) as _)
                 }
             }
             LiveEdit::ClipAudio(id, old) => self.clip_audio(id).filter(|n| *n != old).map(|new| Box::new(SetClipAudio { seq: 0, id, old, new }) as _),
@@ -859,6 +943,9 @@ impl LiveEdit {
         }
     }
 }
+
+/// Status message when an edit is refused because of a locked track.
+pub const LOCKED: &str = "That clip is on a locked track (or linked to one). Unlock the track to edit it";
 
 fn load_project(path: &Path) -> anyhow::Result<Project> {
     Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)

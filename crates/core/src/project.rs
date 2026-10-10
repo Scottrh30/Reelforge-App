@@ -2,6 +2,7 @@
 
 use crate::anim::TransformAnim;
 use crate::audio::{ClipAudio, TrackAudio};
+use crate::effects::{eval_stack, Effect, EffectValues};
 use crate::time::{FrameRate, Rational, Time};
 use crate::transform::{BlendMode, Transform};
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,9 @@ pub struct Clip {
     /// starts on the same video track (0 = a plain cut).
     #[serde(default)]
     pub dissolve_in: Time,
+    /// Effects applied to the layer, top of the list first (video clips).
+    #[serde(default)]
+    pub effects: Vec<Effect>,
 }
 
 /// Everything about how a video clip looks, edited and undone as one unit.
@@ -89,6 +93,7 @@ pub struct ClipVisual {
     pub transform: Transform,
     pub blend: BlendMode,
     pub anim: TransformAnim,
+    pub effects: Vec<Effect>,
 }
 
 impl Clip {
@@ -106,15 +111,21 @@ impl Clip {
             audio: ClipAudio::default(),
             anim: TransformAnim::default(),
             dissolve_in: Time::ZERO,
+            effects: Vec::new(),
         }
     }
 
     pub fn visual(&self) -> ClipVisual {
-        ClipVisual { transform: self.transform, blend: self.blend, anim: self.anim.clone() }
+        ClipVisual { transform: self.transform, blend: self.blend, anim: self.anim.clone(), effects: self.effects.clone() }
     }
 
     pub fn set_visual(&mut self, v: ClipVisual) {
-        (self.transform, self.blend, self.anim) = (v.transform, v.blend, v.anim);
+        (self.transform, self.blend, self.anim, self.effects) = (v.transform, v.blend, v.anim, v.effects);
+    }
+
+    /// The enabled effects evaluated at *source* time `src`, ready to render.
+    pub fn effects_at(&self, src: Time) -> Vec<EffectValues> {
+        eval_stack(&self.effects, src)
     }
 
     /// The (possibly animated) transform at sequence time `t`.
@@ -144,11 +155,14 @@ pub struct Track {
     /// Track volume and pan, applied on top of each clip's (audio tracks).
     #[serde(default)]
     pub audio: TrackAudio,
+    /// A locked track's clips can't be edited, and ripple edits leave them where they are.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 impl Track {
     pub fn new(name: impl Into<String>, kind: TrackKind) -> Self {
-        Self { name: name.into(), kind, clips: Vec::new(), muted: false, audio: TrackAudio::default() }
+        Self { name: name.into(), kind, clips: Vec::new(), muted: false, audio: TrackAudio::default(), locked: false }
     }
     pub fn clip_at(&self, t: Time) -> Option<&Clip> {
         self.clips.iter().find(|c| c.contains(t))
@@ -169,6 +183,11 @@ pub struct Sequence {
     pub frame_rate: FrameRate,
     /// Index 0 is the bottom video track; higher tracks composite on top.
     pub tracks: Vec<Track>,
+    /// In and out marks (e.g. the range to export). The out point is exclusive.
+    #[serde(default)]
+    pub in_point: Option<Time>,
+    #[serde(default)]
+    pub out_point: Option<Time>,
 }
 
 impl Sequence {
@@ -183,10 +202,25 @@ impl Sequence {
                 Track::new("Video 2", TrackKind::Video),
                 Track::new("Audio 1", TrackKind::Audio),
             ],
+            in_point: None,
+            out_point: None,
         }
     }
     pub fn duration(&self) -> Time {
         self.tracks.iter().map(Track::end).max().unwrap_or(Time::ZERO)
+    }
+
+    /// The marked range `[in, out)`, falling back to the start and end of the
+    /// sequence for a missing mark. `None` if the marks don't make a range.
+    pub fn marked_range(&self) -> Option<(Time, Time)> {
+        let start = self.in_point.unwrap_or(Time::ZERO);
+        let end = self.out_point.unwrap_or_else(|| self.duration());
+        (end > start).then_some((start, end))
+    }
+
+    /// Is `id`, or any clip linked to it, on a locked track? Such clips can't be edited.
+    pub fn is_locked(&self, id: ClipId) -> bool {
+        self.link_group(id).iter().any(|(ti, _)| self.tracks[*ti].locked)
     }
 
     /// Topmost visible video clip at `t` — what the viewer should show until
@@ -233,7 +267,7 @@ impl Sequence {
 }
 
 /// One clip as it should be drawn at a moment in time.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Layer<'a> {
     pub track: usize,
     pub clip: &'a Clip,
@@ -242,9 +276,11 @@ pub struct Layer<'a> {
     /// Transform with keyframes applied.
     pub transform: Transform,
     pub blend: BlendMode,
+    /// Effects with keyframes applied (enabled ones that do something).
+    pub effects: Vec<EffectValues>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum VideoItem<'a> {
     Single(Layer<'a>),
     /// Cross-dissolve: `mix` goes 0 → 1 from all-`from` to all-`to`.
@@ -374,7 +410,8 @@ impl Project {
         let dissolves = self.dissolves(seq);
         fn layer<'a>(p: &Project, track: usize, c: &'a Clip, t: Time) -> Layer<'a> {
             let source_time = if p.is_still(c.media) { Time::ZERO } else { c.source_time(t) };
-            Layer { track, clip: c, source_time, transform: c.transform_at(t), blend: c.blend }
+            // Keys are anchored to source time (also for stills, like the transform's).
+            Layer { track, clip: c, source_time, transform: c.transform_at(t), blend: c.blend, effects: c.effects_at(c.source_time(t)) }
         }
         let mut out = Vec::new();
         for (ti, tr) in s.tracks.iter().enumerate() {

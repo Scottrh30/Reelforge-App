@@ -75,14 +75,14 @@ fn reference_frame(c: &mut Compositor, a: &Path, b: &Path, t: f64) -> Vec<u8> {
     let fa = FrameSource::open(a, None).unwrap().frame_at_blocking(Time::from_secs_f64(t), wait).unwrap();
     let mut layers = vec![LayerInput {
         key: 1, content_id: id, pixels: &fa.rgba, pixel_size: [fa.width, fa.height],
-        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal,
+        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(),
     }];
     let fb;
     if t >= 1.0 {
         fb = FrameSource::open(b, None).unwrap().frame_at_blocking(Time::from_secs_f64(t - 1.0), wait).unwrap();
         layers.push(LayerInput {
             key: 2, content_id: id, pixels: &fb.rgba, pixel_size: [fb.width, fb.height],
-            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal,
+            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(),
         });
     }
     c.render([640, 360], &layers);
@@ -382,4 +382,53 @@ fn exported_dissolve_and_keyframed_motion() {
     assert!(close(pixel(25, 320, 180), [255, 255, 255]), "square at centre at 1 s");
     assert!(close(pixel(12, 320 - 100 + 3, 180), [255, 255, 255]), "square at x-100 at 0.5 s");
     assert!(!close(pixel(12, 320, 180), [255, 255, 255]), "and not yet at the centre");
+}
+
+#[test]
+fn exports_the_marked_range_with_keyframed_effects() {
+    use reelforge_core::{Effect, EffectKind};
+    let (Some(red), Some(green)) = (solid_clip("rf_red.mp4", "red", "640x360"), solid_clip("rf_lime.mp4", "lime", "640x360")) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &red));
+    p.media.push(asset(2, &green));
+    let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+    // V1: red, desaturating from 100% to 0% over its 2 s.
+    let mut a = Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(2.0), None);
+    let mut cc = Effect::new(EffectKind::ColorCorrect);
+    cc.params[2].keys.set(s(0.0), 100.0);
+    cc.params[2].keys.set(s(2.0), 0.0);
+    a.effects.push(cc);
+    // V2: a green screen over it, keyed out completely.
+    let mut g = Clip::new(ClipId(2), MediaId(2), s(0.0), s(0.0), s(2.0), None);
+    g.effects.push(Effect::new(EffectKind::ChromaKey));
+    seq.tracks[0].clips = vec![a];
+    seq.tracks[1].clips = vec![g];
+    // Export only from 1 s to the end.
+    seq.in_point = Some(s(1.0));
+    let (start, end) = seq.marked_range().unwrap();
+    assert_eq!((start, end), (s(1.0), s(2.0)));
+    p.sequences = vec![seq];
+
+    let out = std::env::temp_dir().join("rf_export_range_fx.mp4");
+    let mut st = settings(out.clone());
+    (st.start, st.end, st.include_audio) = (start, end, false);
+    let report = export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    assert_eq!(report.frames, 25, "one second at 25 fps");
+    let info = probe(&out).unwrap();
+    assert!((info.duration.as_secs_f64() - 1.0).abs() < 0.05, "duration {}", info.duration);
+
+    let rate = FrameRate::new(25, 1);
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let mut pixel = |frame: i64| {
+        let f = dec.frame_at_blocking(Time::from_frame(frame, rate), Duration::from_secs(5)).unwrap();
+        let i = ((180 * 640 + 320) * 4) as usize;
+        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+    };
+    let close = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 8);
+    // The movie's first frame is the sequence at 1 s: red at 50% saturation, green keyed away.
+    assert!(close(pixel(0), [204, 92, 92]), "half saturation at 1 s: {:?}", pixel(0));
+    // Its last frame (1.96 s) is almost grey.
+    assert!(close(pixel(24), [131, 126, 126]), "nearly grey at the end: {:?}", pixel(24));
 }

@@ -174,6 +174,7 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
     });
     match selected {
         Some((ti, clip)) => {
+            let locked = st.seq().is_locked(clip.id);
             let media = st.project.media(clip.media);
             egui::Grid::new("clip_props").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                 ui.weak("Media");
@@ -195,11 +196,19 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.monospace(clip.source_in.timecode(rate));
                 ui.end_row();
             });
-            if st.seq().tracks[ti].kind == reelforge_core::TrackKind::Video {
-                ui.add_space(10.0);
-                transform_controls(ui, st, &clip);
-                dissolve_control(ui, st, &clip);
+            if locked {
+                ui.add_space(6.0);
+                ui.colored_label(ui.visuals().warn_fg_color, "On a locked track: unlock it to make changes.");
             }
+            ui.add_enabled_ui(!locked, |ui| {
+                if st.seq().tracks[ti].kind == reelforge_core::TrackKind::Video {
+                    ui.add_space(10.0);
+                    transform_controls(ui, st, &clip);
+                    dissolve_control(ui, st, &clip);
+                    ui.add_space(10.0);
+                    effect_controls(ui, st, &clip);
+                }
+            });
             // Audio controls for this clip, or for the audio linked to a selected video clip.
             let audio_clip = st
                 .seq()
@@ -209,7 +218,7 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 .map(|(t, c)| (t, c.clone()));
             if let Some((ati, aclip)) = audio_clip {
                 ui.add_space(10.0);
-                clip_audio_controls(ui, st, &aclip);
+                ui.add_enabled_ui(!locked, |ui| clip_audio_controls(ui, st, &aclip));
                 ui.add_space(10.0);
                 track_audio_controls(ui, st, ati);
             }
@@ -472,6 +481,126 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
     }
 }
 
+/// The clip's effect stack: add, remove, reorder, enable, and edit each
+/// parameter (with keyframes, like the transform). One undo step per gesture.
+fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
+    use reelforge_core::{Effect, EffectKind};
+    let Some(mut v) = st.visual(clip.id) else { return };
+    let before = v.clone();
+    let playhead = st.playback.playhead;
+    let in_clip = clip.contains(playhead);
+    let src = clip.source_time(playhead.max(clip.timeline_start).min(clip.timeline_end()));
+    enum Act {
+        Up,
+        Down,
+        Remove,
+    }
+    let mut act: Option<(usize, Act)> = None;
+
+    ui.horizontal(|ui| {
+        ui.heading("Effects");
+        ui.menu_button("Add effect…", |ui| {
+            for kind in EffectKind::ALL {
+                if ui.button(kind.label()).clicked() {
+                    v.effects.push(Effect::new(kind));
+                    ui.close();
+                }
+            }
+        });
+    });
+    if v.effects.is_empty() {
+        ui.weak("None. Effects are applied to the clip before its transform, top of the list first.");
+    }
+    let n = v.effects.len();
+    for (i, e) in v.effects.iter_mut().enumerate() {
+        e.normalize();
+        ui.push_id(("effect", i), |ui| {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut e.enabled, "").on_hover_text("Turn the effect on or off");
+                    ui.strong(e.kind.label());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("Remove").clicked() {
+                            act = Some((i, Act::Remove));
+                        }
+                        if arrow_button(ui, false, i + 1 < n).on_hover_text("Move down (applied later)").clicked() {
+                            act = Some((i, Act::Down));
+                        }
+                        if arrow_button(ui, true, i > 0).on_hover_text("Move up (applied earlier)").clicked() {
+                            act = Some((i, Act::Up));
+                        }
+                    });
+                });
+                ui.add_enabled_ui(e.enabled, |ui| {
+                    egui::Grid::new("params").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
+                        for (pi, spec) in e.kind.params().iter().enumerate() {
+                            let animated = e.params[pi].keys.is_animated();
+                            let here = in_clip && e.params[pi].keys.index_at(src).is_some();
+                            ui.weak(spec.name);
+                            let tip = if here { "Remove this keyframe" } else if animated { "Add a keyframe at the playhead" } else { "Start animating: add a keyframe at the playhead" };
+                            let toggle = key_button(ui, here, in_clip).on_hover_text(tip).clicked();
+                            let shown = e.value_at(pi, src);
+                            let mut val = shown;
+                            let changed = ui
+                                .add_enabled_ui(!animated || in_clip, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let r = ui.add(
+                                            egui::DragValue::new(&mut val)
+                                                .speed(spec.speed)
+                                                .range(spec.min..=spec.max)
+                                                .suffix(spec.suffix)
+                                                .fixed_decimals(if spec.speed < 0.1 { 2 } else { 1 }),
+                                        );
+                                        if e.kind == EffectKind::ChromaKey && pi == 0 {
+                                            // Swatch of the key colour.
+                                            let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                            let c = egui::ecolor::Hsva::new(val / 360.0, 1.0, 1.0, 1.0);
+                                            ui.painter().rect_filled(rect, 3.0, Color32::from(c));
+                                        }
+                                        r.changed()
+                                    })
+                                    .inner
+                                })
+                                .inner;
+                            let p = &mut e.params[pi];
+                            if changed {
+                                if animated {
+                                    p.keys.set(src, val);
+                                } else {
+                                    p.value = val;
+                                }
+                            }
+                            if toggle {
+                                if here {
+                                    if p.keys.0.len() == 1 {
+                                        p.value = shown; // last key gone: keep the value it had
+                                    }
+                                    p.keys.remove_at(src);
+                                } else {
+                                    p.keys.set(src, shown);
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+            });
+        });
+    }
+    match act {
+        Some((i, Act::Up)) if i > 0 => v.effects.swap(i, i - 1),
+        Some((i, Act::Down)) if i + 1 < v.effects.len() => v.effects.swap(i, i + 1),
+        Some((i, Act::Remove)) => {
+            v.effects.remove(i);
+        }
+        _ => {}
+    }
+    if v != before {
+        st.set_visual_live(clip.id, v);
+    }
+}
+
 /// "Dissolve in" length for a video clip that touches the one before it.
 fn dissolve_control(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
     let Some(left_dur) = st.project.clip_before(0, clip.id).and_then(|id| st.seq().find_clip(id).map(|(_, c)| c.duration)) else { return };
@@ -495,6 +624,20 @@ fn dissolve_control(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_co
                 .on_hover_text("A dissolve shows the outgoing clip past its end and the incoming one before its start. Trim the clips to leave unused media at the cut.");
         }
     });
+}
+
+/// A small button with a painted up/down triangle (the font has no arrow glyphs).
+fn arrow_button(ui: &mut egui::Ui, up: bool, enabled: bool) -> egui::Response {
+    let size = Vec2::new(20.0, ui.spacing().interact_size.y - 4.0);
+    let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
+    let visuals = if enabled { ui.style().interact(&resp) } else { &ui.style().visuals.widgets.noninteractive };
+    ui.painter().rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+    let c = rect.center();
+    let (dy, w) = (if up { -3.0 } else { 3.0 }, 4.5);
+    let pts = vec![c + Vec2::new(0.0, dy), c + Vec2::new(w, -dy), c + Vec2::new(-w, -dy)];
+    let col = if enabled { visuals.fg_stroke.color } else { ui.visuals().weak_text_color() };
+    ui.painter().add(egui::Shape::convex_polygon(pts, col, egui::Stroke::NONE));
+    resp
 }
 
 /// A button showing a keyframe diamond: filled when there's a key at the playhead.

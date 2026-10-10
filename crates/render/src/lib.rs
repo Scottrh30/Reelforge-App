@@ -16,8 +16,14 @@
 //! `mix`, and that target is then composited over the frame like one layer.
 //! This gives `(1 − u)·over(A, bg) + u·over(B, bg)` exactly, so there's no dip
 //! in brightness halfway through, even for clips that don't fill the frame.
+//!
+//! A layer with effects is processed first, in its own pixel space: it's
+//! converted to premultiplied linear float, run through one full-screen pass
+//! per effect (two for a separable blur) ping-ponging between two scratch
+//! targets kept per layer, and the result is drawn like a group. Because the
+//! effects run before the transform, they move, scale and rotate with the layer.
 
-use reelforge_core::{BlendMode, Transform};
+use reelforge_core::{BlendMode, EffectKind, EffectValues, Transform};
 use std::collections::HashMap;
 
 pub use wgpu;
@@ -29,6 +35,9 @@ pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Draw calls per frame (a dissolve uses three).
 const MAX_DRAWS: usize = 128;
 const UNIFORM_SIZE: u64 = 80; // mat4 + vec2 + f32 + pad
+/// Effect passes per frame.
+const MAX_FX_PASSES: usize = 256;
+const FX_UNIFORM_SIZE: u64 = 64; // 4 × vec4
 
 /// One layer to draw.
 #[derive(Clone)]
@@ -45,6 +54,8 @@ pub struct LayerInput<'a> {
     pub layer_size: [f32; 2],
     pub transform: Transform,
     pub blend: BlendMode,
+    /// Effects to apply to the layer first, top of the stack first.
+    pub effects: Vec<EffectValues>,
 }
 
 /// Something to draw, bottom first.
@@ -60,6 +71,13 @@ struct LayerTex {
     bind_group: wgpu::BindGroup,
     size: [u32; 2],
     content_id: u64,
+}
+
+/// Two scratch targets the size of a layer's pixels, for its effect chain.
+struct FxTargets {
+    size: [u32; 2],
+    views: [wgpu::TextureView; 2],
+    binds: [wgpu::BindGroup; 2],
 }
 
 struct Targets {
@@ -81,6 +99,14 @@ pub struct Compositor {
     group_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
     /// Adds layers into a group target (colour and alpha both summed).
     sum_pipeline: wgpu::RenderPipeline,
+    /// Same, for a layer whose effects already made it premultiplied.
+    sum_premul_pipeline: wgpu::RenderPipeline,
+    /// One per effect pass kind (fragment entry point), all writing float targets.
+    fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline>,
+    fx_uniforms: wgpu::Buffer,
+    fx_uniform_bind: wgpu::BindGroup,
+    fx_uniform_stride: u64,
+    fx_targets: HashMap<u64, FxTargets>,
     output_pipeline: wgpu::RenderPipeline,
     texture_layout: wgpu::BindGroupLayout,
     output_layout: wgpu::BindGroupLayout,
@@ -197,6 +223,70 @@ impl Compositor {
         let group_pipelines = BlendMode::ALL.into_iter().map(|m| (m, make(m.label(), "fs_layer_premul", blend_state(m)))).collect();
         let sum = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
         let sum_pipeline = make("dissolve sum", "fs_layer", wgpu::BlendState { color: sum, alpha: sum });
+        let sum_premul_pipeline = make("dissolve sum (premultiplied)", "fs_layer_premul", wgpu::BlendState { color: sum, alpha: sum });
+
+        // Effect passes.
+        let fx_shader = device.create_shader_module(wgpu::include_wgsl!("effects.wgsl"));
+        let fx_uniform_stride = FX_UNIFORM_SIZE.div_ceil(align) * align;
+        let fx_uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("effect uniforms"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(FX_UNIFORM_SIZE),
+                },
+                count: None,
+            }],
+        });
+        let fx_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("effects"),
+            bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout)],
+            immediate_size: 0,
+        });
+        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette"]
+            .into_iter()
+            .map(|entry| {
+                let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(entry),
+                    layout: Some(&fx_pl),
+                    vertex: wgpu::VertexState {
+                        module: &fx_shader,
+                        entry_point: Some("vs_fullscreen"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &fx_shader,
+                        entry_point: Some(entry),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+                (entry, p)
+            })
+            .collect();
+        let fx_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("effect uniforms"),
+            size: fx_uniform_stride * MAX_FX_PASSES as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let fx_uniform_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("effect uniforms"),
+            layout: &fx_uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &fx_uniforms, offset: 0, size: wgpu::BufferSize::new(FX_UNIFORM_SIZE) }),
+            }],
+        });
 
         let output_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("output"),
@@ -256,6 +346,12 @@ impl Compositor {
             layer_pipelines,
             group_pipelines,
             sum_pipeline,
+            sum_premul_pipeline,
+            fx_pipelines,
+            fx_uniforms,
+            fx_uniform_bind,
+            fx_uniform_stride,
+            fx_targets: HashMap::new(),
             output_pipeline,
             texture_layout,
             output_layout,
@@ -358,6 +454,37 @@ impl Compositor {
         t.content_id = l.content_id;
     }
 
+    fn ensure_fx_targets(&mut self, key: u64, size: [u32; 2]) {
+        if self.fx_targets.get(&key).is_some_and(|t| t.size == size) {
+            return;
+        }
+        let make = || {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("effect scratch"),
+                size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: ACCUM_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&Default::default());
+            let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("effect scratch"),
+                layout: &self.texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            });
+            (view, bind)
+        };
+        let (va, ba) = make();
+        let (vb, bb) = make();
+        self.fx_targets.insert(key, FxTargets { size, views: [va, vb], binds: [ba, bb] });
+    }
+
     /// Composite plain `layers` (bottom first). See [`Self::render_items`].
     pub fn render(&mut self, frame_size: [u32; 2], layers: &[LayerInput]) {
         let items: Vec<DrawItem> = layers.iter().map(|l| DrawItem::Layer(l.clone())).collect();
@@ -368,26 +495,102 @@ impl Compositor {
     pub fn render_items(&mut self, frame_size: [u32; 2], items: &[DrawItem]) {
         self.ensure_targets(frame_size);
         let frame = [frame_size[0] as f32, frame_size[1] as f32];
+        let all_layers = || {
+            items.iter().flat_map(|item| match item {
+                DrawItem::Layer(l) => vec![l],
+                DrawItem::Dissolve { from, to, .. } => vec![from, to],
+            })
+        };
 
-        for item in items {
-            let layers: &[&LayerInput] = match item {
-                DrawItem::Layer(l) => &[l],
-                DrawItem::Dissolve { from, to, .. } => &[from, to],
-            };
-            for l in layers {
-                if l.pixels.len() as u64 == l.pixel_size[0] as u64 * l.pixel_size[1] as u64 * 4 && l.pixel_size[0] > 0 {
-                    self.upload(l);
-                }
+        for l in all_layers() {
+            if l.pixels.len() as u64 == l.pixel_size[0] as u64 * l.pixel_size[1] as u64 * 4 && l.pixel_size[0] > 0 {
+                self.upload(l);
             }
         }
 
-        // Build the draw list: (uniform slot, what to draw).
+        // ---- Effect chains: plan the passes for every layer that has effects ----
+        enum Src {
+            Layer,
+            Scratch(usize),
+        }
+        struct FxPass {
+            key: u64,
+            entry: &'static str,
+            src: Src,
+            dst: usize,
+            uniform: [f32; 16],
+        }
+        let mut fx_passes: Vec<FxPass> = Vec::new();
+        // Which scratch target holds each processed layer's result.
+        let mut processed: HashMap<u64, usize> = HashMap::new();
+        for l in all_layers() {
+            if l.effects.is_empty() || !self.layers.contains_key(&l.key) || processed.contains_key(&l.key) {
+                continue;
+            }
+            let needed = 1 + l.effects.iter().map(|e| if e.kind == EffectKind::Blur { 2 } else { 1 }).sum::<usize>();
+            if fx_passes.len() + needed > MAX_FX_PASSES {
+                log::warn!("too many effect passes; skipping effects on some layers");
+                break;
+            }
+            self.ensure_fx_targets(l.key, l.pixel_size);
+            let [pw, ph] = [l.pixel_size[0].max(1) as f32, l.pixel_size[1].max(1) as f32];
+            let aspect = l.layer_size[0] / l.layer_size[1].max(1.0);
+            let uniform = |v: &[f32; reelforge_core::effects::MAX_PARAMS], dir: [f32; 2]| {
+                let mut u = [0.0f32; 16];
+                u[..8].copy_from_slice(v);
+                u[8..12].copy_from_slice(&[1.0 / pw, 1.0 / ph, dir[0], dir[1]]);
+                u[12] = aspect;
+                u
+            };
+            fx_passes.push(FxPass { key: l.key, entry: "fs_import", src: Src::Layer, dst: 0, uniform: [0.0; 16] });
+            let mut cur = 0;
+            let mut pass = |entry, u, cur: &mut usize| {
+                fx_passes.push(FxPass { key: l.key, entry, src: Src::Scratch(*cur), dst: 1 - *cur, uniform: u });
+                *cur = 1 - *cur;
+            };
+            for e in &l.effects {
+                match e.kind {
+                    EffectKind::Blur => {
+                        // Radius is in frame pixels at 100% scale; sigma is half of it, in texels.
+                        let sx = e.values[0] * 0.5 * pw / l.layer_size[0].max(1.0);
+                        let sy = e.values[0] * 0.5 * ph / l.layer_size[1].max(1.0);
+                        let mut vx = e.values;
+                        vx[0] = sx;
+                        let mut vy = e.values;
+                        vy[0] = sy;
+                        pass("fs_blur", uniform(&vx, [1.0, 0.0]), &mut cur);
+                        pass("fs_blur", uniform(&vy, [0.0, 1.0]), &mut cur);
+                    }
+                    EffectKind::ColorCorrect => pass("fs_color", uniform(&e.values, [0.0; 2]), &mut cur),
+                    EffectKind::ChromaKey => pass("fs_key", uniform(&e.values, [0.0; 2]), &mut cur),
+                    EffectKind::Vignette => pass("fs_vignette", uniform(&e.values, [0.0; 2]), &mut cur),
+                }
+            }
+            processed.insert(l.key, cur);
+        }
+        if !fx_passes.is_empty() {
+            let mut data = vec![0u8; self.fx_uniform_stride as usize * fx_passes.len()];
+            for (i, p) in fx_passes.iter().enumerate() {
+                let bytes: Vec<u8> = p.uniform.iter().flat_map(|f| f.to_ne_bytes()).collect();
+                let off = i * self.fx_uniform_stride as usize;
+                data[off..off + bytes.len()].copy_from_slice(&bytes);
+            }
+            self.queue.write_buffer(&self.fx_uniforms, 0, &data);
+        }
+
+        // Build the draw list: (uniform slot, what to draw). `fx` is the scratch
+        // target holding the layer's processed (premultiplied) pixels, if any.
+        struct Draw {
+            slot: usize,
+            key: u64,
+            fx: Option<usize>,
+        }
         enum Op {
             /// Draw a layer into the frame.
-            Frame { slot: usize, key: u64, blend: BlendMode },
+            Frame { draw: Draw, blend: BlendMode },
             /// Draw a dissolve group: sum two layers into the group target, then
             /// composite the group into the frame.
-            Group { a: (usize, u64), b: (usize, u64), over: usize, blend: BlendMode },
+            Group { a: Draw, b: Draw, over: usize, blend: BlendMode },
         }
         let mut uniforms: Vec<(Transform, [f32; 2])> = Vec::new();
         fn slot(u: &mut Vec<(Transform, [f32; 2])>, t: Transform, size: [f32; 2]) -> usize {
@@ -397,15 +600,18 @@ impl Compositor {
         let mut ops = Vec::new();
         for item in items {
             match item {
-                DrawItem::Layer(l) => ops.push(Op::Frame { slot: slot(&mut uniforms, l.transform, l.layer_size), key: l.key, blend: l.blend }),
+                DrawItem::Layer(l) => {
+                    let draw = Draw { slot: slot(&mut uniforms, l.transform, l.layer_size), key: l.key, fx: processed.get(&l.key).copied() };
+                    ops.push(Op::Frame { draw, blend: l.blend })
+                }
                 DrawItem::Dissolve { from, to, mix } => {
                     let m = mix.clamp(0.0, 1.0);
                     let mut ta = from.transform;
                     ta.opacity *= 1.0 - m;
                     let mut tb = to.transform;
                     tb.opacity *= m;
-                    let a = (slot(&mut uniforms, ta, from.layer_size), from.key);
-                    let b = (slot(&mut uniforms, tb, to.layer_size), to.key);
+                    let a = Draw { slot: slot(&mut uniforms, ta, from.layer_size), key: from.key, fx: processed.get(&from.key).copied() };
+                    let b = Draw { slot: slot(&mut uniforms, tb, to.layer_size), key: to.key, fx: processed.get(&to.key).copied() };
                     let over = slot(&mut uniforms, Transform::default(), frame);
                     ops.push(Op::Group { a, b, over, blend: to.blend });
                 }
@@ -446,30 +652,52 @@ impl Compositor {
             })
             .forget_lifetime()
         };
+
+        // Effects first: each pass is its own render pass on a layer's scratch target.
+        for (i, p) in fx_passes.iter().enumerate() {
+            let (Some(fx), Some(tex)) = (self.fx_targets.get(&p.key), self.layers.get(&p.key)) else { continue };
+            let mut pass = pass_on(&mut enc, &fx.views[p.dst], wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            pass.set_pipeline(&self.fx_pipelines[p.entry]);
+            pass.set_bind_group(0, &self.fx_uniform_bind, &[(i as u64 * self.fx_uniform_stride) as u32]);
+            match p.src {
+                Src::Layer => pass.set_bind_group(1, &tex.bind_group, &[]),
+                Src::Scratch(s) => pass.set_bind_group(1, &fx.binds[s], &[]),
+            }
+            pass.draw(0..3, 0..1);
+        }
+
         let offset = |slot: usize| (slot as u64 * self.uniform_stride) as u32;
+        // The texture to sample for a draw: the processed result, or the plain upload.
+        let source = |d: &Draw| -> Option<&wgpu::BindGroup> {
+            match d.fx {
+                Some(i) => self.fx_targets.get(&d.key).map(|f| &f.binds[i]),
+                None => self.layers.get(&d.key).map(|t| &t.bind_group),
+            }
+        };
 
         // The frame is drawn in runs of plain layers; each dissolve group needs
         // its own pass on the scratch target in between.
         let mut frame_pass = Some(pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK)));
         for op in &ops {
             match op {
-                Op::Frame { slot, key, blend } => {
-                    let Some(tex) = self.layers.get(key) else { continue };
+                Op::Frame { draw, blend } => {
+                    let Some(bind) = source(draw) else { continue };
                     let pass = frame_pass.get_or_insert_with(|| pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Load));
-                    pass.set_pipeline(&self.layer_pipelines[blend]);
-                    pass.set_bind_group(0, &self.uniform_bind, &[offset(*slot)]);
-                    pass.set_bind_group(1, &tex.bind_group, &[]);
+                    // Processed layers are already premultiplied: draw them like a group.
+                    pass.set_pipeline(if draw.fx.is_some() { &self.group_pipelines[blend] } else { &self.layer_pipelines[blend] });
+                    pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
+                    pass.set_bind_group(1, bind, &[]);
                     pass.draw(0..6, 0..1);
                 }
                 Op::Group { a, b, over, blend } => {
                     drop(frame_pass.take());
                     {
                         let mut gp = pass_on(&mut enc, &targets.group_view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
-                        gp.set_pipeline(&self.sum_pipeline);
-                        for (slot, key) in [a, b] {
-                            let Some(tex) = self.layers.get(key) else { continue };
-                            gp.set_bind_group(0, &self.uniform_bind, &[offset(*slot)]);
-                            gp.set_bind_group(1, &tex.bind_group, &[]);
+                        for d in [a, b] {
+                            let Some(bind) = source(d) else { continue };
+                            gp.set_pipeline(if d.fx.is_some() { &self.sum_premul_pipeline } else { &self.sum_pipeline });
+                            gp.set_bind_group(0, &self.uniform_bind, &[offset(d.slot)]);
+                            gp.set_bind_group(1, bind, &[]);
                             gp.draw(0..6, 0..1);
                         }
                     }
@@ -494,6 +722,7 @@ impl Compositor {
     /// Drop cached textures for layers not in `keep`.
     pub fn retain_layers(&mut self, keep: impl Fn(u64) -> bool) {
         self.layers.retain(|k, _| keep(*k));
+        self.fx_targets.retain(|k, _| keep(*k));
     }
 
     /// Read the last rendered frame back as tightly packed RGBA8 (sRGB). Blocks on the GPU.

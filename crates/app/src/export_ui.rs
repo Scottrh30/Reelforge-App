@@ -41,6 +41,8 @@ struct Dialog {
     scale: Scale,
     quality: Quality,
     include_audio: bool,
+    /// Export only between the in and out points.
+    marked_only: bool,
 }
 
 enum Msg {
@@ -82,7 +84,8 @@ impl ExportUi {
             .as_ref()
             .map(|d| d.path.clone())
             .unwrap_or_else(|| default_path(st).to_string_lossy().into_owned());
-        self.dialog = Some(Dialog { path, scale: Scale::Full, quality: Quality::Medium, include_audio: true });
+        let marked_only = st.seq().in_point.is_some() || st.seq().out_point.is_some();
+        self.dialog = Some(Dialog { path, scale: Scale::Full, quality: Quality::Medium, include_audio: true, marked_only });
         self.outcome = None;
     }
 
@@ -122,7 +125,13 @@ impl ExportUi {
         let seq = st.seq();
         let (w, h) = (seq.width, seq.height);
         let duration = seq.duration();
-        let (first, last) = frame_range(seq.frame_rate, Time::ZERO, duration);
+        let marks = seq.in_point.is_some() || seq.out_point.is_some();
+        let marked = seq.marked_range();
+        if !marks {
+            d.marked_only = false;
+        }
+        let (range_start, range_end) = if d.marked_only { marked.unwrap_or((Time::ZERO, Time::ZERO)) } else { (Time::ZERO, duration) };
+        let (first, last) = frame_range(seq.frame_rate, range_start, range_end);
         let has_audio = !reelforge_export::mix_clips(&st.project, 48_000).is_empty();
         let mut open = true;
         let mut start = false;
@@ -187,17 +196,28 @@ impl ExportUi {
                     ui.end_row();
 
                     ui.label("Range");
-                    ui.weak(format!(
-                        "Whole sequence: {} ({} frames @ {:.3} fps)",
-                        duration.timecode(seq.frame_rate),
-                        last - first,
-                        seq.frame_rate.fps()
-                    ));
+                    ui.vertical(|ui| {
+                        ui.radio_value(&mut d.marked_only, false, format!("Whole sequence ({})", duration.timecode(seq.frame_rate)));
+                        let label = match marked {
+                            Some((a, b)) => format!("In to out: {} – {}", a.timecode(seq.frame_rate), b.timecode(seq.frame_rate)),
+                            None if marks => "In to out (the marks don't make a range)".into(),
+                            None => "In to out".into(),
+                        };
+                        ui.add_enabled_ui(marks, |ui| ui.radio_value(&mut d.marked_only, true, label))
+                            .response
+                            .on_disabled_hover_text("Set an in point (I) and/or an out point (O) on the timeline first");
+                        ui.weak(format!(
+                            "{} · {} frames @ {:.3} fps",
+                            (range_end - range_start).max(Time::ZERO).timecode(seq.frame_rate),
+                            last - first,
+                            seq.frame_rate.fps()
+                        ));
+                    });
                     ui.end_row();
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let can = duration > Time::ZERO && !d.path.trim().is_empty();
+                    let can = range_end > range_start && !d.path.trim().is_empty();
                     if ui.add_enabled(can, egui::Button::new(RichText::new("Export").strong())).clicked() {
                         start = true;
                     }
@@ -221,8 +241,8 @@ impl ExportUi {
                 height: (h / d.scale.divisor()).max(2),
                 quality: d.quality,
                 include_audio: d.include_audio && has_audio,
-                start: Time::ZERO,
-                end: duration,
+                start: range_start,
+                end: range_end,
             };
             match st.preview.gpu() {
                 Some((device, queue)) => {

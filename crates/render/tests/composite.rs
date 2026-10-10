@@ -8,7 +8,7 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
 }
 
 fn layer<'a>(key: u64, pixels: &'a [u8], px: [u32; 2], size: [f32; 2], t: Transform, blend: BlendMode) -> LayerInput<'a> {
-    LayerInput { key, content_id: 1, pixels, pixel_size: px, layer_size: size, transform: t, blend }
+    LayerInput { key, content_id: 1, pixels, pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new() }
 }
 
 fn px(img: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
@@ -104,7 +104,7 @@ fn textures_are_cached_by_content_id() {
     let red = solid(4, 4, [255, 0, 0, 255]);
     let green = solid(4, 4, [0, 255, 0, 255]);
     fn mk(pixels: &[u8], id: u64) -> LayerInput<'_> {
-        LayerInput { key: 7, content_id: id, pixels, pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal }
+        LayerInput { key: 7, content_id: id, pixels, pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new() }
     }
     c.render([4, 4], &[mk(&red, 1)]);
     c.render([4, 4], &[mk(&green, 1)]); // same content id: not re-uploaded
@@ -177,4 +177,124 @@ fn layers_after_a_dissolve_still_composite_on_top() {
     let img = c.read_output().unwrap();
     assert!(near(px(&img, 16, 8, 8), [0, 255, 0]), "green on top");
     assert!(near(px(&img, 16, 1, 1), [188, 0, 188]), "dissolve underneath");
+}
+
+// ---- Effects ----------------------------------------------------------------
+
+use reelforge_core::{Effect, EffectKind, EffectValues};
+
+fn fx(kind: EffectKind, set: &[(usize, f32)]) -> EffectValues {
+    let mut e = Effect::new(kind);
+    for &(i, v) in set {
+        e.params[i].value = v;
+    }
+    e.eval(reelforge_core::Time::ZERO)
+}
+
+fn with_fx<'a>(mut l: LayerInput<'a>, effects: Vec<EffectValues>) -> LayerInput<'a> {
+    l.effects = effects;
+    l
+}
+
+/// 8-bit sRGB code for a linear value.
+fn srgb(lin: f32) -> u8 {
+    let v = if lin <= 0.003_130_8 { lin * 12.92 } else { 1.055 * lin.powf(1.0 / 2.4) - 0.055 };
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+#[test]
+fn colour_correction_works_in_linear_light() {
+    let Some(mut c) = setup() else { return };
+    let grey = solid(1, 1, [srgb(0.18), srgb(0.18), srgb(0.18), 255]);
+    // +1 stop doubles the light.
+    c.render([8, 8], &[with_fx(full(1, &grey, [8, 8]), vec![fx(EffectKind::ColorCorrect, &[(0, 1.0)])])]);
+    let v = srgb(0.36);
+    assert!(near(px(&c.read_output().unwrap(), 8, 4, 4), [v, v, v]), "{:?}", px(&c.read_output().unwrap(), 8, 4, 4));
+    // No saturation: pure red becomes grey of the same luminance.
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    c.render([8, 8], &[with_fx(full(2, &red, [8, 8]), vec![fx(EffectKind::ColorCorrect, &[(2, 0.0)])])]);
+    let g = srgb(0.2126);
+    assert!(near(px(&c.read_output().unwrap(), 8, 4, 4), [g, g, g]));
+    // Contrast pivots on 18% grey, which stays put.
+    c.render([8, 8], &[with_fx(full(3, &grey, [8, 8]), vec![fx(EffectKind::ColorCorrect, &[(1, 180.0)])])]);
+    let v = srgb(0.18);
+    assert!(near(px(&c.read_output().unwrap(), 8, 4, 4), [v, v, v]));
+}
+
+#[test]
+fn blur_softens_edges_but_keeps_flat_areas() {
+    let Some(mut c) = setup() else { return };
+    // 64×8: left half black, right half white.
+    let mut img = Vec::new();
+    for _y in 0..8 {
+        for x in 0..64 {
+            let v = if x < 32 { 0 } else { 255 };
+            img.extend([v, v, v, 255]);
+        }
+    }
+    let l = layer(1, &img, [64, 8], [64.0, 8.0], Transform::default(), BlendMode::Normal);
+    c.render([64, 8], &[with_fx(l, vec![fx(EffectKind::Blur, &[(0, 6.0)])])]);
+    let out = c.read_output().unwrap();
+    let at = |x| px(&out, 64, x, 4)[0];
+    assert!(at(2) <= 1 && at(61) >= 254, "far from the edge nothing changes: {} {}", at(2), at(61));
+    // Either side of the edge meet near 50% linear light.
+    let mid = (at(31) as i32 + at(32) as i32) / 2;
+    assert!((mid - srgb(0.5) as i32).abs() <= 12, "edge {mid}");
+    assert!(at(29) > 0 && at(34) < 255, "the edge is spread out");
+    // Monotonic across the edge.
+    assert!((26..38).all(|x| at(x) <= at(x + 1)));
+}
+
+#[test]
+fn chroma_key_removes_green_and_keeps_other_colours() {
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    // Top half: a typical green screen; bottom half: a skin tone.
+    let mut img = Vec::new();
+    for y in 0..8 {
+        for _x in 0..8 {
+            img.extend(if y < 4 { [50, 180, 80, 255] } else { [205, 150, 125, 255] });
+        }
+    }
+    let fg = layer(2, &img, [8, 8], [8.0, 8.0], Transform::default(), BlendMode::Normal);
+    c.render([8, 8], &[full(1, &red, [8, 8]), with_fx(fg, vec![fx(EffectKind::ChromaKey, &[])])]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 8, 4, 1), [255, 0, 0]), "green is keyed out to the red below: {:?}", px(&out, 8, 4, 1));
+    assert!(near(px(&out, 8, 4, 6), [205, 150, 125]), "skin stays: {:?}", px(&out, 8, 4, 6));
+    // A blue key leaves the green screen alone.
+    let fg = layer(3, &img, [8, 8], [8.0, 8.0], Transform::default(), BlendMode::Normal);
+    c.render([8, 8], &[full(1, &red, [8, 8]), with_fx(fg, vec![fx(EffectKind::ChromaKey, &[(0, 230.0), (3, 0.0)])])]);
+    assert!(near(px(&c.read_output().unwrap(), 8, 4, 1), [50, 180, 80]));
+}
+
+#[test]
+fn vignette_darkens_corners_only() {
+    let Some(mut c) = setup() else { return };
+    // Effects run at the layer's own pixel resolution, so give it real pixels.
+    let white = solid(32, 32, [255, 255, 255, 255]);
+    let l = layer(1, &white, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+    c.render([32, 32], &[with_fx(l, vec![fx(EffectKind::Vignette, &[(0, 100.0)])])]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 32, 16, 16), [255, 255, 255]));
+    assert!(px(&out, 32, 0, 0)[0] < 60, "corner {:?}", px(&out, 32, 0, 0));
+}
+
+#[test]
+fn effects_follow_the_layer_and_work_in_dissolves() {
+    let Some(mut c) = setup() else { return };
+    let white = solid(1, 1, [255, 255, 255, 255]);
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    // A white layer at −1 stop, half-size and moved: the effect is applied inside its footprint only.
+    let t = Transform { position: [8.0, 0.0], scale: [0.5, 0.5], rotation: 0.0, opacity: 1.0 };
+    let l = with_fx(layer(1, &white, [1, 1], [16.0, 16.0], t, BlendMode::Normal), vec![fx(EffectKind::ColorCorrect, &[(0, -1.0)])]);
+    c.render([16, 16], &[full(9, &black, [16, 16]), l]);
+    let out = c.read_output().unwrap();
+    let half = srgb(0.5);
+    assert!(near(px(&out, 16, 12, 8), [half, half, half]), "{:?}", px(&out, 16, 12, 8));
+    assert!(near(px(&out, 16, 2, 8), [0, 0, 0]));
+    // A dissolve where one side has effects still sums to the right mix.
+    let a = with_fx(full(1, &white, [16, 16]), vec![fx(EffectKind::ColorCorrect, &[(0, -1.0)])]);
+    c.render_items([16, 16], &[DrawItem::Dissolve { from: a, to: full(2, &black, [16, 16]), mix: 0.5 }]);
+    let q = srgb(0.25);
+    assert!(near(px(&c.read_output().unwrap(), 16, 8, 8), [q, q, q]));
 }

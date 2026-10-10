@@ -1,11 +1,11 @@
 # Reelforge
 
-A HitFilm-style video editor and compositor, written in Rust. Phases 1–4 are done: a working
-editor with synced audio, a GPU compositor, and export to MP4.
+A HitFilm-style video editor and compositor, written in Rust. Phases 1–4 are done (a working
+editor with synced audio, a GPU compositor, and export to MP4), and phase 5 (effects) has begun.
 
 What works now:
 
-- Dockable panel layout (Media, Viewer, Controls, Editor Timeline) — drag tabs to rearrange
+- Dockable panel layout (Media, Viewer, Controls, Editor Timeline, Curves, Meters) — drag tabs to rearrange
 - Import video/image/audio via **File → Import**, `Ctrl+I`, or drag files from Explorer
 - FFmpeg decoding on a background thread, with frame-accurate seeking
 - Viewer with transport bar and timecode
@@ -70,6 +70,40 @@ What works now:
     Each trim is one undo step.
 - **Ripple delete** (**Shift+Del** or **Edit → Ripple delete**): removes the selected clip and
   closes the gap it leaves on all tracks
+- **Slip and slide**: two more tools next to the trim tools, acting on the whole clip.
+  - **Slip (Y)**: drag a clip to change which part of its media it shows. It stays where it is
+    and keeps its length. While you drag, a band under the clip shows the whole source file, so
+    you can see how much is left either side.
+  - **Slide (U)**: drag a clip along the timeline, keeping its content. The clip before it gets
+    longer or shorter to stay butted up, and the clip after it has its start trimmed to match,
+    so nothing else moves. Where there's a gap instead of a neighbour, the clip can slide into the
+    gap but not past it.
+  - Both work on linked audio too, stop at the limits of the media, and are one undo step.
+- **Track locking**: the padlock in each track header. A locked track's clips can't be moved,
+  trimmed, split, deleted or changed in the Controls panel, and ripple edits leave them where
+  they are (the lane is hatched so it's obvious). A clip linked to one on a locked track is
+  locked too, so locking never splits a clip from its sound.
+- **In/out points**: **I** and **O** (or the Edit menu) mark a range at the playhead (the out
+  point includes the frame under the playhead); **Alt+X** clears them. The range shows in blue
+  on the ruler, and **Export** then offers "In to out" as well as the whole sequence
+- **Effects** (Controls panel, **Add effect…**): a stack per video clip, applied on the GPU in
+  linear light before the clip's transform, so they move, scale and rotate with it:
+  - **Colour correction**: exposure (in stops), contrast, saturation, temperature and tint
+  - **Gaussian blur**: radius in pixels (two separable passes, any size)
+  - **Chroma key**: pick the key colour by hue (green by default, with a swatch), threshold,
+    softness and spill suppression
+  - **Vignette**: amount, size and softness
+  - Turn each effect on or off, reorder (applied top to bottom) or remove it. Every parameter
+    has a keyframe button and works like the transform properties. The viewer and export use
+    the same GPU passes, so exports match what you see
+- **Curves panel** (a tab next to the Editor Timeline): a value graph of the selected clip's
+  keyframes. Pick channels on the left (position X/Y, scale X/Y, rotation, opacity and every
+  effect parameter). **Drag** a key to change its time and value (**Shift** changes only the
+  value), **double-click** a curve to add a key, **double-click** or **Alt+click** a key to delete
+  it, and **right-click** for Linear / Ease / Hold. Hold keys are drawn as squares and ease keys
+  hollow. Each drag is one undo step
+- Opening a `.rfproj` from the command line (or by double-clicking it once associated) opens the
+  project
 - **Cross-dissolves**: **Edit → Cross-dissolve at playhead** (`Ctrl+D`) adds a 1 s dissolve at
   the nearest cut between two touching video clips; adjust it with "Dissolve in" in the Controls
   panel. Like audio crossfades it uses the spare media either side of the cut. The dissolve is
@@ -88,8 +122,8 @@ What works now:
 - Colour-accurate decoding: BT.709/BT.601 and full/limited range are read from each file
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
-Not yet: effects (colour correction, blur, chroma key…), other transition types (wipes, dip to
-black), slip/slide edits, a curve editor for keyframes, an in/out range for export.
+Not yet: more effects (sharpen, levels/curves, glow, masks…), other transition types (wipes,
+dip to black), Bézier handles in the curve editor, keyframed audio pan.
 See the roadmap at the bottom.
 
 ## Layout
@@ -201,6 +235,9 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
 | Alt while dragging a clip or edge | Don't snap |
 | Drag a clip edge | Trim (ripple / roll with those tools) |
 | V / B / N | Select / Ripple / Roll trim tool |
+| Y / U | Slip / Slide tool (drag a clip) |
+| I / O | Mark in / out at the playhead |
+| Alt+X | Clear in/out |
 | Shift+Del | Ripple delete (close the gap) |
 | Ctrl+D | Add/remove cross-dissolve at the nearest video cut |
 | Ctrl + mouse wheel | Zoom timeline |
@@ -255,6 +292,23 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
   back before they hit something fixed. While you drag, the app keeps a snapshot of every clip's
   timing and re-plans from it each frame, so the result depends only on where the pointer is
   now. On release the changes become a single batch of `SetClipTiming` commands.
+- **Slip and slide** (`plan_slip` / `plan_slide` in the same file) return the same kind of plan,
+  so the app drives every tool through one live-edit path. Locked tracks are handled there too:
+  `Sequence::is_locked` treats a whole link group as locked, planners refuse to touch locked
+  clips, and `shift_limit` counts them as fixed when working out how far a ripple can go.
+- **Effects** (`core/src/effects.rs`, `render/src/effects.wgsl`): an `Effect` is a kind plus
+  parameters, each a static value or a keyframe `Curve`. `Project::video_layers_at` evaluates
+  them at the frame's source time into `EffectValues`. The compositor runs each layer that has
+  effects through full-screen passes at the layer's own resolution: an import pass
+  (sRGB → premultiplied linear float), then one pass per effect, ping-ponging between two float
+  textures kept per layer. The result is drawn with the pre-multiplied pipeline, including
+  inside dissolve groups. The blur radius is converted from frame pixels to texels, so a proxy-
+  sized preview and a full-size export blur by the same visible amount.
+- **Curves** (`core/src/channels.rs`, `app/src/curves.rs`): `Channel` addresses any keyframeable
+  number on a clip (a transform component or an effect parameter), with uniform get/set/move
+  operations, so the curve editor doesn't care what it's editing. A drag re-applies the move
+  to a copy of the clip taken when it started, which keeps keys in order and makes the whole
+  drag one undo step.
 - **Volume automation** is stored as `(source time, dB)` keys and interpolated linearly in dB
   (what sounds like an even ramp). `mix_clips` converts keys to sample offsets per clip, so the
   mixer applies them sample-accurately in both playback and export.
@@ -283,13 +337,15 @@ finally MPEG-4 Part 2. The export result window says which encoder was used.
 2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms, volume/pan, fades, scrubbing,
    volume keyframes, crossfades, meters~~
    (still to add: per-track meters, audio effects like EQ/compressor, keyframed pan)
-3. ~~Compositor: layers, transforms, opacity, blend modes, viewer gizmo, keyframes,
-   cross-dissolves, trimming, ripple/roll trims, ripple delete~~
+3. ~~Compositor and editing: layers, transforms, opacity, blend modes, viewer gizmo, keyframes
+   and a curve editor, cross-dissolves, trimming, ripple/roll/slip/slide, ripple delete, track
+   locking~~
    (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes,
-   a keyframe curve editor, slip/slide tools, track locking to exclude tracks from a ripple)
-4. ~~Export to H.264/AAC with progress and cancel~~ ← you are here
-   (still to add: in/out range, ProRes/DNxHR for intermediates, PNG sequences, an export queue)
-5. **Effects**: `EffectInstance { params: Vec<Curve<…>> }` on clips (reusing the keyframe
-   curves), each effect a WGSL pass between decode and composite.
-6. **Composite shots**, masks, chroma key, tracking, 3D camera/lights, GPU particles.
+   Bézier keyframe handles)
+4. ~~Export to H.264/AAC with progress, cancel and an in/out range~~
+   (still to add: ProRes/DNxHR for intermediates, PNG sequences, an export queue)
+5. **Effects** ← you are here. Done: the effect stack, keyframable parameters, colour
+   correction, Gaussian blur, chroma key, vignette. Next: levels/curves, sharpen, glow, LUTs,
+   an effects browser, and effects that reach outside the layer (drop shadow, glow).
+6. **Composite shots**, masks, tracking, 3D camera/lights, GPU particles.
 7. **Performance**: proxy media, a GPU-resident frame cache, hardware decode (`d3d11va`).

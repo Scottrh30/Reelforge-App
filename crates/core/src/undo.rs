@@ -211,6 +211,8 @@ impl Command for SplitClip {
             // Transform keys are source-anchored too; a dissolve stays on the left half.
             anim: clip.anim.clone(),
             dissolve_in: Time::ZERO,
+            // Effect keys are source-anchored as well.
+            effects: clip.effects.clone(),
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;
@@ -255,6 +257,10 @@ impl Command for SetClipVisual {
     fn name(&self) -> &str {
         if self.old.blend != self.new.blend {
             "Change blend mode"
+        } else if self.old.effects.len() != self.new.effects.len() {
+            if self.old.effects.len() < self.new.effects.len() { "Add effect" } else { "Remove effect" }
+        } else if self.old.effects != self.new.effects {
+            "Change effect"
         } else if self.old.anim != self.new.anim {
             "Change keyframes"
         } else {
@@ -339,7 +345,7 @@ pub fn trim_range(p: &Project, seq: usize, id: ClipId, edge: Edge) -> Option<(Ti
     let s = &p.sequences[seq];
     let frame = s.frame_rate.frame_duration();
     let group = s.link_group(id);
-    if group.is_empty() {
+    if group.is_empty() || s.is_locked(id) {
         return None;
     }
     let ids: Vec<ClipId> = group.iter().map(|(_, c)| c.id).collect();
@@ -491,6 +497,9 @@ impl Command for SetLink {
 
 /// Split `id` and everything linked to it at `at`. `None` if nothing can be split there.
 pub fn split_group(p: &mut Project, seq: usize, id: ClipId, at: Time) -> Option<Box<dyn Command>> {
+    if p.sequences[seq].is_locked(id) {
+        return None;
+    }
     let targets: Vec<ClipId> = p.sequences[seq]
         .link_group(id)
         .into_iter()
@@ -526,6 +535,9 @@ pub fn move_group(p: &Project, seq: usize, id: ClipId, to: (usize, Time)) -> Res
     let s = &p.sequences[seq];
     let group = s.link_group(id);
     let Some(&(_, lead)) = group.iter().find(|(_, c)| c.id == id) else { return Err("clip not found") };
+    if s.is_locked(id) || s.tracks.get(to.0).is_none_or(|t| t.locked) {
+        return Err("the track is locked");
+    }
     let delta = to.1.0 - lead.timeline_start.0;
     let ignore: Vec<ClipId> = group.iter().map(|(_, c)| c.id).collect();
     let mut cmds: Vec<Box<dyn Command>> = Vec::new();
@@ -656,12 +668,14 @@ mod tests {
         u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(1001, 0.0, 4.0) }));
         let t = Transform { position: [10.0, 5.0], scale: [0.5, 0.5], rotation: 15.0, opacity: 0.4 };
         let old = ClipVisual::default();
-        let new = ClipVisual { transform: t, blend: BlendMode::Screen, anim: Default::default() };
+        let effects = vec![crate::Effect::new(crate::EffectKind::Blur)];
+        let new = ClipVisual { transform: t, blend: BlendMode::Screen, anim: Default::default(), effects: effects.clone() };
         u.execute(&mut p, Box::new(SetClipVisual { seq: 0, id: ClipId(1001), old, new }));
         let cmd = split_group(&mut p, 0, ClipId(1001), Time::from_secs_f64(2.0)).unwrap();
         u.execute(&mut p, cmd);
         for c in &p.sequences[0].tracks[0].clips {
             assert_eq!((c.transform, c.blend), (t, BlendMode::Screen), "both halves keep the look");
+            assert_eq!(c.effects, effects, "and the effects");
         }
         u.undo(&mut p);
         u.undo(&mut p);

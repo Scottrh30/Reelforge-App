@@ -196,6 +196,7 @@ pub fn export_sequence(
             size: [f32; 2],
             transform: reelforge_core::Transform,
             blend: reelforge_core::BlendMode,
+            effects: Vec<reelforge_core::EffectValues>,
             frame: reelforge_media::VideoFrame,
         }
         let mut gather = |l: &reelforge_core::Layer| -> Result<Option<Gathered>> {
@@ -210,7 +211,7 @@ pub fn export_sequence(
             let frame = src
                 .frame_at_blocking(l.source_time, FRAME_TIMEOUT)
                 .ok_or_else(|| anyhow!("{} produced no frame at {}", media.name, l.source_time))?;
-            Ok(Some(Gathered { key: l.clip.id.0, media: media.id, size: [v.width as f32, v.height as f32], transform: l.transform, blend: l.blend, frame }))
+            Ok(Some(Gathered { key: l.clip.id.0, media: media.id, size: [v.width as f32, v.height as f32], transform: l.transform, blend: l.blend, effects: l.effects.clone(), frame }))
         };
         enum Item {
             Single(Gathered),
@@ -238,6 +239,7 @@ pub fn export_sequence(
                 layer_size: g.size,
                 transform: g.transform,
                 blend: g.blend,
+                effects: g.effects.clone(),
             }
         }
         let draw: Vec<DrawItem> = items
