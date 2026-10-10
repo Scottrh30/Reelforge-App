@@ -279,7 +279,15 @@ impl MovieWriter {
 impl Drop for MovieWriter {
     fn drop(&mut self) {
         if !self.finished {
-            // Cancelled or failed: don't leave a broken file behind.
+            // Cancelled or failed: don't leave a broken file behind. Close the file
+            // first: Windows can't delete a file that's still open. (The context's
+            // own drop later sees a null handle and skips closing it again.)
+            unsafe {
+                let ctx = self.octx.as_mut_ptr();
+                if !ctx.is_null() {
+                    ff::ffi::avio_closep(&mut (*ctx).pb);
+                }
+            }
             let _ = std::fs::remove_file(&self.path);
         }
     }

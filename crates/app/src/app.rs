@@ -65,7 +65,8 @@ pub const WAVEFORM_RATE: u32 = 100;
 
 impl ReelforgeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        // Always dark, like HitFilm (not following the OS light/dark setting).
+        cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
 
         // HitFilm-like layout: media bin left, viewer centre, inspector right, timeline across the bottom.
         let mut dock = DockState::new(vec![Tab::Viewer]);

@@ -205,6 +205,25 @@ don't include it, so Reelforge falls back, in order, to NVIDIA (`h264_nvenc`), I
 (`h264_qsv`), AMD (`h264_amf`) or Windows Media Foundation (`h264_mf`) hardware encoders, and
 finally MPEG-4 Part 2. The export result window says which encoder was used.
 
+### Cross-compiling the Windows build from Linux
+
+The prebuilt `Reelforge-Windows-x64.zip` was made this way (mingw-w64, no Windows needed):
+
+```sh
+sudo apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 clang
+rustup target add x86_64-pc-windows-gnu
+# FFmpeg: unzip a "win64-gpl-shared" build from https://github.com/BtbN/FFmpeg-Builds/releases
+export FFMPEG_DIR=$PWD/ffmpeg-n8.1-latest-win64-gpl-shared-8.1
+export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+# mingw-w64 lacks d3d12video.h, which FFmpeg's headers include; a one-line stub
+# (`typedef struct ID3D12VideoDevice ID3D12VideoDevice;`) in ./stubs is enough for bindgen.
+export BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnu="--sysroot=/usr/x86_64-w64-mingw32 -I/usr/x86_64-w64-mingw32/include -I$PWD/stubs"
+cargo build --release -p reelforge --target x86_64-pc-windows-gnu
+```
+
+Ship `reelforge.exe` with the `bin/*.dll` files from the FFmpeg build next to it. The test
+suites can be cross-built the same way (`cargo test --no-run --target …`) and run under Wine.
+
 ### Troubleshooting
 
 | Symptom | Fix |
