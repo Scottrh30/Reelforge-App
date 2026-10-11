@@ -17,11 +17,13 @@ pub struct Settings {
     pub cache_mb: usize,
     /// Minutes between autosaves (0 = off).
     pub autosave_minutes: u32,
+    /// Show picture thumbnails on video clips in the timeline.
+    pub timeline_thumbnails: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, autosave_minutes: 2 }
+        Self { hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, autosave_minutes: 2, timeline_thumbnails: true }
     }
 }
 
@@ -57,6 +59,9 @@ pub fn window(ctx: &egui::Context, st: &mut EditorState, open: &mut bool) {
         });
         let (used, frames, hit) = FrameCache::global().stats();
         ui.weak(format!("Holding {frames} frames ({} MB) · {:.0}% of requests served from memory", used >> 20, hit * 100.0));
+        ui.add_space(4.0);
+        ui.checkbox(&mut s.timeline_thumbnails, "Picture thumbnails on timeline clips")
+            .on_hover_text("Small frames along each video clip. They're decoded in the background (from proxies when there are some).");
 
         ui.add_space(8.0);
         ui.heading("Proxies");

@@ -1207,7 +1207,7 @@ mod tests {
         let mut p = Project::new();
         let mut u = UndoStack::default();
         u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(1001, 0.0, 4.0) }));
-        let t = Transform { position: [10.0, 5.0], scale: [0.5, 0.5], rotation: 15.0, opacity: 0.4 };
+        let t = Transform { position: [10.0, 5.0], scale: [0.5, 0.5], rotation: 15.0, opacity: 0.4, ..Default::default() };
         let old = ClipVisual::default();
         let effects = vec![crate::Effect::new(crate::EffectKind::Blur)];
         let new = ClipVisual { transform: t, blend: BlendMode::Screen, anim: Default::default(), effects: effects.clone(), masks: Vec::new() };

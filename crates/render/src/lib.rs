@@ -36,7 +36,7 @@ const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Draw calls per frame (a dissolve uses three).
 const MAX_DRAWS: usize = 128;
-const UNIFORM_SIZE: u64 = 112; // mat4 + vec2 + 2×f32 + 2×vec4
+const UNIFORM_SIZE: u64 = 128; // mat4 + vec2 + 2×f32 + 3×vec4
 /// Effect passes per frame.
 const MAX_FX_PASSES: usize = 256;
 const FX_UNIFORM_SIZE: u64 = 64; // 4 × vec4
@@ -103,6 +103,8 @@ pub struct MaskInput<'a> {
 }
 
 /// Something to draw, bottom first.
+// Built per frame and consumed at once, so the size difference doesn't matter.
+#[allow(clippy::large_enum_variant)]
 pub enum DrawItem<'a> {
     Layer(LayerInput<'a>),
     /// Cross-dissolve from `from` to `to`; `mix` 0 → 1. The pair is composited
@@ -891,6 +893,7 @@ impl Compositor {
             let w = wipe.unwrap_or(Wipe { iris: false, axis: [0.0; 3], progress: 1.0, softness: 0.1 });
             floats.extend([w.axis[0], w.axis[1], w.axis[2], w.progress.clamp(0.0, 1.0)]);
             floats.extend([w.softness, frame[0], frame[1], 0.0]);
+            floats.extend(t.crop_uv());
             let bytes: Vec<u8> = floats.iter().flat_map(|f| f.to_ne_bytes()).collect();
             let off = i * self.uniform_stride as usize;
             data[off..off + bytes.len()].copy_from_slice(&bytes);

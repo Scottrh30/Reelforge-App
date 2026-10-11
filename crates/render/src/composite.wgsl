@@ -16,6 +16,8 @@ struct Layer {
     wipe: vec4<f32>,
     // Softness (0–1 of the frame), frame width, frame height.
     wipe2: vec4<f32>,
+    // The part of the layer shown after cropping, as UVs (u0, v0, u1, v1).
+    crop: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> layer: Layer;
@@ -34,7 +36,8 @@ fn vs_layer(@builtin(vertex_index) i: u32) -> VsOut {
         vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
         vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
     );
-    let uv = corners[i];
+    // Only the cropped part of the layer is drawn: a smaller quad, sampling that part.
+    let uv = mix(layer.crop.xy, layer.crop.zw, corners[i]);
     let local = (uv - vec2(0.5)) * layer.size;
     var out: VsOut;
     out.pos = layer.mvp * vec4(local, 0.0, 1.0);

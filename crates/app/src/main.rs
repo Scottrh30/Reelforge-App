@@ -6,6 +6,8 @@ mod audio;
 mod curves;
 mod export_ui;
 mod fxbrowser;
+mod gizmo;
+mod thumbs;
 mod history;
 mod masks;
 mod meters;

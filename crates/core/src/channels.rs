@@ -21,12 +21,16 @@ pub enum Channel {
 enum Ref<'a> {
     Scalar(&'a Curve<f32>, f32),
     Pair(&'a Curve<[f32; 2]>, usize, f32),
+    Quad(&'a Curve<[f32; 4]>, usize, f32),
 }
 
 enum Mut<'a> {
     Scalar(&'a mut Curve<f32>),
     Pair(&'a mut Curve<[f32; 2]>, usize),
+    Quad(&'a mut Curve<[f32; 4]>, usize),
 }
+
+const CROP_SIDES: [&str; 4] = ["left", "top", "right", "bottom"];
 
 /// Keys of a channel as plain `(time, value, interpolation)`.
 pub type ChannelKey = (Time, f32, Interp);
@@ -41,6 +45,12 @@ impl ClipVisual {
             Channel::Transform(Prop::Scale, 1),
             Channel::Transform(Prop::Rotation, 0),
             Channel::Transform(Prop::Opacity, 0),
+            Channel::Transform(Prop::Anchor, 0),
+            Channel::Transform(Prop::Anchor, 1),
+            Channel::Transform(Prop::Crop, 0),
+            Channel::Transform(Prop::Crop, 1),
+            Channel::Transform(Prop::Crop, 2),
+            Channel::Transform(Prop::Crop, 3),
         ];
         for (i, e) in self.effects.iter().enumerate() {
             v.extend((0..e.kind.params().len()).map(|p| Channel::Effect(i, p)));
@@ -54,6 +64,8 @@ impl ClipVisual {
             Channel::Transform(Prop::Scale, c) => format!("Scale {}", ["X", "Y"][c as usize & 1]),
             Channel::Transform(Prop::Rotation, _) => "Rotation".into(),
             Channel::Transform(Prop::Opacity, _) => "Opacity".into(),
+            Channel::Transform(Prop::Anchor, c) => format!("Anchor {}", ["X", "Y"][c as usize & 1]),
+            Channel::Transform(Prop::Crop, c) => format!("Crop {}", CROP_SIDES[c as usize & 3]),
             Channel::Effect(e, p) => match self.effects.get(e) {
                 Some(fx) => format!("{}: {}", fx.kind.label(), fx.spec(p).map_or("?", |s| s.name)),
                 None => "?".into(),
@@ -64,9 +76,9 @@ impl ClipVisual {
     /// Display multiplier and unit: opacity and scale are stored as fractions but shown as %.
     pub fn channel_display(&self, ch: Channel) -> (f32, &'static str) {
         match ch {
-            Channel::Transform(Prop::Scale | Prop::Opacity, _) => (100.0, " %"),
+            Channel::Transform(Prop::Scale | Prop::Opacity | Prop::Crop, _) => (100.0, " %"),
             Channel::Transform(Prop::Rotation, _) => (1.0, "°"),
-            Channel::Transform(Prop::Position, _) => (1.0, " px"),
+            Channel::Transform(Prop::Position | Prop::Anchor, _) => (1.0, " px"),
             Channel::Effect(e, p) => (1.0, self.effects.get(e).and_then(|fx| fx.spec(p)).map_or("", |s| s.suffix)),
         }
     }
@@ -74,7 +86,7 @@ impl ClipVisual {
     /// Allowed value range (stored units), if the channel has one.
     pub fn channel_range(&self, ch: Channel) -> Option<(f32, f32)> {
         match ch {
-            Channel::Transform(Prop::Opacity, _) => Some((0.0, 1.0)),
+            Channel::Transform(Prop::Opacity | Prop::Crop, _) => Some((0.0, 1.0)),
             Channel::Effect(e, p) => self.effects.get(e).and_then(|fx| fx.spec(p)).map(|s| (s.min, s.max)),
             _ => None,
         }
@@ -87,6 +99,8 @@ impl ClipVisual {
             Channel::Transform(Prop::Scale, c) => Ref::Pair(&self.anim.scale, c as usize & 1, t.scale[c as usize & 1]),
             Channel::Transform(Prop::Rotation, _) => Ref::Scalar(&self.anim.rotation, t.rotation),
             Channel::Transform(Prop::Opacity, _) => Ref::Scalar(&self.anim.opacity, t.opacity),
+            Channel::Transform(Prop::Anchor, c) => Ref::Pair(&self.anim.anchor, c as usize & 1, t.anchor[c as usize & 1]),
+            Channel::Transform(Prop::Crop, c) => Ref::Quad(&self.anim.crop, c as usize & 3, t.crop[c as usize & 3]),
             Channel::Effect(e, p) => {
                 let param = self.effects.get(e)?.params.get(p)?;
                 Ref::Scalar(&param.keys, param.value)
@@ -100,6 +114,8 @@ impl ClipVisual {
             Channel::Transform(Prop::Scale, c) => Mut::Pair(&mut self.anim.scale, c as usize & 1),
             Channel::Transform(Prop::Rotation, _) => Mut::Scalar(&mut self.anim.rotation),
             Channel::Transform(Prop::Opacity, _) => Mut::Scalar(&mut self.anim.opacity),
+            Channel::Transform(Prop::Anchor, c) => Mut::Pair(&mut self.anim.anchor, c as usize & 1),
+            Channel::Transform(Prop::Crop, c) => Mut::Quad(&mut self.anim.crop, c as usize & 3),
             Channel::Effect(e, p) => Mut::Scalar(&mut self.effects.get_mut(e)?.params.get_mut(p)?.keys),
         })
     }
@@ -108,6 +124,7 @@ impl ClipVisual {
         match self.get(ch) {
             Some(Ref::Scalar(c, _)) => c.is_animated(),
             Some(Ref::Pair(c, ..)) => c.is_animated(),
+            Some(Ref::Quad(c, ..)) => c.is_animated(),
             None => false,
         }
     }
@@ -116,6 +133,7 @@ impl ClipVisual {
         match self.get(ch) {
             Some(Ref::Scalar(c, _)) => c.0.iter().map(|k| (k.at, k.value, k.interp)).collect(),
             Some(Ref::Pair(c, i, _)) => c.0.iter().map(|k| (k.at, k.value[i], k.interp)).collect(),
+            Some(Ref::Quad(c, i, _)) => c.0.iter().map(|k| (k.at, k.value[i], k.interp)).collect(),
             None => Vec::new(),
         }
     }
@@ -126,6 +144,11 @@ impl ClipVisual {
             Some(Ref::Scalar(c, base)) => c.value_at(t, base),
             Some(Ref::Pair(c, i, base)) => {
                 let mut b = [0.0; 2];
+                b[i] = base;
+                c.value_at(t, b)[i]
+            }
+            Some(Ref::Quad(c, i, base)) => {
+                let mut b = [0.0; 4];
                 b[i] = base;
                 c.value_at(t, b)[i]
             }
@@ -163,6 +186,13 @@ impl ClipVisual {
                 }
                 t
             }
+            Some(Mut::Quad(c, i)) => {
+                let t = place(&mut c.0, index, at, gap).unwrap_or(at);
+                if let Some(k) = c.0.get_mut(index) {
+                    k.value[i] = value;
+                }
+                t
+            }
             None => at,
         }
     }
@@ -171,6 +201,7 @@ impl ClipVisual {
         match self.get_mut(ch) {
             Some(Mut::Scalar(c)) => c.0.get_mut(index).into_iter().for_each(|k| k.interp = interp),
             Some(Mut::Pair(c, _)) => c.0.get_mut(index).into_iter().for_each(|k| k.interp = interp),
+            Some(Mut::Quad(c, _)) => c.0.get_mut(index).into_iter().for_each(|k| k.interp = interp),
             None => {}
         }
     }
@@ -182,6 +213,9 @@ impl ClipVisual {
                 c.0.remove(index);
             }
             Some(Mut::Pair(c, _)) if index < c.0.len() => {
+                c.0.remove(index);
+            }
+            Some(Mut::Quad(c, _)) if index < c.0.len() => {
                 c.0.remove(index);
             }
             _ => {}
@@ -197,10 +231,12 @@ impl ClipVisual {
             Ref::Pair(c, _, _) => {
                 let b = match ch {
                     Channel::Transform(Prop::Scale, _) => self.transform.scale,
+                    Channel::Transform(Prop::Anchor, _) => self.transform.anchor,
                     _ => self.transform.position,
                 };
                 KeyBase::Pair(c.value_at(at, b))
             }
+            Ref::Quad(c, _, _) => KeyBase::Quad(c.value_at(at, self.transform.crop)),
         };
         match (self.get_mut(ch)?, base) {
             (Mut::Scalar(c), KeyBase::Scalar(v)) => {
@@ -208,6 +244,10 @@ impl ClipVisual {
                 c.index_at(at)
             }
             (Mut::Pair(c, _), KeyBase::Pair(v)) => {
+                c.set(at, v);
+                c.index_at(at)
+            }
+            (Mut::Quad(c, _), KeyBase::Quad(v)) => {
                 c.set(at, v);
                 c.index_at(at)
             }
@@ -219,6 +259,7 @@ impl ClipVisual {
 enum KeyBase {
     Scalar(f32),
     Pair([f32; 2]),
+    Quad([f32; 4]),
 }
 
 #[cfg(test)]
@@ -244,6 +285,22 @@ mod tests {
         v.channel_set_key(y, 1, s(2.0), 120.0, Time(1));
         assert_eq!(v.channel_value(y, s(1.0)), 70.0);
         assert_eq!(v.channel_value(x, s(1.0)), 10.0, "x untouched");
+    }
+
+    #[test]
+    fn anchor_and_crop_are_channels() {
+        let mut v = ClipVisual::default();
+        v.transform.crop = [0.1, 0.2, 0.3, 0.4];
+        let right = Channel::Transform(Prop::Crop, 2);
+        assert_eq!(v.channel_name(right), "Crop right");
+        assert_eq!(v.channel_value(right, s(0.0)), 0.3);
+        let i = v.channel_add_key(right, s(1.0)).unwrap();
+        v.channel_set_key(right, i, s(1.0), 2.0, Time(1));
+        assert_eq!(v.anim.crop.0[0].value, [0.1, 0.2, 1.0, 0.4], "clamped; other sides kept");
+        let ax = Channel::Transform(Prop::Anchor, 0);
+        v.channel_add_key(ax, s(0.0));
+        v.channel_set_key(ax, 0, s(0.0), 25.0, Time(1));
+        assert_eq!(v.anim.eval(&v.transform, s(0.0)).anchor, [25.0, 0.0]);
     }
 
     #[test]

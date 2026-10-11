@@ -85,6 +85,8 @@ pub struct EditorState {
     /// Installed fonts for titles, found in the background at startup (`None` until then).
     fonts: Arc<std::sync::Mutex<Option<Arc<Vec<FontEntry>>>>>,
     pub settings: crate::settings::Settings,
+    /// Pictures for video clips on the timeline.
+    pub thumbs: crate::thumbs::Thumbnails,
     pub settings_open: bool,
     pub proxies: crate::proxies::Proxies,
     /// Project revision when proxies were last looked for.
@@ -366,6 +368,7 @@ impl EditorState {
             waveform_tx,
             waveform_rx,
             settings: Default::default(),
+            thumbs: Default::default(),
             settings_open: false,
             proxies: Default::default(),
             proxied_rev: 0,
@@ -1812,6 +1815,7 @@ impl EditorState {
                 }
                 ui.checkbox(&mut self.playback.scrub_audio, "Audio scrubbing")
                     .on_hover_text("Hear audio while dragging the playhead or stepping frames");
+                ui.checkbox(&mut self.settings.timeline_thumbnails, "Timeline thumbnails").on_hover_text("Show small frames along video clips");
             });
             ui.separator();
             crate::history::undo_redo_buttons(ui, self);

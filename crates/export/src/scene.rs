@@ -54,6 +54,7 @@ struct Gathered {
 /// alpha, so the renderer's filtering covers the rest.
 const MASK_MAX: u32 = 2048;
 
+#[allow(clippy::large_enum_variant)] // short-lived, per frame
 enum Item {
     Single(Gathered),
     /// A dissolve, or a dip through a colour.
@@ -267,7 +268,7 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
     frame_size.hash(&mut h);
     let layer = |l: &Gathered, h: &mut DefaultHasher| {
         (l.key, l.picture.media, l.picture.frame.pts, l.picture.frame.generation, l.picture.frame.width).hash(h);
-        for f in l.transform.position.iter().chain(&l.transform.scale).chain([&l.transform.rotation, &l.transform.opacity]).chain(&l.picture.size) {
+        for f in l.transform.position.iter().chain(&l.transform.scale).chain([&l.transform.rotation, &l.transform.opacity]).chain(&l.transform.anchor).chain(&l.transform.crop).chain(&l.picture.size) {
             f.to_bits().hash(h);
         }
         l.blend.hash(h);

@@ -285,7 +285,7 @@ fn effects_follow_the_layer_and_work_in_dissolves() {
     let white = solid(1, 1, [255, 255, 255, 255]);
     let black = solid(1, 1, [0, 0, 0, 255]);
     // A white layer at −1 stop, half-size and moved: the effect is applied inside its footprint only.
-    let t = Transform { position: [8.0, 0.0], scale: [0.5, 0.5], rotation: 0.0, opacity: 1.0 };
+    let t = Transform { position: [8.0, 0.0], scale: [0.5, 0.5], ..Default::default() };
     let l = with_fx(layer(1, &white, [1, 1], [16.0, 16.0], t, BlendMode::Normal), vec![fx(EffectKind::ColorCorrect, &[(0, -1.0)])]);
     c.render([16, 16], &[full(9, &black, [16, 16]), l]);
     let out = c.read_output().unwrap();
@@ -406,4 +406,37 @@ fn wipes_dips_and_iris() {
     let p = px(&c.read_output().unwrap(), 32, 16, 8);
     let h = srgb(0.5);
     assert!(near(p, [255, h, h]), "{p:?}");
+}
+
+#[test]
+fn crop_cuts_the_layer_and_anchor_moves_the_pivot() {
+    let Some(mut c) = setup() else { return };
+    // A 16×16 picture: left half red, right half green.
+    let mut img = Vec::new();
+    for _y in 0..16 {
+        for x in 0..16 {
+            img.extend(if x < 8 { [255, 0, 0, 255] } else { [0, 255, 0, 255] });
+        }
+    }
+    // Crop away the left half: only green remains, still in its place.
+    let t = Transform { crop: [0.5, 0.0, 0.0, 0.25], ..Default::default() };
+    c.render([32, 32], &[layer(1, &img, [16, 16], [16.0, 16.0], t, BlendMode::Normal)]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 32, 12, 16), [0, 0, 0]), "the cropped left half is gone");
+    assert!(near(px(&out, 32, 20, 10), [0, 255, 0]), "the right half stays where it was");
+    assert!(near(px(&out, 32, 20, 22), [0, 0, 0]), "the bottom quarter is cropped");
+
+    // Anchor at the layer's top-left corner: that corner sits on the frame centre.
+    let t = Transform { anchor: [-8.0, -8.0], ..Default::default() };
+    c.render([32, 32], &[layer(1, &img, [16, 16], [16.0, 16.0], t, BlendMode::Normal)]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 32, 18, 18), [255, 0, 0]), "the layer hangs down-right of the centre");
+    assert!(near(px(&out, 32, 14, 14), [0, 0, 0]));
+    // Rotating 180° about that corner swings the layer up-left.
+    let t = Transform { anchor: [-8.0, -8.0], rotation: 180.0, ..Default::default() };
+    c.render([32, 32], &[layer(1, &img, [16, 16], [16.0, 16.0], t, BlendMode::Normal)]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 32, 13, 13), [255, 0, 0]));
+    assert!(near(px(&out, 32, 4, 4), [0, 255, 0]));
+    assert!(near(px(&out, 32, 18, 18), [0, 0, 0]));
 }

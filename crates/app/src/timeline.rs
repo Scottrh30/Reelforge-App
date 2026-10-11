@@ -203,6 +203,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     let mut track_action: Option<TrackAction> = None;
 
     // ---- Tracks and clips ----
+    // Taken out while the tracks are drawn (they borrow the state).
+    let mut thumbs = std::mem::take(&mut st.thumbs);
+    thumbs.poll(ui.ctx());
     let selected_group: Vec<ClipId> = reelforge_core::undo::expand_links(&st.project, st.active, &st.selected_ids());
     // While dragging clips, the originals are drawn faded.
     let moving: Vec<ClipId> = match &st.timeline.drag {
@@ -331,6 +334,12 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 fill = fill.gamma_multiply(0.6);
             }
             painter.rect_filled(vis, 4.0, fill);
+
+            // Picture thumbnails along video clips (not titles or composite shots).
+            let mut thumbs_drawn = false;
+            if tr.kind == TrackKind::Video && clip.title.is_none() && clip.nested.is_none() && st.settings.timeline_thumbnails {
+                thumbs_drawn = draw_thumbnails(ui.ctx(), &painter, &st.project, &mut thumbs, clip, cr, vis, &m, dragging || tr.muted || tr.locked);
+            }
 
             // Waveform on audio clips: peaks mirrored around the centre line,
             // scaled by clip + track volume and the fades, so it shows what you'll hear.
@@ -463,9 +472,16 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 _ => name,
             };
             let text_painter = painter.with_clip_rect(vis.shrink(2.0));
+            if thumbs_drawn {
+                // A dark tab behind the name so it reads over the pictures.
+                let galley = text_painter.layout_no_wrap(name.clone(), FontId::proportional(12.0), Color32::WHITE);
+                let tab = Rect::from_min_size(vis.left_top() + Vec2::new(2.0, 2.0), galley.size() + Vec2::new(8.0, 4.0));
+                text_painter.rect_filled(tab, 3.0, Color32::from_black_alpha(150));
+            }
             text_painter.text(vis.left_top() + Vec2::new(6.0, 4.0), Align2::LEFT_TOP, name, FontId::proportional(12.0), Color32::WHITE);
         }
     }
+    st.thumbs = thumbs;
     if let Some(ti) = mute_clicked {
         st.toggle_mute(ti);
     }
@@ -1309,6 +1325,52 @@ fn snap_point(st: &EditorState, id: ClipId, edge: Edge, edge_at: Time, mode: Tri
         }
     }
     best.map_or(t, |(_, x)| x)
+}
+
+/// Tile a video clip with thumbnails of the frames under each tile. Returns
+/// whether any were drawn.
+#[allow(clippy::too_many_arguments)]
+fn draw_thumbnails(ctx: &egui::Context, painter: &egui::Painter, project: &reelforge_core::Project, thumbs: &mut crate::thumbs::Thumbnails, clip: &reelforge_core::Clip, cr: Rect, vis: Rect, m: &Mapping, dim: bool) -> bool {
+    let Some(media) = project.media(clip.media) else { return false };
+    let Some(v) = media.info.video.as_ref() else { return false };
+    if !media.path.exists() {
+        return false;
+    }
+    let (path, duration) = (media.path.clone(), media.info.duration);
+    let area = Rect::from_min_max(cr.min + Vec2::new(1.0, 1.0), cr.max - Vec2::new(1.0, 1.0));
+    let h = area.height();
+    if h < 8.0 {
+        return false;
+    }
+    let aspect = (v.width as f32 / v.height.max(1) as f32).clamp(0.25, 4.0);
+    let w = (h * aspect).max(8.0);
+    let p = painter.with_clip_rect(vis.shrink(1.0));
+    // Media covered by one tile (speed included), to pick how finely to sample.
+    let span = (w / m.pps) as f64 * clip.speed.abs().max(1e-3) as f64;
+    let first = ((vis.left() - area.left()) / w).floor().max(0.0) as i32;
+    let last = ((vis.right() - area.left()) / w).ceil() as i32;
+    let tint = if dim { Color32::from_gray(110) } else { Color32::from_gray(225) };
+    let mut any = false;
+    for k in first..last.max(first) {
+        let x = area.left() + k as f32 * w;
+        if x >= area.right() {
+            break;
+        }
+        // The frame at the middle of the tile (or of what's left of the clip).
+        let mid = ((x + w / 2.0).min((x + area.right()) / 2.0) - cr.left()) / m.pps;
+        let src = clip.source_in + Time::from_secs_f64(mid.max(0.0) as f64);
+        let at = clip.media_time(src).max(Time::ZERO).min(duration);
+        if let Some(tex) = thumbs.get(ctx, clip.media, &path, at, span) {
+            let tile = Rect::from_min_size(Pos2::new(x, area.top()), Vec2::new(w, h));
+            p.image(tex.id(), tile, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
+            any = true;
+        }
+    }
+    if any {
+        // Rounded corners like the clip, and a thin line between the pictures and the edge.
+        p.rect_stroke(area, 3.0, Stroke::new(1.0, Color32::from_black_alpha(90)), StrokeKind::Inside);
+    }
+    any
 }
 
 fn clip_rect(m: &Mapping, row: Rect, start: Time, dur: Time) -> Rect {

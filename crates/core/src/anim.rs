@@ -136,10 +136,43 @@ pub enum Prop {
     Scale,
     Rotation,
     Opacity,
+    Anchor,
+    Crop,
 }
 
 impl Prop {
-    pub const ALL: [Prop; 4] = [Prop::Position, Prop::Scale, Prop::Rotation, Prop::Opacity];
+    pub const ALL: [Prop; 6] = [Prop::Position, Prop::Scale, Prop::Rotation, Prop::Opacity, Prop::Anchor, Prop::Crop];
+}
+
+impl Lerp for [f32; 4] {
+    fn lerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+        std::array::from_fn(|i| f32::lerp(a[i], b[i], t))
+    }
+}
+
+impl Transform {
+    /// Copy property `p` from `from`.
+    pub fn copy_prop(&mut self, p: Prop, from: &Transform) {
+        match p {
+            Prop::Position => self.position = from.position,
+            Prop::Scale => self.scale = from.scale,
+            Prop::Rotation => self.rotation = from.rotation,
+            Prop::Opacity => self.opacity = from.opacity,
+            Prop::Anchor => self.anchor = from.anchor,
+            Prop::Crop => self.crop = from.crop,
+        }
+    }
+    /// Does property `p` differ between the two?
+    pub fn prop_differs(&self, p: Prop, other: &Transform) -> bool {
+        match p {
+            Prop::Position => self.position != other.position,
+            Prop::Scale => self.scale != other.scale,
+            Prop::Rotation => self.rotation != other.rotation,
+            Prop::Opacity => self.opacity != other.opacity,
+            Prop::Anchor => self.anchor != other.anchor,
+            Prop::Crop => self.crop != other.crop,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -149,19 +182,36 @@ pub struct TransformAnim {
     pub scale: Curve<[f32; 2]>,
     pub rotation: Curve<f32>,
     pub opacity: Curve<f32>,
+    #[serde(skip_serializing_if = "Curve::is_empty")]
+    pub anchor: Curve<[f32; 2]>,
+    #[serde(skip_serializing_if = "Curve::is_empty")]
+    pub crop: Curve<[f32; 4]>,
+}
+
+impl<T> Curve<T> {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl TransformAnim {
     pub fn is_animated(&self) -> bool {
-        self.position.is_animated() || self.scale.is_animated() || self.rotation.is_animated() || self.opacity.is_animated()
+        Prop::ALL.iter().any(|p| self.prop_animated(*p))
     }
 
     pub fn prop_animated(&self, p: Prop) -> bool {
+        self.key_count(p) > 0
+    }
+
+    /// How many keys property `p` has.
+    pub fn key_count(&self, p: Prop) -> usize {
         match p {
-            Prop::Position => self.position.is_animated(),
-            Prop::Scale => self.scale.is_animated(),
-            Prop::Rotation => self.rotation.is_animated(),
-            Prop::Opacity => self.opacity.is_animated(),
+            Prop::Position => self.position.0.len(),
+            Prop::Scale => self.scale.0.len(),
+            Prop::Rotation => self.rotation.0.len(),
+            Prop::Opacity => self.opacity.0.len(),
+            Prop::Anchor => self.anchor.0.len(),
+            Prop::Crop => self.crop.0.len(),
         }
     }
 
@@ -173,6 +223,8 @@ impl TransformAnim {
             scale: self.scale.value_at(t, base.scale),
             rotation: self.rotation.value_at(t, base.rotation),
             opacity: self.opacity.value_at(t, base.opacity).clamp(0.0, 1.0),
+            anchor: self.anchor.value_at(t, base.anchor),
+            crop: self.crop.value_at(t, base.crop),
         }
     }
 
@@ -183,16 +235,13 @@ impl TransformAnim {
             Prop::Scale => self.scale.set(t, v.scale),
             Prop::Rotation => self.rotation.set(t, v.rotation),
             Prop::Opacity => self.opacity.set(t, v.opacity),
+            Prop::Anchor => self.anchor.set(t, v.anchor),
+            Prop::Crop => self.crop.set(t, v.crop),
         }
     }
 
     pub fn has_key(&self, p: Prop, t: Time) -> bool {
-        match p {
-            Prop::Position => self.position.index_at(t).is_some(),
-            Prop::Scale => self.scale.index_at(t).is_some(),
-            Prop::Rotation => self.rotation.index_at(t).is_some(),
-            Prop::Opacity => self.opacity.index_at(t).is_some(),
-        }
+        self.key_times_of(p).contains(&t)
     }
 
     pub fn remove_key(&mut self, p: Prop, t: Time) -> bool {
@@ -201,6 +250,8 @@ impl TransformAnim {
             Prop::Scale => self.scale.remove_at(t),
             Prop::Rotation => self.rotation.remove_at(t),
             Prop::Opacity => self.opacity.remove_at(t),
+            Prop::Anchor => self.anchor.remove_at(t),
+            Prop::Crop => self.crop.remove_at(t),
         }
     }
 
@@ -210,40 +261,60 @@ impl TransformAnim {
             Prop::Scale => self.scale.0.clear(),
             Prop::Rotation => self.rotation.0.clear(),
             Prop::Opacity => self.opacity.0.clear(),
+            Prop::Anchor => self.anchor.0.clear(),
+            Prop::Crop => self.crop.0.clear(),
+        }
+    }
+
+    fn key_times_of(&self, p: Prop) -> Vec<Time> {
+        match p {
+            Prop::Position => self.position.0.iter().map(|k| k.at).collect(),
+            Prop::Scale => self.scale.0.iter().map(|k| k.at).collect(),
+            Prop::Rotation => self.rotation.0.iter().map(|k| k.at).collect(),
+            Prop::Opacity => self.opacity.0.iter().map(|k| k.at).collect(),
+            Prop::Anchor => self.anchor.0.iter().map(|k| k.at).collect(),
+            Prop::Crop => self.crop.0.iter().map(|k| k.at).collect(),
         }
     }
 
     /// Times of all keys on any property, sorted and de-duplicated.
     pub fn key_times(&self) -> Vec<Time> {
-        let mut v: Vec<Time> = self
-            .position
-            .0
-            .iter()
-            .map(|k| k.at)
-            .chain(self.scale.0.iter().map(|k| k.at))
-            .chain(self.rotation.0.iter().map(|k| k.at))
-            .chain(self.opacity.0.iter().map(|k| k.at))
-            .collect();
+        let mut v: Vec<Time> = Prop::ALL.iter().flat_map(|p| self.key_times_of(*p)).collect();
         v.sort();
         v.dedup();
         v
     }
 
+    fn interp_of(&self, p: Prop, t: Time) -> Option<Interp> {
+        fn find<T>(c: &[Key<T>], t: Time) -> Option<Interp> {
+            c.iter().find(|k| k.at == t).map(|k| k.interp)
+        }
+        match p {
+            Prop::Position => find(&self.position.0, t),
+            Prop::Scale => find(&self.scale.0, t),
+            Prop::Rotation => find(&self.rotation.0, t),
+            Prop::Opacity => find(&self.opacity.0, t),
+            Prop::Anchor => find(&self.anchor.0, t),
+            Prop::Crop => find(&self.crop.0, t),
+        }
+    }
+
     /// Interpolation of the key(s) at `t` (the first found), if any.
     pub fn interp_at(&self, t: Time) -> Option<Interp> {
-        let find = |c: &[Key<f32>]| c.iter().find(|k| k.at == t).map(|k| k.interp);
-        let find2 = |c: &[Key<[f32; 2]>]| c.iter().find(|k| k.at == t).map(|k| k.interp);
-        find2(&self.position.0).or_else(|| find2(&self.scale.0)).or_else(|| find(&self.rotation.0)).or_else(|| find(&self.opacity.0))
+        Prop::ALL.iter().find_map(|p| self.interp_of(*p, t))
     }
 
     /// Set the interpolation of every key at `t`.
     pub fn set_interp_at(&mut self, t: Time, interp: Interp) {
-        for k in self.position.0.iter_mut().chain(self.scale.0.iter_mut()).filter(|k| k.at == t) {
-            k.interp = interp;
+        fn set<T>(c: &mut [Key<T>], t: Time, interp: Interp) {
+            c.iter_mut().filter(|k| k.at == t).for_each(|k| k.interp = interp);
         }
-        for k in self.rotation.0.iter_mut().chain(self.opacity.0.iter_mut()).filter(|k| k.at == t) {
-            k.interp = interp;
-        }
+        set(&mut self.position.0, t, interp);
+        set(&mut self.scale.0, t, interp);
+        set(&mut self.rotation.0, t, interp);
+        set(&mut self.opacity.0, t, interp);
+        set(&mut self.anchor.0, t, interp);
+        set(&mut self.crop.0, t, interp);
     }
 }
 
@@ -291,7 +362,7 @@ mod tests {
 
     #[test]
     fn transform_eval_mixes_animated_and_static_properties() {
-        let base = Transform { position: [10.0, 20.0], scale: [1.0, 1.0], rotation: 5.0, opacity: 1.0 };
+        let base = Transform { position: [10.0, 20.0], scale: [1.0, 1.0], rotation: 5.0, ..Default::default() };
         let mut a = TransformAnim::default();
         let mut v = base;
         v.position = [0.0, 0.0];

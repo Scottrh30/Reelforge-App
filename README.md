@@ -25,14 +25,31 @@ What works now:
 - **Linked clips**: footage with sound lands as a video clip + audio clip that move, split and
   delete together. **Edit → Unlink audio/video** separates them
 - Audio waveforms on clips; per-track mute (**M**) and show/hide (eye) buttons
+- **Timeline thumbnails**: video clips show small frames along their length (speed and reverse
+  included). They're decoded in the background, from the proxy when there is one, nearest-first
+  for the part of the timeline on screen; while zooming, the nearest frame already decoded fills
+  in. Toggle in **Edit → Timeline thumbnails** or Settings
 
 - **GPU compositor**: every visible video track is blended into the frame on the GPU
   (wgpu), in linear light with float precision
 - **Per-clip transform** in the Controls panel: position, scale (with a lock for uniform
-  scaling), rotation, opacity, and **blend modes** (Normal, Add, Multiply, Screen), plus
-  Reset / Fit / Fill buttons. Clips sit at their native pixel size by default, like HitFilm
-- **On-canvas editing**: click a layer in the Viewer to select it, drag to move it. Each
-  gesture (a drag, or a slider move) is one undo step
+  scaling), rotation, opacity, **anchor point**, **crop**, and **blend modes** (Normal, Add,
+  Multiply, Screen), plus Reset / Fit / Fill buttons. Clips sit at their native pixel size by
+  default, like HitFilm
+  - **Anchor point**: the pivot for scale and rotation (pixels from the layer's centre).
+    Changing it keeps the picture where it is; **Centre** puts it back in the middle
+  - **Crop**: cut away the left, top, right and bottom edges (% of the layer). The crop moves,
+    scales and rotates with the layer
+- **On-canvas editing** (the Viewer gizmo on the selected layer): click a layer to select it,
+  drag inside it to move it, and:
+  - **corner handles** scale uniformly around the anchor (**Shift**: X and Y separately);
+  - **edge handles** stretch one way (**Shift**: both); **Ctrl + edge** crops that edge;
+  - the **stem above the top edge** (or just outside any corner) rotates around the anchor
+    (**Shift**: 15° steps);
+  - **Ctrl + the cross** moves the anchor point; it snaps to the middle, corners and edge
+    midpoints (**Shift**: no snapping) and the picture stays put.
+  A readout next to the pointer shows the value while you drag, and each gesture is one undo
+  step (keyed at the playhead when the property is animated)
 
 - **Export** (**File → Export…**, `Ctrl+M`): renders the timeline (or the in/out range) in the
   background; you can keep editing meanwhile. Export waits for every exact frame at full
@@ -242,7 +259,7 @@ What works now:
   left/right/up/down (it pushes this one out). Motion is eased in and out. Like audio
   crossfades they use the spare media either side of the cut. Dissolves are rendered in linear
   light: no brightness dip at the midpoint, even for clips that don't fill the frame
-- **Video keyframes**: Position, Scale, Rotation and Opacity each have a keyframe button in the
+- **Video keyframes**: Position, Scale, Rotation, Opacity, Anchor and Crop each have a keyframe button in the
   Controls panel. Click it to start animating that property at the playhead; after that, changing
   the value (or dragging the layer in the Viewer) sets a keyframe at the playhead. Previous/next
   keyframe buttons, and an interpolation choice per keyframe: **Linear**, **Ease** (smooth start
@@ -410,6 +427,9 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | E | Effects & transitions browser |
 | Ctrl + mouse wheel | Zoom timeline |
 | Click / drag in Viewer | Select / move a layer |
+| Drag a corner / edge handle | Scale / stretch (Shift: free / both ways) |
+| Drag the stem or just outside a corner | Rotate (Shift: 15° steps) |
+| Ctrl + drag an edge handle / the cross | Crop that edge / move the anchor point |
 
 ## How the pieces fit
 
@@ -468,6 +488,18 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   so the app drives every tool through one live-edit path. Locked tracks are handled there too:
   `Sequence::is_locked` treats a whole link group as locked, planners refuse to touch locked
   clips, and `shift_limit` counts them as fixed when working out how far a ripple can go.
+- **Anchor and crop** (`core/src/transform.rs`): `Transform::matrix` puts the anchor at the
+  frame centre plus `position` and scales/rotates around it, so the compositor, the viewer gizmo,
+  masks and the tracker all agree. Crop is stored as fractions of the layer per side; the
+  compositor draws a smaller quad sampling just that part of the texture (`crop_uv`), so it
+  costs nothing. `with_anchor_kept_in_place` moves the pivot without moving the picture.
+- **The gizmo** (`app/src/gizmo.rs`) computes every drag from the transform at the start of the
+  drag and the pointer now (scale as the ratio of the pointer's offsets from the anchor in the
+  layer's rotated axes; rotation accumulated frame to frame so it can go past 180°), and writes
+  through the same `apply_transform_edit` as the Controls panel.
+- **Thumbnails** (`app/src/thumbs.rs`): one background thread with a LIFO queue (newest request
+  first, old ones dropped) decodes small frames with a `FrameSource`; requests snap to a time grid
+  chosen from how much media a tile covers, and the nearest decoded picture stands in meanwhile.
 - **Effects** (`core/src/effects.rs`, `render/src/effects.wgsl`): an `Effect` is a kind plus
   parameters, each a static value or a keyframe `Curve`. `Project::video_layers_at` evaluates
   them at the frame's source time into `EffectValues`. The compositor runs each layer that has
@@ -580,8 +612,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 3. ~~Compositor and editing: layers, transforms, opacity, blend modes, viewer gizmo, keyframes
    and a curve editor, cross-dissolves, trimming, ripple/roll/slip/slide, ripple delete, track
    locking~~
-   (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes,
-   Bézier keyframe handles)
+   (still to add: more blend modes, Bézier keyframe handles)
 4. ~~Export: H.264/H.265/ProRes/DNxHR/image sequences/WAV, presets including vertical video,
    fit/fill/stretch, GPU encoders, an in/out range, an export queue~~
    (still to add: 10-bit HEVC/HDR, custom bitrates, saving your own presets)

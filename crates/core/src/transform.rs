@@ -18,11 +18,17 @@ pub struct Transform {
     pub rotation: f32,
     /// 0.0..=1.0
     pub opacity: f32,
+    /// The point the layer scales and rotates around (and that `position`
+    /// places), in layer pixels from the layer's centre at 100%.
+    pub anchor: [f32; 2],
+    /// How much of the layer is cut away from the left, top, right and bottom,
+    /// as fractions of its width/height (0–1).
+    pub crop: [f32; 4],
 }
 
 impl Default for Transform {
     fn default() -> Self {
-        Self { position: [0.0, 0.0], scale: [1.0, 1.0], rotation: 0.0, opacity: 1.0 }
+        Self { position: [0.0, 0.0], scale: [1.0, 1.0], rotation: 0.0, opacity: 1.0, anchor: [0.0, 0.0], crop: [0.0; 4] }
     }
 }
 
@@ -86,28 +92,75 @@ impl Affine2 {
 }
 
 impl Transform {
-    /// Maps layer-local pixels (origin at the layer centre) to frame pixels.
+    /// Maps layer-local pixels (origin at the layer centre) to frame pixels:
+    /// the anchor point lands at the frame centre plus `position`, and the
+    /// layer scales and rotates around it.
     pub fn matrix(&self, frame: [f32; 2]) -> Affine2 {
         let (s, c) = self.rotation.to_radians().sin_cos();
         let [kx, ky] = self.scale;
+        let (a, b, cc, d) = (c * kx, s * kx, -s * ky, c * ky);
+        let [ax, ay] = self.anchor;
         Affine2 {
-            a: c * kx,
-            b: s * kx,
-            c: -s * ky,
-            d: c * ky,
-            tx: frame[0] / 2.0 + self.position[0],
-            ty: frame[1] / 2.0 + self.position[1],
+            a,
+            b,
+            c: cc,
+            d,
+            tx: frame[0] / 2.0 + self.position[0] - (a * ax + cc * ay),
+            ty: frame[1] / 2.0 + self.position[1] - (b * ax + d * ay),
         }
     }
 
-    /// Frame-pixel corners of a `layer`-sized layer: top-left, top-right, bottom-right, bottom-left.
+    /// Frame-pixel corners of a `layer`-sized layer (after cropping): top-left, top-right, bottom-right, bottom-left.
     pub fn corners(&self, layer: [f32; 2], frame: [f32; 2]) -> [[f32; 2]; 4] {
-        self.rect_corners(Self::full_rect(layer), frame)
+        self.rect_corners(self.crop_rect(layer), frame)
     }
 
-    /// Is frame point `p` inside the layer?
+    /// Is frame point `p` inside the (cropped) layer?
     pub fn hit(&self, layer: [f32; 2], frame: [f32; 2], p: [f32; 2]) -> bool {
-        self.hit_rect(Self::full_rect(layer), frame, p)
+        self.hit_rect(self.crop_rect(layer), frame, p)
+    }
+
+    /// The crop amounts, clamped so the sides never pass each other.
+    pub fn crop_clamped(&self) -> [f32; 4] {
+        let [l, t, r, b] = self.crop.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 });
+        [l, t, r.min(1.0 - l), b.min(1.0 - t)]
+    }
+
+    /// Does the crop cut anything?
+    pub fn is_cropped(&self) -> bool {
+        self.crop_clamped().iter().any(|v| *v > 0.0)
+    }
+
+    /// The part of the layer's texture that's shown, as UVs `[u0, v0, u1, v1]`.
+    pub fn crop_uv(&self) -> [f32; 4] {
+        let [l, t, r, b] = self.crop_clamped();
+        [l, t, 1.0 - r, 1.0 - b]
+    }
+
+    /// What's left of a `layer`-sized layer after cropping, layer-local `[x0, y0, x1, y1]`.
+    pub fn crop_rect(&self, layer: [f32; 2]) -> [f32; 4] {
+        let [u0, v0, u1, v1] = self.crop_uv();
+        let [w, h] = layer;
+        [(u0 - 0.5) * w, (v0 - 0.5) * h, (u1 - 0.5) * w, (v1 - 0.5) * h]
+    }
+
+    /// Rectangle `r` (layer-local) limited to the cropped area of a `layer`-sized layer.
+    pub fn clip_to_crop(&self, r: [f32; 4], layer: [f32; 2]) -> [f32; 4] {
+        let c = self.crop_rect(layer);
+        let x0 = r[0].max(c[0]);
+        let y0 = r[1].max(c[1]);
+        [x0, y0, r[2].min(c[2]).max(x0), r[3].min(c[3]).max(y0)]
+    }
+
+    /// Change the anchor without moving the picture: `position` shifts to make up for it.
+    pub fn with_anchor_kept_in_place(&self, anchor: [f32; 2], frame: [f32; 2]) -> Transform {
+        let before = self.matrix(frame).apply(anchor);
+        let mut t = *self;
+        t.anchor = anchor;
+        let after = t.matrix(frame).apply(anchor);
+        t.position[0] += before[0] - after[0];
+        t.position[1] += before[1] - after[1];
+        t
     }
 
     /// A whole `layer`-sized layer as a layer-local rectangle `[x0, y0, x1, y1]`.
@@ -161,7 +214,7 @@ mod tests {
 
     #[test]
     fn inverse_and_hit() {
-        let t = Transform { position: [30.0, -20.0], scale: [2.0, 0.5], rotation: 33.0, opacity: 1.0 };
+        let t = Transform { position: [30.0, -20.0], scale: [2.0, 0.5], rotation: 33.0, ..Default::default() };
         let m = t.matrix([800.0, 600.0]);
         let q = m.inverse().unwrap().apply(m.apply([12.0, -7.0]));
         assert!(close(q, [12.0, -7.0]));
@@ -179,6 +232,45 @@ mod tests {
         let cx = m[0][0] * x + m[1][0] * y + m[3][0];
         let cy = m[0][1] * x + m[1][1] * y + m[3][1];
         assert!(close([cx, cy], [-1.0, 1.0]), "{cx},{cy}");
+    }
+
+    #[test]
+    fn anchor_is_the_pivot_and_position_places_it() {
+        let frame = [200.0, 100.0];
+        // Anchor at the layer's top-left corner of a 40×20 layer.
+        let t = Transform { anchor: [-20.0, -10.0], ..Default::default() };
+        // The anchor lands on the frame centre...
+        assert!(close(t.matrix(frame).apply([-20.0, -10.0]), [100.0, 50.0]));
+        // ...and stays there when scaled or rotated.
+        let t2 = Transform { scale: [3.0, 3.0], rotation: 45.0, ..t };
+        assert!(close(t2.matrix(frame).apply([-20.0, -10.0]), [100.0, 50.0]));
+        // Moving the anchor "in place" keeps the picture still.
+        let r = Transform { rotation: 30.0, scale: [2.0, 1.5], position: [5.0, 7.0], ..Default::default() };
+        let moved = r.with_anchor_kept_in_place([12.0, -4.0], frame);
+        for p in [[0.0, 0.0], [10.0, 3.0], [-7.0, 9.0]] {
+            assert!(close(r.matrix(frame).apply(p), moved.matrix(frame).apply(p)));
+        }
+        let at = [100.0 + moved.position[0], 50.0 + moved.position[1]];
+        assert!(close(moved.matrix(frame).apply([12.0, -4.0]), at), "position now places the new anchor");
+        let spun = Transform { rotation: 75.0, ..moved };
+        assert!(close(spun.matrix(frame).apply([12.0, -4.0]), at), "and it's the pivot");
+    }
+
+    #[test]
+    fn crop_trims_the_shown_area() {
+        let t = Transform { crop: [0.25, 0.0, 0.25, 0.5], ..Default::default() };
+        assert!(t.is_cropped());
+        assert_eq!(t.crop_uv(), [0.25, 0.0, 0.75, 0.5]);
+        assert_eq!(t.crop_rect([100.0, 40.0]), [-25.0, -20.0, 25.0, 0.0]);
+        let frame = [100.0, 40.0];
+        assert!(t.hit([100.0, 40.0], frame, [50.0, 10.0]));
+        assert!(!t.hit([100.0, 40.0], frame, [10.0, 10.0]), "cropped away on the left");
+        assert!(!t.hit([100.0, 40.0], frame, [50.0, 30.0]), "cropped away at the bottom");
+        // Opposite sides can't cross.
+        let over = Transform { crop: [0.8, 0.0, 0.8, 0.0], ..Default::default() };
+        let uv = over.crop_uv();
+        assert!(uv[2] >= uv[0]);
+        assert_eq!(t.clip_to_crop([-50.0, -20.0, -30.0, 20.0], [100.0, 40.0]), [-25.0, -20.0, -25.0, 0.0]);
     }
 
     #[test]

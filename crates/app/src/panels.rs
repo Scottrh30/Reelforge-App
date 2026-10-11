@@ -194,7 +194,6 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     }
 
     // Screen <-> frame pixel mapping.
-    let to_screen = |[x, y]: [f32; 2]| frame_rect.min + Vec2::new(x, y) * scale;
     let to_frame = |p: egui::Pos2| {
         let v = (p - frame_rect.min) / scale;
         [v.x, v.y]
@@ -202,9 +201,11 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
 
     // Visible layers at the playhead, top first, with their native sizes.
     let t = st.playback.playhead;
-    // Each as the layer-local rectangle that counts as "the layer": the whole
-    // picture for footage, just the text (and its box) for a title.
-    let layers: Vec<(reelforge_core::ClipId, [f32; 4], reelforge_core::Transform)> = st
+    let view = crate::gizmo::View { frame: frame_px, scale, origin: frame_rect.min };
+    // Each as the layer-local rectangle that counts as "the layer" (the whole
+    // picture for footage, just the text and its box for a title), and the
+    // layer's own size (which crop fractions refer to).
+    let layers: Vec<(crate::gizmo::GizmoLayer, reelforge_core::Transform)> = st
         .project
         .video_layers_at(st.active, t)
         .iter()
@@ -214,23 +215,36 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
             if c.title.is_some() {
                 let b = st.preview.title_bounds(c.id)?;
                 let (hw, hh) = (frame_px[0] / 2.0, frame_px[1] / 2.0);
-                return Some((c.id, [b[0] - hw, b[1] - hh, b[2] - hw, b[3] - hh], tr));
+                return Some((crate::gizmo::GizmoLayer { id: c.id, rect: [b[0] - hw, b[1] - hh, b[2] - hw, b[3] - hh], size: frame_px }, tr));
             }
             let [w, h] = st.project.picture_size(c)?;
-            Some((c.id, Transform::full_rect([w as f32, h as f32]), tr))
+            let size = [w as f32, h as f32];
+            Some((crate::gizmo::GizmoLayer { id: c.id, rect: Transform::full_rect(size), size }, tr))
         })
         .collect();
+    let shows = |l: &crate::gizmo::GizmoLayer, tr: &Transform, f: [f32; 2]| tr.hit_rect(tr.clip_to_crop(l.rect, l.size), frame_px, f);
 
     // Pressing on a mask handle (or drawing a mask) isn't a click on a layer.
     let press = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
     let mask_press = press.is_some_and(|p| crate::masks::wants_press(st, frame_px, scale, frame_rect.min, p));
 
+    // A press on one of the selected layer's handles (which can be outside the layer).
+    let selected = st.selection.and_then(|id| layers.iter().find(|(l, _)| l.id == id).copied());
+    let grabbed = if mask_press || st.playback.playing {
+        None
+    } else {
+        selected.and_then(|(l, _)| {
+            let now = st.seq().find_clip(l.id).map(|(_, c)| c.transform_at(t))?;
+            crate::gizmo::handle_at(&now, &l, &view, press?, ui.input(|i| i.modifiers.command))
+        })
+    };
+
     // Click a layer in the viewer to select it (topmost hit wins), like HitFilm.
-    if (resp.clicked() || resp.drag_started()) && !mask_press {
-        if let Some(p) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()) {
+    if (resp.clicked() || resp.drag_started()) && !mask_press && grabbed.is_none() {
+        if let Some(p) = press {
             let f = to_frame(p);
-            let hit = layers.iter().find(|(_, r, tr)| tr.hit_rect(*r, frame_px, f)).map(|(id, ..)| *id);
-            let keep = st.selection.is_some_and(|sel| layers.iter().any(|(id, r, tr)| *id == sel && tr.hit_rect(*r, frame_px, f)));
+            let hit = layers.iter().find(|(l, tr)| shows(l, tr, f)).map(|(l, _)| l.id);
+            let keep = st.selection.is_some_and(|sel| layers.iter().any(|(l, tr)| l.id == sel && shows(l, tr, f)));
             if !keep {
                 st.select_only(hit);
             }
@@ -238,14 +252,17 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     }
 
     let mask_used = crate::masks::overlay(ui, st, &resp, area, frame_px, scale, frame_rect.min);
-    let tracker_drag = !mask_used && tracker_overlay(ui, st, &resp, area, frame_px, scale, frame_rect.min);
+    let tracker_drag = !mask_used && grabbed.is_none() && tracker_overlay(ui, st, &resp, area, frame_px, scale, frame_rect.min);
 
-    // Drag the selected layer to move it.
-    let selected = st.selection.and_then(|id| layers.iter().find(|(lid, ..)| *lid == id).copied());
-    if let Some((id, lrect, tr)) = selected {
-        if resp.dragged() && !st.playback.playing && !tracker_drag && !mask_used {
+    // The gizmo on the selected layer: handles to scale, rotate, crop and move the anchor;
+    // dragging anywhere else on the layer moves it.
+    let selected = st.selection.and_then(|id| layers.iter().find(|(l, _)| l.id == id).copied());
+    if let Some((layer, _)) = selected {
+        let handle_drag = !mask_used && !tracker_drag && crate::gizmo::show(ui, st, &resp, area, layer, view, grabbed);
+        if resp.dragged() && !st.playback.playing && !tracker_drag && !mask_used && !handle_drag {
             let d = resp.drag_delta() / scale;
             if d != Vec2::ZERO {
+                let id = layer.id;
                 let clip = st.seq().find_clip(id).map(|(_, c)| c.clone());
                 if let (Some(mut v), Some(clip)) = (st.visual(id), clip) {
                     let shown = clip.transform_at(t);
@@ -259,17 +276,6 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
             }
             ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
         }
-        // Bounding box + centre handle.
-        let now = st.seq().find_clip(id).map(|(_, c)| c.transform_at(t)).unwrap_or(tr);
-        let corners = now.rect_corners(lrect, frame_px).map(to_screen);
-        let gold = Color32::from_rgb(255, 196, 64);
-        let clip_painter = ui.painter_at(area);
-        clip_painter.add(egui::Shape::closed_line(corners.to_vec(), egui::Stroke::new(1.5, gold)));
-        for c in corners {
-            clip_painter.rect_filled(egui::Rect::from_center_size(c, Vec2::splat(6.0)), 1.0, gold);
-        }
-        let centre = egui::pos2((corners[0].x + corners[2].x) / 2.0, (corners[0].y + corners[2].y) / 2.0);
-        clip_painter.circle_stroke(centre, 5.0, egui::Stroke::new(1.5, gold));
     }
 
     transport(ui, st);
@@ -511,13 +517,7 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
 /// i.e. the playhead is on the clip); static ones change the clip's base value.
 pub fn apply_transform_edit(v: &mut ClipVisual, shown: &Transform, edited: &Transform, src: Time, can_key: bool) {
     for p in Prop::ALL {
-        let changed = match p {
-            Prop::Position => shown.position != edited.position,
-            Prop::Scale => shown.scale != edited.scale,
-            Prop::Rotation => shown.rotation != edited.rotation,
-            Prop::Opacity => shown.opacity != edited.opacity,
-        };
-        if !changed {
+        if !shown.prop_differs(p, edited) {
             continue;
         }
         if v.anim.prop_animated(p) {
@@ -525,12 +525,7 @@ pub fn apply_transform_edit(v: &mut ClipVisual, shown: &Transform, edited: &Tran
                 v.anim.set_key(p, src, edited);
             }
         } else {
-            match p {
-                Prop::Position => v.transform.position = edited.position,
-                Prop::Scale => v.transform.scale = edited.scale,
-                Prop::Rotation => v.transform.rotation = edited.rotation,
-                Prop::Opacity => v.transform.opacity = edited.opacity,
-            }
+            v.transform.copy_prop(p, edited);
         }
     }
 }
@@ -620,6 +615,54 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
         });
         ui.end_row();
 
+        ui.weak("Anchor");
+        key_btn(ui, Prop::Anchor, &mut toggles);
+        ui.add_enabled_ui(editable(Prop::Anchor), |ui| {
+            ui.horizontal(|ui| {
+                let mut a = t.anchor;
+                let rx = ui.add(egui::DragValue::new(&mut a[0]).speed(1.0).prefix("X ").fixed_decimals(1));
+                let ry = ui.add(egui::DragValue::new(&mut a[1]).speed(1.0).prefix("Y ").fixed_decimals(1));
+                if rx.changed() || ry.changed() {
+                    // Keep the picture where it is: only the pivot moves.
+                    t = t.with_anchor_kept_in_place(a, frame);
+                }
+                (rx | ry).on_hover_text("The point the layer scales and rotates around, in pixels from its centre. Ctrl+drag the cross in the Viewer to place it");
+                if ui.small_button("Centre").on_hover_text("Put the anchor back in the middle of the layer").clicked() {
+                    t = t.with_anchor_kept_in_place([0.0, 0.0], frame);
+                }
+            });
+        });
+        ui.end_row();
+
+        ui.weak("Crop");
+        key_btn(ui, Prop::Crop, &mut toggles);
+        ui.add_enabled_ui(editable(Prop::Crop), |ui| {
+            ui.vertical(|ui| {
+                let mut c = t.crop.map(|v| v * 100.0);
+                let mut changed = false;
+                ui.horizontal(|ui| {
+                    for (i, name) in ["L ", "T "].iter().enumerate() {
+                        changed |= ui.add(egui::DragValue::new(&mut c[i]).speed(0.2).range(0.0..=100.0).prefix(*name).suffix(" %").fixed_decimals(1)).changed();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    for (i, name) in ["R ", "B "].iter().enumerate() {
+                        changed |= ui.add(egui::DragValue::new(&mut c[i + 2]).speed(0.2).range(0.0..=100.0).prefix(*name).suffix(" %").fixed_decimals(1)).changed();
+                    }
+                    if ui.add_enabled(t.is_cropped(), egui::Button::new("Clear").small()).on_hover_text("Show the whole layer").clicked() {
+                        c = [0.0; 4];
+                        changed = true;
+                    }
+                });
+                if changed {
+                    t.crop = c.map(|v| v / 100.0);
+                }
+            })
+            .response
+            .on_hover_text("Cut away the edges of the layer: left, top, right and bottom, as a share of its width/height. Or drag the edge handles in the Viewer with Ctrl held");
+        });
+        ui.end_row();
+
         ui.weak("Blend");
         ui.label("");
         egui::ComboBox::from_id_salt("blend").selected_text(v.blend.label()).show_ui(ui, |ui| {
@@ -688,22 +731,8 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
         for p in toggles {
             if v.anim.has_key(p, src) {
                 // Removing the last key: keep the current value so nothing jumps.
-                let last = match p {
-                    Prop::Position => v.anim.position.0.len() == 1,
-                    Prop::Scale => v.anim.scale.0.len() == 1,
-                    Prop::Rotation => v.anim.rotation.0.len() == 1,
-                    Prop::Opacity => v.anim.opacity.0.len() == 1,
-                };
-                if last {
-                    let mut base = v.transform;
-                    let cur = now;
-                    match p {
-                        Prop::Position => base.position = cur.position,
-                        Prop::Scale => base.scale = cur.scale,
-                        Prop::Rotation => base.rotation = cur.rotation,
-                        Prop::Opacity => base.opacity = cur.opacity,
-                    }
-                    v.transform = base;
+                if v.anim.key_count(p) == 1 {
+                    v.transform.copy_prop(p, &now);
                 }
                 v.anim.remove_key(p, src);
             } else {

@@ -37,7 +37,7 @@ fn asset(id: u64, path: &Path) -> MediaAsset {
     MediaAsset { id: MediaId(id), path: path.to_owned(), name: path.file_name().unwrap().to_string_lossy().into(), info: probe(path).unwrap() }
 }
 
-const B_TRANSFORM: Transform = Transform { position: [100.0, 0.0], scale: [1.0, 1.0], rotation: 0.0, opacity: 0.5 };
+const B_TRANSFORM: Transform = Transform { position: [100.0, 0.0], scale: [1.0, 1.0], rotation: 0.0, opacity: 0.5, anchor: [0.0, 0.0], crop: [0.0; 4] };
 
 /// V1: A at 0–2 s. V2: B at 1–2 s, offset and half transparent. A1: A's audio starting at 0.5 s.
 fn project(a: &Path, b: &Path) -> Project {
