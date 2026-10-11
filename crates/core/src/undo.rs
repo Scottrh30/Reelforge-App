@@ -494,6 +494,34 @@ impl Command for SetLink {
     }
 }
 
+/// Point a media item at a different file (relinking missing media).
+pub struct RelinkMedia {
+    pub id: MediaId,
+    pub old: MediaAsset,
+    pub new: MediaAsset,
+}
+
+impl Command for RelinkMedia {
+    fn name(&self) -> &str {
+        "Relink media"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some(m) = p.media.iter_mut().find(|m| m.id == self.id) {
+            *m = self.new.clone();
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some(m) = p.media.iter_mut().find(|m| m.id == self.id) {
+            *m = self.old.clone();
+        }
+    }
+}
+
+/// Media whose file isn't where the project says (moved, renamed, or on a drive that isn't connected).
+pub fn missing_media(p: &Project) -> Vec<MediaId> {
+    p.media.iter().filter(|m| !m.path.exists()).map(|m| m.id).collect()
+}
+
 // ---- Tracks -------------------------------------------------------------------
 
 /// Insert a new track at `index`.

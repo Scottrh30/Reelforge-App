@@ -109,6 +109,29 @@ What works now:
   placement. Titles are ordinary layers, so the transform, keyframes, effects, dissolves and
   blend modes all work on them; click the text in the Viewer to select and drag it. Titles are
   purple on the timeline and can be any length
+- **Proxies**: heavy footage (above 1080p, or 720p and up in HEVC/AV1/VP9/ProRes/DNxHD) gets a
+  small editing copy automatically, made in the background, with a progress bar in the Media
+  panel; **Make proxy** does it for any clip. Proxies are 960×540 with every frame a keyframe,
+  so jumping around is instant (8 s of 4K: ~1.5 s per random seek on the original, 3 ms on the
+  proxy). The **Proxies on/off** button in the viewer switches between proxies and originals;
+  export always uses the originals. Proxies are kept per file in your cache folder, so other
+  projects using the same footage reuse them
+- **Hardware decoding**: video is decoded on the graphics card where possible (D3D11VA on
+  Windows, VAAPI on Linux, VideoToolbox on macOS), falling back to software automatically if
+  the GPU can't handle a file
+- **Frame cache**: decoded frames are kept in memory (1 GB by default), shared between clips
+  of the same file, so scrubbing back over footage you've already seen is instant
+- **Autosave and crash recovery**: the project is autosaved every 2 minutes (when it has
+  changed). If Reelforge doesn't close properly, it offers to recover that work the next time
+  it starts; **File > Open an autosave…** opens older ones. Saving always writes a new file and
+  then swaps it in, so a crash mid-save can't corrupt the project. Closing, starting a new
+  project or opening another asks **Save changes?** if there's unsaved work
+- **Missing media**: files that have moved show a red banner in the Media panel and a
+  "MEDIA OFFLINE" frame in the viewer. **Relink…** a file and Reelforge also looks for the
+  other missing files in that folder (and its subfolders) by name; **Search a folder…** does
+  it for all of them. Relinking can be undone. Export won't start while media is missing
+- **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, proxies, autosave
+  interval, and the proxy/autosave folders
 - **Curves panel** (a tab next to the Editor Timeline): a value graph of the selected clip's
   keyframes. Pick channels on the left (position X/Y, scale X/Y, rotation, opacity and every
   effect parameter). **Drag** a key to change its time and value (**Shift** changes only the
@@ -338,6 +361,16 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   textures kept per layer. The result is drawn with the pre-multiplied pipeline, including
   inside dissolve groups. The blur radius is converted from frame pixels to texels, so a proxy-
   sized preview and a full-size export blur by the same visible amount.
+- **Proxies, hardware decoding and the frame cache** live in the media crate. `hw.rs` sets a
+  shared hardware device on each decoder context before it opens (`hw_device_ctx` +
+  `get_format`) and copies frames back with `av_hwframe_transfer_data`; any failure reopens
+  the decoder in software and carries on from the same frame. `cache.rs` is a byte-budgeted
+  LRU of decoded frames keyed by (file, decode size, pts) that every preview decoder fills and
+  reads. `proxy.rs` writes all-intra H.264 at ≤960×540, sampling the source once per nominal
+  frame so proxies line up with variable-frame-rate originals.
+- **Safety** (`app/src/safety.rs`): every save goes through `write_atomic` (write, fsync,
+  rename). Each running app holds an OS file lock on its session file; at start-up, a session
+  file nobody holds a lock on means that run crashed, and its autosave is offered back.
 - **Titles** (`core/src/title.rs`, `render/src/text.rs`): a title is a clip with a
   `TitleSpec` and no media (`MediaId::GENERATED`, treated like a still). The text is laid out
   with `ab_glyph` and rasterised on the CPU onto a transparent canvas the size of the frame:
@@ -396,4 +429,6 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 6. **Composite shots**, masks, tracking, 3D camera/lights, GPU particles.
    (Text titles and track management are done; next for titles: animated text presets,
    per-letter animation, title templates.)
-7. **Performance**: proxy media, a GPU-resident frame cache, hardware decode (`d3d11va`).
+7. ~~**Performance**: proxy media, a frame cache, hardware decode~~
+   (still to add: GPU-side frame upload from hardware decoders without the copy back to memory,
+   render caching of effects)

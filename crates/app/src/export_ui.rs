@@ -230,6 +230,11 @@ impl ExportUi {
                 });
             });
 
+        let missing: Vec<String> = reelforge_core::undo::missing_media(&st.project).iter().filter_map(|id| st.project.media(*id).map(|m| m.name.clone())).collect();
+        if start && !missing.is_empty() {
+            st.status = format!("Can't export: missing media ({}). Relink it in the Media panel first.", missing.join(", "));
+            start = false;
+        }
         if start {
             let mut path = PathBuf::from(d.path.trim());
             if path.extension().is_none() {

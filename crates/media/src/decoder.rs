@@ -125,6 +125,34 @@ struct DecodeState {
     /// Last frame skipped while pre-rolling, so a seek past the end still shows the final frame.
     held: Option<(ff::frame::Video, Time)>,
     eof: Arc<AtomicU64>,
+    /// Pixel format of hardware frames, when the decoder runs on the GPU.
+    hw_format: Option<i32>,
+    /// Where decoding has got to (pts of the last frame seen), for resuming after a fallback.
+    position: Time,
+}
+
+/// Open a decoder for `params`: on the GPU if `hw`, else in software (multi-threaded).
+fn open_decoder(params: ff::codec::Parameters, hw: bool) -> Result<(ff::decoder::Video, Option<i32>)> {
+    let mut ctx = ff::codec::context::Context::from_parameters(params.clone())?;
+    // SAFETY: a fresh, unopened context.
+    let hw_format = if hw { unsafe { crate::hw::attach(ctx.as_mut_ptr()) } } else { None };
+    if hw_format.is_none() {
+        // `..Default::default()` covers fields that only exist on older FFmpeg versions.
+        #[allow(clippy::needless_update)]
+        ctx.set_threading(ff::codec::threading::Config {
+            kind: ff::codec::threading::Type::Frame,
+            count: 0, // let FFmpeg pick based on core count
+            ..Default::default()
+        });
+    }
+    match ctx.decoder().video() {
+        Ok(d) => Ok((d, hw_format)),
+        Err(e) if hw_format.is_some() => {
+            log::info!("hardware decoder didn't open ({e}); using software");
+            open_decoder(params, false)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 enum Flow {
@@ -146,15 +174,9 @@ impl DecodeState {
         }
         let frame_dur = Time::from_rational(Rational::new(rate.den, rate.num));
 
-        let mut ctx = ff::codec::context::Context::from_parameters(st.parameters())?;
-        // `..Default::default()` covers fields that only exist on older FFmpeg versions.
-        #[allow(clippy::needless_update)]
-        ctx.set_threading(ff::codec::threading::Config {
-            kind: ff::codec::threading::Type::Frame,
-            count: 0, // let FFmpeg pick based on core count
-            ..Default::default()
-        });
-        let decoder = ctx.decoder().video()?;
+        // Stills and tiny files gain nothing from the GPU.
+        let small = { let p = st.parameters(); unsafe { (*p.as_ptr()).width * (*p.as_ptr()).height < 640 * 360 } };
+        let (decoder, hw_format) = open_decoder(st.parameters(), crate::hw::enabled() && !small)?;
 
         Ok(Self {
             ictx,
@@ -169,7 +191,27 @@ impl DecodeState {
             discard_before: None,
             held: None,
             eof,
+            hw_format,
+            position: Time::ZERO,
         })
+    }
+
+    /// The GPU decoder failed: carry on in software from where we were.
+    fn fall_back_to_software(&mut self) -> Result<()> {
+        log::warn!("hardware decoding failed; switching this file to software decoding");
+        let params = self.ictx.stream(self.stream_index).ok_or_else(|| anyhow!("stream vanished"))?.parameters();
+        let (decoder, _) = open_decoder(params, false)?;
+        self.decoder = decoder;
+        self.hw_format = None;
+        self.scaler = None;
+        // Re-decode from the keyframe before where we were, skipping what was already delivered.
+        let resume = self.discard_before.unwrap_or(self.position + self.frame_dur);
+        let us = resume.to_pts(Rational::new(1, AV_TIME_BASE))
+            + Time::from_pts(self.start_pts, self.time_base).to_pts(Rational::new(1, AV_TIME_BASE));
+        let _ = self.ictx.seek(us, ..us);
+        self.discard_before = Some(resume);
+        self.held = None;
+        Ok(())
     }
 
     fn run(mut self, cmds: Receiver<Cmd>, out: Sender<VideoFrame>) -> Result<()> {
@@ -189,6 +231,10 @@ impl DecodeState {
                 }
                 eof = false;
                 if let Err(e) = self.decoder.send_packet(&packet) {
+                    if self.hw_format.is_some() && !matches!(e, ff::Error::Other { errno: ff::util::error::EAGAIN }) {
+                        self.fall_back_to_software()?;
+                        continue 'outer;
+                    }
                     log::warn!("send_packet: {e}");
                 }
                 match self.drain(&cmds, &out)? {
@@ -252,6 +298,7 @@ impl DecodeState {
         while self.decoder.receive_frame(&mut decoded).is_ok() {
             let ts = decoded.timestamp().or(decoded.pts()).unwrap_or(self.start_pts);
             let pts = Time::from_pts(ts - self.start_pts, self.time_base);
+            self.position = pts;
 
             if let Some(target) = self.discard_before {
                 if pts + self.frame_dur <= target {
@@ -265,7 +312,17 @@ impl DecodeState {
                 self.held = None;
             }
 
-            let frame = self.convert(&decoded, pts)?;
+            let frame = match self.convert(&decoded, pts) {
+                Ok(f) => f,
+                Err(e) if self.hw_format.is_some() => {
+                    log::warn!("couldn't read back a hardware frame: {e:#}");
+                    self.discard_before = Some(pts);
+                    self.position = pts - self.frame_dur;
+                    self.fall_back_to_software()?;
+                    return Ok(Flow::Restart);
+                }
+                Err(e) => return Err(e),
+            };
             // Block until the consumer takes the frame, but stay responsive to commands.
             select! {
                 send(out, frame) -> r => if r.is_err() { return Ok(Flow::Stop) },
@@ -278,6 +335,20 @@ impl DecodeState {
     }
 
     fn convert(&mut self, src: &ff::frame::Video, pts: Time) -> Result<VideoFrame> {
+        // GPU frames are copied back to memory first (as NV12 or similar).
+        let downloaded;
+        // SAFETY: reading the format field of a valid frame.
+        let src = if self.hw_format.is_some_and(|f| unsafe { (*src.as_ptr()).format } == f) {
+            let mut sw = ff::frame::Video::empty();
+            // SAFETY: `src` is a decoded hardware frame and `sw` an empty frame.
+            if !unsafe { crate::hw::download(src.as_ptr(), sw.as_mut_ptr()) } {
+                return Err(anyhow!("hardware frame transfer failed"));
+            }
+            downloaded = sw;
+            &downloaded
+        } else {
+            src
+        };
         let (sw, sh, fmt) = (src.width(), src.height(), src.format());
         let (dw, dh) = fit(sw, sh, self.max_size);
         let space = crate::color::effective_space(src.color_space(), sh);

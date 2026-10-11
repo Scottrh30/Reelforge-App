@@ -3091,6 +3091,7 @@ dependencies = [
  "reelforge-media",
  "reelforge-render",
  "rfd",
+ "serde",
  "serde_json",
 ]
 

@@ -9,6 +9,9 @@ mod meters;
 mod panels;
 mod playback;
 mod preview;
+mod proxies;
+mod safety;
+mod settings;
 mod timeline;
 
 fn main() -> eframe::Result<()> {

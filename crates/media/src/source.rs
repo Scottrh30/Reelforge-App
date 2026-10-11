@@ -1,5 +1,6 @@
 //! Random-access "give me the frame at time t" on top of a forward-only decoder.
 
+use crate::cache::{CacheKey, FrameCache};
 use crate::decoder::{DecoderHandle, VideoFrame};
 use anyhow::Result;
 use reelforge_core::Time;
@@ -20,13 +21,25 @@ pub struct FrameSource {
     current: Option<VideoFrame>,
     /// Target of an in-flight seek; cleared when its first frame arrives.
     pending_seek: Option<Time>,
+    /// Share decoded frames through the global [`FrameCache`] (preview only).
+    cache: Option<CacheKey>,
+    /// A frame served from the cache for the last request.
+    hit: Option<VideoFrame>,
 }
 
 impl FrameSource {
     pub fn open(path: &Path, max_size: Option<(u32, u32)>) -> Result<Self> {
         let decoder = DecoderHandle::spawn(path, max_size, 8)?;
         // A fresh decoder starts at the beginning, which behaves like a seek to 0.
-        Ok(Self { decoder, generation: 0, ahead: VecDeque::new(), current: None, pending_seek: Some(Time::ZERO) })
+        Ok(Self { decoder, generation: 0, ahead: VecDeque::new(), current: None, pending_seek: Some(Time::ZERO), cache: None, hit: None })
+    }
+
+    /// Like [`Self::open`], but frames go through the shared memory cache, so
+    /// revisiting a moment that any decoder of this file has shown is instant.
+    pub fn open_cached(path: &Path, max_size: Option<(u32, u32)>) -> Result<Self> {
+        let mut s = Self::open(path, max_size)?;
+        s.cache = Some(CacheKey { path: path.to_owned(), max_size });
+        Ok(s)
     }
 
     pub fn path(&self) -> &Path {
@@ -37,11 +50,20 @@ impl FrameSource {
         self.decoder.frame_duration
     }
 
+    /// Take a frame from the decoder: cache it, and queue it if it's from the current seek.
+    fn accept(&mut self, f: VideoFrame) {
+        if let Some(k) = &self.cache {
+            // Even frames from before a seek are worth keeping.
+            FrameCache::global().insert(k, &f, self.decoder.frame_duration);
+        }
+        if f.generation == self.generation {
+            self.ahead.push_back(f);
+        }
+    }
+
     fn pull(&mut self) {
         while let Ok(f) = self.decoder.frames.try_recv() {
-            if f.generation == self.generation {
-                self.ahead.push_back(f);
-            }
+            self.accept(f);
         }
     }
 
@@ -62,6 +84,7 @@ impl FrameSource {
     /// Never blocks: if the decoder hasn't produced the frame yet this returns
     /// the best frame available and catches up on later calls. Call it every repaint.
     pub fn frame_at(&mut self, t: Time) -> Option<&VideoFrame> {
+        self.hit = None;
         self.pull();
         if self.needs_seek(t) {
             self.generation += 1;
@@ -81,15 +104,23 @@ impl FrameSource {
                 self.pending_seek = None;
             }
         }
-        self.current.as_ref()
+        // Not decoded yet, but seen before: show it from memory while the decoder catches up.
+        if !self.decoder_exact(t) {
+            if let Some(k) = &self.cache {
+                self.hit = FrameCache::global().get(k, t);
+            }
+        }
+        self.hit.as_ref().or(self.current.as_ref())
+    }
+
+    fn decoder_exact(&self, t: Time) -> bool {
+        self.pending_seek.is_none()
+            && self.current.as_ref().is_some_and(|c| c.pts <= t + self.frame_duration() && t < c.pts + self.frame_duration())
     }
 
     /// True when the frame `frame_at(t)` returned is the right one for `t`.
     pub fn is_exact(&self, t: Time) -> bool {
-        self.pending_seek.is_none()
-            && self.current.as_ref().is_some_and(|c| {
-                c.pts <= t + self.frame_duration() && t < c.pts + self.frame_duration()
-            })
+        self.hit.is_some() || self.decoder_exact(t)
     }
 
     /// Wait (up to `timeout`) for the exact frame at `t`. For offline rendering
@@ -98,7 +129,7 @@ impl FrameSource {
         let deadline = Instant::now() + timeout;
         loop {
             self.frame_at(t);
-            if self.is_exact(t) || Instant::now() >= deadline {
+            if self.decoder_exact(t) || Instant::now() >= deadline {
                 return self.current.clone();
             }
             // Past the end of the stream: nothing newer is coming, so the last frame is the answer.
@@ -107,9 +138,7 @@ impl FrameSource {
                 return self.current.clone();
             }
             if let Ok(f) = self.decoder.frames.recv_timeout(Duration::from_millis(20)) {
-                if f.generation == self.generation {
-                    self.ahead.push_back(f);
-                }
+                self.accept(f);
             }
         }
     }

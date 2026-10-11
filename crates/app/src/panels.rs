@@ -21,14 +21,64 @@ pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
         return;
     }
 
+    // Missing files: a banner with ways to find them.
+    let missing = reelforge_core::undo::missing_media(&st.project);
+    let mut search_folder = false;
+    if !missing.is_empty() {
+        egui::Frame::new().fill(Color32::from_rgb(90, 20, 24)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(format!("{} file{} missing", missing.len(), if missing.len() == 1 { " is" } else { "s are" })).strong().color(Color32::WHITE));
+            ui.label(RichText::new("Moved, renamed, or on a drive that isn't connected. Relink each below, or:").color(Color32::from_gray(220)));
+            if ui.button("Search a folder…").on_hover_text("Looks in the folder and its subfolders for files with the same names").clicked() {
+                search_folder = true;
+            }
+        });
+        ui.add_space(4.0);
+    }
+
     let mut add: Option<MediaId> = None;
+    let mut relink: Option<MediaId> = None;
+    let mut make_proxy: Option<(std::path::PathBuf, reelforge_core::MediaInfo)> = None;
     for m in &st.project.media {
         let id = egui::Id::new(("media", m.id));
+        let is_missing = missing.contains(&m.id);
         let resp = ui
             .dnd_drag_source(id, m.id, |ui| {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new(&m.name).strong());
+                    if is_missing {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(Color32::from_rgb(255, 110, 110), "Missing");
+                            if ui.small_button("Relink…").on_hover_text(m.path.display().to_string()).clicked() {
+                                relink = Some(m.id);
+                            }
+                        });
+                    } else if m.info.video.is_some() && m.info.duration > Time::ZERO {
+                        use crate::proxies::ProxyState;
+                        ui.horizontal(|ui| match st.proxies.state(&m.path) {
+                            Some(ProxyState::Ready(_)) => {
+                                ui.weak(if st.settings.use_proxies { "Proxy: in use" } else { "Proxy: ready (off)" });
+                            }
+                            Some(ProxyState::Building(p)) => {
+                                ui.add(egui::ProgressBar::new(*p).desired_width(120.0).text(format!("Proxy {:.0}%", p * 100.0)));
+                            }
+                            Some(ProxyState::Queued) => {
+                                ui.weak("Proxy: waiting…");
+                            }
+                            Some(ProxyState::Failed(e)) => {
+                                ui.colored_label(ui.visuals().warn_fg_color, "Proxy failed").on_hover_text(e);
+                                if ui.small_button("Retry").clicked() {
+                                    make_proxy = Some((m.path.clone(), m.info.clone()));
+                                }
+                            }
+                            None => {
+                                if ui.small_button("Make proxy").on_hover_text("A small, fast copy for smoother editing (export still uses the original)").clicked() {
+                                    make_proxy = Some((m.path.clone(), m.info.clone()));
+                                }
+                            }
+                        });
+                    }
                     let mut parts = vec![format_duration(m.info.duration)];
                     if let Some(v) = &m.info.video {
                         parts.push(format!("{}×{}", v.width, v.height));
@@ -49,6 +99,18 @@ pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
     }
     if let Some(id) = add {
         st.add_to_timeline(id, None, None);
+    }
+    if let Some(id) = relink {
+        st.relink(id);
+    }
+    if search_folder {
+        st.find_missing_in_folder();
+    }
+    if let Some((path, info)) = make_proxy {
+        if matches!(st.proxies.state(&path), Some(crate::proxies::ProxyState::Failed(_))) {
+            st.proxies.forget(&path);
+        }
+        st.proxies.request(&path, &info);
     }
 }
 
@@ -151,14 +213,14 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState) {
         if ui.button("⏮").on_hover_text("Go to start (Home)").clicked() {
             st.playback.seek(Time::ZERO);
         }
-        if ui.button("⏴").on_hover_text("Previous frame (←)").clicked() {
+        if ui.button("⏴").on_hover_text("Previous frame (Left arrow)").clicked() {
             st.playback.step(-1, rate);
         }
         let label = if st.playback.playing { "⏸" } else { "▶" };
         if ui.button(label).on_hover_text("Play / pause (Space)").clicked() {
             st.playback.toggle(end);
         }
-        if ui.button("⏵").on_hover_text("Next frame (→)").clicked() {
+        if ui.button("⏵").on_hover_text("Next frame (Right arrow)").clicked() {
             st.playback.step(1, rate);
         }
         if ui.button("⏭").on_hover_text("Go to end (End)").clicked() {
@@ -168,6 +230,12 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState) {
         ui.label(RichText::new(st.playback.playhead.timecode(rate)).monospace().size(15.0));
         ui.weak(format!("/ {}", end.timecode(rate)));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let any = st.project.media.iter().any(|m| st.proxies.ready(&m.path).is_some());
+            let label = if st.settings.use_proxies { "Proxies on" } else { "Proxies off" };
+            let tip = if any { "Show proxies (fast) or the original files (full quality) in the viewer. Export always uses the originals." } else { "No proxies yet: make them from the Media panel (heavy footage gets them automatically)" };
+            if ui.selectable_label(st.settings.use_proxies, label).on_hover_text(tip).clicked() {
+                st.settings.use_proxies = !st.settings.use_proxies;
+            }
             if !st.preview.exact {
                 ui.spinner();
             }

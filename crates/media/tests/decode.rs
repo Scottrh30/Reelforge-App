@@ -104,3 +104,63 @@ fn bt709_colours_decode_accurately() {
         assert!((*g as i32 - w).abs() <= 3, "got {got:?}, want [48, 128, 192]");
     }
 }
+
+#[test]
+fn a_second_decoder_gets_already_seen_frames_from_the_cache_instantly() {
+    let Some(path) = make_clip() else { return };
+    let rate = FrameRate::new(25, 1);
+    let size = Some((320, 180));
+    // The first viewer of the file decodes 0–1 s.
+    let mut a = FrameSource::open_cached(&path, size).unwrap();
+    for i in 0..25 {
+        a.frame_at_blocking(Time::from_frame(i, rate), Duration::from_secs(5)).unwrap();
+    }
+    // A fresh decoder (e.g. another clip of the same file) asked for 0.6 s answers
+    // straight away with the right frame, before its own decoder has produced anything.
+    let mut b = FrameSource::open_cached(&path, size).unwrap();
+    let t = Time::from_frame(15, rate);
+    let f = b.frame_at(t).cloned().expect("served from the cache");
+    assert_eq!(f.pts.to_frame(rate), 15);
+    assert!(b.is_exact(t));
+    // An uncached source has to wait for its decoder.
+    let mut c = FrameSource::open(&path, size).unwrap();
+    assert!(!c.is_exact(t) || c.frame_at(t).is_some_and(|f| f.pts.to_frame(rate) == 15));
+}
+
+#[test]
+fn proxies_are_small_all_keyframe_and_line_up_with_the_original() {
+    use reelforge_media::proxy;
+    use std::sync::atomic::AtomicBool;
+    // 1280x720 HEVC is "heavy": proxies are made for it automatically.
+    let path = std::env::temp_dir().join("reelforge_proxy_src.mp4");
+    if !path.exists() {
+        let ok = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=25:duration=3"])
+            .args(["-c:v", "libx265", "-x265-params", "log-level=error", "-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return;
+        }
+    }
+    let info = probe(&path).unwrap();
+    assert!(proxy::worth_a_proxy(&info));
+    let _ = std::fs::remove_file(proxy::proxy_path(&path));
+    let mut last = 0.0;
+    let out = proxy::make_proxy(&path, &info, &AtomicBool::new(false), |p| last = p).unwrap();
+    assert_eq!(last, 1.0);
+    assert_eq!(proxy::existing_proxy(&path), Some(out.clone()));
+    let pi = probe(&out).unwrap();
+    let v = pi.video.unwrap();
+    assert_eq!((v.width, v.height), (960, 540));
+    assert!((pi.duration.as_secs_f64() - 3.0).abs() < 0.1);
+    // Frame 40 of the proxy is frame 40 of the original (testsrc2 draws the frame number).
+    let rate = FrameRate::new(25, 1);
+    let t = Time::from_frame(40, rate);
+    let a = FrameSource::open(&path, Some((960, 540))).unwrap().frame_at_blocking(t, Duration::from_secs(5)).unwrap();
+    let b = FrameSource::open(&out, None).unwrap().frame_at_blocking(t, Duration::from_secs(5)).unwrap();
+    assert_eq!(b.pts.to_frame(rate), 40);
+    let diff: f64 = a.rgba.iter().zip(b.rgba.iter()).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as f64).sum::<f64>() / a.rgba.len() as f64;
+    assert!(diff < 4.0, "proxy frame differs from the original: {diff}");
+}

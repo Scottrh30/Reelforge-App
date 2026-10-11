@@ -12,6 +12,7 @@ fn writer(path: &std::path::Path, w: u32, h: u32, audio: bool) -> MovieWriter {
         frame_rate: FrameRate::new(30000, 1001),
         quality: Quality::High,
         audio_rate: audio.then_some(48_000),
+        proxy: false,
     })
     .unwrap()
 }

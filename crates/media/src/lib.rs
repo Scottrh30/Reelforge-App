@@ -4,14 +4,18 @@
 //! at time t" every repaint, and the source keeps a decoder thread running ahead.
 
 pub mod audio;
+pub mod cache;
 pub mod color;
 pub mod decoder;
 pub mod encode;
+pub mod hw;
 pub mod mixer;
 pub mod probe;
+pub mod proxy;
 pub mod source;
 
 pub use audio::{waveform_peaks, AudioReader};
+pub use cache::{CacheKey, FrameCache};
 pub use decoder::{DecoderHandle, VideoFrame};
 pub use encode::{MovieWriter, Quality, WriterSettings};
 pub use mixer::{MixClip, Mixer};

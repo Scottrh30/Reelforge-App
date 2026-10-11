@@ -178,6 +178,7 @@ pub fn export_sequence(
         frame_rate: rate,
         quality: settings.quality,
         audio_rate: has_audio.then_some(AUDIO_RATE),
+        proxy: false,
     })?;
     let video_codec = writer.video_codec.clone();
 

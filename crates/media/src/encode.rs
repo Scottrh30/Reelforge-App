@@ -62,6 +62,9 @@ pub struct WriterSettings {
     pub quality: Quality,
     /// Audio sample rate, or `None` for a video-only file.
     pub audio_rate: Option<u32>,
+    /// Make an editing proxy: every frame a keyframe (instant seeking) and the
+    /// fastest encoder settings, at the expense of file size.
+    pub proxy: bool,
 }
 
 /// H.264 encoders to try, best first. Hardware ones may be listed by FFmpeg but
@@ -314,7 +317,11 @@ fn open_video_encoder(w: u32, h: u32, s: &WriterSettings, global_header: bool) -
         enc.set_format(pix);
         enc.set_time_base(tb);
         enc.set_frame_rate(Some(fps));
-        enc.set_gop((s.frame_rate.fps() * 2.0).round().max(1.0) as u32); // keyframe every ~2 s: easy scrubbing
+        // Keyframe every ~2 s for easy scrubbing; every frame for proxies.
+        enc.set_gop(if s.proxy { 1 } else { (s.frame_rate.fps() * 2.0).round().max(1.0) as u32 });
+        if s.proxy {
+            enc.set_max_b_frames(0);
+        }
         enc.set_colorspace(Space::BT709);
         enc.set_color_range(Range::MPEG);
         enc.set_color_primaries(Primaries::BT709);
@@ -328,7 +335,11 @@ fn open_video_encoder(w: u32, h: u32, s: &WriterSettings, global_header: bool) -
         enc.set_flags(flags);
 
         let mut opts = Dictionary::new();
-        if *name == "libx264" {
+        if *name == "libx264" && s.proxy {
+            opts.set("crf", "23");
+            opts.set("preset", "veryfast");
+            opts.set("tune", "fastdecode");
+        } else if *name == "libx264" {
             opts.set("crf", s.quality.crf());
             opts.set("preset", "medium");
             opts.set("profile", "high");

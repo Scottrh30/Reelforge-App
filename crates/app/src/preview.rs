@@ -49,7 +49,33 @@ fn title_frame(titles: &mut HashMap<ClipId, TitleCache>, id: ClipId, spec: &reel
 
 struct Slot {
     source: Result<FrameSource, String>,
+    /// The file being decoded (the original or its proxy).
+    path: std::path::PathBuf,
     last_used: Instant,
+}
+
+/// A stand-in picture for media whose file is missing: dark red, with the file's name.
+fn offline_frame(name: &str, size: [u32; 2]) -> VideoFrame {
+    // Draw it small; the compositor scales it to the clip's real size.
+    let k = (960.0 / size[0].max(1) as f32).min(540.0 / size[1].max(1) as f32).min(1.0);
+    let (w, h) = (((size[0] as f32 * k) as u32).max(16), ((size[1] as f32 * k) as u32).max(16));
+    let spec = reelforge_core::TitleSpec {
+        text: format!("MEDIA OFFLINE\n{name}"),
+        size: h as f32 / 12.0,
+        shadow: false,
+        ..Default::default()
+    };
+    let text = reelforge_render::text::render_title(&spec, [w, h]);
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for (o, t) in rgba.chunks_exact_mut(4).zip(text.rgba.chunks_exact(4)) {
+        let a = t[3] as f32 / 255.0;
+        let bg = [110.0, 16.0, 24.0];
+        for k in 0..3 {
+            o[k] = (t[k] as f32 * a + bg[k] * (1.0 - a)) as u8;
+        }
+        o[3] = 255;
+    }
+    VideoFrame { pts: Time::ZERO, width: w, height: h, rgba: Arc::from(rgba), generation: 0 }
 }
 
 struct Gpu {
@@ -64,6 +90,7 @@ pub struct Preview {
     /// at different times don't fight over one decoder.
     slots: HashMap<ClipId, Slot>,
     titles: HashMap<ClipId, TitleCache>,
+    offline: HashMap<MediaId, VideoFrame>,
     gpu: Option<Gpu>,
     /// Hash of everything that went into the last render; skip identical frames.
     last_signature: u64,
@@ -78,7 +105,7 @@ impl Preview {
             let compositor = Compositor::new(&rs.device, &rs.queue);
             Gpu { render_state: rs, compositor, texture: None, registered_generation: 0 }
         });
-        Self { slots: HashMap::new(), titles: HashMap::new(), gpu, last_signature: 0, exact: true, error: None }
+        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None }
     }
 
     /// The composited frame, ready to draw with `egui::Image`/`painter.image`.
@@ -106,19 +133,28 @@ impl Preview {
     pub fn reset(&mut self) {
         self.slots.clear();
         self.titles.clear();
+        self.offline.clear();
         self.last_signature = 0;
     }
 
     fn slot<'a>(slots: &'a mut HashMap<ClipId, Slot>, id: ClipId, path: &std::path::Path) -> &'a mut Slot {
-        let slot = slots.entry(id).or_insert_with(|| Slot {
-            source: FrameSource::open(path, Some(PREVIEW_MAX)).map_err(|e| format!("{e:#}")),
+        let open = || Slot {
+            source: FrameSource::open_cached(path, Some(PREVIEW_MAX)).map_err(|e| format!("{e:#}")),
+            path: path.to_owned(),
             last_used: Instant::now(),
-        });
+        };
+        let slot = slots.entry(id).or_insert_with(open);
+        if slot.path != path {
+            // Switched between the original and its proxy.
+            *slot = open();
+        }
         slot.last_used = Instant::now();
         slot
     }
 
-    pub fn update(&mut self, project: &Project, t: Time, playing: bool) {
+    /// Render the frame at `t`. `sources` says which file to decode for each
+    /// media item (the original, or its proxy).
+    pub fn update(&mut self, project: &Project, t: Time, playing: bool, sources: &HashMap<MediaId, std::path::PathBuf>) {
         let seq = &project.sequences[0];
         let frame_size = [seq.width.max(2), seq.height.max(2)];
 
@@ -139,6 +175,7 @@ impl Preview {
         let mut items = Vec::new();
         let mut exact = true;
         self.error = None;
+        let offline = &mut self.offline;
         let mut gather = |l: &reelforge_core::Layer, slots: &mut HashMap<ClipId, Slot>, titles: &mut HashMap<ClipId, TitleCache>, error: &mut Option<String>| -> Option<Gathered> {
             if let Some(spec) = &l.clip.title {
                 // Titles are drawn on a canvas the size of the frame, so 100% is their natural size.
@@ -154,7 +191,13 @@ impl Preview {
             }
             let media = project.media(l.clip.media)?;
             let v = media.info.video.as_ref()?;
-            let src = match &mut Self::slot(slots, l.clip.id, &media.path).source {
+            let layer_size = [v.width as f32, v.height as f32];
+            let path = sources.get(&media.id).unwrap_or(&media.path);
+            if !path.exists() {
+                let frame = offline.entry(media.id).or_insert_with(|| offline_frame(&media.name, [v.width, v.height])).clone();
+                return Some(Gathered { key: l.clip.id.0, frame, media: media.id, layer_size, transform: l.transform, blend: l.blend, effects: l.effects.clone() });
+            }
+            let src = match &mut Self::slot(slots, l.clip.id, path).source {
                 Ok(s) => s,
                 Err(e) => {
                     *error = Some(format!("Can't decode {}: {e}", media.name));
@@ -198,7 +241,8 @@ impl Preview {
                     let shows_at = clip.timeline_start - clip.dissolve_in;
                     if shows_at > t && shows_at <= t + PREFETCH {
                         if let Some(media) = project.media(clip.media) {
-                            if let Ok(src) = &mut Self::slot(&mut self.slots, clip.id, &media.path).source {
+                            let path = sources.get(&media.id).unwrap_or(&media.path);
+                            if let Ok(src) = &mut Self::slot(&mut self.slots, clip.id, path).source {
                                 src.frame_at(clip.source_time(shows_at).max(Time::ZERO));
                             }
                         }

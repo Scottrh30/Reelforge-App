@@ -59,8 +59,34 @@ pub struct EditorState {
     pub waveforms: HashMap<MediaId, Arc<Vec<f32>>>,
     /// Installed fonts for titles, found in the background at startup (`None` until then).
     fonts: Arc<std::sync::Mutex<Option<Arc<Vec<FontEntry>>>>>,
+    pub settings: crate::settings::Settings,
+    pub settings_open: bool,
+    pub proxies: crate::proxies::Proxies,
+    /// Project revision when proxies were last looked for.
+    proxied_rev: u64,
+    /// This run's autosave/crash-detection session (moved along on New/Open).
+    session: Option<crate::safety::Session>,
+    /// Project revision at the last save (or open): anything newer is unsaved.
+    saved_rev: u64,
+    /// Crashed sessions found at startup, offered for recovery.
+    recoveries: Vec<crate::safety::Recovery>,
+    /// Something waiting on "save changes?".
+    pending: Option<Pending>,
+    /// The user agreed to close (after saving or discarding changes).
+    quit_confirmed: bool,
     waveform_tx: Sender<(MediaId, Vec<f32>)>,
     waveform_rx: Receiver<(MediaId, Vec<f32>)>,
+}
+
+/// An action that would throw away unsaved changes, waiting for the user's answer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pending {
+    New,
+    Open,
+    Quit,
+    Recover(usize),
+    /// Open an autosave file as a new, unsaved project.
+    OpenAutosave(PathBuf),
 }
 
 /// Waveform resolution: peaks per second of audio.
@@ -89,7 +115,14 @@ impl ReelforgeApp {
         };
         let preview = Preview::new(cc.wgpu_render_state.clone());
         let mut app = Self { dock, state: EditorState::new(Playback::with_audio(audio), preview), export: Default::default() };
-        app.state.status = "Import media with File → Import, or drop files onto the window.".into();
+        if let Some(s) = cc.storage.and_then(|s| eframe::get_value::<crate::settings::Settings>(s, crate::settings::Settings::STORAGE_KEY)) {
+            app.state.settings = s;
+        }
+        app.state.settings.apply();
+        let (session, crashed) = crate::safety::Session::start();
+        app.state.session = Some(session);
+        app.state.recoveries = crashed;
+        app.state.status = "Import media with File > Import, or drop files onto the window.".into();
 
         // `reelforge project.rfproj` opens a project (e.g. double-clicked in Explorer);
         // `reelforge clip1.mp4 clip2.mov …` imports the files and lays them out on the timeline.
@@ -108,9 +141,26 @@ impl ReelforgeApp {
 }
 
 impl eframe::App for ReelforgeApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, crate::settings::Settings::STORAGE_KEY, &self.state.settings);
+    }
+
+    fn on_exit(&mut self) {
+        // A clean exit: no crash to recover from next time.
+        if let Some(s) = &self.state.session {
+            s.end();
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let st = &mut self.state;
+
+        // Closing the window with unsaved changes asks first.
+        if ctx.input(|i| i.viewport().close_requested()) && st.is_dirty() && !st.quit_confirmed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            st.pending = Some(Pending::Quit);
+        }
 
         // Files dropped from Explorer.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
@@ -125,7 +175,8 @@ impl eframe::App for ReelforgeApp {
         let (rate, end) = (seq.frame_rate, seq.duration());
         st.playback.tick(rate, end);
         st.playback.scrub_if_moved();
-        st.preview.update(&st.project, st.playback.playhead, st.playback.playing);
+        let sources = st.decode_paths();
+        st.preview.update(&st.project, st.playback.playhead, st.playback.playing, &sources);
         if let Some(e) = st.preview.error.take() {
             st.status = e;
         }
@@ -159,6 +210,12 @@ impl eframe::App for ReelforgeApp {
         });
 
         self.export.show(&ctx, st);
+        if st.settings_open {
+            let mut open = true;
+            crate::settings::window(&ctx, st, &mut open);
+            st.settings_open = open;
+        }
+        st.dialogs(&ctx);
 
         // A slider/gizmo gesture ends when the mouse is released and no text field is being typed in.
         if st.live_edit.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
@@ -170,7 +227,11 @@ impl eframe::App for ReelforgeApp {
             ctx.request_repaint();
         } else if !st.preview.exact {
             ctx.request_repaint_after(std::time::Duration::from_millis(15));
+        } else if st.proxies.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
+        // Wake up for autosave even when idle.
+        ctx.request_repaint_after(std::time::Duration::from_secs(20));
     }
 }
 
@@ -243,6 +304,15 @@ impl EditorState {
             },
             waveform_tx,
             waveform_rx,
+            settings: Default::default(),
+            settings_open: false,
+            proxies: Default::default(),
+            proxied_rev: 0,
+            session: None,
+            saved_rev: 1,
+            recoveries: Vec::new(),
+            pending: None,
+            quit_confirmed: false,
         }
     }
 
@@ -254,6 +324,13 @@ impl EditorState {
         let mut st = EditorState::new(Playback::with_audio(self.playback.audio.take()), preview);
         st.playback.scrub_audio = self.playback.scrub_audio;
         st.fonts = self.fonts.clone(); // no need to scan again
+        st.settings = self.settings.clone();
+        st.proxies = std::mem::take(&mut self.proxies);
+        st.session = self.session.take();
+        if let Some(s) = &mut st.session {
+            s.set_project(None);
+        }
+        st.recoveries = std::mem::take(&mut self.recoveries);
         st.status = "New project".into();
         st
     }
@@ -313,7 +390,9 @@ impl EditorState {
 
     pub fn import(&mut self, paths: &[PathBuf]) {
         let mut ok = 0;
-        for path in paths {
+        // Store full paths, so the project works wherever it's opened from.
+        let paths: Vec<PathBuf> = paths.iter().map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone())).collect();
+        for path in &paths {
             if self.project.media.iter().any(|m| m.path == *path) {
                 continue;
             }
@@ -642,6 +721,20 @@ impl EditorState {
 
     /// Per-frame housekeeping: push edits to the audio engine, collect finished waveforms.
     fn sync_background(&mut self) {
+        if self.rev != self.proxied_rev {
+            self.proxies.refresh(&self.project, self.settings.auto_proxies);
+            self.proxied_rev = self.rev;
+        }
+        if self.proxies.poll() {
+            self.status = "A proxy is ready: the viewer uses it now".into();
+        }
+        if let Some(s) = &mut self.session {
+            if let Some(msg) = s.tick(&self.project, self.rev, self.settings.autosave_minutes) {
+                if msg.starts_with("Autosave failed") {
+                    self.status = msg;
+                }
+            }
+        }
         if self.rev != self.mixed_rev {
             if let Some(a) = &self.playback.audio {
                 a.set_clips(reelforge_export::mix_clips(&self.project, a.rate));
@@ -655,41 +748,288 @@ impl EditorState {
 
     // ---- Project files -------------------------------------------------------
 
-    fn save_project(&mut self, save_as: bool) {
+    /// Save (asking for a file name if needed). Returns whether it was saved.
+    fn save_project(&mut self, save_as: bool) -> bool {
+        self.commit_live_edit();
         let path = match (&self.project_path, save_as) {
             (Some(p), false) => Some(p.clone()),
             _ => rfd::FileDialog::new().add_filter("Reelforge project", &["rfproj"]).set_file_name("project.rfproj").save_file(),
         };
-        let Some(path) = path else { return };
+        let Some(path) = path else { return false };
         let result = serde_json::to_string_pretty(&self.project)
             .map_err(anyhow::Error::from)
-            .and_then(|json| std::fs::write(&path, json).map_err(Into::into));
-        self.status = match result {
+            .and_then(|json| crate::safety::write_atomic(&path, json.as_bytes()).map_err(Into::into));
+        match result {
             Ok(()) => {
-                let msg = format!("Saved {}", path.display());
-                self.project_path = Some(path);
-                msg
+                self.status = format!("Saved {}", path.display());
+                self.project_path = Some(path.clone());
+                self.saved_rev = self.rev;
+                if let Some(s) = &mut self.session {
+                    s.set_project(Some(path));
+                    s.autosaved_rev = self.rev;
+                }
+                true
             }
-            Err(e) => format!("Save failed: {e}"),
-        };
+            Err(e) => {
+                self.status = format!("Save failed: {e}");
+                false
+            }
+        }
     }
 
-    fn open_project(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("Reelforge project", &["rfproj"]).pick_file() else { return };
-        self.open_project_path(path);
+    /// Are there changes since the last save?
+    pub fn is_dirty(&self) -> bool {
+        self.rev != self.saved_rev
+    }
+
+    /// Run `action` now, or ask about unsaved changes first.
+    pub fn request(&mut self, action: Pending) {
+        self.commit_live_edit();
+        if self.is_dirty() {
+            self.pending = Some(action);
+        } else {
+            self.perform(action);
+        }
+    }
+
+    fn perform(&mut self, action: Pending) {
+        match action {
+            Pending::New => {
+                *self = self.fresh();
+                self.saved_rev = self.rev;
+            }
+            Pending::Open => {
+                if let Some(path) = rfd::FileDialog::new().add_filter("Reelforge project", &["rfproj"]).pick_file() {
+                    self.open_project_path(path);
+                }
+            }
+            Pending::Quit => {
+                self.quit_confirmed = true;
+            }
+            Pending::Recover(i) => self.recover(i),
+            Pending::OpenAutosave(p) => {
+                self.open_project_path(p);
+                self.project_path = None; // save it somewhere real, not over the autosave
+                self.saved_rev = self.rev.wrapping_sub(1);
+                if let Some(s) = &mut self.session {
+                    s.set_project(None);
+                }
+            }
+        }
     }
 
     pub fn open_project_path(&mut self, path: PathBuf) {
         match load_project(&path) {
             Ok(p) => {
                 *self = EditorState { project: p, project_path: Some(path.clone()), ..self.fresh() };
-                self.status = format!("Opened {}", path.display());
-                let media: Vec<_> = self.project.media.clone();
-                for m in &media {
-                    self.compute_waveform(m);
+                self.saved_rev = self.rev;
+                if let Some(s) = &mut self.session {
+                    s.set_project(Some(path.clone()));
+                    s.autosaved_rev = self.rev;
                 }
+                self.status = format!("Opened {}", path.display());
+                self.after_load();
             }
             Err(e) => self.status = format!("Open failed: {e:#}"),
+        }
+    }
+
+    /// After opening or recovering: waveforms, and a warning about missing files.
+    fn after_load(&mut self) {
+        let media: Vec<_> = self.project.media.clone();
+        for m in &media {
+            self.compute_waveform(m);
+        }
+        let missing = reelforge_core::undo::missing_media(&self.project);
+        if !missing.is_empty() {
+            self.status = format!(
+                "{} media file{} can't be found: relink {} in the Media panel",
+                missing.len(),
+                if missing.len() == 1 { "" } else { "s" },
+                if missing.len() == 1 { "it" } else { "them" }
+            );
+        }
+    }
+
+    /// Load crashed session `i`'s autosave as an unsaved project.
+    fn recover(&mut self, i: usize) {
+        if i >= self.recoveries.len() {
+            return;
+        }
+        let r = self.recoveries.remove(i);
+        match r.load() {
+            Ok(p) => {
+                let path = r.info.project.clone();
+                *self = EditorState { project: p, project_path: path.clone(), ..self.fresh() };
+                self.saved_rev = self.rev.wrapping_sub(1); // recovered work hasn't been saved
+                if let Some(s) = &mut self.session {
+                    s.set_project(path.clone());
+                }
+                self.after_load();
+                self.status = match &path {
+                    Some(p) => format!("Recovered your work on {}: save (Ctrl+S) to keep it", p.display()),
+                    None => "Recovered your unsaved project: save it (Ctrl+S) to keep it".into(),
+                };
+                r.dismiss(true);
+            }
+            Err(e) => self.status = format!("Couldn't read the autosave: {e:#}"),
+        }
+    }
+
+    /// The file to decode for each media item in the viewer: its proxy when
+    /// proxies are on and one is ready, otherwise the original.
+    pub fn decode_paths(&self) -> HashMap<MediaId, PathBuf> {
+        self.project
+            .media
+            .iter()
+            .map(|m| {
+                let p = if self.settings.use_proxies { self.proxies.ready(&m.path).cloned() } else { None };
+                (m.id, p.unwrap_or_else(|| m.path.clone()))
+            })
+            .collect()
+    }
+
+    // ---- Relinking -------------------------------------------------------------
+
+    /// Point a missing media item at a file the user picks; then look in that
+    /// folder for any other missing files with their original names.
+    pub fn relink(&mut self, id: MediaId) {
+        let Some(m) = self.project.media(id).cloned() else { return };
+        let mut dlg = rfd::FileDialog::new().set_title(format!("Find {}", m.name)).add_filter("All files", &["*"]);
+        if let Some(dir) = m.path.parent().filter(|d| d.is_dir()) {
+            dlg = dlg.set_directory(dir);
+        }
+        let Some(new_path) = dlg.pick_file() else { return };
+        let mut pairs = vec![(m.path.clone(), new_path.clone())];
+        if let Some(dir) = new_path.parent() {
+            let others: Vec<PathBuf> = reelforge_core::undo::missing_media(&self.project)
+                .into_iter()
+                .filter(|o| *o != id)
+                .filter_map(|o| self.project.media(o).map(|m| m.path.clone()))
+                .collect();
+            pairs.extend(crate::safety::find_by_name(dir, &others));
+        }
+        self.apply_relinks(pairs);
+    }
+
+    /// Search a folder (and its subfolders) for every missing file by name.
+    pub fn find_missing_in_folder(&mut self) {
+        let Some(dir) = rfd::FileDialog::new().set_title("Folder to search for missing media").pick_folder() else { return };
+        let missing: Vec<PathBuf> = reelforge_core::undo::missing_media(&self.project)
+            .into_iter()
+            .filter_map(|o| self.project.media(o).map(|m| m.path.clone()))
+            .collect();
+        let pairs = crate::safety::find_by_name(&dir, &missing);
+        if pairs.is_empty() {
+            self.status = format!("None of the missing files are in {}", dir.display());
+        } else {
+            self.apply_relinks(pairs);
+        }
+    }
+
+    fn apply_relinks(&mut self, pairs: Vec<(PathBuf, PathBuf)>) {
+        let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+        let mut problems = Vec::new();
+        for (old_path, new_path) in pairs {
+            let Some(old) = self.project.media.iter().find(|m| m.path == old_path).cloned() else { continue };
+            match reelforge_media::probe(&new_path) {
+                Ok(info) => {
+                    if old.info.video.is_some() != info.video.is_some() || old.info.audio.is_some() != info.audio.is_some() {
+                        problems.push(format!("{} has different streams from the original", new_path.display()));
+                    }
+                    let name = new_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let new = MediaAsset { id: old.id, path: new_path, name, info };
+                    cmds.push(Box::new(reelforge_core::undo::RelinkMedia { id: old.id, old, new }));
+                }
+                Err(e) => problems.push(format!("{}: {e:#}", new_path.display())),
+            }
+        }
+        let n = cmds.len();
+        if n > 0 {
+            self.execute(Box::new(Batch { name: "Relink media".into(), cmds }));
+            self.preview.reset(); // reopen decoders on the new files
+            let media: Vec<_> = self.project.media.clone();
+            for m in &media {
+                self.compute_waveform(m);
+            }
+        }
+        let left = reelforge_core::undo::missing_media(&self.project).len();
+        self.status = format!(
+            "Relinked {n} file{}{}{}",
+            if n == 1 { "" } else { "s" },
+            if left > 0 { format!("; {left} still missing") } else { String::new() },
+            if problems.is_empty() { String::new() } else { format!(" ({})", problems.join("; ")) }
+        );
+    }
+
+    /// Modal dialogs: "save changes?" and crash recovery.
+    pub fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(action) = self.pending.clone() {
+            let name = self.project_path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "the project".into());
+            let mut choice = None;
+            egui::Modal::new(egui::Id::new("unsaved")).show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.heading("Save changes?");
+                ui.label(format!("{name} has changes that haven't been saved."));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(egui::RichText::new("Save").strong()).clicked() {
+                        choice = Some(0);
+                    }
+                    if ui.button("Don't save").clicked() {
+                        choice = Some(1);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(2);
+                    }
+                });
+            });
+            match choice {
+                Some(0) => {
+                    self.pending = None;
+                    if self.save_project(false) {
+                        self.perform(action);
+                    }
+                }
+                Some(1) => {
+                    self.pending = None;
+                    self.perform(action);
+                }
+                Some(2) => self.pending = None,
+                _ => {}
+            }
+            if self.quit_confirmed {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else if !self.recoveries.is_empty() {
+            let mut act: Option<(usize, bool)> = None;
+            egui::Modal::new(egui::Id::new("recover")).show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.heading("Recover unsaved work?");
+                ui.label("Reelforge didn't close properly last time. Its autosave can be opened:");
+                ui.add_space(6.0);
+                for (i, r) in self.recoveries.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(r.describe());
+                        if ui.button(egui::RichText::new("Recover").strong()).clicked() {
+                            act = Some((i, true));
+                        }
+                        if ui.button("Discard").on_hover_text("Delete this autosave").clicked() {
+                            act = Some((i, false));
+                        }
+                    });
+                }
+                ui.add_space(4.0);
+                ui.weak("Autosaves are also in Edit > Settings > Open autosave folder.");
+            });
+            match act {
+                Some((i, true)) => self.request(Pending::Recover(i)),
+                Some((i, false)) => {
+                    let r = self.recoveries.remove(i);
+                    r.dismiss(false);
+                }
+                None => {}
+            }
         }
     }
 
@@ -697,10 +1037,10 @@ impl EditorState {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("New project").clicked() {
-                    *self = self.fresh();
+                    self.request(Pending::New);
                 }
                 if ui.button("Open project…").clicked() {
-                    self.open_project();
+                    self.request(Pending::Open);
                 }
                 if ui.button("Save project        Ctrl+S").clicked() {
                     self.save_project(false);
@@ -715,6 +1055,13 @@ impl EditorState {
                 ui.separator();
                 if ui.add_enabled(!exporting, egui::Button::new("Export…               Ctrl+M")).clicked() {
                     self.export_requested = true;
+                }
+                ui.separator();
+                if ui.button("Open an autosave…").on_hover_text("Autosaves are made every few minutes (see Edit > Settings)").clicked() {
+                    let dir = crate::safety::autosave_dir();
+                    if let Some(p) = rfd::FileDialog::new().set_directory(&dir).add_filter("Reelforge project", &["rfproj"]).pick_file() {
+                        self.request(Pending::OpenAutosave(p));
+                    }
                 }
             });
             ui.menu_button("Edit", |ui| {
@@ -767,6 +1114,9 @@ impl EditorState {
                     self.clear_marks();
                 }
                 ui.separator();
+                if ui.button("Settings…").clicked() {
+                    self.settings_open = true;
+                }
                 ui.checkbox(&mut self.playback.scrub_audio, "Audio scrubbing")
                     .on_hover_text("Hear audio while dragging the playhead or stepping frames");
             });
@@ -1068,4 +1418,67 @@ pub const LOCKED: &str = "That clip is on a locked track (or linked to one). Unl
 
 fn load_project(path: &Path) -> anyhow::Result<Project> {
     Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn editor() -> EditorState {
+        EditorState::new(Playback::with_audio(None), Preview::new(None))
+    }
+
+    /// A small real video file made with the ffmpeg CLI (tests skip without it).
+    fn clip(dir: &Path, name: &str) -> Option<PathBuf> {
+        let p = dir.join(name);
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25:duration=1", "-pix_fmt", "yuv420p"])
+            .arg(&p)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(p)
+    }
+
+    #[test]
+    fn relinking_points_media_at_the_moved_files_and_undoes() {
+        let dir = std::env::temp_dir().join(format!("rf-app-relink-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("new/sub")).unwrap();
+        let (Some(a), Some(b)) = (clip(&dir.join("new"), "a.mp4"), clip(&dir.join("new/sub"), "b.mp4")) else { return };
+        let mut st = editor();
+        let info = reelforge_media::probe(&a).unwrap();
+        for (id, name) in [(1, "a.mp4"), (2, "b.mp4")] {
+            st.project.media.push(MediaAsset { id: MediaId(id), path: dir.join("old").join(name), name: name.into(), info: info.clone() });
+        }
+        assert_eq!(reelforge_core::undo::missing_media(&st.project).len(), 2);
+        // Relinking one file finds the other in the same folder tree by name.
+        let mut pairs = vec![(dir.join("old/a.mp4"), a.clone())];
+        pairs.extend(crate::safety::find_by_name(&dir.join("new"), &[dir.join("old/b.mp4")]));
+        st.apply_relinks(pairs);
+        assert!(reelforge_core::undo::missing_media(&st.project).is_empty(), "{}", st.status);
+        assert_eq!(st.project.media(MediaId(2)).unwrap().path, b);
+        assert!(st.status.starts_with("Relinked 2 files"));
+        st.undo();
+        assert_eq!(reelforge_core::undo::missing_media(&st.project).len(), 2, "one undo step");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn edits_are_unsaved_until_saved() {
+        let dir = std::env::temp_dir().join(format!("rf-app-dirty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut st = editor();
+        assert!(!st.is_dirty(), "a new project has nothing to save");
+        st.add_track(TrackKind::Video);
+        assert!(st.is_dirty());
+        st.project_path = Some(dir.join("p.rfproj"));
+        assert!(st.save_project(false));
+        assert!(!st.is_dirty());
+        let saved: Project = serde_json::from_str(&std::fs::read_to_string(dir.join("p.rfproj")).unwrap()).unwrap();
+        assert_eq!(saved.sequences[0].tracks.len(), 4);
+        // Asking for a new project with unsaved changes waits for an answer.
+        st.add_title();
+        st.request(Pending::New);
+        assert_eq!(st.pending, Some(Pending::New));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
