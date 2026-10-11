@@ -1493,26 +1493,26 @@ fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_co
         ui.horizontal(|ui| {
             ui.label("Apply to");
             let label = targets.iter().find(|(id, _)| *id == chosen).map(|(_, n)| n.clone()).unwrap_or_default();
-            egui::ComboBox::from_id_salt(key).width((ui.available_width() - 60.0).clamp(110.0, 230.0)).truncate().selected_text(label).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt(key).width(ui.available_width().clamp(110.0, 260.0)).truncate().selected_text(label).show_ui(ui, |ui| {
                 for (id, name) in &targets {
                     ui.selectable_value(&mut chosen, *id, name);
                 }
             });
-            if ui.button("Apply").on_hover_text("Writes keyframes (undoable)").clicked() {
+        });
+        // The button on its own line, so a long target name never pushes it out of a narrow panel.
+        ui.horizontal(|ui| {
+            if ui.button(RichText::new("Apply").strong()).on_hover_text("Writes keyframes (undoable)").clicked() {
                 match chosen {
                     (_, Some(i)) => st.apply_track_to_mask(clip.id, i),
                     (id, None) => st.apply_track(clip.id, id, smoothing),
                 }
             }
-        });
-        if chosen == (clip.id, None) && trk.mode != TrackMode::CornerPin {
-            ui.horizontal(|ui| {
+            if chosen == (clip.id, None) && trk.mode != TrackMode::CornerPin {
                 ui.weak("Smoothing");
                 ui.add(egui::DragValue::new(&mut smoothing).range(0.0..=120.0).speed(0.25).suffix(" frames").fixed_decimals(0))
                     .on_hover_text("0 locks the shot completely. Higher keeps slow, deliberate camera moves (pans, tilts) and only takes out the shake: 10–30 frames suits most handheld footage");
-                ui.weak(if smoothing > 0.0 { "keeps camera moves" } else { "locked" });
-            });
-        }
+            }
+        });
         if trk.mode == TrackMode::CornerPin && chosen.0 != clip.id && chosen.1.is_none() {
             ui.weak("A layer that isn't pinned is pinned straight into the four points. To place it differently on the surface, adjust its corner pin at the first tracked frame and apply again: it keeps that shape and moves with the surface.");
         }
