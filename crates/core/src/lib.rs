@@ -9,6 +9,7 @@ pub mod channels;
 pub mod clipboard;
 pub mod edit;
 pub mod effects;
+pub mod mask;
 pub mod project;
 pub mod time;
 pub mod title;

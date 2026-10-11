@@ -221,8 +221,12 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
         })
         .collect();
 
+    // Pressing on a mask handle (or drawing a mask) isn't a click on a layer.
+    let press = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
+    let mask_press = press.is_some_and(|p| crate::masks::wants_press(st, frame_px, scale, frame_rect.min, p));
+
     // Click a layer in the viewer to select it (topmost hit wins), like HitFilm.
-    if resp.clicked() || resp.drag_started() {
+    if (resp.clicked() || resp.drag_started()) && !mask_press {
         if let Some(p) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()) {
             let f = to_frame(p);
             let hit = layers.iter().find(|(_, r, tr)| tr.hit_rect(*r, frame_px, f)).map(|(id, ..)| *id);
@@ -233,12 +237,13 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
         }
     }
 
-    let tracker_drag = tracker_overlay(ui, st, &resp, area, frame_px, scale, frame_rect.min);
+    let mask_used = crate::masks::overlay(ui, st, &resp, area, frame_px, scale, frame_rect.min);
+    let tracker_drag = !mask_used && tracker_overlay(ui, st, &resp, area, frame_px, scale, frame_rect.min);
 
     // Drag the selected layer to move it.
     let selected = st.selection.and_then(|id| layers.iter().find(|(lid, ..)| *lid == id).copied());
     if let Some((id, lrect, tr)) = selected {
-        if resp.dragged() && !st.playback.playing && !tracker_drag {
+        if resp.dragged() && !st.playback.playing && !tracker_drag && !mask_used {
             let d = resp.drag_delta() / scale;
             if d != Vec2::ZERO {
                 let clip = st.seq().find_clip(id).map(|(_, c)| c.clone());
@@ -427,6 +432,8 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                     dissolve_control(ui, st, &clip);
                     ui.add_space(10.0);
                     effect_controls(ui, st, &clip);
+                    ui.add_space(10.0);
+                    crate::masks::controls(ui, st, &clip);
                     if footage {
                         ui.add_space(10.0);
                         tracker_controls(ui, st, &clip);
@@ -1256,14 +1263,19 @@ fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_co
         ui.weak(format!("{} frames tracked, {} to {}", trk.path.len(), to_seq(a.at).timecode(rate), to_seq(b.at).timecode(rate)));
         // Where it can go: this clip (stabilise), or another video layer that overlaps the track.
         let (ta, tb) = (to_seq(a.at), to_seq(b.at));
-        let mut targets: Vec<(reelforge_core::ClipId, String)> = vec![(clip.id, "This clip: stabilise".into())];
+        // Targets: (clip, mask index), where a mask index means "this clip's mask".
+        let mut targets: Vec<((reelforge_core::ClipId, Option<usize>), String)> = vec![((clip.id, None), "This clip: stabilise".into())];
+        for (i, m) in clip.masks.iter().enumerate() {
+            targets.push(((clip.id, Some(i)), format!("Mask: {}", m.name)));
+        }
         for tr in st.seq().tracks.iter().filter(|t| t.kind == reelforge_core::TrackKind::Video) {
             for c in tr.clips.iter().filter(|c| c.id != clip.id && c.timeline_start < tb && c.timeline_end() > ta) {
-                targets.push((c.id, format!("{} ({})", c.display_name(&st.project), tr.name)));
+                targets.push(((c.id, None), format!("{} ({})", c.display_name(&st.project), tr.name)));
             }
         }
         let key = egui::Id::new(("track_target", clip.id));
-        let mut chosen: reelforge_core::ClipId = ui.data(|d| d.get_temp(key)).filter(|id| targets.iter().any(|(t, _)| t == id)).unwrap_or(targets[targets.len().min(2) - 1].0);
+        let default = targets.iter().find(|((id, m), _)| *id != clip.id || m.is_some()).unwrap_or(&targets[0]).0;
+        let mut chosen: (reelforge_core::ClipId, Option<usize>) = ui.data(|d| d.get_temp(key)).filter(|c| targets.iter().any(|(t, _)| t == c)).unwrap_or(default);
         ui.horizontal(|ui| {
             ui.label("Apply to");
             let label = targets.iter().find(|(id, _)| *id == chosen).map(|(_, n)| n.clone()).unwrap_or_default();
@@ -1272,8 +1284,11 @@ fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_co
                     ui.selectable_value(&mut chosen, *id, name);
                 }
             });
-            if ui.button("Apply").on_hover_text("Writes position keyframes (undoable)").clicked() {
-                st.apply_track(clip.id, chosen);
+            if ui.button("Apply").on_hover_text("Writes keyframes (undoable)").clicked() {
+                match chosen {
+                    (_, Some(i)) => st.apply_track_to_mask(clip.id, i),
+                    (id, None) => st.apply_track(clip.id, id),
+                }
             }
         });
         ui.data_mut(|d| d.insert_temp(key, chosen));

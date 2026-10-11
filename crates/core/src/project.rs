@@ -100,6 +100,9 @@ pub struct Clip {
     /// is `MediaId::NESTED`). Its source time is that sequence's time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nested: Option<usize>,
+    /// Masks cutting the layer down, combined in order (see `mask`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masks: Vec<crate::mask::Mask>,
     /// A point tracker on this clip (see `track`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracker: Option<crate::track::PointTrack>,
@@ -112,6 +115,7 @@ pub struct ClipVisual {
     pub blend: BlendMode,
     pub anim: TransformAnim,
     pub effects: Vec<Effect>,
+    pub masks: Vec<crate::mask::Mask>,
 }
 
 impl Clip {
@@ -132,6 +136,7 @@ impl Clip {
             effects: Vec::new(),
             title: None,
             nested: None,
+            masks: Vec::new(),
             tracker: None,
         }
     }
@@ -158,11 +163,11 @@ impl Clip {
     }
 
     pub fn visual(&self) -> ClipVisual {
-        ClipVisual { transform: self.transform, blend: self.blend, anim: self.anim.clone(), effects: self.effects.clone() }
+        ClipVisual { transform: self.transform, blend: self.blend, anim: self.anim.clone(), effects: self.effects.clone(), masks: self.masks.clone() }
     }
 
     pub fn set_visual(&mut self, v: ClipVisual) {
-        (self.transform, self.blend, self.anim, self.effects) = (v.transform, v.blend, v.anim, v.effects);
+        (self.transform, self.blend, self.anim, self.effects, self.masks) = (v.transform, v.blend, v.anim, v.effects, v.masks);
     }
 
     /// The enabled effects evaluated at *source* time `src`, ready to render.

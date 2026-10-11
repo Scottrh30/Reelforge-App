@@ -5,6 +5,7 @@ mod app;
 mod audio;
 mod curves;
 mod export_ui;
+mod masks;
 mod meters;
 mod panels;
 mod playback;

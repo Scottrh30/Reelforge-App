@@ -9,9 +9,10 @@
 //! picture becomes one layer of the outer one.
 
 use anyhow::Result;
+use reelforge_core::mask::{self, MaskImage};
 use reelforge_core::{BlendMode, ClipId, EffectValues, Layer, MediaId, Project, Time, Transform, VideoItem};
 use reelforge_media::VideoFrame;
-use reelforge_render::{wgpu, Compositor, DrawItem, LayerInput};
+use reelforge_render::{wgpu, Compositor, DrawItem, LayerInput, MaskInput};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -43,7 +44,13 @@ struct Gathered {
     transform: Transform,
     blend: BlendMode,
     effects: Vec<EffectValues>,
+    /// The layer's masks as an alpha image, and its hash.
+    mask: Option<(u64, Arc<MaskImage>)>,
 }
+
+/// Masks are rasterised at most this big (longer side); they're soft-edged
+/// alpha, so the renderer's filtering covers the rest.
+const MASK_MAX: u32 = 2048;
 
 enum Item {
     Single(Gathered),
@@ -63,6 +70,8 @@ pub struct Scene {
     queue: wgpu::Queue,
     /// Per composite-shot clip.
     nested: HashMap<ClipId, Nested>,
+    /// Rasterised masks per clip: (hash of the shape, image, last used tick).
+    masks: HashMap<ClipId, (u64, Arc<MaskImage>, u64)>,
     /// Counts top-level renders, to let go of composite shots not seen for a while.
     tick: u64,
     generation: u64,
@@ -70,12 +79,13 @@ pub struct Scene {
 
 impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), tick: 0, generation: 0 }
+        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0 }
     }
 
     /// Forget composite-shot renders (e.g. a different project was opened).
     pub fn reset(&mut self) {
         self.nested.clear();
+        self.masks.clear();
     }
 
     /// Render sequence `seq` at time `t` into `compositor`. Returns a
@@ -95,6 +105,7 @@ impl Scene {
         let tick = self.tick;
         // Composite shots off screen for a few seconds give their GPU memory back.
         self.nested.retain(|_, n| tick - n.last_used < 150);
+        self.masks.retain(|_, m| tick - m.2 < 150);
         Ok(sig)
     }
 
@@ -114,9 +125,9 @@ impl Scene {
         let mut items = Vec::new();
         for item in project.video_layers_at(seq, t) {
             match item {
-                VideoItem::Single(l) => items.extend(self.gather(project, &l, frame_size, provider, depth)?.map(Item::Single)),
+                VideoItem::Single(l) => items.extend(self.gather(project, &l, t, frame_size, provider, depth)?.map(Item::Single)),
                 VideoItem::Dissolve { from, to, mix } => {
-                    match (self.gather(project, &from, frame_size, provider, depth)?, self.gather(project, &to, frame_size, provider, depth)?) {
+                    match (self.gather(project, &from, t, frame_size, provider, depth)?, self.gather(project, &to, t, frame_size, provider, depth)?) {
                         (Some(a), Some(b)) => items.push(Item::Dissolve(a, b, mix)),
                         (Some(one), None) | (None, Some(one)) => items.push(Item::Single(one)),
                         (None, None) => {}
@@ -148,12 +159,31 @@ impl Scene {
         Ok(signature)
     }
 
-    fn gather(&mut self, project: &Project, l: &Layer, frame_size: [u32; 2], provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Gathered>> {
+    #[allow(clippy::too_many_arguments)]
+    fn gather(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Gathered>> {
         let picture = match l.clip.nested {
             Some(inner) => self.nested_picture(project, l.clip.id, inner, l.source_time, provider, depth)?,
             None => provider.picture(project, l, frame_size)?,
         };
-        Ok(picture.map(|picture| Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects: l.effects.clone() }))
+        let Some(picture) = picture else { return Ok(None) };
+        let mask = self.mask_for(l.clip, l.clip.source_time(t), picture.size);
+        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects: l.effects.clone(), mask }))
+    }
+
+    /// The clip's masks at source time `src` as an image (made again only when they change).
+    fn mask_for(&mut self, clip: &reelforge_core::Clip, src: Time, layer: [f32; 2]) -> Option<(u64, Arc<MaskImage>)> {
+        if !mask::any_active(&clip.masks) {
+            return None;
+        }
+        let hash = mask::mask_hash(&clip.masks, src, layer);
+        let tick = self.tick;
+        if let Some(e) = self.masks.get_mut(&clip.id).filter(|e| e.0 == hash) {
+            e.2 = tick;
+            return Some((hash, e.1.clone()));
+        }
+        let img = Arc::new(mask::rasterize(&clip.masks, src, layer, MASK_MAX)?);
+        self.masks.insert(clip.id, (hash, img.clone(), tick));
+        Some((hash, img))
     }
 
     /// Render composite shot `inner` at its time `t` and read the picture back.
@@ -206,6 +236,7 @@ fn input(g: &Gathered) -> LayerInput<'_> {
         transform: g.transform,
         blend: g.blend,
         effects: g.effects.clone(),
+        mask: g.mask.as_ref().map(|(hash, img)| MaskInput { content_id: *hash, pixels: &img.data, size: [img.width, img.height] }),
     }
 }
 
@@ -219,6 +250,7 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
             f.to_bits().hash(h);
         }
         l.blend.hash(h);
+        l.mask.as_ref().map(|m| m.0).hash(h);
         for e in &l.effects {
             e.kind.hash(h);
             for v in e.values {

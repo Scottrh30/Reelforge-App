@@ -149,6 +149,27 @@ What works now:
   it for all of them. Relinking can be undone. Export won't start while media is missing
 - **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, proxies, autosave
   interval, and the proxy/autosave folders
+- **Selecting several clips**: **Ctrl+click** (or Shift+click) adds a clip to the selection or
+  takes it out; **drag a box** over empty track space to select every clip it touches (hold
+  Ctrl to add to the selection); **Ctrl+A** selects everything, **Esc** nothing. Dragging any
+  selected clip moves them all together (a ghost shows where each lands, red if something's in
+  the way), and **Del** deletes them all. Linked audio always comes along
+- **Cut, copy and paste** (`Ctrl+X` / `Ctrl+C` / `Ctrl+V`, or the Edit menu): pastes at the
+  playhead, keeping the clips' spacing and stacking order, or at the next place where they all
+  fit. Everything comes along: keyframes, effects, masks, titles, trackers, links (the copies are
+  linked to each other, not to the originals). Paste into a composite shot works too: missing
+  tracks are added
+- **Masks** (Controls panel, any video clip, title or composite shot): **+ Rectangle**,
+  **+ Ellipse**, or **+ Freehand** (click points in the Viewer; click the first point or press
+  Enter to close, Esc to cancel). Drag a mask's corner handles in the Viewer to reshape it (a
+  rectangle or ellipse can be pulled into any four-sided shape), or select it in the list and
+  drag inside it to move it
+  - Several masks combine in order: **Add**, **Subtract** (cut a hole) or **Intersect**; each
+    can be inverted and has a **feather** (soft edge), an **expansion** (grow/shrink) and an
+    opacity
+  - **Animate shape**: once ticked, reshaping the mask at the playhead sets a keyframe there
+  - Masks are applied before the clip's effects and move with the layer's transform
+  - With a tracker on the clip, **Apply to → Mask: …** makes the mask follow the tracked point
 - **Composite shots**: a composite shot is a sequence of its own, with its own layers, that
   sits on the timeline as one clip (amber, marked `[C]`). Transform it, add effects, dissolve
   it, trim it like any clip; its audio plays and exports with it
@@ -333,7 +354,12 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | Y / U | Slip / Slide tool (drag a clip) |
 | I / O | Mark in / out at the playhead |
 | Ctrl+T | Add a title at the playhead |
-| Ctrl+G | Make composite shot (selected clip, or everything between in and out) |
+| Ctrl+G | Make composite shot (the selected clips, or everything between in and out) |
+| Ctrl+click / Shift+click | Add a clip to the selection, or take it out |
+| Drag on empty track space | Select clips with a box (Ctrl adds to the selection) |
+| Ctrl+A / Esc | Select all / nothing |
+| Ctrl+X / Ctrl+C / Ctrl+V | Cut / copy / paste clips (paste goes to the playhead) |
+| Enter / Esc while drawing a mask | Close the mask / cancel |
 | Double-click a composite shot | Open it |
 | Alt+X | Clear in/out |
 | Shift+Del | Ripple delete (close the gap) |
@@ -434,6 +460,21 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   `mix_clips` flattens a shot's audio into the outer mix, shifted and cut to the clip.
   `undo::make_composite` builds the "Make composite shot" command (whole-sequence snapshots for
   undo); `Project::contains_sequence` stops a shot going inside itself
+- **Selection and clipboard** (`undo::move_targets` / `move_clips` / `delete_clips`,
+  `core/src/clipboard.rs`): a selection is a list of clip ids, always widened to their link
+  groups. Moving plans every clip's new track and time first (the timeline draws that plan as
+  ghosts), shifting selected clips by the same number of tracks of their kind. The clipboard
+  stores clips with times relative to the earliest one and tracks as "n-th video/audio track";
+  pasting simulates the paste on a copy of the project to add tracks and find the first time
+  where everything fits, then makes it one undoable batch with fresh ids and links. egui only
+  reports Ctrl+V when the system clipboard holds text, so copying leaves a short note there
+- **Masks** (`core/src/mask.rs`, `render/src/mask.wgsl`): a mask is points in the layer's own
+  pixels (four corners for a rectangle or ellipse, any number for freehand) plus optional shape
+  keys. `rasterize` fills each outline (even-odd scanlines), computes the distance to the outline
+  only in a narrow band around it, turns that into alpha with the feather and expansion, and
+  combines the masks (add = screen, subtract, intersect), at up to 2048 px. `Scene` caches the
+  image per clip by a hash of the shapes, and the compositor applies it in the layer's own pixel
+  space as the first pass of its effect chain, so the viewer and export match
 - **Tracking** (`core/src/track.rs`, `media/src/tracker.rs`): `Template::find` scores every
   offset in the search area by normalised cross-correlation on luma and fits a parabola through
   the best score's neighbours for sub-pixel accuracy. `track_point` steps through the clip's
@@ -485,7 +526,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    correction, Gaussian blur, chroma key, vignette. Next: levels/curves, sharpen, glow, LUTs,
    an effects browser, and effects that reach outside the layer (drop shadow, glow).
 6. **Compositing**: ~~composite shots (nested sequences), point tracking (follow and
-   stabilise)~~, titles and track management are done. Still to come: masks, planar and
+   stabilise), masks~~, titles and track management are done. Still to come: Bézier mask
+   curves and per-point feather, planar and
    multi-point tracking (rotation/scale), a 3D camera and lights, GPU particles, animated text
    presets.
 7. ~~**Performance**: proxy media, a frame cache, hardware decode~~

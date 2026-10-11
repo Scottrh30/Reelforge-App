@@ -8,7 +8,7 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
 }
 
 fn layer<'a>(key: u64, pixels: &'a [u8], px: [u32; 2], size: [f32; 2], t: Transform, blend: BlendMode) -> LayerInput<'a> {
-    LayerInput { key, content_id: 1, pixels, pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new() }
+    LayerInput { key, content_id: 1, pixels, pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new(), mask: None }
 }
 
 fn px(img: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
@@ -104,7 +104,7 @@ fn textures_are_cached_by_content_id() {
     let red = solid(4, 4, [255, 0, 0, 255]);
     let green = solid(4, 4, [0, 255, 0, 255]);
     fn mk(pixels: &[u8], id: u64) -> LayerInput<'_> {
-        LayerInput { key: 7, content_id: id, pixels, pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new() }
+        LayerInput { key: 7, content_id: id, pixels, pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None }
     }
     c.render([4, 4], &[mk(&red, 1)]);
     c.render([4, 4], &[mk(&green, 1)]); // same content id: not re-uploaded

@@ -44,6 +44,10 @@ pub struct EditorState {
     pub selection: Option<ClipId>,
     /// Every selected clip (Ctrl+click, drag a box, Ctrl+A), including `selection`.
     pub selected: Vec<ClipId>,
+    /// Drawing a freehand mask in the viewer: the clip, and the points so far (layer pixels).
+    pub mask_draw: Option<(ClipId, Vec<[f32; 2]>)>,
+    /// The mask being edited (clip, index), highlighted in the viewer and the Controls panel.
+    pub active_mask: Option<(ClipId, usize)>,
     /// Clips copied with Ctrl+C / Ctrl+X.
     pub clipboard: reelforge_core::clipboard::Clipboard,
     pub timeline: TimelineView,
@@ -311,6 +315,8 @@ impl EditorState {
             playback,
             selection: None,
             selected: Vec::new(),
+            mask_draw: None,
+            active_mask: None,
             clipboard: Default::default(),
             timeline: TimelineView::default(),
             curves: Default::default(),
@@ -608,6 +614,40 @@ impl EditorState {
         self.selection = ids.first().copied();
         self.status = format!("Selected {} clip{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
         self.selected = ids;
+    }
+
+    // ---- Masks --------------------------------------------------------------------
+
+    /// The size a clip's masks are drawn in (its picture, or the frame for a title).
+    pub fn layer_size(&self, clip: &Clip) -> [f32; 2] {
+        match self.project.picture_size(clip) {
+            Some([w, h]) => [w as f32, h as f32],
+            None => [self.seq().width as f32, self.seq().height as f32],
+        }
+    }
+
+    /// Add a mask to a clip as one undo step; it becomes the active mask.
+    pub fn add_mask(&mut self, id: ClipId, mask: reelforge_core::mask::Mask) {
+        self.commit_live_edit();
+        let Some(mut v) = self.visual(id) else { return };
+        let n = v.masks.len();
+        let mut mask = mask;
+        mask.name = format!("{} {}", mask.shape.label(), n + 1);
+        v.masks.push(mask);
+        self.set_visual_live(id, v);
+        self.commit_live_edit();
+        self.active_mask = Some((id, n));
+        self.status = "Mask added: drag its corners in the Viewer, or inside it to move it".into();
+    }
+
+    /// Close the freehand shape being drawn and add it.
+    pub fn finish_mask_drawing(&mut self) {
+        let Some((id, pts)) = self.mask_draw.take() else { return };
+        if pts.len() < 3 {
+            self.status = "A freehand mask needs at least 3 points".into();
+            return;
+        }
+        self.add_mask(id, reelforge_core::mask::Mask::freehand(pts));
     }
 
     // ---- Clipboard ----------------------------------------------------------------
@@ -961,6 +1001,20 @@ impl EditorState {
                 self.status = status;
             }
         }
+    }
+
+    /// Make mask `index` of the tracked clip move with its tracked feature.
+    pub fn apply_track_to_mask(&mut self, tracked: ClipId, index: usize) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(tracked) else { return };
+        let (Some(track), Some(mask)) = (&c.tracker, c.masks.get(index)) else { return };
+        let Some(m) = reelforge_core::track::follow_mask(mask, track) else { return };
+        let name = m.name.clone();
+        let mut v = c.visual();
+        v.masks[index] = m;
+        self.set_visual_live(tracked, v);
+        self.commit_live_edit();
+        self.status = format!("{name} now follows the tracked point");
     }
 
     /// Make `target` follow the tracked feature of `tracked` (or, if they're the
@@ -1627,6 +1681,11 @@ impl EditorState {
                 Key::Delete | Key::Backspace => {
                     self.delete_selection();
                 }
+                Key::Escape if self.mask_draw.is_some() => {
+                    self.mask_draw = None;
+                    self.status = "Mask drawing cancelled".into();
+                }
+                Key::Enter if self.mask_draw.is_some() => self.finish_mask_drawing(),
                 Key::Escape => self.select_only(None),
                 Key::V => self.set_trim_mode(TrimMode::Normal),
                 Key::B => self.set_trim_mode(TrimMode::Ripple),

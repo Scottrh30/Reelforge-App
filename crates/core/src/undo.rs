@@ -215,6 +215,7 @@ impl Command for SplitClip {
             effects: clip.effects.clone(),
             title: clip.title.clone(),
             nested: clip.nested,
+            masks: clip.masks.clone(),
             tracker: clip.tracker.clone(),
         };
         clip.duration = left;
@@ -264,6 +265,10 @@ impl Command for SetClipVisual {
             if self.old.effects.len() < self.new.effects.len() { "Add effect" } else { "Remove effect" }
         } else if self.old.effects != self.new.effects {
             "Change effect"
+        } else if self.old.masks.len() != self.new.masks.len() {
+            if self.old.masks.len() < self.new.masks.len() { "Add mask" } else { "Remove mask" }
+        } else if self.old.masks != self.new.masks {
+            "Edit mask"
         } else if self.old.anim != self.new.anim {
             "Change keyframes"
         } else {
@@ -1081,7 +1086,7 @@ mod tests {
         let t = Transform { position: [10.0, 5.0], scale: [0.5, 0.5], rotation: 15.0, opacity: 0.4 };
         let old = ClipVisual::default();
         let effects = vec![crate::Effect::new(crate::EffectKind::Blur)];
-        let new = ClipVisual { transform: t, blend: BlendMode::Screen, anim: Default::default(), effects: effects.clone() };
+        let new = ClipVisual { transform: t, blend: BlendMode::Screen, anim: Default::default(), effects: effects.clone(), masks: Vec::new() };
         u.execute(&mut p, Box::new(SetClipVisual { seq: 0, id: ClipId(1001), old, new }));
         let cmd = split_group(&mut p, 0, ClipId(1001), Time::from_secs_f64(2.0)).unwrap();
         u.execute(&mut p, cmd);

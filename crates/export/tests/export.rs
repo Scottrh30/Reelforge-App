@@ -79,14 +79,14 @@ fn reference_frame(c: &mut Compositor, a: &Path, b: &Path, t: f64) -> Vec<u8> {
     let fa = FrameSource::open(a, None).unwrap().frame_at_blocking(Time::from_secs_f64(t), wait).unwrap();
     let mut layers = vec![LayerInput {
         key: 1, content_id: id, pixels: &fa.rgba, pixel_size: [fa.width, fa.height],
-        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(),
+        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None,
     }];
     let fb;
     if t >= 1.0 {
         fb = FrameSource::open(b, None).unwrap().frame_at_blocking(Time::from_secs_f64(t - 1.0), wait).unwrap();
         layers.push(LayerInput {
             key: 2, content_id: id, pixels: &fb.rgba, pixel_size: [fb.width, fb.height],
-            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(),
+            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(), mask: None,
         });
     }
     c.render([640, 360], &layers);
@@ -643,7 +643,7 @@ fn transparent_compositor_keeps_coverage() {
     let t = Transform { scale: [0.5, 0.5], opacity: 0.5, ..Default::default() };
     let layer = LayerInput {
         key: 1, content_id: 1, pixels: &px, pixel_size: [16, 16], layer_size: [64.0, 64.0],
-        transform: t, blend: BlendMode::Normal, effects: Vec::new(),
+        transform: t, blend: BlendMode::Normal, effects: Vec::new(), mask: None,
     };
     c.render([64, 64], &[layer]);
     let out = c.read_output().unwrap();
@@ -651,4 +651,29 @@ fn transparent_compositor_keeps_coverage() {
     assert_eq!(at(2, 2), [0, 0, 0, 0], "transparent where nothing is drawn");
     let m = at(32, 32);
     assert!(m[0] > 250 && m[1] < 5 && (m[3] as i32 - 128).abs() <= 2, "straight colour, half coverage: {m:?}");
+}
+
+#[test]
+fn exports_masked_layers() {
+    use reelforge_core::mask::{Mask, MaskMode};
+    let Some((mut p, _)) = red_with_tone() else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    // Keep the left half of the red layer, with a 40 px feather, minus a hole in the middle of it.
+    let keep = Mask { points: vec![[0.0, 0.0], [320.0, 0.0], [320.0, 360.0], [0.0, 360.0]], feather: 40.0, ..Default::default() };
+    let hole = Mask { mode: MaskMode::Subtract, points: vec![[100.0, 150.0], [140.0, 150.0], [140.0, 210.0], [100.0, 210.0]], ..Default::default() };
+    p.sequences[0].tracks[0].clips[0].masks = vec![keep, hole];
+    let out = std::env::temp_dir().join("rf_masked.mp4");
+    let mut st = settings(out.clone());
+    (st.end, st.include_audio) = (Time::from_secs_f64(0.2), false);
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+    let r = |x: u32, y: u32| f.rgba[((y * 640 + x) * 4) as usize] as i32;
+    assert!(r(40, 40) > 220, "kept: {}", r(40, 40));
+    assert!(r(600, 40) < 20, "masked out: {}", r(600, 40));
+    assert!(r(120, 180) < 20, "the subtracted hole: {}", r(120, 180));
+    // On the feathered edge the layer is half there: half-way in linear light is about 188 in sRGB.
+    let edge = r(320, 40);
+    assert!((150..215).contains(&edge), "soft edge: {edge}");
+    assert!(r(300, 40) > edge && r(340, 40) < edge, "fading out to the right");
 }

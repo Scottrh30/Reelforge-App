@@ -58,6 +58,17 @@ pub struct LayerInput<'a> {
     pub blend: BlendMode,
     /// Effects to apply to the layer first, top of the stack first.
     pub effects: Vec<EffectValues>,
+    /// An alpha mask over the layer (applied before the effects).
+    pub mask: Option<MaskInput<'a>>,
+}
+
+/// A layer's mask: 8-bit alpha, stretched over the whole layer.
+#[derive(Clone, Copy)]
+pub struct MaskInput<'a> {
+    /// Changes whenever `pixels` changes.
+    pub content_id: u64,
+    pub pixels: &'a [u8],
+    pub size: [u32; 2],
 }
 
 /// Something to draw, bottom first.
@@ -121,6 +132,9 @@ pub struct Compositor {
     uniform_stride: u64,
     sampler: wgpu::Sampler,
     layers: HashMap<u64, LayerTex>,
+    /// Mask textures, by layer key.
+    masks: HashMap<u64, LayerTex>,
+    mask_pipeline: wgpu::RenderPipeline,
     targets: Option<Targets>,
     /// Bumped when the output texture is recreated (resize), so a UI can re-register it.
     pub output_generation: u64,
@@ -252,6 +266,28 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
+        let mask_shader = device.create_shader_module(wgpu::include_wgsl!("mask.wgsl"));
+        let mask_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("mask"),
+            bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
+            immediate_size: 0,
+        });
+        let mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("mask"),
+            layout: Some(&mask_pl),
+            vertex: wgpu::VertexState { module: &mask_shader, entry_point: Some("vs_fullscreen"), compilation_options: Default::default(), buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &mask_shader,
+                entry_point: Some("fs_mask"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette"]
             .into_iter()
             .map(|entry| {
@@ -372,6 +408,8 @@ impl Compositor {
             uniform_stride,
             sampler,
             layers: HashMap::new(),
+            masks: HashMap::new(),
+            mask_pipeline,
             targets: None,
             output_generation: 0,
         }
@@ -466,6 +504,43 @@ impl Compositor {
         t.content_id = l.content_id;
     }
 
+    fn upload_mask(&mut self, key: u64, m: &MaskInput) {
+        let [w, h] = m.size;
+        if self.masks.get(&key).is_some_and(|t| t.size == m.size && t.content_id == m.content_id) {
+            return;
+        }
+        if self.masks.get(&key).is_none_or(|t| t.size != m.size) {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("mask"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mask"),
+                layout: &self.texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            });
+            self.masks.insert(key, LayerTex { texture, bind_group, size: m.size, content_id: u64::MAX });
+        }
+        let t = self.masks.get_mut(&key).unwrap();
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            m.pixels,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        t.content_id = m.content_id;
+    }
+
     fn ensure_fx_targets(&mut self, key: u64, size: [u32; 2]) {
         if self.fx_targets.get(&key).is_some_and(|t| t.size == size) {
             return;
@@ -518,6 +593,9 @@ impl Compositor {
             if l.pixels.len() as u64 == l.pixel_size[0] as u64 * l.pixel_size[1] as u64 * 4 && l.pixel_size[0] > 0 {
                 self.upload(l);
             }
+            if let Some(m) = l.mask.filter(|m| m.pixels.len() as u64 == m.size[0] as u64 * m.size[1] as u64 && m.size[0] > 0) {
+                self.upload_mask(l.key, &m);
+            }
         }
 
         // ---- Effect chains: plan the passes for every layer that has effects ----
@@ -536,10 +614,11 @@ impl Compositor {
         // Which scratch target holds each processed layer's result.
         let mut processed: HashMap<u64, usize> = HashMap::new();
         for l in all_layers() {
-            if l.effects.is_empty() || !self.layers.contains_key(&l.key) || processed.contains_key(&l.key) {
+            let masked = l.mask.is_some() && self.masks.contains_key(&l.key);
+            if (l.effects.is_empty() && !masked) || !self.layers.contains_key(&l.key) || processed.contains_key(&l.key) {
                 continue;
             }
-            let needed = 1 + l.effects.iter().map(|e| if e.kind == EffectKind::Blur { 2 } else { 1 }).sum::<usize>();
+            let needed = 1 + masked as usize + l.effects.iter().map(|e| if e.kind == EffectKind::Blur { 2 } else { 1 }).sum::<usize>();
             if fx_passes.len() + needed > MAX_FX_PASSES {
                 log::warn!("too many effect passes; skipping effects on some layers");
                 break;
@@ -560,6 +639,9 @@ impl Compositor {
                 fx_passes.push(FxPass { key: l.key, entry, src: Src::Scratch(*cur), dst: 1 - *cur, uniform: u });
                 *cur = 1 - *cur;
             };
+            if masked {
+                pass("fs_mask", [0.0; 16], &mut cur);
+            }
             for e in &l.effects {
                 match e.kind {
                     EffectKind::Blur => {
@@ -669,7 +751,13 @@ impl Compositor {
         for (i, p) in fx_passes.iter().enumerate() {
             let (Some(fx), Some(tex)) = (self.fx_targets.get(&p.key), self.layers.get(&p.key)) else { continue };
             let mut pass = pass_on(&mut enc, &fx.views[p.dst], wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
-            pass.set_pipeline(&self.fx_pipelines[p.entry]);
+            if p.entry == "fs_mask" {
+                let Some(m) = self.masks.get(&p.key) else { continue };
+                pass.set_pipeline(&self.mask_pipeline);
+                pass.set_bind_group(2, &m.bind_group, &[]);
+            } else {
+                pass.set_pipeline(&self.fx_pipelines[p.entry]);
+            }
             pass.set_bind_group(0, &self.fx_uniform_bind, &[(i as u64 * self.fx_uniform_stride) as u32]);
             match p.src {
                 Src::Layer => pass.set_bind_group(1, &tex.bind_group, &[]),
@@ -736,6 +824,7 @@ impl Compositor {
     pub fn retain_layers(&mut self, keep: impl Fn(u64) -> bool) {
         self.layers.retain(|k, _| keep(*k));
         self.fx_targets.retain(|k, _| keep(*k));
+        self.masks.retain(|k, _| keep(*k));
     }
 
     /// Read the last rendered frame back as tightly packed RGBA8 (sRGB). Blocks on the GPU.

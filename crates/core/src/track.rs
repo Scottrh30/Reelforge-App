@@ -228,6 +228,25 @@ pub fn follow_keys(tracked: &Clip, track: &PointTrack, layer: [f32; 2], frame: [
     Some(anim)
 }
 
+/// Make a mask on the tracked clip itself move with the feature: shape keys
+/// at every tracked frame, the shape as it is at the first tracked frame
+/// shifted by how far the feature has moved since. (Both are in the clip's own
+/// pixels, so the layer's transform doesn't come into it.)
+pub fn follow_mask(mask: &crate::mask::Mask, track: &PointTrack) -> Option<crate::mask::Mask> {
+    let first = track.path.first()?;
+    let base = mask.points_at(first.at);
+    let mut m = mask.clone();
+    let (a, b) = (first.at, track.path.last()?.at);
+    m.keys.retain(|k| k.at < a || k.at > b);
+    for s in &track.path {
+        let (dx, dy) = (s.pos[0] - first.pos[0], s.pos[1] - first.pos[1]);
+        let pts = base.iter().map(|p| [p[0] + dx, p[1] + dy]).collect();
+        let i = m.keys.partition_point(|k| k.at < s.at);
+        m.keys.insert(i, crate::mask::ShapeKey { at: s.at, points: pts });
+    }
+    Some(m)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +280,20 @@ mod tests {
         // A flat patch can't be tracked.
         let flat = vec![50.0; w * h];
         assert!(Template::new(&Luma { data: &flat, width: w, height: h }, [60.0, 45.0], 21.0).is_flat());
+    }
+
+    #[test]
+    fn masks_follow_the_track() {
+        let s = Time::from_secs_f64;
+        let track = PointTrack {
+            path: vec![TrackSample { at: s(1.0), pos: [10.0, 10.0], score: 1.0 }, TrackSample { at: s(2.0), pos: [30.0, 5.0], score: 1.0 }],
+            ..Default::default()
+        };
+        let mask = crate::mask::Mask { points: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]], ..Default::default() };
+        let m = follow_mask(&mask, &track).unwrap();
+        assert_eq!(m.keys.len(), 2);
+        assert_eq!(m.points_at(s(2.0))[1], [24.0, -5.0]);
+        assert_eq!(m.points_at(s(1.5))[0], [10.0, -2.5]);
     }
 
     #[test]
