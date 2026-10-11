@@ -26,6 +26,7 @@ pub enum Tab {
     Timeline,
     Curves,
     Meters,
+    History,
 }
 
 pub struct ReelforgeApp {
@@ -68,6 +69,8 @@ pub struct EditorState {
     pub active: usize,
     /// The effects & transitions browser is open.
     pub effects_browser: bool,
+    /// Bring the History tab to the front (set by the Edit menu).
+    pub show_history: bool,
     /// Switch to this sequence at the start of the next frame.
     pub open_request: Option<usize>,
     /// A point-tracking run in progress.
@@ -125,7 +128,7 @@ impl ReelforgeApp {
         // `fraction` is the share kept by the original node (the viewer).
         let [top, timeline] = tree.split_below(NodeIndex::root(), 0.6, vec![Tab::Timeline, Tab::Curves]);
         tree.split_right(timeline, 0.93, vec![Tab::Meters]);
-        let [viewer, _bin] = tree.split_left(top, 0.18, vec![Tab::MediaBin]);
+        let [viewer, _bin] = tree.split_left(top, 0.18, vec![Tab::MediaBin, Tab::History]);
         tree.split_right(viewer, 0.76, vec![Tab::Inspector]);
 
         let audio = match AudioEngine::new() {
@@ -250,6 +253,11 @@ impl eframe::App for ReelforgeApp {
             crate::settings::window(&ctx, st, &mut open);
             st.settings_open = open;
         }
+        if std::mem::take(&mut st.show_history) {
+            if let Some(path) = self.dock.find_tab(&Tab::History) {
+                let _ = self.dock.set_active_tab(path);
+            }
+        }
         if st.effects_browser {
             let mut open = true;
             crate::fxbrowser::window(&ctx, st, &mut open);
@@ -290,6 +298,7 @@ impl egui_dock::TabViewer for EditorState {
             Tab::Timeline => "Editor Timeline",
             Tab::Curves => "Curves",
             Tab::Meters => "Meters",
+            Tab::History => "History",
         }
         .into()
     }
@@ -302,6 +311,7 @@ impl egui_dock::TabViewer for EditorState {
             Tab::Timeline => crate::timeline::show(ui, self),
             Tab::Curves => crate::curves::show(ui, self),
             Tab::Meters => crate::meters::show(ui, self),
+            Tab::History => crate::history::show(ui, self),
         }
     }
 
@@ -336,6 +346,7 @@ impl EditorState {
             export_queue_requested: false,
             active: 0,
             effects_browser: false,
+            show_history: false,
             open_request: None,
             tracking: None,
             playheads: HashMap::new(),
@@ -422,14 +433,35 @@ impl EditorState {
             Some(n) => self.status = format!("Undo: {n}"),
             None => self.status = "Nothing to undo".into(),
         }
+        self.touch();
         self.validate_selection();
     }
 
     pub fn redo(&mut self) {
+        self.commit_live_edit();
         match self.undo.redo(&mut self.project) {
             Some(n) => self.status = format!("Redo: {n}"),
             None => self.status = "Nothing to redo".into(),
         }
+        self.touch();
+        self.validate_selection();
+    }
+
+    /// Jump through the history to the state after `pos` steps (0 = before the first).
+    pub fn history_go_to(&mut self, pos: usize) {
+        self.commit_live_edit();
+        let from = self.undo.position();
+        let n = self.undo.go_to(&mut self.project, pos);
+        if n == 0 {
+            return;
+        }
+        let to = self.undo.position();
+        self.status = match (to.cmp(&from), to) {
+            (std::cmp::Ordering::Less, 0) => format!("Undid {n} step{}: back to the start", if n == 1 { "" } else { "s" }),
+            (std::cmp::Ordering::Less, _) => format!("Undid {n} step{}", if n == 1 { "" } else { "s" }),
+            _ => format!("Redid {n} step{}", if n == 1 { "" } else { "s" }),
+        };
+        self.touch();
         self.validate_selection();
     }
 
@@ -1689,6 +1721,10 @@ impl EditorState {
                 if ui.add_enabled(self.undo.can_redo(), egui::Button::new("Redo          Ctrl+Y")).clicked() {
                     self.redo();
                 }
+                if ui.button("Undo history").on_hover_text("Show every step and jump back to any of them").clicked() {
+                    self.show_history = true;
+                    ui.close();
+                }
                 ui.separator();
                 let n = self.composite_candidates().len();
                 let tip = if self.seq().in_point.is_some() || self.seq().out_point.is_some() {
@@ -1777,6 +1813,8 @@ impl EditorState {
                 ui.checkbox(&mut self.playback.scrub_audio, "Audio scrubbing")
                     .on_hover_text("Hear audio while dragging the playhead or stepping frames");
             });
+            ui.separator();
+            crate::history::undo_redo_buttons(ui, self);
         });
     }
 
@@ -2204,6 +2242,31 @@ mod tests {
         st.undo();
         assert_eq!(reelforge_core::undo::missing_media(&st.project).len(), 2, "one undo step");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn history_jumps_back_and_forward_and_marks_changes() {
+        let mut st = editor();
+        st.add_track(TrackKind::Video);
+        st.add_title();
+        st.add_marker();
+        assert_eq!(st.undo.entries().len(), 3);
+        let titled = st.selection.expect("the new title is selected");
+        let rev = st.rev;
+        st.history_go_to(1); // just after adding the track
+        assert!(st.rev > rev, "jumping counts as a change");
+        assert!(st.seq().markers.is_empty());
+        assert!(st.seq().find_clip(titled).is_none());
+        assert_eq!(st.selection, None, "the selected clip no longer exists");
+        assert!(st.status.starts_with("Undid 2 steps"), "{}", st.status);
+        st.history_go_to(3);
+        assert_eq!(st.seq().markers.len(), 1);
+        assert!(st.seq().find_clip(titled).is_some());
+        st.history_go_to(0);
+        assert_eq!(st.seq().tracks.len(), 3);
+        assert_eq!(st.undo.entries().len(), 3, "undone steps stay listed");
+        st.redo();
+        assert_eq!(st.seq().tracks.len(), 4);
     }
 
     #[test]

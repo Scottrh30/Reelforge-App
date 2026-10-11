@@ -10,30 +10,50 @@ pub trait Command: Send {
     fn undo(&mut self, project: &mut Project);
 }
 
+/// The edit history: commands done (oldest first) and undone (most recently undone last).
 #[derive(Default)]
 pub struct UndoStack {
-    done: Vec<Box<dyn Command>>,
-    undone: Vec<Box<dyn Command>>,
+    done: Vec<Step>,
+    undone: Vec<Step>,
+}
+
+struct Step {
+    cmd: Box<dyn Command>,
+    at: std::time::SystemTime,
+}
+
+/// One row of the history, for display.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HistoryEntry {
+    pub name: String,
+    pub at: std::time::SystemTime,
 }
 
 impl UndoStack {
+    /// The most steps kept; older ones are forgotten (their changes stay).
+    pub const MAX_STEPS: usize = 1000;
+
     pub fn execute(&mut self, project: &mut Project, mut cmd: Box<dyn Command>) {
         cmd.apply(project);
-        self.done.push(cmd);
+        self.done.push(Step { cmd, at: std::time::SystemTime::now() });
         self.undone.clear();
+        if self.done.len() > Self::MAX_STEPS {
+            let extra = self.done.len() - Self::MAX_STEPS;
+            self.done.drain(..extra);
+        }
     }
     pub fn undo(&mut self, project: &mut Project) -> Option<String> {
-        let mut cmd = self.done.pop()?;
-        cmd.undo(project);
-        let name = cmd.name().to_owned();
-        self.undone.push(cmd);
+        let mut step = self.done.pop()?;
+        step.cmd.undo(project);
+        let name = step.cmd.name().to_owned();
+        self.undone.push(step);
         Some(name)
     }
     pub fn redo(&mut self, project: &mut Project) -> Option<String> {
-        let mut cmd = self.undone.pop()?;
-        cmd.apply(project);
-        let name = cmd.name().to_owned();
-        self.done.push(cmd);
+        let mut step = self.undone.pop()?;
+        step.cmd.apply(project);
+        let name = step.cmd.name().to_owned();
+        self.done.push(step);
         Some(name)
     }
     pub fn can_undo(&self) -> bool {
@@ -41,6 +61,44 @@ impl UndoStack {
     }
     pub fn can_redo(&self) -> bool {
         !self.undone.is_empty()
+    }
+    /// What Undo would undo.
+    pub fn undo_name(&self) -> Option<&str> {
+        self.done.last().map(|s| s.cmd.name())
+    }
+    /// What Redo would redo.
+    pub fn redo_name(&self) -> Option<&str> {
+        self.undone.last().map(|s| s.cmd.name())
+    }
+
+    /// Every step in order, done ones first, then the undone ones that Redo would bring back.
+    pub fn entries(&self) -> Vec<HistoryEntry> {
+        self.done
+            .iter()
+            .chain(self.undone.iter().rev())
+            .map(|s| HistoryEntry { name: s.cmd.name().to_owned(), at: s.at })
+            .collect()
+    }
+    /// How many of `entries()` are in effect (0 = the state before any of them).
+    pub fn position(&self) -> usize {
+        self.done.len()
+    }
+    /// Undo or redo until `position()` is `pos`. Returns how many steps were taken.
+    pub fn go_to(&mut self, project: &mut Project, pos: usize) -> usize {
+        let pos = pos.min(self.done.len() + self.undone.len());
+        let mut n = 0;
+        while self.done.len() > pos && self.undo(project).is_some() {
+            n += 1;
+        }
+        while self.done.len() < pos && self.redo(project).is_some() {
+            n += 1;
+        }
+        n
+    }
+    /// Forget everything (the project stays as it is).
+    pub fn clear(&mut self) {
+        self.done.clear();
+        self.undone.clear();
     }
 }
 
@@ -1021,6 +1079,46 @@ mod tests {
         a.link = Some(99);
         u.execute(p, Box::new(AddClip { seq: 0, track: 0, clip: v }));
         u.execute(p, Box::new(AddClip { seq: 0, track: 2, clip: a }));
+    }
+
+    #[test]
+    fn history_lists_steps_and_jumps_to_any_of_them() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        for i in 0..4 {
+            u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(10 + i, i as f64 * 10.0, 5.0) }));
+        }
+        let names: Vec<String> = u.entries().into_iter().map(|e| e.name).collect();
+        assert_eq!(names.len(), 4);
+        assert_eq!(u.position(), 4);
+        let count = |p: &Project| p.sequences[0].tracks[0].clips.len();
+
+        // Back to the start, then forward to step 3: undone steps stay listed.
+        assert_eq!(u.go_to(&mut p, 0), 4);
+        assert_eq!((count(&p), u.position(), u.entries().len()), (0, 0, 4));
+        assert_eq!(u.go_to(&mut p, 3), 3);
+        assert_eq!((count(&p), u.position()), (3, 3));
+        assert_eq!(u.redo_name(), Some(names[3].as_str()));
+        assert_eq!(u.undo_name(), Some(names[2].as_str()));
+        assert_eq!(u.go_to(&mut p, 99), 1, "clamped to the end");
+        assert_eq!(count(&p), 4);
+
+        // A new edit after going back drops the steps that were undone.
+        u.go_to(&mut p, 2);
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(50, 100.0, 5.0) }));
+        assert_eq!((u.entries().len(), u.position(), u.can_redo()), (3, 3, false));
+    }
+
+    #[test]
+    fn history_is_capped() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        for i in 0..(UndoStack::MAX_STEPS as u64 + 5) {
+            u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(10 + i, i as f64 * 10.0, 5.0) }));
+        }
+        assert_eq!(u.entries().len(), UndoStack::MAX_STEPS);
+        u.go_to(&mut p, 0);
+        assert_eq!(p.sequences[0].tracks[0].clips.len(), 5, "the forgotten steps' changes remain");
     }
 
     #[test]

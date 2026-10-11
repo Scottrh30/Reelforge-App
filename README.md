@@ -12,7 +12,12 @@ What works now:
 - Viewer with transport bar and timecode
 - Multi-track timeline: drag media from the bin onto a track, move clips between tracks,
   razor split (`S`), delete (`Del`), scrub, zoom (`Ctrl` + scroll), pan (scroll)
-- Undo/redo for every edit (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z`)
+- Undo/redo for every edit (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z`, or the **Undo** / **Redo**
+  buttons in the menu bar, whose tooltips name the step)
+- **History** panel (a tab next to Media, or **Edit → Undo history**): every edit in order with
+  how long ago it was made. Click any step to jump back to just after it (or **Start** to undo
+  everything); the steps after it stay listed, greyed and struck through, so you can click
+  forward again, until you make a new edit. The last 1,000 steps are kept
 - Save/open projects (`.rfproj`, JSON)
 - **Audio playback** through your default output device, mixed from all audio tracks
   (any format FFmpeg decodes, resampled to the device rate)
@@ -411,7 +416,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 - **Time** is stored as integer ticks (705,600,000 per second), which divides exactly by every
   common frame rate (23.976 … 120) and audio rate (44.1k, 48k). No float drift.
 - **Every edit is a `Command`** (`crates/core/src/undo.rs`) with `apply`/`undo`. Add new edit
-  types there and undo comes for free.
+  types there and undo comes for free. `UndoStack::entries()` lists done and undone steps for
+  the History panel, and `go_to(n)` undoes or redoes until `n` steps are in effect.
 - **Decoding**: `DecoderHandle` runs FFmpeg on its own thread and pushes RGBA frames into a
   bounded channel, so it stays a few frames ahead and blocks when the UI stops reading.
   Seeks carry a generation number so stale frames get dropped. `FrameSource` turns this into
