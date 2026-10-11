@@ -215,6 +215,7 @@ impl Command for SplitClip {
             effects: clip.effects.clone(),
             title: clip.title.clone(),
             nested: clip.nested,
+            transition: clip.transition,
             speed: clip.speed,
             reverse: clip.reverse,
             anchor: clip.anchor,

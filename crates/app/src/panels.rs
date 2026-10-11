@@ -872,7 +872,7 @@ fn title_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core
 /// The clip's effect stack: add, remove, reorder, enable, and edit each
 /// parameter (with keyframes, like the transform). One undo step per gesture.
 fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
-    use reelforge_core::{Effect, EffectKind};
+    use reelforge_core::{Effect, EffectData, EffectKind};
     let Some(mut v) = st.visual(clip.id) else { return };
     let before = v.clone();
     let playhead = st.playback.playhead;
@@ -893,6 +893,11 @@ fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_cor
                     v.effects.push(Effect::new(kind));
                     ui.close();
                 }
+            }
+            ui.separator();
+            if ui.button("Browse effects…   E").clicked() {
+                st.effects_browser = true;
+                ui.close();
             }
         });
     });
@@ -972,6 +977,26 @@ fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_cor
                             ui.end_row();
                         }
                     });
+                    match e.kind {
+                        EffectKind::Curves => {
+                            if !matches!(e.data, Some(EffectData::Curves(_))) {
+                                e.data = Some(EffectData::Curves(Default::default()));
+                            }
+                            if let Some(EffectData::Curves(c)) = &mut e.data {
+                                crate::fxbrowser::curves_editor(ui, c);
+                            }
+                        }
+                        EffectKind::Lut => {
+                            let mut path = match &e.data {
+                                Some(EffectData::Lut(p)) => Some(p.clone()),
+                                _ => None,
+                            };
+                            if crate::fxbrowser::lut_picker(ui, &mut path) {
+                                e.data = path.map(EffectData::Lut);
+                            }
+                        }
+                        _ => {}
+                    }
                 });
             });
         });
@@ -989,19 +1014,33 @@ fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_cor
     }
 }
 
-/// "Dissolve in" length for a video clip that touches the one before it.
+/// The transition (kind and length) into a video clip that touches the one before it.
 fn dissolve_control(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
     let Some(left_dur) = st.project.clip_before(st.active, clip.id).and_then(|id| st.seq().find_clip(id).map(|(_, c)| c.duration)) else { return };
     let rate = st.seq().frame_rate;
     let x = st.project.crossfade_into(st.active, clip.id);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.weak("Dissolve in");
+        ui.weak("Transition in");
+        let mut kind = clip.transition;
+        egui::ComboBox::from_id_salt(("transition_kind", clip.id))
+            .selected_text(kind.label())
+            .show_ui(ui, |ui| {
+                for k in reelforge_core::Transition::ALL {
+                    ui.selectable_value(&mut kind, k, k.label()).on_hover_text(k.description());
+                }
+            });
+        if kind != clip.transition {
+            st.set_transition_kind(clip.id, kind);
+            if clip.dissolve_in == Time::ZERO {
+                st.status = "Set a length too: the transition plays over that many seconds".into();
+            }
+        }
         let mut secs = clip.dissolve_in.as_secs_f64();
         let limit = left_dur.min(clip.duration).as_secs_f64();
         if ui
             .add(egui::DragValue::new(&mut secs).speed(0.01).range(0.0..=limit).suffix(" s").fixed_decimals(2))
-            .on_hover_text("Cross-dissolve from the clip before this one (Ctrl+D)")
+            .on_hover_text("How long the transition from the clip before this one lasts (Ctrl+D adds a 1 s dissolve)")
             .changed()
         {
             st.set_dissolve_live(clip.id, Time::from_secs_f64(secs).snap(rate));

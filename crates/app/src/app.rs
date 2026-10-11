@@ -66,6 +66,8 @@ pub struct EditorState {
     pub export_queue_requested: bool,
     /// The sequence shown in the timeline and viewer (0 = the main edit).
     pub active: usize,
+    /// The effects & transitions browser is open.
+    pub effects_browser: bool,
     /// Switch to this sequence at the start of the next frame.
     pub open_request: Option<usize>,
     /// A point-tracking run in progress.
@@ -248,6 +250,11 @@ impl eframe::App for ReelforgeApp {
             crate::settings::window(&ctx, st, &mut open);
             st.settings_open = open;
         }
+        if st.effects_browser {
+            let mut open = true;
+            crate::fxbrowser::window(&ctx, st, &mut open);
+            st.effects_browser = open;
+        }
         st.dialogs(&ctx);
 
         // A slider/gizmo gesture ends when the mouse is released and no text field is being typed in.
@@ -328,6 +335,7 @@ impl EditorState {
             export_requested: false,
             export_queue_requested: false,
             active: 0,
+            effects_browser: false,
             open_request: None,
             tracking: None,
             playheads: HashMap::new(),
@@ -1204,9 +1212,58 @@ impl EditorState {
         }
     }
 
-    /// Add (or remove) a 1 s transition at the cut nearest the playhead on tracks
-    /// of `kind`: an audio crossfade or a video cross-dissolve. Prefers the
-    /// selected clip's cut, otherwise any matching cut within 1 s.
+    /// The incoming clip of the cut nearest the playhead on a `kind` track
+    /// (preferring the selected clips), within a second unless selected.
+    fn cut_near_playhead(&self, kind: TrackKind) -> Option<ClipId> {
+        let t = self.playback.playhead;
+        let seq = self.seq();
+        let mut cuts: Vec<(Time, ClipId)> = Vec::new();
+        for tr in seq.tracks.iter().filter(|t| t.kind == kind) {
+            for pair in tr.clips.windows(2) {
+                if pair[0].timeline_end() == pair[1].timeline_start {
+                    cuts.push((Time((pair[1].timeline_start.0 - t.0).abs()), pair[1].id));
+                }
+            }
+        }
+        let selected: Vec<ClipId> = reelforge_core::undo::expand_links(&self.project, self.active, &self.selected_ids());
+        let preferred = cuts.iter().filter(|(_, id)| selected.contains(id) || self.project.clip_before(self.active, *id).is_some_and(|l| selected.contains(&l)));
+        preferred
+            .min_by_key(|(d, _)| *d)
+            .or_else(|| cuts.iter().filter(|(d, _)| *d <= Time(Time::TICKS_PER_SECOND)).min_by_key(|(d, _)| *d))
+            .map(|(_, id)| *id)
+    }
+
+    /// Put a transition of `kind` on the video cut nearest the playhead (1 s if it had none).
+    pub fn apply_transition(&mut self, kind: reelforge_core::Transition) {
+        self.commit_live_edit();
+        let Some(id) = self.cut_near_playhead(TrackKind::Video) else {
+            self.status = "No cut between two video clips near the playhead: move the playhead to a cut first".into();
+            return;
+        };
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let mut cmds: Vec<Box<dyn Command>> = vec![Box::new(reelforge_core::transition::SetTransition { seq: self.active, id, old: c.transition, new: kind })];
+        if c.dissolve_in == Time::ZERO {
+            let one_sec = Time::from_secs_f64(1.0).snap(self.seq().frame_rate);
+            cmds.push(Box::new(SetDissolve { seq: self.active, id, old: Time::ZERO, new: one_sec }));
+        }
+        self.execute(Box::new(Batch { name: format!("Add {}", kind.label().to_lowercase()), cmds }));
+        self.select_only(Some(id));
+        self.status = match self.project.crossfade_into(self.active, id) {
+            Some(x) if x.is_empty() => format!("{} added, but there's no spare media at the cut, so it plays as a plain cut", kind.label()),
+            Some(x) => format!("{} added: {:.2} s", kind.label(), x.len().as_secs_f64()),
+            None => kind.label().to_string(),
+        };
+    }
+
+    /// Change the kind of the transition into clip `id`.
+    pub fn set_transition_kind(&mut self, id: ClipId, kind: reelforge_core::Transition) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        if c.transition != kind {
+            self.execute(Box::new(reelforge_core::transition::SetTransition { seq: self.active, id, old: c.transition, new: kind }));
+        }
+    }
+
     pub fn toggle_transition_at_playhead(&mut self, kind: TrackKind) {
         let t = self.playback.playhead;
         let seq = self.seq();
@@ -1676,6 +1733,10 @@ impl EditorState {
                 if ui.add_enabled(self.selection_is_linked(), egui::Button::new("Unlink audio/video")).clicked() {
                     self.unlink_selection();
                 }
+                if ui.button("Effects & transitions…      E").clicked() {
+                    self.effects_browser = true;
+                    ui.close();
+                }
                 if ui.button("Freeze frame at playhead   Shift+F").on_hover_text("Holds the frame for 2 s and pushes the rest of the clip later").clicked() {
                     self.freeze_frame_at_playhead();
                     ui.close();
@@ -1811,6 +1872,7 @@ impl EditorState {
                 }
                 Key::L => self.playback.shuttle(1.0, end),
                 Key::M => self.add_marker(),
+                Key::E => self.effects_browser = !self.effects_browser,
                 Key::ArrowUp => self.jump(false),
                 Key::ArrowDown => self.jump(true),
                 Key::I => self.mark_in(),

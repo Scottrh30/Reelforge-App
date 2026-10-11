@@ -10,9 +10,9 @@
 
 use anyhow::Result;
 use reelforge_core::mask::{self, MaskImage};
-use reelforge_core::{BlendMode, ClipId, EffectValues, Layer, MediaId, Project, Time, Transform, VideoItem};
+use reelforge_core::{Transition, BlendMode, ClipId, EffectValues, Layer, MediaId, Project, Time, Transform, VideoItem};
 use reelforge_media::VideoFrame;
-use reelforge_render::{wgpu, Compositor, DrawItem, LayerInput, MaskInput};
+use reelforge_render::{wgpu, Compositor, DrawItem, LayerInput, MaskInput, Wipe};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -46,6 +46,8 @@ struct Gathered {
     effects: Vec<EffectValues>,
     /// The layer's masks as an alpha image, and its hash.
     mask: Option<(u64, Arc<MaskImage>)>,
+    /// Revealed by a wipe transition.
+    wipe: Option<Wipe>,
 }
 
 /// Masks are rasterised at most this big (longer side); they're soft-edged
@@ -54,7 +56,8 @@ const MASK_MAX: u32 = 2048;
 
 enum Item {
     Single(Gathered),
-    Dissolve(Gathered, Gathered, f32),
+    /// A dissolve, or a dip through a colour.
+    Dissolve(Gathered, Gathered, f32, Option<[f32; 3]>),
 }
 
 /// A composite shot's own renderer and its last picture.
@@ -126,9 +129,26 @@ impl Scene {
         for item in project.video_layers_at(seq, t) {
             match item {
                 VideoItem::Single(l) => items.extend(self.gather(project, &l, t, frame_size, provider, depth)?.map(Item::Single)),
-                VideoItem::Dissolve { from, to, mix } => {
+                VideoItem::Dissolve { from, to, mix, kind } => {
                     match (self.gather(project, &from, t, frame_size, provider, depth)?, self.gather(project, &to, t, frame_size, provider, depth)?) {
-                        (Some(a), Some(b)) => items.push(Item::Dissolve(a, b, mix)),
+                        (Some(mut a), Some(mut b)) => {
+                            if kind.is_slide() || kind.is_push() {
+                                // Moves only: the incoming clip over the outgoing one.
+                                let (to_off, from_off) = kind.offsets(mix, [frame_size[0] as f32, frame_size[1] as f32]);
+                                for (g, o) in [(&mut a, from_off), (&mut b, to_off)] {
+                                    g.transform.position[0] += o[0];
+                                    g.transform.position[1] += o[1];
+                                }
+                                items.push(Item::Single(a));
+                                items.push(Item::Single(b));
+                            } else if kind.is_wipe() {
+                                b.wipe = Some(if kind == Transition::Iris { Wipe::iris(mix) } else { Wipe::moving(kind.direction(), mix) });
+                                items.push(Item::Single(a));
+                                items.push(Item::Single(b));
+                            } else {
+                                items.push(Item::Dissolve(a, b, mix, kind.dip_color()));
+                            }
+                        }
                         (Some(one), None) | (None, Some(one)) => items.push(Item::Single(one)),
                         (None, None) => {}
                     }
@@ -144,7 +164,7 @@ impl Scene {
             .iter()
             .map(|i| match i {
                 Item::Single(g) => DrawItem::Layer(input(g)),
-                Item::Dissolve(a, b, mix) => DrawItem::Dissolve { from: input(a), to: input(b), mix: *mix },
+                Item::Dissolve(a, b, mix, dip) => DrawItem::Dissolve { from: input(a), to: input(b), mix: *mix, dip: *dip },
             })
             .collect();
         compositor.render_items(frame_size, &draw);
@@ -152,7 +172,7 @@ impl Scene {
             .iter()
             .flat_map(|i| match i {
                 Item::Single(g) => vec![g.key],
-                Item::Dissolve(a, b, _) => vec![a.key, b.key],
+                Item::Dissolve(a, b, ..) => vec![a.key, b.key],
             })
             .collect();
         compositor.retain_layers(|k| keys.contains(&k));
@@ -167,7 +187,7 @@ impl Scene {
         };
         let Some(picture) = picture else { return Ok(None) };
         let mask = self.mask_for(l.clip, l.clip.source_time(t), picture.size);
-        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects: l.effects.clone(), mask }))
+        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects: l.effects.clone(), mask, wipe: None }))
     }
 
     /// The clip's masks at source time `src` as an image (made again only when they change).
@@ -237,6 +257,7 @@ fn input(g: &Gathered) -> LayerInput<'_> {
         blend: g.blend,
         effects: g.effects.clone(),
         mask: g.mask.as_ref().map(|(hash, img)| MaskInput { content_id: *hash, pixels: &img.data, size: [img.width, img.height] }),
+        wipe: g.wipe,
     }
 }
 
@@ -251,20 +272,23 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
         }
         l.blend.hash(h);
         l.mask.as_ref().map(|m| m.0).hash(h);
+        l.wipe.map(|w| (w.iris, w.progress.to_bits(), w.axis.map(f32::to_bits))).hash(h);
         for e in &l.effects {
             e.kind.hash(h);
             for v in e.values {
                 v.to_bits().hash(h);
             }
+            e.table.as_ref().map(|t| t.id).hash(h);
         }
     };
     for item in items {
         match item {
             Item::Single(l) => layer(l, &mut h),
-            Item::Dissolve(a, b, mix) => {
+            Item::Dissolve(a, b, mix, dip) => {
                 layer(a, &mut h);
                 layer(b, &mut h);
                 mix.to_bits().hash(&mut h);
+                dip.map(|c| c.map(f32::to_bits)).hash(&mut h);
             }
         }
     }

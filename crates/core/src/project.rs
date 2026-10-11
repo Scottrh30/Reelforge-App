@@ -90,6 +90,9 @@ pub struct Clip {
     /// starts on the same video track (0 = a plain cut).
     #[serde(default)]
     pub dissolve_in: Time,
+    /// What kind of transition `dissolve_in` is (cross-dissolve, wipe, slide…).
+    #[serde(default, skip_serializing_if = "is_default_transition")]
+    pub transition: crate::transition::Transition,
     /// Effects applied to the layer, top of the list first (video clips).
     #[serde(default)]
     pub effects: Vec<Effect>,
@@ -143,6 +146,7 @@ impl Clip {
             audio: ClipAudio::default(),
             anim: TransformAnim::default(),
             dissolve_in: Time::ZERO,
+            transition: Default::default(),
             effects: Vec::new(),
             title: None,
             nested: None,
@@ -263,6 +267,10 @@ impl Clip {
 /// `t` × `k`, rounded to the nearest tick.
 pub fn scale(t: Time, k: f64) -> Time {
     Time((t.0 as f64 * k).round() as i64)
+}
+
+fn is_default_transition(t: &crate::transition::Transition) -> bool {
+    *t == crate::transition::Transition::Dissolve
 }
 
 fn one() -> f32 {
@@ -484,8 +492,8 @@ pub struct Layer<'a> {
 #[derive(Clone, Debug)]
 pub enum VideoItem<'a> {
     Single(Layer<'a>),
-    /// Cross-dissolve: `mix` goes 0 → 1 from all-`from` to all-`to`.
-    Dissolve { from: Layer<'a>, to: Layer<'a>, mix: f32 },
+    /// A transition (the kind is the incoming clip's): `mix` goes 0 → 1 from all-`from` to all-`to`.
+    Dissolve { from: Layer<'a>, to: Layer<'a>, mix: f32, kind: crate::transition::Transition },
 }
 
 impl<'a> VideoItem<'a> {
@@ -673,7 +681,7 @@ impl Project {
             if let Some(x) = dissolves.iter().find(|x| x.track == ti && !x.is_empty() && t >= x.start() && t < x.end()) {
                 let (Some((_, a)), Some((_, b))) = (s.find_clip(x.left), s.find_clip(x.right)) else { continue };
                 let mix = (t - x.start()).0 as f32 / x.len().0 as f32;
-                out.push(VideoItem::Dissolve { from: layer(self, ti, a, t), to: layer(self, ti, b, t), mix });
+                out.push(VideoItem::Dissolve { from: layer(self, ti, a, t), to: layer(self, ti, b, t), mix, kind: b.transition });
             } else if let Some(c) = tr.clip_at(t) {
                 let l = layer(self, ti, c, t);
                 if l.transform.opacity > 0.0 {
@@ -785,7 +793,7 @@ mod crossfade_tests {
             other => panic!("{other:?}"),
         }
         match at(3.75).as_slice() {
-            [VideoItem::Dissolve { from, to, mix }] => {
+            [VideoItem::Dissolve { from, to, mix, .. }] => {
                 assert_eq!((from.clip.id, to.clip.id), (ClipId(10), ClipId(11)));
                 assert!((mix - 0.25).abs() < 1e-4);
                 assert_eq!(to.source_time, secs(4.75), "incoming clip reads its spare media before its in-point");

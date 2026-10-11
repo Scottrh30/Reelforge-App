@@ -130,3 +130,56 @@ fn fs_vignette(in: VsOut) -> @location(0) vec4<f32> {
     let f = 1.0 - fx.p0.x / 100.0 * v;
     return vec4(c.rgb * f, c.a);
 }
+
+fn to_display(rgb: vec3<f32>) -> vec3<f32> {
+    return pow(max(rgb, vec3(0.0)), vec3(1.0 / 2.2));
+}
+fn to_linear(g: vec3<f32>) -> vec3<f32> {
+    return pow(max(g, vec3(0.0)), vec3(2.2));
+}
+
+// Levels, on display values 0–255: p0 = (in black, in white, gamma, out black), p1.x = out white.
+@fragment
+fn fs_levels(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, in.uv);
+    let g = to_display(unpremul(c));
+    let ib = fx.p0.x / 255.0;
+    let iw = max(fx.p0.y / 255.0, ib + 1.0 / 255.0);
+    var v = clamp((g - ib) / (iw - ib), vec3(0.0), vec3(1.0));
+    v = pow(v, vec3(1.0 / max(fx.p0.z, 0.01)));
+    v = fx.p0.w / 255.0 + v * (fx.p1.x - fx.p0.w) / 255.0;
+    return vec4(to_linear(v) * c.a, c.a);
+}
+
+// Sharpen: p0 = (amount %, radius in texels).
+@fragment
+fn fs_sharpen(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, in.uv);
+    let d = fx.texel_dir.xy * max(fx.p0.y, 0.5);
+    var sum = vec4(0.0);
+    for (var i = 0; i < 8; i = i + 1) {
+        let a = f32(i) * 0.7853982;
+        sum = sum + textureSample(src, src_sampler, in.uv + vec2(cos(a), sin(a)) * d);
+    }
+    let blurred = sum / 8.0;
+    let out = c + (c - blurred) * (fx.p0.x / 100.0);
+    let a = clamp(out.a, 0.0, 1.0);
+    return vec4(clamp(out.rgb, vec3(0.0), vec3(a)), a);
+}
+
+// Glow, step 1: keep the bright parts. p0 = (threshold %, -, -, softness %).
+@fragment
+fn fs_bright(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, in.uv);
+    let y = dot(to_display(unpremul(c)), LUMA);
+    let t = fx.p0.x / 100.0;
+    let s = max(fx.p0.w / 100.0, 0.001);
+    return c * smoothstep(t - s * 0.5, t + s * 0.5, y);
+}
+
+// Drop shadow, step 1: the layer's shape, moved. p0 = (offset x texels, offset y texels, -, opacity %).
+@fragment
+fn fs_shadow(in: VsOut) -> @location(0) vec4<f32> {
+    let a = textureSample(src, src_sampler, in.uv - fx.p0.xy * fx.texel_dir.xy).a;
+    return vec4(0.0, 0.0, 0.0, a * fx.p0.w / 100.0);
+}

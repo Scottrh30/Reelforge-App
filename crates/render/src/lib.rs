@@ -36,7 +36,7 @@ const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Draw calls per frame (a dissolve uses three).
 const MAX_DRAWS: usize = 128;
-const UNIFORM_SIZE: u64 = 80; // mat4 + vec2 + f32 + pad
+const UNIFORM_SIZE: u64 = 112; // mat4 + vec2 + 2×f32 + 2×vec4
 /// Effect passes per frame.
 const MAX_FX_PASSES: usize = 256;
 const FX_UNIFORM_SIZE: u64 = 64; // 4 × vec4
@@ -60,6 +60,37 @@ pub struct LayerInput<'a> {
     pub effects: Vec<EffectValues>,
     /// An alpha mask over the layer (applied before the effects).
     pub mask: Option<MaskInput<'a>>,
+    /// Reveal the layer with a moving edge (wipe transitions).
+    pub wipe: Option<Wipe>,
+}
+
+/// A wipe: the layer shows where `q < progress`, with a soft edge. For a
+/// straight wipe q = axis·(x/w, y/h, 1) over the frame; for an iris q is the
+/// distance from the middle (0 at the centre, 1 in the corners).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wipe {
+    pub iris: bool,
+    pub axis: [f32; 3],
+    pub progress: f32,
+    /// Width of the soft edge, as a fraction of the frame.
+    pub softness: f32,
+}
+
+impl Wipe {
+    /// The wipe for a transition moving in `dir` (x right, y down), `progress` of the way.
+    pub fn moving(dir: [f32; 2], progress: f32) -> Self {
+        // Revealed first where the edge starts: the side opposite the motion.
+        let axis = match dir {
+            [x, _] if x < 0.0 => [-1.0, 0.0, 1.0],
+            [x, _] if x > 0.0 => [1.0, 0.0, 0.0],
+            [_, y] if y < 0.0 => [0.0, -1.0, 1.0],
+            _ => [0.0, 1.0, 0.0],
+        };
+        Self { iris: false, axis, progress, softness: 0.08 }
+    }
+    pub fn iris(progress: f32) -> Self {
+        Self { iris: true, axis: [0.0; 3], progress, softness: 0.08 }
+    }
 }
 
 /// A layer's mask: 8-bit alpha, stretched over the whole layer.
@@ -75,8 +106,9 @@ pub struct MaskInput<'a> {
 pub enum DrawItem<'a> {
     Layer(LayerInput<'a>),
     /// Cross-dissolve from `from` to `to`; `mix` 0 → 1. The pair is composited
-    /// with `to`'s blend mode.
-    Dissolve { from: LayerInput<'a>, to: LayerInput<'a>, mix: f32 },
+    /// with `to`'s blend mode. With `dip`, it fades out to that colour (linear
+    /// RGB) and in from it instead.
+    Dissolve { from: LayerInput<'a>, to: LayerInput<'a>, mix: f32, dip: Option<[f32; 3]> },
 }
 
 struct LayerTex {
@@ -87,10 +119,12 @@ struct LayerTex {
 }
 
 /// Two scratch targets the size of a layer's pixels, for its effect chain.
+/// Three scratch targets the size of a layer's pixels, for its effect chain
+/// (two for ping-pong, one more to keep the layer while glow or a shadow is built).
 struct FxTargets {
     size: [u32; 2],
-    views: [wgpu::TextureView; 2],
-    binds: [wgpu::BindGroup; 2],
+    views: [wgpu::TextureView; 3],
+    binds: [wgpu::BindGroup; 3],
 }
 
 struct Targets {
@@ -134,7 +168,10 @@ pub struct Compositor {
     layers: HashMap<u64, LayerTex>,
     /// Mask textures, by layer key.
     masks: HashMap<u64, LayerTex>,
-    mask_pipeline: wgpu::RenderPipeline,
+    /// Effect passes that read a second texture (mask, lookup table, another target).
+    fx2_pipelines: HashMap<&'static str, wgpu::RenderPipeline>,
+    /// Lookup tables (curves, LUTs), by layer key and effect index; `content_id` is the table id.
+    tables: HashMap<(u64, usize), LayerTex>,
     targets: Option<Targets>,
     /// Bumped when the output texture is recreated (resize), so a UI can re-register it.
     pub output_generation: u64,
@@ -272,23 +309,29 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("mask"),
-            layout: Some(&mask_pl),
-            vertex: wgpu::VertexState { module: &mask_shader, entry_point: Some("vs_fullscreen"), compilation_options: Default::default(), buffers: &[] },
-            fragment: Some(wgpu::FragmentState {
-                module: &mask_shader,
-                entry_point: Some("fs_mask"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under"]
+            .into_iter()
+            .map(|entry| {
+                let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(entry),
+                    layout: Some(&mask_pl),
+                    vertex: wgpu::VertexState { module: &mask_shader, entry_point: Some("vs_fullscreen"), compilation_options: Default::default(), buffers: &[] },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &mask_shader,
+                        entry_point: Some(entry),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+                (entry, p)
+            })
+            .collect();
+        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -409,7 +452,8 @@ impl Compositor {
             sampler,
             layers: HashMap::new(),
             masks: HashMap::new(),
-            mask_pipeline,
+            fx2_pipelines,
+            tables: HashMap::new(),
             targets: None,
             output_generation: 0,
         }
@@ -541,6 +585,38 @@ impl Compositor {
         t.content_id = m.content_id;
     }
 
+    fn upload_table(&mut self, key: (u64, usize), t: &reelforge_core::lut::Table) {
+        if self.tables.get(&key).is_some_and(|x| x.content_id == t.id && x.size == [t.width, t.height]) {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("lookup table"),
+            size: wgpu::Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("lookup table"),
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &t.rgba,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * t.width), rows_per_image: Some(t.height) },
+            wgpu::Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 },
+        );
+        self.tables.insert(key, LayerTex { texture, bind_group, size: [t.width, t.height], content_id: t.id });
+    }
+
     fn ensure_fx_targets(&mut self, key: u64, size: [u32; 2]) {
         if self.fx_targets.get(&key).is_some_and(|t| t.size == size) {
             return;
@@ -569,7 +645,8 @@ impl Compositor {
         };
         let (va, ba) = make();
         let (vb, bb) = make();
-        self.fx_targets.insert(key, FxTargets { size, views: [va, vb], binds: [ba, bb] });
+        let (vc, bc) = make();
+        self.fx_targets.insert(key, FxTargets { size, views: [va, vb, vc], binds: [ba, bb, bc] });
     }
 
     /// Composite plain `layers` (bottom first). See [`Self::render_items`].
@@ -599,14 +676,24 @@ impl Compositor {
         }
 
         // ---- Effect chains: plan the passes for every layer that has effects ----
+        #[derive(Clone, Copy)]
         enum Src {
             Layer,
+            Scratch(usize),
+        }
+        /// The second texture a two-input pass reads.
+        #[derive(Clone, Copy)]
+        enum Second {
+            None,
+            Mask,
+            Table(usize),
             Scratch(usize),
         }
         struct FxPass {
             key: u64,
             entry: &'static str,
             src: Src,
+            second: Second,
             dst: usize,
             uniform: [f32; 16],
         }
@@ -618,14 +705,26 @@ impl Compositor {
             if (l.effects.is_empty() && !masked) || !self.layers.contains_key(&l.key) || processed.contains_key(&l.key) {
                 continue;
             }
-            let needed = 1 + masked as usize + l.effects.iter().map(|e| if e.kind == EffectKind::Blur { 2 } else { 1 }).sum::<usize>();
+            let cost = |e: &EffectValues| match e.kind {
+                EffectKind::Blur => 2,
+                EffectKind::Glow | EffectKind::DropShadow => 4,
+                _ => 1,
+            };
+            let needed = 1 + masked as usize + l.effects.iter().map(cost).sum::<usize>();
             if fx_passes.len() + needed > MAX_FX_PASSES {
                 log::warn!("too many effect passes; skipping effects on some layers");
                 break;
             }
             self.ensure_fx_targets(l.key, l.pixel_size);
+            for (i, e) in l.effects.iter().enumerate() {
+                if let Some(t) = &e.table {
+                    self.upload_table((l.key, i), t);
+                }
+            }
             let [pw, ph] = [l.pixel_size[0].max(1) as f32, l.pixel_size[1].max(1) as f32];
             let aspect = l.layer_size[0] / l.layer_size[1].max(1.0);
+            // Frame pixels at 100% scale → this layer's texels.
+            let (kx, ky) = (pw / l.layer_size[0].max(1.0), ph / l.layer_size[1].max(1.0));
             let uniform = |v: &[f32; reelforge_core::effects::MAX_PARAMS], dir: [f32; 2]| {
                 let mut u = [0.0f32; 16];
                 u[..8].copy_from_slice(v);
@@ -633,31 +732,82 @@ impl Compositor {
                 u[12] = aspect;
                 u
             };
-            fx_passes.push(FxPass { key: l.key, entry: "fs_import", src: Src::Layer, dst: 0, uniform: [0.0; 16] });
-            let mut cur = 0;
-            let mut pass = |entry, u, cur: &mut usize| {
-                fx_passes.push(FxPass { key: l.key, entry, src: Src::Scratch(*cur), dst: 1 - *cur, uniform: u });
-                *cur = 1 - *cur;
+            let key = l.key;
+            fx_passes.push(FxPass { key, entry: "fs_import", src: Src::Layer, second: Second::None, dst: 0, uniform: [0.0; 16] });
+            let mut cur = 0usize;
+            let mut push = |entry, src: usize, second, dst: usize, u| fx_passes.push(FxPass { key, entry, src: Src::Scratch(src), second, dst, uniform: u });
+            // The two targets that aren't `cur`.
+            let others = |cur: usize| ((cur + 1) % 3, (cur + 2) % 3);
+            // A separable blur of `from` into `into`, using `tmp`.
+            let blur = |push: &mut dyn FnMut(&'static str, usize, Second, usize, [f32; 16]), radius: f32, from: usize, tmp: usize, into: usize| {
+                let mut vx = [0.0; reelforge_core::effects::MAX_PARAMS];
+                vx[0] = radius * 0.5 * kx;
+                let mut vy = vx;
+                vy[0] = radius * 0.5 * ky;
+                push("fs_blur", from, Second::None, tmp, uniform(&vx, [1.0, 0.0]));
+                push("fs_blur", tmp, Second::None, into, uniform(&vy, [0.0, 1.0]));
             };
             if masked {
-                pass("fs_mask", [0.0; 16], &mut cur);
+                let (o, _) = others(cur);
+                push("fs_mask", cur, Second::Mask, o, [0.0; 16]);
+                cur = o;
             }
-            for e in &l.effects {
+            for (i, e) in l.effects.iter().enumerate() {
+                let (o1, o2) = others(cur);
                 match e.kind {
                     EffectKind::Blur => {
-                        // Radius is in frame pixels at 100% scale; sigma is half of it, in texels.
-                        let sx = e.values[0] * 0.5 * pw / l.layer_size[0].max(1.0);
-                        let sy = e.values[0] * 0.5 * ph / l.layer_size[1].max(1.0);
-                        let mut vx = e.values;
-                        vx[0] = sx;
-                        let mut vy = e.values;
-                        vy[0] = sy;
-                        pass("fs_blur", uniform(&vx, [1.0, 0.0]), &mut cur);
-                        pass("fs_blur", uniform(&vy, [0.0, 1.0]), &mut cur);
+                        blur(&mut push, e.values[0], cur, o1, o2);
+                        cur = o2;
                     }
-                    EffectKind::ColorCorrect => pass("fs_color", uniform(&e.values, [0.0; 2]), &mut cur),
-                    EffectKind::ChromaKey => pass("fs_key", uniform(&e.values, [0.0; 2]), &mut cur),
-                    EffectKind::Vignette => pass("fs_vignette", uniform(&e.values, [0.0; 2]), &mut cur),
+                    EffectKind::Glow => {
+                        // Bright parts → blur → added back onto the untouched layer.
+                        push("fs_bright", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                        blur(&mut push, e.values[1], o1, o2, o1);
+                        push("fs_glow_add", cur, Second::Scratch(o1), o2, uniform(&e.values, [0.0; 2]));
+                        cur = o2;
+                    }
+                    EffectKind::DropShadow => {
+                        // The shape, moved and darkened → blurred → put under the layer.
+                        let (d, a) = (e.values[0], e.values[1].to_radians());
+                        let mut v = e.values;
+                        (v[0], v[1], v[3]) = (-a.cos() * d * kx, a.sin() * d * ky, e.values[3]);
+                        push("fs_shadow", cur, Second::None, o1, uniform(&v, [0.0; 2]));
+                        blur(&mut push, e.values[2], o1, o2, o1);
+                        push("fs_under", cur, Second::Scratch(o1), o2, uniform(&e.values, [0.0; 2]));
+                        cur = o2;
+                    }
+                    EffectKind::Sharpen => {
+                        let mut v = e.values;
+                        v[1] = e.values[1] * kx.max(ky);
+                        push("fs_sharpen", cur, Second::None, o1, uniform(&v, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::Curves | EffectKind::Lut => {
+                        if !self.tables.contains_key(&(key, i)) {
+                            continue;
+                        }
+                        let mut v = e.values;
+                        v[1] = e.table.as_ref().map_or(0.0, |t| t.cube_size as f32);
+                        let entry = if e.kind == EffectKind::Curves { "fs_curves" } else { "fs_lut" };
+                        push(entry, cur, Second::Table(i), o1, uniform(&v, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::ColorCorrect => {
+                        push("fs_color", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::ChromaKey => {
+                        push("fs_key", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::Vignette => {
+                        push("fs_vignette", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::Levels => {
+                        push("fs_levels", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
                 }
             }
             processed.insert(l.key, cur);
@@ -682,32 +832,47 @@ impl Compositor {
         enum Op {
             /// Draw a layer into the frame.
             Frame { draw: Draw, blend: BlendMode },
-            /// Draw a dissolve group: sum two layers into the group target, then
-            /// composite the group into the frame.
-            Group { a: Draw, b: Draw, over: usize, blend: BlendMode },
+            /// Draw a dissolve group: sum the layers into the group target (cleared
+            /// to `clear`, premultiplied, for a dip), then composite the group into the frame.
+            Group { a: Option<Draw>, b: Option<Draw>, over: usize, blend: BlendMode, clear: wgpu::Color },
         }
-        let mut uniforms: Vec<(Transform, [f32; 2])> = Vec::new();
-        fn slot(u: &mut Vec<(Transform, [f32; 2])>, t: Transform, size: [f32; 2]) -> usize {
-            u.push((t, size));
+        let mut uniforms: Vec<(Transform, [f32; 2], Option<Wipe>)> = Vec::new();
+        fn slot(u: &mut Vec<(Transform, [f32; 2], Option<Wipe>)>, t: Transform, size: [f32; 2], wipe: Option<Wipe>) -> usize {
+            u.push((t, size, wipe));
             u.len() - 1
         }
         let mut ops = Vec::new();
         for item in items {
             match item {
                 DrawItem::Layer(l) => {
-                    let draw = Draw { slot: slot(&mut uniforms, l.transform, l.layer_size), key: l.key, fx: processed.get(&l.key).copied() };
+                    let draw = Draw { slot: slot(&mut uniforms, l.transform, l.layer_size, l.wipe), key: l.key, fx: processed.get(&l.key).copied() };
                     ops.push(Op::Frame { draw, blend: l.blend })
                 }
-                DrawItem::Dissolve { from, to, mix } => {
+                DrawItem::Dissolve { from, to, mix, dip } => {
                     let m = mix.clamp(0.0, 1.0);
-                    let mut ta = from.transform;
-                    ta.opacity *= 1.0 - m;
-                    let mut tb = to.transform;
-                    tb.opacity *= m;
-                    let a = Draw { slot: slot(&mut uniforms, ta, from.layer_size), key: from.key, fx: processed.get(&from.key).copied() };
-                    let b = Draw { slot: slot(&mut uniforms, tb, to.layer_size), key: to.key, fx: processed.get(&to.key).copied() };
-                    let over = slot(&mut uniforms, Transform::default(), frame);
-                    ops.push(Op::Group { a, b, over, blend: to.blend });
+                    let (mut ta, mut tb) = (from.transform, to.transform);
+                    let (draw_a, draw_b, clear) = match dip {
+                        // A dip: first half fades `from` into the colour, second half `to` out of it.
+                        Some(c) => {
+                            let (w, first) = if m < 0.5 { (1.0 - 2.0 * m, true) } else { (2.0 * m - 1.0, false) };
+                            if first {
+                                ta.opacity *= w;
+                            } else {
+                                tb.opacity *= w;
+                            }
+                            let k = (1.0 - w) as f64;
+                            (first, !first, wgpu::Color { r: c[0] as f64 * k, g: c[1] as f64 * k, b: c[2] as f64 * k, a: k })
+                        }
+                        None => {
+                            ta.opacity *= 1.0 - m;
+                            tb.opacity *= m;
+                            (true, true, wgpu::Color::TRANSPARENT)
+                        }
+                    };
+                    let a = draw_a.then(|| Draw { slot: slot(&mut uniforms, ta, from.layer_size, from.wipe), key: from.key, fx: processed.get(&from.key).copied() });
+                    let b = draw_b.then(|| Draw { slot: slot(&mut uniforms, tb, to.layer_size, to.wipe), key: to.key, fx: processed.get(&to.key).copied() });
+                    let over = slot(&mut uniforms, Transform::default(), frame, None);
+                    ops.push(Op::Group { a, b, over, blend: to.blend, clear });
                 }
             }
             if uniforms.len() > MAX_DRAWS - 3 {
@@ -718,10 +883,14 @@ impl Compositor {
 
         // Uniforms for every draw in one buffer, addressed by dynamic offset.
         let mut data = vec![0u8; self.uniform_stride as usize * uniforms.len().max(1)];
-        for (i, (t, size)) in uniforms.iter().enumerate() {
+        for (i, (t, size, wipe)) in uniforms.iter().enumerate() {
             let mvp = t.matrix(frame).to_clip_space(frame);
             let mut floats: Vec<f32> = mvp.iter().flatten().copied().collect();
-            floats.extend([size[0], size[1], t.opacity.clamp(0.0, 1.0), 0.0]);
+            let mode = wipe.map_or(0.0, |w| if w.iris { 2.0 } else { 1.0 });
+            floats.extend([size[0], size[1], t.opacity.clamp(0.0, 1.0), mode]);
+            let w = wipe.unwrap_or(Wipe { iris: false, axis: [0.0; 3], progress: 1.0, softness: 0.1 });
+            floats.extend([w.axis[0], w.axis[1], w.axis[2], w.progress.clamp(0.0, 1.0)]);
+            floats.extend([w.softness, frame[0], frame[1], 0.0]);
             let bytes: Vec<u8> = floats.iter().flat_map(|f| f.to_ne_bytes()).collect();
             let off = i * self.uniform_stride as usize;
             data[off..off + bytes.len()].copy_from_slice(&bytes);
@@ -750,13 +919,22 @@ impl Compositor {
         // Effects first: each pass is its own render pass on a layer's scratch target.
         for (i, p) in fx_passes.iter().enumerate() {
             let (Some(fx), Some(tex)) = (self.fx_targets.get(&p.key), self.layers.get(&p.key)) else { continue };
+            let second = match p.second {
+                Second::None => None,
+                Second::Mask => Some(self.masks.get(&p.key).map(|m| &m.bind_group)),
+                Second::Table(e) => Some(self.tables.get(&(p.key, e)).map(|t| &t.bind_group)),
+                Second::Scratch(s) => Some(Some(&fx.binds[s])),
+            };
+            if matches!(second, Some(None)) {
+                continue; // its texture is missing
+            }
             let mut pass = pass_on(&mut enc, &fx.views[p.dst], wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
-            if p.entry == "fs_mask" {
-                let Some(m) = self.masks.get(&p.key) else { continue };
-                pass.set_pipeline(&self.mask_pipeline);
-                pass.set_bind_group(2, &m.bind_group, &[]);
-            } else {
-                pass.set_pipeline(&self.fx_pipelines[p.entry]);
+            match second {
+                Some(Some(b)) => {
+                    pass.set_pipeline(&self.fx2_pipelines[p.entry]);
+                    pass.set_bind_group(2, b, &[]);
+                }
+                _ => pass.set_pipeline(&self.fx_pipelines[p.entry]),
             }
             pass.set_bind_group(0, &self.fx_uniform_bind, &[(i as u64 * self.fx_uniform_stride) as u32]);
             match p.src {
@@ -790,11 +968,11 @@ impl Compositor {
                     pass.set_bind_group(1, bind, &[]);
                     pass.draw(0..6, 0..1);
                 }
-                Op::Group { a, b, over, blend } => {
+                Op::Group { a, b, over, blend, clear } => {
                     drop(frame_pass.take());
                     {
-                        let mut gp = pass_on(&mut enc, &targets.group_view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
-                        for d in [a, b] {
+                        let mut gp = pass_on(&mut enc, &targets.group_view, wgpu::LoadOp::Clear(*clear));
+                        for d in [a, b].into_iter().flatten() {
                             let Some(bind) = source(d) else { continue };
                             gp.set_pipeline(if d.fx.is_some() { &self.sum_premul_pipeline } else { &self.sum_pipeline });
                             gp.set_bind_group(0, &self.uniform_bind, &[offset(d.slot)]);
@@ -825,6 +1003,7 @@ impl Compositor {
         self.layers.retain(|k, _| keep(*k));
         self.fx_targets.retain(|k, _| keep(*k));
         self.masks.retain(|k, _| keep(*k));
+        self.tables.retain(|k, _| keep(k.0));
     }
 
     /// Read the last rendered frame back as tightly packed RGBA8 (sRGB). Blocks on the GPU.

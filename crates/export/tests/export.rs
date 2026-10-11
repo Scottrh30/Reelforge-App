@@ -79,14 +79,14 @@ fn reference_frame(c: &mut Compositor, a: &Path, b: &Path, t: f64) -> Vec<u8> {
     let fa = FrameSource::open(a, None).unwrap().frame_at_blocking(Time::from_secs_f64(t), wait).unwrap();
     let mut layers = vec![LayerInput {
         key: 1, content_id: id, pixels: &fa.rgba, pixel_size: [fa.width, fa.height],
-        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None,
+        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None,
     }];
     let fb;
     if t >= 1.0 {
         fb = FrameSource::open(b, None).unwrap().frame_at_blocking(Time::from_secs_f64(t - 1.0), wait).unwrap();
         layers.push(LayerInput {
             key: 2, content_id: id, pixels: &fb.rgba, pixel_size: [fb.width, fb.height],
-            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(), mask: None,
+            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None,
         });
     }
     c.render([640, 360], &layers);
@@ -643,7 +643,7 @@ fn transparent_compositor_keeps_coverage() {
     let t = Transform { scale: [0.5, 0.5], opacity: 0.5, ..Default::default() };
     let layer = LayerInput {
         key: 1, content_id: 1, pixels: &px, pixel_size: [16, 16], layer_size: [64.0, 64.0],
-        transform: t, blend: BlendMode::Normal, effects: Vec::new(), mask: None,
+        transform: t, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None,
     };
     c.render([64, 64], &[layer]);
     let out = c.read_output().unwrap();

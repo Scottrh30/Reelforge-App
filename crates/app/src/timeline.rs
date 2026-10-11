@@ -513,8 +513,10 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         let s = Stroke::new(1.2, Color32::from_white_alpha(200));
         xp.line_segment([xr.left_top(), xr.right_bottom()], s);
         xp.line_segment([xr.left_bottom(), xr.right_top()], s);
+        let kind = if x.kind == TrackKind::Video { st.seq().find_clip(x.right).map(|(_, c)| c.transition).unwrap_or_default() } else { reelforge_core::Transition::Dissolve };
         if xr.width() > 34.0 {
-            xp.text(xr.center_bottom() - Vec2::new(0.0, 2.0), Align2::CENTER_BOTTOM, format!("{:.1}s", x.len().as_secs_f64()), FontId::proportional(10.0), Color32::WHITE);
+            let label = if x.kind == TrackKind::Video && xr.width() > 90.0 { format!("{} {:.1}s", kind.label(), x.len().as_secs_f64()) } else { format!("{:.1}s", x.len().as_secs_f64()) };
+            xp.text(xr.center_bottom() - Vec2::new(0.0, 2.0), Align2::CENTER_BOTTOM, label, FontId::proportional(10.0), Color32::WHITE);
         }
     }
 

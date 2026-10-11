@@ -103,13 +103,26 @@ What works now:
 - **In/out points**: **I** and **O** (or the Edit menu) mark a range at the playhead (the out
   point includes the frame under the playhead); **Alt+X** clears them. The range shows in blue
   on the ruler, and **Export** then offers "In to out" as well as the whole sequence
-- **Effects** (Controls panel, **Add effect…**): a stack per video clip, applied on the GPU in
-  linear light before the clip's transform, so they move, scale and rotate with it:
+- **Effects** (Controls panel, **Add effect…**, or the **Effects & transitions** browser, `E`):
+  a stack per video clip, applied on the GPU in linear light before the clip's transform, so
+  they move, scale and rotate with it:
   - **Colour correction**: exposure (in stops), contrast, saturation, temperature and tint
+  - **Levels**: input black/white points, gamma, output black/white (0–255, like Photoshop)
+  - **Curves**: master, red, green and blue tone curves drawn in a small editor (drag a point,
+    double-click to add one, right-click to remove; smooth curves that never overshoot), with
+    a Strength mix
+  - **LUT (.cube)**: load any 3D `.cube` LUT (Resolve, Photoshop, camera LUT packs), sampled
+    with full trilinear interpolation, with a Strength mix
   - **Gaussian blur**: radius in pixels (two separable passes, any size)
+  - **Sharpen**: unsharp mask with amount and radius
   - **Chroma key**: pick the key colour by hue (green by default, with a swatch), threshold,
     softness and spill suppression
+  - **Glow**: threshold, radius, intensity and softness; bright areas bloom outwards
+  - **Drop shadow**: distance, angle, softness and opacity, from the layer's alpha
   - **Vignette**: amount, size and softness
+  - The **browser** (`E`, or **Edit → Effects & transitions…**) lists every effect by category
+    (Colour, Blur & sharpen, Keying, Light & stylize) and every transition, with a search box
+    and a one-line description of each; **Add** puts an effect on the selected clip
   - Turn each effect on or off, reorder (applied top to bottom) or remove it. Every parameter
     has a keyframe button and works like the transform properties. The viewer and export use
     the same GPU passes, so exports match what you see
@@ -215,11 +228,15 @@ What works now:
   hollow. Each drag is one undo step
 - Opening a `.rfproj` from the command line (or by double-clicking it once associated) opens the
   project
-- **Cross-dissolves**: **Edit → Cross-dissolve at playhead** (`Ctrl+D`) adds a 1 s dissolve at
-  the nearest cut between two touching video clips; adjust it with "Dissolve in" in the Controls
-  panel. Like audio crossfades it uses the spare media either side of the cut. The dissolve is
-  rendered correctly in linear light: no brightness dip at the midpoint, even for clips that
-  don't fill the frame
+- **Transitions**: **Edit → Cross-dissolve at playhead** (`Ctrl+D`) adds a 1 s dissolve at
+  the nearest cut between two touching video clips, and the browser's **Transitions** tab
+  applies any kind there. Change the kind and length with "Transition in" in the Controls panel;
+  the timeline labels each one. Kinds: **Cross-dissolve**, **Dip to black**, **Dip to white**,
+  **Wipe** left/right/up/down (soft edge), **Iris** (a circle opening from the centre),
+  **Slide** left/right/up/down (the next shot slides in over this one) and **Push**
+  left/right/up/down (it pushes this one out). Motion is eased in and out. Like audio
+  crossfades they use the spare media either side of the cut. Dissolves are rendered in linear
+  light: no brightness dip at the midpoint, even for clips that don't fill the frame
 - **Video keyframes**: Position, Scale, Rotation and Opacity each have a keyframe button in the
   Controls panel. Click it to start animating that property at the playhead; after that, changing
   the value (or dragging the layer in the Viewer) sets a keyframe at the playhead. Previous/next
@@ -233,8 +250,8 @@ What works now:
 - Colour-accurate decoding: BT.709/BT.601 and full/limited range are read from each file
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
-Not yet: more effects (sharpen, levels/curves, glow, masks…), other transition types (wipes,
-dip to black), Bézier handles in the curve editor, keyframed audio pan, animated text
+Not yet: glow and drop shadow reach only as far as the clip's own frame (a shadow from a
+full-frame clip is hidden), Bézier handles in the curve editor, keyframed audio pan, animated text
 (per-letter reveals), and reordering tracks by dragging.
 See the roadmap at the bottom.
 
@@ -385,6 +402,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | Alt+X | Clear in/out |
 | Shift+Del | Ripple delete (close the gap) |
 | Ctrl+D | Add/remove cross-dissolve at the nearest video cut |
+| E | Effects & transitions browser |
 | Ctrl + mouse wheel | Zoom timeline |
 | Click / drag in Viewer | Select / move a layer |
 
@@ -428,7 +446,10 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   amount), and both the viewer and export render from that, so they always agree.
 - **Dissolves** render as a group in the compositor: both clips are summed, weighted 1−mix and
   mix, into a scratch float target, which is then composited over the frame. That's exactly
-  `(1−u)·A + u·B` over whatever is underneath.
+  `(1−u)·A + u·B` over whatever is underneath. A dip clears the group to the dip colour and
+  fades each clip in turn against it. Wipes and the iris draw the incoming clip with a soft
+  edge computed in frame space in the layer shader; slides and pushes are just offsets added to
+  each clip's transform (`core/src/transition.rs`), so they work for any layer.
 - **Trimming** (`undo::trim_range` / `trim_group`) computes the allowed range for the whole
   linked group up front, so the edge simply stops at a limit instead of failing.
 - **Ripple and roll** (`core/src/edit.rs`): `plan_trim` turns a drag into a `TrimPlan`: the
@@ -445,8 +466,12 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   parameters, each a static value or a keyframe `Curve`. `Project::video_layers_at` evaluates
   them at the frame's source time into `EffectValues`. The compositor runs each layer that has
   effects through full-screen passes at the layer's own resolution: an import pass
-  (sRGB → premultiplied linear float), then one pass per effect, ping-ponging between two float
-  textures kept per layer. The result is drawn with the pre-multiplied pipeline, including
+  (sRGB → premultiplied linear float), then one or more passes per effect, between three float
+  textures kept per layer (glow is bright-pass → blur → add; drop shadow is shadow → blur →
+  under). Two-input passes (masks, curves, LUTs, glow, shadow) read a second texture: the
+  original, or a lookup table. Curves become a 256×1 table; a .cube LUT of size N becomes N
+  slices of N×N laid side by side, sampled with the blue axis interpolated by hand. Tables are
+  uploaded once and cached by content hash. The result is drawn with the pre-multiplied pipeline, including
   inside dissolve groups. The blur radius is converted from frame pixels to texels, so a proxy-
   sized preview and a full-size export blur by the same visible amount.
 - **Proxies, hardware decoding and the frame cache** live in the media crate. `hw.rs` sets a
@@ -554,9 +579,11 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 4. ~~Export: H.264/H.265/ProRes/DNxHR/image sequences/WAV, presets including vertical video,
    fit/fill/stretch, GPU encoders, an in/out range, an export queue~~
    (still to add: 10-bit HEVC/HDR, custom bitrates, saving your own presets)
-5. **Effects** ← you are here. Done: the effect stack, keyframable parameters, colour
-   correction, Gaussian blur, chroma key, vignette. Next: levels/curves, sharpen, glow, LUTs,
-   an effects browser, and effects that reach outside the layer (drop shadow, glow).
+5. ~~**Effects**: the effect stack, keyframable parameters, colour correction, levels, curves,
+   LUTs, blur, sharpen, chroma key, glow, drop shadow, vignette, an effects browser;
+   dissolve, dip, wipe, iris, slide and push transitions~~
+   (still to add: letting glow/shadow spill outside the layer, more stylize effects, saved
+   effect presets)
 6. **Compositing**: ~~composite shots (nested sequences), point tracking (follow and
    stabilise), masks~~, titles and track management are done. Still to come: Bézier mask
    curves and per-point feather, planar and

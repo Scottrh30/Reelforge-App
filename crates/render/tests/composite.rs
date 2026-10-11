@@ -8,7 +8,7 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
 }
 
 fn layer<'a>(key: u64, pixels: &'a [u8], px: [u32; 2], size: [f32; 2], t: Transform, blend: BlendMode) -> LayerInput<'a> {
-    LayerInput { key, content_id: 1, pixels, pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new(), mask: None }
+    LayerInput { key, content_id: 1, pixels, pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new(), mask: None, wipe: None }
 }
 
 fn px(img: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
@@ -104,7 +104,7 @@ fn textures_are_cached_by_content_id() {
     let red = solid(4, 4, [255, 0, 0, 255]);
     let green = solid(4, 4, [0, 255, 0, 255]);
     fn mk(pixels: &[u8], id: u64) -> LayerInput<'_> {
-        LayerInput { key: 7, content_id: id, pixels, pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None }
+        LayerInput { key: 7, content_id: id, pixels, pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None }
     }
     c.render([4, 4], &[mk(&red, 1)]);
     c.render([4, 4], &[mk(&green, 1)]); // same content id: not re-uploaded
@@ -137,7 +137,7 @@ fn full_frame_dissolve_mixes_in_linear_light() {
     let red = solid(1, 1, [255, 0, 0, 255]);
     let blue = solid(1, 1, [0, 0, 255, 255]);
     for (mix, want) in [(0.0, [255, 0, 0]), (0.5, [188, 0, 188]), (1.0, [0, 0, 255])] {
-        c.render_items([16, 16], &[DrawItem::Dissolve { from: full(1, &red, [16, 16]), to: full(2, &blue, [16, 16]), mix }]);
+        c.render_items([16, 16], &[DrawItem::Dissolve { dip: None, from: full(1, &red, [16, 16]), to: full(2, &blue, [16, 16]), mix }]);
         let got = px(&c.read_output().unwrap(), 16, 8, 8);
         assert!(near(got, want), "mix {mix}: got {got:?}, want {want:?}");
     }
@@ -151,7 +151,7 @@ fn dissolve_between_small_layers_has_no_midpoint_dip() {
     // A centred 8x8; B the same size shifted right by 4, so they half overlap.
     let a = layer(2, &white, [1, 1], [8.0, 8.0], Transform::default(), BlendMode::Normal);
     let b = layer(3, &white, [1, 1], [8.0, 8.0], Transform { position: [4.0, 0.0], ..Default::default() }, BlendMode::Normal);
-    c.render_items([32, 32], &[DrawItem::Layer(full(1, &gray, [32, 32])), DrawItem::Dissolve { from: a, to: b, mix: 0.5 }]);
+    c.render_items([32, 32], &[DrawItem::Layer(full(1, &gray, [32, 32])), DrawItem::Dissolve { dip: None, from: a, to: b, mix: 0.5 }]);
     let img = c.read_output().unwrap();
     // Where both cover: 0.5·white + 0.5·white = white (a naive A-then-B fade would darken this).
     assert!(near(px(&img, 32, 17, 16), [255, 255, 255]), "overlap: {:?}", px(&img, 32, 17, 16));
@@ -171,7 +171,7 @@ fn layers_after_a_dissolve_still_composite_on_top() {
     let green = solid(1, 1, [0, 255, 0, 255]);
     let top = layer(9, &green, [1, 1], [4.0, 4.0], Transform::default(), BlendMode::Normal);
     c.render_items([16, 16], &[
-        DrawItem::Dissolve { from: full(1, &red, [16, 16]), to: full(2, &blue, [16, 16]), mix: 0.5 },
+        DrawItem::Dissolve { dip: None, from: full(1, &red, [16, 16]), to: full(2, &blue, [16, 16]), mix: 0.5 },
         DrawItem::Layer(top),
     ]);
     let img = c.read_output().unwrap();
@@ -294,7 +294,116 @@ fn effects_follow_the_layer_and_work_in_dissolves() {
     assert!(near(px(&out, 16, 2, 8), [0, 0, 0]));
     // A dissolve where one side has effects still sums to the right mix.
     let a = with_fx(full(1, &white, [16, 16]), vec![fx(EffectKind::ColorCorrect, &[(0, -1.0)])]);
-    c.render_items([16, 16], &[DrawItem::Dissolve { from: a, to: full(2, &black, [16, 16]), mix: 0.5 }]);
+    c.render_items([16, 16], &[DrawItem::Dissolve { dip: None, from: a, to: full(2, &black, [16, 16]), mix: 0.5 }]);
     let q = srgb(0.25);
     assert!(near(px(&c.read_output().unwrap(), 16, 8, 8), [q, q, q]));
+}
+
+// ---- New effects ---------------------------------------------------------------
+
+#[test]
+fn levels_curves_and_luts_remap_colours() {
+    let Some(mut c) = setup() else { return };
+    let grey = solid(1, 1, [128, 128, 128, 255]);
+    // Levels: input white at 128 makes mid-grey white.
+    c.render([4, 4], &[with_fx(full(1, &grey, [4, 4]), vec![fx(EffectKind::Levels, &[(1, 128.0)])])]);
+    assert!(near(px(&c.read_output().unwrap(), 4, 2, 2), [255, 255, 255]));
+    // Curves: a master curve that halves everything (display values).
+    let mut e = Effect::new(EffectKind::Curves);
+    e.data = Some(reelforge_core::EffectData::Curves(reelforge_core::lut::Curves { master: vec![[0.0, 0.0], [1.0, 0.5]], ..Default::default() }));
+    let white = solid(1, 1, [255, 255, 255, 255]);
+    c.render([4, 4], &[with_fx(full(2, &white, [4, 4]), vec![e.eval(reelforge_core::Time::ZERO)])]);
+    let v = px(&c.read_output().unwrap(), 4, 2, 2)[0] as i32;
+    assert!((v - 128).abs() <= 8, "curves: {v}");
+    // A LUT that swaps red and blue.
+    let mut text = String::from("LUT_3D_SIZE 2\n");
+    for b in 0..2 {
+        for g in 0..2 {
+            for r in 0..2 {
+                text += &format!("{b} {g} {r}\n");
+            }
+        }
+    }
+    let path = std::env::temp_dir().join("rf_swap.cube");
+    std::fs::write(&path, text).unwrap();
+    let mut e = Effect::new(EffectKind::Lut);
+    e.data = Some(reelforge_core::EffectData::Lut(path));
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    c.render([4, 4], &[with_fx(full(3, &red, [4, 4]), vec![e.eval(reelforge_core::Time::ZERO)])]);
+    assert!(near(px(&c.read_output().unwrap(), 4, 2, 2), [0, 0, 255]), "{:?}", px(&c.read_output().unwrap(), 4, 2, 2));
+}
+
+#[test]
+fn sharpen_glow_and_drop_shadow() {
+    let Some(mut c) = setup() else { return };
+    // Sharpen: a soft step gets an overshoot on its bright side.
+    let mut img = Vec::new();
+    for _y in 0..8 {
+        for x in 0..32 {
+            let v = if x < 15 { 60 } else if x > 16 { 190 } else { 125 };
+            img.extend([v, v, v, 255]);
+        }
+    }
+    let l = layer(1, &img, [32, 8], [32.0, 8.0], Transform::default(), BlendMode::Normal);
+    c.render([32, 8], &[with_fx(l, vec![fx(EffectKind::Sharpen, &[(0, 200.0), (1, 1.5)])])]);
+    let out = c.read_output().unwrap();
+    assert!(px(&out, 32, 17, 4)[0] > 200 && px(&out, 32, 14, 4)[0] < 50, "{:?} {:?}", px(&out, 32, 17, 4), px(&out, 32, 14, 4));
+    assert!((px(&out, 32, 2, 4)[0] as i32 - 60).abs() <= 2, "flat areas stay");
+
+    // Glow: a white square on black spreads light around it.
+    let mut img = vec![0u8; 32 * 32 * 4];
+    for y in 0..32 {
+        for x in 0..32 {
+            let v = if (12..20).contains(&x) && (12..20).contains(&y) { 255 } else { 0 };
+            img[(y * 32 + x) * 4..][..4].copy_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let l = layer(2, &img, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+    c.render([32, 32], &[with_fx(l, vec![fx(EffectKind::Glow, &[(1, 6.0)])])]);
+    let out = c.read_output().unwrap();
+    assert!(px(&out, 32, 9, 16)[0] > 30, "glow outside the square: {:?}", px(&out, 32, 9, 16));
+    assert!(px(&out, 32, 1, 1)[0] < 10, "but not far away");
+
+    // Drop shadow: a white square with nothing around it, over red: the shadow falls down-right.
+    let mut img = vec![0u8; 32 * 32 * 4];
+    for y in 8..16 {
+        for x in 8..16 {
+            img[(y * 32 + x) * 4..][..4].copy_from_slice(&[255, 255, 255, 255]);
+        }
+    }
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    let l = layer(3, &img, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+    c.render([32, 32], &[full(9, &red, [32, 32]), with_fx(l, vec![fx(EffectKind::DropShadow, &[(0, 6.0), (2, 0.0), (3, 100.0)])])]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 32, 12, 12), [255, 255, 255]), "the square itself");
+    assert!(px(&out, 32, 19, 19)[0] < 40, "shadow down-right: {:?}", px(&out, 32, 19, 19));
+    assert!(near(px(&out, 32, 4, 4), [255, 0, 0]), "no shadow up-left");
+}
+
+#[test]
+fn wipes_dips_and_iris() {
+    use reelforge_render::{DrawItem, Wipe};
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    let blue = solid(1, 1, [0, 0, 255, 255]);
+    // Wipe right, half way: the new clip (blue) covers the left half.
+    let mut b = full(2, &blue, [32, 16]);
+    b.wipe = Some(Wipe::moving([1.0, 0.0], 0.5));
+    c.render_items([32, 16], &[DrawItem::Layer(full(1, &red, [32, 16])), DrawItem::Layer(b)]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 32, 4, 8), [0, 0, 255]) && near(px(&out, 32, 28, 8), [255, 0, 0]), "{:?} {:?}", px(&out, 32, 4, 8), px(&out, 32, 28, 8));
+    // Iris, half way: blue in the middle, red in the corners.
+    let mut b = full(2, &blue, [32, 16]);
+    b.wipe = Some(Wipe::iris(0.5));
+    c.render_items([32, 16], &[DrawItem::Layer(full(1, &red, [32, 16])), DrawItem::Layer(b)]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 32, 16, 8), [0, 0, 255]) && near(px(&out, 32, 0, 0), [255, 0, 0]));
+    // Dip to white: white half way, and a quarter of the way it's half red, half white.
+    let item = |mix| DrawItem::Dissolve { from: full(1, &red, [32, 16]), to: full(2, &blue, [32, 16]), mix, dip: Some([1.0; 3]) };
+    c.render_items([32, 16], &[item(0.5)]);
+    assert!(near(px(&c.read_output().unwrap(), 32, 16, 8), [255, 255, 255]));
+    c.render_items([32, 16], &[item(0.25)]);
+    let p = px(&c.read_output().unwrap(), 32, 16, 8);
+    let h = srgb(0.5);
+    assert!(near(p, [255, h, h]), "{p:?}");
 }
