@@ -67,6 +67,7 @@ fn settings(path: PathBuf) -> ExportSettings {
         video: Some(VideoCodec::H264),
         hardware: false,
         fit: Fit::Letterbox,
+        sequence: 0,
     }
 }
 
@@ -242,7 +243,7 @@ fn audio_asset(id: u64, path: &Path) -> MediaAsset {
 /// Renders the timeline audio exactly as playback/export do.
 fn render_mix(p: &Project, secs: f64) -> Vec<f32> {
     let mut m = reelforge_media::Mixer::new(48_000);
-    m.set_clips(reelforge_export::mix_clips(p, 48_000));
+    m.set_clips(reelforge_export::mix_clips(p, 0, 48_000));
     let mut out = vec![0.0f32; (secs * 48_000.0) as usize * 2];
     for (i, chunk) in out.chunks_mut(1024 * 2).enumerate() {
         m.render(i as i64 * 1024, chunk);
@@ -580,4 +581,74 @@ fn letterboxes_into_a_different_shape_and_exports_audio_alone() {
     rd.read(12_000, &mut buf);
     // lavfi's sine is 1/8 amplitude: RMS 0.088.
     assert!((rms(&buf) - 0.088).abs() < 0.01, "the tone is there: {}", rms(&buf));
+}
+
+#[test]
+fn exports_composite_shots_with_their_transform_and_audio() {
+    let Some((mut p, _)) = red_with_tone() else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    // The red+tone sequence becomes a composite shot (sequence 1) inside a new main
+    // sequence, from 0.5 s to 1.5 s, at half size and -6 dB.
+    let inner = p.sequences.remove(0);
+    let mut main = Sequence::new("Main", 640, 360, FrameRate::new(25, 1));
+    let mut v = Clip::new_nested(ClipId(10), 1, s(0.5), s(1.0), Some(7));
+    v.transform.scale = [0.5, 0.5];
+    let mut a = Clip::new_nested(ClipId(11), 1, s(0.5), s(1.0), Some(7));
+    a.audio.volume_db = -6.0206;
+    main.tracks[1].clips = vec![v];
+    main.tracks[2].clips = vec![a];
+    p.sequences = vec![main, inner];
+
+    let mix = reelforge_export::mix_clips(&p, 0, 48_000);
+    assert_eq!(mix.len(), 1);
+    assert_eq!((mix[0].start, mix[0].len), (24_000, 48_000), "moved to where the shot plays");
+    assert!((mix[0].gain - 0.5).abs() < 0.01);
+
+    let out = std::env::temp_dir().join("rf_nested.mp4");
+    let st = settings(out.clone());
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let wait = Duration::from_secs(5);
+    let px = |f: &reelforge_media::VideoFrame, x: u32, y: u32| {
+        let i = ((y * f.width + x) * 4) as usize;
+        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+    };
+    let before = dec.frame_at_blocking(s(0.2), wait).unwrap();
+    assert!(px(&before, 320, 180)[0] < 30, "nothing before the shot starts");
+    let during = dec.frame_at_blocking(s(1.0), wait).unwrap();
+    let c = px(&during, 320, 180);
+    assert!(c[0] > 215 && c[1] < 30, "the shot's picture in the middle: {c:?}");
+    assert!(px(&during, 40, 40)[0] < 30, "scaled to half size, so the corners are empty");
+    assert!(px(&during, 320 + 150, 180)[0] > 200 && px(&during, 320 + 170, 180)[0] < 40, "edge of the half-size picture at x = 160 from the centre");
+
+    let mut rd = AudioReader::open(&out, 48_000).unwrap();
+    let mut buf = vec![0.0f32; 9_600];
+    rd.read(4_800, &mut buf);
+    assert!(rms(&buf) < 0.005, "silent before the shot");
+    rd.read(36_000, &mut buf);
+    assert!((rms(&buf) - 0.044).abs() < 0.008, "the shot's tone at -6 dB: {}", rms(&buf));
+    rd.read(79_000, &mut buf);
+    assert!(rms(&buf) < 0.005, "silent after the shot");
+}
+
+#[test]
+fn transparent_compositor_keeps_coverage() {
+    let Some((device, queue)) = headless_device() else { return };
+    let mut c = Compositor::new(&device, &queue);
+    c.transparent = true;
+    // A 50%-opaque red layer at half size in the middle of a 64×64 frame.
+    let px: Vec<u8> = [255u8, 0, 0, 255].repeat(16 * 16);
+    let t = Transform { scale: [0.5, 0.5], opacity: 0.5, ..Default::default() };
+    let layer = LayerInput {
+        key: 1, content_id: 1, pixels: &px, pixel_size: [16, 16], layer_size: [64.0, 64.0],
+        transform: t, blend: BlendMode::Normal, effects: Vec::new(),
+    };
+    c.render([64, 64], &[layer]);
+    let out = c.read_output().unwrap();
+    let at = |x: usize, y: usize| &out[(y * 64 + x) * 4..][..4];
+    assert_eq!(at(2, 2), [0, 0, 0, 0], "transparent where nothing is drawn");
+    let m = at(32, 32);
+    assert!(m[0] > 250 && m[1] < 5 && (m[3] as i32 - 128).abs() <= 2, "straight colour, half coverage: {m:?}");
 }

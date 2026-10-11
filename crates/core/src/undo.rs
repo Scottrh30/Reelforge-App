@@ -214,6 +214,8 @@ impl Command for SplitClip {
             // Effect keys are source-anchored as well.
             effects: clip.effects.clone(),
             title: clip.title.clone(),
+            nested: clip.nested,
+            tracker: clip.tracker.clone(),
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;
@@ -368,7 +370,7 @@ pub fn trim_range(p: &Project, seq: usize, id: ClipId, edge: Edge) -> Option<(Ti
             Edge::End => {
                 lo = lo.max(frame - c.duration);
                 if !still {
-                    let media_len = p.media(c.media).map(|m| m.info.duration).unwrap_or(Time::ZERO);
+                    let media_len = p.source_len(c);
                     hi = hi.min(media_len - (c.source_in + c.duration));
                 }
                 for o in others.filter(|o| o.timeline_start >= c.timeline_end()) {
@@ -522,6 +524,160 @@ pub fn missing_media(p: &Project) -> Vec<MediaId> {
     p.media.iter().filter(|m| !m.path.exists()).map(|m| m.id).collect()
 }
 
+// ---- Composite shots ----------------------------------------------------------
+
+/// Add a new, empty composite shot (a sequence that can be placed in others).
+pub struct AddSequence {
+    pub seq: Sequence,
+    /// Where it lands: always at the end.
+    pub index: usize,
+}
+
+impl AddSequence {
+    pub fn new(p: &Project, seq: Sequence) -> Self {
+        Self { seq, index: p.sequences.len() }
+    }
+}
+
+impl Command for AddSequence {
+    fn name(&self) -> &str {
+        "New composite shot"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        p.sequences.truncate(self.index);
+        p.sequences.push(self.seq.clone());
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if p.sequences.len() == self.index + 1 {
+            self.seq = p.sequences.pop().unwrap();
+        }
+    }
+}
+
+/// "Make composite shot": move clips into a new sequence and put one clip
+/// playing that sequence where they were (plus a linked audio one if any
+/// audio moved).
+pub struct MakeComposite {
+    seq: usize,
+    before: Sequence,
+    after: Sequence,
+    comp: Sequence,
+    /// Index of the new sequence.
+    pub index: usize,
+    /// The new composite-shot clip (the video one if there is one).
+    pub clip: ClipId,
+}
+
+impl Command for MakeComposite {
+    fn name(&self) -> &str {
+        "Make composite shot"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        p.sequences[self.seq] = self.after.clone();
+        p.sequences.truncate(self.index);
+        p.sequences.push(self.comp.clone());
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if p.sequences.len() == self.index + 1 {
+            p.sequences.pop();
+        }
+        p.sequences[self.seq] = self.before.clone();
+    }
+}
+
+/// A name like "Composite shot 3" not used by another sequence.
+pub fn next_composite_name(p: &Project) -> String {
+    (1..).map(|n| format!("Composite shot {n}")).find(|name| !p.sequences.iter().any(|s| &s.name == name)).unwrap()
+}
+
+/// Plan "Make composite shot" for clips `ids` (and everything linked to them)
+/// in sequence `seq`. Allocates ids, hence `&mut`.
+pub fn make_composite(p: &mut Project, seq: usize, ids: &[ClipId], name: String) -> Result<MakeComposite, String> {
+    let s = &p.sequences[seq];
+    let mut moved: Vec<ClipId> = Vec::new();
+    for id in ids {
+        for (_, c) in s.link_group(*id) {
+            if !moved.contains(&c.id) {
+                moved.push(c.id);
+            }
+        }
+    }
+    if moved.is_empty() {
+        return Err("Select the clips to put in the composite shot first".into());
+    }
+    if moved.iter().any(|id| s.is_locked(*id)) {
+        return Err("Some of those clips are on a locked track".into());
+    }
+    let clips: Vec<(usize, &Clip)> = moved.iter().filter_map(|id| s.find_clip(*id)).collect();
+    let start = clips.iter().map(|(_, c)| c.timeline_start).min().unwrap();
+    let end = clips.iter().map(|(_, c)| c.timeline_end()).max().unwrap();
+
+    // The new sequence: same format, one track per track that had a selected clip.
+    let mut comp = Sequence { tracks: Vec::new(), in_point: None, out_point: None, ..Sequence::new(name, s.width, s.height, s.frame_rate) };
+    let mut track_map = Vec::new(); // outer track -> inner track
+    for (ti, tr) in s.tracks.iter().enumerate() {
+        if clips.iter().any(|(t, _)| *t == ti) {
+            track_map.push((ti, comp.tracks.len()));
+            comp.tracks.push(Track { clips: Vec::new(), locked: false, ..tr.clone() });
+        }
+    }
+    for (ti, c) in &clips {
+        let inner = track_map.iter().find(|(o, _)| o == ti).unwrap().1;
+        let mut c = (*c).clone();
+        // A transition from a clip that stays outside can't come along.
+        let from_outside = s.tracks[*ti].clips.iter().any(|o| o.timeline_end() == c.timeline_start && !moved.contains(&o.id));
+        if from_outside {
+            c.dissolve_in = Time::ZERO;
+            c.audio.crossfade_in = Time::ZERO;
+        }
+        c.timeline_start = c.timeline_start - start;
+        comp.tracks[inner].clips.push(c);
+    }
+    for tr in &mut comp.tracks {
+        tr.sort();
+    }
+
+    let mut after = s.clone();
+    for tr in &mut after.tracks {
+        let gone: Vec<Time> = tr.clips.iter().filter(|c| moved.contains(&c.id)).map(|c| c.timeline_end()).collect();
+        tr.clips.retain(|c| !moved.contains(&c.id));
+        // Nor can a transition into a clip that stays from one that left.
+        for c in &mut tr.clips {
+            if gone.contains(&c.timeline_start) {
+                c.dissolve_in = Time::ZERO;
+                c.audio.crossfade_in = Time::ZERO;
+            }
+        }
+    }
+    let has = |k: TrackKind| clips.iter().any(|(t, _)| s.tracks[*t].kind == k);
+    let (has_video, has_audio) = (has(TrackKind::Video), has(TrackKind::Audio));
+    // A free track for the new clip: one of the selection's own, lowest first.
+    let free_track = |after: &Sequence, kind: TrackKind| -> Result<usize, String> {
+        track_map
+            .iter()
+            .map(|(o, _)| *o)
+            .filter(|t| after.tracks[*t].kind == kind)
+            .find(|t| !after.overlaps(*t, start, end - start, &[]))
+            .ok_or_else(|| "Other clips sit between the selected ones; select them too, or move them out of the way".to_string())
+    };
+    let link = (has_video && has_audio).then(|| p.alloc_id());
+    let mut clip_id = None;
+    let s = &p.sequences[seq];
+    let before = s.clone();
+    let index = p.sequences.len();
+    for kind in [TrackKind::Video, TrackKind::Audio] {
+        if (kind == TrackKind::Video && !has_video) || (kind == TrackKind::Audio && !has_audio) {
+            continue;
+        }
+        let t = free_track(&after, kind)?;
+        let id = ClipId(p.alloc_id());
+        clip_id.get_or_insert(id);
+        after.tracks[t].clips.push(Clip::new_nested(id, index, start, end - start, link));
+        after.tracks[t].sort();
+    }
+    Ok(MakeComposite { seq, before, after, comp, index, clip: clip_id.unwrap() })
+}
+
 // ---- Tracks -------------------------------------------------------------------
 
 /// Insert a new track at `index`.
@@ -620,6 +776,31 @@ impl Command for RenameTrack {
     fn undo(&mut self, p: &mut Project) {
         if let Some(t) = p.sequences[self.seq].tracks.get_mut(self.index) {
             t.name = self.old.clone();
+        }
+    }
+}
+
+/// Add, change or remove a clip's point tracker.
+pub struct SetTracker {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: Option<crate::track::PointTrack>,
+    pub new: Option<crate::track::PointTrack>,
+    pub label: &'static str,
+}
+
+impl Command for SetTracker {
+    fn name(&self) -> &str {
+        self.label
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.tracker = self.new.clone();
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.tracker = self.old.clone();
         }
     }
 }
@@ -1063,5 +1244,79 @@ mod track_tests {
         assert_eq!(p.sequences[0].find_clip(ClipId(3)).unwrap().1.title.as_ref().unwrap().text, "Title");
         // Titles show up as layers like any video clip.
         assert_eq!(p.video_layers_at(0, s(1.5)).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod composite_tests {
+    use super::*;
+
+    fn s(x: f64) -> Time {
+        Time::from_secs_f64(x)
+    }
+
+    #[test]
+    fn makes_a_composite_shot_and_undoes_it() {
+        let mut p = Project::new(); // V1, V2, A1
+        // V1: a [0,2) linked to audio, b [2,4) (stays); V2: c [1,3) on top.
+        let seq = &mut p.sequences[0];
+        seq.tracks[0].clips.push(Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(2.0), Some(50)));
+        seq.tracks[2].clips.push(Clip::new(ClipId(2), MediaId(1), s(0.0), s(0.0), s(2.0), Some(50)));
+        let mut b = Clip::new(ClipId(3), MediaId(1), s(2.0), s(2.0), s(2.0), None);
+        b.dissolve_in = s(0.5);
+        seq.tracks[0].clips.push(b);
+        seq.tracks[1].clips.push(Clip::new(ClipId(4), MediaId(1), s(1.0), s(0.0), s(2.0), None));
+        for _ in 0..100 {
+            p.alloc_id(); // past the hand-made ids
+        }
+        let before = p.sequences[0].clone();
+
+        let mut u = UndoStack::default();
+        // Selecting the video of `a` brings its audio along.
+        let name = next_composite_name(&p);
+        let cmd = make_composite(&mut p, 0, &[ClipId(1), ClipId(4)], name).unwrap();
+        let clip = cmd.clip;
+        u.execute(&mut p, Box::new(cmd));
+        assert_eq!(p.sequences.len(), 2);
+        let comp = &p.sequences[1];
+        assert_eq!(comp.name, "Composite shot 1");
+        let names: Vec<&str> = comp.tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Video 1", "Video 2", "Audio 1"]);
+        assert_eq!(comp.tracks[1].clips[0].timeline_start, s(1.0), "times are relative to the shot's start");
+        assert_eq!(comp.duration(), s(3.0));
+
+        let outer = &p.sequences[0];
+        let (t, c) = outer.find_clip(clip).unwrap();
+        // V1 still has b at 2-4 s in the way, so the shot goes on V2.
+        assert_eq!((t, c.nested, c.media, c.timeline_start, c.duration), (1, Some(1), MediaId::NESTED, s(0.0), s(3.0)));
+        assert!(outer.find_clip(ClipId(1)).is_none() && outer.find_clip(ClipId(4)).is_none());
+        // b no longer dissolves from a clip that left.
+        assert_eq!(outer.find_clip(ClipId(3)).unwrap().1.dissolve_in, Time::ZERO);
+        // The audio composite clip is linked to the video one.
+        let group = outer.link_group(clip);
+        assert_eq!(group.len(), 2);
+        assert_eq!(group[1].0, 2);
+        assert_eq!(p.source_len(c), s(3.0));
+        assert!(p.contains_sequence(0, 1) && !p.contains_sequence(1, 0));
+        assert_eq!(p.nested_in(0), vec![1]);
+        assert_eq!(c.display_name(&p), "Composite shot 1");
+
+        u.undo(&mut p);
+        assert_eq!(p.sequences.len(), 1);
+        assert_eq!(p.sequences[0].tracks[0].clips, before.tracks[0].clips);
+        u.redo(&mut p);
+        assert_eq!(p.sequences.len(), 2);
+    }
+
+    #[test]
+    fn refuses_when_other_clips_are_in_the_way() {
+        let mut p = Project::new();
+        let seq = &mut p.sequences[0];
+        seq.tracks[0].clips.push(Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(1.0), None));
+        seq.tracks[0].clips.push(Clip::new(ClipId(2), MediaId(1), s(1.0), s(0.0), s(1.0), None));
+        seq.tracks[0].clips.push(Clip::new(ClipId(3), MediaId(1), s(2.0), s(0.0), s(1.0), None));
+        assert!(make_composite(&mut p, 0, &[ClipId(1), ClipId(3)], "x".into()).is_err());
+        assert!(make_composite(&mut p, 0, &[], "x".into()).is_err());
+        assert!(make_composite(&mut p, 0, &[ClipId(1), ClipId(2), ClipId(3)], "x".into()).is_ok());
     }
 }

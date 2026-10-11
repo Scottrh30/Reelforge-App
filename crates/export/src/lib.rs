@@ -8,14 +8,17 @@
 //! callback that can also cancel.
 
 use anyhow::{anyhow, Context as _, Result};
-use reelforge_core::{ClipId, FrameRate, Project, Time, TrackKind, VideoItem};
-use reelforge_media::{Fit, FrameSource, MixClip, Mixer, MovieWriter, Quality, VideoCodec, WriterSettings};
-use reelforge_render::{wgpu, Compositor, DrawItem, LayerInput};
+use reelforge_core::{ClipId, FrameRate, Layer, Project, Time, TrackKind};
+use reelforge_media::{Fit, FrameSource, MixClip, Mixer, MovieWriter, Quality, VideoCodec, VideoFrame, WriterSettings};
+use reelforge_render::{wgpu, Compositor};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+pub mod scene;
+pub use scene::{FrameProvider, Picture, Scene};
 
 /// Audio is always exported at 48 kHz, the video standard.
 pub const AUDIO_RATE: u32 = 48_000;
@@ -41,6 +44,8 @@ pub struct ExportSettings {
     pub hardware: bool,
     /// What to do when the output's shape differs from the sequence's.
     pub fit: Fit,
+    /// Which sequence of the project (0 is the main edit; others are composite shots).
+    pub sequence: usize,
 }
 
 impl ExportSettings {
@@ -109,26 +114,74 @@ pub fn frame_range(rate: FrameRate, start: Time, end: Time) -> (i64, i64) {
     (first, last.max(first))
 }
 
-/// The audio clips of sequence 0 as the mixer wants them, at `rate`.
+/// The audio clips of sequence `seq` as the mixer wants them, at `rate`.
 ///
 /// Folds clip and track volume/pan together, converts fades and volume
 /// keyframes to samples, and resolves crossfades: the outgoing clip is extended
 /// past the cut into its spare media and the incoming one starts early, each
-/// with an equal-power ramp across the overlap. Used for both playback and
-/// export, so they always sound the same.
-pub fn mix_clips(project: &Project, rate: u32) -> Vec<MixClip> {
+/// with an equal-power ramp across the overlap. Composite shots on audio
+/// tracks contribute their own sequence's audio, flattened. Used for both
+/// playback and export, so they always sound the same.
+pub fn mix_clips(project: &Project, seq: usize, rate: u32) -> Vec<MixClip> {
+    mix_sequence(project, seq, rate, 0)
+}
+
+fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<MixClip> {
     use reelforge_core::audio::{balance, db_to_gain};
+    let Some(sequence) = project.sequences.get(seq) else { return Vec::new() };
     let sr = FrameRate::new(rate as i64, 1);
-    let crossfades = project.crossfades(0);
-    project.sequences[0]
-        .tracks
-        .iter()
-        .filter(|t| t.kind == TrackKind::Audio && !t.muted)
-        .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
-        .filter_map(|(t, c)| {
-            let m = project.media(c.media)?;
+    let crossfades = project.crossfades(seq);
+    let mut out = Vec::new();
+    for t in sequence.tracks.iter().filter(|t| t.kind == TrackKind::Audio && !t.muted) {
+        for c in &t.clips {
             let [cl, cr] = balance(c.audio.pan);
             let [tl, tr] = balance(t.audio.pan);
+            let track_gain = db_to_gain(t.audio.volume_db);
+            if let Some(inner) = c.nested {
+                if depth >= scene::MAX_NESTING {
+                    continue;
+                }
+                // The composite shot's own mix, moved to where the clip plays it and cut
+                // to the clip's length. The clip's (static) volume, pan and fades apply on top.
+                let (ws, we) = (c.timeline_start.to_frame(sr), c.timeline_end().to_frame(sr));
+                let offset = ws - c.source_in.to_frame(sr);
+                let (fin, fout) = c.audio.clamped_fades(c.duration);
+                let gain = db_to_gain(c.audio.volume_db) * track_gain;
+                for mut m in mix_sequence(project, inner, rate, depth + 1) {
+                    m.start += offset;
+                    if m.start < ws {
+                        let cut = ws - m.start;
+                        m.start = ws;
+                        m.source_in += cut;
+                        m.len -= cut;
+                        m.fade_in = (m.fade_in - cut).max(0);
+                        m.volume_keys.iter_mut().for_each(|k| k.0 -= cut);
+                    }
+                    if m.start + m.len > we {
+                        m.len = we - m.start;
+                        m.fade_out = 0;
+                    }
+                    if m.len <= 0 {
+                        continue;
+                    }
+                    if m.start == ws {
+                        m.fade_in = m.fade_in.max(fin.to_frame(sr));
+                    }
+                    if m.start + m.len == we {
+                        m.fade_out = m.fade_out.max(fout.to_frame(sr));
+                    }
+                    let mut h = DefaultHasher::new();
+                    (c.id, m.id).hash(&mut h);
+                    m.id = ClipId(h.finish());
+                    m.gain *= gain;
+                    m.balance = [m.balance[0] * cl * tl, m.balance[1] * cr * tr];
+                    if m.gain > 0.0 {
+                        out.push(m);
+                    }
+                }
+                continue;
+            }
+            let Some(m) = project.media(c.media) else { continue };
             let (mut fin, mut fout) = c.audio.clamped_fades(c.duration);
             let (mut start, mut source_in, mut end) = (c.timeline_start, c.source_in, c.timeline_end());
             // A crossfade replaces the plain fade on that edge.
@@ -141,7 +194,6 @@ pub fn mix_clips(project: &Project, rate: u32) -> Vec<MixClip> {
                 end = end + x.after;
                 fout = x.len();
             }
-            let track_gain = db_to_gain(t.audio.volume_db);
             let (gain, volume_keys) = if c.audio.is_animated() {
                 let s0 = source_in.to_frame(sr);
                 let keys = c.audio.volume_keys.iter().map(|k| (k.at.to_frame(sr) - s0, k.db)).collect();
@@ -150,7 +202,7 @@ pub fn mix_clips(project: &Project, rate: u32) -> Vec<MixClip> {
                 (db_to_gain(c.audio.volume_db) * track_gain, Vec::new())
             };
             let start_s = start.to_frame(sr);
-            Some(MixClip {
+            let clip = MixClip {
                 id: c.id,
                 path: m.path.clone(),
                 start: start_s,
@@ -161,13 +213,60 @@ pub fn mix_clips(project: &Project, rate: u32) -> Vec<MixClip> {
                 fade_in: fin.to_frame(sr),
                 fade_out: fout.to_frame(sr),
                 volume_keys,
-            })
-        })
-        .filter(|c| c.gain > 0.0)
-        .collect()
+            };
+            if clip.gain > 0.0 {
+                out.push(clip);
+            }
+        }
+    }
+    out
 }
 
-/// Render sequence 0 of `project` to a movie file.
+/// Exact, full-size frames for export: one blocking decoder per clip, and titles.
+struct ExactFrames {
+    sources: HashMap<ClipId, (FrameSource, u64)>,
+    titles: HashMap<ClipId, (u64, VideoFrame, u64)>,
+    /// Counts frames, to close decoders that haven't been needed for a while.
+    tick: u64,
+}
+
+impl FrameProvider for ExactFrames {
+    fn picture(&mut self, project: &Project, l: &Layer, frame_size: [u32; 2]) -> Result<Option<Picture>> {
+        let tick = self.tick;
+        if let Some(spec) = &l.clip.title {
+            let hash = spec.content_hash(frame_size);
+            let frame = match self.titles.get_mut(&l.clip.id) {
+                Some((h, f, used)) if *h == hash => {
+                    *used = tick;
+                    f.clone()
+                }
+                _ => {
+                    let r = reelforge_render::text::render_title(spec, frame_size);
+                    let f = VideoFrame { pts: Time::ZERO, width: r.width, height: r.height, rgba: r.rgba, generation: hash };
+                    self.titles.insert(l.clip.id, (hash, f.clone(), tick));
+                    f
+                }
+            };
+            let size = [frame_size[0] as f32, frame_size[1] as f32];
+            return Ok(Some(Picture { frame, size, media: reelforge_core::MediaId::GENERATED }));
+        }
+        let Some(media) = project.media(l.clip.media) else { return Ok(None) };
+        let Some(v) = &media.info.video else { return Ok(None) };
+        let (src, used) = match self.sources.entry(l.clip.id) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert((FrameSource::open(&media.path, None).with_context(|| format!("opening {}", media.name))?, tick))
+            }
+        };
+        *used = tick;
+        let frame = src
+            .frame_at_blocking(l.source_time, FRAME_TIMEOUT)
+            .ok_or_else(|| anyhow!("{} produced no frame at {}", media.name, l.source_time))?;
+        Ok(Some(Picture { frame, size: [v.width as f32, v.height as f32], media: media.id }))
+    }
+}
+
+/// Render a sequence of `project` (`settings.sequence`) to a movie file.
 ///
 /// `on_progress` is called after every frame; return `false` to cancel, in
 /// which case the partial file is deleted and the error is [`Cancelled`].
@@ -179,7 +278,7 @@ pub fn export_sequence(
     mut on_progress: impl FnMut(Progress) -> bool,
 ) -> Result<Report> {
     let started = Instant::now();
-    let seq = project.sequences.first().ok_or_else(|| anyhow!("project has no sequence"))?;
+    let seq = project.sequences.get(settings.sequence).ok_or_else(|| anyhow!("the project has no sequence {}", settings.sequence))?;
     let rate = seq.frame_rate;
     let frame_size = [seq.width.max(2), seq.height.max(2)];
     let (first, last) = frame_range(rate, settings.start, settings.end);
@@ -188,7 +287,7 @@ pub fn export_sequence(
         return Err(anyhow!("nothing to export: the range is empty"));
     }
 
-    let audio_clips = if settings.include_audio { mix_clips(project, AUDIO_RATE) } else { Vec::new() };
+    let audio_clips = if settings.include_audio { mix_clips(project, settings.sequence, AUDIO_RATE) } else { Vec::new() };
     // Image sequences carry no sound.
     let has_audio = !audio_clips.is_empty() && !settings.video.is_some_and(|v| v.is_sequence());
     if settings.video.is_none() && !has_audio {
@@ -214,9 +313,10 @@ pub fn export_sequence(
     let video_codec = writer.video_codec.clone();
 
     let mut compositor = Compositor::new(device, queue);
-    let mut sources: HashMap<ClipId, FrameSource> = HashMap::new();
-    // Rasterised titles, by clip: (content hash, image).
-    let mut titles: HashMap<ClipId, (u64, reelforge_media::VideoFrame)> = HashMap::new();
+    let mut scene = Scene::new(device, queue);
+    let mut frames = ExactFrames { sources: HashMap::new(), titles: HashMap::new(), tick: 0 };
+    // Decoders not needed for this many frames are closed.
+    let idle = (rate.fps() * 2.0).ceil() as u64;
     let mut audio_pos = Time::from_frame(first, rate).to_frame(sr);
     let mut audio_buf = Vec::new();
 
@@ -236,80 +336,8 @@ pub fn export_sequence(
         }
 
         // Exact frame for every visible layer (two per dissolve), with keyframes applied.
-        struct Gathered {
-            key: u64,
-            media: reelforge_core::MediaId,
-            size: [f32; 2],
-            transform: reelforge_core::Transform,
-            blend: reelforge_core::BlendMode,
-            effects: Vec<reelforge_core::EffectValues>,
-            frame: reelforge_media::VideoFrame,
-        }
-        let mut gather = |l: &reelforge_core::Layer| -> Result<Option<Gathered>> {
-            if let Some(spec) = &l.clip.title {
-                let hash = spec.content_hash(frame_size);
-                let frame = match titles.get(&l.clip.id) {
-                    Some((h, f)) if *h == hash => f.clone(),
-                    _ => {
-                        let r = reelforge_render::text::render_title(spec, frame_size);
-                        let f = reelforge_media::VideoFrame { pts: Time::ZERO, width: r.width, height: r.height, rgba: r.rgba, generation: hash };
-                        titles.insert(l.clip.id, (hash, f.clone()));
-                        f
-                    }
-                };
-                let size = [frame_size[0] as f32, frame_size[1] as f32];
-                return Ok(Some(Gathered { key: l.clip.id.0, media: reelforge_core::MediaId::GENERATED, size, transform: l.transform, blend: l.blend, effects: l.effects.clone(), frame }));
-            }
-            let Some(media) = project.media(l.clip.media) else { return Ok(None) };
-            let Some(v) = &media.info.video else { return Ok(None) };
-            let src = match sources.entry(l.clip.id) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(FrameSource::open(&media.path, None).with_context(|| format!("opening {}", media.name))?)
-                }
-            };
-            let frame = src
-                .frame_at_blocking(l.source_time, FRAME_TIMEOUT)
-                .ok_or_else(|| anyhow!("{} produced no frame at {}", media.name, l.source_time))?;
-            Ok(Some(Gathered { key: l.clip.id.0, media: media.id, size: [v.width as f32, v.height as f32], transform: l.transform, blend: l.blend, effects: l.effects.clone(), frame }))
-        };
-        enum Item {
-            Single(Gathered),
-            Dissolve(Gathered, Gathered, f32),
-        }
-        let mut items = Vec::new();
-        for item in project.video_layers_at(0, t) {
-            match item {
-                VideoItem::Single(l) => items.extend(gather(&l)?.map(Item::Single)),
-                VideoItem::Dissolve { from, to, mix } => match (gather(&from)?, gather(&to)?) {
-                    (Some(a), Some(b)) => items.push(Item::Dissolve(a, b, mix)),
-                    (Some(one), None) | (None, Some(one)) => items.push(Item::Single(one)),
-                    (None, None) => {}
-                },
-            }
-        }
-        fn input(g: &Gathered) -> LayerInput<'_> {
-            let mut h = DefaultHasher::new();
-            (g.media, g.frame.pts, g.frame.generation).hash(&mut h);
-            LayerInput {
-                key: g.key,
-                content_id: h.finish(),
-                pixels: &g.frame.rgba,
-                pixel_size: [g.frame.width, g.frame.height],
-                layer_size: g.size,
-                transform: g.transform,
-                blend: g.blend,
-                effects: g.effects.clone(),
-            }
-        }
-        let draw: Vec<DrawItem> = items
-            .iter()
-            .map(|i| match i {
-                Item::Single(g) => DrawItem::Layer(input(g)),
-                Item::Dissolve(a, b, mix) => DrawItem::Dissolve { from: input(a), to: input(b), mix: *mix },
-            })
-            .collect();
-        compositor.render_items(frame_size, &draw);
+        frames.tick += 1;
+        scene.render(project, settings.sequence, t, &mut compositor, &mut frames, None)?;
         let rgba = compositor.read_output().ok_or_else(|| anyhow!("GPU readback failed"))?;
         writer.write_video(&rgba)?;
 
@@ -322,15 +350,10 @@ pub fn export_sequence(
             audio_pos = next;
         }
 
-        // Close decoders for clips that are finished.
-        // (A clip stays needed past its end while it dissolves into the next one.)
-        let dissolves = project.dissolves(0);
-        sources.retain(|id, _| {
-            let tail = dissolves.iter().find(|x| x.left == *id).map_or(Time::ZERO, |x| x.after);
-            seq.find_clip(*id).is_some_and(|(_, c)| c.timeline_end() + tail > t)
-        });
-        titles.retain(|id, _| seq.find_clip(*id).is_some_and(|(_, c)| c.timeline_end() > t));
-        compositor.retain_layers(|k| sources.contains_key(&ClipId(k)) || titles.contains_key(&ClipId(k)));
+        // Close decoders (and forget titles) not needed lately.
+        let tick = frames.tick;
+        frames.sources.retain(|_, (_, used)| tick - *used < idle);
+        frames.titles.retain(|_, (_, _, used)| tick - *used < idle);
 
         let p = Progress { done: n as u64 + 1, total, elapsed: started.elapsed() };
         if !on_progress(p) {
@@ -351,3 +374,4 @@ pub fn export_sequence(
         elapsed: started.elapsed(),
     })
 }
+

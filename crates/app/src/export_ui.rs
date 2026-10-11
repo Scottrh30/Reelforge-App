@@ -356,7 +356,10 @@ impl ExportUi {
             return false;
         }
         let name = settings.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let title = if preset == Preset::Custom { name } else { format!("{name} ({})", preset.label()) };
+        let mut title = if preset == Preset::Custom { name } else { format!("{name} ({})", preset.label()) };
+        if settings.sequence != 0 {
+            title = format!("{title} - {}", st.project.sequences[settings.sequence].name);
+        }
         self.next_id += 1;
         self.jobs.push(Job { id: self.next_id, title, project: Arc::new(st.project.clone()), settings, state: JobState::Waiting });
         true
@@ -373,7 +376,7 @@ impl ExportUi {
             d.marked_only = false;
         }
         let (range_start, range_end) = if d.marked_only { marked.unwrap_or((Time::ZERO, Time::ZERO)) } else { (Time::ZERO, duration) };
-        let has_audio = !reelforge_export::mix_clips(&st.project, 48_000).is_empty();
+        let has_audio = !reelforge_export::mix_clips(&st.project, st.active, 48_000).is_empty();
         let mut open = true;
         let mut action = None::<bool>; // Some(true) = export now, Some(false) = add to queue
         let mut close = false;
@@ -527,6 +530,7 @@ impl ExportUi {
                 video: d.spec.video,
                 hardware: d.spec.hardware,
                 fit: d.spec.fit,
+                sequence: st.active,
             };
             if self.enqueue(st, settings, d.preset) {
                 self.last = Some(d);

@@ -14,6 +14,7 @@ pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
         ui.weak(format!("{} item(s)", st.project.media.len()));
     });
     ui.separator();
+    composite_shots(ui, st);
 
     if st.project.media.is_empty() {
         ui.add_space(20.0);
@@ -114,6 +115,68 @@ pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
     }
 }
 
+/// The composite shots of the project, with ways to open them or put them in the edit.
+fn composite_shots(ui: &mut egui::Ui, st: &mut EditorState) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Composite shots").strong());
+        if ui.small_button("+ New").on_hover_text("An empty composite shot to build a layered shot in").clicked() {
+            st.open_request = None;
+            st.new_composite();
+        }
+        if ui
+            .add_enabled(!st.composite_candidates().is_empty(), egui::Button::new("Make from selection").small())
+            .on_hover_text("Ctrl+G: move the selected clip, or everything between the in/out marks, into a new composite shot")
+            .clicked()
+        {
+            st.make_composite();
+        }
+    });
+    if st.project.sequences.len() < 2 {
+        ui.weak("None yet. A composite shot is a sequence of its own, with its own layers, used like one clip.");
+        ui.separator();
+        return;
+    }
+    let mut open = None;
+    let mut add = None;
+    for i in 1..st.project.sequences.len() {
+        let s = &st.project.sequences[i];
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let name = RichText::new(&s.name).strong().color(Color32::from_rgb(230, 160, 80));
+                if ui.add(egui::Label::new(name).sense(Sense::click())).on_hover_text("Double-click to open").double_clicked() {
+                    open = Some(i);
+                }
+                if i == st.active {
+                    ui.weak("(open)");
+                }
+            });
+            let layers = s.tracks.iter().filter(|t| !t.clips.is_empty()).count();
+            ui.weak(format!("{} · {}×{} · {} layer{}", format_duration(s.duration()), s.width, s.height, layers, if layers == 1 { "" } else { "s" }));
+            ui.horizontal(|ui| {
+                if ui.add_enabled(i != st.active, egui::Button::new("Open").small()).clicked() {
+                    open = Some(i);
+                }
+                let ok = !st.project.contains_sequence(i, st.active);
+                if ui
+                    .add_enabled(ok, egui::Button::new("Add at playhead").small())
+                    .on_disabled_hover_text("A composite shot can't go inside itself")
+                    .clicked()
+                {
+                    add = Some(i);
+                }
+            });
+        });
+    }
+    if let Some(i) = open {
+        st.open_request = Some(i);
+    }
+    if let Some(i) = add {
+        st.add_composite_to_timeline(i);
+    }
+    ui.separator();
+}
+
 pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     let transport_h = 34.0;
     let avail = ui.available_size() - Vec2::new(0.0, transport_h);
@@ -143,7 +206,7 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     // picture for footage, just the text (and its box) for a title.
     let layers: Vec<(reelforge_core::ClipId, [f32; 4], reelforge_core::Transform)> = st
         .project
-        .video_layers_at(0, t)
+        .video_layers_at(st.active, t)
         .iter()
         .rev()
         .flat_map(|item| item.layers().into_iter().rev().map(|l| (l.clip, l.transform)).collect::<Vec<_>>())
@@ -153,8 +216,8 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
                 let (hw, hh) = (frame_px[0] / 2.0, frame_px[1] / 2.0);
                 return Some((c.id, [b[0] - hw, b[1] - hh, b[2] - hw, b[3] - hh], tr));
             }
-            let v = st.project.media(c.media)?.info.video.as_ref()?;
-            Some((c.id, Transform::full_rect([v.width as f32, v.height as f32]), tr))
+            let [w, h] = st.project.picture_size(c)?;
+            Some((c.id, Transform::full_rect([w as f32, h as f32]), tr))
         })
         .collect();
 
@@ -170,10 +233,12 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
         }
     }
 
+    let tracker_drag = tracker_overlay(ui, st, &resp, area, frame_px, scale, frame_rect.min);
+
     // Drag the selected layer to move it.
     let selected = st.selection.and_then(|id| layers.iter().find(|(lid, ..)| *lid == id).copied());
     if let Some((id, lrect, tr)) = selected {
-        if resp.dragged() && !st.playback.playing {
+        if resp.dragged() && !st.playback.playing && !tracker_drag {
             let d = resp.drag_delta() / scale;
             if d != Vec2::ZERO {
                 let clip = st.seq().find_clip(id).map(|(_, c)| c.clone());
@@ -203,6 +268,66 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     }
 
     transport(ui, st);
+}
+
+/// The selected clip's point tracker in the viewer: the feature box, the
+/// search area and the tracked path. Dragging the box places the tracker.
+/// Returns true while it's being dragged.
+fn tracker_overlay(ui: &mut egui::Ui, st: &mut EditorState, resp: &egui::Response, area: egui::Rect, frame_px: [f32; 2], scale: f32, origin: egui::Pos2) -> bool {
+    let Some(id) = st.selection else { return false };
+    let Some((_, clip)) = st.seq().find_clip(id) else { return false };
+    let (Some(trk), Some([lw, lh])) = (clip.tracker.clone(), st.project.picture_size(clip)) else { return false };
+    let clip = clip.clone();
+    let t = st.playback.playhead;
+    let m = clip.transform_at(t).matrix(frame_px);
+    let half = [lw as f32 / 2.0, lh as f32 / 2.0];
+    let src = clip.source_time(t.max(clip.timeline_start).min(clip.timeline_end()));
+    let pos = trk.shown_at(src);
+    let to_s = |p: [f32; 2]| {
+        let f = m.apply([p[0] - half[0], p[1] - half[1]]);
+        origin + Vec2::new(f[0], f[1]) * scale
+    };
+    let square = |r: f32| [[pos[0] - r, pos[1] - r], [pos[0] + r, pos[1] - r], [pos[0] + r, pos[1] + r], [pos[0] - r, pos[1] + r]].map(to_s).to_vec();
+    let cyan = Color32::from_rgb(80, 220, 255);
+    let painter = ui.painter_at(area);
+    if trk.path.len() > 1 {
+        painter.add(egui::Shape::line(trk.path.iter().map(|s| to_s(s.pos)).collect(), egui::Stroke::new(1.0, cyan.gamma_multiply(0.6))));
+    }
+    painter.add(egui::Shape::closed_line(square(trk.size / 2.0 + trk.search), egui::Stroke::new(1.0, cyan.gamma_multiply(0.45))));
+    painter.add(egui::Shape::closed_line(square(trk.size / 2.0), egui::Stroke::new(1.5, cyan)));
+    painter.circle_filled(to_s(pos), 2.5, cyan);
+
+    // Drag the feature box to place the tracker (on the frame shown).
+    let Some(inv) = m.inverse() else { return false };
+    let drag_id = egui::Id::new("tracker_drag");
+    if resp.drag_started() {
+        let inside = ui.input(|i| i.pointer.press_origin()).is_some_and(|p| {
+            let f = (p - origin) / scale;
+            let l = inv.apply([f.x, f.y]);
+            let r = trk.size / 2.0 + 4.0 / scale;
+            (l[0] + half[0] - pos[0]).abs() <= r && (l[1] + half[1] - pos[1]).abs() <= r
+        });
+        ui.data_mut(|d| d.insert_temp(drag_id, inside));
+    }
+    let dragging = resp.dragged() && ui.data(|d| d.get_temp::<bool>(drag_id)).unwrap_or(false);
+    if dragging && !st.playback.playing && st.tracking.is_none() {
+        let d = resp.drag_delta() / scale;
+        if d != Vec2::ZERO {
+            // Frame pixels to the layer's own pixels (undo its scale and rotation).
+            let (o, q) = (inv.apply([0.0, 0.0]), inv.apply([d.x, d.y]));
+            let mut n = trk.clone();
+            n.point = [(pos[0] + q[0] - o[0]).clamp(0.0, lw as f32), (pos[1] + q[1] - o[1]).clamp(0.0, lh as f32)];
+            n.start = src;
+            // A moved tracker starts afresh.
+            n.path.clear();
+            st.set_tracker_live(id, Some(n));
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| d.remove::<bool>(drag_id));
+    }
+    dragging
 }
 
 fn transport(ui: &mut egui::Ui, st: &mut EditorState) {
@@ -252,12 +377,20 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
     });
     match selected {
         Some((ti, clip)) => {
+            let mut open_comp = None;
             let locked = st.seq().is_locked(clip.id);
             let media = st.project.media(clip.media);
             egui::Grid::new("clip_props").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                 ui.weak("Media");
                 if clip.title.is_some() {
                     ui.label("Title (generated)");
+                } else if let Some(n) = clip.nested {
+                    ui.horizontal(|ui| {
+                        ui.label(clip.display_name(&st.project).into_owned());
+                        if ui.small_button("Open").on_hover_text("Edit this composite shot (or double-click the clip)").clicked() {
+                            open_comp = Some(n);
+                        }
+                    });
                 } else {
                     ui.label(media.map(|m| m.name.as_str()).unwrap_or("<missing>"));
                 }
@@ -282,6 +415,7 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.add_space(6.0);
                 ui.colored_label(ui.visuals().warn_fg_color, "On a locked track: unlock it to make changes.");
             }
+            let footage = clip.title.is_none() && clip.nested.is_none() && media.is_some_and(|m| m.info.video.is_some() && m.info.duration > Time::ZERO);
             ui.add_enabled_ui(!locked, |ui| {
                 if clip.title.is_some() {
                     ui.add_space(10.0);
@@ -293,6 +427,10 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                     dissolve_control(ui, st, &clip);
                     ui.add_space(10.0);
                     effect_controls(ui, st, &clip);
+                    if footage {
+                        ui.add_space(10.0);
+                        tracker_controls(ui, st, &clip);
+                    }
                 }
             });
             // Audio controls for this clip, or for the audio linked to a selected video clip.
@@ -308,6 +446,9 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.add_space(10.0);
                 track_audio_controls(ui, st, ati);
             }
+            if let Some(n) = open_comp {
+                st.open_sequence(n);
+            }
         }
         None => {
             ui.weak("Select a clip on the timeline.");
@@ -317,7 +458,7 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
     ui.add_space(12.0);
     ui.separator();
     ui.heading("Sequence");
-    let seq = &mut st.project.sequences[0];
+    let seq = &mut st.project.sequences[st.active];
     egui::Grid::new("seq_props").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
         ui.weak("Name");
         ui.text_edit_singleline(&mut seq.name);
@@ -390,12 +531,7 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
     let to_timeline = |at: Time| clip.timeline_start + (at - clip.source_in);
     let shown = v.anim.eval(&v.transform, src);
     let mut t = shown;
-    let native = st
-        .project
-        .media(clip.media)
-        .and_then(|m| m.info.video.as_ref())
-        .map(|v| [v.width as f32, v.height as f32])
-        .unwrap_or([1.0, 1.0]);
+    let native = st.project.picture_size(clip).map(|[w, h]| [w as f32, h as f32]).unwrap_or([1.0, 1.0]);
     let frame = [st.seq().width as f32, st.seq().height as f32];
     let lock_id = egui::Id::new("scale_lock");
     let mut lock = ui.data_mut(|d| *d.get_persisted_mut_or(lock_id, true));
@@ -839,9 +975,9 @@ fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_cor
 
 /// "Dissolve in" length for a video clip that touches the one before it.
 fn dissolve_control(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
-    let Some(left_dur) = st.project.clip_before(0, clip.id).and_then(|id| st.seq().find_clip(id).map(|(_, c)| c.duration)) else { return };
+    let Some(left_dur) = st.project.clip_before(st.active, clip.id).and_then(|id| st.seq().find_clip(id).map(|(_, c)| c.duration)) else { return };
     let rate = st.seq().frame_rate;
-    let x = st.project.crossfade_into(0, clip.id);
+    let x = st.project.crossfade_into(st.active, clip.id);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.weak("Dissolve in");
@@ -935,8 +1071,8 @@ fn clip_audio_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge
     let to_timeline = |at: Time| clip.timeline_start + (at - clip.source_in);
     let mut seek = None;
     // Crossfade with the clip that ends where this one starts, if any.
-    let before_clip = st.project.clip_before(0, clip.id).and_then(|id| st.seq().find_clip(id).map(|(_, c)| c.duration));
-    let xfade = st.project.crossfade_into(0, clip.id);
+    let before_clip = st.project.clip_before(st.active, clip.id).and_then(|id| st.seq().find_clip(id).map(|(_, c)| c.duration));
+    let xfade = st.project.crossfade_into(st.active, clip.id);
 
     ui.heading("Audio");
     egui::Grid::new("clip_audio").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -1058,4 +1194,96 @@ fn format_duration(t: Time) -> String {
     } else {
         format!("{}:{:04.1}", (s / 60.0) as u64, s % 60.0)
     }
+}
+
+/// Motion tracking for a footage clip: place a tracker, track it, and apply the
+/// motion to another layer or use it to stabilise this one.
+fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
+    use reelforge_core::track::PointTrack;
+    ui.heading("Motion tracking");
+    let Some([lw, lh]) = st.project.picture_size(clip) else { return };
+    let t = st.playback.playhead;
+    let src = clip.source_time(t.max(clip.timeline_start).min(clip.timeline_end()));
+    let Some(trk) = clip.tracker.clone() else {
+        ui.weak("Follow a detail through the clip, then make another layer move with it, or hold this clip steady.");
+        if ui.button("Add tracker").clicked() {
+            let trk = PointTrack { point: [lw as f32 / 2.0, lh as f32 / 2.0], start: src, ..Default::default() };
+            st.set_tracker(clip.id, Some(trk), "Add tracker");
+            st.status = "Drag the tracker box in the Viewer onto a sharp detail, then press Track forward".into();
+        }
+        return;
+    };
+    ui.weak("Drag the box in the Viewer onto a sharp detail (a corner, a mark, a light), then track. The outer box is how far it may move per frame.");
+    egui::Grid::new("tracker_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+        let mut n = trk.clone();
+        ui.weak("Feature box");
+        ui.add(egui::DragValue::new(&mut n.size).range(9.0..=201.0).speed(0.5).suffix(" px").fixed_decimals(0));
+        ui.end_row();
+        ui.weak("Search");
+        ui.add(egui::DragValue::new(&mut n.search).range(2.0..=200.0).speed(0.5).suffix(" px").fixed_decimals(0)).on_hover_text("Raise it for fast motion; lower is faster and less likely to jump to a look-alike");
+        ui.end_row();
+        if n != trk {
+            st.set_tracker_live(clip.id, Some(n));
+        }
+    });
+
+    let job = st.tracking.as_ref().map(|j| (j.clip, j.progress));
+    match job {
+        Some((id, p)) if id == clip.id => {
+            ui.horizontal(|ui| {
+                ui.add(egui::ProgressBar::new(p).desired_width(160.0).show_percentage());
+                if ui.button("Stop").clicked() {
+                    st.cancel_tracking();
+                }
+            });
+        }
+        _ => {
+            ui.horizontal(|ui| {
+                let free = job.is_none();
+                if ui.add_enabled(free, egui::Button::new("⏴ Track backward")).on_hover_text("From the playhead to the clip's start").clicked() {
+                    st.start_tracking(clip.id, false);
+                }
+                if ui.add_enabled(free, egui::Button::new(RichText::new("Track forward ⏵").strong())).on_hover_text("From the playhead to the clip's end").clicked() {
+                    st.start_tracking(clip.id, true);
+                }
+            });
+        }
+    }
+
+    if let (Some(a), Some(b)) = (trk.path.first(), trk.path.last()) {
+        let rate = st.seq().frame_rate;
+        let to_seq = |s: Time| clip.timeline_start + (s - clip.source_in);
+        ui.weak(format!("{} frames tracked, {} to {}", trk.path.len(), to_seq(a.at).timecode(rate), to_seq(b.at).timecode(rate)));
+        // Where it can go: this clip (stabilise), or another video layer that overlaps the track.
+        let (ta, tb) = (to_seq(a.at), to_seq(b.at));
+        let mut targets: Vec<(reelforge_core::ClipId, String)> = vec![(clip.id, "This clip: stabilise".into())];
+        for tr in st.seq().tracks.iter().filter(|t| t.kind == reelforge_core::TrackKind::Video) {
+            for c in tr.clips.iter().filter(|c| c.id != clip.id && c.timeline_start < tb && c.timeline_end() > ta) {
+                targets.push((c.id, format!("{} ({})", c.display_name(&st.project), tr.name)));
+            }
+        }
+        let key = egui::Id::new(("track_target", clip.id));
+        let mut chosen: reelforge_core::ClipId = ui.data(|d| d.get_temp(key)).filter(|id| targets.iter().any(|(t, _)| t == id)).unwrap_or(targets[targets.len().min(2) - 1].0);
+        ui.horizontal(|ui| {
+            ui.label("Apply to");
+            let label = targets.iter().find(|(id, _)| *id == chosen).map(|(_, n)| n.clone()).unwrap_or_default();
+            egui::ComboBox::from_id_salt(key).width(180.0).selected_text(label).show_ui(ui, |ui| {
+                for (id, name) in &targets {
+                    ui.selectable_value(&mut chosen, *id, name);
+                }
+            });
+            if ui.button("Apply").on_hover_text("Writes position keyframes (undoable)").clicked() {
+                st.apply_track(clip.id, chosen);
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(key, chosen));
+    }
+    ui.horizontal(|ui| {
+        if ui.add_enabled(!trk.path.is_empty(), egui::Button::new("Clear path")).clicked() {
+            st.set_tracker(clip.id, Some(PointTrack { path: Vec::new(), ..trk.clone() }), "Clear track");
+        }
+        if ui.button("Remove tracker").clicked() {
+            st.set_tracker(clip.id, None, "Remove tracker");
+        }
+    });
 }

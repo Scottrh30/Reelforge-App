@@ -13,6 +13,7 @@ pub mod mixer;
 pub mod probe;
 pub mod proxy;
 pub mod source;
+pub mod tracker;
 
 pub use audio::{waveform_peaks, AudioReader};
 pub use cache::{CacheKey, FrameCache};
@@ -21,6 +22,7 @@ pub use encode::{is_hardware_encoder, sequence_file, Fit, MovieWriter, Quality, 
 pub use mixer::{MixClip, Mixer};
 pub use probe::probe;
 pub use source::FrameSource;
+pub use tracker::{track_point, TrackEnd};
 
 use std::sync::Once;
 

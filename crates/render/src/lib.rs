@@ -110,6 +110,10 @@ pub struct Compositor {
     fx_uniform_stride: u64,
     fx_targets: HashMap<u64, FxTargets>,
     output_pipeline: wgpu::RenderPipeline,
+    output_alpha_pipeline: wgpu::RenderPipeline,
+    /// Render over transparency and keep the alpha in the output (for composite
+    /// shots, which are layered again), instead of over opaque black.
+    pub transparent: bool,
     texture_layout: wgpu::BindGroupLayout,
     output_layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
@@ -295,27 +299,31 @@ impl Compositor {
             bind_group_layouts: &[Some(&output_layout)],
             immediate_size: 0,
         });
-        let output_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("output"),
-            layout: Some(&output_pl),
-            vertex: wgpu::VertexState {
-                module: &output_shader,
-                entry_point: Some("vs_fullscreen"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &output_shader,
-                entry_point: Some("fs_output"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: OUTPUT_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let output_pipeline_for = |entry: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&output_pl),
+                vertex: wgpu::VertexState {
+                    module: &output_shader,
+                    entry_point: Some("vs_fullscreen"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &output_shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: OUTPUT_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let output_pipeline = output_pipeline_for("fs_output");
+        let output_alpha_pipeline = output_pipeline_for("fs_output_alpha");
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("layer uniforms"),
@@ -355,6 +363,8 @@ impl Compositor {
             fx_uniform_stride,
             fx_targets: HashMap::new(),
             output_pipeline,
+            output_alpha_pipeline,
+            transparent: false,
             texture_layout,
             output_layout,
             uniforms,
@@ -679,7 +689,8 @@ impl Compositor {
 
         // The frame is drawn in runs of plain layers; each dissolve group needs
         // its own pass on the scratch target in between.
-        let mut frame_pass = Some(pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK)));
+        let background = if self.transparent { wgpu::Color::TRANSPARENT } else { wgpu::Color::BLACK };
+        let mut frame_pass = Some(pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Clear(background)));
         for op in &ops {
             match op {
                 Op::Frame { draw, blend } => {
@@ -713,8 +724,8 @@ impl Compositor {
         }
         drop(frame_pass);
         {
-            let mut pass = pass_on(&mut enc, &targets.output_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
-            pass.set_pipeline(&self.output_pipeline);
+            let mut pass = pass_on(&mut enc, &targets.output_view, wgpu::LoadOp::Clear(background));
+            pass.set_pipeline(if self.transparent { &self.output_alpha_pipeline } else { &self.output_pipeline });
             pass.set_bind_group(0, &targets.output_bind, &[]);
             pass.draw(0..3, 0..1);
         }

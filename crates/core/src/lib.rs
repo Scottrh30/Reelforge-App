@@ -11,6 +11,7 @@ pub mod effects;
 pub mod project;
 pub mod time;
 pub mod title;
+pub mod track;
 pub mod transform;
 pub mod undo;
 

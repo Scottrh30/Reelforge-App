@@ -106,6 +106,22 @@ impl Mapping {
 }
 
 pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
+    // With composite shots, a row of tabs to switch between the sequences.
+    if st.project.sequences.len() > 1 {
+        ui.horizontal(|ui| {
+            for i in 0..st.project.sequences.len() {
+                let name = &st.project.sequences[i].name;
+                let label = if i == 0 { format!("Edit: {name}") } else { name.clone() };
+                let r = ui.selectable_label(i == st.active, label);
+                if r.clicked() {
+                    st.open_request = Some(i);
+                }
+                if i == 0 {
+                    ui.separator();
+                }
+            }
+        });
+    }
     let rate = st.seq().frame_rate;
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -289,6 +305,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             let vis = cr.intersect(lanes);
             let base = if clip.title.is_some() {
                 Color32::from_rgb(122, 78, 170) // titles: purple, like generated media in HitFilm
+            } else if clip.nested.is_some() {
+                Color32::from_rgb(176, 108, 40) // composite shots: amber
             } else if tr.kind == TrackKind::Video {
                 Color32::from_rgb(54, 96, 160)
             } else {
@@ -417,7 +435,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 painter.rect_stroke(vis, 4.0, Stroke::new(w, Color32::from_rgb(255, 196, 64)), StrokeKind::Inside);
             }
             let name = clip.display_name(&st.project);
-            let name = if clip.title.is_some() { format!("T  {name}") } else { name.into_owned() };
+            let name = if clip.title.is_some() {
+                format!("T  {name}")
+            } else if clip.nested.is_some() {
+                format!("[C]  {name}")
+            } else {
+                name.into_owned()
+            };
             let text_painter = painter.with_clip_rect(vis.shrink(2.0));
             text_painter.text(vis.left_top() + Vec2::new(6.0, 4.0), Align2::LEFT_TOP, name, FontId::proportional(12.0), Color32::WHITE);
         }
@@ -454,7 +478,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
 
     // Crossfades: a block with an X over the overlap; a red tick where one was
     // asked for but there's no spare media to make it.
-    for x in st.project.transitions(0) {
+    for x in st.project.transitions(st.active) {
         let Some(row) = rows.iter().position(|&t| t == x.track) else { continue };
         let r = row_rect(row);
         if x.is_empty() {
@@ -479,7 +503,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         if let Some(clip) = st.seq().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == *id) {
             if let Some(row) = rows.iter().position(|&t| t == to.0) {
                 let gr = clip_rect(&m, row_rect(row), to.1, clip.duration).intersect(lanes);
-                let ok = move_group(&st.project, 0, *id, *to).is_ok();
+                let ok = move_group(&st.project, st.active, *id, *to).is_ok();
                 let c = if ok { Color32::from_white_alpha(70) } else { Color32::from_rgba_unmultiplied(220, 60, 60, 90) };
                 painter.rect_filled(gr, 4.0, c);
             }
@@ -628,7 +652,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             let Some(row) = rows.iter().position(|&t| t == ti) else { continue };
             let cr = clip_rect(&m, row_rect(row), c.timeline_start, c.duration);
             if dragging && mode == TrimMode::Slip && !st.project.is_still(c.media) {
-                let len = st.project.media(c.media).map_or(Time::ZERO, |md| md.info.duration);
+                let len = st.project.source_len(c);
                 let media_start = c.timeline_start - c.source_in;
                 let band = Rect::from_x_y_ranges(m.x(media_start)..=m.x(media_start + len), cr.bottom() - 9.0..=cr.bottom() - 2.0);
                 hp.rect_filled(band, 2.0, col.gamma_multiply(0.35));
@@ -876,7 +900,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     if resp.drag_stopped() {
         if let Some(Drag::Clip { id, from, to, .. }) = st.timeline.drag.take() {
             if to != from {
-                match move_group(&st.project, 0, id, to) {
+                match move_group(&st.project, st.active, id, to) {
                     Ok(cmd) => st.execute(cmd),
                     Err(why) => st.status = format!("Can't move there: {why}"),
                 }
@@ -920,6 +944,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 }
                 _ => {}
             }
+        }
+    }
+
+    // Double-click a composite shot to go inside it.
+    if resp.double_clicked() && !handled {
+        if let Some(n) = pointer.and_then(|p| hit_clip(st, p)).and_then(|(_, id, _)| st.seq().find_clip(id).and_then(|(_, c)| c.nested)) {
+            st.open_request = Some(n);
         }
     }
 

@@ -15,6 +15,8 @@ pub struct MediaId(pub u64);
 impl MediaId {
     /// The "media" of clips whose picture is generated (titles): no file behind it.
     pub const GENERATED: MediaId = MediaId(0);
+    /// The "media" of composite-shot clips: another sequence of the project (see `Clip::nested`).
+    pub const NESTED: MediaId = MediaId(u64::MAX);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -94,6 +96,13 @@ pub struct Clip {
     /// For a title clip: the text and how it looks (its media is `MediaId::GENERATED`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<TitleSpec>,
+    /// For a composite-shot clip: the index of the sequence it plays (its media
+    /// is `MediaId::NESTED`). Its source time is that sequence's time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested: Option<usize>,
+    /// A point tracker on this clip (see `track`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<crate::track::PointTrack>,
 }
 
 /// Everything about how a video clip looks, edited and undone as one unit.
@@ -122,6 +131,8 @@ impl Clip {
             dissolve_in: Time::ZERO,
             effects: Vec::new(),
             title: None,
+            nested: None,
+            tracker: None,
         }
     }
 
@@ -130,12 +141,20 @@ impl Clip {
         Self { title: Some(spec), ..Self::new(id, MediaId::GENERATED, timeline_start, Time::ZERO, duration, None) }
     }
 
-    /// What to call the clip in the UI: the media name, or a title's first line.
+    /// A composite-shot clip playing sequence `seq` from its start.
+    pub fn new_nested(id: ClipId, seq: usize, timeline_start: Time, duration: Time, link: Option<u64>) -> Self {
+        Self { nested: Some(seq), ..Self::new(id, MediaId::NESTED, timeline_start, Time::ZERO, duration, link) }
+    }
+
+    /// What to call the clip in the UI: the media name, a title's first line, or a composite shot's name.
     pub fn display_name<'a>(&'a self, p: &'a Project) -> std::borrow::Cow<'a, str> {
-        match &self.title {
-            Some(t) => std::borrow::Cow::Owned(t.label()),
-            None => std::borrow::Cow::Borrowed(p.media(self.media).map(|m| m.name.as_str()).unwrap_or("<missing media>")),
+        if let Some(t) = &self.title {
+            return std::borrow::Cow::Owned(t.label());
         }
+        if let Some(s) = self.nested {
+            return std::borrow::Cow::Borrowed(p.sequences.get(s).map(|s| s.name.as_str()).unwrap_or("<missing composite shot>"));
+        }
+        std::borrow::Cow::Borrowed(p.media(self.media).map(|m| m.name.as_str()).unwrap_or("<missing media>"))
     }
 
     pub fn visual(&self) -> ClipVisual {
@@ -395,6 +414,52 @@ impl Project {
         id == MediaId::GENERATED || self.media(id).is_some_and(|m| m.info.video.is_some() && m.info.duration <= Time::ZERO)
     }
 
+    /// How long a clip's source is: the media's duration, or the nested
+    /// sequence's. (Stills have no length limit; check `is_still` first.)
+    pub fn source_len(&self, c: &Clip) -> Time {
+        match c.nested {
+            Some(s) => self.sequences.get(s).map_or(Time::ZERO, |s| s.duration()),
+            None => self.media(c.media).map(|m| m.info.duration).unwrap_or(Time::ZERO),
+        }
+    }
+
+    /// A video layer's native size: the media's, or the composite shot's frame.
+    /// (Titles are drawn on a canvas the size of the frame they're in.)
+    pub fn picture_size(&self, c: &Clip) -> Option<[u32; 2]> {
+        match c.nested {
+            Some(s) => self.sequences.get(s).map(|s| [s.width, s.height]),
+            None => self.media(c.media)?.info.video.as_ref().map(|v| [v.width, v.height]),
+        }
+    }
+
+    /// Does sequence `outer` show sequence `inner` (itself, or through nesting at any depth)?
+    /// A composite shot can't be put inside itself.
+    pub fn contains_sequence(&self, outer: usize, inner: usize) -> bool {
+        fn walk(p: &Project, s: usize, target: usize, depth: usize) -> bool {
+            if s == target {
+                return true;
+            }
+            if depth > 32 {
+                return true; // a cycle already exists; treat as containing
+            }
+            p.sequences.get(s).is_some_and(|seq| {
+                seq.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.nested).any(|n| walk(p, n, target, depth + 1))
+            })
+        }
+        walk(self, outer, inner, 0)
+    }
+
+    /// Sequences that appear inside sequence `seq` (directly), in order, without repeats.
+    pub fn nested_in(&self, seq: usize) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::new();
+        for n in self.sequences[seq].tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.nested) {
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        out
+    }
+
     /// Every transition in sequence `seq`: crossfades on audio tracks and
     /// cross-dissolves on video tracks.
     pub fn transitions(&self, seq: usize) -> Vec<Crossfade> {
@@ -415,7 +480,7 @@ impl Project {
                 let left_spare = if self.is_still(l.media) {
                     r.duration
                 } else {
-                    let media_len = self.media(l.media).map(|m| m.info.duration).unwrap_or(Time::ZERO);
+                    let media_len = self.source_len(l);
                     (media_len - (l.source_in + l.duration)).min(r.duration)
                 };
                 let right_spare = if self.is_still(r.media) { l.duration } else { r.source_in.min(l.duration) };

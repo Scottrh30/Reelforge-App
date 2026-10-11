@@ -7,8 +7,9 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::preview::Preview;
 use reelforge_core::undo::{
     delete_group, split_group, AddClip, Batch, Edge, ImportMedia, SetClipAudio, SetClipTiming, SetClipVisual, SetDissolve,
-    SetLink, SetTrackAudio, Timing, AddTrack, RemoveTrack, RenameTrack, SetTitle,
+    SetLink, SetTrackAudio, Timing, AddTrack, RemoveTrack, RenameTrack, SetTitle, SetTracker,
 };
+use reelforge_core::track::PointTrack;
 use reelforge_render::text::FontEntry;
 use reelforge_core::edit::{plan_trim, ripple_delete};
 use reelforge_core::*;
@@ -54,6 +55,14 @@ pub struct EditorState {
     pub export_requested: bool,
     /// Show the export queue window.
     pub export_queue_requested: bool,
+    /// The sequence shown in the timeline and viewer (0 = the main edit).
+    pub active: usize,
+    /// Switch to this sequence at the start of the next frame.
+    pub open_request: Option<usize>,
+    /// A point-tracking run in progress.
+    pub tracking: Option<TrackJob>,
+    /// Where the playhead was in each sequence, to come back to.
+    playheads: HashMap<usize, Time>,
     /// Bumped on every project change so the audio mixer can be resynced.
     rev: u64,
     mixed_rev: u64,
@@ -173,18 +182,21 @@ impl eframe::App for ReelforgeApp {
         st.handle_shortcuts(&ctx);
         st.sync_background();
 
-        let seq = &st.project.sequences[0];
+        let seq = &st.project.sequences[st.active];
         let (rate, end) = (seq.frame_rate, seq.duration());
         st.playback.tick(rate, end);
         st.playback.scrub_if_moved();
         let sources = st.decode_paths();
-        st.preview.update(&st.project, st.playback.playhead, st.playback.playing, &sources);
+        st.preview.update(&st.project, st.active, st.playback.playhead, st.playback.playing, &sources);
         if let Some(e) = st.preview.error.take() {
             st.status = e;
         }
 
         if std::mem::take(&mut st.export_requested) {
             self.export.open(st);
+        }
+        if let Some(i) = st.open_request.take() {
+            st.open_sequence(i);
         }
         if std::mem::take(&mut st.export_queue_requested) {
             self.export.open_queue();
@@ -201,7 +213,7 @@ impl eframe::App for ReelforgeApp {
                         }
                         ui.separator();
                     }
-                    let seq = &st.project.sequences[0];
+                    let seq = &st.project.sequences[st.active];
                     ui.weak(format!("{}×{} @ {:.3} fps", seq.width, seq.height, seq.frame_rate.fps()));
                     ui.separator();
                     match &st.playback.audio {
@@ -239,7 +251,7 @@ impl eframe::App for ReelforgeApp {
             ctx.request_repaint();
         } else if !st.preview.exact {
             ctx.request_repaint_after(std::time::Duration::from_millis(15));
-        } else if st.proxies.busy() {
+        } else if st.proxies.busy() || st.tracking.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         // Wake up for autosave even when idle.
@@ -302,6 +314,10 @@ impl EditorState {
             meters: Default::default(),
             export_requested: false,
             export_queue_requested: false,
+            active: 0,
+            open_request: None,
+            tracking: None,
+            playheads: HashMap::new(),
             rev: 1,
             mixed_rev: 0,
             waveforms: HashMap::new(),
@@ -354,7 +370,23 @@ impl EditorState {
     }
 
     pub fn seq(&self) -> &Sequence {
-        &self.project.sequences[0]
+        &self.project.sequences[self.active]
+    }
+
+    /// Show sequence `i` (the main edit, or a composite shot) in the timeline and viewer.
+    pub fn open_sequence(&mut self, i: usize) {
+        if i >= self.project.sequences.len() || i == self.active {
+            return;
+        }
+        self.commit_live_edit();
+        self.playback.pause();
+        self.playheads.insert(self.active, self.playback.playhead);
+        self.active = i;
+        let t = self.playheads.get(&i).copied().unwrap_or(Time::ZERO);
+        self.playback.seek(t);
+        self.selection = None;
+        self.status = format!("Editing {}", self.seq().name);
+        self.touch();
     }
 
     pub fn execute(&mut self, cmd: Box<dyn Command>) {
@@ -381,8 +413,13 @@ impl EditorState {
     }
 
     fn validate_selection(&mut self) {
+        // Undoing "Make composite shot" can remove the sequence being shown.
+        if self.active >= self.project.sequences.len() {
+            self.active = 0;
+            self.selection = None;
+        }
         if let Some(id) = self.selection {
-            if self.project.sequences[0].find_clip_mut(id).is_none() {
+            if self.project.sequences[self.active].find_clip_mut(id).is_none() {
                 self.selection = None;
             }
         }
@@ -441,7 +478,7 @@ impl EditorState {
         // First clip in an empty sequence: match the sequence to the footage, like HitFilm does.
         if self.seq().duration() == Time::ZERO {
             if let Some(v) = &media.info.video {
-                let s = &mut self.project.sequences[0];
+                let s = &mut self.project.sequences[self.active];
                 s.width = v.width;
                 s.height = v.height;
                 s.frame_rate = v.frame_rate;
@@ -486,7 +523,7 @@ impl EditorState {
             let id = ClipId(self.project.alloc_id());
             first.get_or_insert(id);
             let clip = Clip::new(id, media_id, start, Time::ZERO, duration, link);
-            cmds.push(Box::new(AddClip { seq: 0, track, clip }));
+            cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
         }
         self.execute(Box::new(Batch { name: "Add clip".into(), cmds }));
         self.selection = first;
@@ -503,7 +540,7 @@ impl EditorState {
             .filter(|id| all().filter(splittable).any(|c| c.id == *id))
             .or_else(|| seq.top_video_clip_at(t).filter(splittable).map(|c| c.id))
             .or_else(|| all().find(splittable).map(|c| c.id));
-        match target.and_then(|id| split_group(&mut self.project, 0, id, t)) {
+        match target.and_then(|id| split_group(&mut self.project, self.active, id, t)) {
             Some(cmd) => self.execute(cmd),
             None => self.status = "No clip under the playhead to split".into(),
         }
@@ -516,7 +553,7 @@ impl EditorState {
             return;
         }
         self.selection = None;
-        let cmd = delete_group(&self.project, 0, id);
+        let cmd = delete_group(&self.project, self.active, id);
         self.execute(cmd);
     }
 
@@ -529,13 +566,13 @@ impl EditorState {
 
     pub fn add_track(&mut self, kind: TrackKind) {
         self.commit_live_edit();
-        let cmd = AddTrack::new(&self.project, 0, kind);
+        let cmd = AddTrack::new(&self.project, self.active, kind);
         self.execute(Box::new(cmd));
     }
 
     pub fn delete_track(&mut self, index: usize) {
         self.commit_live_edit();
-        match RemoveTrack::new(&self.project, 0, index) {
+        match RemoveTrack::new(&self.project, self.active, index) {
             Ok(cmd) => {
                 let name = self.seq().tracks[index].name.clone();
                 let clips = self.seq().tracks[index].clips.len();
@@ -555,7 +592,7 @@ impl EditorState {
         if name.is_empty() || name == old {
             return;
         }
-        self.execute(Box::new(RenameTrack { seq: 0, index, old, new: name }));
+        self.execute(Box::new(RenameTrack { seq: self.active, index, old, new: name }));
     }
 
     // ---- Titles ---------------------------------------------------------------
@@ -579,17 +616,122 @@ impl EditorState {
         let track = match free {
             Some(t) => t,
             None => {
-                let add = AddTrack::new(&self.project, 0, TrackKind::Video);
+                let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
                 let t = add.index;
                 cmds.push(Box::new(add));
                 t
             }
         };
         let id = ClipId(self.project.alloc_id());
-        cmds.push(Box::new(AddClip { seq: 0, track, clip: Clip::new_title(id, start, dur, spec) }));
+        cmds.push(Box::new(AddClip { seq: self.active, track, clip: Clip::new_title(id, start, dur, spec) }));
         self.execute(Box::new(Batch { name: "Add title".into(), cmds }));
         self.selection = Some(id);
         self.status = "Added a title: type its text in the Controls panel".into();
+    }
+
+    // ---- Composite shots ---------------------------------------------------------
+
+    /// A new, empty composite shot the size of the current sequence, opened for editing.
+    pub fn new_composite(&mut self) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let seq = Sequence::new(reelforge_core::undo::next_composite_name(&self.project), s.width, s.height, s.frame_rate);
+        let cmd = reelforge_core::undo::AddSequence::new(&self.project, seq);
+        let index = cmd.index;
+        self.execute(Box::new(cmd));
+        self.open_sequence(index);
+        self.status = "New composite shot: add clips to it, then put it in your edit from the Media panel".into();
+    }
+
+    /// The clips "Make composite shot" would take: everything entirely between
+    /// the in and out marks (on unlocked tracks) if they're set, else the
+    /// selected clip and what's linked to it.
+    pub fn composite_candidates(&self) -> Vec<ClipId> {
+        let s = self.seq();
+        if s.in_point.is_some() || s.out_point.is_some() {
+            if let Some((a, b)) = s.marked_range() {
+                return s
+                    .tracks
+                    .iter()
+                    .filter(|t| !t.locked)
+                    .flat_map(|t| &t.clips)
+                    .filter(|c| c.timeline_start >= a && c.timeline_end() <= b)
+                    .map(|c| c.id)
+                    .collect();
+            }
+        }
+        self.selection.into_iter().collect()
+    }
+
+    pub fn make_composite(&mut self) {
+        self.commit_live_edit();
+        let ids = self.composite_candidates();
+        let name = reelforge_core::undo::next_composite_name(&self.project);
+        match reelforge_core::undo::make_composite(&mut self.project, self.active, &ids, name) {
+            Ok(cmd) => {
+                let (clip, index) = (cmd.clip, cmd.index);
+                self.execute(Box::new(cmd));
+                self.selection = Some(clip);
+                self.status = format!("Made {}: double-click it to edit inside", self.project.sequences[index].name);
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// Put composite shot `index` into the current sequence at the playhead.
+    pub fn add_composite_to_timeline(&mut self, index: usize) {
+        self.commit_live_edit();
+        if self.project.contains_sequence(index, self.active) {
+            self.status = "A composite shot can't contain itself".into();
+            return;
+        }
+        let Some(comp) = self.project.sequences.get(index) else { return };
+        let dur = comp.duration();
+        if dur == Time::ZERO {
+            self.status = format!("{} is empty: open it and add some clips first", comp.name);
+            return;
+        }
+        let has = |k: TrackKind| comp.tracks.iter().any(|t| t.kind == k && !t.clips.is_empty());
+        let (video, audio) = (has(TrackKind::Video), has(TrackKind::Audio));
+        let s = self.seq();
+        let start = self.playback.playhead.snap(s.frame_rate);
+        let dur = dur.snap(s.frame_rate).max(s.frame_rate.frame_duration());
+        let free = |k: TrackKind| (0..s.tracks.len()).find(|&t| s.tracks[t].kind == k && !s.tracks[t].locked && !s.overlaps(t, start, dur, &[]));
+        let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+        let mut targets = Vec::new();
+        // Video first: a new video track goes below the audio tracks, shifting them up one.
+        let mut shift = 0;
+        if video {
+            match free(TrackKind::Video) {
+                Some(t) => targets.push(t),
+                None => {
+                    let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
+                    targets.push(add.index);
+                    shift = 1;
+                    cmds.push(Box::new(add));
+                }
+            }
+        }
+        if audio {
+            match free(TrackKind::Audio) {
+                Some(t) => targets.push(t + shift),
+                None => {
+                    let index = s.tracks.len() + shift;
+                    targets.push(index);
+                    let track = reelforge_core::Track::new(s.next_track_name(TrackKind::Audio), TrackKind::Audio);
+                    cmds.push(Box::new(AddTrack { seq: self.active, index, track }));
+                }
+            }
+        }
+        let link = (targets.len() > 1).then(|| self.project.alloc_id());
+        let mut first = None;
+        for track in targets {
+            let id = ClipId(self.project.alloc_id());
+            first.get_or_insert(id);
+            cmds.push(Box::new(AddClip { seq: self.active, track, clip: Clip::new_nested(id, index, start, dur, link) }));
+        }
+        self.execute(Box::new(Batch { name: "Add composite shot".into(), cmds }));
+        self.selection = first;
     }
 
     pub fn set_title_live(&mut self, id: ClipId, spec: TitleSpec) {
@@ -598,14 +740,130 @@ impl EditorState {
             return;
         }
         self.begin_live(LiveEdit::Title(id, before));
-        if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
+        if let Some((_, c)) = self.project.sequences[self.active].find_clip_mut(id) {
             c.title = Some(spec);
         }
     }
 
+    // ---- Motion tracking -----------------------------------------------------------
+
+    /// Change a clip's tracker as part of a gesture (dragging it, a slider).
+    pub fn set_tracker_live(&mut self, id: ClipId, t: Option<PointTrack>) {
+        let Some(before) = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()) else { return };
+        if before == t {
+            return;
+        }
+        self.begin_live(LiveEdit::Tracker(id, before));
+        if let Some((_, c)) = self.project.sequences[self.active].find_clip_mut(id) {
+            c.tracker = t;
+        }
+    }
+
+    /// Change a clip's tracker as one undo step.
+    pub fn set_tracker(&mut self, id: ClipId, t: Option<PointTrack>, label: &'static str) {
+        self.commit_live_edit();
+        let Some(old) = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()) else { return };
+        if old != t {
+            self.execute(Box::new(SetTracker { seq: self.active, id, old, new: t, label }));
+        }
+    }
+
+    /// Track the selected clip's feature from the playhead to the end of the
+    /// clip (or back to its start), in the background.
+    pub fn start_tracking(&mut self, id: ClipId, forward: bool) {
+        self.commit_live_edit();
+        if self.tracking.is_some() {
+            return;
+        }
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let (Some(track), Some(media)) = (c.tracker.clone(), self.project.media(c.media).cloned()) else { return };
+        let t = self.playback.playhead.max(c.timeline_start).min(c.timeline_end() - self.seq().frame_rate.frame_duration());
+        let from = c.source_time(t);
+        let until = if forward { c.source_in + c.duration - self.seq().frame_rate.frame_duration() } else { c.source_in };
+        let (tx, rx) = unbounded();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = cancel.clone();
+        std::thread::Builder::new()
+            .name("tracker".into())
+            .spawn(move || {
+                let progress_tx = tx.clone();
+                let r = reelforge_media::track_point(&media.path, &media.info, &track, from, until, &stop, |p| {
+                    let _ = progress_tx.send(TrackMsg::Progress(p));
+                });
+                let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
+            })
+            .expect("tracker thread");
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0 });
+        self.status = "Tracking…".into();
+    }
+
+    pub fn cancel_tracking(&mut self) {
+        if let Some(j) = &self.tracking {
+            j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn poll_tracking(&mut self) {
+        let Some(job) = &mut self.tracking else { return };
+        let mut done = None;
+        while let Ok(m) = job.rx.try_recv() {
+            match m {
+                TrackMsg::Progress(p) => job.progress = p,
+                TrackMsg::Done(r) => done = Some(r),
+            }
+        }
+        let Some(result) = done else { return };
+        let job = self.tracking.take().unwrap();
+        match result {
+            Err(e) => self.status = format!("Tracking failed: {e}"),
+            Ok((samples, end)) => {
+                let n = samples.len().saturating_sub(1);
+                let Some(old) = self.project.sequences.get(job.seq).and_then(|s| s.find_clip(job.clip)).and_then(|(_, c)| c.tracker.clone()) else { return };
+                let mut new = old.clone();
+                new.merge(samples);
+                let rate = self.project.sequences[job.seq].frame_rate;
+                self.status = match end {
+                    reelforge_media::TrackEnd::Done => format!("Tracked {n} frames"),
+                    reelforge_media::TrackEnd::Cancelled => format!("Tracking stopped after {n} frames"),
+                    reelforge_media::TrackEnd::Lost(t) => {
+                        format!("Tracked {n} frames, then lost the feature at {} (source time): move the tracker there and track again", t.timecode(rate))
+                    }
+                };
+                let status = self.status.clone();
+                self.execute(Box::new(SetTracker { seq: job.seq, id: job.clip, old: Some(old), new: Some(new), label: "Track point" }));
+                self.status = status;
+            }
+        }
+    }
+
+    /// Make `target` follow the tracked feature of `tracked` (or, if they're the
+    /// same clip, hold it steady), as position keyframes.
+    pub fn apply_track(&mut self, tracked: ClipId, target: ClipId) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let (Some((_, a)), Some((_, b))) = (s.find_clip(tracked), s.find_clip(target)) else { return };
+        let Some(track) = &a.tracker else { return };
+        let Some([w, h]) = self.project.picture_size(a) else { return };
+        let frame = [s.width as f32, s.height as f32];
+        let stabilise = tracked == target;
+        let Some(anim) = reelforge_core::track::follow_keys(a, track, [w as f32, h as f32], frame, b, stabilise) else {
+            self.status = "Nothing to apply: the track doesn't overlap that clip".into();
+            return;
+        };
+        if s.is_locked(target) {
+            self.status = LOCKED.into();
+            return;
+        }
+        let old = b.visual();
+        let new = ClipVisual { anim, ..old.clone() };
+        let name = b.display_name(&self.project).into_owned();
+        self.execute(Box::new(SetClipVisual { seq: self.active, id: target, old, new }));
+        self.status = if stabilise { "Stabilised: the clip now moves against the tracked motion".into() } else { format!("{name} now follows the tracked point") };
+    }
+
     pub fn toggle_lock(&mut self, track: usize) {
         self.commit_live_edit();
-        let tr = &mut self.project.sequences[0].tracks[track];
+        let tr = &mut self.project.sequences[self.active].tracks[track];
         tr.locked = !tr.locked;
         self.status = if tr.locked {
             format!("{} locked: its clips can't be edited and ripple edits leave it alone", tr.name)
@@ -619,7 +877,7 @@ impl EditorState {
 
     pub fn mark_in(&mut self) {
         let t = self.playback.playhead;
-        let s = &mut self.project.sequences[0];
+        let s = &mut self.project.sequences[self.active];
         s.in_point = Some(t);
         if s.out_point.is_some_and(|o| o <= t) {
             s.out_point = None;
@@ -630,7 +888,7 @@ impl EditorState {
 
     /// The out point is placed after the frame under the playhead, so that frame is included.
     pub fn mark_out(&mut self) {
-        let s = &mut self.project.sequences[0];
+        let s = &mut self.project.sequences[self.active];
         let rate = s.frame_rate;
         let t = self.playback.playhead.snap(rate) + rate.frame_duration();
         s.out_point = Some(t);
@@ -642,7 +900,7 @@ impl EditorState {
     }
 
     pub fn clear_marks(&mut self) {
-        let s = &mut self.project.sequences[0];
+        let s = &mut self.project.sequences[self.active];
         (s.in_point, s.out_point) = (None, None);
         self.status = "In/out points cleared".into();
         self.touch();
@@ -656,7 +914,7 @@ impl EditorState {
         let Some(id) = self.selection else { return };
         let ids: Vec<ClipId> = self.seq().link_group(id).iter().map(|(_, c)| c.id).collect();
         if ids.len() > 1 {
-            self.execute(Box::new(SetLink::new(0, ids, None)));
+            self.execute(Box::new(SetLink::new(self.active, ids, None)));
         }
     }
 
@@ -677,7 +935,7 @@ impl EditorState {
         }
         let selected: Vec<ClipId> = self.selection.map(|id| seq.link_group(id).iter().map(|(_, c)| c.id).collect()).unwrap_or_default();
         let preferred = cuts.iter().filter(|(_, id)| {
-            selected.contains(id) || self.project.clip_before(0, *id).is_some_and(|l| selected.contains(&l))
+            selected.contains(id) || self.project.clip_before(self.active, *id).is_some_and(|l| selected.contains(&l))
         });
         let pick = preferred
             .min_by_key(|(d, _)| *d)
@@ -694,16 +952,16 @@ impl EditorState {
                 let Some(old) = self.clip_audio(id) else { return };
                 let mut new = old.clone();
                 new.crossfade_in = if old.crossfade_in > Time::ZERO { Time::ZERO } else { one_sec };
-                self.execute(Box::new(SetClipAudio { seq: 0, id, old, new }));
+                self.execute(Box::new(SetClipAudio { seq: self.active, id, old, new }));
             }
             TrackKind::Video => {
                 let Some(old) = self.seq().find_clip(id).map(|(_, c)| c.dissolve_in) else { return };
                 let new = if old > Time::ZERO { Time::ZERO } else { one_sec };
-                self.execute(Box::new(SetDissolve { seq: 0, id, old, new }));
+                self.execute(Box::new(SetDissolve { seq: self.active, id, old, new }));
             }
         }
         self.selection = Some(id);
-        self.status = match self.project.crossfade_into(0, id) {
+        self.status = match self.project.crossfade_into(self.active, id) {
             Some(x) if x.is_empty() => format!("{what} added, but there's no spare media at the cut, so it plays as a plain cut"),
             Some(x) if x.len() < x.requested => format!("{what} added: {:.2} s (limited by spare media)", x.len().as_secs_f64()),
             Some(x) => format!("{what} added: {:.2} s", x.len().as_secs_f64()),
@@ -712,7 +970,7 @@ impl EditorState {
     }
 
     pub fn toggle_mute(&mut self, track: usize) {
-        let tr = &mut self.project.sequences[0].tracks[track];
+        let tr = &mut self.project.sequences[self.active].tracks[track];
         tr.muted = !tr.muted;
         self.status = format!("{} {}", tr.name, if tr.muted { "muted" } else { "unmuted" });
         self.touch();
@@ -738,6 +996,7 @@ impl EditorState {
             self.proxies.refresh(&self.project, self.settings.auto_proxies);
             self.proxied_rev = self.rev;
         }
+        self.poll_tracking();
         if self.proxies.poll() {
             self.status = "A proxy is ready: the viewer uses it now".into();
         }
@@ -750,7 +1009,7 @@ impl EditorState {
         }
         if self.rev != self.mixed_rev {
             if let Some(a) = &self.playback.audio {
-                a.set_clips(reelforge_export::mix_clips(&self.project, a.rate));
+                a.set_clips(reelforge_export::mix_clips(&self.project, self.active, a.rate));
             }
             self.mixed_rev = self.rev;
         }
@@ -1088,6 +1347,21 @@ impl EditorState {
                     self.redo();
                 }
                 ui.separator();
+                let n = self.composite_candidates().len();
+                let tip = if self.seq().in_point.is_some() || self.seq().out_point.is_some() {
+                    "Moves every clip between the in and out marks into a new composite shot"
+                } else {
+                    "Moves the selected clip (and its linked audio) into a new composite shot. Set in/out marks to take several clips"
+                };
+                if ui.add_enabled(n > 0, egui::Button::new("Make composite shot   Ctrl+G")).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+                    self.make_composite();
+                    ui.close();
+                }
+                if ui.button("New composite shot").clicked() {
+                    self.new_composite();
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Split at playhead     S").clicked() {
                     self.split_at_playhead();
                 }
@@ -1156,6 +1430,9 @@ impl EditorState {
         }
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::T))) {
             self.add_title();
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::G))) {
+            self.make_composite();
         }
         let (redo, undo, save, import, export) = ctx.input_mut(|i| {
             let redo = i.consume_shortcut(&cmd_shift(Key::Z)) || i.consume_shortcut(&cmd(Key::Y));
@@ -1273,7 +1550,7 @@ impl EditorState {
             return;
         }
         self.begin_live(LiveEdit::Visual(id, before));
-        if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
+        if let Some((_, c)) = self.project.sequences[self.active].find_clip_mut(id) {
             c.set_visual(v);
         }
     }
@@ -1285,9 +1562,9 @@ impl EditorState {
     pub fn trim_live(&mut self, id: ClipId, edge: Edge, mode: TrimMode, delta: Time, snapshot: &[(ClipId, Timing)]) -> Option<TrimPlan> {
         self.begin_live(LiveEdit::Timing(id, snapshot.to_vec(), mode));
         self.restore_timings(snapshot);
-        let plan = plan_trim(&self.project, 0, id, edge, mode, delta);
+        let plan = plan_trim(&self.project, self.active, id, edge, mode, delta);
         if let Some(plan) = &plan {
-            plan.apply(&mut self.project, 0);
+            plan.apply(&mut self.project, self.active);
         }
         self.touch();
         plan
@@ -1306,7 +1583,7 @@ impl EditorState {
             self.status = LOCKED.into();
             return;
         }
-        match ripple_delete(&self.project, 0, id) {
+        match ripple_delete(&self.project, self.active, id) {
             Some((cmd, closed)) => {
                 self.execute(cmd);
                 self.selection = None;
@@ -1323,9 +1600,9 @@ impl EditorState {
 
     fn restore_timings(&mut self, start: &[(ClipId, Timing)]) {
         for (cid, (a, b, c)) in start {
-            if let Some((ti, clip)) = self.project.sequences[0].find_clip_mut(*cid) {
+            if let Some((ti, clip)) = self.project.sequences[self.active].find_clip_mut(*cid) {
                 (clip.timeline_start, clip.source_in, clip.duration) = (*a, *b, *c);
-                self.project.sequences[0].tracks[ti].sort();
+                self.project.sequences[self.active].tracks[ti].sort();
             }
         }
     }
@@ -1336,7 +1613,7 @@ impl EditorState {
             return;
         }
         self.begin_live(LiveEdit::Dissolve(id, before));
-        if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
+        if let Some((_, c)) = self.project.sequences[self.active].find_clip_mut(id) {
             c.dissolve_in = d;
         }
     }
@@ -1347,7 +1624,7 @@ impl EditorState {
             return;
         }
         self.begin_live(LiveEdit::ClipAudio(id, before));
-        if let Some((_, c)) = self.project.sequences[0].find_clip_mut(id) {
+        if let Some((_, c)) = self.project.sequences[self.active].find_clip_mut(id) {
             c.audio = a;
         }
         self.touch(); // the mixer hears it immediately
@@ -1359,7 +1636,7 @@ impl EditorState {
             return;
         }
         self.begin_live(LiveEdit::TrackAudio(track, before));
-        self.project.sequences[0].tracks[track].audio = a;
+        self.project.sequences[self.active].tracks[track].audio = a;
         self.touch();
     }
 
@@ -1367,10 +1644,10 @@ impl EditorState {
     pub fn commit_live_edit(&mut self) {
         let Some(edit) = self.live_edit.take() else { return };
         let cmd: Option<Box<dyn Command>> = match edit {
-            LiveEdit::Visual(id, old) => self.visual(id).filter(|n| *n != old).map(|new| Box::new(SetClipVisual { seq: 0, id, old, new }) as _),
+            LiveEdit::Visual(id, old) => self.visual(id).filter(|n| *n != old).map(|new| Box::new(SetClipVisual { seq: self.active, id, old, new }) as _),
             LiveEdit::Dissolve(id, old) => {
                 let new = self.seq().find_clip(id).map(|(_, c)| c.dissolve_in).filter(|n| *n != old);
-                new.map(|new| Box::new(SetDissolve { seq: 0, id, old, new }) as _)
+                new.map(|new| Box::new(SetDissolve { seq: self.active, id, old, new }) as _)
             }
             LiveEdit::Timing(_, start, mode) => {
                 let cmds: Vec<Box<dyn Command>> = start
@@ -1378,7 +1655,7 @@ impl EditorState {
                     .filter_map(|(cid, old)| {
                         let (_, c) = self.seq().find_clip(cid)?;
                         let new = (c.timeline_start, c.source_in, c.duration);
-                        (new != old).then(|| Box::new(SetClipTiming { seq: 0, id: cid, old, new }) as Box<dyn Command>)
+                        (new != old).then(|| Box::new(SetClipTiming { seq: self.active, id: cid, old, new }) as Box<dyn Command>)
                     })
                     .collect();
                 if cmds.is_empty() {
@@ -1390,12 +1667,16 @@ impl EditorState {
             }
             LiveEdit::Title(id, old) => {
                 let new = self.seq().find_clip(id).and_then(|(_, c)| c.title.clone()).filter(|n| *n != old);
-                new.map(|new| Box::new(SetTitle { seq: 0, id, old, new }) as _)
+                new.map(|new| Box::new(SetTitle { seq: self.active, id, old, new }) as _)
             }
-            LiveEdit::ClipAudio(id, old) => self.clip_audio(id).filter(|n| *n != old).map(|new| Box::new(SetClipAudio { seq: 0, id, old, new }) as _),
+            LiveEdit::Tracker(id, old) => {
+                let new = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()).filter(|n| *n != old);
+                new.map(|new| Box::new(SetTracker { seq: self.active, id, old, new, label: "Move tracker" }) as _)
+            }
+            LiveEdit::ClipAudio(id, old) => self.clip_audio(id).filter(|n| *n != old).map(|new| Box::new(SetClipAudio { seq: self.active, id, old, new }) as _),
             LiveEdit::TrackAudio(track, old) => {
                 let new = self.seq().tracks.get(track).map(|t| t.audio).filter(|n| *n != old);
-                new.map(|new| Box::new(SetTrackAudio { seq: 0, track, old, new }) as _)
+                new.map(|new| Box::new(SetTrackAudio { seq: self.active, track, old, new }) as _)
             }
         };
         if let Some(cmd) = cmd {
@@ -1405,12 +1686,26 @@ impl EditorState {
 }
 
 /// An interactive edit in progress: what's being changed and its value before the gesture.
+pub enum TrackMsg {
+    Progress(f32),
+    Done(Result<(Vec<reelforge_core::track::TrackSample>, reelforge_media::TrackEnd), String>),
+}
+
+pub struct TrackJob {
+    seq: usize,
+    pub clip: ClipId,
+    rx: Receiver<TrackMsg>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    pub progress: f32,
+}
+
 enum LiveEdit {
     Visual(ClipId, ClipVisual),
     /// Trimming a clip (keyed by the clip grabbed): timings of every clip before, and the trim mode.
     Timing(ClipId, Vec<(ClipId, Timing)>, TrimMode),
     Dissolve(ClipId, Time),
     Title(ClipId, TitleSpec),
+    Tracker(ClipId, Option<PointTrack>),
     ClipAudio(ClipId, ClipAudio),
     TrackAudio(usize, TrackAudio),
 }
@@ -1422,6 +1717,7 @@ impl LiveEdit {
             (LiveEdit::Timing(a, ..), LiveEdit::Timing(b, ..)) => a == b,
             (LiveEdit::Dissolve(a, _), LiveEdit::Dissolve(b, _)) => a == b,
             (LiveEdit::Title(a, _), LiveEdit::Title(b, _)) => a == b,
+            (LiveEdit::Tracker(a, _), LiveEdit::Tracker(b, _)) => a == b,
             (LiveEdit::ClipAudio(a, _), LiveEdit::ClipAudio(b, _)) => a == b,
             (LiveEdit::TrackAudio(a, _), LiveEdit::TrackAudio(b, _)) => a == b,
             _ => false,

@@ -160,7 +160,7 @@ fn length_range(p: &Project, seq: usize, c: &Clip, edge: Edge) -> (Time, Time) {
             let hi = if still {
                 big
             } else {
-                let media_len = p.media(c.media).map(|m| m.info.duration).unwrap_or(Time::ZERO);
+                let media_len = p.source_len(c);
                 media_len - (c.source_in + c.duration)
             };
             (frame - c.duration, hi)
@@ -329,7 +329,7 @@ pub fn plan_slip(p: &Project, seq: usize, id: ClipId, delta: Time) -> Option<Tri
         if p.is_still(c.media) {
             continue;
         }
-        let media_len = p.media(c.media).map(|m| m.info.duration).unwrap_or(Time::ZERO);
+        let media_len = p.source_len(c);
         lo = lo.max(Time(-c.source_in.0));
         hi = hi.min(media_len - (c.source_in + c.duration));
         movable.push(*c);

@@ -1,7 +1,8 @@
 # Reelforge
 
-A HitFilm-style video editor and compositor, written in Rust. Phases 1–4 are done (a working
-editor with synced audio, a GPU compositor, and export to MP4), and phase 5 (effects) has begun.
+A HitFilm-style video editor and compositor, written in Rust. Editing, audio, the GPU
+compositor, export (with presets, a queue and GPU encoders), proxies and crash safety are done;
+effects and compositing (composite shots, tracking) are under way.
 
 What works now:
 
@@ -148,6 +149,26 @@ What works now:
   it for all of them. Relinking can be undone. Export won't start while media is missing
 - **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, proxies, autosave
   interval, and the proxy/autosave folders
+- **Composite shots**: a composite shot is a sequence of its own, with its own layers, that
+  sits on the timeline as one clip (amber, marked `[C]`). Transform it, add effects, dissolve
+  it, trim it like any clip; its audio plays and exports with it
+  - **Make composite shot** (`Ctrl+G`, the Edit menu, or **Make from selection** in the Media
+    panel) moves the selected clip and its linked audio into a new composite shot, or every clip
+    between the in and out marks if you've set them. Undo puts them back
+  - **Double-click** a composite-shot clip (or **Open** in the Controls or Media panel) to go
+    inside and edit it; tabs above the timeline switch between the main edit and each shot, and
+    each remembers its playhead. **+ New** in the Media panel starts an empty one, and **Add at
+    playhead** puts a shot into whatever you're editing (shots can contain shots; a shot can't
+    contain itself)
+  - Empty parts of a shot are transparent, so layers underneath show through
+  - Exporting while inside a shot exports that shot
+- **Motion tracking** (Controls panel, for footage clips): **Add tracker**, drag its box in the
+  Viewer onto a sharp detail, then **Track forward** / **Track backward** from the playhead. It
+  follows the detail frame by frame to a fraction of a pixel (normalised cross-correlation, so
+  lighting changes don't throw it) and stops where it loses it, so you can re-place it and carry
+  on. The path is drawn in the Viewer. **Apply to** another layer makes that layer follow the
+  point (a title stuck to a moving car, say); **This clip: stabilise** moves the clip against
+  the motion so the point holds still. Both write position keyframes you can edit or undo
 - **Curves panel** (a tab next to the Editor Timeline): a value graph of the selected clip's
   keyframes. Pick channels on the left (position X/Y, scale X/Y, rotation, opacity and every
   effect parameter). **Drag** a key to change its time and value (**Shift** changes only the
@@ -189,7 +210,8 @@ crates/
            AudioReader (random-access resampled audio), Mixer (renders the timeline's audio).
   render/  wgpu compositor: transformed layers, blend modes, linear-light float pipeline,
            pixel readback. No egui dependency, so export can use it headless.
-  export/  Offline render: exact frames -> compositor -> MovieWriter (media crate), with
+  export/  Scene building shared by viewer and export (incl. composite shots), the audio mix
+           list, and offline render: exact frames -> compositor -> MovieWriter, with
            progress/cancel. Runs headless (tests use it without a window).
   app/     eframe/egui desktop app (wgpu renderer), egui_dock panels, timeline, viewer,
            cpal audio engine.
@@ -311,6 +333,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | Y / U | Slip / Slide tool (drag a clip) |
 | I / O | Mark in / out at the playhead |
 | Ctrl+T | Add a title at the playhead |
+| Ctrl+G | Make composite shot (selected clip, or everything between in and out) |
+| Double-click a composite shot | Open it |
 | Alt+X | Clear in/out |
 | Shift+Del | Ripple delete (close the gap) |
 | Ctrl+D | Add/remove cross-dissolve at the nearest video cut |
@@ -400,6 +424,22 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 - **Tracks** are added and removed with `AddTrack` / `RemoveTrack` commands (the removed track
   and its clips are kept for undo). Deleting a track is refused if it would orphan linked clips
   on another track, or leave the sequence without a video or audio track.
+- **Composite shots** (`Clip::nested`, `export/src/scene.rs`): a clip whose `nested` names a
+  sequence index (its media is `MediaId::NESTED`; its source time is that sequence's time).
+  `Scene` turns a sequence at a time into compositor draws for both the viewer and export, via
+  a `FrameProvider` (the viewer's gives whatever preview frame is ready; export's waits for
+  exact full-size frames). For a composite-shot layer it renders the inner sequence with its own
+  `Compositor` in transparent mode (cleared to transparent, written as straight alpha), reads it
+  back, and uses it as the layer's picture; unchanged inner frames are reused by signature.
+  `mix_clips` flattens a shot's audio into the outer mix, shifted and cut to the clip.
+  `undo::make_composite` builds the "Make composite shot" command (whole-sequence snapshots for
+  undo); `Project::contains_sequence` stops a shot going inside itself
+- **Tracking** (`core/src/track.rs`, `media/src/tracker.rs`): `Template::find` scores every
+  offset in the search area by normalised cross-correlation on luma and fits a parabola through
+  the best score's neighbours for sub-pixel accuracy. `track_point` steps through the clip's
+  frames (exact, full size), refreshing the template after confident matches and stopping below
+  a 0.6 score. `follow_keys` turns the path into position keys, taking the tracked layer's own
+  transform into account
 - **Curves** (`core/src/channels.rs`, `app/src/curves.rs`): `Channel` addresses any keyframeable
   number on a clip (a transform component or an effect parameter), with uniform get/set/move
   operations, so the curve editor doesn't care what it's editing. A drag re-applies the move
@@ -444,9 +484,10 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 5. **Effects** ← you are here. Done: the effect stack, keyframable parameters, colour
    correction, Gaussian blur, chroma key, vignette. Next: levels/curves, sharpen, glow, LUTs,
    an effects browser, and effects that reach outside the layer (drop shadow, glow).
-6. **Composite shots**, masks, tracking, 3D camera/lights, GPU particles.
-   (Text titles and track management are done; next for titles: animated text presets,
-   per-letter animation, title templates.)
+6. **Compositing**: ~~composite shots (nested sequences), point tracking (follow and
+   stabilise)~~, titles and track management are done. Still to come: masks, planar and
+   multi-point tracking (rotation/scale), a 3D camera and lights, GPU particles, animated text
+   presets.
 7. ~~**Performance**: proxy media, a frame cache, hardware decode~~
    (still to add: GPU-side frame upload from hardware decoders without the copy back to memory,
    render caching of effects)

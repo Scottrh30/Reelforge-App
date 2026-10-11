@@ -3,12 +3,12 @@
 //! the GPU (shared with egui) into a texture the viewer panel draws.
 
 use eframe::egui_wgpu::{self, wgpu};
-use reelforge_core::{ClipId, MediaId, Project, Time, VideoItem};
+use reelforge_core::{ClipId, Layer, MediaId, Project, Time};
+use reelforge_export::{FrameProvider, Picture, Scene};
 use reelforge_media::{FrameSource, VideoFrame};
-use reelforge_render::{Compositor, DrawItem, LayerInput};
-use std::collections::hash_map::DefaultHasher;
+use reelforge_render::Compositor;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -81,6 +81,7 @@ fn offline_frame(name: &str, size: [u32; 2]) -> VideoFrame {
 struct Gpu {
     render_state: egui_wgpu::RenderState,
     compositor: Compositor,
+    scene: Scene,
     texture: Option<egui::TextureId>,
     registered_generation: u64,
 }
@@ -103,7 +104,8 @@ impl Preview {
     pub fn new(render_state: Option<egui_wgpu::RenderState>) -> Self {
         let gpu = render_state.map(|rs| {
             let compositor = Compositor::new(&rs.device, &rs.queue);
-            Gpu { render_state: rs, compositor, texture: None, registered_generation: 0 }
+            let scene = Scene::new(&rs.device, &rs.queue);
+            Gpu { render_state: rs, compositor, scene, texture: None, registered_generation: 0 }
         });
         Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None }
     }
@@ -135,6 +137,9 @@ impl Preview {
         self.titles.clear();
         self.offline.clear();
         self.last_signature = 0;
+        if let Some(g) = &mut self.gpu {
+            g.scene.reset();
+        }
     }
 
     fn slot<'a>(slots: &'a mut HashMap<ClipId, Slot>, id: ClipId, path: &std::path::Path) -> &'a mut Slot {
@@ -152,91 +157,16 @@ impl Preview {
         slot
     }
 
-    /// Render the frame at `t`. `sources` says which file to decode for each
-    /// media item (the original, or its proxy).
-    pub fn update(&mut self, project: &Project, t: Time, playing: bool, sources: &HashMap<MediaId, std::path::PathBuf>) {
-        let seq = &project.sequences[0];
-        let frame_size = [seq.width.max(2), seq.height.max(2)];
-
-        // Gather the frame for every visible layer (two per dissolve).
-        struct Gathered {
-            key: u64,
-            frame: VideoFrame,
-            media: MediaId,
-            layer_size: [f32; 2],
-            transform: reelforge_core::Transform,
-            blend: reelforge_core::BlendMode,
-            effects: Vec<reelforge_core::EffectValues>,
-        }
-        enum Item {
-            Single(Gathered),
-            Dissolve(Gathered, Gathered, f32),
-        }
-        let mut items = Vec::new();
-        let mut exact = true;
+    /// Render sequence `seq` at `t`. `sources` says which file to decode for
+    /// each media item (the original, or its proxy).
+    pub fn update(&mut self, project: &Project, seq: usize, t: Time, playing: bool, sources: &HashMap<MediaId, PathBuf>) {
+        let Some(sequence) = project.sequences.get(seq) else { return };
         self.error = None;
-        let offline = &mut self.offline;
-        let mut gather = |l: &reelforge_core::Layer, slots: &mut HashMap<ClipId, Slot>, titles: &mut HashMap<ClipId, TitleCache>, error: &mut Option<String>| -> Option<Gathered> {
-            if let Some(spec) = &l.clip.title {
-                // Titles are drawn on a canvas the size of the frame, so 100% is their natural size.
-                return Some(Gathered {
-                    key: l.clip.id.0,
-                    frame: title_frame(titles, l.clip.id, spec, frame_size),
-                    media: MediaId::GENERATED,
-                    layer_size: [frame_size[0] as f32, frame_size[1] as f32],
-                    transform: l.transform,
-                    blend: l.blend,
-                    effects: l.effects.clone(),
-                });
-            }
-            let media = project.media(l.clip.media)?;
-            let v = media.info.video.as_ref()?;
-            let layer_size = [v.width as f32, v.height as f32];
-            let path = sources.get(&media.id).unwrap_or(&media.path);
-            if !path.exists() {
-                let frame = offline.entry(media.id).or_insert_with(|| offline_frame(&media.name, [v.width, v.height])).clone();
-                return Some(Gathered { key: l.clip.id.0, frame, media: media.id, layer_size, transform: l.transform, blend: l.blend, effects: l.effects.clone() });
-            }
-            let src = match &mut Self::slot(slots, l.clip.id, path).source {
-                Ok(s) => s,
-                Err(e) => {
-                    *error = Some(format!("Can't decode {}: {e}", media.name));
-                    return None;
-                }
-            };
-            let frame = src.frame_at(l.source_time).cloned();
-            exact &= src.is_exact(l.source_time);
-            Some(Gathered {
-                key: l.clip.id.0,
-                frame: frame?,
-                media: media.id,
-                layer_size: [v.width as f32, v.height as f32],
-                transform: l.transform,
-                blend: l.blend,
-                effects: l.effects.clone(),
-            })
-        };
-        for item in project.video_layers_at(0, t) {
-            match item {
-                VideoItem::Single(l) => items.extend(gather(&l, &mut self.slots, &mut self.titles, &mut self.error).map(Item::Single)),
-                VideoItem::Dissolve { from, to, mix } => {
-                    match (
-                        gather(&from, &mut self.slots, &mut self.titles, &mut self.error),
-                        gather(&to, &mut self.slots, &mut self.titles, &mut self.error),
-                    ) {
-                        (Some(a), Some(b)) => items.push(Item::Dissolve(a, b, mix)),
-                        (Some(one), None) | (None, Some(one)) => items.push(Item::Single(one)),
-                        (None, None) => {}
-                    }
-                }
-            }
-        }
-        self.exact = exact;
 
         // Warm up decoders for cuts coming up soon (including the early start of an
         // incoming dissolve), so the first frame is ready on time.
         if playing {
-            for tr in seq.tracks.iter().filter(|tr| tr.kind == reelforge_core::TrackKind::Video && !tr.muted) {
+            for tr in sequence.tracks.iter().filter(|tr| tr.kind == reelforge_core::TrackKind::Video && !tr.muted) {
                 for clip in tr.clips.iter() {
                     let shows_at = clip.timeline_start - clip.dissolve_in;
                     if shows_at > t && shows_at <= t + PREFETCH {
@@ -250,67 +180,30 @@ impl Preview {
                 }
             }
         }
-        self.slots.retain(|_, s| s.last_used.elapsed() < IDLE_CLOSE);
-        self.titles.retain(|_, t| t.last_used.elapsed() < IDLE_CLOSE);
 
         let Some(gpu) = &mut self.gpu else { return };
-
-        // Skip the GPU work if nothing that affects the picture changed.
-        let mut h = DefaultHasher::new();
-        frame_size.hash(&mut h);
-        let hash_layer = |l: &Gathered, h: &mut DefaultHasher| {
-            (l.key, l.media, l.frame.pts, l.frame.generation).hash(h);
-            for f in l.transform.position.iter().chain(&l.transform.scale).chain([&l.transform.rotation, &l.transform.opacity]) {
-                f.to_bits().hash(h);
-            }
-            l.blend.hash(h);
-            for e in &l.effects {
-                e.kind.hash(h);
-                for v in e.values {
-                    v.to_bits().hash(h);
-                }
-            }
+        let mut frames = PreviewFrames {
+            slots: &mut self.slots,
+            titles: &mut self.titles,
+            offline: &mut self.offline,
+            sources,
+            exact: true,
+            error: None,
         };
-        for item in &items {
-            match item {
-                Item::Single(l) => hash_layer(l, &mut h),
-                Item::Dissolve(a, b, mix) => {
-                    hash_layer(a, &mut h);
-                    hash_layer(b, &mut h);
-                    mix.to_bits().hash(&mut h);
-                }
-            }
+        let unchanged = gpu.texture.is_some().then_some(self.last_signature);
+        match gpu.scene.render(project, seq, t, &mut gpu.compositor, &mut frames, unchanged) {
+            Ok(sig) => self.last_signature = sig,
+            Err(e) => self.error = Some(format!("{e:#}")),
         }
-        let signature = h.finish();
-        if signature == self.last_signature && gpu.texture.is_some() {
+        self.exact = frames.exact;
+        if let Some(e) = frames.error {
+            self.error = Some(e);
+        }
+        self.slots.retain(|_, s| s.last_used.elapsed() < IDLE_CLOSE);
+        self.titles.retain(|_, t| t.last_used.elapsed() < IDLE_CLOSE);
+        if gpu.compositor.output_view().is_none() {
             return;
         }
-        self.last_signature = signature;
-
-        fn input(l: &Gathered) -> LayerInput<'_> {
-            let mut ch = DefaultHasher::new();
-            (l.media, l.frame.pts, l.frame.generation).hash(&mut ch);
-            LayerInput {
-                key: l.key,
-                content_id: ch.finish(),
-                pixels: &l.frame.rgba,
-                pixel_size: [l.frame.width, l.frame.height],
-                layer_size: l.layer_size,
-                transform: l.transform,
-                blend: l.blend,
-                effects: l.effects.clone(),
-            }
-        }
-        let draw: Vec<DrawItem> = items
-            .iter()
-            .map(|i| match i {
-                Item::Single(l) => DrawItem::Layer(input(l)),
-                Item::Dissolve(a, b, mix) => DrawItem::Dissolve { from: input(a), to: input(b), mix: *mix },
-            })
-            .collect();
-        gpu.compositor.render_items(frame_size, &draw);
-        let (slots, titles) = (&self.slots, &self.titles);
-        gpu.compositor.retain_layers(|k| slots.contains_key(&ClipId(k)) || titles.contains_key(&ClipId(k)));
 
         // Hand the output texture to egui (re-register after a resize).
         let view = gpu.compositor.output_view().expect("rendered");
@@ -326,5 +219,44 @@ impl Preview {
             }
             Some(_) => {}
         }
+    }
+}
+
+/// The viewer's frames: whatever each clip's preview-size decoder has ready.
+struct PreviewFrames<'a> {
+    slots: &'a mut HashMap<ClipId, Slot>,
+    titles: &'a mut HashMap<ClipId, TitleCache>,
+    offline: &'a mut HashMap<MediaId, VideoFrame>,
+    sources: &'a HashMap<MediaId, PathBuf>,
+    /// Every layer showed its exact frame.
+    exact: bool,
+    error: Option<String>,
+}
+
+impl FrameProvider for PreviewFrames<'_> {
+    fn picture(&mut self, project: &Project, l: &Layer, frame_size: [u32; 2]) -> anyhow::Result<Option<Picture>> {
+        if let Some(spec) = &l.clip.title {
+            // Titles are drawn on a canvas the size of the frame, so 100% is their natural size.
+            let frame = title_frame(self.titles, l.clip.id, spec, frame_size);
+            return Ok(Some(Picture { frame, size: [frame_size[0] as f32, frame_size[1] as f32], media: MediaId::GENERATED }));
+        }
+        let Some(media) = project.media(l.clip.media) else { return Ok(None) };
+        let Some(v) = media.info.video.as_ref() else { return Ok(None) };
+        let size = [v.width as f32, v.height as f32];
+        let path = self.sources.get(&media.id).unwrap_or(&media.path);
+        if !path.exists() {
+            let frame = self.offline.entry(media.id).or_insert_with(|| offline_frame(&media.name, [v.width, v.height])).clone();
+            return Ok(Some(Picture { frame, size, media: media.id }));
+        }
+        let src = match &mut Preview::slot(self.slots, l.clip.id, path).source {
+            Ok(s) => s,
+            Err(e) => {
+                self.error = Some(format!("Can't decode {}: {e}", media.name));
+                return Ok(None);
+            }
+        };
+        let frame = src.frame_at(l.source_time).cloned();
+        self.exact &= src.is_exact(l.source_time);
+        Ok(frame.map(|frame| Picture { frame, size, media: media.id }))
     }
 }
