@@ -2,7 +2,7 @@
 
 use crate::app::EditorState;
 use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
-use reelforge_core::undo::{move_group, Edge, Timing};
+use reelforge_core::undo::{Edge, Timing};
 use reelforge_core::audio::{db_to_gain, fade_curve, MAX_DB, MIN_DB};
 use reelforge_core::ClipAudio;
 use reelforge_core::{ClipId, MediaId, Time, TrackKind, TrimMode};
@@ -55,6 +55,8 @@ enum Drag {
     /// Slipping or sliding a whole clip: where the pointer went down (timeline
     /// time), the tool, and every clip's timing before the drag.
     Body { id: ClipId, grab: Time, mode: TrimMode, start: Vec<(ClipId, Timing)> },
+    /// Dragging a box over empty track space to select the clips it touches.
+    Marquee { from: Pos2, add: bool },
 }
 
 /// How close (px) to a clip's edge counts as grabbing it for trimming.
@@ -197,7 +199,12 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     let mut track_action: Option<TrackAction> = None;
 
     // ---- Tracks and clips ----
-    let selected_group: Vec<ClipId> = st.selection.map(|id| st.seq().link_group(id).iter().map(|(_, c)| c.id).collect()).unwrap_or_default();
+    let selected_group: Vec<ClipId> = reelforge_core::undo::expand_links(&st.project, st.active, &st.selected_ids());
+    // While dragging clips, the originals are drawn faded.
+    let moving: Vec<ClipId> = match &st.timeline.drag {
+        Some(Drag::Clip { .. }) => selected_group.clone(),
+        _ => Vec::new(),
+    };
     let mut mute_clicked = None;
     let mut lock_clicked = None;
     for (row, &ti) in rows.iter().enumerate() {
@@ -297,7 +304,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         }
 
         for clip in &tr.clips {
-            let dragging = matches!(&st.timeline.drag, Some(Drag::Clip { id, .. }) if *id == clip.id);
+            let dragging = moving.contains(&clip.id);
             let cr = clip_rect(&m, r, clip.timeline_start, clip.duration);
             if !cr.intersect(lanes).is_positive() {
                 continue;
@@ -498,16 +505,26 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         }
     }
 
-    // Ghost of the clip being dragged.
+    // Ghosts of the clips being dragged, where they'd land.
     if let Some(Drag::Clip { id, to, .. }) = &st.timeline.drag {
-        if let Some(clip) = st.seq().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == *id) {
-            if let Some(row) = rows.iter().position(|&t| t == to.0) {
-                let gr = clip_rect(&m, row_rect(row), to.1, clip.duration).intersect(lanes);
-                let ok = move_group(&st.project, st.active, *id, *to).is_ok();
-                let c = if ok { Color32::from_white_alpha(70) } else { Color32::from_rgba_unmultiplied(220, 60, 60, 90) };
-                painter.rect_filled(gr, 4.0, c);
+        let sel = st.selected_ids();
+        let plan = reelforge_core::undo::move_targets(&st.project, st.active, *id, &sel, *to);
+        let ghosts: Vec<(usize, Time, Time)> = match &plan {
+            Ok(moves) => moves.iter().filter_map(|mv| st.seq().find_clip(mv.id).map(|(_, c)| (mv.to_track, mv.start, c.duration))).collect(),
+            Err(_) => st.seq().find_clip(*id).map(|(_, c)| vec![(to.0, to.1, c.duration)]).unwrap_or_default(),
+        };
+        let col = if plan.is_ok() { Color32::from_white_alpha(70) } else { Color32::from_rgba_unmultiplied(220, 60, 60, 90) };
+        for (track, start, dur) in ghosts {
+            if let Some(row) = rows.iter().position(|&t| t == track) {
+                painter.rect_filled(clip_rect(&m, row_rect(row), start, dur).intersect(lanes), 4.0, col);
             }
         }
+    }
+    // The selection box.
+    if let (Some(Drag::Marquee { from, .. }), Some(p)) = (&st.timeline.drag, resp.interact_pointer_pos()) {
+        let r = Rect::from_two_pos(*from, p).intersect(lanes);
+        painter.rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(255, 196, 64, 24));
+        painter.rect_stroke(r, 2.0, Stroke::new(1.0, Color32::from_rgb(255, 196, 64)), StrokeKind::Inside);
     }
 
     // ---- Interaction ----
@@ -704,42 +721,52 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             let vol = if hit_fade(st, p).is_none() && edge.is_none() { hit_vol(st, p) } else { None };
             st.timeline.drag = match (hit_fade(st, p), vol) {
                 (Some((id, out)), _) => {
-                    st.selection = Some(id);
+                    st.select_only(Some(id));
                     Some(Drag::Fade { id, out })
                 }
                 (None, _) if edge.is_some() => {
                     let (id, edge) = edge.unwrap();
-                    st.selection = Some(id);
+                    st.select_only(Some(id));
                     let c = st.seq().find_clip(id).map(|(_, c)| c.clone()).unwrap();
                     let edge_at = if edge == Edge::Start { c.timeline_start } else { c.timeline_end() };
                     let mode = st.timeline.mode;
                     Some(Drag::Trim { id, edge, edge_at, mode, start: st.all_timings() })
                 }
                 (None, Some(VolHit::Key(id, index))) => {
-                    st.selection = Some(id);
+                    st.select_only(Some(id));
                     Some(Drag::VolKey { id, index })
                 }
                 (None, Some(VolHit::Line(id))) if !ui.input(|i| i.modifiers.command) => {
-                    st.selection = Some(id);
+                    st.select_only(Some(id));
                     let orig = st.clip_audio(id).unwrap_or_default();
                     Some(Drag::VolLine { id, start_y: p.y, orig })
                 }
                 _ => match hit_clip(st, p) {
                 Some((_, id, _)) if st.seq().is_locked(id) => {
-                    st.selection = Some(id);
+                    st.select_only(Some(id));
                     st.status = crate::app::LOCKED.into();
                     None
                 }
                 Some((_, id, _)) if st.timeline.mode.acts_on_body() => {
-                    st.selection = Some(id);
+                    st.select_only(Some(id));
                     let mode = st.timeline.mode;
                     Some(Drag::Body { id, grab: m.t(p.x), mode, start: st.all_timings() })
                 }
                 Some((ti, id, start)) => {
-                    st.selection = Some(id);
+                    // Dragging a selected clip moves the whole selection; Ctrl/Shift adds to it.
+                    let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);
+                    if st.is_selected(id) {
+                        st.selection = Some(id);
+                    } else if add {
+                        st.add_selected(&[id]);
+                        st.selection = Some(id);
+                    } else {
+                        st.select_only(Some(id));
+                    }
                     Some(Drag::Clip { id, grab: m.t(p.x) - start, from: (ti, start), to: (ti, start) })
                 }
-                None if p.x >= m.x0 => Some(Drag::Scrub),
+                None if p.x >= m.x0 && p.y < rect.top() + RULER_H => Some(Drag::Scrub),
+                None if p.x >= m.x0 => Some(Drag::Marquee { from: p, add: ui.input(|i| i.modifiers.command || i.modifiers.shift) }),
                 None => None,
                 },
             };
@@ -875,7 +902,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeColumn);
             }
             let target = st.timeline.drag.as_ref().map(|d| match d {
-                Drag::Scrub | Drag::Fade { .. } | Drag::VolKey { .. } | Drag::VolLine { .. } | Drag::Trim { .. } | Drag::Body { .. } => None,
+                Drag::Scrub | Drag::Fade { .. } | Drag::VolKey { .. } | Drag::VolLine { .. } | Drag::Trim { .. } | Drag::Body { .. } | Drag::Marquee { .. } => None,
                 Drag::Clip { id, from, grab, .. } => {
                     let kind = st.seq().tracks[from.0].kind;
                     let ti = row_at(p.y).filter(|&t| st.seq().tracks[t].kind == kind).unwrap_or(from.0);
@@ -898,13 +925,34 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     }
 
     if resp.drag_stopped() {
-        if let Some(Drag::Clip { id, from, to, .. }) = st.timeline.drag.take() {
-            if to != from {
-                match move_group(&st.project, st.active, id, to) {
+        match st.timeline.drag.take() {
+            Some(Drag::Clip { id, from, to, .. }) if to != from => {
+                let sel = st.selected_ids();
+                match reelforge_core::undo::move_clips(&st.project, st.active, id, &sel, to) {
                     Ok(cmd) => st.execute(cmd),
                     Err(why) => st.status = format!("Can't move there: {why}"),
                 }
             }
+            Some(Drag::Marquee { from, add }) => {
+                if let Some(p) = pointer {
+                    let r = Rect::from_two_pos(from, p);
+                    let mut hits = Vec::new();
+                    for (row, &ti) in rows.iter().enumerate() {
+                        for c in &st.seq().tracks[ti].clips {
+                            if clip_rect(&m, row_rect(row), c.timeline_start, c.duration).intersects(r) {
+                                hits.push(c.id);
+                            }
+                        }
+                    }
+                    if !add {
+                        st.select_only(None);
+                    }
+                    st.add_selected(&hits);
+                    let n = st.selected_ids().len();
+                    st.status = format!("{n} clip{} selected", if n == 1 { "" } else { "s" });
+                }
+            }
+            _ => {}
         }
         st.timeline.drag = None;
     }
@@ -921,7 +969,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                         st.set_clip_audio_live(id, a);
                         st.commit_live_edit();
                     }
-                    st.selection = Some(id);
+                    st.select_only(Some(id));
                     handled = true;
                 }
                 Some(VolHit::Line(id)) if ctrl => {
@@ -939,7 +987,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                         st.commit_live_edit();
                         st.status = "Added volume keyframe".into();
                     }
-                    st.selection = Some(id);
+                    st.select_only(Some(id));
                     handled = true;
                 }
                 _ => {}
@@ -958,11 +1006,17 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         if let Some(p) = pointer {
             let on_ruler = p.y < rect.top() + RULER_H;
             match hit_clip(st, p) {
-                Some((_, id, _)) => st.selection = Some(id),
+                Some((_, id, _)) => {
+                    if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
+                        st.toggle_selected(id);
+                    } else {
+                        st.select_only(Some(id));
+                    }
+                }
                 // The ruler only moves the playhead; empty track space also deselects.
                 None if p.x >= m.x0 => {
                     if !on_ruler {
-                        st.selection = None;
+                        st.select_only(None);
                     }
                     st.playback.seek(m.t(p.x).snap(rate));
                 }

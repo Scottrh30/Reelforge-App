@@ -6,6 +6,7 @@
 pub mod anim;
 pub mod audio;
 pub mod channels;
+pub mod clipboard;
 pub mod edit;
 pub mod effects;
 pub mod project;

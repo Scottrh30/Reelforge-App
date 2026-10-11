@@ -228,7 +228,7 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
             let hit = layers.iter().find(|(_, r, tr)| tr.hit_rect(*r, frame_px, f)).map(|(id, ..)| *id);
             let keep = st.selection.is_some_and(|sel| layers.iter().any(|(id, r, tr)| *id == sel && tr.hit_rect(*r, frame_px, f)));
             if !keep {
-                st.selection = hit;
+                st.select_only(hit);
             }
         }
     }

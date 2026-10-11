@@ -6,7 +6,7 @@ use crate::audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::preview::Preview;
 use reelforge_core::undo::{
-    delete_group, split_group, AddClip, Batch, Edge, ImportMedia, SetClipAudio, SetClipTiming, SetClipVisual, SetDissolve,
+    split_group, AddClip, Batch, Edge, ImportMedia, SetClipAudio, SetClipTiming, SetClipVisual, SetDissolve,
     SetLink, SetTrackAudio, Timing, AddTrack, RemoveTrack, RenameTrack, SetTitle, SetTracker,
 };
 use reelforge_core::track::PointTrack;
@@ -40,7 +40,12 @@ pub struct EditorState {
     pub project: Project,
     pub undo: UndoStack,
     pub playback: Playback,
+    /// The clip the Controls panel shows (the last one clicked).
     pub selection: Option<ClipId>,
+    /// Every selected clip (Ctrl+click, drag a box, Ctrl+A), including `selection`.
+    pub selected: Vec<ClipId>,
+    /// Clips copied with Ctrl+C / Ctrl+X.
+    pub clipboard: reelforge_core::clipboard::Clipboard,
     pub timeline: TimelineView,
     pub curves: crate::curves::CurveView,
     pub status: String,
@@ -305,6 +310,8 @@ impl EditorState {
             undo: UndoStack::default(),
             playback,
             selection: None,
+            selected: Vec::new(),
+            clipboard: Default::default(),
             timeline: TimelineView::default(),
             curves: Default::default(),
             status: String::new(),
@@ -384,7 +391,7 @@ impl EditorState {
         self.active = i;
         let t = self.playheads.get(&i).copied().unwrap_or(Time::ZERO);
         self.playback.seek(t);
-        self.selection = None;
+        self.select_only(None);
         self.status = format!("Editing {}", self.seq().name);
         self.touch();
     }
@@ -416,11 +423,11 @@ impl EditorState {
         // Undoing "Make composite shot" can remove the sequence being shown.
         if self.active >= self.project.sequences.len() {
             self.active = 0;
-            self.selection = None;
+            self.select_only(None);
         }
         if let Some(id) = self.selection {
             if self.project.sequences[self.active].find_clip_mut(id).is_none() {
-                self.selection = None;
+                self.select_only(None);
             }
         }
         self.touch();
@@ -526,7 +533,7 @@ impl EditorState {
             cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
         }
         self.execute(Box::new(Batch { name: "Add clip".into(), cmds }));
-        self.selection = first;
+        self.select_only(first);
     }
 
     pub fn split_at_playhead(&mut self) {
@@ -546,15 +553,131 @@ impl EditorState {
         }
     }
 
-    pub fn delete_selection(&mut self) {
-        let Some(id) = self.selection else { return };
-        if self.seq().is_locked(id) {
-            self.status = LOCKED.into();
+    // ---- Selection ----------------------------------------------------------------
+
+    /// Select just `id` (or nothing).
+    pub fn select_only(&mut self, id: Option<ClipId>) {
+        self.selection = id;
+        self.selected = id.into_iter().collect();
+    }
+
+    /// Ctrl+click: add `id` to the selection, or take it out.
+    pub fn toggle_selected(&mut self, id: ClipId) {
+        let mut all = self.selected_ids();
+        if let Some(i) = all.iter().position(|x| *x == id) {
+            all.remove(i);
+            self.selection = all.last().copied();
+        } else {
+            all.push(id);
+            self.selection = Some(id);
+        }
+        self.selected = all;
+    }
+
+    /// Add clips to the selection (box select with Ctrl).
+    pub fn add_selected(&mut self, ids: &[ClipId]) {
+        let mut all = self.selected_ids();
+        for id in ids {
+            if !all.contains(id) {
+                all.push(*id);
+            }
+        }
+        if self.selection.is_none() {
+            self.selection = all.first().copied();
+        }
+        self.selected = all;
+    }
+
+    /// All selected clips that still exist in the sequence shown.
+    pub fn selected_ids(&self) -> Vec<ClipId> {
+        let s = self.seq();
+        let mut out: Vec<ClipId> = self.selected.iter().copied().filter(|id| s.find_clip(*id).is_some()).collect();
+        if let Some(id) = self.selection.filter(|id| !out.contains(id) && s.find_clip(*id).is_some()) {
+            out.push(id);
+        }
+        out
+    }
+
+    /// Is `id` selected (directly, or linked to a selected clip)?
+    pub fn is_selected(&self, id: ClipId) -> bool {
+        reelforge_core::undo::expand_links(&self.project, self.active, &self.selected_ids()).contains(&id)
+    }
+
+    pub fn select_all(&mut self) {
+        let ids: Vec<ClipId> = self.seq().tracks.iter().flat_map(|t| &t.clips).map(|c| c.id).collect();
+        self.selection = ids.first().copied();
+        self.status = format!("Selected {} clip{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
+        self.selected = ids;
+    }
+
+    // ---- Clipboard ----------------------------------------------------------------
+
+    /// Copy the selected clips (and their linked clips). Returns how many.
+    pub fn copy_selection(&mut self) -> usize {
+        self.commit_live_edit();
+        let ids = self.selected_ids();
+        if ids.is_empty() {
+            self.status = "Select clips to copy first".into();
+            return 0;
+        }
+        self.clipboard = reelforge_core::clipboard::copy_clips(&self.project, self.active, &ids);
+        let n = self.clipboard.len();
+        self.status = format!("Copied {n} clip{}", if n == 1 { "" } else { "s" });
+        n
+    }
+
+    pub fn cut_selection(&mut self) {
+        if self.copy_selection() > 0 {
+            let n = self.clipboard.len();
+            if self.delete_selection() {
+                self.status = format!("Cut {n} clip{}", if n == 1 { "" } else { "s" });
+            }
+        }
+    }
+
+    /// Paste at the playhead (or the first place after it with room).
+    pub fn paste(&mut self) {
+        self.commit_live_edit();
+        if self.clipboard.is_empty() {
+            self.status = "Nothing to paste: copy some clips first (Ctrl+C)".into();
             return;
         }
-        self.selection = None;
-        let cmd = delete_group(&self.project, self.active, id);
+        let t = self.playback.playhead.snap(self.seq().frame_rate);
+        let cb = self.clipboard.clone();
+        match reelforge_core::clipboard::paste_clips(&mut self.project, self.active, &cb, t) {
+            Some(p) => {
+                let (n, at, skipped) = (p.ids.len(), p.at, p.skipped);
+                self.execute(p.cmd);
+                self.selection = p.ids.first().copied();
+                self.selected = p.ids;
+                let rate = self.seq().frame_rate;
+                let mut msg = format!("Pasted {n} clip{}", if n == 1 { "" } else { "s" });
+                if at != t {
+                    msg += &format!(" at {} (the next place with room)", at.timecode(rate));
+                }
+                if skipped > 0 {
+                    msg += &format!("; left out {skipped} that can't go here");
+                }
+                self.status = msg;
+            }
+            None => self.status = "Can't paste here (a locked track, or a composite shot inside itself)".into(),
+        }
+    }
+
+    /// Delete every selected clip. Returns whether anything was deleted.
+    pub fn delete_selection(&mut self) -> bool {
+        let ids = self.selected_ids();
+        if ids.is_empty() {
+            return false;
+        }
+        if ids.iter().any(|id| self.seq().is_locked(*id)) {
+            self.status = LOCKED.into();
+            return false;
+        }
+        self.select_only(None);
+        let cmd = reelforge_core::undo::delete_clips(&self.project, self.active, &ids);
         self.execute(cmd);
+        true
     }
 
     /// Installed fonts, once the background scan has finished.
@@ -625,7 +748,7 @@ impl EditorState {
         let id = ClipId(self.project.alloc_id());
         cmds.push(Box::new(AddClip { seq: self.active, track, clip: Clip::new_title(id, start, dur, spec) }));
         self.execute(Box::new(Batch { name: "Add title".into(), cmds }));
-        self.selection = Some(id);
+        self.select_only(Some(id));
         self.status = "Added a title: type its text in the Controls panel".into();
     }
 
@@ -648,6 +771,10 @@ impl EditorState {
     /// selected clip and what's linked to it.
     pub fn composite_candidates(&self) -> Vec<ClipId> {
         let s = self.seq();
+        let selected = self.selected_ids();
+        if selected.len() > 1 {
+            return selected;
+        }
         if s.in_point.is_some() || s.out_point.is_some() {
             if let Some((a, b)) = s.marked_range() {
                 return s
@@ -660,7 +787,7 @@ impl EditorState {
                     .collect();
             }
         }
-        self.selection.into_iter().collect()
+        self.selected_ids()
     }
 
     pub fn make_composite(&mut self) {
@@ -671,7 +798,7 @@ impl EditorState {
             Ok(cmd) => {
                 let (clip, index) = (cmd.clip, cmd.index);
                 self.execute(Box::new(cmd));
-                self.selection = Some(clip);
+                self.select_only(Some(clip));
                 self.status = format!("Made {}: double-click it to edit inside", self.project.sequences[index].name);
             }
             Err(e) => self.status = e,
@@ -731,7 +858,7 @@ impl EditorState {
             cmds.push(Box::new(AddClip { seq: self.active, track, clip: Clip::new_nested(id, index, start, dur, link) }));
         }
         self.execute(Box::new(Batch { name: "Add composite shot".into(), cmds }));
-        self.selection = first;
+        self.select_only(first);
     }
 
     pub fn set_title_live(&mut self, id: ClipId, spec: TitleSpec) {
@@ -960,7 +1087,7 @@ impl EditorState {
                 self.execute(Box::new(SetDissolve { seq: self.active, id, old, new }));
             }
         }
-        self.selection = Some(id);
+        self.select_only(Some(id));
         self.status = match self.project.crossfade_into(self.active, id) {
             Some(x) if x.is_empty() => format!("{what} added, but there's no spare media at the cut, so it plays as a plain cut"),
             Some(x) if x.len() < x.requested => format!("{what} added: {:.2} s (limited by spare media)", x.len().as_secs_f64()),
@@ -1365,7 +1492,23 @@ impl EditorState {
                 if ui.button("Split at playhead     S").clicked() {
                     self.split_at_playhead();
                 }
-                if ui.add_enabled(self.selection.is_some(), egui::Button::new("Delete clip          Del")).clicked() {
+                let any = !self.selected_ids().is_empty();
+                if ui.add_enabled(any, egui::Button::new("Cut                    Ctrl+X")).clicked() {
+                    self.cut_selection();
+                    ui.ctx().copy_text(format!("{CLIPBOARD_MARK} ({} clips)", self.clipboard.len()));
+                }
+                if ui.add_enabled(any, egui::Button::new("Copy                  Ctrl+C")).clicked() {
+                    self.copy_selection();
+                    ui.ctx().copy_text(format!("{CLIPBOARD_MARK} ({} clips)", self.clipboard.len()));
+                }
+                if ui.add_enabled(!self.clipboard.is_empty(), egui::Button::new("Paste at playhead  Ctrl+V")).clicked() {
+                    self.paste();
+                }
+                if ui.button("Select all             Ctrl+A").clicked() {
+                    self.select_all();
+                }
+                ui.separator();
+                if ui.add_enabled(any, egui::Button::new("Delete clip          Del")).clicked() {
                     self.delete_selection();
                 }
                 if ui.add_enabled(self.selection.is_some(), egui::Button::new("Ripple delete   Shift+Del")).clicked() {
@@ -1481,7 +1624,10 @@ impl EditorState {
                 Key::Home => self.playback.seek(Time::ZERO),
                 Key::End => self.playback.seek(end),
                 Key::S => self.split_at_playhead(),
-                Key::Delete | Key::Backspace => self.delete_selection(),
+                Key::Delete | Key::Backspace => {
+                    self.delete_selection();
+                }
+                Key::Escape => self.select_only(None),
                 Key::V => self.set_trim_mode(TrimMode::Normal),
                 Key::B => self.set_trim_mode(TrimMode::Ripple),
                 Key::N => self.set_trim_mode(TrimMode::Roll),
@@ -1497,8 +1643,40 @@ impl EditorState {
                 matches!(e, egui::Event::Key { key: Key::Delete | Key::Backspace, pressed: true, modifiers, .. } if modifiers.shift && !modifiers.command && !modifiers.alt)
             })
         });
-        if ripple_del {
+        // Clipboard keys arrive as Copy/Cut/Paste events, not key presses. (On
+        // Windows, Shift+Del also arrives as Cut: that one is ripple delete.)
+        let (copy, cut, paste, shift_del) = ctx.input(|i| {
+            let mut r = (false, false, false, false);
+            for e in &i.events {
+                match e {
+                    egui::Event::Copy => r.0 = true,
+                    egui::Event::Cut if i.modifiers.shift && !i.modifiers.command => r.3 = true,
+                    egui::Event::Cut => r.1 = true,
+                    egui::Event::Paste(text) => r.2 = text.starts_with(CLIPBOARD_MARK),
+                    _ => {}
+                }
+            }
+            r
+        });
+        if ripple_del || shift_del {
             self.ripple_delete_selected();
+        }
+        if copy || cut {
+            if cut {
+                self.cut_selection();
+            } else {
+                self.copy_selection();
+            }
+            if !self.clipboard.is_empty() {
+                // Paste only arrives when the system clipboard holds text, so leave a note there.
+                ctx.copy_text(format!("{CLIPBOARD_MARK} ({} clips)", self.clipboard.len()));
+            }
+        }
+        if paste {
+            self.paste();
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::A))) {
+            self.select_all();
         }
         if ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::ALT, Key::X))) {
             self.clear_marks();
@@ -1586,7 +1764,7 @@ impl EditorState {
         match ripple_delete(&self.project, self.active, id) {
             Some((cmd, closed)) => {
                 self.execute(cmd);
-                self.selection = None;
+                self.select_only(None);
                 let rate = self.seq().frame_rate;
                 self.status = if closed > Time::ZERO {
                     format!("Ripple delete: closed a {} gap", closed.timecode(rate))
@@ -1724,6 +1902,10 @@ impl LiveEdit {
         }
     }
 }
+
+/// Start of the text left on the system clipboard when clips are copied
+/// (egui only reports Ctrl+V when the clipboard holds text).
+pub const CLIPBOARD_MARK: &str = "Reelforge clips";
 
 /// Status message when an edit is refused because of a locked track.
 pub const LOCKED: &str = "That clip is on a locked track (or linked to one). Unlock the track to edit it";

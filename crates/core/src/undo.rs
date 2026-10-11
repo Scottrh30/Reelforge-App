@@ -866,33 +866,109 @@ pub fn delete_group(p: &Project, seq: usize, id: ClipId) -> Box<dyn Command> {
     Box::new(Batch { name: "Delete clip".into(), cmds })
 }
 
+/// Delete `ids` and everything linked to them, as one undo step.
+pub fn delete_clips(p: &Project, seq: usize, ids: &[ClipId]) -> Box<dyn Command> {
+    let all = expand_links(p, seq, ids);
+    let name = if all.len() > 1 { "Delete clips" } else { "Delete clip" };
+    let cmds = all.into_iter().map(|id| Box::new(RemoveClip::new(seq, id)) as Box<dyn Command>).collect();
+    Box::new(Batch { name: name.into(), cmds })
+}
+
+/// `ids` plus every clip linked to any of them, without repeats, in timeline order.
+pub fn expand_links(p: &Project, seq: usize, ids: &[ClipId]) -> Vec<ClipId> {
+    let s = &p.sequences[seq];
+    let mut out: Vec<ClipId> = Vec::new();
+    for id in ids {
+        for (_, c) in s.link_group(*id) {
+            if !out.contains(&c.id) {
+                out.push(c.id);
+            }
+        }
+    }
+    out.sort_by_key(|id| s.find_clip(*id).map(|(t, c)| (c.timeline_start, t)));
+    out
+}
+
 /// Move `id` to `(track, start)`; linked clips shift by the same time but stay on their tracks.
 pub fn move_group(p: &Project, seq: usize, id: ClipId, to: (usize, Time)) -> Result<Box<dyn Command>, &'static str> {
+    move_clips(p, seq, id, &[id], to)
+}
+
+/// Move a selection: clip `lead` (one of `selection`) goes to `(track, start)`
+/// and every selected clip, plus what's linked to them, shifts by the same
+/// time. Clips of the lead's kind also shift by the same number of tracks of
+/// that kind; linked clips of the other kind stay on their tracks.
+pub fn move_clips(p: &Project, seq: usize, lead: ClipId, selection: &[ClipId], to: (usize, Time)) -> Result<Box<dyn Command>, &'static str> {
+    let moves = move_targets(p, seq, lead, selection, to)?;
+    let cmds: Vec<Box<dyn Command>> = moves
+        .iter()
+        .filter(|m| (m.to_track, m.start) != (m.from_track, m.from_start))
+        .map(|m| Box::new(MoveClip { seq, id: m.id, from: (m.from_track, m.from_start), to: (m.to_track, m.start) }) as Box<dyn Command>)
+        .collect();
+    let groups = {
+        let s = &p.sequences[seq];
+        let mut links: Vec<Option<u64>> = moves.iter().map(|m| s.find_clip(m.id).and_then(|(_, c)| c.link).or(Some(u64::MAX - m.id.0))).collect();
+        links.sort();
+        links.dedup();
+        links.len()
+    };
+    Ok(Box::new(Batch { name: if groups > 1 { "Move clips" } else { "Move clip" }.into(), cmds }))
+}
+
+/// Where each clip goes in a [`move_clips`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipMove {
+    pub id: ClipId,
+    pub from_track: usize,
+    pub from_start: Time,
+    pub to_track: usize,
+    pub start: Time,
+}
+
+/// Plan a [`move_clips`] without making it (e.g. to draw where clips would land).
+pub fn move_targets(p: &Project, seq: usize, lead: ClipId, selection: &[ClipId], to: (usize, Time)) -> Result<Vec<ClipMove>, &'static str> {
     let s = &p.sequences[seq];
-    let group = s.link_group(id);
-    let Some(&(_, lead)) = group.iter().find(|(_, c)| c.id == id) else { return Err("clip not found") };
-    if s.is_locked(id) || s.tracks.get(to.0).is_none_or(|t| t.locked) {
+    let Some((lead_track, lead_clip)) = s.find_clip(lead) else { return Err("clip not found") };
+    let mut sel = selection.to_vec();
+    if !sel.contains(&lead) {
+        sel.push(lead);
+    }
+    let moving = expand_links(p, seq, &sel);
+    if moving.iter().any(|id| s.is_locked(*id)) || s.tracks.get(to.0).is_none_or(|t| t.locked) {
         return Err("the track is locked");
     }
-    let delta = to.1.0 - lead.timeline_start.0;
-    let ignore: Vec<ClipId> = group.iter().map(|(_, c)| c.id).collect();
-    let mut cmds: Vec<Box<dyn Command>> = Vec::new();
-    for (ti, c) in &group {
-        let (track, start) = if c.id == id { to } else { (*ti, Time(c.timeline_start.0 + delta)) };
+    let kind = s.tracks[lead_track].kind;
+    if s.tracks[to.0].kind != kind {
+        return Err("clips can only move to a track of the same kind");
+    }
+    // Tracks of the lead's kind, bottom first, so "up one video track" skips audio tracks.
+    let same_kind: Vec<usize> = (0..s.tracks.len()).filter(|&t| s.tracks[t].kind == kind).collect();
+    let rank = |t: usize| same_kind.iter().position(|&x| x == t);
+    let shift = rank(to.0).unwrap() as isize - rank(lead_track).unwrap() as isize;
+    let delta = to.1.0 - lead_clip.timeline_start.0;
+    let mut out = Vec::new();
+    for id in &moving {
+        let (ti, c) = s.find_clip(*id).unwrap();
+        let start = Time(c.timeline_start.0 + delta);
         if start < Time::ZERO {
             return Err("can't move before the start of the timeline");
         }
-        if s.tracks[track].kind != s.tracks[*ti].kind {
-            return Err("clips can only move to a track of the same kind");
+        // Only selected clips change track; linked partners keep theirs.
+        let track = if s.tracks[ti].kind == kind && sel.contains(id) {
+            let r = rank(ti).unwrap() as isize + shift;
+            *same_kind.get(usize::try_from(r).map_err(|_| "there's no track there")?).ok_or("there's no track there")?
+        } else {
+            ti
+        };
+        if s.tracks[track].locked {
+            return Err("the track is locked");
         }
-        if s.overlaps(track, start, c.duration, &ignore) {
+        if s.overlaps(track, start, c.duration, &moving) {
             return Err("it would overlap another clip");
         }
-        if (track, start) != (*ti, c.timeline_start) {
-            cmds.push(Box::new(MoveClip { seq, id: c.id, from: (*ti, c.timeline_start), to: (track, start) }));
-        }
+        out.push(ClipMove { id: c.id, from_track: ti, from_start: c.timeline_start, to_track: track, start });
     }
-    Ok(Box::new(Batch { name: "Move clip".into(), cmds }))
+    Ok(out)
 }
 
 #[cfg(test)]
