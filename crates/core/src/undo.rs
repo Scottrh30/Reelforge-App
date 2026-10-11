@@ -1004,6 +1004,21 @@ pub fn move_clips(p: &Project, seq: usize, lead: ClipId, selection: &[ClipId], t
     Ok(Box::new(Batch { name: if groups > 1 { "Move clips" } else { "Move clip" }.into(), cmds }))
 }
 
+/// Move the selected clips (and what's linked to them) `by` along the
+/// timeline, keeping their tracks: the keyboard nudge. Refused, with a reason,
+/// if anything would overlap another clip, pass the start or is locked.
+pub fn nudge_clips(p: &Project, seq: usize, selection: &[ClipId], by: Time) -> Result<Box<dyn Command>, &'static str> {
+    let s = &p.sequences[seq];
+    let lead = selection.iter().filter_map(|id| s.find_clip(*id)).min_by_key(|(_, c)| c.timeline_start).map(|(t, c)| (t, c.id, c.timeline_start));
+    let Some((track, id, start)) = lead else { return Err("select clips to nudge first") };
+    if by == Time::ZERO {
+        return Err("nothing to move");
+    }
+    let moves = move_targets(p, seq, id, selection, (track, start + by))?;
+    let cmds: Vec<Box<dyn Command>> = moves.iter().map(|m| Box::new(MoveClip { seq, id: m.id, from: (m.from_track, m.from_start), to: (m.to_track, m.start) }) as Box<dyn Command>).collect();
+    Ok(Box::new(Batch { name: if selection.len() > 1 { "Nudge clips" } else { "Nudge clip" }.into(), cmds }))
+}
+
 /// Where each clip goes in a [`move_clips`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipMove {
@@ -1079,6 +1094,34 @@ mod tests {
         a.link = Some(99);
         u.execute(p, Box::new(AddClip { seq: 0, track: 0, clip: v }));
         u.execute(p, Box::new(AddClip { seq: 0, track: 2, clip: a }));
+    }
+
+    #[test]
+    fn nudging_moves_the_selection_and_its_links_one_step() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        linked_pair(&mut p, &mut u);
+        u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(1003, 10.5, 2.0) }));
+        let f = Time::from_secs_f64(0.04);
+        let start = |p: &Project, id: u64| p.sequences[0].find_clip(ClipId(id)).unwrap().1.timeline_start;
+        // Right one frame: the video and its linked audio both move.
+        let cmd = nudge_clips(&p, 0, &[ClipId(1001)], f).unwrap();
+        assert_eq!(cmd.name(), "Nudge clip");
+        u.execute(&mut p, cmd);
+        assert_eq!((start(&p, 1001), start(&p, 1002)), (f, f));
+        // Not past the start of the timeline...
+        assert!(nudge_clips(&p, 0, &[ClipId(1001)], Time::ZERO - f - f).is_err());
+        // ...nor into the next clip (it starts at 10.5 s; this one ends at 10.04 s).
+        let half = Time::from_secs_f64(0.5);
+        assert_eq!(nudge_clips(&p, 0, &[ClipId(1001)], half).err(), Some("it would overlap another clip"));
+        // Both together move as one, and undo puts them back.
+        let both = nudge_clips(&p, 0, &[ClipId(1001), ClipId(1003)], half).unwrap();
+        u.execute(&mut p, both);
+        assert_eq!(start(&p, 1003), Time::from_secs_f64(11.0));
+        u.undo(&mut p);
+        u.undo(&mut p);
+        assert_eq!((start(&p, 1001), start(&p, 1003)), (Time::ZERO, Time::from_secs_f64(10.5)));
+        assert!(nudge_clips(&p, 0, &[], f).is_err());
     }
 
     #[test]

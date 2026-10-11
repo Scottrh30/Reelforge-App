@@ -12,11 +12,13 @@ mod history;
 mod masks;
 mod meters;
 mod panels;
+mod paste_attrs;
 mod playback;
 mod preview;
 mod proxies;
 mod safety;
 mod settings;
+mod snap;
 mod timeline;
 
 fn main() -> eframe::Result<()> {

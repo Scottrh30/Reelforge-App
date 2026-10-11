@@ -264,24 +264,55 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     // The gizmo on the selected layer: handles to scale, rotate, crop and move the anchor;
     // dragging anywhere else on the layer moves it.
     let selected = st.selection.and_then(|id| layers.iter().find(|(l, _)| l.id == id).copied());
+    let move_id = egui::Id::new("viewer_move");
     if let Some((layer, _)) = selected {
         let handle_drag = !mask_used && !tracker_drag && crate::gizmo::show(ui, st, &resp, area, layer, view, grabbed);
         if resp.dragged() && !st.playback.playing && !tracker_drag && !mask_used && !handle_drag {
-            let d = resp.drag_delta() / scale;
-            if d != Vec2::ZERO {
-                let id = layer.id;
-                let clip = st.seq().find_clip(id).map(|(_, c)| c.clone());
-                if let (Some(mut v), Some(clip)) = (st.visual(id), clip) {
-                    let shown = clip.transform_at(t);
-                    let mut moved = shown;
-                    match shown.valid_pin() {
-                        // A pinned layer moves by moving all four corners.
-                        Some(pin) => moved.pin = Some(pin.map(|p| [p[0] + d.x, p[1] + d.y])),
-                        None => {
-                            moved.position[0] += d.x;
-                            moved.position[1] += d.y;
-                        }
+            let (press, now, alt) = ui.input(|i| (i.pointer.press_origin(), i.pointer.interact_pos(), i.modifiers.alt));
+            let id = layer.id;
+            let clip = st.seq().find_clip(id).map(|(_, c)| c.clone());
+            if let (Some(press), Some(now), Some(mut v), Some(clip)) = (press, now, st.visual(id), clip) {
+                let shown = clip.transform_at(t);
+                // Worked out from where the layer was when the drag began (so snapping
+                // doesn't add up frame after frame), captured on the first frame.
+                let start = match ui.data(|d| d.get_temp::<(reelforge_core::ClipId, Transform)>(move_id)) {
+                    Some((cid, tr)) if cid == id => tr,
+                    _ => {
+                        ui.data_mut(|d| d.insert_temp(move_id, (id, shown)));
+                        shown
                     }
+                };
+                let raw = (now - press) / scale;
+                let mut d = [raw.x, raw.y];
+                if st.settings.viewer_snapping && !alt {
+                    let outline = |l: &crate::gizmo::GizmoLayer, tr: &Transform| {
+                        let pts = if tr.valid_pin().is_some() { tr.corners(l.size, frame_px) } else { tr.rect_corners(tr.clip_to_crop(l.rect, l.size), frame_px) };
+                        crate::snap::bounds(&pts)
+                    };
+                    let b = outline(&layer, &start);
+                    let others: Vec<crate::snap::Bounds> = layers.iter().filter(|(l, _)| l.id != id).map(|(l, tr)| outline(l, tr)).collect();
+                    let targets = crate::snap::Targets::new(frame_px, &others);
+                    let snapped = crate::snap::snap([b[0] + d[0], b[1] + d[1], b[2] + d[0], b[3] + d[1]], &targets, 8.0 / scale);
+                    d = [d[0] + snapped.offset[0], d[1] + snapped.offset[1]];
+                    // Guide lines across the frame where it lined up.
+                    let guide = egui::Stroke::new(1.5, Color32::from_rgb(255, 70, 70));
+                    let painter = ui.painter_at(frame_rect);
+                    for x in &snapped.guides_x {
+                        let sx = frame_rect.left() + x * scale;
+                        painter.line_segment([egui::pos2(sx, frame_rect.top()), egui::pos2(sx, frame_rect.bottom())], guide);
+                    }
+                    for y in &snapped.guides_y {
+                        let sy = frame_rect.top() + y * scale;
+                        painter.line_segment([egui::pos2(frame_rect.left(), sy), egui::pos2(frame_rect.right(), sy)], guide);
+                    }
+                }
+                let mut moved = shown;
+                match start.valid_pin() {
+                    // A pinned layer moves by moving all four corners.
+                    Some(pin) => moved.pin = Some(pin.map(|p| [p[0] + d[0], p[1] + d[1]])),
+                    None => moved.position = [start.position[0] + d[0], start.position[1] + d[1]],
+                }
+                if moved != shown {
                     // Keyed if position is animated (adds/updates a key at the playhead).
                     apply_transform_edit(&mut v, &shown, &moved, clip.source_time(t), clip.contains(t));
                     st.set_visual_live(id, v);
@@ -289,6 +320,9 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
             }
             ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
         }
+    }
+    if !resp.dragged() {
+        ui.data_mut(|d| d.remove::<(reelforge_core::ClipId, Transform)>(move_id));
     }
 
     transport(ui, st);

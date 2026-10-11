@@ -19,11 +19,13 @@ pub struct Settings {
     pub autosave_minutes: u32,
     /// Show picture thumbnails on video clips in the timeline.
     pub timeline_thumbnails: bool,
+    /// Layers dragged in the Viewer snap to the frame and to each other.
+    pub viewer_snapping: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, autosave_minutes: 2, timeline_thumbnails: true }
+        Self { hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, autosave_minutes: 2, timeline_thumbnails: true, viewer_snapping: true }
     }
 }
 
@@ -62,6 +64,8 @@ pub fn window(ctx: &egui::Context, st: &mut EditorState, open: &mut bool) {
         ui.add_space(4.0);
         ui.checkbox(&mut s.timeline_thumbnails, "Picture thumbnails on timeline clips")
             .on_hover_text("Small frames along each video clip. They're decoded in the background (from proxies when there are some).");
+        ui.checkbox(&mut s.viewer_snapping, "Snap layers in the Viewer")
+            .on_hover_text("A layer you drag lines up with the frame's centre and edges and with other layers, showing guide lines. Hold Alt while dragging to place it freely.");
 
         ui.add_space(8.0);
         ui.heading("Proxies");

@@ -4,6 +4,7 @@
 //! pure makes it easy to test, serialize, and drive from a headless renderer later.
 
 pub mod anim;
+pub mod attrs;
 pub mod audio;
 pub mod channels;
 pub mod clipboard;

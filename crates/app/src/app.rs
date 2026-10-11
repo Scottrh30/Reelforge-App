@@ -88,6 +88,13 @@ pub struct EditorState {
     /// Pictures for video clips on the timeline.
     pub thumbs: crate::thumbs::Thumbnails,
     pub settings_open: bool,
+    /// The Paste attributes dialog: open, the choices in it, and Cancel pressed.
+    pub paste_attrs_open: bool,
+    pub paste_attrs: reelforge_core::attrs::AttrSet,
+    pub paste_attrs_cancel: bool,
+    /// Modifier keys at the end of the last frame (to know what was held at a
+    /// Paste event, which carries none: Ctrl+Alt+V vs Ctrl+V).
+    last_modifiers: egui::Modifiers,
     pub proxies: crate::proxies::Proxies,
     /// Project revision when proxies were last looked for.
     proxied_rev: u64,
@@ -255,6 +262,11 @@ impl eframe::App for ReelforgeApp {
             crate::settings::window(&ctx, st, &mut open);
             st.settings_open = open;
         }
+        if st.paste_attrs_open {
+            let mut open = true;
+            crate::paste_attrs::window(&ctx, st, &mut open);
+            st.paste_attrs_open = open;
+        }
         if std::mem::take(&mut st.show_history) {
             if let Some(path) = self.dock.find_tab(&Tab::History) {
                 let _ = self.dock.set_active_tab(path);
@@ -370,6 +382,10 @@ impl EditorState {
             settings: Default::default(),
             thumbs: Default::default(),
             settings_open: false,
+            paste_attrs_open: false,
+            paste_attrs: Default::default(),
+            paste_attrs_cancel: false,
+            last_modifiers: Default::default(),
             proxies: Default::default(),
             proxied_rev: 0,
             session: None,
@@ -823,6 +839,49 @@ impl EditorState {
     }
 
     /// Paste at the playhead (or the first place after it with room).
+    /// Open the Paste attributes dialog (needs a copied clip).
+    pub fn open_paste_attributes(&mut self) {
+        self.commit_live_edit();
+        if self.clipboard.is_empty() {
+            self.status = "Paste attributes: copy a clip first (Ctrl+C), then select the clips to paste onto".into();
+            return;
+        }
+        self.paste_attrs_open = true;
+    }
+
+    /// Paste the chosen attributes of the copied clip onto the selected clips, as one undo step.
+    pub fn paste_attributes(&mut self, set: reelforge_core::attrs::AttrSet) {
+        self.commit_live_edit();
+        let ids = self.selected_ids();
+        match reelforge_core::attrs::paste_attributes(&self.project, self.active, &self.clipboard, &ids, set) {
+            Ok((cmd, n)) => {
+                self.execute(cmd);
+                self.status = format!("Pasted attributes onto {n} clip{}", if n == 1 { "" } else { "s" });
+            }
+            Err(e) => self.status = format!("Paste attributes: {e}"),
+        }
+    }
+
+    /// Move the selected clips `frames` frames along the timeline (negative = earlier).
+    pub fn nudge(&mut self, frames: i64) {
+        self.commit_live_edit();
+        let ids = self.selected_ids();
+        let by = Time(self.seq().frame_rate.frame_duration().0 * frames);
+        match reelforge_core::undo::nudge_clips(&self.project, self.active, &ids, by) {
+            Ok(cmd) => {
+                self.execute(cmd);
+                let n = frames.unsigned_abs();
+                self.status = format!("Nudged {} frame{} {}", n, if n == 1 { "" } else { "s" }, if frames < 0 { "earlier" } else { "later" });
+            }
+            Err(e) => self.status = format!("Can't nudge: {e}"),
+        }
+    }
+
+    /// Zoom the timeline so the whole sequence fits (done when it's next drawn).
+    pub fn zoom_to_fit(&mut self) {
+        self.timeline.fit_request = true;
+    }
+
     pub fn paste(&mut self) {
         self.commit_live_edit();
         if self.clipboard.is_empty() {
@@ -1782,8 +1841,26 @@ impl EditorState {
                 if ui.add_enabled(!self.clipboard.is_empty(), egui::Button::new("Paste at playhead  Ctrl+V")).clicked() {
                     self.paste();
                 }
+                if ui
+                    .add_enabled(!self.clipboard.is_empty(), egui::Button::new("Paste attributes…  Ctrl+Alt+V"))
+                    .on_hover_text("Put chosen parts of the copied clip (transform, effects, masks, audio levels…) onto the selected clips")
+                    .clicked()
+                {
+                    self.open_paste_attributes();
+                    ui.close();
+                }
                 if ui.button("Select all             Ctrl+A").clicked() {
                     self.select_all();
+                }
+                ui.separator();
+                if ui.add_enabled(any, egui::Button::new("Nudge earlier        ,")).on_hover_text("One frame (Shift+, for ten)").clicked() {
+                    self.nudge(-1);
+                }
+                if ui.add_enabled(any, egui::Button::new("Nudge later           .")).on_hover_text("One frame (Shift+. for ten)").clicked() {
+                    self.nudge(1);
+                }
+                if ui.button("Zoom timeline to fit   \\").clicked() {
+                    self.zoom_to_fit();
                 }
                 ui.separator();
                 if ui.add_enabled(any, egui::Button::new("Delete clip          Del")).clicked() {
@@ -1839,6 +1916,7 @@ impl EditorState {
                 ui.checkbox(&mut self.playback.scrub_audio, "Audio scrubbing")
                     .on_hover_text("Hear audio while dragging the playhead or stepping frames");
                 ui.checkbox(&mut self.settings.timeline_thumbnails, "Timeline thumbnails").on_hover_text("Show small frames along video clips");
+                ui.checkbox(&mut self.settings.viewer_snapping, "Snap in Viewer").on_hover_text("Dragged layers line up with the frame and each other (hold Alt to place freely)");
             });
             ui.separator();
             crate::history::undo_redo_buttons(ui, self);
@@ -1846,6 +1924,8 @@ impl EditorState {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // Modifier keys held as this frame's events begin (see the Paste handling below).
+        let prev_modifiers = std::mem::replace(&mut self.last_modifiers, ctx.input(|i| i.modifiers));
         if ctx.egui_wants_keyboard_input() {
             return; // typing in a text field
         }
@@ -1942,8 +2022,30 @@ impl EditorState {
                 Key::ArrowDown => self.jump(true),
                 Key::I => self.mark_in(),
                 Key::O => self.mark_out(),
+                Key::Comma => self.nudge(-1),
+                Key::Period => self.nudge(1),
+                Key::Backslash => self.zoom_to_fit(),
                 _ => {}
             }
+        }
+        // Shift+, and Shift+. nudge ten frames.
+        let big: Vec<i64> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } if modifiers.shift_only() => {
+                        match physical_key.unwrap_or(*key) {
+                            Key::Comma => Some(-10),
+                            Key::Period => Some(10),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+                .collect()
+        });
+        for n in big {
+            self.nudge(n);
         }
         let ripple_del = ctx.input(|i| {
             i.events.iter().any(|e| {
@@ -1952,13 +2054,19 @@ impl EditorState {
         });
         // Clipboard keys arrive as Copy/Cut/Paste events, not key presses. (On
         // Windows, Shift+Del also arrives as Cut: that one is ripple delete.)
-        let (copy, cut, paste, shift_del) = ctx.input(|i| {
-            let mut r = (false, false, false, false);
+        // Modifiers are followed event by event, so a quick Ctrl+Alt+V (keys
+        // released within one frame) is still told apart from Ctrl+V.
+        let (copy, cut, paste, shift_del, paste_attrs) = ctx.input(|i| {
+            let mut r = (false, false, false, false, false);
+            let mut held = prev_modifiers;
             for e in &i.events {
                 match e {
+                    egui::Event::ModifiersChanged(m) => held = *m,
                     egui::Event::Copy => r.0 = true,
                     egui::Event::Cut if i.modifiers.shift && !i.modifiers.command => r.3 = true,
                     egui::Event::Cut => r.1 = true,
+                    // Ctrl+Alt+V: Paste attributes.
+                    egui::Event::Paste(_) if held.alt => r.4 = true,
                     egui::Event::Paste(text) => r.2 = text.starts_with(CLIPBOARD_MARK),
                     _ => {}
                 }
@@ -1981,6 +2089,9 @@ impl EditorState {
         }
         if paste {
             self.paste();
+        }
+        if paste_attrs {
+            self.open_paste_attributes();
         }
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::A))) {
             self.select_all();

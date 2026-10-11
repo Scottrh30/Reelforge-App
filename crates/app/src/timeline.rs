@@ -26,6 +26,8 @@ pub struct TimelineView {
     drag: Option<Drag>,
     /// The marker whose editor (name, colour) is open.
     pub marker_edit: Option<usize>,
+    /// Zoom so the whole sequence fits, next time the timeline is drawn.
+    pub fit_request: bool,
 }
 
 /// Track-header actions, applied after drawing.
@@ -38,7 +40,7 @@ enum TrackAction {
 
 impl Default for TimelineView {
     fn default() -> Self {
-        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None, marker_edit: None }
+        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None, marker_edit: None, fit_request: false }
     }
 }
 
@@ -155,6 +157,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     };
 
     // ---- Zoom / scroll ----
+    if std::mem::take(&mut st.timeline.fit_request) {
+        // The whole sequence across the track area, with a little room at the end.
+        let width = (rect.width() - HEADER_W - 24.0).max(50.0);
+        let secs = st.seq().duration().as_secs_f64().max(1.0) as f32;
+        st.timeline.px_per_sec = (width / secs).clamp(2.0, 2000.0);
+        st.timeline.scroll = 0.0;
+        st.status = "Zoomed the timeline to fit the sequence".into();
+    }
     if resp.hovered() {
         let (zoom, scroll) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta));
         if zoom != 1.0 {

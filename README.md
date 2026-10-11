@@ -211,6 +211,18 @@ What works now:
   fit. Everything comes along: keyframes, effects, masks, titles, trackers, links (the copies are
   linked to each other, not to the originals). Paste into a composite shot works too: missing
   tracks are added
+- **Paste attributes** (`Ctrl+Alt+V`, or **Edit → Paste attributes…**): copy a clip, select
+  others, and choose what to put on them: position/scale/rotation/anchor/opacity, crop, corner
+  pin, blend mode, effects (replacing theirs or added after), masks, audio levels (volume, pan,
+  fades) or a title's text style (each keeps its own text). The same colour grade on every
+  shot in one step. Keyframes keep their distance from the clip's start, masks are scaled to
+  each clip's picture size, and it's one undo step
+- **Nudging**: `,` / `.` move the selected clips one frame earlier / later (`Shift` for ten),
+  with their linked audio; refused (with a reason) if they'd hit another clip. `\` zooms the
+  timeline to fit the whole sequence
+- **Snapping in the Viewer**: a layer you drag snaps its edges and middle to the frame's edges
+  and centre lines and to other layers' edges and middles, with red guide lines showing what
+  lined up. Hold **Alt** to place it freely; turn it off in **Edit → Snap in Viewer** or Settings
 - **Masks** (Controls panel, any video clip, title or composite shot): **+ Rectangle**,
   **+ Ellipse**, or **+ Freehand** (click points in the Viewer; click the first point or press
   Enter to close, Esc to cancel). Drag a mask's corner handles in the Viewer to reshape it (a
@@ -439,6 +451,10 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | Drag on empty track space | Select clips with a box (Ctrl adds to the selection) |
 | Ctrl+A / Esc | Select all / nothing |
 | Ctrl+X / Ctrl+C / Ctrl+V | Cut / copy / paste clips (paste goes to the playhead) |
+| Ctrl+Alt+V | Paste attributes of the copied clip onto the selected clips |
+| , / . | Nudge the selected clips one frame earlier / later (Shift: ten) |
+| \\ | Zoom the timeline to fit the sequence |
+| Alt while dragging a layer in the Viewer | Don't snap |
 | Enter / Esc while drawing a mask | Close the mask / cancel |
 | Double-click a composite shot | Open it |
 | Alt+X | Clear in/out |
@@ -604,6 +620,18 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   homography; `follow_keys` composes it with the target's transform (or, stabilising, applies
   its inverse, optionally against a Gaussian-smoothed camera path) and writes position /
   rotation / scale keys, or corner-pin keys
+- **Paste attributes** (`core/src/attrs.rs`): `paste_attributes` takes the first copied video
+  and audio clip as the source and builds one `Batch` of `SetClipVisual` / `SetClipAudio` /
+  `SetTitle` commands. Keys move by the difference of the two clips' `source_in` (keys live in
+  each clip's own time); mask points scale by the ratio of picture sizes. **Nudge** is
+  `nudge_clips` in `undo.rs`, which reuses `move_targets`, so links, locks and overlaps behave
+  exactly as when dragging. Ctrl+Alt+V reaches the app as a Paste event (egui turns Ctrl+V into
+  one), so the shortcut handler replays the frame's `ModifiersChanged` events to know whether
+  Alt was down at that moment, even if all the keys were released within the same frame.
+- **Viewer snapping** (`app/src/snap.rs`): a drag is computed from the layer's transform when
+  it began plus the pointer's total movement (so snapping never accumulates); the moving
+  layer's bounding box is snapped on each axis to the nearest of the frame's and other
+  layers' edges and centres within 8 screen pixels.
 - **Corner pin** (`core/src/transform.rs`): `Transform::pin` holds where the layer's corners go;
   `Transform::layer_map` gives an affine map or, when pinned, a `Homography` (solved from the
   four corners). Its clip-space matrix carries the perspective in w, so the compositor's
