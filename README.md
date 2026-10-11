@@ -28,11 +28,27 @@ What works now:
 - **On-canvas editing**: click a layer in the Viewer to select it, drag to move it. Each
   gesture (a drag, or a slider move) is one undo step
 
-- **Export** (**File → Export…**, `Ctrl+M`): renders the whole timeline to H.264 + AAC in
-  MP4, MOV or MKV, at full, half or quarter resolution, with three quality levels. It runs in
-  the background with a progress bar, time remaining, and Cancel; you can keep editing
-  meanwhile. Export waits for every exact frame at full resolution and uses the same compositor
-  and mixer as playback, so the file matches what you saw and heard
+- **Export** (**File → Export…**, `Ctrl+M`): renders the timeline (or the in/out range) in the
+  background; you can keep editing meanwhile. Export waits for every exact frame at full
+  resolution and uses the same compositor and mixer as playback, so the file matches what you
+  saw and heard
+  - **Presets**: YouTube 1080p, YouTube 4K (H.265), Shorts/Reels/TikTok 9:16 (1080×1920),
+    Instagram portrait 4:5, Square 1:1, ProRes 422 HQ and DNxHR HQ masters, a quick half-size
+    draft on the GPU, PNG/JPEG image sequences and audio-only WAV. Changing any setting turns
+    the preset into "Custom"
+  - **Formats**: H.264 or H.265 with AAC (MP4); ProRes 422 / 422 HQ and DNxHR SQ / HQ with
+    24-bit PCM audio (MOV); PNG, JPEG or TIFF sequences (`name_00001.png`, …); WAV. The file
+    extension follows the format
+  - **Any size**: the sequence size, half, quarter, common sizes, or custom. When the shape
+    differs from the sequence, choose **Fit** (black bars), **Fill** (crop the edges; the
+    default for vertical and square presets) or **Stretch**
+  - **GPU encoders**: tick "Use the graphics card" to encode H.264/H.265 with NVENC (NVIDIA),
+    Quick Sync (Intel) or AMF (AMD), several times faster. If none works on the PC it quietly
+    falls back to the software encoder; the queue shows which encoder was used
+  - **Export queue** (**File → Export queue…**): "Add to queue" collects several exports (each
+    a snapshot of the project at that moment, so you can keep editing or queue versions), then
+    **Start queue** renders them one after another, with progress, time left, cancel, retry,
+    reorder and "Show in folder". The status bar shows queue progress
 - **Audio levels**: per-clip volume (dB), pan and fade-in/out, plus per-track volume and pan,
   in the Controls panel (select an audio clip, or a video clip with linked audio). Changes
   are heard immediately during playback and are included in exports
@@ -240,7 +256,8 @@ want to distribute a closed-source app.
 **Export and FFmpeg builds:** export prefers `libx264`, which is in the `gpl` builds. LGPL builds
 don't include it, so Reelforge falls back, in order, to NVIDIA (`h264_nvenc`), Intel
 (`h264_qsv`), AMD (`h264_amf`) or Windows Media Foundation (`h264_mf`) hardware encoders, and
-finally MPEG-4 Part 2. The export result window says which encoder was used.
+finally MPEG-4 Part 2. The export queue says which encoder was used. H.265 needs `libx265`
+(also `gpl`) or a GPU encoder; ProRes, DNxHR and image sequences work with every build.
 
 ### Cross-compiling the Windows build from Linux
 
@@ -421,8 +438,9 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    locking~~
    (still to add: anchor point, crop, scale/rotate handles on the gizmo, more blend modes,
    Bézier keyframe handles)
-4. ~~Export to H.264/AAC with progress, cancel and an in/out range~~
-   (still to add: ProRes/DNxHR for intermediates, PNG sequences, an export queue)
+4. ~~Export: H.264/H.265/ProRes/DNxHR/image sequences/WAV, presets including vertical video,
+   fit/fill/stretch, GPU encoders, an in/out range, an export queue~~
+   (still to add: 10-bit HEVC/HDR, custom bitrates, saving your own presets)
 5. **Effects** ← you are here. Done: the effect stack, keyframable parameters, colour
    correction, Gaussian blur, chroma key, vignette. Next: levels/curves, sharpen, glow, LUTs,
    an effects browser, and effects that reach outside the layer (drop shadow, glow).

@@ -52,6 +52,8 @@ pub struct EditorState {
     pub meters: crate::meters::Meters,
     /// Set by the menu/shortcut; the app opens the export dialog.
     pub export_requested: bool,
+    /// Show the export queue window.
+    pub export_queue_requested: bool,
     /// Bumped on every project change so the audio mixer can be resynced.
     rev: u64,
     mixed_rev: u64,
@@ -184,11 +186,21 @@ impl eframe::App for ReelforgeApp {
         if std::mem::take(&mut st.export_requested) {
             self.export.open(st);
         }
-        egui::Panel::top("menu").show(ui, |ui| st.menu_bar(ui, self.export.is_running()));
+        if std::mem::take(&mut st.export_queue_requested) {
+            self.export.open_queue();
+        }
+        let export_note = self.export.summary();
+        egui::Panel::top("menu").show(ui, |ui| st.menu_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&st.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(note) = &export_note {
+                        if ui.link(note).on_hover_text("Open the export queue").clicked() {
+                            st.export_queue_requested = true;
+                        }
+                        ui.separator();
+                    }
                     let seq = &st.project.sequences[0];
                     ui.weak(format!("{}×{} @ {:.3} fps", seq.width, seq.height, seq.frame_rate.fps()));
                     ui.separator();
@@ -289,6 +301,7 @@ impl EditorState {
             live_edit: None,
             meters: Default::default(),
             export_requested: false,
+            export_queue_requested: false,
             rev: 1,
             mixed_rev: 0,
             waveforms: HashMap::new(),
@@ -1033,7 +1046,7 @@ impl EditorState {
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui, exporting: bool) {
+    fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("New project").clicked() {
@@ -1053,8 +1066,11 @@ impl EditorState {
                     self.import_dialog();
                 }
                 ui.separator();
-                if ui.add_enabled(!exporting, egui::Button::new("Export…               Ctrl+M")).clicked() {
+                if ui.button("Export…               Ctrl+M").clicked() {
                     self.export_requested = true;
+                }
+                if ui.button("Export queue…").clicked() {
+                    self.export_queue_requested = true;
                 }
                 ui.separator();
                 if ui.button("Open an autosave…").on_hover_text("Autosaves are made every few minutes (see Edit > Settings)").clicked() {

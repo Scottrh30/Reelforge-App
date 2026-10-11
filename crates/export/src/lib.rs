@@ -9,7 +9,7 @@
 
 use anyhow::{anyhow, Context as _, Result};
 use reelforge_core::{ClipId, FrameRate, Project, Time, TrackKind, VideoItem};
-use reelforge_media::{FrameSource, MixClip, Mixer, MovieWriter, Quality, WriterSettings};
+use reelforge_media::{Fit, FrameSource, MixClip, Mixer, MovieWriter, Quality, VideoCodec, WriterSettings};
 use reelforge_render::{wgpu, Compositor, DrawItem, LayerInput};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -24,6 +24,8 @@ const FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct ExportSettings {
+    /// The output file. For an image sequence this is the first file's name
+    /// without the number ("shot.png" becomes shot_00001.png, shot_00002.png, …).
     pub path: PathBuf,
     /// Output size; the sequence is rendered at its own size and scaled to this.
     pub width: u32,
@@ -33,6 +35,25 @@ pub struct ExportSettings {
     /// Range of the sequence to export, `[start, end)`.
     pub start: Time,
     pub end: Time,
+    /// The video format, or `None` for audio only (WAV).
+    pub video: Option<VideoCodec>,
+    /// Use a GPU encoder (NVENC, Quick Sync, AMF…) when there is one.
+    pub hardware: bool,
+    /// What to do when the output's shape differs from the sequence's.
+    pub fit: Fit,
+}
+
+impl ExportSettings {
+    /// The path actually written: for image sequences, `name_%05d.ext`.
+    pub fn output_path(&self) -> PathBuf {
+        match self.video {
+            Some(v) if v.is_sequence() => {
+                let stem = self.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "frame".into());
+                self.path.with_file_name(format!("{stem}_%05d.{}", v.extension()))
+            }
+            _ => self.path.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -61,6 +82,8 @@ pub struct Report {
     pub width: u32,
     pub height: u32,
     pub video_codec: String,
+    /// The encoder ran on the GPU.
+    pub hardware: bool,
     pub has_audio: bool,
     pub elapsed: Duration,
 }
@@ -166,12 +189,17 @@ pub fn export_sequence(
     }
 
     let audio_clips = if settings.include_audio { mix_clips(project, AUDIO_RATE) } else { Vec::new() };
-    let has_audio = !audio_clips.is_empty();
+    // Image sequences carry no sound.
+    let has_audio = !audio_clips.is_empty() && !settings.video.is_some_and(|v| v.is_sequence());
+    if settings.video.is_none() && !has_audio {
+        return Err(anyhow!("nothing to export: audio only, but the range has no audio"));
+    }
+    let out_path = settings.output_path();
     let mut mixer = Mixer::new(AUDIO_RATE);
     mixer.set_clips(audio_clips);
     let sr = FrameRate::new(AUDIO_RATE as i64, 1);
 
-    let mut writer = MovieWriter::create(&settings.path, &WriterSettings {
+    let mut writer = MovieWriter::create(&out_path, &WriterSettings {
         width: settings.width,
         height: settings.height,
         input_size: Some(frame_size),
@@ -179,6 +207,9 @@ pub fn export_sequence(
         quality: settings.quality,
         audio_rate: has_audio.then_some(AUDIO_RATE),
         proxy: false,
+        video: settings.video,
+        hardware: settings.hardware,
+        fit: settings.fit,
     })?;
     let video_codec = writer.video_codec.clone();
 
@@ -191,6 +222,18 @@ pub fn export_sequence(
 
     for (n, i) in (first..last).enumerate() {
         let t = Time::from_frame(i, rate);
+        if settings.video.is_none() {
+            // Audio only: just the mix for this frame's span.
+            let next = Time::from_frame(i + 1, rate).to_frame(sr);
+            audio_buf.resize((next - audio_pos).max(0) as usize * 2, 0.0);
+            mixer.render(audio_pos, &mut audio_buf);
+            writer.write_audio(&audio_buf)?;
+            audio_pos = next;
+            if !on_progress(Progress { done: n as u64 + 1, total, elapsed: started.elapsed() }) {
+                return Err(Cancelled.into());
+            }
+            continue;
+        }
 
         // Exact frame for every visible layer (two per dissolve), with keyframes applied.
         struct Gathered {
@@ -296,8 +339,10 @@ pub fn export_sequence(
     }
 
     let path = writer.finish()?;
+    let hardware = reelforge_media::is_hardware_encoder(&video_codec);
     Ok(Report {
         path,
+        hardware,
         frames: total,
         width: settings.width & !1,
         height: settings.height & !1,

@@ -91,6 +91,7 @@ pub fn make_proxy(src: &Path, info: &MediaInfo, cancel: &AtomicBool, mut progres
         quality: Quality::Medium,
         audio_rate: None,
         proxy: true,
+        ..Default::default()
     })?;
     let blank = vec![0u8; (first.width * first.height * 4) as usize];
     // One proxy frame per nominal frame time, so the proxy lines up with the

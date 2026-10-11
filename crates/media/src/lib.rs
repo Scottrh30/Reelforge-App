@@ -17,7 +17,7 @@ pub mod source;
 pub use audio::{waveform_peaks, AudioReader};
 pub use cache::{CacheKey, FrameCache};
 pub use decoder::{DecoderHandle, VideoFrame};
-pub use encode::{MovieWriter, Quality, WriterSettings};
+pub use encode::{is_hardware_encoder, sequence_file, Fit, MovieWriter, Quality, VideoCodec, WriterSettings};
 pub use mixer::{MixClip, Mixer};
 pub use probe::probe;
 pub use source::FrameSource;

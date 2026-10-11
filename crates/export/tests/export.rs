@@ -4,7 +4,7 @@
 
 use reelforge_core::{BlendMode, Clip, ClipId, FrameRate, MediaAsset, MediaId, Project, Sequence, Time, Transform};
 use reelforge_export::{export_sequence, frame_range, Cancelled, ExportSettings};
-use reelforge_media::{probe, AudioReader, FrameSource, Quality};
+use reelforge_media::{probe, AudioReader, Fit, FrameSource, Quality, VideoCodec};
 use reelforge_render::{headless_device, Compositor, LayerInput};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -64,6 +64,9 @@ fn settings(path: PathBuf) -> ExportSettings {
         include_audio: true,
         start: Time::ZERO,
         end: Time::from_secs_f64(2.0),
+        video: Some(VideoCodec::H264),
+        hardware: false,
+        fit: Fit::Letterbox,
     }
 }
 
@@ -470,4 +473,111 @@ fn exports_titles_with_their_transform_and_effects() {
     assert!(close(pixel(10, 200, 180), [254, 0, 0]), "{:?}", pixel(10, 200, 180));
     // Half-way through the fade (t = 1.5 s) it's 50% over red, in linear light.
     assert!(close(pixel(37, 420, 180), [255, 188, 188]), "{:?}", pixel(37, 420, 180));
+}
+
+/// Red video with a 440 Hz tone, 1 s, as a one-clip project (video + linked audio).
+fn red_with_tone() -> Option<(Project, PathBuf)> {
+    let src = ffmpeg("rf_red_tone.mp4", &[
+        "-f", "lavfi", "-i", "color=c=red:s=640x360:r=25:d=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+    ])?;
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &src));
+    let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+    seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(1.0), None)];
+    seq.tracks[2].clips = vec![Clip::new(ClipId(2), MediaId(1), s(0.0), s(0.0), s(1.0), None)];
+    p.sequences = vec![seq];
+    Some((p, src))
+}
+
+fn first_frame_centre(path: &Path) -> [i32; 3] {
+    let mut dec = FrameSource::open(path, None).unwrap();
+    let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+    let i = (((f.height / 2) * f.width + f.width / 2) * 4) as usize;
+    [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+}
+
+#[test]
+fn exports_every_video_format() {
+    let Some((p, _)) = red_with_tone() else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let red = |c: [i32; 3]| c[0] > 215 && c[1] < 30 && c[2] < 30; // lossy codecs drift a little
+    for (codec, want_codec, want_audio) in [
+        (VideoCodec::H265, "hevc", Some("aac")),
+        (VideoCodec::ProRes422Hq, "prores", Some("pcm_s24le")),
+        (VideoCodec::DnxhrHq, "dnxhd", Some("pcm_s24le")),
+    ] {
+        let out = std::env::temp_dir().join(format!("rf_fmt_{}.{}", want_codec, codec.extension()));
+        let mut st = settings(out.clone());
+        (st.end, st.video) = (Time::from_secs_f64(0.4), Some(codec));
+        let r = export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        let info = probe(&out).unwrap();
+        assert_eq!(info.video.as_ref().unwrap().codec, want_codec, "{codec:?} via {}", r.video_codec);
+        assert_eq!(info.audio.as_ref().map(|a| a.codec.as_str()), want_audio, "{codec:?}");
+        assert!(red(first_frame_centre(&out)), "{codec:?}: {:?}", first_frame_centre(&out));
+    }
+    // Image sequences: one numbered file per frame, no audio.
+    for codec in [VideoCodec::PngSequence, VideoCodec::JpegSequence, VideoCodec::TiffSequence] {
+        let dir = std::env::temp_dir().join(format!("rf_seq_{}", codec.extension()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut st = settings(dir.join(format!("shot.{}", codec.extension())));
+        (st.end, st.video) = (Time::from_secs_f64(0.2), Some(codec));
+        let r = export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        assert!(!r.has_audio);
+        let mut files: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        files.sort();
+        let ext = codec.extension();
+        assert_eq!(files, (1..=5).map(|i| format!("shot_{i:05}.{ext}")).collect::<Vec<_>>());
+        let c = first_frame_centre(&dir.join(format!("shot_00001.{ext}"))); assert!(red(c), "{codec:?} {c:?}");
+    }
+}
+
+#[test]
+fn letterboxes_into_a_different_shape_and_exports_audio_alone() {
+    let Some((p, _)) = red_with_tone() else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    // A 16:9 sequence into a 9:16 frame: bars above and below, picture in the middle.
+    let out = std::env::temp_dir().join("rf_vertical.mp4");
+    let mut st = settings(out.clone());
+    (st.width, st.height, st.end, st.include_audio) = (360, 640, Time::from_secs_f64(0.2), false);
+    // Asking for the GPU falls back to software quietly when there isn't one.
+    st.hardware = true;
+    let r = export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    eprintln!("encoder used: {} (hardware: {})", r.video_codec, r.hardware);
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+    assert_eq!((f.width, f.height), (360, 640));
+    let at = |x: u32, y: u32| f.rgba[((y * 360 + x) * 4) as usize] as i32;
+    assert!(at(180, 40) < 20, "black bar at the top");
+    assert!(at(180, 320) > 230, "picture in the middle");
+    assert!(at(180, 600) < 20, "black bar at the bottom");
+    // The picture is 360 × 202 (16:9), so it ends about 101 px either side of the middle.
+    assert!(at(180, 320 - 95) > 200 && at(180, 320 - 108) < 40);
+
+    // Fill instead: the picture covers the whole frame, edges cut off.
+    st.fit = Fit::Crop;
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+    let at = |x: u32, y: u32| f.rgba[((y * 360 + x) * 4) as usize] as i32;
+    assert!(at(180, 10) > 200 && at(5, 320) > 200 && at(180, 630) > 200, "no bars when cropping");
+
+    // Audio only.
+    let wav = std::env::temp_dir().join("rf_audio_only.wav");
+    let mut st = settings(wav.clone());
+    (st.video, st.end) = (None, Time::from_secs_f64(1.0));
+    let r = export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    assert!(r.has_audio);
+    let info = probe(&wav).unwrap();
+    assert!(info.video.is_none());
+    assert_eq!(info.audio.as_ref().unwrap().codec, "pcm_s24le");
+    assert!((info.duration.as_secs_f64() - 1.0).abs() < 0.05, "{}", info.duration);
+    let mut rd = AudioReader::open(&wav, 48_000).unwrap();
+    let mut buf = vec![0.0f32; 48_000];
+    rd.read(12_000, &mut buf);
+    // lavfi's sine is 1/8 amplitude: RMS 0.088.
+    assert!((rms(&buf) - 0.088).abs() < 0.01, "the tone is there: {}", rms(&buf));
 }
