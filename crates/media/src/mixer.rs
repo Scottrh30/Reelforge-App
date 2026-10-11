@@ -30,12 +30,16 @@ pub struct MixClip {
     /// the clip's level follows it (multiplied by `gain`, which then carries
     /// only the track volume).
     pub volume_keys: Vec<(i64, f32)>,
+    /// Media samples per timeline sample: 1 normally, 0.5 for half speed,
+    /// negative when reversed, 0 for a freeze frame (silent). `source_in` is
+    /// the media sample heard at `start`.
+    pub rate: f64,
 }
 
 impl MixClip {
     /// A clip at unity gain, centred, without fades.
     pub fn plain(id: ClipId, path: PathBuf, start: i64, source_in: i64, len: i64) -> Self {
-        Self { id, path, start, source_in, len, gain: 1.0, balance: [1.0, 1.0], fade_in: 0, fade_out: 0, volume_keys: Vec::new() }
+        Self { id, path, start, source_in, len, gain: 1.0, balance: [1.0, 1.0], fade_in: 0, fade_out: 0, volume_keys: Vec::new(), rate: 1.0 }
     }
 }
 
@@ -44,11 +48,13 @@ pub struct Mixer {
     clips: Vec<MixClip>,
     readers: HashMap<ClipId, Option<AudioReader>>,
     scratch: Vec<f32>,
+    /// Media read for a clip played at another speed, before resampling.
+    span: Vec<f32>,
 }
 
 impl Mixer {
     pub fn new(rate: u32) -> Self {
-        Self { rate, clips: Vec::new(), readers: HashMap::new(), scratch: Vec::new() }
+        Self { rate, clips: Vec::new(), readers: HashMap::new(), scratch: Vec::new(), span: Vec::new() }
     }
 
     pub fn rate(&self) -> u32 {
@@ -87,9 +93,32 @@ impl Mixer {
                 }
             });
             let Some(reader) = reader else { continue };
+            if clip.rate == 0.0 {
+                continue; // a freeze frame has no sound
+            }
             let n = (e - s) as usize * CHANNELS;
             self.scratch.resize(n, 0.0);
-            reader.read(clip.source_in + (s - clip.start), &mut self.scratch);
+            if clip.rate == 1.0 {
+                reader.read(clip.source_in + (s - clip.start), &mut self.scratch);
+            } else {
+                // Varispeed, like tape: read the stretch of media this block covers
+                // and resample it linearly (backwards when the rate is negative).
+                let m = |k: i64| clip.source_in as f64 + (s - clip.start + k) as f64 * clip.rate;
+                let (m0, m1) = (m(0), m(e - s));
+                let lo = m0.min(m1).floor() as i64 - 1;
+                let hi = m0.max(m1).ceil() as i64 + 2;
+                self.span.resize((hi - lo) as usize * CHANNELS, 0.0);
+                reader.read(lo, &mut self.span);
+                for k in 0..(e - s) {
+                    let x = (m(k) - lo as f64).max(0.0);
+                    let i = (x as usize).min((hi - lo) as usize - 2);
+                    let f = (x - i as f64) as f32;
+                    for ch in 0..CHANNELS {
+                        let (a, b) = (self.span[i * CHANNELS + ch], self.span[(i + 1) * CHANNELS + ch]);
+                        self.scratch[k as usize * CHANNELS + ch] = a + (b - a) * f;
+                    }
+                }
+            }
             let dst = &mut out[(s - pos) as usize * CHANNELS..][..n];
             let [bl, br] = clip.balance;
             let fading = clip.fade_in > 0 || clip.fade_out > 0;

@@ -286,7 +286,8 @@ fn tracker_overlay(ui: &mut egui::Ui, st: &mut EditorState, resp: &egui::Respons
     let t = st.playback.playhead;
     let m = clip.transform_at(t).matrix(frame_px);
     let half = [lw as f32 / 2.0, lh as f32 / 2.0];
-    let src = clip.source_time(t.max(clip.timeline_start).min(clip.timeline_end()));
+    // Trackers work in media time.
+    let src = clip.media_at(t.max(clip.timeline_start).min(clip.timeline_end()));
     let pos = trk.shown_at(src);
     let to_s = |p: [f32; 2]| {
         let f = m.apply([p[0] - half[0], p[1] - half[1]]);
@@ -359,6 +360,11 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState) {
         ui.separator();
         ui.label(RichText::new(st.playback.playhead.timecode(rate)).monospace().size(15.0));
         ui.weak(format!("/ {}", end.timecode(rate)));
+        let sh = st.playback.shuttle;
+        if st.playback.playing && sh != 1.0 {
+            let label = if sh < 0.0 { format!("Reverse {}x", sh.abs()) } else { format!("Fast {sh}x") };
+            ui.colored_label(Color32::from_rgb(255, 196, 64), label).on_hover_text("J / L to change speed, K to stop (no sound while shuttling)");
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let any = st.project.media.iter().any(|m| st.proxies.ready(&m.path).is_some());
             let label = if st.settings.use_proxies { "Proxies on" } else { "Proxies off" };
@@ -413,7 +419,7 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.monospace(clip.duration.timecode(rate));
                 ui.end_row();
                 ui.weak("Source in");
-                ui.monospace(clip.source_in.timecode(rate));
+                ui.monospace(clip.media_time(clip.source_in).timecode(rate));
                 ui.end_row();
             });
             if locked {
@@ -421,6 +427,9 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.colored_label(ui.visuals().warn_fg_color, "On a locked track: unlock it to make changes.");
             }
             let footage = clip.title.is_none() && clip.nested.is_none() && media.is_some_and(|m| m.info.video.is_some() && m.info.duration > Time::ZERO);
+            if !st.project.is_still(clip.media) {
+                ui.add_enabled_ui(!locked, |ui| speed_controls(ui, st, &clip));
+            }
             ui.add_enabled_ui(!locked, |ui| {
                 if clip.title.is_some() {
                     ui.add_space(10.0);
@@ -1210,7 +1219,7 @@ fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_co
     ui.heading("Motion tracking");
     let Some([lw, lh]) = st.project.picture_size(clip) else { return };
     let t = st.playback.playhead;
-    let src = clip.source_time(t.max(clip.timeline_start).min(clip.timeline_end()));
+    let src = clip.media_at(t.max(clip.timeline_start).min(clip.timeline_end()));
     let Some(trk) = clip.tracker.clone() else {
         ui.weak("Follow a detail through the clip, then make another layer move with it, or hold this clip steady.");
         if ui.button("Add tracker").clicked() {
@@ -1259,10 +1268,10 @@ fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_co
 
     if let (Some(a), Some(b)) = (trk.path.first(), trk.path.last()) {
         let rate = st.seq().frame_rate;
-        let to_seq = |s: Time| clip.timeline_start + (s - clip.source_in);
+        let to_seq = |s: Time| clip.timeline_of_media(s).unwrap_or(clip.timeline_start);
         ui.weak(format!("{} frames tracked, {} to {}", trk.path.len(), to_seq(a.at).timecode(rate), to_seq(b.at).timecode(rate)));
         // Where it can go: this clip (stabilise), or another video layer that overlaps the track.
-        let (ta, tb) = (to_seq(a.at), to_seq(b.at));
+        let (ta, tb) = { let (x, y) = (to_seq(a.at), to_seq(b.at)); (x.min(y), x.max(y)) };
         // Targets: (clip, mask index), where a mask index means "this clip's mask".
         let mut targets: Vec<((reelforge_core::ClipId, Option<usize>), String)> = vec![((clip.id, None), "This clip: stabilise".into())];
         for (i, m) in clip.masks.iter().enumerate() {
@@ -1301,4 +1310,55 @@ fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_co
             st.set_tracker(clip.id, None, "Remove tracker");
         }
     });
+}
+
+/// Speed: slow motion, fast motion, reverse, freeze frames.
+fn speed_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
+    ui.add_space(10.0);
+    ui.heading("Speed");
+    let id = clip.id;
+    let current = clip.speed * 100.0;
+    if clip.speed == 0.0 {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Freeze frame").strong());
+            if ui.button("Play from here").on_hover_text("Turn it back into moving footage at 100%").clicked() {
+                st.set_speed(id, 1.0, false);
+            }
+        });
+        return;
+    }
+    ui.horizontal(|ui| {
+        // Edited as a number, applied when you let go (each change re-times the clip).
+        let key = egui::Id::new(("speed_edit", id));
+        let mut v: f32 = ui.data(|d| d.get_temp(key)).unwrap_or(current);
+        let r = ui.add(egui::DragValue::new(&mut v).range(1.0..=2000.0).speed(1.0).suffix(" %").fixed_decimals(0));
+        if r.dragged() || r.has_focus() {
+            ui.data_mut(|d| d.insert_temp(key, v));
+        } else {
+            ui.data_mut(|d| d.remove::<f32>(key));
+        }
+        if (r.drag_stopped() || r.lost_focus()) && (v - current).abs() > 0.01 {
+            st.set_speed(id, v / 100.0, clip.reverse);
+        }
+        let mut rev = clip.reverse;
+        if ui.checkbox(&mut rev, "Reverse").changed() {
+            st.set_speed(id, clip.speed, rev);
+        }
+    });
+    ui.horizontal(|ui| {
+        for p in [25.0f32, 50.0, 100.0, 200.0, 400.0] {
+            if ui.selectable_label((current - p).abs() < 0.01, format!("{p:.0}%")).clicked() && (current - p).abs() > 0.01 {
+                st.set_speed(id, p / 100.0, clip.reverse);
+            }
+        }
+    });
+    if ui.button("Freeze frame at playhead").on_hover_text("Shift+F: holds the frame for 2 s and pushes the rest of the clip later").clicked() {
+        st.freeze_frame_at_playhead();
+    }
+    if clip.is_retimed() {
+        ui.weak("The clip's length follows its speed; clips after it move along to make room. Audio changes pitch with speed, like tape.");
+        if clip.reverse {
+            ui.weak("Reversed footage previews most smoothly with proxies on.");
+        }
+    }
 }

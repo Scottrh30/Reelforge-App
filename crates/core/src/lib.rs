@@ -11,6 +11,7 @@ pub mod edit;
 pub mod effects;
 pub mod mask;
 pub mod project;
+pub mod speed;
 pub mod time;
 pub mod title;
 pub mod track;

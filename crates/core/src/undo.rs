@@ -215,6 +215,9 @@ impl Command for SplitClip {
             effects: clip.effects.clone(),
             title: clip.title.clone(),
             nested: clip.nested,
+            speed: clip.speed,
+            reverse: clip.reverse,
+            anchor: clip.anchor,
             masks: clip.masks.clone(),
             tracker: clip.tracker.clone(),
         };
@@ -364,7 +367,7 @@ pub fn trim_range(p: &Project, seq: usize, id: ClipId, edge: Edge) -> Option<(Ti
         match edge {
             Edge::Start => {
                 if !still {
-                    lo = lo.max(Time(-c.source_in.0));
+                    lo = lo.max(p.clip_limits(c).0 - c.source_in);
                 }
                 lo = lo.max(Time(-c.timeline_start.0)); // not before 0
                 hi = hi.min(c.duration - frame);
@@ -375,8 +378,7 @@ pub fn trim_range(p: &Project, seq: usize, id: ClipId, edge: Edge) -> Option<(Ti
             Edge::End => {
                 lo = lo.max(frame - c.duration);
                 if !still {
-                    let media_len = p.source_len(c);
-                    hi = hi.min(media_len - (c.source_in + c.duration));
+                    hi = hi.min(p.clip_limits(c).1 - (c.source_in + c.duration));
                 }
                 for o in others.filter(|o| o.timeline_start >= c.timeline_end()) {
                     hi = hi.min(o.timeline_start - c.timeline_end());
@@ -807,6 +809,29 @@ impl Command for SetTracker {
         if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
             c.tracker = self.old.clone();
         }
+    }
+}
+
+/// Add, move, rename, recolour or remove markers (the whole list before and after).
+pub struct SetMarkers {
+    pub seq: usize,
+    pub old: Vec<Marker>,
+    pub new: Vec<Marker>,
+}
+
+impl Command for SetMarkers {
+    fn name(&self) -> &str {
+        match self.new.len().cmp(&self.old.len()) {
+            std::cmp::Ordering::Greater => "Add marker",
+            std::cmp::Ordering::Less => "Remove marker",
+            std::cmp::Ordering::Equal => "Change marker",
+        }
+    }
+    fn apply(&mut self, p: &mut Project) {
+        p.sequences[self.seq].markers = self.new.clone();
+    }
+    fn undo(&mut self, p: &mut Project) {
+        p.sequences[self.seq].markers = self.old.clone();
     }
 }
 

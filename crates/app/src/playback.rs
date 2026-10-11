@@ -23,11 +23,14 @@ pub struct Playback {
     /// Hear audio when the playhead moves while paused (dragging, frame stepping).
     pub scrub_audio: bool,
     last_heard: Time,
+    /// Shuttle speed (J/K/L): 1 = normal play, 2/4/8 faster, negative backwards.
+    /// Anything but 1 runs on the system clock, without sound.
+    pub shuttle: f64,
 }
 
 impl Playback {
     pub fn with_audio(audio: Option<AudioEngine>) -> Self {
-        Self { audio, scrub_audio: true, ..Default::default() }
+        Self { audio, scrub_audio: true, shuttle: 1.0, ..Default::default() }
     }
 
     /// Call once per UI frame: plays a scrub snippet if the paused playhead moved.
@@ -53,8 +56,23 @@ impl Playback {
         self.wall_clock = false;
         self.anchor = Some((Instant::now(), self.playhead));
         if let Some(a) = &mut self.audio {
-            a.play(self.playhead);
+            if self.shuttle == 1.0 {
+                a.play(self.playhead);
+            } else {
+                a.stop();
+            }
         }
+    }
+
+    /// J (`dir` = -1) or L (`dir` = 1): play that way; pressing again doubles
+    /// the speed, up to 8×.
+    pub fn shuttle(&mut self, dir: f64, end: Time) {
+        let same_way = self.playing && self.shuttle.signum() == dir.signum();
+        self.shuttle = if same_way { (self.shuttle * 2.0).clamp(-8.0, 8.0) } else { dir };
+        if dir > 0.0 && self.playhead >= end {
+            self.playhead = Time::ZERO;
+        }
+        self.play();
     }
 
     pub fn pause(&mut self) {
@@ -71,6 +89,7 @@ impl Playback {
         if self.playing {
             self.pause();
         } else {
+            self.shuttle = 1.0;
             if self.playhead >= end {
                 self.playhead = Time::ZERO; // replay from start
             }
@@ -94,7 +113,17 @@ impl Playback {
     /// Advance the playhead; stops at `end`.
     pub fn tick(&mut self, rate: FrameRate, end: Time) {
         let Some((started, from)) = self.anchor else { return };
-        let wall = from + Time::from_secs_f64(started.elapsed().as_secs_f64());
+        let wall = from + Time::from_secs_f64(started.elapsed().as_secs_f64() * self.shuttle);
+        if self.shuttle != 1.0 {
+            // Shuttling: system clock, either direction.
+            if wall <= Time::ZERO || wall >= end {
+                self.playhead = wall.max(Time::ZERO).min(end);
+                self.pause();
+            } else {
+                self.playhead = wall.snap(rate);
+            }
+            return;
+        }
         let t = match (&self.audio, self.wall_clock) {
             (Some(a), false) => match a.position() {
                 Some(p) => p,

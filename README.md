@@ -149,6 +149,23 @@ What works now:
   it for all of them. Relinking can be undone. Export won't start while media is missing
 - **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, proxies, autosave
   interval, and the proxy/autosave folders
+- **Speed** (Controls panel, any footage or composite-shot clip): 1–2000%, with one-click 25/50/
+  100/200/400%, and **Reverse**. The clip keeps playing the same stretch of footage, so slow
+  motion makes it longer (clips after it on its tracks move along) and fast motion shorter;
+  linked audio changes speed with it, pitch and all, like tape. Keyframes stay where they are on
+  the timeline. Trimming, slipping, splitting and tracking all follow the speed
+  - **Freeze frame** (`Shift+F`, the Edit menu, or the Speed section): holds the frame at the
+    playhead for 2 s (trim it to taste), splitting the clip there and pushing the rest of it
+    (and its audio) later. A freeze frame's **Play from here** turns it back into motion
+  - Reversed footage decodes backwards, which is slow for long-GOP files: proxies (all
+    keyframes) make it smooth
+- **J / K / L**: play backwards / stop / play forwards; press J or L again for 2×, 4×, 8×. Shuttling
+  runs on the system clock without sound; Space is normal playback with sound
+- **Markers**: **M** drops a marker at the playhead. Markers sit on the ruler (with a faint line
+  through the tracks); click one to jump to it, drag it to move it (it snaps to clip edges and the
+  playhead, Alt to stop snapping), double-click or right-click it to name it, colour it or delete
+  it. Clips snap to markers when dragged
+- **Up / Down arrows**: jump to the previous / next cut, marker, or in/out point
 - **Selecting several clips**: **Ctrl+click** (or Shift+click) adds a clip to the selection or
   takes it out; **drag a box** over empty track space to select every clip it touches (hold
   Ctrl to add to the selection); **Ctrl+A** selects everything, **Esc** nothing. Dragging any
@@ -354,6 +371,10 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | Y / U | Slip / Slide tool (drag a clip) |
 | I / O | Mark in / out at the playhead |
 | Ctrl+T | Add a title at the playhead |
+| J / K / L | Play backwards / stop / play forwards (again for 2×, 4×, 8×) |
+| M | Add a marker at the playhead |
+| Up / Down | Previous / next cut, marker or in/out point |
+| Shift+F | Freeze frame at the playhead |
 | Ctrl+G | Make composite shot (the selected clips, or everything between in and out) |
 | Ctrl+click / Shift+click | Add a clip to the selection, or take it out |
 | Drag on empty track space | Select clips with a box (Ctrl adds to the selection) |
@@ -460,6 +481,17 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   `mix_clips` flattens a shot's audio into the outer mix, shifted and cut to the clip.
   `undo::make_composite` builds the "Make composite shot" command (whole-sequence snapshots for
   undo); `Project::contains_sequence` stops a shot going inside itself
+- **Speed** (`core/src/speed.rs`): clip time (`Clip::source_time`, what keyframes, effects,
+  masks and volume keys use) always runs at the timeline's pace; `Clip::media_time` maps it to the
+  media: `anchor + rate × clip time` (rate = speed, negative reversed, 0 frozen). Normal clips have
+  rate 1 and anchor 0, so nothing changed for them, and splitting, trimming and slipping need no
+  special cases: they move the clip-time window and the mapping carries on. `change_speed` keeps
+  the clip's media span and recomputes length and anchor; trim limits come from
+  `Clip::clip_time_limits`. The mixer plays a clip at `rate` by reading the media span a block
+  covers and resampling it linearly (backwards for negative rates)
+- **Shuttle and markers**: `Playback::shuttle` runs the playhead from the system clock at ±1–8×
+  (the audio clock only drives normal playback). Markers live on the sequence (`Sequence::markers`)
+  and are edited with `SetMarkers`, live while dragging or typing
 - **Selection and clipboard** (`undo::move_targets` / `move_clips` / `delete_clips`,
   `core/src/clipboard.rs`): a selection is a list of clip ids, always widened to their link
   groups. Moving plans every clip's new track and time first (the timeline draws that plan as

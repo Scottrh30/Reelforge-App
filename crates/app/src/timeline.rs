@@ -24,6 +24,8 @@ pub struct TimelineView {
     /// A track name being edited: (track, text, focus requested yet).
     renaming: Option<(usize, String, bool)>,
     drag: Option<Drag>,
+    /// The marker whose editor (name, colour) is open.
+    pub marker_edit: Option<usize>,
 }
 
 /// Track-header actions, applied after drawing.
@@ -36,7 +38,7 @@ enum TrackAction {
 
 impl Default for TimelineView {
     fn default() -> Self {
-        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None }
+        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None, marker_edit: None }
     }
 }
 
@@ -57,6 +59,8 @@ enum Drag {
     Body { id: ClipId, grab: Time, mode: TrimMode, start: Vec<(ClipId, Timing)> },
     /// Dragging a box over empty track space to select the clips it touches.
     Marquee { from: Pos2, add: bool },
+    /// Dragging a marker along the ruler.
+    Marker { index: usize },
 }
 
 /// How close (px) to a clip's edge counts as grabbing it for trimming.
@@ -350,13 +354,15 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                     let wf = painter.with_clip_rect(vis.shrink(1.0));
                     let mid = vis.center().y + 6.0;
                     let half = (vis.height() - 18.0) / 2.0;
-                    let src0 = clip.source_in.as_secs_f64();
                     let color = Color32::from_rgba_unmultiplied(200, 255, 210, 150);
+                    // The media under each pixel column (speed and reverse included).
+                    let media_of = |x: f32| clip.media_time(clip.source_in + Time::from_secs_f64(((x - cr.left()) / m.pps) as f64)).as_secs_f64();
                     let mut x = vis.left().max(cr.left());
                     while x < vis.right() {
-                        let t = src0 + ((x - cr.left()) / m.pps) as f64;
-                        let i0 = (t * crate::app::WAVEFORM_RATE as f64) as usize;
-                        let i1 = ((t + 1.0 / m.pps as f64) * crate::app::WAVEFORM_RATE as f64).ceil() as usize;
+                        let (ta, tb) = (media_of(x), media_of(x + 1.0));
+                        let (t0, t1) = (ta.min(tb), ta.max(tb));
+                        let i0 = (t0.max(0.0) * crate::app::WAVEFORM_RATE as f64) as usize;
+                        let i1 = (t1.max(0.0) * crate::app::WAVEFORM_RATE as f64).ceil() as usize;
                         let peak = peaks.get(i0..i1.max(i0 + 1).min(peaks.len())).map_or(0.0, |s| s.iter().cloned().fold(0.0, f32::max));
                         let h = ((peak * envelope(x)).min(1.0).sqrt() * half).max(0.5); // sqrt: quiet passages stay visible
                         wf.line_segment([Pos2::new(x, mid - h), Pos2::new(x, mid + h)], Stroke::new(1.0, color));
@@ -449,6 +455,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             } else {
                 name.into_owned()
             };
+            let name = match (clip.speed, clip.reverse) {
+                (0.0, _) => format!("{name}  (freeze)"),
+                (s, false) if s != 1.0 => format!("{name}  ({:.0}%)", s * 100.0),
+                (s, true) if s != 1.0 => format!("{name}  ({:.0}%, reversed)", s * 100.0),
+                (_, true) => format!("{name}  (reversed)"),
+                _ => name,
+            };
             let text_painter = painter.with_clip_rect(vis.shrink(2.0));
             text_painter.text(vis.left_top() + Vec2::new(6.0, 4.0), Align2::LEFT_TOP, name, FontId::proportional(12.0), Color32::WHITE);
         }
@@ -536,6 +549,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         let ti = row_at(p.y)?;
         let t = m.t(p.x);
         st.seq().tracks[ti].clip_at(t).map(|c| (ti, c.id, c.timeline_start))
+    };
+
+    // A marker flag on the ruler under `p`.
+    let marker_at = |st: &EditorState, p: Pos2| -> Option<usize> {
+        if p.y > rect.top() + RULER_H || p.x < m.x0 - 6.0 {
+            return None;
+        }
+        st.seq().markers.iter().enumerate().filter(|(_, mk)| (m.x(mk.at) - p.x).abs() <= 6.0).min_by(|a, b| (m.x(a.1.at) - p.x).abs().total_cmp(&(m.x(b.1.at) - p.x).abs())).map(|(i, _)| i)
     };
 
     // Fade handles sit on the top edge of audio clips, at the end of each fade.
@@ -668,7 +689,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         for (ti, c) in st.seq().link_group(id) {
             let Some(row) = rows.iter().position(|&t| t == ti) else { continue };
             let cr = clip_rect(&m, row_rect(row), c.timeline_start, c.duration);
-            if dragging && mode == TrimMode::Slip && !st.project.is_still(c.media) {
+            if dragging && mode == TrimMode::Slip && !st.project.is_still(c.media) && !c.is_retimed() {
                 let len = st.project.source_len(c);
                 let media_start = c.timeline_start - c.source_in;
                 let band = Rect::from_x_y_ranges(m.x(media_start)..=m.x(media_start + len), cr.bottom() - 9.0..=cr.bottom() - 2.0);
@@ -716,7 +737,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     if resp.drag_started() {
         // Hit-test where the button went down, not where the drag threshold was crossed.
         let origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
-        if let Some(p) = origin {
+        if let Some(i) = origin.and_then(|p| marker_at(st, p)) {
+            st.timeline.drag = Some(Drag::Marker { index: i });
+        } else if let Some(p) = origin {
             let edge = if hit_fade(st, p).is_none() { hit_edge(st, p) } else { None };
             let vol = if hit_fade(st, p).is_none() && edge.is_none() { hit_vol(st, p) } else { None };
             st.timeline.drag = match (hit_fade(st, p), vol) {
@@ -775,6 +798,23 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
 
     if resp.dragged() {
         if let Some(p) = pointer {
+            if let Some(Drag::Marker { index }) = st.timeline.drag {
+                let mut markers = st.seq().markers.clone();
+                if let Some(mk) = markers.get_mut(index) {
+                    let mut t = m.t(p.x).max(Time::ZERO).snap(rate);
+                    // Snap to the playhead and clip edges.
+                    if !ui.input(|i| i.modifiers.alt) {
+                        let targets = std::iter::once(st.playback.playhead).chain(st.seq().tracks.iter().flat_map(|t| &t.clips).flat_map(|c| [c.timeline_start, c.timeline_end()]));
+                        if let Some(best) = targets.filter(|&x| (m.x(x) - m.x(t)).abs() <= SNAP_PX).min_by_key(|&x| (x - t).0.abs()) {
+                            t = best;
+                        }
+                    }
+                    mk.at = t;
+                    st.status = format!("{} at {}", mk.name, t.timecode(rate));
+                    st.set_markers_live(markers);
+                }
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            }
             if let Some(Drag::Fade { id, out }) = st.timeline.drag {
                 if let Some((_, c)) = st.seq().find_clip(id) {
                     let mut a = c.audio.clone();
@@ -883,8 +923,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                             "{what} {}: {:+.2} s  (in {} · out {} · length {})",
                             if edge == Edge::Start { "start" } else { "end" },
                             plan.applied.as_secs_f64(),
-                            c.source_in.timecode(rate),
-                            (c.source_in + c.duration).timecode(rate),
+                            c.media_time(c.source_in).timecode(rate),
+                            c.media_time(c.source_in + c.duration).timecode(rate),
                             c.duration.timecode(rate)
                         );
                         if plan.mode == TrimMode::Ripple && moved > 0 {
@@ -902,7 +942,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeColumn);
             }
             let target = st.timeline.drag.as_ref().map(|d| match d {
-                Drag::Scrub | Drag::Fade { .. } | Drag::VolKey { .. } | Drag::VolLine { .. } | Drag::Trim { .. } | Drag::Body { .. } | Drag::Marquee { .. } => None,
+                Drag::Scrub | Drag::Fade { .. } | Drag::VolKey { .. } | Drag::VolLine { .. } | Drag::Trim { .. } | Drag::Body { .. } | Drag::Marquee { .. } | Drag::Marker { .. } => None,
                 Drag::Clip { id, from, grab, .. } => {
                     let kind = st.seq().tracks[from.0].kind;
                     let ti = row_at(p.y).filter(|&t| st.seq().tracks[t].kind == kind).unwrap_or(from.0);
@@ -952,6 +992,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                     st.status = format!("{n} clip{} selected", if n == 1 { "" } else { "s" });
                 }
             }
+            Some(Drag::Marker { .. }) => st.commit_live_edit(),
             _ => {}
         }
         st.timeline.drag = None;
@@ -995,6 +1036,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         }
     }
 
+    // Double-click or right-click a marker to edit it.
+    if resp.double_clicked() || resp.secondary_clicked() {
+        if let Some(i) = pointer.and_then(|p| marker_at(st, p)) {
+            st.timeline.marker_edit = Some(i);
+        }
+    }
+
     // Double-click a composite shot to go inside it.
     if resp.double_clicked() && !handled {
         if let Some(n) = pointer.and_then(|p| hit_clip(st, p)).and_then(|(_, id, _)| st.seq().find_clip(id).and_then(|(_, c)| c.nested)) {
@@ -1018,7 +1066,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                     if !on_ruler {
                         st.select_only(None);
                     }
-                    st.playback.seek(m.t(p.x).snap(rate));
+                    // Clicking a marker jumps exactly to it.
+                    let t = marker_at(st, p).map(|i| st.seq().markers[i].at).unwrap_or(m.t(p.x).snap(rate));
+                    st.playback.seek(t);
                 }
                 None => {}
             }
@@ -1104,6 +1154,32 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         st.set_trim_mode(mode);
     }
 
+    // ---- Markers: a flag on the ruler and a faint line down through the tracks ----
+    let lane_painter = painter.with_clip_rect(lanes);
+    for mk in &st.seq().markers {
+        let x = m.x(mk.at);
+        if x < m.x0 - 1.0 || x > lanes.right() + 1.0 {
+            continue;
+        }
+        let [r, g, b] = mk.color.rgb();
+        let col = Color32::from_rgb(r, g, b);
+        lane_painter.line_segment([Pos2::new(x, ruler.bottom()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, col.gamma_multiply(0.35)));
+        let (top, bot) = (ruler.bottom() - 15.0, ruler.bottom() - 1.0);
+        let flag = vec![Pos2::new(x - 5.0, top), Pos2::new(x + 5.0, top), Pos2::new(x + 5.0, bot - 5.0), Pos2::new(x, bot), Pos2::new(x - 5.0, bot - 5.0)];
+        lane_painter.add(egui::Shape::convex_polygon(flag, col, Stroke::new(1.0, Color32::from_black_alpha(160))));
+        if !mk.name.is_empty() && m.pps > 20.0 {
+            lane_painter.text(Pos2::new(x + 8.0, top - 1.0), Align2::LEFT_TOP, &mk.name, FontId::proportional(10.0), col);
+        }
+    }
+    if st.timeline.drag.is_none() {
+        if let Some(i) = resp.hover_pos().and_then(|p| marker_at(st, p)) {
+            let mk = &st.seq().markers[i];
+            let tip = format!("{} · {}\nDrag to move · double-click to rename", mk.name, mk.at.timecode(rate));
+            resp.clone().on_hover_text_at_pointer(tip);
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+    }
+
     // ---- Playhead (drawn last, on top) ----
     let px = m.x(st.playback.playhead);
     if px >= m.x0 {
@@ -1112,6 +1188,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         let tri = vec![Pos2::new(px - 6.0, rect.top()), Pos2::new(px + 6.0, rect.top()), Pos2::new(px, rect.top() + 9.0)];
         painter.add(egui::Shape::convex_polygon(tri, red, Stroke::NONE));
     }
+
+    marker_editor(ui.ctx(), st);
 
     // Track changes last, once nothing else this frame refers to the old track list.
     match track_action {
@@ -1186,6 +1264,7 @@ fn snap_clip(st: &EditorState, id: ClipId, start: Time, m: &Mapping) -> Time {
     let Some((_, clip)) = seq.find_clip(id) else { return start };
     let group: Vec<ClipId> = seq.link_group(id).iter().map(|(_, c)| c.id).collect();
     let mut targets = vec![Time::ZERO, st.playback.playhead];
+    targets.extend(seq.markers.iter().map(|mk| mk.at));
     for c in seq.tracks.iter().flat_map(|t| &t.clips).filter(|c| !group.contains(&c.id)) {
         targets.push(c.timeline_start);
         targets.push(c.timeline_end());
@@ -1232,4 +1311,57 @@ fn snap_point(st: &EditorState, id: ClipId, edge: Edge, edge_at: Time, mode: Tri
 
 fn clip_rect(m: &Mapping, row: Rect, start: Time, dur: Time) -> Rect {
     Rect::from_min_max(Pos2::new(m.x(start), row.top() + 3.0), Pos2::new(m.x(start + dur), row.bottom() - 3.0))
+}
+
+/// The small window for naming, recolouring or deleting a marker.
+fn marker_editor(ctx: &egui::Context, st: &mut EditorState) {
+    let Some(i) = st.timeline.marker_edit else { return };
+    let Some(mk) = st.seq().markers.get(i).cloned() else {
+        st.timeline.marker_edit = None;
+        return;
+    };
+    let mut open = true;
+    let mut close = false;
+    let mut delete = false;
+    let mut edited = mk.clone();
+    egui::Window::new("Marker").id(egui::Id::new("marker_editor")).open(&mut open).collapsible(false).resizable(false).default_pos(ctx.pointer_hover_pos().unwrap_or_default()).show(ctx, |ui| {
+        ui.weak(edited.at.timecode(st.seq().frame_rate));
+        let r = ui.add(egui::TextEdit::singleline(&mut edited.name).desired_width(200.0).hint_text("Name"));
+        if !r.has_focus() && ui.memory(|m| m.focused().is_none()) {
+            r.request_focus();
+        }
+        ui.horizontal(|ui| {
+            for c in reelforge_core::MarkerColor::ALL {
+                let [r, g, b] = c.rgb();
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                ui.painter().rect_filled(rect.shrink(2.0), 3.0, Color32::from_rgb(r, g, b));
+                if edited.color == c {
+                    ui.painter().rect_stroke(rect, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+                }
+                if resp.clicked() {
+                    edited.color = c;
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Delete").clicked() {
+                delete = true;
+            }
+            if ui.button("Done").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                close = true;
+            }
+        });
+    });
+    if edited != mk {
+        let mut all = st.seq().markers.clone();
+        all[i] = edited;
+        st.set_markers_live(all);
+    }
+    if delete {
+        st.timeline.marker_edit = None;
+        st.remove_marker(i);
+    } else if close || !open {
+        st.timeline.marker_edit = None;
+        st.commit_live_edit();
+    }
 }

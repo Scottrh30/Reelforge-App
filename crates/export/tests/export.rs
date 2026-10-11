@@ -677,3 +677,41 @@ fn exports_masked_layers() {
     assert!((150..215).contains(&edge), "soft edge: {edge}");
     assert!(r(300, 40) > edge && r(340, 40) < edge, "fading out to the right");
 }
+
+#[test]
+fn exports_speed_changes_and_reverse() {
+    // 2 s that get steadily brighter, so each moment has its own grey level.
+    let Some(src) = ffmpeg("rf_ramp.mp4", &[
+        "-f", "lavfi", "-i", "color=c=gray:s=64x64:r=25:d=2", "-vf", "geq=lum='clip(20+T*100,0,255)':cb=128:cr=128",
+        "-c:v", "libx264", "-g", "5", "-crf", "8", "-pix_fmt", "yuv420p",
+    ]) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &src));
+    let mut seq = Sequence::new("S", 64, 64, FrameRate::new(25, 1));
+    seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(2.0), None)];
+    p.sequences = vec![seq];
+    for _ in 0..10 {
+        p.alloc_id();
+    }
+    let grey = |path: &Path, t: f64| {
+        let mut d = FrameSource::open(path, None).unwrap();
+        let f = d.frame_at_blocking(s(t), Duration::from_secs(5)).unwrap();
+        f.rgba[((32 * 64 + 32) * 4) as usize] as i32
+    };
+    for (speed, reverse, checks) in [(2.0f32, false, [(0.1, 0.2), (0.6, 1.2)]), (1.0, true, [(0.1, 1.88), (1.5, 0.48)])] {
+        let mut q = p.clone();
+        let cmd = reelforge_core::speed::change_speed(&q, 0, ClipId(1), speed, reverse).unwrap();
+        let mut u = reelforge_core::UndoStack::default();
+        u.execute(&mut q, cmd);
+        let out = std::env::temp_dir().join(format!("rf_speed_{speed}_{reverse}.mp4"));
+        let mut st = settings(out.clone());
+        (st.width, st.height, st.include_audio, st.end) = (64, 64, false, q.sequences[0].duration());
+        export_sequence(&q, &st, &device, &queue, |_| true).unwrap();
+        for (t, media) in checks {
+            let (got, want) = (grey(&out, t), grey(&src, media));
+            assert!((got - want).abs() <= 6, "speed {speed} reverse {reverse}: at {t} s got {got}, the media at {media} s is {want}");
+        }
+    }
+}

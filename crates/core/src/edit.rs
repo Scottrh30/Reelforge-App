@@ -153,16 +153,11 @@ fn length_range(p: &Project, seq: usize, c: &Clip, edge: Edge) -> (Time, Time) {
     match edge {
         Edge::Start => {
             // delta moves the in-point: + shortens, − lengthens.
-            let lo = if still { -big } else { Time(-c.source_in.0) };
+            let lo = if still { -big } else { p.clip_limits(c).0 - c.source_in };
             (lo, c.duration - frame)
         }
         Edge::End => {
-            let hi = if still {
-                big
-            } else {
-                let media_len = p.source_len(c);
-                media_len - (c.source_in + c.duration)
-            };
+            let hi = if still { big } else { p.clip_limits(c).1 - (c.source_in + c.duration) };
             (frame - c.duration, hi)
         }
     }
@@ -329,9 +324,9 @@ pub fn plan_slip(p: &Project, seq: usize, id: ClipId, delta: Time) -> Option<Tri
         if p.is_still(c.media) {
             continue;
         }
-        let media_len = p.source_len(c);
-        lo = lo.max(Time(-c.source_in.0));
-        hi = hi.min(media_len - (c.source_in + c.duration));
+        let (a, b) = p.clip_limits(c);
+        lo = lo.max(a - c.source_in);
+        hi = hi.min(b - (c.source_in + c.duration));
         movable.push(*c);
     }
     if movable.is_empty() {

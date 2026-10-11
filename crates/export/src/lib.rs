@@ -144,15 +144,39 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                 // The composite shot's own mix, moved to where the clip plays it and cut
                 // to the clip's length. The clip's (static) volume, pan and fades apply on top.
                 let (ws, we) = (c.timeline_start.to_frame(sr), c.timeline_end().to_frame(sr));
-                let offset = ws - c.source_in.to_frame(sr);
                 let (fin, fout) = c.audio.clamped_fades(c.duration);
                 let gain = db_to_gain(c.audio.volume_db) * track_gain;
+                let r = c.rate();
+                if r == 0.0 {
+                    continue; // a frozen composite shot is silent
+                }
+                // Inner sample x plays at outer sample y where x = a + r·(cs + y − ws).
+                let (a, cs) = (c.anchor.to_frame(sr) as f64, c.source_in.to_frame(sr) as f64);
+                let outer = |x: f64| ws as f64 + (x - a) / r - cs;
                 for mut m in mix_sequence(project, inner, rate, depth + 1) {
-                    m.start += offset;
+                    if !c.is_retimed() {
+                        m.start += ws - c.source_in.to_frame(sr);
+                    } else {
+                        let (y0, y1) = (outer(m.start as f64), outer((m.start + m.len) as f64));
+                        let start = y0.min(y1).round() as i64;
+                        let len = (y0 - y1).abs().round() as i64;
+                        // Media heard at the new start, and the combined rate.
+                        let x_at_start = a + r * (cs + (start - ws) as f64);
+                        m.source_in = (m.source_in as f64 + (x_at_start - m.start as f64) * m.rate).round() as i64;
+                        m.rate *= r;
+                        let k = 1.0 / r.abs();
+                        let stretch = |v: i64| (v as f64 * k).round() as i64;
+                        (m.fade_in, m.fade_out) = if r < 0.0 { (stretch(m.fade_out), stretch(m.fade_in)) } else { (stretch(m.fade_in), stretch(m.fade_out)) };
+                        for key in &mut m.volume_keys {
+                            key.0 = if r < 0.0 { len - stretch(key.0) } else { stretch(key.0) };
+                        }
+                        m.volume_keys.sort_by_key(|k| k.0);
+                        (m.start, m.len) = (start, len);
+                    }
                     if m.start < ws {
                         let cut = ws - m.start;
                         m.start = ws;
-                        m.source_in += cut;
+                        m.source_in += (cut as f64 * m.rate).round() as i64;
                         m.len -= cut;
                         m.fade_in = (m.fade_in - cut).max(0);
                         m.volume_keys.iter_mut().for_each(|k| k.0 -= cut);
@@ -206,7 +230,9 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                 id: c.id,
                 path: m.path.clone(),
                 start: start_s,
-                source_in: source_in.to_frame(sr),
+                // The media heard at the start (the clip's speed maps clip time to media time).
+                source_in: c.media_time(source_in).to_frame(sr),
+                rate: c.rate(),
                 len: end.to_frame(sr) - start_s,
                 gain,
                 balance: [cl * tl, cr * tr],

@@ -173,7 +173,7 @@ impl Preview {
                         if let Some(media) = project.media(clip.media) {
                             let path = sources.get(&media.id).unwrap_or(&media.path);
                             if let Ok(src) = &mut Self::slot(&mut self.slots, clip.id, path).source {
-                                src.frame_at(clip.source_time(shows_at).max(Time::ZERO));
+                                src.frame_at(clip.media_at(shows_at).max(Time::ZERO));
                             }
                         }
                     }

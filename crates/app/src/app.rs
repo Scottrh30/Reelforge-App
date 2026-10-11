@@ -650,6 +650,110 @@ impl EditorState {
         self.add_mask(id, reelforge_core::mask::Mask::freehand(pts));
     }
 
+    // ---- Markers and navigation -------------------------------------------------------
+
+    /// M: a marker at the playhead.
+    pub fn add_marker(&mut self) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let at = self.playback.playhead.snap(s.frame_rate);
+        if s.markers.iter().any(|m| m.at == at) {
+            self.status = "There's already a marker here".into();
+            return;
+        }
+        let old = s.markers.clone();
+        let mut new = old.clone();
+        new.push(reelforge_core::Marker { at, name: s.next_marker_name(), color: Default::default() });
+        new.sort_by_key(|m| m.at);
+        self.execute(Box::new(reelforge_core::undo::SetMarkers { seq: self.active, old, new }));
+        self.status = format!("Marker at {} (double-click it on the ruler to name it)", at.timecode(self.seq().frame_rate));
+    }
+
+    /// Change the markers as part of a gesture (dragging one, typing its name).
+    pub fn set_markers_live(&mut self, markers: Vec<reelforge_core::Marker>) {
+        let before = self.seq().markers.clone();
+        if before == markers {
+            return;
+        }
+        self.begin_live(LiveEdit::Markers(before));
+        self.project.sequences[self.active].markers = markers;
+    }
+
+    pub fn remove_marker(&mut self, index: usize) {
+        self.commit_live_edit();
+        let old = self.seq().markers.clone();
+        if index >= old.len() {
+            return;
+        }
+        let mut new = old.clone();
+        new.remove(index);
+        self.execute(Box::new(reelforge_core::undo::SetMarkers { seq: self.active, old, new }));
+    }
+
+    /// Up/Down: jump to the previous / next cut, marker or in/out point.
+    pub fn jump(&mut self, forward: bool) {
+        let s = self.seq();
+        let rate = s.frame_rate;
+        let now = self.playback.playhead;
+        let half = Time(rate.frame_duration().0 / 2);
+        let points = s.edit_points();
+        let to = if forward { points.into_iter().find(|&p| p > now + half) } else { points.into_iter().rev().find(|&p| p + half < now) };
+        if let Some(t) = to {
+            let what = s.markers.iter().find(|m| m.at == t).map(|m| m.name.clone());
+            self.playback.pause();
+            self.playback.seek(t);
+            self.status = match what {
+                Some(name) => format!("{} · {name}", t.timecode(rate)),
+                None => t.timecode(rate),
+            };
+        }
+    }
+
+    // ---- Speed --------------------------------------------------------------------
+
+    /// Set the speed / direction of `id` (and its linked clips).
+    pub fn set_speed(&mut self, id: ClipId, speed: f32, reverse: bool) {
+        self.commit_live_edit();
+        match reelforge_core::speed::change_speed(&self.project, self.active, id, speed, reverse) {
+            Ok(cmd) => {
+                self.execute(cmd);
+                self.status = match (speed, reverse) {
+                    (0.0, _) => "Freeze frame: holds the clip's first frame".into(),
+                    (s, false) => format!("Speed {:.0}%", s * 100.0),
+                    (s, true) => format!("Speed {:.0}%, reversed", s * 100.0),
+                };
+            }
+            Err(e) => self.status = format!("Can't change the speed: {e}"),
+        }
+    }
+
+    /// Hold the frame at the playhead for 2 s in the selected video clip (or
+    /// the top one under the playhead), pushing the rest of it later.
+    pub fn freeze_frame_at_playhead(&mut self) {
+        self.commit_live_edit();
+        let t = self.playback.playhead.snap(self.seq().frame_rate);
+        let s = self.seq();
+        let p = &self.project;
+        let footage = |c: &Clip| c.contains(t) && !p.is_still(c.media) && c.speed != 0.0;
+        let is_video = |id: ClipId| s.find_clip(id).is_some_and(|(ti, c)| s.tracks[ti].kind == TrackKind::Video && footage(c));
+        // The selected clip if it's under the playhead, else the top moving clip there.
+        let top = || s.tracks.iter().rev().filter(|tr| tr.kind == TrackKind::Video && !tr.muted).find_map(|tr| tr.clips.iter().find(|c| footage(c))).map(|c| c.id);
+        let target = self.selection.filter(|id| is_video(*id)).or_else(top);
+        let Some(id) = target else {
+            self.status = "Put the playhead over a video clip to freeze a frame of it".into();
+            return;
+        };
+        let len = Time::from_secs_f64(2.0).snap(s.frame_rate);
+        match reelforge_core::speed::freeze_frame(&mut self.project, self.active, id, t, len) {
+            Ok((cmd, fid)) => {
+                self.execute(cmd);
+                self.select_only(Some(fid));
+                self.status = "Added a 2 s freeze frame: trim it to change its length".into();
+            }
+            Err(e) => self.status = format!("Can't freeze a frame: {e}"),
+        }
+    }
+
     // ---- Clipboard ----------------------------------------------------------------
 
     /// Copy the selected clips (and their linked clips). Returns how many.
@@ -945,8 +1049,9 @@ impl EditorState {
         let Some((_, c)) = self.seq().find_clip(id) else { return };
         let (Some(track), Some(media)) = (c.tracker.clone(), self.project.media(c.media).cloned()) else { return };
         let t = self.playback.playhead.max(c.timeline_start).min(c.timeline_end() - self.seq().frame_rate.frame_duration());
-        let from = c.source_time(t);
-        let until = if forward { c.source_in + c.duration - self.seq().frame_rate.frame_duration() } else { c.source_in };
+        // Tracking works in media time; for a reversed clip "forward" on the timeline is backwards in the media.
+        let from = c.media_at(t);
+        let until = if forward { c.media_at(c.timeline_end() - self.seq().frame_rate.frame_duration()) } else { c.media_at(c.timeline_start) };
         let (tx, rx) = unbounded();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = cancel.clone();
@@ -1008,7 +1113,7 @@ impl EditorState {
         self.commit_live_edit();
         let Some((_, c)) = self.seq().find_clip(tracked) else { return };
         let (Some(track), Some(mask)) = (&c.tracker, c.masks.get(index)) else { return };
-        let Some(m) = reelforge_core::track::follow_mask(mask, track) else { return };
+        let Some(m) = reelforge_core::track::follow_mask(c, mask, track) else { return };
         let name = m.name.clone();
         let mut v = c.visual();
         v.masks[index] = m;
@@ -1571,6 +1676,10 @@ impl EditorState {
                 if ui.add_enabled(self.selection_is_linked(), egui::Button::new("Unlink audio/video")).clicked() {
                     self.unlink_selection();
                 }
+                if ui.button("Freeze frame at playhead   Shift+F").on_hover_text("Holds the frame for 2 s and pushes the rest of the clip later").clicked() {
+                    self.freeze_frame_at_playhead();
+                    ui.close();
+                }
                 if ui.button("Add title at playhead        Ctrl+T").clicked() {
                     self.add_title();
                 }
@@ -1627,6 +1736,9 @@ impl EditorState {
         }
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::T))) {
             self.add_title();
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::SHIFT, Key::F))) {
+            self.freeze_frame_at_playhead();
         }
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::G))) {
             self.make_composite();
@@ -1692,6 +1804,15 @@ impl EditorState {
                 Key::N => self.set_trim_mode(TrimMode::Roll),
                 Key::Y => self.set_trim_mode(TrimMode::Slip),
                 Key::U => self.set_trim_mode(TrimMode::Slide),
+                Key::J => self.playback.shuttle(-1.0, end),
+                Key::K => {
+                    self.playback.pause();
+                    self.playback.shuttle = 1.0;
+                }
+                Key::L => self.playback.shuttle(1.0, end),
+                Key::M => self.add_marker(),
+                Key::ArrowUp => self.jump(false),
+                Key::ArrowDown => self.jump(true),
                 Key::I => self.mark_in(),
                 Key::O => self.mark_out(),
                 _ => {}
@@ -1906,6 +2027,12 @@ impl EditorState {
                 let new = self.seq().find_clip(id).and_then(|(_, c)| c.title.clone()).filter(|n| *n != old);
                 new.map(|new| Box::new(SetTitle { seq: self.active, id, old, new }) as _)
             }
+            LiveEdit::Markers(old) => {
+                let mut new = self.seq().markers.clone();
+                new.sort_by_key(|m| m.at);
+                self.project.sequences[self.active].markers = new.clone();
+                (new != old).then(|| Box::new(reelforge_core::undo::SetMarkers { seq: self.active, old, new }) as _)
+            }
             LiveEdit::Tracker(id, old) => {
                 let new = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()).filter(|n| *n != old);
                 new.map(|new| Box::new(SetTracker { seq: self.active, id, old, new, label: "Move tracker" }) as _)
@@ -1943,6 +2070,7 @@ enum LiveEdit {
     Dissolve(ClipId, Time),
     Title(ClipId, TitleSpec),
     Tracker(ClipId, Option<PointTrack>),
+    Markers(Vec<reelforge_core::Marker>),
     ClipAudio(ClipId, ClipAudio),
     TrackAudio(usize, TrackAudio),
 }
@@ -1955,6 +2083,7 @@ impl LiveEdit {
             (LiveEdit::Dissolve(a, _), LiveEdit::Dissolve(b, _)) => a == b,
             (LiveEdit::Title(a, _), LiveEdit::Title(b, _)) => a == b,
             (LiveEdit::Tracker(a, _), LiveEdit::Tracker(b, _)) => a == b,
+            (LiveEdit::Markers(_), LiveEdit::Markers(_)) => true,
             (LiveEdit::ClipAudio(a, _), LiveEdit::ClipAudio(b, _)) => a == b,
             (LiveEdit::TrackAudio(a, _), LiveEdit::TrackAudio(b, _)) => a == b,
             _ => false,

@@ -198,7 +198,8 @@ impl Template {
 /// Position keys inside the tracked span are replaced; others are kept.
 pub fn follow_keys(tracked: &Clip, track: &PointTrack, layer: [f32; 2], frame: [f32; 2], target: &Clip, stabilise: bool) -> Option<TransformAnim> {
     let first = track.path.first()?;
-    let to_seq = |src: Time| tracked.timeline_start + (src - tracked.source_in);
+    // Samples are in media time; where each shows on the timeline depends on the clip's speed.
+    let to_seq = |src: Time| tracked.timeline_of_media(src).unwrap_or(tracked.timeline_start);
     // The feature's position on the frame (the tracked layer's transform applies).
     let on_frame = |s: &TrackSample| {
         let tr = tracked.transform_at(to_seq(s.at));
@@ -220,7 +221,8 @@ pub fn follow_keys(tracked: &Clip, track: &PointTrack, layer: [f32; 2], frame: [
         let v = [base[0] + sign * (p[0] - origin[0]), base[1] + sign * (p[1] - origin[1])];
         keys.push((target.source_time(t), v));
     }
-    let (a, b) = (keys.first()?.0, keys.last()?.0);
+    // (A reversed clip lists them newest first.)
+    let (a, b) = (keys.iter().map(|k| k.0).min()?, keys.iter().map(|k| k.0).max()?);
     anim.position.0.retain(|k| k.at < a || k.at > b);
     for (at, v) in keys {
         anim.position.set(at, v);
@@ -232,17 +234,21 @@ pub fn follow_keys(tracked: &Clip, track: &PointTrack, layer: [f32; 2], frame: [
 /// at every tracked frame, the shape as it is at the first tracked frame
 /// shifted by how far the feature has moved since. (Both are in the clip's own
 /// pixels, so the layer's transform doesn't come into it.)
-pub fn follow_mask(mask: &crate::mask::Mask, track: &PointTrack) -> Option<crate::mask::Mask> {
+pub fn follow_mask(clip: &Clip, mask: &crate::mask::Mask, track: &PointTrack) -> Option<crate::mask::Mask> {
+    // Tracked samples are in media time; mask keys are in the clip's own time.
+    let key_time = |s: &TrackSample| clip.clip_time_of_media(s.at);
     let first = track.path.first()?;
-    let base = mask.points_at(first.at);
+    let base = mask.points_at(key_time(first)?);
     let mut m = mask.clone();
-    let (a, b) = (first.at, track.path.last()?.at);
+    let times: Vec<Time> = track.path.iter().filter_map(key_time).collect();
+    let (a, b) = (*times.iter().min()?, *times.iter().max()?);
     m.keys.retain(|k| k.at < a || k.at > b);
     for s in &track.path {
+        let Some(at) = key_time(s) else { continue };
         let (dx, dy) = (s.pos[0] - first.pos[0], s.pos[1] - first.pos[1]);
         let pts = base.iter().map(|p| [p[0] + dx, p[1] + dy]).collect();
-        let i = m.keys.partition_point(|k| k.at < s.at);
-        m.keys.insert(i, crate::mask::ShapeKey { at: s.at, points: pts });
+        let i = m.keys.partition_point(|k| k.at < at);
+        m.keys.insert(i, crate::mask::ShapeKey { at, points: pts });
     }
     Some(m)
 }
@@ -290,7 +296,8 @@ mod tests {
             ..Default::default()
         };
         let mask = crate::mask::Mask { points: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]], ..Default::default() };
-        let m = follow_mask(&mask, &track).unwrap();
+        let clip = Clip::new(ClipId(1), MediaId(1), Time::ZERO, Time::ZERO, s(10.0), None);
+        let m = follow_mask(&clip, &mask, &track).unwrap();
         assert_eq!(m.keys.len(), 2);
         assert_eq!(m.points_at(s(2.0))[1], [24.0, -5.0]);
         assert_eq!(m.points_at(s(1.5))[0], [10.0, -2.5]);

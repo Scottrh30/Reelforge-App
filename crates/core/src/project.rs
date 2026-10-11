@@ -100,6 +100,16 @@ pub struct Clip {
     /// is `MediaId::NESTED`). Its source time is that sequence's time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nested: Option<usize>,
+    /// Playback speed: 1 = normal, 0.5 = half speed (slow motion), 2 = double,
+    /// 0 = a freeze frame. See [`Clip::media_time`].
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub speed: f32,
+    /// Play the media backwards.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reverse: bool,
+    /// With a speed change or reverse, media time = `anchor` + rate × clip time.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub anchor: Time,
     /// Masks cutting the layer down, combined in order (see `mask`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masks: Vec<crate::mask::Mask>,
@@ -136,6 +146,9 @@ impl Clip {
             effects: Vec::new(),
             title: None,
             nested: None,
+            speed: 1.0,
+            reverse: false,
+            anchor: Time::ZERO,
             masks: Vec::new(),
             tracker: None,
         }
@@ -186,10 +199,80 @@ impl Clip {
     pub fn contains(&self, t: Time) -> bool {
         t >= self.timeline_start && t < self.timeline_end()
     }
-    /// Map a sequence time to a time inside the source media.
+    /// The clip's own time at sequence time `t`. Keyframes, effects, masks and
+    /// volume automation are anchored to it. At normal speed it's also the
+    /// media time; with a speed change, [`Clip::media_at`] gives that.
     pub fn source_time(&self, t: Time) -> Time {
         self.source_in + (t - self.timeline_start)
     }
+
+    /// Media seconds per timeline second: negative when reversed, 0 for a freeze frame.
+    pub fn rate(&self) -> f64 {
+        let s = self.speed.max(0.0) as f64;
+        if self.reverse { -s } else { s }
+    }
+
+    /// Does the clip play at anything other than normal speed, forwards?
+    pub fn is_retimed(&self) -> bool {
+        self.speed != 1.0 || self.reverse
+    }
+
+    /// The media time shown at clip time `ct`.
+    pub fn media_time(&self, ct: Time) -> Time {
+        if !self.is_retimed() {
+            return ct;
+        }
+        self.anchor + scale(ct, self.rate())
+    }
+
+    /// The media time shown at sequence time `t`.
+    pub fn media_at(&self, t: Time) -> Time {
+        self.media_time(self.source_time(t))
+    }
+
+    /// The clip time at which media time `m` is shown (none for a freeze frame).
+    pub fn clip_time_of_media(&self, m: Time) -> Option<Time> {
+        if !self.is_retimed() {
+            return Some(m);
+        }
+        let r = self.rate();
+        (r != 0.0).then(|| scale(m - self.anchor, 1.0 / r))
+    }
+
+    /// The sequence time at which media time `m` is shown (if it ever is).
+    pub fn timeline_of_media(&self, m: Time) -> Option<Time> {
+        self.clip_time_of_media(m).map(|ct| self.timeline_start + (ct - self.source_in))
+    }
+
+    /// The clip times whose media lies inside `[0, media_len]`: how far the clip
+    /// can be trimmed out or slipped. Unbounded for a freeze frame.
+    pub fn clip_time_limits(&self, media_len: Time) -> (Time, Time) {
+        let big = Time(i64::MAX / 4);
+        let r = self.rate();
+        if !self.is_retimed() {
+            return (Time::ZERO, media_len);
+        }
+        if r == 0.0 {
+            return (-big, big);
+        }
+        let (a, b) = (scale(Time::ZERO - self.anchor, 1.0 / r), scale(media_len - self.anchor, 1.0 / r));
+        (a.min(b), a.max(b))
+    }
+}
+
+/// `t` × `k`, rounded to the nearest tick.
+pub fn scale(t: Time, k: f64) -> Time {
+    Time((t.0 as f64 * k).round() as i64)
+}
+
+fn one() -> f32 {
+    1.0
+}
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+fn is_zero(t: &Time) -> bool {
+    *t == Time::ZERO
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -235,6 +318,42 @@ pub struct Sequence {
     pub in_point: Option<Time>,
     #[serde(default)]
     pub out_point: Option<Time>,
+    /// Markers on the timeline ruler, sorted by time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
+}
+
+/// A named point on the timeline (M adds one at the playhead).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Marker {
+    pub at: Time,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub color: MarkerColor,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MarkerColor {
+    #[default]
+    Yellow,
+    Red,
+    Green,
+    Blue,
+    Purple,
+}
+
+impl MarkerColor {
+    pub const ALL: [MarkerColor; 5] = [MarkerColor::Yellow, MarkerColor::Red, MarkerColor::Green, MarkerColor::Blue, MarkerColor::Purple];
+    pub fn rgb(self) -> [u8; 3] {
+        match self {
+            MarkerColor::Yellow => [240, 200, 60],
+            MarkerColor::Red => [230, 80, 80],
+            MarkerColor::Green => [90, 200, 110],
+            MarkerColor::Blue => [80, 150, 240],
+            MarkerColor::Purple => [180, 110, 230],
+        }
+    }
 }
 
 impl Sequence {
@@ -251,7 +370,27 @@ impl Sequence {
             ],
             in_point: None,
             out_point: None,
+            markers: Vec::new(),
         }
+    }
+
+    /// Places worth jumping to with Up/Down: every clip's start and end, the
+    /// markers, the in and out points, and the start. Sorted, no repeats.
+    pub fn edit_points(&self) -> Vec<Time> {
+        let mut v: Vec<Time> = std::iter::once(Time::ZERO)
+            .chain(self.tracks.iter().flat_map(|t| &t.clips).flat_map(|c| [c.timeline_start, c.timeline_end()]))
+            .chain(self.markers.iter().map(|m| m.at))
+            .chain(self.in_point)
+            .chain(self.out_point)
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// A name for a new marker: "Marker 3", the first number not taken.
+    pub fn next_marker_name(&self) -> String {
+        (1..).map(|n| format!("Marker {n}")).find(|name| !self.markers.iter().any(|m| &m.name == name)).unwrap()
     }
     pub fn duration(&self) -> Time {
         self.tracks.iter().map(Track::end).max().unwrap_or(Time::ZERO)
@@ -428,6 +567,16 @@ impl Project {
         }
     }
 
+    /// The clip times `c` can show without running out of media (see
+    /// [`Clip::clip_time_limits`]); unbounded for stills.
+    pub fn clip_limits(&self, c: &Clip) -> (Time, Time) {
+        if self.is_still(c.media) {
+            let big = Time(i64::MAX / 4);
+            return (-big, big);
+        }
+        c.clip_time_limits(self.source_len(c))
+    }
+
     /// A video layer's native size: the media's, or the composite shot's frame.
     /// (Titles are drawn on a canvas the size of the frame they're in.)
     pub fn picture_size(&self, c: &Clip) -> Option<[u32; 2]> {
@@ -482,13 +631,8 @@ impl Project {
                 }
                 // Overlap can't run past the far end of either clip.
                 let requested = wanted.min(l.duration).min(r.duration);
-                let left_spare = if self.is_still(l.media) {
-                    r.duration
-                } else {
-                    let media_len = self.source_len(l);
-                    (media_len - (l.source_in + l.duration)).min(r.duration)
-                };
-                let right_spare = if self.is_still(r.media) { l.duration } else { r.source_in.min(l.duration) };
+                let left_spare = (self.clip_limits(l).1 - (l.source_in + l.duration)).min(r.duration);
+                let right_spare = (r.source_in - self.clip_limits(r).0).min(l.duration);
                 let (after, before) = crossfade_extents(requested, left_spare, right_spare);
                 out.push(Crossfade { track: ti, kind: tr.kind, left: l.id, right: r.id, cut: r.timeline_start, after, before, requested });
             }
@@ -517,7 +661,7 @@ impl Project {
         let s = &self.sequences[seq];
         let dissolves = self.dissolves(seq);
         fn layer<'a>(p: &Project, track: usize, c: &'a Clip, t: Time) -> Layer<'a> {
-            let source_time = if p.is_still(c.media) { Time::ZERO } else { c.source_time(t) };
+            let source_time = if p.is_still(c.media) { Time::ZERO } else { c.media_at(t) };
             // Keys are anchored to source time (also for stills, like the transform's).
             Layer { track, clip: c, source_time, transform: c.transform_at(t), blend: c.blend, effects: c.effects_at(c.source_time(t)) }
         }

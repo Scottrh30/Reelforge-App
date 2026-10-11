@@ -191,3 +191,31 @@ fn wav_without_channel_mask_is_not_silent() {
     r.read(24_000, &mut buf);
     assert!((rms(&buf) - 0.125 / 2f32.sqrt()).abs() < 0.005, "rms {}", rms(&buf));
 }
+
+#[test]
+fn varispeed_slows_reverses_and_pitches() {
+    let Some(path) = make_clip() else { return };
+    let r = RATE as i64;
+    let render = |c: MixClip, from: f64, to: f64| {
+        let mut m = Mixer::new(RATE);
+        m.set_clips(vec![c]);
+        let mut buf = vec![0.0f32; ((to - from) * RATE as f64) as usize * 2];
+        m.render((from * RATE as f64) as i64, &mut buf);
+        buf
+    };
+    // Half speed: an octave down (220 Hz), and 2 s of timeline cover 1 s of media.
+    let slow = MixClip { rate: 0.5, ..MixClip::plain(ClipId(1), path.clone(), 0, 0, 2 * r) };
+    let f = freq(&render(slow, 0.5, 1.5));
+    assert!((f - 220.0).abs() < 6.0, "{f}");
+    // Double speed: an octave up.
+    let fast = MixClip { rate: 2.0, ..MixClip::plain(ClipId(1), path.clone(), 0, 0, r) };
+    let f = freq(&render(fast, 0.2, 0.8));
+    assert!((f - 880.0).abs() < 15.0, "{f}");
+    // Reversed from 3.5 s back towards 0.5 s: same pitch, and the tone is there.
+    let back = MixClip { rate: -1.0, ..MixClip::plain(ClipId(1), path.clone(), 0, 3 * r + r / 2, 3 * r) };
+    let b = render(back, 0.5, 1.5);
+    assert!((freq(&b) - 440.0).abs() < 6.0 && rms(&b) > 0.05);
+    // A freeze frame is silent.
+    let frozen = MixClip { rate: 0.0, ..MixClip::plain(ClipId(1), path, 0, r, r) };
+    assert_eq!(rms(&render(frozen, 0.0, 1.0)), 0.0);
+}
