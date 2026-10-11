@@ -138,10 +138,18 @@ pub enum Prop {
     Opacity,
     Anchor,
     Crop,
+    /// Corner pin (see [`crate::transform::Pin`]).
+    Pin,
 }
 
 impl Prop {
-    pub const ALL: [Prop; 6] = [Prop::Position, Prop::Scale, Prop::Rotation, Prop::Opacity, Prop::Anchor, Prop::Crop];
+    pub const ALL: [Prop; 7] = [Prop::Position, Prop::Scale, Prop::Rotation, Prop::Opacity, Prop::Anchor, Prop::Crop, Prop::Pin];
+}
+
+impl Lerp for crate::transform::Pin {
+    fn lerp(a: Self, b: Self, t: f32) -> Self {
+        crate::transform::Pin(std::array::from_fn(|i| <[f32; 2]>::lerp(a.0[i], b.0[i], t)))
+    }
 }
 
 impl Lerp for [f32; 4] {
@@ -160,6 +168,7 @@ impl Transform {
             Prop::Opacity => self.opacity = from.opacity,
             Prop::Anchor => self.anchor = from.anchor,
             Prop::Crop => self.crop = from.crop,
+            Prop::Pin => self.pin = from.pin,
         }
     }
     /// Does property `p` differ between the two?
@@ -171,6 +180,7 @@ impl Transform {
             Prop::Opacity => self.opacity != other.opacity,
             Prop::Anchor => self.anchor != other.anchor,
             Prop::Crop => self.crop != other.crop,
+            Prop::Pin => self.pin != other.pin,
         }
     }
 }
@@ -186,6 +196,8 @@ pub struct TransformAnim {
     pub anchor: Curve<[f32; 2]>,
     #[serde(skip_serializing_if = "Curve::is_empty")]
     pub crop: Curve<[f32; 4]>,
+    #[serde(skip_serializing_if = "Curve::is_empty")]
+    pub pin: Curve<crate::transform::Pin>,
 }
 
 impl<T> Curve<T> {
@@ -212,6 +224,7 @@ impl TransformAnim {
             Prop::Opacity => self.opacity.0.len(),
             Prop::Anchor => self.anchor.0.len(),
             Prop::Crop => self.crop.0.len(),
+            Prop::Pin => self.pin.0.len(),
         }
     }
 
@@ -225,6 +238,11 @@ impl TransformAnim {
             opacity: self.opacity.value_at(t, base.opacity).clamp(0.0, 1.0),
             anchor: self.anchor.value_at(t, base.anchor),
             crop: self.crop.value_at(t, base.crop),
+            // Keys make it pinned; without them, the clip's own setting.
+            pin: match self.pin.0.first() {
+                Some(k) => Some(self.pin.value_at(t, k.value)),
+                None => base.pin,
+            },
         }
     }
 
@@ -237,6 +255,11 @@ impl TransformAnim {
             Prop::Opacity => self.opacity.set(t, v.opacity),
             Prop::Anchor => self.anchor.set(t, v.anchor),
             Prop::Crop => self.crop.set(t, v.crop),
+            Prop::Pin => {
+                if let Some(p) = v.pin {
+                    self.pin.set(t, p)
+                }
+            }
         }
     }
 
@@ -252,6 +275,7 @@ impl TransformAnim {
             Prop::Opacity => self.opacity.remove_at(t),
             Prop::Anchor => self.anchor.remove_at(t),
             Prop::Crop => self.crop.remove_at(t),
+            Prop::Pin => self.pin.remove_at(t),
         }
     }
 
@@ -263,6 +287,7 @@ impl TransformAnim {
             Prop::Opacity => self.opacity.0.clear(),
             Prop::Anchor => self.anchor.0.clear(),
             Prop::Crop => self.crop.0.clear(),
+            Prop::Pin => self.pin.0.clear(),
         }
     }
 
@@ -274,6 +299,7 @@ impl TransformAnim {
             Prop::Opacity => self.opacity.0.iter().map(|k| k.at).collect(),
             Prop::Anchor => self.anchor.0.iter().map(|k| k.at).collect(),
             Prop::Crop => self.crop.0.iter().map(|k| k.at).collect(),
+            Prop::Pin => self.pin.0.iter().map(|k| k.at).collect(),
         }
     }
 
@@ -296,6 +322,7 @@ impl TransformAnim {
             Prop::Opacity => find(&self.opacity.0, t),
             Prop::Anchor => find(&self.anchor.0, t),
             Prop::Crop => find(&self.crop.0, t),
+            Prop::Pin => find(&self.pin.0, t),
         }
     }
 
@@ -315,6 +342,7 @@ impl TransformAnim {
         set(&mut self.opacity.0, t, interp);
         set(&mut self.anchor.0, t, interp);
         set(&mut self.crop.0, t, interp);
+        set(&mut self.pin.0, t, interp);
     }
 }
 

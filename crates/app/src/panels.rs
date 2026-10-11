@@ -222,7 +222,14 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
             Some((crate::gizmo::GizmoLayer { id: c.id, rect: Transform::full_rect(size), size }, tr))
         })
         .collect();
-    let shows = |l: &crate::gizmo::GizmoLayer, tr: &Transform, f: [f32; 2]| tr.hit_rect(tr.clip_to_crop(l.rect, l.size), frame_px, f);
+    let shows = |l: &crate::gizmo::GizmoLayer, tr: &Transform, f: [f32; 2]| {
+        if tr.valid_pin().is_some() {
+            // Corner-pinned: the picture is wherever the pin stretches it.
+            tr.hit(l.size, frame_px, f)
+        } else {
+            tr.hit_rect(tr.clip_to_crop(l.rect, l.size), frame_px, f)
+        }
+    };
 
     // Pressing on a mask handle (or drawing a mask) isn't a click on a layer.
     let press = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
@@ -267,8 +274,14 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
                 if let (Some(mut v), Some(clip)) = (st.visual(id), clip) {
                     let shown = clip.transform_at(t);
                     let mut moved = shown;
-                    moved.position[0] += d.x;
-                    moved.position[1] += d.y;
+                    match shown.valid_pin() {
+                        // A pinned layer moves by moving all four corners.
+                        Some(pin) => moved.pin = Some(pin.map(|p| [p[0] + d.x, p[1] + d.y])),
+                        None => {
+                            moved.position[0] += d.x;
+                            moved.position[1] += d.y;
+                        }
+                    }
                     // Keyed if position is animated (adds/updates a key at the playhead).
                     apply_transform_edit(&mut v, &shown, &moved, clip.source_time(t), clip.contains(t));
                     st.set_visual_live(id, v);
@@ -281,63 +294,104 @@ pub fn viewer(ui: &mut egui::Ui, st: &mut EditorState) {
     transport(ui, st);
 }
 
-/// The selected clip's point tracker in the viewer: the feature box, the
-/// search area and the tracked path. Dragging the box places the tracker.
-/// Returns true while it's being dragged.
+/// Colours of tracker points 1–4 in the Viewer.
+const POINT_COLOURS: [Color32; 4] = [Color32::from_rgb(80, 220, 255), Color32::from_rgb(255, 210, 70), Color32::from_rgb(255, 110, 200), Color32::from_rgb(120, 240, 120)];
+
+/// The selected clip's motion tracker in the viewer: each point's feature box,
+/// search area and tracked path, joined up (a line for two points, the
+/// surface's outline for four). Dragging a box moves that point: on a tracked
+/// frame it corrects the track there; elsewhere it sets where tracking starts.
+/// Returns true while one is being dragged.
 fn tracker_overlay(ui: &mut egui::Ui, st: &mut EditorState, resp: &egui::Response, area: egui::Rect, frame_px: [f32; 2], scale: f32, origin: egui::Pos2) -> bool {
     let Some(id) = st.selection else { return false };
     let Some((_, clip)) = st.seq().find_clip(id) else { return false };
     let (Some(trk), Some([lw, lh])) = (clip.tracker.clone(), st.project.picture_size(clip)) else { return false };
     let clip = clip.clone();
     let t = st.playback.playhead;
-    let m = clip.transform_at(t).matrix(frame_px);
     let half = [lw as f32 / 2.0, lh as f32 / 2.0];
+    // (Corner-pinned layers map in perspective.)
+    let m = clip.transform_at(t).layer_map([lw as f32, lh as f32], frame_px);
     // Trackers work in media time.
     let src = clip.media_at(t.max(clip.timeline_start).min(clip.timeline_end()));
-    let pos = trk.shown_at(src);
+    let shown = trk.shown_at(src);
     let to_s = |p: [f32; 2]| {
         let f = m.apply([p[0] - half[0], p[1] - half[1]]);
         origin + Vec2::new(f[0], f[1]) * scale
     };
-    let square = |r: f32| [[pos[0] - r, pos[1] - r], [pos[0] + r, pos[1] - r], [pos[0] + r, pos[1] + r], [pos[0] - r, pos[1] + r]].map(to_s).to_vec();
-    let cyan = Color32::from_rgb(80, 220, 255);
+    let square = |pos: [f32; 2], r: f32| [[pos[0] - r, pos[1] - r], [pos[0] + r, pos[1] - r], [pos[0] + r, pos[1] + r], [pos[0] - r, pos[1] + r]].map(to_s).to_vec();
     let painter = ui.painter_at(area);
-    if trk.path.len() > 1 {
-        painter.add(egui::Shape::line(trk.path.iter().map(|s| to_s(s.pos)).collect(), egui::Stroke::new(1.0, cyan.gamma_multiply(0.6))));
+    let many = trk.points.len() > 1;
+    // The shape the points make.
+    if many {
+        let pts: Vec<egui::Pos2> = shown.iter().map(|p| to_s(*p)).collect();
+        let joint = egui::Stroke::new(1.2, Color32::from_white_alpha(150));
+        if pts.len() == 2 {
+            painter.add(egui::Shape::dashed_line(&pts, joint, 6.0, 4.0));
+        } else {
+            let mut ring = pts.clone();
+            ring.push(pts[0]);
+            painter.add(egui::Shape::dashed_line(&ring, joint, 6.0, 4.0));
+        }
     }
-    painter.add(egui::Shape::closed_line(square(trk.size / 2.0 + trk.search), egui::Stroke::new(1.0, cyan.gamma_multiply(0.45))));
-    painter.add(egui::Shape::closed_line(square(trk.size / 2.0), egui::Stroke::new(1.5, cyan)));
-    painter.circle_filled(to_s(pos), 2.5, cyan);
+    for (i, (p, pos)) in trk.points.iter().zip(&shown).enumerate() {
+        let col = POINT_COLOURS[i % 4];
+        if p.path.len() > 1 {
+            painter.add(egui::Shape::line(p.path.iter().map(|s| to_s(s.pos)).collect(), egui::Stroke::new(1.0, col.gamma_multiply(0.6))));
+        }
+        painter.add(egui::Shape::closed_line(square(*pos, p.size / 2.0 + p.search), egui::Stroke::new(1.0, col.gamma_multiply(0.4))));
+        painter.add(egui::Shape::closed_line(square(*pos, p.size / 2.0), egui::Stroke::new(1.5, col)));
+        painter.circle_filled(to_s(*pos), 2.5, col);
+        if many {
+            let corner = square(*pos, p.size / 2.0)[0];
+            painter.text(corner + Vec2::new(2.0, -2.0), egui::Align2::LEFT_BOTTOM, format!("{}", i + 1), egui::FontId::proportional(12.0), col);
+        }
+    }
 
-    // Drag the feature box to place the tracker (on the frame shown).
+    // Drag a feature box to move that point (on the frame shown).
     let Some(inv) = m.inverse() else { return false };
     let drag_id = egui::Id::new("tracker_drag");
+    let to_layer = |sp: egui::Pos2| {
+        let f = (sp - origin) / scale;
+        let l = inv.apply([f.x, f.y]);
+        [l[0] + half[0], l[1] + half[1]]
+    };
     if resp.drag_started() {
-        let inside = ui.input(|i| i.pointer.press_origin()).is_some_and(|p| {
-            let f = (p - origin) / scale;
-            let l = inv.apply([f.x, f.y]);
-            let r = trk.size / 2.0 + 4.0 / scale;
-            (l[0] + half[0] - pos[0]).abs() <= r && (l[1] + half[1] - pos[1]).abs() <= r
+        // The point whose box is under the press (the nearest, if boxes overlap).
+        let grabbed = ui.input(|i| i.pointer.press_origin()).and_then(|press| {
+            let l = to_layer(press);
+            trk.points
+                .iter()
+                .zip(&shown)
+                .enumerate()
+                .filter(|(_, (p, pos))| {
+                    let r = p.size / 2.0 + 4.0 / scale;
+                    (l[0] - pos[0]).abs() <= r && (l[1] - pos[1]).abs() <= r
+                })
+                .min_by(|a, b| {
+                    let d = |pos: &[f32; 2]| (l[0] - pos[0]).powi(2) + (l[1] - pos[1]).powi(2);
+                    d(a.1 .1).total_cmp(&d(b.1 .1))
+                })
+                .map(|(i, _)| i)
         });
-        ui.data_mut(|d| d.insert_temp(drag_id, inside));
+        ui.data_mut(|d| d.insert_temp(drag_id, grabbed));
     }
-    let dragging = resp.dragged() && ui.data(|d| d.get_temp::<bool>(drag_id)).unwrap_or(false);
-    if dragging && !st.playback.playing && st.tracking.is_none() {
-        let d = resp.drag_delta() / scale;
-        if d != Vec2::ZERO {
-            // Frame pixels to the layer's own pixels (undo its scale and rotation).
-            let (o, q) = (inv.apply([0.0, 0.0]), inv.apply([d.x, d.y]));
-            let mut n = trk.clone();
-            n.point = [(pos[0] + q[0] - o[0]).clamp(0.0, lw as f32), (pos[1] + q[1] - o[1]).clamp(0.0, lh as f32)];
-            n.start = src;
-            // A moved tracker starts afresh.
-            n.path.clear();
-            st.set_tracker_live(id, Some(n));
+    let grabbed = if resp.dragged() { ui.data(|d| d.get_temp::<Option<usize>>(drag_id)).flatten() } else { None };
+    let dragging = grabbed.is_some();
+    if let (Some(i), Some(_)) = (grabbed, resp.interact_pointer_pos()) {
+        if !st.playback.playing && st.tracking.is_none() && i < trk.points.len() {
+            let d = resp.drag_delta();
+            if d != Vec2::ZERO {
+                // Where the box was on screen, moved by the drag, back into the layer's pixels.
+                let target = to_layer(to_s(shown[i]) + d);
+                let mut n = trk.clone();
+                n.points[i].move_to(src, [target[0].clamp(0.0, lw as f32), target[1].clamp(0.0, lh as f32)]);
+                st.set_tracker_live(id, Some(n));
+            }
         }
         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     }
     if resp.drag_stopped() {
-        ui.data_mut(|d| d.remove::<bool>(drag_id));
+        ui.data_mut(|d| d.remove::<Option<usize>>(drag_id));
     }
     dragging
 }
@@ -548,6 +602,7 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
     let mut lock = ui.data_mut(|d| *d.get_persisted_mut_or(lock_id, true));
     let mut toggles: Vec<Prop> = Vec::new();
     let mut reset = false;
+    let mut unpin = false;
     let mut seek = None;
     let anim = v.anim.clone();
     // A keyframed property can only be edited with the playhead on the clip.
@@ -663,6 +718,38 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
         });
         ui.end_row();
 
+        ui.weak("Corner pin");
+        let pinned = t.pin.is_some();
+        if pinned {
+            key_btn(ui, Prop::Pin, &mut toggles);
+        } else {
+            ui.label("");
+        }
+        ui.add_enabled_ui(editable(Prop::Pin), |ui| {
+            ui.horizontal(|ui| {
+                let mut on = pinned;
+                if ui.checkbox(&mut on, "").on_hover_text("Stretch the layer in perspective so its four corners land wherever you put them (drag them in the Viewer). Position, scale, rotation and anchor don't apply while it's on").changed() {
+                    if on {
+                        // Start from exactly where the layer is now, so nothing jumps.
+                        t.pin = Some(t.pin_of_transform(native, frame));
+                    } else {
+                        unpin = true;
+                    }
+                }
+                if pinned {
+                    if t.valid_pin().is_none() {
+                        ui.colored_label(Color32::from_rgb(255, 170, 80), "twisted: drag the corners apart");
+                    }
+                    if ui.small_button("Reset corners").on_hover_text("Back to the layer's own rectangle (from its position, scale and rotation)").clicked() {
+                        t.pin = Some(t.pin_of_transform(native, frame));
+                    }
+                } else {
+                    ui.weak("off");
+                }
+            });
+        });
+        ui.end_row();
+
         ui.weak("Blend");
         ui.label("");
         egui::ComboBox::from_id_salt("blend").selected_text(v.blend.label()).show_ui(ui, |ui| {
@@ -725,6 +812,9 @@ fn transform_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_
     if reset {
         v.transform = Transform::default();
         v.anim = Default::default();
+    } else if unpin {
+        v.transform.pin = None;
+        v.anim.pin.0.clear();
     } else {
         apply_transform_edit(&mut v, &shown, &t, src, in_clip);
         let now = v.anim.eval(&v.transform, src);
@@ -1280,33 +1370,67 @@ fn format_duration(t: Time) -> String {
     }
 }
 
-/// Motion tracking for a footage clip: place a tracker, track it, and apply the
-/// motion to another layer or use it to stabilise this one.
+/// Motion tracking for a footage clip: place a tracker (1, 2 or 4 points),
+/// track it, and apply the motion to another layer, a mask, or this clip
+/// (stabilise).
 fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
-    use reelforge_core::track::PointTrack;
+    use reelforge_core::track::{TrackMode, Tracker};
     ui.heading("Motion tracking");
     let Some([lw, lh]) = st.project.picture_size(clip) else { return };
+    let layer = [lw as f32, lh as f32];
     let t = st.playback.playhead;
     let src = clip.media_at(t.max(clip.timeline_start).min(clip.timeline_end()));
+    let mode_key = egui::Id::new("new_tracker_mode");
     let Some(trk) = clip.tracker.clone() else {
-        ui.weak("Follow a detail through the clip, then make another layer move with it, or hold this clip steady.");
-        if ui.button("Add tracker").clicked() {
-            let trk = PointTrack { point: [lw as f32 / 2.0, lh as f32 / 2.0], start: src, ..Default::default() };
-            st.set_tracker(clip.id, Some(trk), "Add tracker");
-            st.status = "Drag the tracker box in the Viewer onto a sharp detail, then press Track forward".into();
-        }
+        ui.weak("Follow details through the clip, then make another layer move with them, pin a picture onto a moving surface, or hold this clip steady.");
+        let mut mode: TrackMode = ui.data(|d| d.get_temp(mode_key)).unwrap_or_default();
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("new_tracker_mode").width((ui.available_width() - 100.0).clamp(120.0, 230.0)).truncate().selected_text(mode.label()).show_ui(ui, |ui| {
+                for m in TrackMode::ALL {
+                    ui.selectable_value(&mut mode, m, m.label());
+                }
+            });
+            if ui.button("Add tracker").clicked() {
+                st.set_tracker(clip.id, Some(Tracker::new(mode, [layer[0] / 2.0, layer[1] / 2.0], layer, src)), "Add tracker");
+                st.status = match mode {
+                    TrackMode::Position => "Drag the tracker box in the Viewer onto a sharp detail, then press Track forward".into(),
+                    TrackMode::Transform => "Drag boxes 1 and 2 onto two sharp details, well apart on the same object, then press Track forward".into(),
+                    TrackMode::CornerPin => "Drag boxes 1–4 onto the corners of the surface (top left, top right, bottom right, bottom left), then press Track forward".into(),
+                };
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(mode_key, mode));
         return;
     };
-    ui.weak("Drag the box in the Viewer onto a sharp detail (a corner, a mark, a light), then track. The outer box is how far it may move per frame.");
+    ui.weak(match trk.mode {
+        TrackMode::Position => "Drag the box in the Viewer onto a sharp detail (a corner, a mark, a light), then track. The outer box is how far it may move per frame.",
+        TrackMode::Transform => "Put the two boxes on sharp details of the same object, as far apart as you can: the line between them gives the rotation and scale.",
+        TrackMode::CornerPin => "Put boxes 1–4 on the surface's top-left, top-right, bottom-right and bottom-left corners (or on details near them).",
+    });
     egui::Grid::new("tracker_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-        let mut n = trk.clone();
+        ui.weak("Points");
+        let mut mode = trk.mode;
+        egui::ComboBox::from_id_salt(("tracker_mode", clip.id)).width(ui.available_width().clamp(120.0, 230.0)).truncate().selected_text(mode.label()).show_ui(ui, |ui| {
+            for m in TrackMode::ALL {
+                ui.selectable_value(&mut mode, m, m.label());
+            }
+        });
+        if mode != trk.mode {
+            let mut n = trk.clone();
+            n.set_mode(mode, layer, src);
+            st.set_tracker(clip.id, Some(n), "Change tracker points");
+        }
+        ui.end_row();
+        let (mut size, mut search) = (trk.points[0].size, trk.points[0].search);
         ui.weak("Feature box");
-        ui.add(egui::DragValue::new(&mut n.size).range(9.0..=201.0).speed(0.5).suffix(" px").fixed_decimals(0));
+        ui.add(egui::DragValue::new(&mut size).range(9.0..=201.0).speed(0.5).suffix(" px").fixed_decimals(0));
         ui.end_row();
         ui.weak("Search");
-        ui.add(egui::DragValue::new(&mut n.search).range(2.0..=200.0).speed(0.5).suffix(" px").fixed_decimals(0)).on_hover_text("Raise it for fast motion; lower is faster and less likely to jump to a look-alike");
+        ui.add(egui::DragValue::new(&mut search).range(2.0..=300.0).speed(0.5).suffix(" px").fixed_decimals(0)).on_hover_text("How far a feature may move between frames. Raise it for fast motion (big areas are searched coarse-to-fine, so it stays quick); lower is less likely to jump to a look-alike");
         ui.end_row();
-        if n != trk {
+        if size != trk.points[0].size || search != trk.points[0].search {
+            let mut n = trk.clone();
+            n.set_sizes(size, search);
             st.set_tracker_live(clip.id, Some(n));
         }
     });
@@ -1334,29 +1458,42 @@ fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_co
         }
     }
 
-    if let (Some(a), Some(b)) = (trk.path.first(), trk.path.last()) {
+    let frames = trk.frames();
+    if let (Some(a), Some(b)) = (frames.first(), frames.last()) {
         let rate = st.seq().frame_rate;
         let to_seq = |s: Time| clip.timeline_of_media(s).unwrap_or(clip.timeline_start);
-        ui.weak(format!("{} frames tracked, {} to {}", trk.path.len(), to_seq(a.at).timecode(rate), to_seq(b.at).timecode(rate)));
-        // Where it can go: this clip (stabilise), or another video layer that overlaps the track.
-        let (ta, tb) = { let (x, y) = (to_seq(a.at), to_seq(b.at)); (x.min(y), x.max(y)) };
+        let what = if trk.points.len() > 1 { "frames with every point tracked" } else { "frames tracked" };
+        ui.weak(format!("{} {what}, {} to {}", frames.len(), to_seq(a.0).timecode(rate), to_seq(b.0).timecode(rate)));
+        // Where it can go: this clip (stabilise), its masks, or another video layer that overlaps the track.
+        let (ta, tb) = {
+            let (x, y) = (to_seq(a.0), to_seq(b.0));
+            (x.min(y), x.max(y))
+        };
+        let stab_label = match trk.mode {
+            TrackMode::CornerPin => "This clip: stabilise (perspective)",
+            TrackMode::Transform => "This clip: stabilise (with rotation and scale)",
+            TrackMode::Position => "This clip: stabilise",
+        };
         // Targets: (clip, mask index), where a mask index means "this clip's mask".
-        let mut targets: Vec<((reelforge_core::ClipId, Option<usize>), String)> = vec![((clip.id, None), "This clip: stabilise".into())];
+        let mut targets: Vec<((reelforge_core::ClipId, Option<usize>), String)> = vec![((clip.id, None), stab_label.into())];
         for (i, m) in clip.masks.iter().enumerate() {
             targets.push(((clip.id, Some(i)), format!("Mask: {}", m.name)));
         }
         for tr in st.seq().tracks.iter().filter(|t| t.kind == reelforge_core::TrackKind::Video) {
             for c in tr.clips.iter().filter(|c| c.id != clip.id && c.timeline_start < tb && c.timeline_end() > ta) {
-                targets.push(((c.id, None), format!("{} ({})", c.display_name(&st.project), tr.name)));
+                let how = if trk.mode == TrackMode::CornerPin { "pin into the points: " } else { "" };
+                targets.push(((c.id, None), format!("{how}{} ({})", c.display_name(&st.project), tr.name)));
             }
         }
         let key = egui::Id::new(("track_target", clip.id));
         let default = targets.iter().find(|((id, m), _)| *id != clip.id || m.is_some()).unwrap_or(&targets[0]).0;
         let mut chosen: (reelforge_core::ClipId, Option<usize>) = ui.data(|d| d.get_temp(key)).filter(|c| targets.iter().any(|(t, _)| t == c)).unwrap_or(default);
+        let smooth_key = egui::Id::new("stabilise_smoothing");
+        let mut smoothing: f32 = ui.data_mut(|d| *d.get_persisted_mut_or(smooth_key, 0.0));
         ui.horizontal(|ui| {
             ui.label("Apply to");
             let label = targets.iter().find(|(id, _)| *id == chosen).map(|(_, n)| n.clone()).unwrap_or_default();
-            egui::ComboBox::from_id_salt(key).width(180.0).selected_text(label).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt(key).width((ui.available_width() - 60.0).clamp(110.0, 230.0)).truncate().selected_text(label).show_ui(ui, |ui| {
                 for (id, name) in &targets {
                     ui.selectable_value(&mut chosen, *id, name);
                 }
@@ -1364,15 +1501,31 @@ fn tracker_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_co
             if ui.button("Apply").on_hover_text("Writes keyframes (undoable)").clicked() {
                 match chosen {
                     (_, Some(i)) => st.apply_track_to_mask(clip.id, i),
-                    (id, None) => st.apply_track(clip.id, id),
+                    (id, None) => st.apply_track(clip.id, id, smoothing),
                 }
             }
         });
-        ui.data_mut(|d| d.insert_temp(key, chosen));
+        if chosen == (clip.id, None) && trk.mode != TrackMode::CornerPin {
+            ui.horizontal(|ui| {
+                ui.weak("Smoothing");
+                ui.add(egui::DragValue::new(&mut smoothing).range(0.0..=120.0).speed(0.25).suffix(" frames").fixed_decimals(0))
+                    .on_hover_text("0 locks the shot completely. Higher keeps slow, deliberate camera moves (pans, tilts) and only takes out the shake: 10–30 frames suits most handheld footage");
+                ui.weak(if smoothing > 0.0 { "keeps camera moves" } else { "locked" });
+            });
+        }
+        if trk.mode == TrackMode::CornerPin && chosen.0 != clip.id && chosen.1.is_none() {
+            ui.weak("A layer that isn't pinned is pinned straight into the four points. To place it differently on the surface, adjust its corner pin at the first tracked frame and apply again: it keeps that shape and moves with the surface.");
+        }
+        ui.data_mut(|d| {
+            d.insert_temp(key, chosen);
+            d.insert_persisted(smooth_key, smoothing);
+        });
     }
     ui.horizontal(|ui| {
-        if ui.add_enabled(!trk.path.is_empty(), egui::Button::new("Clear path")).clicked() {
-            st.set_tracker(clip.id, Some(PointTrack { path: Vec::new(), ..trk.clone() }), "Clear track");
+        if ui.add_enabled(trk.is_tracked(), egui::Button::new("Clear paths")).clicked() {
+            let mut n = trk.clone();
+            n.clear_paths();
+            st.set_tracker(clip.id, Some(n), "Clear track");
         }
         if ui.button("Remove tracker").clicked() {
             st.set_tracker(clip.id, None, "Remove tracker");

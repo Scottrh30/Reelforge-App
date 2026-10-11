@@ -9,7 +9,7 @@ use reelforge_core::undo::{
     split_group, AddClip, Batch, Edge, ImportMedia, SetClipAudio, SetClipTiming, SetClipVisual, SetDissolve,
     SetLink, SetTrackAudio, Timing, AddTrack, RemoveTrack, RenameTrack, SetTitle, SetTracker,
 };
-use reelforge_core::track::PointTrack;
+use reelforge_core::track::{ApplyOptions, TrackMode, Tracker};
 use reelforge_render::text::FontEntry;
 use reelforge_core::edit::{plan_trim, ripple_delete};
 use reelforge_core::*;
@@ -1062,7 +1062,7 @@ impl EditorState {
     // ---- Motion tracking -----------------------------------------------------------
 
     /// Change a clip's tracker as part of a gesture (dragging it, a slider).
-    pub fn set_tracker_live(&mut self, id: ClipId, t: Option<PointTrack>) {
+    pub fn set_tracker_live(&mut self, id: ClipId, t: Option<Tracker>) {
         let Some(before) = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()) else { return };
         if before == t {
             return;
@@ -1074,7 +1074,7 @@ impl EditorState {
     }
 
     /// Change a clip's tracker as one undo step.
-    pub fn set_tracker(&mut self, id: ClipId, t: Option<PointTrack>, label: &'static str) {
+    pub fn set_tracker(&mut self, id: ClipId, t: Option<Tracker>, label: &'static str) {
         self.commit_live_edit();
         let Some(old) = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()) else { return };
         if old != t {
@@ -1082,7 +1082,7 @@ impl EditorState {
         }
     }
 
-    /// Track the selected clip's feature from the playhead to the end of the
+    /// Track the selected clip's points from the playhead to the end of the
     /// clip (or back to its start), in the background.
     pub fn start_tracking(&mut self, id: ClipId, forward: bool) {
         self.commit_live_edit();
@@ -1102,7 +1102,7 @@ impl EditorState {
             .name("tracker".into())
             .spawn(move || {
                 let progress_tx = tx.clone();
-                let r = reelforge_media::track_point(&media.path, &media.info, &track, from, until, &stop, |p| {
+                let r = reelforge_media::track_points(&media.path, &media.info, &track, from, until, &stop, |p| {
                     let _ = progress_tx.send(TrackMsg::Progress(p));
                 });
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
@@ -1132,26 +1132,31 @@ impl EditorState {
         match result {
             Err(e) => self.status = format!("Tracking failed: {e}"),
             Ok((samples, end)) => {
-                let n = samples.len().saturating_sub(1);
+                let n = samples.first().map_or(0, |s| s.len().saturating_sub(1));
                 let Some(old) = self.project.sequences.get(job.seq).and_then(|s| s.find_clip(job.clip)).and_then(|(_, c)| c.tracker.clone()) else { return };
                 let mut new = old.clone();
-                new.merge(samples);
+                for (p, s) in new.points.iter_mut().zip(samples) {
+                    p.merge(s);
+                }
                 let rate = self.project.sequences[job.seq].frame_rate;
+                let many = new.points.len() > 1;
                 self.status = match end {
                     reelforge_media::TrackEnd::Done => format!("Tracked {n} frames"),
                     reelforge_media::TrackEnd::Cancelled => format!("Tracking stopped after {n} frames"),
-                    reelforge_media::TrackEnd::Lost(t) => {
-                        format!("Tracked {n} frames, then lost the feature at {} (source time): move the tracker there and track again", t.timecode(rate))
+                    reelforge_media::TrackEnd::Lost(t, i) => {
+                        let what = if many { format!("point {}", i + 1) } else { "the feature".into() };
+                        format!("Tracked {n} frames, then lost {what} at {} (source time): go there, drag it back onto its detail and track again", t.timecode(rate))
                     }
                 };
                 let status = self.status.clone();
-                self.execute(Box::new(SetTracker { seq: job.seq, id: job.clip, old: Some(old), new: Some(new), label: "Track point" }));
+                let label = if many { "Track points" } else { "Track point" };
+                self.execute(Box::new(SetTracker { seq: job.seq, id: job.clip, old: Some(old), new: Some(new), label }));
                 self.status = status;
             }
         }
     }
 
-    /// Make mask `index` of the tracked clip move with its tracked feature.
+    /// Make mask `index` of the tracked clip move with its tracked points.
     pub fn apply_track_to_mask(&mut self, tracked: ClipId, index: usize) {
         self.commit_live_edit();
         let Some((_, c)) = self.seq().find_clip(tracked) else { return };
@@ -1162,21 +1167,32 @@ impl EditorState {
         v.masks[index] = m;
         self.set_visual_live(tracked, v);
         self.commit_live_edit();
-        self.status = format!("{name} now follows the tracked point");
+        self.status = format!("{name} now follows the tracked motion");
     }
 
-    /// Make `target` follow the tracked feature of `tracked` (or, if they're the
-    /// same clip, hold it steady), as position keyframes.
-    pub fn apply_track(&mut self, tracked: ClipId, target: ClipId) {
+    /// Make `target` follow the tracked motion of `tracked` (or, if they're the
+    /// same clip, hold it steady), as keyframes: position, plus rotation and
+    /// scale with two points, or a corner pin with four. `smoothing` (frames)
+    /// keeps slow camera moves when stabilising.
+    pub fn apply_track(&mut self, tracked: ClipId, target: ClipId, smoothing: f32) {
         self.commit_live_edit();
         let s = self.seq();
         let (Some((_, a)), Some((_, b))) = (s.find_clip(tracked), s.find_clip(target)) else { return };
         let Some(track) = &a.tracker else { return };
-        let Some([w, h]) = self.project.picture_size(a) else { return };
+        if self.project.picture_size(a).is_none() {
+            return;
+        }
+        let (layer, target_layer) = (self.layer_size(a), self.layer_size(b));
         let frame = [s.width as f32, s.height as f32];
         let stabilise = tracked == target;
-        let Some(anim) = reelforge_core::track::follow_keys(a, track, [w as f32, h as f32], frame, b, stabilise) else {
-            self.status = "Nothing to apply: the track doesn't overlap that clip".into();
+        let opts = ApplyOptions { stabilise, smoothing: if stabilise { smoothing } else { 0.0 } };
+        let mode = track.mode;
+        let Some(anim) = reelforge_core::track::follow_keys(a, track, layer, frame, b, target_layer, opts) else {
+            self.status = if track.frames().is_empty() {
+                "Nothing to apply: track every point first".into()
+            } else {
+                "Nothing to apply: the track doesn't overlap that clip".into()
+            };
             return;
         };
         if s.is_locked(target) {
@@ -1187,7 +1203,14 @@ impl EditorState {
         let new = ClipVisual { anim, ..old.clone() };
         let name = b.display_name(&self.project).into_owned();
         self.execute(Box::new(SetClipVisual { seq: self.active, id: target, old, new }));
-        self.status = if stabilise { "Stabilised: the clip now moves against the tracked motion".into() } else { format!("{name} now follows the tracked point") };
+        self.status = match (stabilise, mode) {
+            (true, TrackMode::CornerPin) => "Stabilised: the clip is corner-pinned against the tracked perspective".into(),
+            (true, _) if smoothing > 0.0 => "Stabilised: the shake is taken out, slow camera moves are kept (scale it up a little to hide the edges)".into(),
+            (true, _) => "Stabilised: the clip now moves against the tracked motion (scale it up a little to hide the edges)".into(),
+            (false, TrackMode::CornerPin) => format!("{name} is now corner-pinned to the tracked surface"),
+            (false, TrackMode::Transform) => format!("{name} now follows the tracked position, rotation and scale"),
+            (false, TrackMode::Position) => format!("{name} now follows the tracked point"),
+        };
     }
 
     pub fn toggle_lock(&mut self, track: usize) {
@@ -2156,7 +2179,7 @@ impl EditorState {
 /// An interactive edit in progress: what's being changed and its value before the gesture.
 pub enum TrackMsg {
     Progress(f32),
-    Done(Result<(Vec<reelforge_core::track::TrackSample>, reelforge_media::TrackEnd), String>),
+    Done(Result<(Vec<Vec<reelforge_core::track::TrackSample>>, reelforge_media::TrackEnd), String>),
 }
 
 pub struct TrackJob {
@@ -2173,7 +2196,7 @@ enum LiveEdit {
     Timing(ClipId, Vec<(ClipId, Timing)>, TrimMode),
     Dissolve(ClipId, Time),
     Title(ClipId, TitleSpec),
-    Tracker(ClipId, Option<PointTrack>),
+    Tracker(ClipId, Option<Tracker>),
     Markers(Vec<reelforge_core::Marker>),
     ClipAudio(ClipId, ClipAudio),
     TrackAudio(usize, TrackAudio),

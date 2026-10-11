@@ -846,12 +846,12 @@ impl Command for RenameTrack {
     }
 }
 
-/// Add, change or remove a clip's point tracker.
+/// Add, change or remove a clip's motion tracker.
 pub struct SetTracker {
     pub seq: usize,
     pub id: ClipId,
-    pub old: Option<crate::track::PointTrack>,
-    pub new: Option<crate::track::PointTrack>,
+    pub old: Option<crate::track::Tracker>,
+    pub new: Option<crate::track::Tracker>,
     pub label: &'static str,
 }
 

@@ -2,7 +2,7 @@
 
 A HitFilm-style video editor and compositor, written in Rust. Editing, audio, the GPU
 compositor, export (with presets, a queue and GPU encoders), proxies and crash safety are done;
-effects and compositing (composite shots, tracking) are under way.
+effects and compositing (composite shots, motion tracking with corner pinning) are under way.
 
 What works now:
 
@@ -235,13 +235,33 @@ What works now:
     contain itself)
   - Empty parts of a shot are transparent, so layers underneath show through
   - Exporting while inside a shot exports that shot
-- **Motion tracking** (Controls panel, for footage clips): **Add tracker**, drag its box in the
-  Viewer onto a sharp detail, then **Track forward** / **Track backward** from the playhead. It
-  follows the detail frame by frame to a fraction of a pixel (normalised cross-correlation, so
-  lighting changes don't throw it) and stops where it loses it, so you can re-place it and carry
-  on. The path is drawn in the Viewer. **Apply to** another layer makes that layer follow the
-  point (a title stuck to a moving car, say); **This clip: stabilise** moves the clip against
-  the motion so the point holds still. Both write position keyframes you can edit or undo
+- **Motion tracking** (Controls panel, for footage clips). Pick how many points, **Add tracker**,
+  drag the numbered boxes in the Viewer onto sharp details, then **Track forward** / **Track
+  backward** from the playhead:
+  - **Position (1 point)**: movement. A title stuck to a moving car, say.
+  - **Position, rotation and scale (2 points)**: put them on two details of the same object, far
+    apart. The line between them gives the turn and the change of size, so a following layer
+    turns and grows with it, and stabilising takes out rotation and zoom as well.
+  - **Corner pin / perspective (4 points)**: on the corners of a flat surface (a screen, a sign,
+    a picture frame). **Apply to** another layer pins it into those four points in perspective:
+    screen replacement. If that layer already has a corner pin (say you adjusted its corners
+    at the first tracked frame), it keeps that shape and moves with the surface instead.
+    **This clip: stabilise (perspective)** holds the surface flat and still.
+
+  Every point is found to a fraction of a pixel in each frame (centre-weighted normalised
+  cross-correlation, so lighting changes and the surroundings of a turning feature don't throw
+  it). With two or four points the tracker also compares each feature with how it looked at the
+  start, warped by the group's motion, so errors don't build up over long shots. Fast motion is
+  fine: raise **Search** and big areas are searched coarse-to-fine, starting where the last
+  movement predicts. If a point is lost (blocked, out of frame) tracking stops and says which;
+  go there, drag it back onto its detail (that corrects the track at that frame) and track on.
+  **Stabilise** can keep deliberate camera moves: **Smoothing** (frames) takes out only the
+  shake. Everything is written as ordinary keyframes you can edit or undo, and masks on the
+  clip can follow the track too
+- **Corner pin** (Transform section of the Controls panel): tick it to stretch a layer in
+  perspective by its four corners. Drag the pink corner handles in the Viewer (**Shift**: straight
+  across or down; dragging the middle moves all four). It can be keyframed like any property,
+  and position, scale, rotation and anchor don't apply while it's on
 - **Curves panel** (a tab next to the Editor Timeline): a value graph of the selected clip's
   keyframes. Pick channels on the left (position X/Y, scale X/Y, rotation, opacity and every
   effect parameter). **Drag** a key to change its time and value (**Shift** changes only the
@@ -570,12 +590,26 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   combines the masks (add = screen, subtract, intersect), at up to 2048 px. `Scene` caches the
   image per clip by a hash of the shapes, and the compositor applies it in the layer's own pixel
   space as the first pass of its effect chain, so the viewer and export match
-- **Tracking** (`core/src/track.rs`, `media/src/tracker.rs`): `Template::find` scores every
-  offset in the search area by normalised cross-correlation on luma and fits a parabola through
-  the best score's neighbours for sub-pixel accuracy. `track_point` steps through the clip's
-  frames (exact, full size), refreshing the template after confident matches and stopping below
-  a 0.6 score. `follow_keys` turns the path into position keys, taking the tracked layer's own
-  transform into account
+- **Tracking** (`core/src/track.rs`, `media/src/tracker.rs`): a `Tracker` has a `TrackMode` and
+  1, 2 or 4 `PointTrack`s (projects saved with the old single point still load).
+  `Template::find` scores every offset in the search area by Gaussian-weighted normalised
+  cross-correlation on luma and fits a parabola through the best score's neighbours for
+  sub-pixel accuracy; a template remembers the sub-pixel offset of its centre, so refreshing it
+  doesn't drift. `FeatureTracker` searches large areas on a box-filtered `Pyramid`
+  (coarse-to-fine, from a velocity prediction), refreshes its patch after confident matches,
+  and snaps back to the original patch when it still fits. `track_points` decodes each frame
+  once for all points, then (with 2 or 4) solves the group's motion and re-finds each point
+  with its original patch warped by that motion's local linear map (`Template::warped`), which
+  stops errors from building up. `motion_between` gives a shift, a similarity or a
+  homography; `follow_keys` composes it with the target's transform (or, stabilising, applies
+  its inverse, optionally against a Gaussian-smoothed camera path) and writes position /
+  rotation / scale keys, or corner-pin keys
+- **Corner pin** (`core/src/transform.rs`): `Transform::pin` holds where the layer's corners go;
+  `Transform::layer_map` gives an affine map or, when pinned, a `Homography` (solved from the
+  four corners). Its clip-space matrix carries the perspective in w, so the compositor's
+  unchanged vertex shader draws the quad and the GPU interpolates texture coordinates in
+  perspective. Hit testing, the gizmo, masks and the tracker overlay all go through
+  `layer_map`, so they agree with what's drawn. Pin keys are a `Curve<Pin>` like any property
 - **Curves** (`core/src/channels.rs`, `app/src/curves.rs`): `Channel` addresses any keyframeable
   number on a clip (a transform component or an effect parameter), with uniform get/set/move
   operations, so the curve editor doesn't care what it's editing. A drag re-applies the move
@@ -621,10 +655,11 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    dissolve, dip, wipe, iris, slide and push transitions~~
    (still to add: letting glow/shadow spill outside the layer, more stylize effects, saved
    effect presets)
-6. **Compositing**: ~~composite shots (nested sequences), point tracking (follow and
-   stabilise), masks~~, titles and track management are done. Still to come: Bézier mask
-   curves and per-point feather, planar and
-   multi-point tracking (rotation/scale), a 3D camera and lights, GPU particles, animated text
+6. **Compositing**: ~~composite shots (nested sequences), motion tracking (1, 2 and 4
+   points: follow, stabilise with smoothing, corner pin / screen replacement), corner pin,
+   masks~~, titles and track management are done. Still to come: Bézier mask curves and
+   per-point feather, planar tracking of whole surfaces (not just four features), automatic
+   zoom to hide stabilisation edges, a 3D camera and lights, GPU particles, animated text
    presets.
 7. ~~**Performance**: proxy media, a frame cache, hardware decode~~
    (still to add: GPU-side frame upload from hardware decoders without the copy back to memory,

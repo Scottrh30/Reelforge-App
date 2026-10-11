@@ -3,6 +3,9 @@
 //! or just outside a corner), crop (Ctrl + an edge handle) and move the anchor
 //! point (Ctrl + the cross). Dragging inside the box moves the layer (in panels.rs).
 //!
+//! A corner-pinned layer shows its four pin corners instead: drag one to move
+//! that corner (Shift: straight along the frame's axes).
+//!
 //! Every drag is computed from the transform at the start of the drag and the
 //! pointer now, so the result never drifts, and is one undo step on release.
 
@@ -77,7 +80,11 @@ struct Geometry {
 
 fn geometry(t: &Transform, layer: &GizmoLayer, view: &View) -> Geometry {
     let r = t.clip_to_crop(layer.rect, layer.size);
-    let corners = t.rect_corners(r, view.frame).map(|p| view.to_screen(p));
+    let corners = match t.valid_pin() {
+        // A pinned layer's handles are its pin corners.
+        Some(pin) => pin.0.map(|p| view.to_screen(p)),
+        None => t.rect_corners(r, view.frame).map(|p| view.to_screen(p)),
+    };
     let mid = |a: Pos2, b: Pos2| a + (b - a) / 2.0;
     let edges = [mid(corners[0], corners[1]), mid(corners[1], corners[2]), mid(corners[2], corners[3]), mid(corners[3], corners[0])];
     let centre = mid(corners[0], corners[2]);
@@ -93,6 +100,9 @@ fn geometry(t: &Transform, layer: &GizmoLayer, view: &View) -> Geometry {
 pub fn handle_at(t: &Transform, layer: &GizmoLayer, view: &View, p: Pos2, ctrl: bool) -> Option<Handle> {
     let g = geometry(t, layer, view);
     let near = |q: Pos2| q.distance(p) <= GRAB;
+    if t.valid_pin().is_some() {
+        return g.corners.iter().position(|c| near(*c)).map(Handle::Corner);
+    }
     if ctrl && near(g.anchor) {
         return Some(Handle::Anchor);
     }
@@ -154,6 +164,20 @@ fn angle(t: &Transform, frame: [f32; 2], p: [f32; 2]) -> f32 {
 fn dragged(d: &mut DragState, layer: &GizmoLayer, view: &View, p: [f32; 2], shift: bool) -> Transform {
     let s = d.start;
     let mut t = s;
+    if let (Some(pin), Handle::Corner(i)) = (s.valid_pin(), d.handle) {
+        let mut delta = [p[0] - d.from[0], p[1] - d.from[1]];
+        if shift {
+            // Only along whichever axis it has moved further.
+            if delta[0].abs() > delta[1].abs() { delta[1] = 0.0 } else { delta[0] = 0.0 }
+        }
+        let mut q = pin;
+        q.0[i] = [pin.0[i][0] + delta[0], pin.0[i][1] + delta[1]];
+        // A corner dragged across the shape would twist it: keep the last good one.
+        if q.is_valid() {
+            t.pin = Some(q);
+        }
+        return t;
+    }
     match d.handle {
         Handle::Corner(_) | Handle::Edge(_) if d.crop => {
             if let (Handle::Edge(e), Some(inv)) = (d.handle, s.matrix(view.frame).inverse()) {
@@ -234,6 +258,10 @@ fn dragged(d: &mut DragState, layer: &GizmoLayer, view: &View, p: [f32; 2], shif
 
 /// A short readout of what a drag is changing.
 fn readout(d: &DragState, t: &Transform) -> String {
+    if let (Some(pin), Handle::Corner(i)) = (t.valid_pin(), d.handle) {
+        let names = ["Top left", "Top right", "Bottom right", "Bottom left"];
+        return format!("Corner pin: {}  {:.1}, {:.1}", names[i], pin.0[i][0], pin.0[i][1]);
+    }
     match d.handle {
         Handle::Edge(_) if d.crop => {
             let c = t.crop_clamped().map(|v| v * 100.0);
@@ -293,6 +321,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, resp: &egui::Response, area
         let crop = ctrl && matches!(h, Handle::Edge(_));
         ui.ctx().set_cursor_icon(cursor_for(h, crop, &shown));
         let tip = match h {
+            Handle::Corner(_) if shown.valid_pin().is_some() => "Drag to move this corner of the corner pin (Shift: straight across or down)",
             Handle::Corner(_) => "Drag to scale (Shift: X and Y separately)",
             Handle::Edge(_) if crop => "Drag to crop this edge",
             Handle::Edge(_) => "Drag to stretch (Shift: both ways). Ctrl+drag crops this edge",
@@ -307,6 +336,26 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, resp: &egui::Response, area
     let g = geometry(&now, &layer, &view);
     let gold = Color32::from_rgb(255, 196, 64);
     let p = ui.painter_at(area);
+    if now.valid_pin().is_some() {
+        // Corner pin: the four corners and the shape between them (with its
+        // diagonals, which show the perspective), nothing else.
+        let pink = Color32::from_rgb(255, 120, 200);
+        p.add(egui::Shape::closed_line(g.corners.to_vec(), Stroke::new(1.5, pink)));
+        p.line_segment([g.corners[0], g.corners[2]], Stroke::new(1.0, pink.gamma_multiply(0.35)));
+        p.line_segment([g.corners[1], g.corners[3]], Stroke::new(1.0, pink.gamma_multiply(0.35)));
+        for c in g.corners {
+            p.circle_filled(c, 5.0, Color32::from_gray(20));
+            p.circle_stroke(c, 5.0, Stroke::new(2.0, pink));
+        }
+        if let Some((at, text)) = label {
+            let font = egui::FontId::proportional(12.0);
+            let galley = p.layout_no_wrap(text, font, Color32::WHITE);
+            let r = egui::Rect::from_min_size(at + Vec2::new(16.0, 16.0), galley.size() + Vec2::splat(8.0));
+            p.rect_filled(r, 3.0, Color32::from_black_alpha(200));
+            p.galley(r.min + Vec2::splat(4.0), galley, Color32::WHITE);
+        }
+        return active;
+    }
     p.add(egui::Shape::closed_line(g.corners.to_vec(), Stroke::new(1.5, gold)));
     if now.is_cropped() {
         // The uncropped outline, faintly, so you can see what's been cut.
@@ -371,6 +420,22 @@ mod tests {
         let v = view();
         let mut d = DragState { handle: h, crop, start, from, last_angle: angle(&start, v.frame, from), turned: 0.0 };
         dragged(&mut d, &layer(), &v, to, shift)
+    }
+
+    #[test]
+    fn pinned_layers_drag_their_corners() {
+        use reelforge_core::transform::Pin;
+        let pin = Pin([[60.0, 30.0], [140.0, 35.0], [130.0, 80.0], [70.0, 70.0]]);
+        let t = Transform { pin: Some(pin), ..Default::default() };
+        let (l, v) = (layer(), view());
+        assert_eq!(handle_at(&t, &l, &v, Pos2::new(131.0, 79.0), false), Some(Handle::Corner(2)));
+        assert_eq!(handle_at(&t, &l, &v, Pos2::new(100.0, 50.0), true), None, "no anchor or rotation on a pinned layer");
+        let moved = drag(Handle::Corner(2), false, t, [130.0, 80.0], [150.0, 90.0], false);
+        assert_eq!(moved.pin.unwrap().0[2], [150.0, 90.0]);
+        assert_eq!(moved.pin.unwrap().0[0], [60.0, 30.0], "the others stay");
+        // Dragging a corner across the shape is refused (it would twist).
+        let twisted = drag(Handle::Corner(2), false, t, [130.0, 80.0], [20.0, 10.0], false);
+        assert_eq!(twisted.pin, Some(pin));
     }
 
     #[test]

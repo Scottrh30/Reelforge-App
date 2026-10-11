@@ -886,7 +886,8 @@ impl Compositor {
         // Uniforms for every draw in one buffer, addressed by dynamic offset.
         let mut data = vec![0u8; self.uniform_stride as usize * uniforms.len().max(1)];
         for (i, (t, size, wipe)) in uniforms.iter().enumerate() {
-            let mvp = t.matrix(frame).to_clip_space(frame);
+            // (Corner-pinned layers get a perspective matrix.)
+            let mvp = t.layer_map(*size, frame).to_clip_space(frame);
             let mut floats: Vec<f32> = mvp.iter().flatten().copied().collect();
             let mode = wipe.map_or(0.0, |w| if w.iris { 2.0 } else { 1.0 });
             floats.extend([size[0], size[1], t.opacity.clamp(0.0, 1.0), mode]);

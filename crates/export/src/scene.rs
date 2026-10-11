@@ -271,6 +271,7 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
         for f in l.transform.position.iter().chain(&l.transform.scale).chain([&l.transform.rotation, &l.transform.opacity]).chain(&l.transform.anchor).chain(&l.transform.crop).chain(&l.picture.size) {
             f.to_bits().hash(h);
         }
+        l.transform.pin.map(|p| p.0.map(|c| c.map(f32::to_bits))).hash(h);
         l.blend.hash(h);
         l.mask.as_ref().map(|m| m.0).hash(h);
         l.wipe.map(|w| (w.iris, w.progress.to_bits(), w.axis.map(f32::to_bits))).hash(h);

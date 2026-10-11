@@ -4,14 +4,15 @@
 use crate::app::EditorState;
 use egui::{Color32, Pos2, RichText, Stroke, Vec2};
 use reelforge_core::mask::{Mask, MaskMode, MaskShape};
-use reelforge_core::{Affine2, Clip, Time};
+use reelforge_core::transform::LayerMap;
+use reelforge_core::{Clip, Time};
 
 const MASK_COLOR: Color32 = Color32::from_rgb(255, 110, 200);
 
 /// Mapping between a clip's layer pixels and the screen.
 struct Geo {
-    m: Affine2,
-    inv: Affine2,
+    m: LayerMap,
+    inv: LayerMap,
     half: [f32; 2],
     origin: Pos2,
     scale: f32,
@@ -61,8 +62,9 @@ pub fn wants_press(st: &EditorState, frame_px: [f32; 2], scale: f32, origin: Pos
 }
 
 fn geo(st: &EditorState, clip: &Clip, frame_px: [f32; 2], scale: f32, origin: Pos2) -> Option<Geo> {
-    let m = clip.transform_at(st.playback.playhead).matrix(frame_px);
     let size = st.layer_size(clip);
+    // (Corner-pinned layers map in perspective.)
+    let m = clip.transform_at(st.playback.playhead).layer_map(size, frame_px);
     Some(Geo { inv: m.inverse()?, m, half: [size[0] / 2.0, size[1] / 2.0], origin, scale })
 }
 

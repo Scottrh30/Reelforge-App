@@ -8,19 +8,28 @@ use std::process::Command;
 use std::time::Duration;
 
 fn make_clip() -> Option<PathBuf> {
+    // Made once per test run: tests run in parallel, and one must not read the
+    // file while another is still writing it.
+    static CLIP: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    CLIP.get_or_init(write_clip).clone()
+}
+
+fn write_clip() -> Option<PathBuf> {
+    // Written beside the final name, then renamed, so a half-written file is never seen.
     let path = std::env::temp_dir().join("reelforge_test_25fps.mp4");
     if path.exists() {
         return Some(path);
     }
+    let part = std::env::temp_dir().join(format!("reelforge_test_25fps.{}.mp4", std::process::id()));
     // 6 s, 25 fps, keyframe every 2 s so seeks must decode forward from a keyframe.
     let status = Command::new("ffmpeg")
         .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=6"])
         .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=6"])
         .args(["-c:v", "libx264", "-g", "50", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
-        .arg(&path)
+        .arg(&part)
         .status()
         .ok()?;
-    status.success().then_some(path)
+    (status.success() && std::fs::rename(&part, &path).is_ok()).then_some(path)
 }
 
 #[test]

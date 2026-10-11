@@ -116,9 +116,9 @@ pub struct Clip {
     /// Masks cutting the layer down, combined in order (see `mask`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masks: Vec<crate::mask::Mask>,
-    /// A point tracker on this clip (see `track`).
+    /// A motion tracker on this clip (see `track`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tracker: Option<crate::track::PointTrack>,
+    pub tracker: Option<crate::track::Tracker>,
 }
 
 /// Everything about how a video clip looks, edited and undone as one unit.

@@ -66,6 +66,7 @@ impl ClipVisual {
             Channel::Transform(Prop::Opacity, _) => "Opacity".into(),
             Channel::Transform(Prop::Anchor, c) => format!("Anchor {}", ["X", "Y"][c as usize & 1]),
             Channel::Transform(Prop::Crop, c) => format!("Crop {}", CROP_SIDES[c as usize & 3]),
+            Channel::Transform(Prop::Pin, _) => "Corner pin".into(),
             Channel::Effect(e, p) => match self.effects.get(e) {
                 Some(fx) => format!("{}: {}", fx.kind.label(), fx.spec(p).map_or("?", |s| s.name)),
                 None => "?".into(),
@@ -78,7 +79,7 @@ impl ClipVisual {
         match ch {
             Channel::Transform(Prop::Scale | Prop::Opacity | Prop::Crop, _) => (100.0, " %"),
             Channel::Transform(Prop::Rotation, _) => (1.0, "°"),
-            Channel::Transform(Prop::Position | Prop::Anchor, _) => (1.0, " px"),
+            Channel::Transform(Prop::Position | Prop::Anchor | Prop::Pin, _) => (1.0, " px"),
             Channel::Effect(e, p) => (1.0, self.effects.get(e).and_then(|fx| fx.spec(p)).map_or("", |s| s.suffix)),
         }
     }
@@ -101,6 +102,8 @@ impl ClipVisual {
             Channel::Transform(Prop::Opacity, _) => Ref::Scalar(&self.anim.opacity, t.opacity),
             Channel::Transform(Prop::Anchor, c) => Ref::Pair(&self.anim.anchor, c as usize & 1, t.anchor[c as usize & 1]),
             Channel::Transform(Prop::Crop, c) => Ref::Quad(&self.anim.crop, c as usize & 3, t.crop[c as usize & 3]),
+            // Corner pins are edited in the Viewer, not as curves.
+            Channel::Transform(Prop::Pin, _) => return None,
             Channel::Effect(e, p) => {
                 let param = self.effects.get(e)?.params.get(p)?;
                 Ref::Scalar(&param.keys, param.value)
@@ -116,6 +119,7 @@ impl ClipVisual {
             Channel::Transform(Prop::Opacity, _) => Mut::Scalar(&mut self.anim.opacity),
             Channel::Transform(Prop::Anchor, c) => Mut::Pair(&mut self.anim.anchor, c as usize & 1),
             Channel::Transform(Prop::Crop, c) => Mut::Quad(&mut self.anim.crop, c as usize & 3),
+            Channel::Transform(Prop::Pin, _) => return None,
             Channel::Effect(e, p) => Mut::Scalar(&mut self.effects.get_mut(e)?.params.get_mut(p)?.keys),
         })
     }

@@ -440,3 +440,40 @@ fn crop_cuts_the_layer_and_anchor_moves_the_pivot() {
     assert!(near(px(&out, 32, 4, 4), [0, 255, 0]));
     assert!(near(px(&out, 32, 18, 18), [0, 0, 0]));
 }
+
+#[test]
+fn corner_pin_draws_in_perspective() {
+    use reelforge_core::transform::{Homography, Pin};
+    let Some(mut c) = setup() else { return };
+    // A 64×64 layer: left half red, right half blue.
+    let mut img = Vec::with_capacity(64 * 64 * 4);
+    for _y in 0..64 {
+        for x in 0..64 {
+            img.extend(if x < 32 { [255, 0, 0, 255] } else { [0, 0, 255, 255] });
+        }
+    }
+    // Pinned into a quad that recedes strongly on the right.
+    let quad = [[20.0, 20.0], [180.0, 60.0], [180.0, 100.0], [20.0, 140.0]];
+    let t = Transform { pin: Some(Pin(quad)), ..Default::default() };
+    let black = solid(4, 4, [0, 0, 0, 255]);
+    c.render([200, 160], &[
+        layer(1, &black, [4, 4], [200.0, 160.0], Transform::default(), BlendMode::Normal),
+        layer(2, &img, [64, 64], [64.0, 64.0], t, BlendMode::Normal),
+    ]);
+    let out = c.read_output().unwrap();
+    let h = Homography::from_quads(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], &quad).unwrap();
+    // The colour change is where the layer's middle really lands in perspective
+    // (well right of the quad's halfway line at x = 100, as the right side recedes).
+    let mid = h.apply([0.5, 0.5]);
+    assert!(mid[0] > 115.0, "{mid:?}");
+    let at = |p: [f32; 2]| px(&out, 200, p[0] as u32, p[1] as u32);
+    assert!(near(at([mid[0] - 4.0, mid[1]]), [255, 0, 0]), "just left of the middle: {:?}", at([mid[0] - 4.0, mid[1]]));
+    assert!(near(at([mid[0] + 4.0, mid[1]]), [0, 0, 255]), "just right of it: {:?}", at([mid[0] + 4.0, mid[1]]));
+    // A plain (affine) split would put the change at x = 100: that's still red here.
+    assert!(near(at([104.0, 80.0]), [255, 0, 0]));
+    // Inside the corners, and outside the quad.
+    assert!(near(at(h.apply([0.05, 0.05])), [255, 0, 0]));
+    assert!(near(at(h.apply([0.95, 0.95])), [0, 0, 255]));
+    assert!(near(at([190.0, 20.0]), [0, 0, 0]), "outside the pin is the background");
+    assert!(near(at([100.0, 30.0]), [0, 0, 0]), "above the receding top edge too");
+}

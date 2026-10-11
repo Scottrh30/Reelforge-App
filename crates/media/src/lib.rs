@@ -22,7 +22,7 @@ pub use encode::{is_hardware_encoder, sequence_file, Fit, MovieWriter, Quality, 
 pub use mixer::{MixClip, Mixer};
 pub use probe::probe;
 pub use source::FrameSource;
-pub use tracker::{track_point, TrackEnd};
+pub use tracker::{track_point, track_points, TrackEnd};
 
 use std::sync::Once;
 
