@@ -1,7 +1,7 @@
 use crate::playback::Playback;
 use crate::timeline::TimelineView;
 use egui::{Key, KeyboardShortcut, Modifiers};
-use egui_dock::{DockArea, DockState, NodeIndex, Style};
+use egui_dock::{DockArea, DockState, Style};
 use crate::audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::preview::Preview;
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Tab {
     MediaBin,
     Viewer,
@@ -86,8 +86,13 @@ pub struct EditorState {
     /// Which timeline tabs (Editor, Composition) were drawn this frame and the last.
     pub(crate) timeline_drawn: [bool; 2],
     pub(crate) timeline_drawn_before: [bool; 2],
-    /// Bring this dock tab to the front (after opening a sequence).
+    /// Bring this dock tab to the front (after opening a sequence), showing it if it's hidden.
     pub focus_tab: Option<Tab>,
+    /// The windows in the layout (for the Tabs menu's ticks), as of this frame.
+    pub(crate) tabs_shown: Vec<Tab>,
+    /// Tabs menu: show (true) or hide a window; put every window back where it started.
+    pub(crate) tab_toggle: Vec<(Tab, bool)>,
+    pub(crate) reset_layout: bool,
     /// Bumped on every project change so the audio mixer can be resynced.
     pub(crate) rev: u64,
     mixed_rev: u64,
@@ -148,14 +153,7 @@ impl ReelforgeApp {
         // Always dark, like HitFilm (not following the OS light/dark setting).
         cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
 
-        // HitFilm-like layout: media bin left, viewer centre, inspector right, timeline across the bottom.
-        let mut dock = DockState::new(vec![Tab::Viewer]);
-        let tree = dock.main_surface_mut();
-        // `fraction` is the share kept by the original node (the viewer).
-        let [top, timeline] = tree.split_below(NodeIndex::root(), 0.6, vec![Tab::Timeline, Tab::Compositions, Tab::Curves]);
-        tree.split_right(timeline, 0.93, vec![Tab::Meters]);
-        let [viewer, _bin] = tree.split_left(top, 0.18, vec![Tab::MediaBin, Tab::History]);
-        tree.split_right(viewer, 0.76, vec![Tab::Inspector]);
+        let dock = crate::tabs::default_layout();
 
         let audio = match AudioEngine::new() {
             Ok(a) => Some(a),
@@ -168,6 +166,10 @@ impl ReelforgeApp {
         let mut app = Self { dock, state: EditorState::new(Playback::with_audio(audio), preview), export: Default::default() };
         if let Some(s) = cc.storage.and_then(|s| eframe::get_value::<crate::settings::Settings>(s, crate::settings::Settings::STORAGE_KEY)) {
             app.state.settings = s;
+        }
+        // Windows turned off in the Tabs menu stay off.
+        for tab in app.state.settings.hidden_tabs.clone() {
+            crate::tabs::hide(&mut app.dock, tab);
         }
         app.state.settings.apply();
         let (session, crashed) = crate::safety::Session::start();
@@ -247,7 +249,23 @@ impl eframe::App for ReelforgeApp {
             self.export.open_queue();
         }
         let export_note = self.export.summary();
+        st.tabs_shown = self.dock.iter_all_tabs().map(|(_, t)| *t).collect();
         egui::Panel::top("menu").show(ui, |ui| st.menu_bar(ui));
+        for (tab, on) in std::mem::take(&mut st.tab_toggle) {
+            if on {
+                crate::tabs::show(&mut self.dock, tab);
+            } else {
+                crate::tabs::hide(&mut self.dock, tab);
+            }
+            st.settings.hidden_tabs.retain(|t| *t != tab);
+            if !on {
+                st.settings.hidden_tabs.push(tab);
+            }
+        }
+        if std::mem::take(&mut st.reset_layout) {
+            self.dock = crate::tabs::default_layout();
+            st.settings.hidden_tabs.clear();
+        }
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&st.status);
@@ -296,15 +314,14 @@ impl eframe::App for ReelforgeApp {
             st.paste_attrs_open = open;
         }
         if let Some(tab) = st.focus_tab.take() {
-            if let Some(path) = self.dock.find_tab(&tab) {
-                let _ = self.dock.set_active_tab(path);
-            }
+            // Opening a composition (or the main edit) brings its timeline back if it was hidden.
+            crate::tabs::show(&mut self.dock, tab);
+            st.settings.hidden_tabs.retain(|t| *t != tab);
         }
         st.timeline_drawn_before = std::mem::take(&mut st.timeline_drawn);
         if std::mem::take(&mut st.show_history) {
-            if let Some(path) = self.dock.find_tab(&Tab::History) {
-                let _ = self.dock.set_active_tab(path);
-            }
+            crate::tabs::show(&mut self.dock, Tab::History);
+            st.settings.hidden_tabs.retain(|t| *t != Tab::History);
         }
         if st.effects_browser {
             let mut open = true;
@@ -339,17 +356,7 @@ impl egui_dock::TabViewer for EditorState {
     }
 
     fn title(&mut self, tab: &mut Tab) -> egui::WidgetText {
-        match tab {
-            Tab::MediaBin => "Media",
-            Tab::Viewer => "Viewer",
-            Tab::Inspector => "Controls",
-            Tab::Timeline => "Editor Timeline",
-            Tab::Compositions => "Composition Timeline",
-            Tab::Curves => "Curves",
-            Tab::Meters => "Meters",
-            Tab::History => "History",
-        }
-        .into()
+        crate::tabs::title(*tab).into()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Tab) {
@@ -405,6 +412,9 @@ impl EditorState {
             timeline_drawn: [false; 2],
             timeline_drawn_before: [false; 2],
             focus_tab: None,
+            tabs_shown: Vec::new(),
+            tab_toggle: Vec::new(),
+            reset_layout: false,
             rev: 1,
             mixed_rev: 0,
             waveforms: HashMap::new(),
@@ -2028,6 +2038,30 @@ impl EditorState {
                     .on_hover_text("Hear audio while dragging the playhead or stepping frames");
                 ui.checkbox(&mut self.settings.timeline_thumbnails, "Timeline thumbnails").on_hover_text("Show small frames along video clips");
                 ui.checkbox(&mut self.settings.viewer_snapping, "Snap in Viewer").on_hover_text("Dragged layers line up with the frame and each other (hold Alt to place freely)");
+            });
+            // Tabs: tick the windows to show. Stays open so several can be changed at once.
+            let keep_open = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            egui::containers::menu::MenuButton::new("Tabs").config(keep_open).ui(ui, |ui| {
+                ui.set_min_width(200.0);
+                for (tab, hint) in crate::tabs::ALL {
+                    let mut on = self.tabs_shown.contains(&tab);
+                    if ui.checkbox(&mut on, crate::tabs::title(tab)).on_hover_text(hint).changed() {
+                        self.tab_toggle.push((tab, on));
+                    }
+                }
+                ui.separator();
+                let all = crate::tabs::ALL.iter().all(|(t, _)| self.tabs_shown.contains(t));
+                if ui.add_enabled(!all, egui::Button::new("Show all")).clicked() {
+                    for (tab, _) in crate::tabs::ALL {
+                        if !self.tabs_shown.contains(&tab) {
+                            self.tab_toggle.push((tab, true));
+                        }
+                    }
+                }
+                if ui.button("Reset layout").on_hover_text("Every window back where it was when Reelforge started").clicked() {
+                    self.reset_layout = true;
+                    ui.close();
+                }
             });
             ui.separator();
             crate::history::undo_redo_buttons(ui, self);

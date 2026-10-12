@@ -7,6 +7,13 @@ effects and compositing (compositions, motion tracking with corner pinning) are 
 What works now:
 
 - Dockable panel layout (Media, Viewer, Controls, Editor Timeline, Composition Timeline, Curves, Meters) — drag tabs to rearrange
+- **Tabs menu** (next to Edit): a tick box for every window (Viewer, Media, History, Controls,
+  Editor Timeline, Composition Timeline, Curves, Meters). Untick one to take it out of the
+  layout; tick it to bring it back beside the windows it normally shares a panel with (or in
+  its usual place if those are hidden too). The menu stays open so you can change several at
+  once. **Show all** brings back everything hidden, **Reset layout** puts every window back
+  where it started. Hidden windows stay hidden the next time you start Reelforge. Opening a
+  composition, or **Edit → Undo history**, brings back the window it needs
 - Import video/image/audio via **File → Import**, `Ctrl+I`, or drag files from Explorer
 - FFmpeg decoding on a background thread, with frame-accurate seeking
 - Viewer with transport bar and timecode

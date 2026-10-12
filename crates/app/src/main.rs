@@ -21,6 +21,7 @@ mod proxies;
 mod safety;
 mod settings;
 mod snap;
+mod tabs;
 mod timeline;
 
 fn main() -> eframe::Result<()> {
