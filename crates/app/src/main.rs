@@ -3,6 +3,7 @@
 
 mod app;
 mod audio;
+mod collect_ui;
 mod curves;
 mod export_ui;
 mod fxbrowser;

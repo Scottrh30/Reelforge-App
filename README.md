@@ -211,6 +211,18 @@ What works now:
   fit. Everything comes along: keyframes, effects, masks, titles, trackers, links (the copies are
   linked to each other, not to the originals). Paste into a composite shot works too: missing
   tracks are added
+- **Collect project** (**File → Collect project…**): copies the project and every file it uses
+  (video, audio, images, LUT files and the fonts titles use) into one folder, in `Media`,
+  `LUTs` and `Fonts` subfolders next to the project file, with a progress bar and Stop. Files
+  with the same name from different folders are kept apart (`clip.mp4`, `clip (2).mp4`),
+  nothing already in the folder is overwritten, and collecting again into the same folder
+  skips files that are already there. Missing files are listed and left out. The collected
+  project refers to its files relative to itself, so the whole folder can be copied to a
+  backup drive or another computer (Windows or Linux) and opened from anywhere. Options: leave
+  out media no sequence uses, and leave out fonts
+- **Project files are portable**: when you save, files inside the project's own folder (or its
+  subfolders) are stored by relative path, so moving or renaming the whole folder doesn't break
+  anything. Files elsewhere keep their full path (and can be relinked if they move)
 - **Paste attributes** (`Ctrl+Alt+V`, or **Edit → Paste attributes…**): copy a clip, select
   others, and choose what to put on them: position/scale/rotation/anchor/opacity, crop, corner
   pin, blend mode, effects (replacing theirs or added after), masks, audio levels (volume, pan,
@@ -620,6 +632,15 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   homography; `follow_keys` composes it with the target's transform (or, stabilising, applies
   its inverse, optionally against a Gaussian-smoothed camera path) and writes position /
   rotation / scale keys, or corner-pin keys
+- **Collect** (`core/src/collect.rs`, `app/src/collect_ui.rs`): `Project::for_each_path_mut`
+  visits every file reference (media, LUT effect data, title fonts), so planning, relative
+  saving and resolving can't miss one. `plan_collect` picks clash-free names (compared without
+  case, as Windows would) and reuses an existing file only if it has the same size and date.
+  `run_collect` copies on a background thread in 4 MB chunks to a `.part` file renamed when
+  complete (a stopped or failed copy never leaves a half file under the real name), keeps
+  each file's date, then writes the project with `paths_relative_to`. Relative paths are
+  written with `/` and `resolve_paths` accepts either separator, so projects move between
+  systems; `load_project` resolves them against the project file's folder.
 - **Paste attributes** (`core/src/attrs.rs`): `paste_attributes` takes the first copied video
   and audio clip as the source and builds one `Batch` of `SetClipVisual` / `SetClipAudio` /
   `SetTitle` commands. Keys move by the difference of the two clips' `source_in` (keys live in

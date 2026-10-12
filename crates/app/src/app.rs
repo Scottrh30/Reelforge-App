@@ -78,7 +78,7 @@ pub struct EditorState {
     /// Where the playhead was in each sequence, to come back to.
     playheads: HashMap<usize, Time>,
     /// Bumped on every project change so the audio mixer can be resynced.
-    rev: u64,
+    pub(crate) rev: u64,
     mixed_rev: u64,
     /// Audio peak envelopes for drawing, computed in the background (100 per second).
     pub waveforms: HashMap<MediaId, Arc<Vec<f32>>>,
@@ -92,6 +92,8 @@ pub struct EditorState {
     pub paste_attrs_open: bool,
     pub paste_attrs: reelforge_core::attrs::AttrSet,
     pub paste_attrs_cancel: bool,
+    /// File → Collect project… (its dialog and a copy in progress).
+    pub collect: crate::collect_ui::CollectState,
     /// Modifier keys at the end of the last frame (to know what was held at a
     /// Paste event, which carries none: Ctrl+Alt+V vs Ctrl+V).
     last_modifiers: egui::Modifiers,
@@ -101,7 +103,7 @@ pub struct EditorState {
     /// This run's autosave/crash-detection session (moved along on New/Open).
     session: Option<crate::safety::Session>,
     /// Project revision at the last save (or open): anything newer is unsaved.
-    saved_rev: u64,
+    pub(crate) saved_rev: u64,
     /// Crashed sessions found at startup, offered for recovery.
     recoveries: Vec<crate::safety::Recovery>,
     /// Something waiting on "save changes?".
@@ -121,6 +123,8 @@ pub enum Pending {
     Recover(usize),
     /// Open an autosave file as a new, unsaved project.
     OpenAutosave(PathBuf),
+    /// Open this project file (e.g. one just collected).
+    OpenPath(PathBuf),
 }
 
 /// Waveform resolution: peaks per second of audio.
@@ -262,6 +266,7 @@ impl eframe::App for ReelforgeApp {
             crate::settings::window(&ctx, st, &mut open);
             st.settings_open = open;
         }
+        crate::collect_ui::window(&ctx, st);
         if st.paste_attrs_open {
             let mut open = true;
             crate::paste_attrs::window(&ctx, st, &mut open);
@@ -385,6 +390,7 @@ impl EditorState {
             paste_attrs_open: false,
             paste_attrs: Default::default(),
             paste_attrs_cancel: false,
+            collect: Default::default(),
             last_modifiers: Default::default(),
             proxies: Default::default(),
             proxied_rev: 0,
@@ -411,6 +417,8 @@ impl EditorState {
             s.set_project(None);
         }
         st.recoveries = std::mem::take(&mut self.recoveries);
+        // A collect still copying carries on (it works from its own copy of the project).
+        st.collect = std::mem::take(&mut self.collect);
         st.status = "New project".into();
         st
     }
@@ -1457,6 +1465,7 @@ impl EditorState {
             self.proxied_rev = self.rev;
         }
         self.poll_tracking();
+        self.poll_collect();
         if self.proxies.poll() {
             self.status = "A proxy is ready: the viewer uses it now".into();
         }
@@ -1488,7 +1497,11 @@ impl EditorState {
             _ => rfd::FileDialog::new().add_filter("Reelforge project", &["rfproj"]).set_file_name("project.rfproj").save_file(),
         };
         let Some(path) = path else { return false };
-        let result = serde_json::to_string_pretty(&self.project)
+        // Files inside the project's folder are saved by relative path, so the
+        // folder can be moved (or collected, see Collect project) and still open.
+        let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let base = if base.is_absolute() { base } else { std::env::current_dir().map(|d| d.join(&base)).unwrap_or(base) };
+        let result = serde_json::to_string_pretty(&self.project.paths_relative_to(&base))
             .map_err(anyhow::Error::from)
             .and_then(|json| crate::safety::write_atomic(&path, json.as_bytes()).map_err(Into::into));
         match result {
@@ -1539,6 +1552,7 @@ impl EditorState {
                 self.quit_confirmed = true;
             }
             Pending::Recover(i) => self.recover(i),
+            Pending::OpenPath(p) => self.open_project_path(p),
             Pending::OpenAutosave(p) => {
                 self.open_project_path(p);
                 self.project_path = None; // save it somewhere real, not over the autosave
@@ -1779,6 +1793,14 @@ impl EditorState {
                 }
                 if ui.button("Save project as…").clicked() {
                     self.save_project(true);
+                }
+                if ui
+                    .add_enabled(!self.collect.busy(), egui::Button::new("Collect project…"))
+                    .on_hover_text("Copy the project and every file it uses into one folder: a backup, or to move it to another computer")
+                    .clicked()
+                {
+                    self.open_collect();
+                    ui.close();
                 }
                 ui.separator();
                 if ui.button("Import media…      Ctrl+I").clicked() {
@@ -2336,8 +2358,15 @@ pub const CLIPBOARD_MARK: &str = "Reelforge clips";
 /// Status message when an edit is refused because of a locked track.
 pub const LOCKED: &str = "That clip is on a locked track (or linked to one). Unlock the track to edit it";
 
-fn load_project(path: &Path) -> anyhow::Result<Project> {
-    Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+pub(crate) fn load_project(path: &Path) -> anyhow::Result<Project> {
+    let mut p: Project = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    // Relative paths (a collected or moved project) are relative to the project file.
+    if let Some(dir) = path.parent() {
+        // (Not canonicalized: on Windows that gives \\?\ paths, which some tools mishandle.)
+        let dir = if dir.is_absolute() { dir.to_path_buf() } else { std::env::current_dir()?.join(dir) };
+        p.resolve_paths(&dir);
+    }
+    Ok(p)
 }
 
 #[cfg(test)]
