@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 reelforge-core.workspace = true
 wgpu.workspace = true
+# Checks plugin shaders (the same compiler wgpu uses, so the version must match wgpu's).
+naga = { version = "30.0.1", features = ["wgsl-in"] }
 pollster.workspace = true
 log.workspace = true
 ab_glyph.workspace = true

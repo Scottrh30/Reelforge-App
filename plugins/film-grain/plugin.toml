@@ -1,0 +1,26 @@
+id = "reelforge.film-grain"
+name = "Film Grain"
+version = "1.0"
+author = "Reelforge examples"
+category = "Stylize"
+description = "Moving grain like film or a high-ISO camera. Strongest in the mid-tones."
+
+[[param]]
+name = "Amount"
+default = 25
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]
+name = "Size"
+default = 1.5
+min = 1
+max = 8
+suffix = " px"
+step = 0.02
+
+[[param]]
+name = "Colour grain"
+type = "toggle"
+default = 0

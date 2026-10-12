@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Most parameters any effect has (the GPU uniform holds this many).
-pub const MAX_PARAMS: usize = 8;
+pub const MAX_PARAMS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EffectKind {
@@ -38,6 +38,8 @@ pub enum EffectKind {
     DropShadow,
     /// A 3D colour lookup table from a .cube file (the path lives in `Effect::data`).
     Lut,
+    /// An installed plugin (which one is in `Effect::plugin`; see [`crate::plugin`]).
+    Plugin,
 }
 
 /// Where an effect is listed in the effects browser.
@@ -47,16 +49,22 @@ pub enum EffectCategory {
     BlurSharpen,
     Keying,
     Stylize,
+    /// (Plugins only, so far.)
+    Distort,
+    /// Plugins that didn't name a category.
+    Plugins,
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 4] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize];
+    pub const ALL: [EffectCategory; 6] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Distort, EffectCategory::Plugins];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
             EffectCategory::BlurSharpen => "Blur & sharpen",
             EffectCategory::Keying => "Keying",
             EffectCategory::Stylize => "Light & stylize",
+            EffectCategory::Distort => "Distort",
+            EffectCategory::Plugins => "Other plugins",
         }
     }
 }
@@ -69,8 +77,19 @@ pub enum EffectData {
     Lut(PathBuf),
 }
 
+/// How a parameter is shown and edited.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ParamUi {
+    /// A number to drag or type.
+    Number,
+    /// A checkbox: 0 or 1.
+    Toggle,
+    /// A menu: the index of the chosen option.
+    Choice(&'static [&'static str]),
+}
+
 /// Describes one parameter: its name, range and how the UI should show it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamSpec {
     pub name: &'static str,
     pub default: f32,
@@ -80,10 +99,11 @@ pub struct ParamSpec {
     pub suffix: &'static str,
     /// Drag speed per pixel in the UI.
     pub speed: f32,
+    pub ui: ParamUi,
 }
 
 const fn spec(name: &'static str, default: f32, min: f32, max: f32, suffix: &'static str, speed: f32) -> ParamSpec {
-    ParamSpec { name, default, min, max, suffix, speed }
+    ParamSpec { name, default, min, max, suffix, speed, ui: ParamUi::Number }
 }
 
 const COLOR_CORRECT: [ParamSpec; 5] = [
@@ -154,6 +174,7 @@ impl EffectKind {
             EffectKind::Glow => "Glow",
             EffectKind::DropShadow => "Drop shadow",
             EffectKind::Lut => "LUT (.cube)",
+            EffectKind::Plugin => "Plugin",
         }
     }
 
@@ -163,6 +184,7 @@ impl EffectKind {
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette => EffectCategory::Stylize,
+            EffectKind::Plugin => EffectCategory::Plugins,
         }
     }
 
@@ -179,6 +201,7 @@ impl EffectKind {
             EffectKind::Glow => "Bright areas bloom out with a soft halo.",
             EffectKind::DropShadow => "A soft shadow behind a title, logo or keyed subject.",
             EffectKind::Vignette => "Darken the edges to draw the eye to the middle.",
+            EffectKind::Plugin => "An installed plugin.",
         }
     }
 
@@ -194,6 +217,8 @@ impl EffectKind {
             EffectKind::Glow => &GLOW,
             EffectKind::DropShadow => &DROP_SHADOW,
             EffectKind::Lut => &LUT,
+            // A plugin's parameters depend on which plugin: see `Effect::param_specs`.
+            EffectKind::Plugin => &[],
         }
     }
 }
@@ -218,6 +243,9 @@ pub struct Effect {
     pub params: Vec<Param>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<EffectData>,
+    /// For a plugin effect, which plugin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<crate::plugin::PluginRef>,
 }
 
 /// An effect's parameters at one moment, ready for the GPU.
@@ -227,6 +255,10 @@ pub struct EffectValues {
     pub values: [f32; MAX_PARAMS],
     /// The lookup table for Curves and LUT effects.
     pub table: Option<Arc<Table>>,
+    /// The plugin to run, for a plugin effect (`None` if it isn't installed).
+    pub plugin: Option<Arc<crate::plugin::PluginDef>>,
+    /// The clip's source time, in seconds (plugins can animate with it).
+    pub time: f32,
 }
 
 impl EffectValues {
@@ -243,6 +275,8 @@ impl EffectValues {
             EffectKind::Sharpen => v[0] == 0.0,
             EffectKind::Glow => v[2] == 0.0,
             EffectKind::DropShadow => v[3] == 0.0,
+            // Missing plugins are skipped.
+            EffectKind::Plugin => self.plugin.is_none(),
         }
     }
 }
@@ -253,29 +287,80 @@ impl Effect {
             EffectKind::Curves => Some(EffectData::Curves(Curves::default())),
             _ => None,
         };
-        Self { kind, enabled: true, params: kind.params().iter().map(|s| Param { value: s.default, keys: Curve::default() }).collect(), data }
+        Self { kind, enabled: true, params: kind.params().iter().map(|s| Param { value: s.default, keys: Curve::default() }).collect(), data, plugin: None }
+    }
+
+    /// An effect running an installed plugin, with its default settings.
+    pub fn new_plugin(def: &crate::plugin::PluginDef) -> Self {
+        Self {
+            kind: EffectKind::Plugin,
+            enabled: true,
+            params: def.params.iter().map(|s| Param { value: s.default, keys: Curve::default() }).collect(),
+            data: None,
+            plugin: Some(crate::plugin::PluginRef { id: def.id.clone(), name: def.name.clone() }),
+        }
+    }
+
+    /// The installed plugin this effect runs (`None` for built-in effects, or
+    /// a plugin that isn't installed).
+    pub fn plugin_def(&self) -> Option<Arc<crate::plugin::PluginDef>> {
+        self.plugin.as_ref().and_then(|p| crate::plugin::find(&p.id))
+    }
+
+    /// For a plugin effect: is its plugin installed?
+    pub fn plugin_installed(&self) -> bool {
+        self.plugin_def().is_some()
+    }
+
+    /// What to call it: the effect's name, or the plugin's.
+    pub fn label(&self) -> String {
+        match (self.kind, &self.plugin) {
+            (EffectKind::Plugin, Some(p)) => self.plugin_def().map_or_else(|| p.name.clone(), |d| d.name.clone()),
+            _ => self.kind.label().to_string(),
+        }
+    }
+
+    /// Its parameters (for a plugin, the installed plugin's; none if missing).
+    pub fn param_specs(&self) -> &'static [ParamSpec] {
+        match self.kind {
+            EffectKind::Plugin => self.plugin_def().map_or(&[], |d| d.params),
+            k => k.params(),
+        }
     }
 
     pub fn spec(&self, i: usize) -> Option<&'static ParamSpec> {
-        self.kind.params().get(i)
+        self.param_specs().get(i)
     }
 
     /// Parameter `i` at source time `t`, clamped to its range. Missing
-    /// parameters (an older project file) read as their default.
+    /// parameters (an older project file) read as their default. Toggles and
+    /// choices are whole numbers, even between keyframes.
     pub fn value_at(&self, i: usize, t: Time) -> f32 {
         let Some(s) = self.spec(i) else { return 0.0 };
-        match self.params.get(i) {
-            Some(p) => p.keys.value_at(t, p.value).clamp(s.min, s.max),
-            None => s.default,
+        let Some(p) = self.params.get(i) else { return s.default };
+        match s.ui {
+            ParamUi::Number => p.keys.value_at(t, p.value).clamp(s.min, s.max),
+            // A checkbox or menu changes at its keyframes (holding the last key's
+            // value until the next), never sliding through values in between.
+            _ => {
+                let k = &p.keys.0;
+                let v = match k.partition_point(|k| k.at <= t) {
+                    _ if k.is_empty() => p.value,
+                    0 => k[0].value,
+                    n => k[n - 1].value,
+                };
+                v.round().clamp(s.min, s.max)
+            }
         }
     }
 
     pub fn eval(&self, t: Time) -> EffectValues {
         let mut values = [0.0; MAX_PARAMS];
-        for (i, v) in values.iter_mut().enumerate().take(self.kind.params().len()) {
+        for (i, v) in values.iter_mut().enumerate().take(self.param_specs().len()) {
             *v = self.value_at(i, t);
         }
-        EffectValues { kind: self.kind, values, table: self.table() }
+        let plugin = if self.kind == EffectKind::Plugin { self.plugin_def() } else { None };
+        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32 }
     }
 
     /// The lookup table this effect needs, if any (a curve, or a loaded .cube file).
@@ -293,7 +378,11 @@ impl Effect {
 
     /// Make sure there's a `Param` for every parameter the kind defines.
     pub fn normalize(&mut self) {
-        let specs = self.kind.params();
+        // A plugin that isn't installed: keep what's there for when it is.
+        if self.kind == EffectKind::Plugin && !self.plugin_installed() {
+            return;
+        }
+        let specs = self.param_specs();
         self.params.truncate(specs.len());
         for s in &specs[self.params.len()..] {
             self.params.push(Param { value: s.default, keys: Curve::default() });

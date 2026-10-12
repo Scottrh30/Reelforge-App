@@ -15,6 +15,7 @@ mod meters;
 mod panels;
 mod paste_attrs;
 mod playback;
+mod plugins;
 mod preview;
 mod proxies;
 mod safety;

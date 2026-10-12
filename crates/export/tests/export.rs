@@ -715,3 +715,39 @@ fn exports_speed_changes_and_reverse() {
         }
     }
 }
+
+#[test]
+fn exports_plugin_effects_that_animate_with_time() {
+    let Some(red) = solid_clip("rf_red.mp4", "red", "640x360") else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    // A plugin: swap red and green, then fade to black as time goes on (1 s → 0).
+    let manifest = "id = \"test.export-plugin\"\nname = \"Swap\"\n[[param]]\nname = \"Mix\"\ndefault = 100\nmax = 100\n";
+    let source = "fn effect(uv: vec2<f32>) -> vec4<f32> {\n  let c = sample(uv);\n  let k = clamp(1.0 - time(), 0.0, 1.0) * param(0) / 100.0;\n  return vec4(c.g * k, c.r * k, c.b, c.a);\n}";
+    let def = std::sync::Arc::new(reelforge_core::plugin::parse(manifest, source, Path::new("/p")).unwrap());
+    reelforge_core::plugin::set_installed(vec![def.clone()]);
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &red));
+    let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+    let mut c = Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(2.0), None);
+    c.effects.push(reelforge_core::Effect::new_plugin(&def));
+    seq.tracks[0].clips = vec![c];
+    p.sequences = vec![seq];
+    let out = std::env::temp_dir().join("rf_export_plugin.mp4");
+    let mut st = settings(out.clone());
+    st.end = s(2.0);
+    st.include_audio = false;
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    let rate = FrameRate::new(25, 1);
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let mut pixel = |frame: i64| {
+        let f = dec.frame_at_blocking(Time::from_frame(frame, rate), Duration::from_secs(5)).unwrap();
+        let i = ((180 * 640 + 320) * 4) as usize;
+        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+    };
+    let close = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 6);
+    // Frame 0: red became green. Half a second in: linear 0.5 -> sRGB 188. After 1 s: black.
+    assert!(close(pixel(0), [0, 254, 0]), "{:?}", pixel(0));
+    assert!(close(pixel(12), [0, 190, 0]) || close(pixel(12), [0, 186, 0]), "{:?}", pixel(12));
+    assert!(close(pixel(40), [0, 0, 0]), "{:?}", pixel(40));
+}

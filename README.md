@@ -211,6 +211,17 @@ What works now:
   fit. Everything comes along: keyframes, effects, masks, titles, trackers, links (the copies are
   linked to each other, not to the originals). Paste into a composite shot works too: missing
   tracks are added
+- **Effect plugins** (**Edit → Plugins…**): write your own GPU effects and install them without
+  rebuilding Reelforge. A plugin is a folder with a `plugin.toml` (name, category, up to 16
+  parameters: numbers, checkboxes and menus) and a WGSL shader; it appears in the effects
+  browser beside the built-in effects and gets keyframes, undo, paste attributes and export
+  like they do. Shaders are checked when loaded, with errors given as a line in your file;
+  saving a plugin's files reloads it and the Viewer updates at once. Install from a folder or
+  a .zip, start one from a template (**New plugin…**), remove one. Plugins can have several
+  passes (blurs, glows) and animate with time. A project using a plugin that isn't installed
+  still opens; that effect is skipped and keeps its settings. Five examples ship in
+  `plugins/` (RGB Split, Film Grain, Mosaic, Bloom, Wave Warp). **See [PLUGINS.md](PLUGINS.md)
+  for how to write one**
 - **Collect project** (**File → Collect project…**): copies the project and every file it uses
   (video, audio, images, LUT files and the fonts titles use) into one folder, in `Media`,
   `LUTs` and `Fonts` subfolders next to the project file, with a progress bar and Stop. Files
@@ -632,6 +643,21 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   homography; `follow_keys` composes it with the target's transform (or, stabilising, applies
   its inverse, optionally against a Gaussian-smoothed camera path) and writes position /
   rotation / scale keys, or corner-pin keys
+- **Plugins** (`core/src/plugin.rs`, `render/src/plugin.rs`, `app/src/plugins.rs`): the
+  manifest is parsed into a `PluginDef` (parameter specs interned as `&'static`, like the
+  built-in effects' tables, so reloading the same manifest leaks nothing) and published in a
+  global registry that `Effect` (kind `Plugin` plus a `PluginRef` id) looks up for its
+  parameters and label. The render crate wraps the plugin's WGSL between a prelude (bindings,
+  `sample`/`param`/`time`… helpers, all sampling with `textureSampleLevel` so there are no
+  uniformity restrictions) and one generated `@fragment` wrapper per pass, and checks it with
+  naga before wgpu sees it, mapping error spans back to the plugin's own lines. The compositor
+  compiles each plugin revision once (inside an error scope) and runs its passes in the
+  layer's effect chain using the two-texture pipeline layout: each pass reads the previous
+  result and `original` reads the effect's input, alternating between the layer's other two
+  scratch targets. The effect uniform grew to 128 bytes (params 8–15, time, layer size, pass
+  index); built-in shaders only declare the first 64. A plugin's revision and the clip time
+  are part of the frame signature, so reloads and animated plugins re-render. The app's
+  manager fingerprints plugin files once a second for live reload.
 - **Collect** (`core/src/collect.rs`, `app/src/collect_ui.rs`): `Project::for_each_path_mut`
   visits every file reference (media, LUT effect data, title fonts), so planning, relative
   saving and resolving can't miss one. `plan_collect` picks clash-free names (compared without

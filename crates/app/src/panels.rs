@@ -1047,6 +1047,22 @@ fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_cor
                     ui.close();
                 }
             }
+            let plugins = reelforge_core::plugin::installed();
+            ui.menu_button(format!("Plugins ({})", plugins.len()), |ui| {
+                for p in &plugins {
+                    if ui.button(&p.name).on_hover_text(&p.description).clicked() {
+                        v.effects.push(Effect::new_plugin(p));
+                        ui.close();
+                    }
+                }
+                if !plugins.is_empty() {
+                    ui.separator();
+                }
+                if ui.button("Manage plugins…").clicked() {
+                    st.plugins.open = true;
+                    ui.close();
+                }
+            });
             ui.separator();
             if ui.button("Browse effects…   E").clicked() {
                 st.effects_browser = true;
@@ -1065,7 +1081,10 @@ fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_cor
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut e.enabled, "").on_hover_text("Turn the effect on or off");
-                    ui.strong(e.kind.label());
+                    ui.strong(e.label());
+                    if e.kind == EffectKind::Plugin {
+                        ui.weak("plugin");
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.small_button("Remove").clicked() {
                             act = Some((i, Act::Remove));
@@ -1078,9 +1097,13 @@ fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_cor
                         }
                     });
                 });
+                if e.kind == EffectKind::Plugin && !e.plugin_installed() {
+                    let id = e.plugin.as_ref().map(|p| p.id.clone()).unwrap_or_default();
+                    ui.colored_label(Color32::from_rgb(255, 170, 80), format!("This plugin isn't installed (id \"{id}\"), so the effect is skipped. Its settings are kept: install the plugin and it comes back."));
+                }
                 ui.add_enabled_ui(e.enabled, |ui| {
                     egui::Grid::new("params").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
-                        for (pi, spec) in e.kind.params().iter().enumerate() {
+                        for (pi, spec) in e.param_specs().iter().enumerate() {
                             let animated = e.params[pi].keys.is_animated();
                             let here = in_clip && e.params[pi].keys.index_at(src).is_some();
                             ui.weak(spec.name);
@@ -1091,13 +1114,37 @@ fn effect_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_cor
                             let changed = ui
                                 .add_enabled_ui(!animated || in_clip, |ui| {
                                     ui.horizontal(|ui| {
-                                        let r = ui.add(
-                                            egui::DragValue::new(&mut val)
-                                                .speed(spec.speed)
-                                                .range(spec.min..=spec.max)
-                                                .suffix(spec.suffix)
-                                                .fixed_decimals(if spec.speed < 0.1 { 2 } else { 1 }),
-                                        );
+                                        let r = match spec.ui {
+                                            reelforge_core::ParamUi::Toggle => {
+                                                let mut on = val >= 0.5;
+                                                let r = ui.checkbox(&mut on, "");
+                                                if r.changed() {
+                                                    val = if on { 1.0 } else { 0.0 };
+                                                }
+                                                r
+                                            }
+                                            reelforge_core::ParamUi::Choice(options) => {
+                                                let mut k = (val.round().max(0.0) as usize).min(options.len().saturating_sub(1));
+                                                let before = k;
+                                                let mut r = egui::ComboBox::from_id_salt(("choice", pi)).selected_text(options.get(k).copied().unwrap_or("")).show_ui(ui, |ui| {
+                                                    for (oi, o) in options.iter().enumerate() {
+                                                        ui.selectable_value(&mut k, oi, *o);
+                                                    }
+                                                }).response;
+                                                if k != before {
+                                                    val = k as f32;
+                                                    r.mark_changed();
+                                                }
+                                                r
+                                            }
+                                            reelforge_core::ParamUi::Number => ui.add(
+                                                egui::DragValue::new(&mut val)
+                                                    .speed(spec.speed)
+                                                    .range(spec.min..=spec.max)
+                                                    .suffix(spec.suffix)
+                                                    .fixed_decimals(if spec.speed < 0.1 { 2 } else { 1 }),
+                                            ),
+                                        };
                                         if e.kind == EffectKind::ChromaKey && pi == 0 {
                                             // Swatch of the key colour.
                                             let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());

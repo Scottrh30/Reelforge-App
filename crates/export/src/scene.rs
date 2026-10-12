@@ -281,6 +281,11 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
                 v.to_bits().hash(h);
             }
             e.table.as_ref().map(|t| t.id).hash(h);
+            // A reloaded plugin (new revision) or one that animates with time changes the picture.
+            if let Some(p) = &e.plugin {
+                p.revision.hash(h);
+                e.time.to_bits().hash(h);
+            }
         }
     };
     for item in items {

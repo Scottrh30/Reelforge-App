@@ -477,3 +477,68 @@ fn corner_pin_draws_in_perspective() {
     assert!(near(at([190.0, 20.0]), [0, 0, 0]), "outside the pin is the background");
     assert!(near(at([100.0, 30.0]), [0, 0, 0]), "above the receding top edge too");
 }
+
+// ---- Plugins ------------------------------------------------------------------
+
+fn plugin(id: &str, manifest_extra: &str, params: &str, source: &str) -> std::sync::Arc<reelforge_core::plugin::PluginDef> {
+    let manifest = format!("id = \"{id}\"\nname = \"{id}\"\n{manifest_extra}\n{params}");
+    std::sync::Arc::new(reelforge_core::plugin::parse(&manifest, source, std::path::Path::new("/p")).unwrap())
+}
+
+fn plugin_fx(def: &std::sync::Arc<reelforge_core::plugin::PluginDef>, values: &[f32], time: f32) -> EffectValues {
+    let mut v = [0.0; reelforge_core::effects::MAX_PARAMS];
+    v[..values.len()].copy_from_slice(values);
+    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time }
+}
+
+#[test]
+fn plugins_run_with_params_time_and_several_passes() {
+    let Some(mut c) = setup() else { return };
+    // Left half red, right half blue.
+    let mut img = Vec::new();
+    for _y in 0..16 {
+        for x in 0..32 {
+            img.extend(if x < 16 { [255, 0, 0, 255] } else { [0, 0, 255, 255] });
+        }
+    }
+    let lay = |fx: Vec<EffectValues>| with_fx(layer(1, &img, [32, 16], [32.0, 16.0], Transform::default(), BlendMode::Normal), fx);
+
+    // A shift by a number of pixels (param 0), proving param(), pixel() and sampling work.
+    let shift = plugin("t.shift", "", "[[param]]\nname = \"Px\"\nmax = 32", "fn effect(uv: vec2<f32>) -> vec4<f32> { return sample(uv - vec2(param(0), 0.0) * pixel()); }");
+    c.render([32, 16], &[lay(vec![plugin_fx(&shift, &[8.0], 0.0)])]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 32, 20, 8), [255, 0, 0]), "red moved 8 px right: {:?}", px(&out, 32, 20, 8));
+    assert!(near(px(&out, 32, 26, 8), [0, 0, 255]));
+
+    // Time: grey whose level is the time (0.5 s -> linear 0.5 -> sRGB 188).
+    let t = plugin("t.time", "", "", "fn effect(uv: vec2<f32>) -> vec4<f32> { return vec4(vec3(time()), 1.0); }");
+    c.render([32, 16], &[lay(vec![plugin_fx(&t, &[], 0.5)])]);
+    assert!(near(px(&c.read_output().unwrap(), 32, 4, 4), [188, 188, 188]));
+
+    // Three passes: blacken, then invert (reads the previous pass), then mix with
+    // the original (the red/blue picture). Result = 0.5·white + 0.5·original.
+    let multi = plugin(
+        "t.multi",
+        "passes = [\"black\", \"invert\", \"mix_back\"]",
+        "",
+        "fn black(uv: vec2<f32>) -> vec4<f32> { return vec4(0.0, 0.0, 0.0, 1.0); }\n\
+         fn invert(uv: vec2<f32>) -> vec4<f32> { let c = sample(uv); return vec4(1.0 - c.rgb, c.a); }\n\
+         fn mix_back(uv: vec2<f32>) -> vec4<f32> { return mix(sample(uv), original(uv), 0.5); }",
+    );
+    c.render([32, 16], &[lay(vec![plugin_fx(&multi, &[], 0.0)])]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 32, 4, 8), [255, 188, 188]), "{:?}", px(&out, 32, 4, 8));
+    assert!(near(px(&out, 32, 28, 8), [188, 188, 255]), "{:?}", px(&out, 32, 28, 8));
+
+    // A plugin after a built-in effect, and alpha: straight-colour output is premultiplied.
+    let half = plugin("t.half", "", "", "fn effect(uv: vec2<f32>) -> vec4<f32> { let c = sample(uv); return vec4(c.rgb, 0.5); }");
+    let black = solid(4, 4, [0, 0, 0, 255]);
+    c.render([32, 16], &[layer(2, &black, [4, 4], [32.0, 16.0], Transform::default(), BlendMode::Normal), lay(vec![fx(EffectKind::ColorCorrect, &[(2, 0.0)]), plugin_fx(&half, &[], 0.0)])]);
+    // Red, desaturated to its luma (0.2126 linear), at 50% over black -> 0.1063 -> sRGB 92.
+    assert!(near(px(&c.read_output().unwrap(), 32, 4, 8), [92, 92, 92]), "{:?}", px(&c.read_output().unwrap(), 32, 4, 8));
+
+    // A broken plugin is skipped, not a crash; the rest still renders.
+    let broken = plugin("t.broken", "", "", "fn effect(uv: vec2<f32>) -> vec4<f32> { return nope; }");
+    c.render([32, 16], &[lay(vec![plugin_fx(&broken, &[], 0.0), plugin_fx(&shift, &[8.0], 0.0)])]);
+    assert!(near(px(&c.read_output().unwrap(), 32, 20, 8), [255, 0, 0]));
+}

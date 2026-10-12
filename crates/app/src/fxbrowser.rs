@@ -54,9 +54,11 @@ pub fn window(ctx: &egui::Context, st: &mut EditorState, open: &mut bool) {
                     ui.add_space(6.0);
                 }
             } else {
+                let plugins = reelforge_core::plugin::installed();
                 for cat in EffectCategory::ALL {
                     let shown: Vec<EffectKind> = EffectKind::ALL.into_iter().filter(|k| k.category() == cat && hit(k.label(), k.description(), cat.label())).collect();
-                    if shown.is_empty() {
+                    let shown_plugins: Vec<_> = plugins.iter().filter(|p| p.category == cat && (hit(&p.name, &p.description, cat.label()) || hit("plugin", &p.author, ""))).cloned().collect();
+                    if shown.is_empty() && shown_plugins.is_empty() {
                         continue;
                     }
                     any = true;
@@ -64,12 +66,27 @@ pub fn window(ctx: &egui::Context, st: &mut EditorState, open: &mut bool) {
                     for k in shown {
                         if entry(ui, k.label(), k.description(), "Add", target.is_some()) {
                             if let Some(id) = target {
-                                add_effect(st, id, k);
+                                add_effect(st, id, Effect::new(k));
+                            }
+                        }
+                    }
+                    for p in shown_plugins {
+                        let by = if p.author.is_empty() { String::new() } else { format!(" · by {}", p.author) };
+                        let desc = format!("{}{}Plugin{by}", p.description, if p.description.is_empty() { "" } else { "  ·  " });
+                        if entry(ui, &p.name, &desc, "Add", target.is_some()) {
+                            if let Some(id) = target {
+                                add_effect(st, id, Effect::new_plugin(&p));
                             }
                         }
                     }
                     ui.add_space(6.0);
                 }
+                ui.horizontal(|ui| {
+                    ui.weak(format!("{} plugin{} installed.", plugins.len(), if plugins.len() == 1 { "" } else { "s" }));
+                    if ui.small_button("Manage plugins…").clicked() {
+                        st.plugins.open = true;
+                    }
+                });
             }
             if !any {
                 ui.weak("Nothing matches.");
@@ -80,13 +97,14 @@ pub fn window(ctx: &egui::Context, st: &mut EditorState, open: &mut bool) {
 }
 
 /// Add an effect to a clip as one undo step.
-pub fn add_effect(st: &mut EditorState, id: reelforge_core::ClipId, kind: EffectKind) {
+pub fn add_effect(st: &mut EditorState, id: reelforge_core::ClipId, effect: Effect) {
     st.commit_live_edit();
     if let Some(mut v) = st.visual(id) {
-        v.effects.push(Effect::new(kind));
+        let name = effect.label();
+        v.effects.push(effect);
         st.set_visual_live(id, v);
         st.commit_live_edit();
-        st.status = format!("Added {} to the clip", kind.label());
+        st.status = format!("Added {name} to the clip");
     }
 }
 

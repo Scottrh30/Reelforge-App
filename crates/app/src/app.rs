@@ -94,6 +94,8 @@ pub struct EditorState {
     pub paste_attrs_cancel: bool,
     /// File → Collect project… (its dialog and a copy in progress).
     pub collect: crate::collect_ui::CollectState,
+    /// Installed effect plugins and the Plugins window.
+    pub plugins: crate::plugins::PluginManager,
     /// Modifier keys at the end of the last frame (to know what was held at a
     /// Paste event, which carries none: Ctrl+Alt+V vs Ctrl+V).
     last_modifiers: egui::Modifiers,
@@ -161,6 +163,11 @@ impl ReelforgeApp {
         app.state.session = Some(session);
         app.state.recoveries = crashed;
         app.state.status = "Import media with File > Import, or drop files onto the window.".into();
+        // Effect plugins (before opening a project, so its plugin effects are found).
+        let msg = app.state.plugins.scan();
+        if app.state.plugins.entries.iter().any(|e| e.result.is_err()) {
+            app.state.status = msg;
+        }
 
         // `reelforge project.rfproj` opens a project (e.g. double-clicked in Explorer);
         // `reelforge clip1.mp4 clip2.mov …` imports the files and lays them out on the timeline.
@@ -267,6 +274,11 @@ impl eframe::App for ReelforgeApp {
             st.settings_open = open;
         }
         crate::collect_ui::window(&ctx, st);
+        crate::plugins::window(&ctx, st);
+        if st.plugins.live_reload {
+            // Keep checking plugin files for changes while idle.
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
         if st.paste_attrs_open {
             let mut open = true;
             crate::paste_attrs::window(&ctx, st, &mut open);
@@ -391,6 +403,7 @@ impl EditorState {
             paste_attrs: Default::default(),
             paste_attrs_cancel: false,
             collect: Default::default(),
+            plugins: Default::default(),
             last_modifiers: Default::default(),
             proxies: Default::default(),
             proxied_rev: 0,
@@ -419,6 +432,7 @@ impl EditorState {
         st.recoveries = std::mem::take(&mut self.recoveries);
         // A collect still copying carries on (it works from its own copy of the project).
         st.collect = std::mem::take(&mut self.collect);
+        st.plugins = std::mem::take(&mut self.plugins);
         st.status = "New project".into();
         st
     }
@@ -1466,6 +1480,11 @@ impl EditorState {
         }
         self.poll_tracking();
         self.poll_collect();
+        if let Some(msg) = self.plugins.poll() {
+            // A plugin changed on disk: the viewer re-renders with it by itself
+            // (its revision is part of the frame's signature).
+            self.status = msg;
+        }
         if self.proxies.poll() {
             self.status = "A proxy is ready: the viewer uses it now".into();
         }
@@ -1893,6 +1912,10 @@ impl EditorState {
                 }
                 if ui.add_enabled(self.selection_is_linked(), egui::Button::new("Unlink audio/video")).clicked() {
                     self.unlink_selection();
+                }
+                if ui.button("Plugins…").on_hover_text("Install, make and manage effect plugins").clicked() {
+                    self.plugins.open = true;
+                    ui.close();
                 }
                 if ui.button("Effects & transitions…      E").clicked() {
                     self.effects_browser = true;

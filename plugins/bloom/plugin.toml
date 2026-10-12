@@ -1,0 +1,39 @@
+id = "reelforge.bloom"
+name = "Bloom"
+version = "1.0"
+author = "Reelforge examples"
+category = "Stylize"
+description = "Bright parts spill soft light around them. An example of a plugin with several passes."
+# Four passes: pick the bright parts, blur them across, blur them down, then add
+# them onto the original picture. Each pass reads the one before with sample();
+# original() is the picture as it came into the effect.
+passes = ["bright", "blur_across", "blur_down", "combine"]
+# These functions work with premultiplied colour (better for blurs).
+premultiplied = true
+
+[[param]]
+name = "Threshold"
+default = 60
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]
+name = "Radius"
+default = 30
+min = 0
+max = 200
+suffix = " px"
+
+[[param]]
+name = "Intensity"
+default = 120
+min = 0
+max = 500
+suffix = " %"
+
+[[param]]
+name = "Tint"
+type = "choice"
+options = ["None", "Warm", "Cool"]
+default = 0

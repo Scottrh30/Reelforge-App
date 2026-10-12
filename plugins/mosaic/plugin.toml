@@ -1,0 +1,19 @@
+id = "reelforge.mosaic"
+name = "Mosaic"
+version = "1.0"
+author = "Reelforge examples"
+category = "Stylize"
+description = "Big pixels or round dots: hide a face or a number plate, or a retro look."
+
+[[param]]
+name = "Cell size"
+default = 24
+min = 2
+max = 200
+suffix = " px"
+
+[[param]]
+name = "Shape"
+type = "choice"
+options = ["Squares", "Dots"]
+default = 0

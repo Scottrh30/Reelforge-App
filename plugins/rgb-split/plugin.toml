@@ -1,0 +1,26 @@
+id = "reelforge.rgb-split"
+name = "RGB Split"
+version = "1.0"
+author = "Reelforge examples"
+category = "Stylize"
+description = "Pulls the red and blue channels apart, like a cheap lens or a glitch. Can wobble over time."
+
+[[param]]
+name = "Amount"
+default = 6
+min = 0
+max = 100
+suffix = " px"
+step = 0.1
+
+[[param]]
+name = "Angle"
+default = 0
+min = -180
+max = 180
+suffix = "°"
+
+[[param]]
+name = "Wobble"
+type = "toggle"
+default = 0

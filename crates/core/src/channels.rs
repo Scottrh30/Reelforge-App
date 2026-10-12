@@ -53,7 +53,7 @@ impl ClipVisual {
             Channel::Transform(Prop::Crop, 3),
         ];
         for (i, e) in self.effects.iter().enumerate() {
-            v.extend((0..e.kind.params().len()).map(|p| Channel::Effect(i, p)));
+            v.extend((0..e.param_specs().len()).map(|p| Channel::Effect(i, p)));
         }
         v
     }
@@ -68,7 +68,7 @@ impl ClipVisual {
             Channel::Transform(Prop::Crop, c) => format!("Crop {}", CROP_SIDES[c as usize & 3]),
             Channel::Transform(Prop::Pin, _) => "Corner pin".into(),
             Channel::Effect(e, p) => match self.effects.get(e) {
-                Some(fx) => format!("{}: {}", fx.kind.label(), fx.spec(p).map_or("?", |s| s.name)),
+                Some(fx) => format!("{}: {}", fx.label(), fx.spec(p).map_or("?", |s| s.name)),
                 None => "?".into(),
             },
         }

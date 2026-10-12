@@ -1,0 +1,34 @@
+id = "reelforge.wave-warp"
+name = "Wave Warp"
+version = "1.0"
+author = "Reelforge examples"
+category = "Distort"
+description = "Ripples the picture with moving waves: heat haze, water, dream sequences."
+
+[[param]]
+name = "Height"
+default = 12
+min = 0
+max = 200
+suffix = " px"
+
+[[param]]
+name = "Wavelength"
+default = 120
+min = 4
+max = 2000
+suffix = " px"
+
+[[param]]
+name = "Speed"
+default = 1
+min = -10
+max = 10
+suffix = " waves/s"
+step = 0.01
+
+[[param]]
+name = "Direction"
+type = "choice"
+options = ["Horizontal waves", "Vertical waves"]
+default = 0

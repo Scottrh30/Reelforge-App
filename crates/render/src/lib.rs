@@ -28,6 +28,7 @@ use std::collections::HashMap;
 
 pub use wgpu;
 
+pub mod plugin;
 pub mod text;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -39,7 +40,11 @@ const MAX_DRAWS: usize = 128;
 const UNIFORM_SIZE: u64 = 128; // mat4 + vec2 + 2×f32 + 3×vec4
 /// Effect passes per frame.
 const MAX_FX_PASSES: usize = 256;
-const FX_UNIFORM_SIZE: u64 = 64; // 4 × vec4
+/// 8 × vec4: params 0–7, texel/direction, extra (aspect, time, layer size),
+/// params 8–15, extra2 (texture size, pass, pass count), spare. Built-in
+/// effect shaders only declare the first four; plugins see them all.
+const FX_UNIFORM_SIZE: u64 = 128;
+const FX_FLOATS: usize = (FX_UNIFORM_SIZE / 4) as usize;
 
 /// One layer to draw.
 #[derive(Clone)]
@@ -174,6 +179,12 @@ pub struct Compositor {
     fx2_pipelines: HashMap<&'static str, wgpu::RenderPipeline>,
     /// Lookup tables (curves, LUTs), by layer key and effect index; `content_id` is the table id.
     tables: HashMap<(u64, usize), LayerTex>,
+    /// Layout for passes that read two textures (plugins use it: the picture and the original).
+    fx2_layout: wgpu::PipelineLayout,
+    /// Compiled plugin passes, by plugin revision (`None`: it failed to compile).
+    plugin_pipelines: HashMap<u64, Option<Vec<wgpu::RenderPipeline>>>,
+    /// The revision compiled for each plugin id, so a reloaded plugin replaces its old pipelines.
+    plugin_revisions: HashMap<String, u64>,
     targets: Option<Targets>,
     /// Bumped when the output texture is recreated (resize), so a UI can re-register it.
     pub output_generation: u64,
@@ -456,9 +467,65 @@ impl Compositor {
             masks: HashMap::new(),
             fx2_pipelines,
             tables: HashMap::new(),
+            fx2_layout: mask_pl,
+            plugin_pipelines: HashMap::new(),
+            plugin_revisions: HashMap::new(),
             targets: None,
             output_generation: 0,
         }
+    }
+
+    /// Compile a plugin's passes (once per revision). False if it can't run.
+    fn ensure_plugin(&mut self, def: &reelforge_core::plugin::PluginDef) -> bool {
+        if let Some(r) = self.plugin_pipelines.get(&def.revision) {
+            return r.is_some();
+        }
+        // A reloaded plugin: forget the old version.
+        if let Some(old) = self.plugin_revisions.insert(def.id.clone(), def.revision) {
+            self.plugin_pipelines.remove(&old);
+        }
+        let compiled = match plugin::validate(def) {
+            Err(e) => {
+                log::warn!("plugin {} can't be used: {e}", def.id);
+                None
+            }
+            Ok(source) => {
+                // Anything the check above missed is caught here rather than crashing.
+                let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(&def.id), source: wgpu::ShaderSource::Wgsl(source.into()) });
+                let passes: Vec<wgpu::RenderPipeline> = (0..def.passes.len())
+                    .map(|k| {
+                        let entry = plugin::entry_point(k);
+                        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                            label: Some(&entry),
+                            layout: Some(&self.fx2_layout),
+                            vertex: wgpu::VertexState { module: &module, entry_point: Some("rf_vs"), compilation_options: Default::default(), buffers: &[] },
+                            fragment: Some(wgpu::FragmentState {
+                                module: &module,
+                                entry_point: Some(&entry),
+                                compilation_options: Default::default(),
+                                targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                            }),
+                            primitive: wgpu::PrimitiveState::default(),
+                            depth_stencil: None,
+                            multisample: wgpu::MultisampleState::default(),
+                            multiview_mask: None,
+                            cache: None,
+                        })
+                    })
+                    .collect();
+                match pollster::block_on(scope.pop()) {
+                    Some(e) => {
+                        log::warn!("plugin {} failed on the GPU: {e}", def.id);
+                        None
+                    }
+                    None => Some(passes),
+                }
+            }
+        };
+        let ok = compiled.is_some();
+        self.plugin_pipelines.insert(def.revision, compiled);
+        ok
     }
 
     pub fn output_view(&self) -> Option<&wgpu::TextureView> {
@@ -697,7 +764,9 @@ impl Compositor {
             src: Src,
             second: Second,
             dst: usize,
-            uniform: [f32; 16],
+            uniform: [f32; FX_FLOATS],
+            /// A plugin pass: the plugin's revision and which pass.
+            plugin: Option<(u64, usize)>,
         }
         let mut fx_passes: Vec<FxPass> = Vec::new();
         // Which scratch target holds each processed layer's result.
@@ -710,6 +779,7 @@ impl Compositor {
             let cost = |e: &EffectValues| match e.kind {
                 EffectKind::Blur => 2,
                 EffectKind::Glow | EffectKind::DropShadow => 4,
+                EffectKind::Plugin => e.plugin.as_ref().map_or(0, |p| p.passes.len()),
                 _ => 1,
             };
             let needed = 1 + masked as usize + l.effects.iter().map(cost).sum::<usize>();
@@ -728,20 +798,26 @@ impl Compositor {
             // Frame pixels at 100% scale → this layer's texels.
             let (kx, ky) = (pw / l.layer_size[0].max(1.0), ph / l.layer_size[1].max(1.0));
             let uniform = |v: &[f32; reelforge_core::effects::MAX_PARAMS], dir: [f32; 2]| {
-                let mut u = [0.0f32; 16];
-                u[..8].copy_from_slice(v);
+                let mut u = [0.0f32; FX_FLOATS];
+                u[..8].copy_from_slice(&v[..8]);
+                u[16..24].copy_from_slice(&v[8..16]);
                 u[8..12].copy_from_slice(&[1.0 / pw, 1.0 / ph, dir[0], dir[1]]);
                 u[12] = aspect;
                 u
             };
             let key = l.key;
-            fx_passes.push(FxPass { key, entry: "fs_import", src: Src::Layer, second: Second::None, dst: 0, uniform: [0.0; 16] });
+            fx_passes.push(FxPass { key, entry: "fs_import", src: Src::Layer, second: Second::None, dst: 0, uniform: [0.0; FX_FLOATS], plugin: None });
             let mut cur = 0usize;
-            let mut push = |entry, src: usize, second, dst: usize, u| fx_passes.push(FxPass { key, entry, src: Src::Scratch(src), second, dst, uniform: u });
+            // Plugin passes pushed for this layer: (index in fx_passes, revision, pass).
+            let mut plugin_marks: Vec<(usize, u64, usize)> = Vec::new();
+            let mut push = |entry, src: usize, second, dst: usize, u| -> usize {
+                fx_passes.push(FxPass { key, entry, src: Src::Scratch(src), second, dst, uniform: u, plugin: None });
+                fx_passes.len() - 1
+            };
             // The two targets that aren't `cur`.
             let others = |cur: usize| ((cur + 1) % 3, (cur + 2) % 3);
             // A separable blur of `from` into `into`, using `tmp`.
-            let blur = |push: &mut dyn FnMut(&'static str, usize, Second, usize, [f32; 16]), radius: f32, from: usize, tmp: usize, into: usize| {
+            let blur = |push: &mut dyn FnMut(&'static str, usize, Second, usize, [f32; FX_FLOATS]) -> usize, radius: f32, from: usize, tmp: usize, into: usize| {
                 let mut vx = [0.0; reelforge_core::effects::MAX_PARAMS];
                 vx[0] = radius * 0.5 * kx;
                 let mut vy = vx;
@@ -751,7 +827,7 @@ impl Compositor {
             };
             if masked {
                 let (o, _) = others(cur);
-                push("fs_mask", cur, Second::Mask, o, [0.0; 16]);
+                push("fs_mask", cur, Second::Mask, o, [0.0; FX_FLOATS]);
                 cur = o;
             }
             for (i, e) in l.effects.iter().enumerate() {
@@ -810,7 +886,32 @@ impl Compositor {
                         push("fs_levels", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
                         cur = o1;
                     }
+                    EffectKind::Plugin => {
+                        let Some(def) = &e.plugin else { continue };
+                        if !self.ensure_plugin(def) {
+                            continue;
+                        }
+                        // Each pass reads the last one's result (the first reads `cur`) and
+                        // can read `cur` as "the original"; results alternate between the other two.
+                        let n = def.passes.len();
+                        let (mut read, mut write) = (cur, o1);
+                        for k in 0..n {
+                            let mut u = uniform(&e.values, [0.0; 2]);
+                            u[13] = e.time;
+                            u[14] = l.layer_size[0];
+                            u[15] = l.layer_size[1];
+                            u[24..28].copy_from_slice(&[pw, ph, k as f32, n as f32]);
+                            let at = push("", read, Second::Scratch(cur), write, u);
+                            plugin_marks.push((at, def.revision, k));
+                            read = write;
+                            write = if write == o1 { o2 } else { o1 };
+                        }
+                        cur = read;
+                    }
                 }
+            }
+            for (at, rev, k) in plugin_marks {
+                fx_passes[at].plugin = Some((rev, k));
             }
             processed.insert(l.key, cur);
         }
@@ -932,13 +1033,19 @@ impl Compositor {
             if matches!(second, Some(None)) {
                 continue; // its texture is missing
             }
+            let pipeline = match (p.plugin, second) {
+                (Some((rev, k)), Some(Some(_))) => match self.plugin_pipelines.get(&rev) {
+                    Some(Some(passes)) => &passes[k],
+                    _ => continue,
+                },
+                (Some(_), _) => continue,
+                (None, Some(Some(_))) => &self.fx2_pipelines[p.entry],
+                (None, _) => &self.fx_pipelines[p.entry],
+            };
             let mut pass = pass_on(&mut enc, &fx.views[p.dst], wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
-            match second {
-                Some(Some(b)) => {
-                    pass.set_pipeline(&self.fx2_pipelines[p.entry]);
-                    pass.set_bind_group(2, b, &[]);
-                }
-                _ => pass.set_pipeline(&self.fx_pipelines[p.entry]),
+            pass.set_pipeline(pipeline);
+            if let Some(Some(b)) = second {
+                pass.set_bind_group(2, b, &[]);
             }
             pass.set_bind_group(0, &self.fx_uniform_bind, &[(i as u64 * self.fx_uniform_stride) as u32]);
             match p.src {
