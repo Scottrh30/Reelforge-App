@@ -429,7 +429,17 @@ export BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnu="--sysroot=/usr/x86_64-w64
 cargo build --release -p reelforge --target x86_64-pc-windows-gnu
 ```
 
-Ship `reelforge.exe` with the `bin/*.dll` files from the FFmpeg build next to it. The test
+Ship `reelforge.exe` with the `bin/*.dll` files from the FFmpeg build next to it.
+
+**The four-part download.** FFmpeg's `avcodec-62.dll` alone is bigger than some file-sharing
+limits, so the Windows build is also packed as four zips, each under 30 MB: part 1 holds
+Reelforge, its plugins, the guide, the small FFmpeg DLLs, `ffmpeg-files.txt` (each DLL's size
+and CRC-32) and **Finish install.exe** (`crates/setup`, a small program with no FFmpeg
+dependency). Parts 2–4 hold the other DLLs, with `avcodec-62.dll` cut into
+`avcodec-62.dll.part1`/`.part2`. Finish install finds the other parts (next to it, the folders
+above, or Downloads; a browser's "(1)" copies are fine), unpacks only DLLs and pieces by file
+name (nothing can be written outside its folder), joins the pieces, checks every file against
+the list, and re-reads the zips if a check fails. The test
 suites can be cross-built the same way (`cargo test --no-run --target …`) and run under Wine.
 
 ### Troubleshooting
