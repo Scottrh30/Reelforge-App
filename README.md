@@ -2,11 +2,11 @@
 
 A HitFilm-style video editor and compositor, written in Rust. Editing, audio, the GPU
 compositor, export (with presets, a queue and GPU encoders), proxies and crash safety are done;
-effects and compositing (composite shots, motion tracking with corner pinning) are under way.
+effects and compositing (compositions, motion tracking with corner pinning) are under way.
 
 What works now:
 
-- Dockable panel layout (Media, Viewer, Controls, Editor Timeline, Curves, Meters) — drag tabs to rearrange
+- Dockable panel layout (Media, Viewer, Controls, Editor Timeline, Composition Timeline, Curves, Meters) — drag tabs to rearrange
 - Import video/image/audio via **File → Import**, `Ctrl+I`, or drag files from Explorer
 - FFmpeg decoding on a background thread, with frame-accurate seeking
 - Viewer with transport bar and timecode
@@ -184,7 +184,7 @@ What works now:
   it for all of them. Relinking can be undone. Export won't start while media is missing
 - **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, proxies, autosave
   interval, and the proxy/autosave folders
-- **Speed** (Controls panel, any footage or composite-shot clip): 1–2000%, with one-click 25/50/
+- **Speed** (Controls panel, any footage or composition clip): 1–2000%, with one-click 25/50/
   100/200/400%, and **Reverse**. The clip keeps playing the same stretch of footage, so slow
   motion makes it longer (clips after it on its tracks move along) and fast motion shorter;
   linked audio changes speed with it, pitch and all, like tape. Keyframes stay where they are on
@@ -209,7 +209,7 @@ What works now:
 - **Cut, copy and paste** (`Ctrl+X` / `Ctrl+C` / `Ctrl+V`, or the Edit menu): pastes at the
   playhead, keeping the clips' spacing and stacking order, or at the next place where they all
   fit. Everything comes along: keyframes, effects, masks, titles, trackers, links (the copies are
-  linked to each other, not to the originals). Paste into a composite shot works too: missing
+  linked to each other, not to the originals). Paste into a composition works too: missing
   tracks are added
 - **Effect plugins** (**Edit → Plugins…**): write your own GPU effects and install them without
   rebuilding Reelforge. A plugin is a folder with a `plugin.toml` (name, category, up to 16
@@ -246,7 +246,7 @@ What works now:
 - **Snapping in the Viewer**: a layer you drag snaps its edges and middle to the frame's edges
   and centre lines and to other layers' edges and middles, with red guide lines showing what
   lined up. Hold **Alt** to place it freely; turn it off in **Edit → Snap in Viewer** or Settings
-- **Masks** (Controls panel, any video clip, title or composite shot): **+ Rectangle**,
+- **Masks** (Controls panel, any video clip, title or composition): **+ Rectangle**,
   **+ Ellipse**, or **+ Freehand** (click points in the Viewer; click the first point or press
   Enter to close, Esc to cancel). Drag a mask's corner handles in the Viewer to reshape it (a
   rectangle or ellipse can be pulled into any four-sided shape), or select it in the list and
@@ -257,17 +257,29 @@ What works now:
   - **Animate shape**: once ticked, reshaping the mask at the playhead sets a keyframe there
   - Masks are applied before the clip's effects and move with the layer's transform
   - With a tracker on the clip, **Apply to → Mask: …** makes the mask follow the tracked point
-- **Composite shots**: a composite shot is a sequence of its own, with its own layers, that
+- **Compositions**: a composition is a sequence of its own, with its own layers, that
   sits on the timeline as one clip (amber, marked `[C]`). Transform it, add effects, dissolve
   it, trim it like any clip; its audio plays and exports with it
-  - **Make composite shot** (`Ctrl+G`, the Edit menu, or **Make from selection** in the Media
-    panel) moves the selected clip and its linked audio into a new composite shot, or every clip
+  - **Make composition** (`Ctrl+G`, the Edit menu, or **Make from selection** in the Media
+    panel) moves the selected clip and its linked audio into a new composition, or every clip
     between the in and out marks if you've set them. Undo puts them back
-  - **Double-click** a composite-shot clip (or **Open** in the Controls or Media panel) to go
-    inside and edit it; tabs above the timeline switch between the main edit and each shot, and
-    each remembers its playhead. **+ New** in the Media panel starts an empty one, and **Add at
-    playhead** puts a shot into whatever you're editing (shots can contain shots; a shot can't
-    contain itself)
+  - **New composition from media**: right-click footage, a still or a sound file in the Media
+    panel. The new composition takes the file's name, picture size, frame rate and length,
+    holds the file (picture on Video 1, sound linked on Audio 1, in one undo step), and opens
+    in the Composition Timeline, ready for layers on top. Stills use the edit's frame rate and
+    last 5 seconds; sound-only files use the edit's size
+  - The same right-click menu also adds the file at the playhead or at the end of what you're
+    editing (or of the main edit), makes a proxy, relinks a missing file, shows it in its folder,
+    and copies its path
+  - **Composition Timeline** (a tab next to the Editor Timeline): the timeline of the
+    composition you're working on, with a tab for each composition along its top and **+** for
+    a new one. The Editor Timeline always shows the main edit. Switching between the two tabs
+    switches what the Viewer, Controls and export work on; each sequence remembers its playhead,
+    zoom and scroll. If you dock the two side by side, click the one not in use to switch
+  - **Double-click** a composition clip (or **Open** in the Controls or Media panel) to open it
+    in the Composition Timeline. **+ New** in the Media panel starts an empty one, and **Add at
+    playhead** puts a composition into whatever you're editing (compositions can contain
+    compositions; one can't contain itself)
   - Empty parts of a shot are transparent, so layers underneath show through
   - Exporting while inside a shot exports that shot
 - **Motion tracking** (Controls panel, for footage clips). Pick how many points, **Add tracker**,
@@ -342,7 +354,7 @@ crates/
            AudioReader (random-access resampled audio), Mixer (renders the timeline's audio).
   render/  wgpu compositor: transformed layers, blend modes, linear-light float pipeline,
            pixel readback. No egui dependency, so export can use it headless.
-  export/  Scene building shared by viewer and export (incl. composite shots), the audio mix
+  export/  Scene building shared by viewer and export (incl. compositions), the audio mix
            list, and offline render: exact frames -> compositor -> MovieWriter, with
            progress/cancel. Runs headless (tests use it without a window).
   app/     eframe/egui desktop app (wgpu renderer), egui_dock panels, timeline, viewer,
@@ -473,7 +485,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | M | Add a marker at the playhead |
 | Up / Down | Previous / next cut, marker or in/out point |
 | Shift+F | Freeze frame at the playhead |
-| Ctrl+G | Make composite shot (the selected clips, or everything between in and out) |
+| Ctrl+G | Make composition (the selected clips, or everything between in and out) |
 | Ctrl+click / Shift+click | Add a clip to the selection, or take it out |
 | Drag on empty track space | Select clips with a box (Ctrl adds to the selection) |
 | Ctrl+A / Esc | Select all / nothing |
@@ -483,7 +495,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | \\ | Zoom the timeline to fit the sequence |
 | Alt while dragging a layer in the Viewer | Don't snap |
 | Enter / Esc while drawing a mask | Close the mask / cancel |
-| Double-click a composite shot | Open it |
+| Double-click a composition | Open it |
+| Right-click a media item | New composition from media, add, proxy, show in folder |
 | Alt+X | Clear in/out |
 | Shift+Del | Ripple delete (close the gap) |
 | Ctrl+D | Add/remove cross-dissolve at the nearest video cut |
@@ -597,15 +610,15 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 - **Tracks** are added and removed with `AddTrack` / `RemoveTrack` commands (the removed track
   and its clips are kept for undo). Deleting a track is refused if it would orphan linked clips
   on another track, or leave the sequence without a video or audio track.
-- **Composite shots** (`Clip::nested`, `export/src/scene.rs`): a clip whose `nested` names a
+- **Compositions** (`Clip::nested`, `export/src/scene.rs`): a clip whose `nested` names a
   sequence index (its media is `MediaId::NESTED`; its source time is that sequence's time).
   `Scene` turns a sequence at a time into compositor draws for both the viewer and export, via
   a `FrameProvider` (the viewer's gives whatever preview frame is ready; export's waits for
-  exact full-size frames). For a composite-shot layer it renders the inner sequence with its own
+  exact full-size frames). For a composition layer it renders the inner sequence with its own
   `Compositor` in transparent mode (cleared to transparent, written as straight alpha), reads it
   back, and uses it as the layer's picture; unchanged inner frames are reused by signature.
   `mix_clips` flattens a shot's audio into the outer mix, shifted and cut to the clip.
-  `undo::make_composite` builds the "Make composite shot" command (whole-sequence snapshots for
+  `undo::make_composite` builds the "Make composition" command (whole-sequence snapshots for
   undo); `Project::contains_sequence` stops a shot going inside itself
 - **Speed** (`core/src/speed.rs`): clip time (`Clip::source_time`, what keyframes, effects,
   masks and volume keys use) always runs at the timeline's pace; `Clip::media_time` maps it to the
@@ -734,7 +747,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    dissolve, dip, wipe, iris, slide and push transitions~~
    (still to add: letting glow/shadow spill outside the layer, more stylize effects, saved
    effect presets)
-6. **Compositing**: ~~composite shots (nested sequences), motion tracking (1, 2 and 4
+6. **Compositing**: ~~compositions (nested sequences), motion tracking (1, 2 and 4
    points: follow, stabilise with smoothing, corner pin / screen replacement), corner pin,
    masks~~, titles and track management are done. Still to come: Bézier mask curves and
    per-point feather, planar tracking of whole surfaces (not just four features), automatic

@@ -588,7 +588,7 @@ fn exports_composite_shots_with_their_transform_and_audio() {
     let Some((mut p, _)) = red_with_tone() else { return };
     let Some((device, queue)) = headless_device() else { return };
     let s = Time::from_secs_f64;
-    // The red+tone sequence becomes a composite shot (sequence 1) inside a new main
+    // The red+tone sequence becomes a composition (sequence 1) inside a new main
     // sequence, from 0.5 s to 1.5 s, at half size and -6 dB.
     let inner = p.sequences.remove(0);
     let mut main = Sequence::new("Main", 640, 360, FrameRate::new(25, 1));

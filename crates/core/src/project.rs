@@ -15,7 +15,7 @@ pub struct MediaId(pub u64);
 impl MediaId {
     /// The "media" of clips whose picture is generated (titles): no file behind it.
     pub const GENERATED: MediaId = MediaId(0);
-    /// The "media" of composite-shot clips: another sequence of the project (see `Clip::nested`).
+    /// The "media" of composition clips: another sequence of the project (see `Clip::nested`).
     pub const NESTED: MediaId = MediaId(u64::MAX);
 }
 
@@ -99,7 +99,7 @@ pub struct Clip {
     /// For a title clip: the text and how it looks (its media is `MediaId::GENERATED`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<TitleSpec>,
-    /// For a composite-shot clip: the index of the sequence it plays (its media
+    /// For a composition clip: the index of the sequence it plays (its media
     /// is `MediaId::NESTED`). Its source time is that sequence's time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nested: Option<usize>,
@@ -163,18 +163,18 @@ impl Clip {
         Self { title: Some(spec), ..Self::new(id, MediaId::GENERATED, timeline_start, Time::ZERO, duration, None) }
     }
 
-    /// A composite-shot clip playing sequence `seq` from its start.
+    /// A composition clip playing sequence `seq` from its start.
     pub fn new_nested(id: ClipId, seq: usize, timeline_start: Time, duration: Time, link: Option<u64>) -> Self {
         Self { nested: Some(seq), ..Self::new(id, MediaId::NESTED, timeline_start, Time::ZERO, duration, link) }
     }
 
-    /// What to call the clip in the UI: the media name, a title's first line, or a composite shot's name.
+    /// What to call the clip in the UI: the media name, a title's first line, or a composition's name.
     pub fn display_name<'a>(&'a self, p: &'a Project) -> std::borrow::Cow<'a, str> {
         if let Some(t) = &self.title {
             return std::borrow::Cow::Owned(t.label());
         }
         if let Some(s) = self.nested {
-            return std::borrow::Cow::Borrowed(p.sequences.get(s).map(|s| s.name.as_str()).unwrap_or("<missing composite shot>"));
+            return std::borrow::Cow::Borrowed(p.sequences.get(s).map(|s| s.name.as_str()).unwrap_or("<missing composition>"));
         }
         std::borrow::Cow::Borrowed(p.media(self.media).map(|m| m.name.as_str()).unwrap_or("<missing media>"))
     }
@@ -585,7 +585,7 @@ impl Project {
         c.clip_time_limits(self.source_len(c))
     }
 
-    /// A video layer's native size: the media's, or the composite shot's frame.
+    /// A video layer's native size: the media's, or the composition's frame.
     /// (Titles are drawn on a canvas the size of the frame they're in.)
     pub fn picture_size(&self, c: &Clip) -> Option<[u32; 2]> {
         match c.nested {
@@ -595,7 +595,7 @@ impl Project {
     }
 
     /// Does sequence `outer` show sequence `inner` (itself, or through nesting at any depth)?
-    /// A composite shot can't be put inside itself.
+    /// A composition can't be put inside itself.
     pub fn contains_sequence(&self, outer: usize, inner: usize) -> bool {
         fn walk(p: &Project, s: usize, target: usize, depth: usize) -> bool {
             if s == target {

@@ -590,9 +590,9 @@ pub fn missing_media(p: &Project) -> Vec<MediaId> {
     p.media.iter().filter(|m| !m.path.exists()).map(|m| m.id).collect()
 }
 
-// ---- Composite shots ----------------------------------------------------------
+// ---- Compositions ----------------------------------------------------------
 
-/// Add a new, empty composite shot (a sequence that can be placed in others).
+/// Add a new, empty composition (a sequence that can be placed in others).
 pub struct AddSequence {
     pub seq: Sequence,
     /// Where it lands: always at the end.
@@ -607,7 +607,7 @@ impl AddSequence {
 
 impl Command for AddSequence {
     fn name(&self) -> &str {
-        "New composite shot"
+        "New composition"
     }
     fn apply(&mut self, p: &mut Project) {
         p.sequences.truncate(self.index);
@@ -620,7 +620,7 @@ impl Command for AddSequence {
     }
 }
 
-/// "Make composite shot": move clips into a new sequence and put one clip
+/// "Make composition": move clips into a new sequence and put one clip
 /// playing that sequence where they were (plus a linked audio one if any
 /// audio moved).
 pub struct MakeComposite {
@@ -630,13 +630,13 @@ pub struct MakeComposite {
     comp: Sequence,
     /// Index of the new sequence.
     pub index: usize,
-    /// The new composite-shot clip (the video one if there is one).
+    /// The new composition clip (the video one if there is one).
     pub clip: ClipId,
 }
 
 impl Command for MakeComposite {
     fn name(&self) -> &str {
-        "Make composite shot"
+        "Make composition"
     }
     fn apply(&mut self, p: &mut Project) {
         p.sequences[self.seq] = self.after.clone();
@@ -651,12 +651,58 @@ impl Command for MakeComposite {
     }
 }
 
-/// A name like "Composite shot 3" not used by another sequence.
+/// A name like "Composition 3" not used by another sequence.
 pub fn next_composite_name(p: &Project) -> String {
-    (1..).map(|n| format!("Composite shot {n}")).find(|name| !p.sequences.iter().any(|s| &s.name == name)).unwrap()
+    (1..).map(|n| format!("Composition {n}")).find(|name| !p.sequences.iter().any(|s| &s.name == name)).unwrap()
 }
 
-/// Plan "Make composite shot" for clips `ids` (and everything linked to them)
+/// `base`, or `base 2`, `base 3`… whichever no sequence is called yet.
+pub fn unique_sequence_name(p: &Project, base: &str) -> String {
+    let taken = |n: &str| p.sequences.iter().any(|s| s.name == n);
+    if !taken(base) {
+        return base.to_owned();
+    }
+    (2..).map(|n| format!("{base} {n}")).find(|n| !taken(n)).unwrap()
+}
+
+/// "New composition from media": a composition named after the file, matching
+/// its picture size, frame rate and length, with the media on Video 1 (and its
+/// sound, linked, on Audio 1). Media without a picture, and stills (whose
+/// "frame rate" means nothing), take the size or rate from `fallback`, the
+/// format of the sequence being edited; stills last `still` long.
+/// Allocates clip ids, hence `&mut`.
+pub fn composition_from_media(p: &mut Project, media: MediaId, fallback: &Sequence, still: Time) -> Result<AddSequence, String> {
+    let m = p.media(media).ok_or("That media isn't in the project")?.clone();
+    if m.info.video.is_none() && m.info.audio.is_none() {
+        return Err(format!("{} has no picture or sound to put in a composition", m.name));
+    }
+    let is_still = m.info.duration <= Time::ZERO;
+    let (width, height) = m.info.video.as_ref().map_or((fallback.width, fallback.height), |v| (v.width.max(1), v.height.max(1)));
+    let rate = match &m.info.video {
+        Some(v) if !is_still && v.frame_rate.fps() > 0.0 => v.frame_rate,
+        _ => fallback.frame_rate,
+    };
+    let duration = if is_still { still } else { m.info.duration }.snap(rate).max(rate.frame_duration());
+    let stem = std::path::Path::new(&m.name).file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| m.name.clone());
+    let name = unique_sequence_name(p, &stem);
+    let mut seq = Sequence::new(name, width, height, rate);
+    // Sequence::new: Video 1, Video 2, Audio 1.
+    let mut targets = Vec::new();
+    if m.info.video.is_some() {
+        targets.push(0);
+    }
+    if m.info.audio.is_some() {
+        targets.push(2);
+    }
+    let link = (targets.len() > 1).then(|| p.alloc_id());
+    for t in targets {
+        let id = ClipId(p.alloc_id());
+        seq.tracks[t].clips.push(Clip::new(id, media, Time::ZERO, Time::ZERO, duration, link));
+    }
+    Ok(AddSequence::new(p, seq))
+}
+
+/// Plan "Make composition" for clips `ids` (and everything linked to them)
 /// in sequence `seq`. Allocates ids, hence `&mut`.
 pub fn make_composite(p: &mut Project, seq: usize, ids: &[ClipId], name: String) -> Result<MakeComposite, String> {
     let s = &p.sequences[seq];
@@ -669,7 +715,7 @@ pub fn make_composite(p: &mut Project, seq: usize, ids: &[ClipId], name: String)
         }
     }
     if moved.is_empty() {
-        return Err("Select the clips to put in the composite shot first".into());
+        return Err("Select the clips to put in the composition first".into());
     }
     if moved.iter().any(|id| s.is_locked(*id)) {
         return Err("Some of those clips are on a locked track".into());
@@ -1498,6 +1544,7 @@ mod track_tests {
 #[cfg(test)]
 mod composite_tests {
     use super::*;
+    use crate::{FrameRate, MediaInfo, VideoStreamInfo};
 
     fn s(x: f64) -> Time {
         Time::from_secs_f64(x)
@@ -1527,7 +1574,7 @@ mod composite_tests {
         u.execute(&mut p, Box::new(cmd));
         assert_eq!(p.sequences.len(), 2);
         let comp = &p.sequences[1];
-        assert_eq!(comp.name, "Composite shot 1");
+        assert_eq!(comp.name, "Composition 1");
         let names: Vec<&str> = comp.tracks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["Video 1", "Video 2", "Audio 1"]);
         assert_eq!(comp.tracks[1].clips[0].timeline_start, s(1.0), "times are relative to the shot's start");
@@ -1547,7 +1594,7 @@ mod composite_tests {
         assert_eq!(p.source_len(c), s(3.0));
         assert!(p.contains_sequence(0, 1) && !p.contains_sequence(1, 0));
         assert_eq!(p.nested_in(0), vec![1]);
-        assert_eq!(c.display_name(&p), "Composite shot 1");
+        assert_eq!(c.display_name(&p), "Composition 1");
 
         u.undo(&mut p);
         assert_eq!(p.sequences.len(), 1);
@@ -1566,5 +1613,64 @@ mod composite_tests {
         assert!(make_composite(&mut p, 0, &[ClipId(1), ClipId(3)], "x".into()).is_err());
         assert!(make_composite(&mut p, 0, &[], "x".into()).is_err());
         assert!(make_composite(&mut p, 0, &[ClipId(1), ClipId(2), ClipId(3)], "x".into()).is_ok());
+    }
+
+    fn asset(id: u64, name: &str, dur: f64, video: Option<(u32, u32, FrameRate)>, audio: bool) -> MediaAsset {
+        MediaAsset {
+            id: MediaId(id),
+            path: name.into(),
+            name: name.into(),
+            info: MediaInfo {
+                duration: s(dur),
+                video: video.map(|(width, height, frame_rate)| VideoStreamInfo { width, height, frame_rate, codec: "h264".into(), time_base: crate::time::Rational::new(1, 90000) }),
+                audio: audio.then(|| AudioStreamInfo { sample_rate: 48000, channels: 2, codec: "aac".into() }),
+                container: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn composition_from_media_matches_the_footage() {
+        let mut p = Project::new();
+        p.media.push(asset(1, "beach.mp4", 4.0, Some((3840, 2160, FrameRate::new(30000, 1001))), true));
+        p.media.push(asset(2, "logo.png", 0.0, Some((500, 200, FrameRate::new(25, 1))), false));
+        p.media.push(asset(3, "music.wav", 2.5, None, true));
+        let main = p.sequences[0].clone();
+        let mut u = UndoStack::default();
+
+        let cmd = composition_from_media(&mut p, MediaId(1), &main, s(5.0)).unwrap();
+        assert_eq!(cmd.index, 1);
+        u.execute(&mut p, Box::new(cmd));
+        let c = &p.sequences[1];
+        assert_eq!((c.name.as_str(), c.width, c.height, c.frame_rate), ("beach", 3840, 2160, FrameRate::new(30000, 1001)));
+        assert_eq!(c.duration(), s(4.0).snap(c.frame_rate));
+        let (v, a) = (&c.tracks[0].clips[0], &c.tracks[2].clips[0]);
+        assert_eq!((v.media, v.timeline_start, a.media), (MediaId(1), Time::ZERO, MediaId(1)));
+        assert!(v.link.is_some() && v.link == a.link, "picture and sound are linked");
+        assert!(c.tracks[1].clips.is_empty());
+
+        // Again: a new name, not a second "beach".
+        let cmd = composition_from_media(&mut p, MediaId(1), &main, s(5.0)).unwrap();
+        u.execute(&mut p, Box::new(cmd));
+        assert_eq!(p.sequences[2].name, "beach 2");
+
+        // A still: its size, the edit's frame rate, the still length.
+        let cmd = composition_from_media(&mut p, MediaId(2), &main, s(5.0)).unwrap();
+        u.execute(&mut p, Box::new(cmd));
+        let c = &p.sequences[3];
+        assert_eq!((c.width, c.height, c.frame_rate, c.duration()), (500, 200, main.frame_rate, s(5.0).snap(main.frame_rate)));
+        assert!(c.tracks[2].clips.is_empty() && c.tracks[0].clips[0].link.is_none());
+
+        // Sound only: the edit's format, audio on Audio 1.
+        let cmd = composition_from_media(&mut p, MediaId(3), &main, s(5.0)).unwrap();
+        u.execute(&mut p, Box::new(cmd));
+        let c = &p.sequences[4];
+        assert_eq!((c.width, c.height), (main.width, main.height));
+        assert!(c.tracks[0].clips.is_empty() && c.tracks[2].clips.len() == 1);
+
+        assert!(composition_from_media(&mut p, MediaId(9), &main, s(5.0)).is_err());
+        u.undo(&mut p);
+        u.undo(&mut p);
+        assert_eq!(p.sequences.len(), 3);
     }
 }

@@ -95,7 +95,7 @@ impl Project {
         });
     }
 
-    /// Media that no clip in any sequence (or composite shot) uses.
+    /// Media that no clip in any sequence (or composition) uses.
     pub fn unused_media(&self) -> Vec<MediaId> {
         let used: HashSet<MediaId> = self.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()).map(|c| c.media).collect();
         self.media.iter().filter(|m| !used.contains(&m.id)).map(|m| m.id).collect()

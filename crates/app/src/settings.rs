@@ -113,6 +113,20 @@ pub fn window(ctx: &egui::Context, st: &mut EditorState, open: &mut bool) {
     }
 }
 
+/// Open the folder holding `file`, with the file selected where the system can.
+pub fn reveal_in_file_manager(file: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Explorer wants exactly /select,"path" (its own quoting rules).
+        let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", file.display())).spawn();
+    }
+    #[cfg(not(windows))]
+    if let Some(dir) = file.parent() {
+        open_in_file_manager(dir);
+    }
+}
+
 pub fn open_in_file_manager(dir: &std::path::Path) {
     let cmd = if cfg!(windows) {
         "explorer"

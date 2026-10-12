@@ -24,6 +24,8 @@ pub enum Tab {
     Viewer,
     Inspector,
     Timeline,
+    /// The timeline of the composition being worked on, next to the Editor Timeline.
+    Compositions,
     Curves,
     Meters,
     History,
@@ -77,6 +79,15 @@ pub struct EditorState {
     pub tracking: Option<TrackJob>,
     /// Where the playhead was in each sequence, to come back to.
     playheads: HashMap<usize, Time>,
+    /// Zoom and scroll of the timeline for each sequence, to come back to.
+    views: HashMap<usize, (f32, f32, f32)>,
+    /// The composition shown in the Composition Timeline tab (0 = none yet).
+    pub comp_open: usize,
+    /// Which timeline tabs (Editor, Composition) were drawn this frame and the last.
+    pub(crate) timeline_drawn: [bool; 2],
+    pub(crate) timeline_drawn_before: [bool; 2],
+    /// Bring this dock tab to the front (after opening a sequence).
+    pub focus_tab: Option<Tab>,
     /// Bumped on every project change so the audio mixer can be resynced.
     pub(crate) rev: u64,
     mixed_rev: u64,
@@ -141,7 +152,7 @@ impl ReelforgeApp {
         let mut dock = DockState::new(vec![Tab::Viewer]);
         let tree = dock.main_surface_mut();
         // `fraction` is the share kept by the original node (the viewer).
-        let [top, timeline] = tree.split_below(NodeIndex::root(), 0.6, vec![Tab::Timeline, Tab::Curves]);
+        let [top, timeline] = tree.split_below(NodeIndex::root(), 0.6, vec![Tab::Timeline, Tab::Compositions, Tab::Curves]);
         tree.split_right(timeline, 0.93, vec![Tab::Meters]);
         let [viewer, _bin] = tree.split_left(top, 0.18, vec![Tab::MediaBin, Tab::History]);
         tree.split_right(viewer, 0.76, vec![Tab::Inspector]);
@@ -284,6 +295,12 @@ impl eframe::App for ReelforgeApp {
             crate::paste_attrs::window(&ctx, st, &mut open);
             st.paste_attrs_open = open;
         }
+        if let Some(tab) = st.focus_tab.take() {
+            if let Some(path) = self.dock.find_tab(&tab) {
+                let _ = self.dock.set_active_tab(path);
+            }
+        }
+        st.timeline_drawn_before = std::mem::take(&mut st.timeline_drawn);
         if std::mem::take(&mut st.show_history) {
             if let Some(path) = self.dock.find_tab(&Tab::History) {
                 let _ = self.dock.set_active_tab(path);
@@ -327,6 +344,7 @@ impl egui_dock::TabViewer for EditorState {
             Tab::Viewer => "Viewer",
             Tab::Inspector => "Controls",
             Tab::Timeline => "Editor Timeline",
+            Tab::Compositions => "Composition Timeline",
             Tab::Curves => "Curves",
             Tab::Meters => "Meters",
             Tab::History => "History",
@@ -339,7 +357,8 @@ impl egui_dock::TabViewer for EditorState {
             Tab::MediaBin => crate::panels::media_bin(ui, self),
             Tab::Viewer => crate::panels::viewer(ui, self),
             Tab::Inspector => crate::panels::inspector(ui, self),
-            Tab::Timeline => crate::timeline::show(ui, self),
+            Tab::Timeline => crate::timeline::tab(ui, self, false),
+            Tab::Compositions => crate::timeline::tab(ui, self, true),
             Tab::Curves => crate::curves::show(ui, self),
             Tab::Meters => crate::meters::show(ui, self),
             Tab::History => crate::history::show(ui, self),
@@ -381,6 +400,11 @@ impl EditorState {
             open_request: None,
             tracking: None,
             playheads: HashMap::new(),
+            views: HashMap::new(),
+            comp_open: 0,
+            timeline_drawn: [false; 2],
+            timeline_drawn_before: [false; 2],
+            focus_tab: None,
             rev: 1,
             mixed_rev: 0,
             waveforms: HashMap::new(),
@@ -446,17 +470,33 @@ impl EditorState {
         &self.project.sequences[self.active]
     }
 
-    /// Show sequence `i` (the main edit, or a composite shot) in the timeline and viewer.
+    /// Show sequence `i` (the main edit, or a composition) in the timeline and viewer.
+    ///
+    /// The main edit shows in the Editor Timeline tab and compositions in the
+    /// Composition Timeline tab, which is brought to the front.
     pub fn open_sequence(&mut self, i: usize) {
-        if i >= self.project.sequences.len() || i == self.active {
+        if i >= self.project.sequences.len() {
+            return;
+        }
+        if i > 0 {
+            self.comp_open = i;
+        }
+        self.focus_tab = Some(if i == 0 { Tab::Timeline } else { Tab::Compositions });
+        if i == self.active {
             return;
         }
         self.commit_live_edit();
         self.playback.pause();
         self.playheads.insert(self.active, self.playback.playhead);
+        let tv = &self.timeline;
+        self.views.insert(self.active, (tv.px_per_sec, tv.scroll, tv.vscroll));
         self.active = i;
         let t = self.playheads.get(&i).copied().unwrap_or(Time::ZERO);
         self.playback.seek(t);
+        match self.views.get(&i).copied() {
+            Some((pps, scroll, vscroll)) => (self.timeline.px_per_sec, self.timeline.scroll, self.timeline.vscroll) = (pps, scroll, vscroll),
+            None => (self.timeline.fit_request, self.timeline.fit_quietly) = (true, true),
+        }
         self.select_only(None);
         self.status = format!("Editing {}", self.seq().name);
         self.touch();
@@ -507,10 +547,13 @@ impl EditorState {
     }
 
     fn validate_selection(&mut self) {
-        // Undoing "Make composite shot" can remove the sequence being shown.
+        // Undoing "Make composition" can remove the sequence being shown.
         if self.active >= self.project.sequences.len() {
             self.active = 0;
             self.select_only(None);
+        }
+        if self.comp_open >= self.project.sequences.len() {
+            self.comp_open = self.project.sequences.len() - 1;
         }
         if let Some(id) = self.selection {
             if self.project.sequences[self.active].find_clip_mut(id).is_none() {
@@ -559,7 +602,12 @@ impl EditorState {
 
     /// Default length for media without a duration (still images).
     fn clip_duration(media: &MediaAsset) -> Time {
-        if media.info.duration > Time::ZERO { media.info.duration } else { Time::from_secs_f64(5.0) }
+        if media.info.duration > Time::ZERO { media.info.duration } else { Self::still_length() }
+    }
+
+    /// How long a still image lasts when placed.
+    pub fn still_length() -> Time {
+        Time::from_secs_f64(5.0)
     }
 
     /// Place media on the timeline at `at` (or after existing clips if that overlaps).
@@ -928,7 +976,7 @@ impl EditorState {
                 }
                 self.status = msg;
             }
-            None => self.status = "Can't paste here (a locked track, or a composite shot inside itself)".into(),
+            None => self.status = "Can't paste here (a locked track, or a composition inside itself)".into(),
         }
     }
 
@@ -1020,9 +1068,9 @@ impl EditorState {
         self.status = "Added a title: type its text in the Controls panel".into();
     }
 
-    // ---- Composite shots ---------------------------------------------------------
+    // ---- Compositions ---------------------------------------------------------
 
-    /// A new, empty composite shot the size of the current sequence, opened for editing.
+    /// A new, empty composition the size of the current sequence, opened for editing.
     pub fn new_composite(&mut self) {
         self.commit_live_edit();
         let s = self.seq();
@@ -1031,10 +1079,28 @@ impl EditorState {
         let index = cmd.index;
         self.execute(Box::new(cmd));
         self.open_sequence(index);
-        self.status = "New composite shot: add clips to it, then put it in your edit from the Media panel".into();
+        self.status = "New composition: add clips to it, then put it in your edit from the Media panel".into();
     }
 
-    /// The clips "Make composite shot" would take: everything entirely between
+    /// "New composition from media" (right-click in the Media panel): a
+    /// composition the size, frame rate and length of the media, holding it,
+    /// opened in the Composition Timeline.
+    pub fn new_composition_from_media(&mut self, media: MediaId) {
+        self.commit_live_edit();
+        let fallback = self.project.sequences[0].clone();
+        match reelforge_core::undo::composition_from_media(&mut self.project, media, &fallback, Self::still_length()) {
+            Ok(cmd) => {
+                let index = cmd.index;
+                self.execute(Box::new(Batch { name: "New composition from media".into(), cmds: vec![Box::new(cmd)] }));
+                self.open_sequence(index);
+                let s = self.seq();
+                self.status = format!("New composition {} ({}×{}, {:.3} fps): add layers above the footage", s.name, s.width, s.height, s.frame_rate.fps());
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// The clips "Make composition" would take: everything entirely between
     /// the in and out marks (on unlocked tracks) if they're set, else the
     /// selected clip and what's linked to it.
     pub fn composite_candidates(&self) -> Vec<ClipId> {
@@ -1073,11 +1139,11 @@ impl EditorState {
         }
     }
 
-    /// Put composite shot `index` into the current sequence at the playhead.
+    /// Put composition `index` into the current sequence at the playhead.
     pub fn add_composite_to_timeline(&mut self, index: usize) {
         self.commit_live_edit();
         if self.project.contains_sequence(index, self.active) {
-            self.status = "A composite shot can't contain itself".into();
+            self.status = "A composition can't contain itself".into();
             return;
         }
         let Some(comp) = self.project.sequences.get(index) else { return };
@@ -1125,7 +1191,7 @@ impl EditorState {
             first.get_or_insert(id);
             cmds.push(Box::new(AddClip { seq: self.active, track, clip: Clip::new_nested(id, index, start, dur, link) }));
         }
-        self.execute(Box::new(Batch { name: "Add composite shot".into(), cmds }));
+        self.execute(Box::new(Batch { name: "Add composition".into(), cmds }));
         self.select_only(first);
     }
 
@@ -1854,15 +1920,15 @@ impl EditorState {
                 ui.separator();
                 let n = self.composite_candidates().len();
                 let tip = if self.seq().in_point.is_some() || self.seq().out_point.is_some() {
-                    "Moves every clip between the in and out marks into a new composite shot"
+                    "Moves every clip between the in and out marks into a new composition"
                 } else {
-                    "Moves the selected clip (and its linked audio) into a new composite shot. Set in/out marks to take several clips"
+                    "Moves the selected clip (and its linked audio) into a new composition. Set in/out marks to take several clips"
                 };
-                if ui.add_enabled(n > 0, egui::Button::new("Make composite shot   Ctrl+G")).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+                if ui.add_enabled(n > 0, egui::Button::new("Make composition   Ctrl+G")).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
                     self.make_composite();
                     ui.close();
                 }
-                if ui.button("New composite shot").clicked() {
+                if ui.button("New composition").clicked() {
                     self.new_composite();
                     ui.close();
                 }

@@ -44,7 +44,7 @@ pub struct ExportSettings {
     pub hardware: bool,
     /// What to do when the output's shape differs from the sequence's.
     pub fit: Fit,
-    /// Which sequence of the project (0 is the main edit; others are composite shots).
+    /// Which sequence of the project (0 is the main edit; others are compositions).
     pub sequence: usize,
 }
 
@@ -119,7 +119,7 @@ pub fn frame_range(rate: FrameRate, start: Time, end: Time) -> (i64, i64) {
 /// Folds clip and track volume/pan together, converts fades and volume
 /// keyframes to samples, and resolves crossfades: the outgoing clip is extended
 /// past the cut into its spare media and the incoming one starts early, each
-/// with an equal-power ramp across the overlap. Composite shots on audio
+/// with an equal-power ramp across the overlap. Compositions on audio
 /// tracks contribute their own sequence's audio, flattened. Used for both
 /// playback and export, so they always sound the same.
 pub fn mix_clips(project: &Project, seq: usize, rate: u32) -> Vec<MixClip> {
@@ -141,14 +141,14 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                 if depth >= scene::MAX_NESTING {
                     continue;
                 }
-                // The composite shot's own mix, moved to where the clip plays it and cut
+                // The composition's own mix, moved to where the clip plays it and cut
                 // to the clip's length. The clip's (static) volume, pan and fades apply on top.
                 let (ws, we) = (c.timeline_start.to_frame(sr), c.timeline_end().to_frame(sr));
                 let (fin, fout) = c.audio.clamped_fades(c.duration);
                 let gain = db_to_gain(c.audio.volume_db) * track_gain;
                 let r = c.rate();
                 if r == 0.0 {
-                    continue; // a frozen composite shot is silent
+                    continue; // a frozen composition is silent
                 }
                 // Inner sample x plays at outer sample y where x = a + r·(cs + y − ws).
                 let (a, cs) = (c.anchor.to_frame(sr) as f64, c.source_in.to_frame(sr) as f64);

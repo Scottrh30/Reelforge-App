@@ -1,5 +1,5 @@
 //! Copy and paste of clips, within a sequence or between sequences (e.g.
-//! from the main edit into a composite shot).
+//! from the main edit into a composition).
 //!
 //! Copied clips keep their positions relative to each other in time, and
 //! which track they were on is remembered as "the n-th video track" or "the
@@ -61,7 +61,7 @@ pub struct Paste {
     pub ids: Vec<ClipId>,
     /// Where they start (later than asked if something was in the way).
     pub at: Time,
-    /// Clips left out (composite shots that would contain themselves, missing media).
+    /// Clips left out (compositions that would contain themselves, missing media).
     pub skipped: usize,
 }
 
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(p.sequences[1].tracks.iter().map(|t| t.clips.len()).collect::<Vec<_>>(), [1, 1, 1]);
         u.undo(&mut p);
         assert_eq!(p.sequences[1].tracks.len(), 1, "the added tracks go too");
-        // A composite shot can't be pasted into itself.
+        // A composition can't be pasted into itself.
         p.sequences[0].tracks[1].clips.push(Clip::new_nested(ClipId(50), 1, s(20.0), s(1.0), None));
         let cb = copy_clips(&p, 0, &[ClipId(50)]);
         assert!(paste_clips(&mut p, 1, &cb, Time::ZERO).is_none());

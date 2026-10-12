@@ -22,7 +22,7 @@ fn fs_output(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4(srgb_from_linear(clamp(c.rgb, vec3(0.0), vec3(1.0))), 1.0);
 }
 
-// For a picture that will be composited again (a composite shot): keep the
+// For a picture that will be composited again (a composition): keep the
 // coverage, as straight (not premultiplied) alpha.
 @fragment
 fn fs_output_alpha(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {

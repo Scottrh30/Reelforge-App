@@ -4,7 +4,7 @@
 //! Where each layer's picture comes from is up to the caller (a
 //! [`FrameProvider`]): the viewer wants whatever frame is ready right now from
 //! a preview-sized decoder; export waits for the exact frame at full size.
-//! Composite shots (clips that play another sequence) are handled here: the
+//! Compositions (clips that play another sequence) are handled here: the
 //! inner sequence is rendered by its own compositor, recursively, and its
 //! picture becomes one layer of the outer one.
 
@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-/// Composite shots inside composite shots stop here (a cycle can't be built,
+/// Compositions inside compositions stop here (a cycle can't be built,
 /// but a damaged project file could contain one).
 pub const MAX_NESTING: usize = 8;
 
@@ -61,7 +61,7 @@ enum Item {
     Dissolve(Gathered, Gathered, f32, Option<[f32; 3]>),
 }
 
-/// A composite shot's own renderer and its last picture.
+/// A composition's own renderer and its last picture.
 struct Nested {
     compositor: Compositor,
     signature: Option<u64>,
@@ -72,11 +72,11 @@ struct Nested {
 pub struct Scene {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Per composite-shot clip.
+    /// Per composition clip.
     nested: HashMap<ClipId, Nested>,
     /// Rasterised masks per clip: (hash of the shape, image, last used tick).
     masks: HashMap<ClipId, (u64, Arc<MaskImage>, u64)>,
-    /// Counts top-level renders, to let go of composite shots not seen for a while.
+    /// Counts top-level renders, to let go of compositions not seen for a while.
     tick: u64,
     generation: u64,
 }
@@ -86,7 +86,7 @@ impl Scene {
         Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0 }
     }
 
-    /// Forget composite-shot renders (e.g. a different project was opened).
+    /// Forget composition renders (e.g. a different project was opened).
     pub fn reset(&mut self) {
         self.nested.clear();
         self.masks.clear();
@@ -107,7 +107,7 @@ impl Scene {
         self.tick += 1;
         let sig = self.render_at(project, seq, t, compositor, provider, unchanged_from, 0)?;
         let tick = self.tick;
-        // Composite shots off screen for a few seconds give their GPU memory back.
+        // Compositions off screen for a few seconds give their GPU memory back.
         self.nested.retain(|_, n| tick - n.last_used < 150);
         self.masks.retain(|_, m| tick - m.2 < 150);
         Ok(sig)
@@ -207,7 +207,7 @@ impl Scene {
         Some((hash, img))
     }
 
-    /// Render composite shot `inner` at its time `t` and read the picture back.
+    /// Render composition `inner` at its time `t` and read the picture back.
     fn nested_picture(&mut self, project: &Project, clip: ClipId, inner: usize, t: Time, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Picture>> {
         let Some(s) = project.sequences.get(inner) else { return Ok(None) };
         if depth >= MAX_NESTING {

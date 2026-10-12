@@ -40,11 +40,19 @@ pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
     let mut add: Option<MediaId> = None;
     let mut relink: Option<MediaId> = None;
     let mut make_proxy: Option<(std::path::PathBuf, reelforge_core::MediaInfo)> = None;
+    let mut menu_action: Option<(MediaId, MediaAction)> = None;
+    let editing = st.seq().name.clone();
+    let main_name = st.project.sequences[0].name.clone();
     for m in &st.project.media {
         let id = egui::Id::new(("media", m.id));
         let is_missing = missing.contains(&m.id);
+        // The item senses clicks and drags underneath its contents (so its own
+        // buttons still work): drag it to the timeline, double-click to append,
+        // right-click for the menu.
         let resp = ui
-            .dnd_drag_source(id, m.id, |ui| {
+            .scope_builder(egui::UiBuilder::new().id_salt(id).sense(Sense::click_and_drag()), |ui| {
+                // Text that can be selected would take the clicks.
+                ui.style_mut().interaction.selectable_labels = false;
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new(&m.name).strong());
@@ -93,10 +101,81 @@ pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
                 });
             })
             .response;
+        if resp.dragged() {
+            // Carried to the timeline, which takes it on release.
+            egui::DragAndDrop::set_payload(ui.ctx(), m.id);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            if let Some(p) = ui.ctx().pointer_interact_pos() {
+                egui::Area::new(id.with("drag"))
+                    .order(egui::Order::Tooltip)
+                    .fixed_pos(p + Vec2::new(14.0, 10.0))
+                    .interactable(false)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(RichText::new(&m.name).strong()));
+                    });
+            }
+        } else if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
         if resp.double_clicked() {
             add = Some(m.id);
         }
-        resp.on_hover_text("Drag onto the timeline, or double-click to append");
+        resp.context_menu(|ui| {
+            ui.set_min_width(230.0);
+            ui.label(RichText::new(&m.name).strong());
+            ui.separator();
+            let usable = !is_missing && (m.info.video.is_some() || m.info.audio.is_some());
+            if ui
+                .add_enabled(usable, egui::Button::new("🎬  New composition from media"))
+                .on_hover_text("A composition with this media's size, frame rate and length, holding it, opened in the Composition Timeline")
+                .clicked()
+            {
+                menu_action = Some((m.id, MediaAction::NewComposition));
+            }
+            ui.separator();
+            if ui.add_enabled(usable, egui::Button::new(format!("Add to {editing} at playhead"))).clicked() {
+                menu_action = Some((m.id, MediaAction::AddAtPlayhead));
+            }
+            if ui.add_enabled(usable, egui::Button::new(format!("Append to end of {editing}"))).clicked() {
+                menu_action = Some((m.id, MediaAction::Append));
+            }
+            if editing != main_name && ui.add_enabled(usable, egui::Button::new(format!("Append to end of {main_name}"))).clicked() {
+                menu_action = Some((m.id, MediaAction::AppendToEdit));
+            }
+            ui.separator();
+            if is_missing {
+                if ui.button("Relink…").clicked() {
+                    relink = Some(m.id);
+                }
+            } else {
+                if m.info.video.is_some() && m.info.duration > Time::ZERO && st.proxies.state(&m.path).is_none() && ui.button("Make proxy").clicked() {
+                    make_proxy = Some((m.path.clone(), m.info.clone()));
+                }
+                if ui.button("Show in folder").clicked() {
+                    menu_action = Some((m.id, MediaAction::Reveal));
+                }
+            }
+            if ui.button("Copy file path").clicked() {
+                ui.ctx().copy_text(m.path.display().to_string());
+            }
+        });
+        resp.on_hover_text("Drag onto the timeline, double-click to append, right-click for more");
+    }
+    if let Some((id, action)) = menu_action {
+        match action {
+            MediaAction::NewComposition => st.new_composition_from_media(id),
+            MediaAction::AddAtPlayhead => st.add_to_timeline(id, None, Some(st.playback.playhead)),
+            MediaAction::Append => st.add_to_timeline(id, None, None),
+            MediaAction::AppendToEdit => {
+                st.open_sequence(0);
+                st.add_to_timeline(id, None, None);
+            }
+            MediaAction::Reveal => {
+                if let Some(m) = st.project.media(id) {
+                    crate::settings::reveal_in_file_manager(&m.path);
+                }
+            }
+        }
     }
     if let Some(id) = add {
         st.add_to_timeline(id, None, None);
@@ -115,24 +194,34 @@ pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
     }
 }
 
-/// The composite shots of the project, with ways to open them or put them in the edit.
+/// What the right-click menu on a media item asked for.
+#[derive(Clone, Copy)]
+enum MediaAction {
+    NewComposition,
+    AddAtPlayhead,
+    Append,
+    AppendToEdit,
+    Reveal,
+}
+
+/// The compositions of the project, with ways to open them or put them in the edit.
 fn composite_shots(ui: &mut egui::Ui, st: &mut EditorState) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Composite shots").strong());
-        if ui.small_button("+ New").on_hover_text("An empty composite shot to build a layered shot in").clicked() {
+        ui.label(RichText::new("Compositions").strong());
+        if ui.small_button("+ New").on_hover_text("An empty composition to build a layered shot in").clicked() {
             st.open_request = None;
             st.new_composite();
         }
         if ui
             .add_enabled(!st.composite_candidates().is_empty(), egui::Button::new("Make from selection").small())
-            .on_hover_text("Ctrl+G: move the selected clip, or everything between the in/out marks, into a new composite shot")
+            .on_hover_text("Ctrl+G: move the selected clip, or everything between the in/out marks, into a new composition")
             .clicked()
         {
             st.make_composite();
         }
     });
     if st.project.sequences.len() < 2 {
-        ui.weak("None yet. A composite shot is a sequence of its own, with its own layers, used like one clip.");
+        ui.weak("None yet. A composition is a sequence of its own, with its own layers, used like one clip.");
         ui.separator();
         return;
     }
@@ -160,7 +249,7 @@ fn composite_shots(ui: &mut egui::Ui, st: &mut EditorState) {
                 let ok = !st.project.contains_sequence(i, st.active);
                 if ui
                     .add_enabled(ok, egui::Button::new("Add at playhead").small())
-                    .on_disabled_hover_text("A composite shot can't go inside itself")
+                    .on_disabled_hover_text("A composition can't go inside itself")
                     .clicked()
                 {
                     add = Some(i);
@@ -492,7 +581,7 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
                 } else if let Some(n) = clip.nested {
                     ui.horizontal(|ui| {
                         ui.label(clip.display_name(&st.project).into_owned());
-                        if ui.small_button("Open").on_hover_text("Edit this composite shot (or double-click the clip)").clicked() {
+                        if ui.small_button("Open").on_hover_text("Edit this composition (or double-click the clip)").clicked() {
                             open_comp = Some(n);
                         }
                     });
@@ -1442,7 +1531,7 @@ fn track_audio_controls(ui: &mut egui::Ui, st: &mut EditorState, track: usize) {
     }
 }
 
-fn format_duration(t: Time) -> String {
+pub(crate) fn format_duration(t: Time) -> String {
     let s = t.as_secs_f64();
     if s <= 0.0 {
         "still".into()

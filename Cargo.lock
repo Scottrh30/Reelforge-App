@@ -3162,14 +3162,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reelforge-setup"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "zip",
-]
-
-[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

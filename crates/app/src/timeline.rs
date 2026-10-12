@@ -28,6 +28,8 @@ pub struct TimelineView {
     pub marker_edit: Option<usize>,
     /// Zoom so the whole sequence fits, next time the timeline is drawn.
     pub fit_request: bool,
+    /// ...without saying so in the status bar (a sequence opened for the first time).
+    pub fit_quietly: bool,
 }
 
 /// Track-header actions, applied after drawing.
@@ -40,7 +42,7 @@ enum TrackAction {
 
 impl Default for TimelineView {
     fn default() -> Self {
-        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None, marker_edit: None, fit_request: false }
+        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None, marker_edit: None, fit_request: false, fit_quietly: false }
     }
 }
 
@@ -113,23 +115,113 @@ impl Mapping {
     }
 }
 
-pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
-    // With composite shots, a row of tabs to switch between the sequences.
-    if st.project.sequences.len() > 1 {
+/// One of the two timeline tabs: the Editor Timeline (the main edit, `comp ==
+/// false`) or the Composition Timeline (the composition being worked on).
+///
+/// One sequence is edited at a time (it's what the viewer shows), so a tab that
+/// comes into view takes over. If both tabs are visible side by side, the one
+/// not in use offers to switch with a click.
+pub fn tab(ui: &mut egui::Ui, st: &mut EditorState, comp: bool) {
+    let k = comp as usize;
+    st.timeline_drawn[k] = true;
+    if comp {
+        if st.active != 0 {
+            st.comp_open = st.active;
+        }
+        if st.comp_open == 0 || st.comp_open >= st.project.sequences.len() {
+            st.comp_open = if st.project.sequences.len() > 1 { 1 } else { 0 };
+        }
+        composition_strip(ui, st);
+        if st.comp_open == 0 {
+            no_compositions(ui, st);
+            return;
+        }
+    }
+    let want = if comp { st.comp_open } else { 0 };
+    if st.active != want {
+        let just_shown = !st.timeline_drawn_before[k];
+        let other_shown = st.timeline_drawn_before[1 - k];
+        // Alone on screen (and not about to be swapped for the other tab), or just brought up.
+        let other = if comp { crate::app::Tab::Timeline } else { crate::app::Tab::Compositions };
+        if just_shown || (!other_shown && st.focus_tab != Some(other)) {
+            st.open_sequence(want);
+            ui.ctx().request_repaint();
+        } else {
+            // Both timeline tabs are on screen and the other one is in use.
+            let name = st.project.sequences[want].name.clone();
+            let rect = ui.available_rect_before_wrap();
+            let r = ui.allocate_rect(rect, Sense::click());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+            let text = if r.hovered() { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
+            painter.text(rect.center(), Align2::CENTER_CENTER, format!("Click to edit {name} here"), FontId::proportional(15.0), text);
+            if r.clicked() {
+                st.open_sequence(want);
+            }
+            return;
+        }
+    }
+    show(ui, st);
+}
+
+/// The compositions as tabs along the top of the Composition Timeline, with "+".
+fn composition_strip(ui: &mut egui::Ui, st: &mut EditorState) {
+    ui.horizontal(|ui| {
+        let mut open = None;
+        for i in 1..st.project.sequences.len() {
+            let s = &st.project.sequences[i];
+            let r = ui
+                .selectable_label(i == st.comp_open, &s.name)
+                .on_hover_text(format!("{}×{} · {:.3} fps · {}", s.width, s.height, s.frame_rate.fps(), crate::panels::format_duration(s.duration())));
+            if r.clicked() {
+                open = Some(i);
+            }
+        }
+        if ui.small_button("+").on_hover_text("New empty composition").clicked() {
+            st.new_composite();
+        }
+        if let Some(i) = open {
+            st.open_request = Some(i);
+        }
+        if st.comp_open > 0 && st.comp_open == st.active {
+            let s = st.seq();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(format!("{}×{} · {:.3} fps", s.width, s.height, s.frame_rate.fps()));
+            });
+        }
+    });
+}
+
+/// The Composition Timeline before there are any compositions.
+fn no_compositions(ui: &mut egui::Ui, st: &mut EditorState) {
+    ui.add_space(24.0);
+    ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new("No compositions yet").strong());
+        ui.add_space(4.0);
+        ui.weak("A composition is a shot built from layers: footage, titles, effects and masks,");
+        ui.weak("stacked and timed on their own timeline, then used in your edit like one clip.");
+        ui.add_space(8.0);
+        ui.label("Right-click a clip in the Media panel and choose New composition from media, or:");
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            for i in 0..st.project.sequences.len() {
-                let name = &st.project.sequences[i].name;
-                let label = if i == 0 { format!("Edit: {name}") } else { name.clone() };
-                let r = ui.selectable_label(i == st.active, label);
-                if r.clicked() {
-                    st.open_request = Some(i);
-                }
-                if i == 0 {
-                    ui.separator();
-                }
+            let w = 330.0;
+            ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
+            if ui.button("+ New composition").clicked() {
+                st.new_composite();
+            }
+            let n = st.composite_candidates().len();
+            if ui
+                .add_enabled(n > 0, egui::Button::new("Make from selection   Ctrl+G"))
+                .on_disabled_hover_text("Select clips in the Editor Timeline first")
+                .clicked()
+            {
+                st.make_composite();
             }
         });
-    }
+    });
+}
+
+pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     let rate = st.seq().frame_rate;
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -163,7 +255,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         let secs = st.seq().duration().as_secs_f64().max(1.0) as f32;
         st.timeline.px_per_sec = (width / secs).clamp(2.0, 2000.0);
         st.timeline.scroll = 0.0;
-        st.status = "Zoomed the timeline to fit the sequence".into();
+        if !std::mem::take(&mut st.timeline.fit_quietly) {
+            st.status = "Zoomed the timeline to fit the sequence".into();
+        }
     }
     if resp.hovered() {
         let (zoom, scroll) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta));
@@ -330,7 +424,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             let base = if clip.title.is_some() {
                 Color32::from_rgb(122, 78, 170) // titles: purple, like generated media in HitFilm
             } else if clip.nested.is_some() {
-                Color32::from_rgb(176, 108, 40) // composite shots: amber
+                Color32::from_rgb(176, 108, 40) // compositions: amber
             } else if tr.kind == TrackKind::Video {
                 Color32::from_rgb(54, 96, 160)
             } else {
@@ -345,7 +439,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             }
             painter.rect_filled(vis, 4.0, fill);
 
-            // Picture thumbnails along video clips (not titles or composite shots).
+            // Picture thumbnails along video clips (not titles or compositions).
             let mut thumbs_drawn = false;
             if tr.kind == TrackKind::Video && clip.title.is_none() && clip.nested.is_none() && st.settings.timeline_thumbnails {
                 thumbs_drawn = draw_thumbnails(ui.ctx(), &painter, &st.project, &mut thumbs, clip, cr, vis, &m, dragging || tr.muted || tr.locked);
@@ -1071,7 +1165,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         }
     }
 
-    // Double-click a composite shot to go inside it.
+    // Double-click a composition to go inside it.
     if resp.double_clicked() && !handled {
         if let Some(n) = pointer.and_then(|p| hit_clip(st, p)).and_then(|(_, id, _)| st.seq().find_clip(id).and_then(|(_, c)| c.nested)) {
             st.open_request = Some(n);
