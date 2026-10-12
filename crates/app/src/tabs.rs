@@ -1,7 +1,83 @@
 //! The dock layout, and the Tabs menu that shows or hides each window.
 
 use crate::app::Tab;
-use egui_dock::{DockState, NodeIndex};
+use egui::{Color32, CursorIcon, Pos2, Rect, Stroke, Vec2};
+use egui_dock::{DockState, Node, NodeIndex, Style};
+
+/// Thickness of the divider bars between panels, and how far either side of
+/// one still grabs it.
+pub const DIVIDER: f32 = 6.0;
+const DIVIDER_GRAB: f32 = 6.0;
+/// The smallest a panel can be dragged to (points).
+const MIN_PANEL: f32 = 70.0;
+
+/// The dock's look: tabs from the egui theme, and divider bars you can see and grab.
+pub fn dock_style(egui_style: &egui::Style) -> Style {
+    let mut style = Style::from_egui(egui_style);
+    let accent = egui_style.visuals.selection.bg_fill;
+    style.separator.width = DIVIDER;
+    style.separator.extra_interact_width = DIVIDER_GRAB;
+    style.separator.extra = MIN_PANEL;
+    style.separator.color_idle = Color32::from_gray(38);
+    style.separator.color_hovered = accent.gamma_multiply(0.75);
+    style.separator.color_dragged = accent;
+    style
+}
+
+/// Grip marks in the middle of each divider bar, so they read as handles.
+/// Drawn over the dock after it's shown.
+pub fn paint_dividers(ui: &egui::Ui, dock: &DockState<Tab>) {
+    let painter = ui.painter();
+    let pointer = ui.ctx().pointer_hover_pos();
+    let dragging = ui.ctx().dragged_id().is_some();
+    for node in dock.main_surface().iter() {
+        let (split, across) = match node {
+            Node::Horizontal(s) => (s, true), // side by side: a vertical bar
+            Node::Vertical(s) => (s, false),  // one above the other: a horizontal bar
+            _ => continue,
+        };
+        let r = split.rect;
+        let bar = if across {
+            let x = r.min.x + r.width() * split.fraction;
+            Rect::from_min_max(Pos2::new(x - DIVIDER / 2.0, r.min.y), Pos2::new(x + DIVIDER / 2.0, r.max.y))
+        } else {
+            let y = r.min.y + r.height() * split.fraction;
+            Rect::from_min_max(Pos2::new(r.min.x, y - DIVIDER / 2.0), Pos2::new(r.max.x, y + DIVIDER / 2.0))
+        };
+        if !bar.is_positive() {
+            continue;
+        }
+        let hot = !dragging && pointer.is_some_and(|p| bar.expand(DIVIDER_GRAB / 2.0).contains(p));
+        if hot {
+            ui.ctx().set_cursor_icon(if across { CursorIcon::ResizeHorizontal } else { CursorIcon::ResizeVertical });
+        }
+        let dot = if hot { Color32::from_gray(230) } else { Color32::from_gray(110) };
+        let c = bar.center();
+        let step = if across { Vec2::new(0.0, 5.0) } else { Vec2::new(5.0, 0.0) };
+        for i in -2..=2 {
+            painter.circle_filled(c + step * i as f32, 1.1, dot);
+        }
+        // A hairline on each edge keeps neighbouring panels apart visually.
+        let edge = Stroke::new(1.0, Color32::from_gray(24));
+        if across {
+            painter.vline(bar.min.x, bar.y_range(), edge);
+            painter.vline(bar.max.x, bar.y_range(), edge);
+        } else {
+            painter.hline(bar.x_range(), bar.min.y, edge);
+            painter.hline(bar.x_range(), bar.max.y, edge);
+        }
+    }
+}
+
+/// Where the layout (panel sizes and arrangement) is kept between runs.
+pub const STORAGE_KEY: &str = "reelforge_layout";
+
+/// A saved layout, if it's usable: every tab at most once.
+pub fn checked_layout(dock: DockState<Tab>) -> Option<DockState<Tab>> {
+    let tabs: Vec<Tab> = dock.iter_all_tabs().map(|(_, t)| *t).collect();
+    let unique = tabs.iter().enumerate().all(|(i, t)| !tabs[..i].contains(t));
+    (unique && !tabs.is_empty()).then_some(dock)
+}
 
 /// Every window, in the order the Tabs menu lists them, with a hint.
 pub const ALL: [(Tab, &str); 8] = [
@@ -119,6 +195,26 @@ pub fn show(dock: &mut DockState<Tab>, tab: Tab) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_round_trips_through_storage() {
+        let mut dock = default_layout();
+        hide(&mut dock, Tab::Meters);
+        if let Node::Vertical(s) = &mut dock.main_surface_mut()[NodeIndex::root()] {
+            s.fraction = 0.42;
+        }
+        let text = ron::to_string(&dock).unwrap();
+        let back: DockState<Tab> = checked_layout(ron::from_str(&text).unwrap()).unwrap();
+        assert!(!is_shown(&back, Tab::Meters) && is_shown(&back, Tab::Viewer));
+        match &back.main_surface()[NodeIndex::root()] {
+            Node::Vertical(s) => assert_eq!(s.fraction, 0.42),
+            _ => panic!("root should still be the viewer/timeline split"),
+        }
+        // A layout with a window twice isn't used.
+        let mut twice = default_layout();
+        twice.push_to_first_leaf(Tab::Viewer);
+        assert!(checked_layout(twice).is_none());
+    }
 
     fn tabs(dock: &DockState<Tab>) -> Vec<Tab> {
         dock.iter_all_tabs().map(|(_, t)| *t).collect()

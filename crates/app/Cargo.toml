@@ -23,3 +23,7 @@ cpal.workspace = true
 crossbeam-channel.workspace = true
 # Installing plugins from .zip files.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+# The format eframe stores settings and the layout in.
+ron = "0.12"

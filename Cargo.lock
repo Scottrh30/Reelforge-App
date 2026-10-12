@@ -1150,6 +1150,7 @@ dependencies = [
  "duplicate",
  "egui",
  "paste",
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -3111,6 +3112,7 @@ dependencies = [
  "reelforge-media",
  "reelforge-render",
  "rfd",
+ "ron",
  "serde",
  "serde_json",
  "zip",

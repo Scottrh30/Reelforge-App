@@ -7,6 +7,11 @@ effects and compositing (compositions, motion tracking with corner pinning) are 
 What works now:
 
 - Dockable panel layout (Media, Viewer, Controls, Editor Timeline, Composition Timeline, Curves, Meters) — drag tabs to rearrange
+- **Divider bars** between the panels: drag one to make the panels on either side bigger or
+  smaller (the pointer turns into a resize arrow over it, and the bar lights up). The grip dots
+  mark the middle of each bar. Double-click a bar to split its two sides evenly. Panels stop at
+  about 70 points so nothing disappears. The layout (sizes, and which windows are where) is
+  remembered the next time you start Reelforge; **Tabs → Reset layout** puts it back
 - **Tabs menu** (next to Edit): a tick box for every window (Viewer, Media, History, Controls,
   Editor Timeline, Composition Timeline, Curves, Meters). Untick one to take it out of the
   layout; tick it to bring it back beside the windows it normally shares a panel with (or in

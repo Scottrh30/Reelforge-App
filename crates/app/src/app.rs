@@ -1,7 +1,7 @@
 use crate::playback::Playback;
 use crate::timeline::TimelineView;
 use egui::{Key, KeyboardShortcut, Modifiers};
-use egui_dock::{DockArea, DockState, Style};
+use egui_dock::{DockArea, DockState};
 use crate::audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::preview::Preview;
@@ -167,9 +167,15 @@ impl ReelforgeApp {
         if let Some(s) = cc.storage.and_then(|s| eframe::get_value::<crate::settings::Settings>(s, crate::settings::Settings::STORAGE_KEY)) {
             app.state.settings = s;
         }
-        // Windows turned off in the Tabs menu stay off.
-        for tab in app.state.settings.hidden_tabs.clone() {
-            crate::tabs::hide(&mut app.dock, tab);
+        // The layout as it was left: panel sizes, which windows are where.
+        match cc.storage.and_then(|s| eframe::get_value::<DockState<Tab>>(s, crate::tabs::STORAGE_KEY)).and_then(crate::tabs::checked_layout) {
+            Some(dock) => app.dock = dock,
+            None => {
+                // Windows turned off in the Tabs menu stay off.
+                for tab in app.state.settings.hidden_tabs.clone() {
+                    crate::tabs::hide(&mut app.dock, tab);
+                }
+            }
         }
         app.state.settings.apply();
         let (session, crashed) = crate::safety::Session::start();
@@ -201,6 +207,7 @@ impl ReelforgeApp {
 impl eframe::App for ReelforgeApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, crate::settings::Settings::STORAGE_KEY, &self.state.settings);
+        eframe::set_value(storage, crate::tabs::STORAGE_KEY, &self.dock);
     }
 
     fn on_exit(&mut self) {
@@ -289,11 +296,12 @@ impl eframe::App for ReelforgeApp {
         });
         egui::CentralPanel::default().show(ui, |ui| {
             DockArea::new(&mut self.dock)
-                .style(Style::from_egui(ui.style().as_ref()))
+                .style(crate::tabs::dock_style(ui.style().as_ref()))
                 .show_close_buttons(false)
                 .show_leaf_close_all_buttons(false)
                 .show_leaf_collapse_buttons(false)
                 .show_inside(ui, st);
+            crate::tabs::paint_dividers(ui, &self.dock);
         });
 
         self.export.show(&ctx, st);
