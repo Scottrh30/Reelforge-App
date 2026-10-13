@@ -18,7 +18,7 @@ use ff::{ChannelLayout, Dictionary};
 use reelforge_core::FrameRate;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Quality {
     /// Visually lossless; big files.
     High,
@@ -55,7 +55,7 @@ impl Quality {
 }
 
 /// What kind of video to write.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub enum VideoCodec {
     #[default]
     H264,
@@ -158,6 +158,70 @@ impl VideoCodec {
     }
 }
 
+impl VideoCodec {
+    /// Can be written with 10 bits per channel (smoother gradients).
+    pub fn supports_10bit(self) -> bool {
+        self == VideoCodec::H265
+    }
+
+    /// Can carry HDR (BT.2020 colour with a PQ or HLG curve).
+    pub fn supports_hdr(self) -> bool {
+        self == VideoCodec::H265
+    }
+
+    /// Always encoded with more than 8 bits (fed from the 16-bit render).
+    fn always_deep(self) -> bool {
+        matches!(self, VideoCodec::ProRes422 | VideoCodec::ProRes422Hq)
+    }
+
+    /// Takes a target bitrate (the others are fixed-quality by design).
+    pub fn uses_bitrate(self) -> bool {
+        matches!(self, VideoCodec::H264 | VideoCodec::H265)
+    }
+}
+
+/// The output's dynamic range and colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+pub enum ColorOut {
+    /// Standard dynamic range, BT.709, 8 bits.
+    #[default]
+    Sdr8,
+    /// Standard dynamic range, BT.709, 10 bits: no banding in skies and fades.
+    Sdr10,
+    /// HDR10: BT.2020 with the PQ curve, 10 bits. SDR white sits at 203 nits
+    /// (ITU-R BT.2408); brighter-than-white highlights (glows, exposure) go above it.
+    HdrPq,
+    /// HLG: BT.2020 with the hybrid log-gamma curve, 10 bits. Looks right on
+    /// both SDR and HDR screens; SDR white at 75% signal (BT.2408).
+    HdrHlg,
+}
+
+impl ColorOut {
+    pub const ALL: [ColorOut; 4] = [ColorOut::Sdr8, ColorOut::Sdr10, ColorOut::HdrPq, ColorOut::HdrHlg];
+    pub fn label(self) -> &'static str {
+        match self {
+            ColorOut::Sdr8 => "SDR, 8-bit",
+            ColorOut::Sdr10 => "SDR, 10-bit",
+            ColorOut::HdrPq => "HDR10 (PQ), 10-bit",
+            ColorOut::HdrHlg => "HDR (HLG), 10-bit",
+        }
+    }
+    pub fn hint(self) -> &'static str {
+        match self {
+            ColorOut::Sdr8 => "Plays everywhere.",
+            ColorOut::Sdr10 => "Smoother gradients (skies, fades, vignettes). Needs a player with 10-bit HEVC support.",
+            ColorOut::HdrPq => "For HDR TVs and YouTube HDR. White in the edit is 203 nits; highlights pushed above white (glow, exposure) get brighter.",
+            ColorOut::HdrHlg => "Broadcast HDR that also looks right on ordinary screens.",
+        }
+    }
+    pub fn ten_bit(self) -> bool {
+        self != ColorOut::Sdr8
+    }
+    pub fn is_hdr(self) -> bool {
+        matches!(self, ColorOut::HdrPq | ColorOut::HdrHlg)
+    }
+}
+
 /// Is this encoder name a GPU one?
 pub fn is_hardware_encoder(name: &str) -> bool {
     ["nvenc", "_qsv", "_amf", "_mf", "videotoolbox", "_vaapi"].iter().any(|k| name.contains(k))
@@ -184,10 +248,15 @@ pub struct WriterSettings {
     pub hardware: bool,
     /// What to do when the input's shape differs from the output's.
     pub fit: Fit,
+    /// Dynamic range and bit depth (10-bit and HDR only for codecs that support them).
+    pub color: ColorOut,
+    /// A target average bitrate in kbit/s, instead of the quality setting
+    /// (H.264/H.265 only). Peaks may go to 1.5× it.
+    pub bitrate_kbps: Option<u32>,
 }
 
 /// How a picture goes into a frame of a different shape.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Fit {
     /// Show all of it, with black bars at the sides or top and bottom.
     #[default]
@@ -250,7 +319,26 @@ impl Default for WriterSettings {
             video: Some(VideoCodec::H264),
             hardware: false,
             fit: Fit::Letterbox,
+            color: ColorOut::Sdr8,
+            bitrate_kbps: None,
         }
+    }
+}
+
+impl WriterSettings {
+    /// The colour actually written: 10-bit and HDR fall back to SDR 8-bit for
+    /// codecs that can't carry them.
+    pub fn effective_color(&self) -> ColorOut {
+        match self.video {
+            Some(v) if self.color.is_hdr() && !v.supports_hdr() => ColorOut::Sdr8,
+            Some(v) if self.color == ColorOut::Sdr10 && !v.supports_10bit() => ColorOut::Sdr8,
+            _ => self.color,
+        }
+    }
+
+    /// Frames should come in as 16-bit RGBA ([`MovieWriter::write_video_deep`]).
+    pub fn wants_deep(&self) -> bool {
+        self.video.is_some_and(|v| v.always_deep()) || self.effective_color().ten_bit()
     }
 }
 
@@ -266,6 +354,9 @@ struct VideoOut {
     next_pts: i64,
     range: Range,
     yuv: bool,
+    /// Input frames are RGBA64 (16 bits per channel).
+    deep: bool,
+    color: ColorOut,
 }
 
 struct AudioOut {
@@ -336,12 +427,15 @@ impl MovieWriter {
                 let [iw, ih] = s.input_size.unwrap_or([s.width, s.height]);
                 let pad = canvas(s.fit, iw, ih, w, h);
                 let (sw, sh) = pad.map_or((iw, ih), |c| (c.w, c.h));
-                let mut scaler = Scaler::get(ff::format::Pixel::RGBA, sw, sh, pix, w, h, Flags::BICUBIC)?;
+                let deep = s.wants_deep();
+                let color = s.effective_color();
+                let input = if deep { ff::format::Pixel::RGBA64LE } else { ff::format::Pixel::RGBA };
+                let mut scaler = Scaler::get(input, sw, sh, pix, w, h, Flags::BICUBIC)?;
                 if yuv {
-                    crate::color::configure(&mut scaler, Space::BT709, range, false);
+                    crate::color::configure(&mut scaler, if color.is_hdr() { Space::BT2020NCL } else { Space::BT709 }, range, false);
                 }
                 let time_base = encoder.time_base();
-                Some(VideoOut { encoder, stream, time_base, scaler, in_size: (iw, ih), pad, frame: ff::frame::Video::new(pix, w, h), next_pts: 0, range, yuv })
+                Some(VideoOut { encoder, stream, time_base, scaler, in_size: (iw, ih), pad, frame: ff::frame::Video::new(pix, w, h), next_pts: 0, range, yuv, deep, color })
             }
             None => None,
         };
@@ -359,44 +453,80 @@ impl MovieWriter {
         Ok(Self { octx, video, audio, path: path.to_owned(), video_codec, sequence, finished: false })
     }
 
+    /// The frames to pass: 16-bit ([`write_video_deep`](Self::write_video_deep))
+    /// rather than 8-bit ([`write_video`](Self::write_video)).
+    pub fn wants_deep(&self) -> bool {
+        self.video.as_ref().is_some_and(|v| v.deep)
+    }
+
+    /// The colour being written (after falling back for codecs that can't do 10-bit/HDR).
+    pub fn color(&self) -> ColorOut {
+        self.video.as_ref().map_or(ColorOut::Sdr8, |v| v.color)
+    }
+
     /// Append one frame of tightly packed sRGB RGBA at the size given in the settings.
     pub fn write_video(&mut self, rgba: &[u8]) -> Result<()> {
+        if self.wants_deep() {
+            // Widen to 16 bits (x·257 maps 0…255 exactly onto 0…65535).
+            let wide: Vec<u16> = rgba.iter().map(|&b| b as u16 * 257).collect();
+            return self.write_video_deep(&wide);
+        }
+        self.put_frame(rgba, 4, ff::format::Pixel::RGBA, &[0, 0, 0, 255])
+    }
+
+    /// Append one frame of tightly packed 16-bit RGBA, already in the output's
+    /// curve (sRGB, PQ or HLG; see `ColorOut`).
+    pub fn write_video_deep(&mut self, rgba: &[u16]) -> Result<()> {
+        if !self.wants_deep() {
+            let narrow: Vec<u8> = rgba.iter().map(|&v| ((v as u32 + 128) / 257) as u8).collect();
+            return self.put_frame(&narrow, 4, ff::format::Pixel::RGBA, &[0, 0, 0, 255]);
+        }
+        // SAFETY: u16 has no padding or invalid bit patterns; viewed as bytes, little-endian
+        // on every platform we build for (RGBA64LE).
+        let bytes = unsafe { std::slice::from_raw_parts(rgba.as_ptr() as *const u8, rgba.len() * 2) };
+        // Black in each curve is zero; opaque alpha is all ones.
+        self.put_frame(bytes, 8, ff::format::Pixel::RGBA64LE, &[0, 0, 0, 0, 0, 0, 255, 255])
+    }
+
+    /// Place a packed frame (`bpp` bytes per pixel) on the canvas, scale/convert, encode.
+    fn put_frame(&mut self, pixels: &[u8], bpp: usize, format: ff::format::Pixel, black: &[u8]) -> Result<()> {
         let Some(v) = &mut self.video else { return Ok(()) };
         let (w, h) = v.in_size;
-        if rgba.len() != (w * h * 4) as usize {
-            bail!("frame is {} bytes, expected {}x{} RGBA", rgba.len(), w, h);
+        if pixels.len() != w as usize * h as usize * bpp {
+            bail!("frame is {} bytes, expected {}x{} at {} bytes per pixel", pixels.len(), w, h, bpp);
         }
         let c = v.pad.unwrap_or(Canvas { w, h, x: 0, y: 0 });
-        let mut src = ff::frame::Video::new(ff::format::Pixel::RGBA, c.w, c.h);
+        let mut src = ff::frame::Video::new(format, c.w, c.h);
         let stride = src.stride(0);
         let data = src.data_mut(0);
         if c.x > 0 || c.y > 0 {
             // Black bars, opaque.
             for y in 0..c.h as usize {
-                for px in data[y * stride..y * stride + c.w as usize * 4].chunks_exact_mut(4) {
-                    px.copy_from_slice(&[0, 0, 0, 255]);
+                for px in data[y * stride..y * stride + c.w as usize * bpp].chunks_exact_mut(bpp) {
+                    px.copy_from_slice(black);
                 }
             }
         }
         // The part of the input that lands on the canvas.
         let (x0, x1) = ((-c.x).max(0) as usize, (c.w as i32 - c.x).min(w as i32) as usize);
-        let in_row = w as usize * 4;
+        let in_row = w as usize * bpp;
         for cy in 0..c.h as i32 {
             let y = cy - c.y;
             if y < 0 || y >= h as i32 {
                 continue;
             }
-            let at = cy as usize * stride + (x0 as i32 + c.x) as usize * 4;
+            let at = cy as usize * stride + (x0 as i32 + c.x) as usize * bpp;
             let from = y as usize * in_row;
-            data[at..at + (x1 - x0) * 4].copy_from_slice(&rgba[from + x0 * 4..from + x1 * 4]);
+            data[at..at + (x1 - x0) * bpp].copy_from_slice(&pixels[from + x0 * bpp..from + x1 * bpp]);
         }
         v.scaler.run(&src, &mut v.frame)?;
         v.frame.set_pts(Some(v.next_pts));
         if v.yuv {
-            v.frame.set_color_space(Space::BT709);
+            let (space, primaries, trc) = color_tags(v.color);
+            v.frame.set_color_space(space);
             v.frame.set_color_range(v.range);
-            v.frame.set_color_primaries(Primaries::BT709);
-            v.frame.set_color_transfer_characteristic(TransferCharacteristic::BT709);
+            v.frame.set_color_primaries(primaries);
+            v.frame.set_color_transfer_characteristic(trc);
         }
         v.next_pts += 1;
         v.encoder.send_frame(&v.frame)?;
@@ -549,7 +679,17 @@ impl Drop for MovieWriter {
     }
 }
 
+/// Colour tags for the stream and frames.
+fn color_tags(c: ColorOut) -> (Space, Primaries, TransferCharacteristic) {
+    match c {
+        ColorOut::Sdr8 | ColorOut::Sdr10 => (Space::BT709, Primaries::BT709, TransferCharacteristic::BT709),
+        ColorOut::HdrPq => (Space::BT2020NCL, Primaries::BT2020, TransferCharacteristic::SMPTE2084),
+        ColorOut::HdrHlg => (Space::BT2020NCL, Primaries::BT2020, TransferCharacteristic::ARIB_STD_B67),
+    }
+}
+
 fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, global_header: bool) -> Result<(ff::encoder::Video, ff::Codec, String)> {
+    let color = s.effective_color();
     let tb = ff::Rational::new(s.frame_rate.0.den as i32, s.frame_rate.0.num as i32);
     let fps = ff::Rational::new(s.frame_rate.0.num as i32, s.frame_rate.0.den as i32);
     let mut errors = Vec::new();
@@ -557,10 +697,19 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
         let Some(codec) = ff::encoder::find_by_name(name) else { continue };
         let Ok(vcodec) = codec.video() else { continue };
         let formats: Vec<ff::format::Pixel> = vcodec.formats().map(|f| f.collect()).unwrap_or_default();
+        use ff::format::Pixel as P;
         let pix = match kind.pixel() {
             Some(p) => p,
+            // 10-bit: planar for software encoders, P010 for GPU ones.
+            None if color.ten_bit() => match [P::YUV420P10LE, P::P010LE].into_iter().find(|p| formats.is_empty() || formats.contains(p)) {
+                Some(p) => p,
+                None => {
+                    errors.push(format!("{name}: no 10-bit support"));
+                    continue;
+                }
+            },
             // Prefer yuv420p (plays everywhere); otherwise the encoder's first format (e.g. nv12 for hardware).
-            None if formats.is_empty() || formats.contains(&ff::format::Pixel::YUV420P) => ff::format::Pixel::YUV420P,
+            None if formats.is_empty() || formats.contains(&P::YUV420P) => P::YUV420P,
             None => formats[0],
         };
         if !formats.is_empty() && !formats.contains(&pix) {
@@ -586,16 +735,19 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
             flags |= ff::codec::Flags::CLOSED_GOP;
         }
         if !matches!(pix, ff::format::Pixel::RGB24) {
-            enc.set_colorspace(Space::BT709);
+            let (space, primaries, trc) = color_tags(color);
+            enc.set_colorspace(space);
             enc.set_color_range(if pix == ff::format::Pixel::YUVJ420P { Range::JPEG } else { Range::MPEG });
-            enc.set_color_primaries(Primaries::BT709);
-            enc.set_color_transfer_characteristic(TransferCharacteristic::BT709);
+            enc.set_color_primaries(primaries);
+            enc.set_color_transfer_characteristic(trc);
         }
         if global_header {
             flags |= ff::codec::Flags::GLOBAL_HEADER;
         }
 
         let mut opts = Dictionary::new();
+        // A target bitrate replaces the quality setting (CRF).
+        let target = s.bitrate_kbps.filter(|k| *k > 0 && kind.uses_bitrate() && !s.proxy);
         let bitrate = |bpp: f64| ((w as f64 * h as f64 * s.frame_rate.fps() * bpp) as usize).max(500_000);
         match (kind, name) {
             (_, "libx264") if s.proxy => {
@@ -604,16 +756,31 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
                 opts.set("tune", "fastdecode");
             }
             (_, "libx264") => {
-                opts.set("crf", s.quality.crf());
+                if target.is_none() {
+                    opts.set("crf", s.quality.crf());
+                }
                 opts.set("preset", "medium");
                 opts.set("profile", "high");
             }
             (_, "libx265") => {
                 // HEVC needs ~4 less CRF for the same look as H.264, at about half the size.
                 let crf: u32 = s.quality.crf().parse::<u32>().unwrap_or(21) + 4;
-                opts.set("crf", &crf.to_string());
+                if target.is_none() {
+                    opts.set("crf", &crf.to_string());
+                }
                 opts.set("preset", "medium");
-                opts.set("x265-params", "log-level=error");
+                let mut params = String::from("log-level=error");
+                match color {
+                    // Signal HDR10 with typical mastering metadata (P3 primaries, 1000 nits),
+                    // in every keyframe so players switch modes when seeking.
+                    ColorOut::HdrPq => params.push_str(
+                        ":hdr10=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc\
+                         :master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400",
+                    ),
+                    ColorOut::HdrHlg => params.push_str(":repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc"),
+                    _ => {}
+                }
+                opts.set("x265-params", &params);
                 opts.set("tag", "hvc1");
             }
             (VideoCodec::ProRes422 | VideoCodec::ProRes422Hq, _) => {
@@ -640,6 +807,16 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
         }
         if kind == VideoCodec::H265 && name != "libx265" {
             opts.set("tag", "hvc1"); // so Apple players accept the MP4
+        }
+        if let Some(kbps) = target {
+            // Average `kbps`, peaks to 1.5×.
+            let bps = kbps as usize * 1000;
+            enc.set_bit_rate(bps);
+            enc.set_max_bit_rate(bps * 3 / 2);
+            opts.set("bufsize", &(bps * 2).to_string());
+            if name.contains("nvenc") {
+                opts.set("rc", "vbr");
+            }
         }
         enc.set_flags(flags);
         match enc.open_with(opts) {

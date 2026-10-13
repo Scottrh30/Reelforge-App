@@ -8,7 +8,7 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
 }
 
 fn layer<'a>(key: u64, pixels: &'a [u8], px: [u32; 2], size: [f32; 2], t: Transform, blend: BlendMode) -> LayerInput<'a> {
-    LayerInput { key, content_id: 1, pixels, pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new(), mask: None, wipe: None }
+    LayerInput { key, content_id: 1, pixels: PixelData::Rgba(pixels), pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new(), mask: None, wipe: None }
 }
 
 fn px(img: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
@@ -104,7 +104,7 @@ fn textures_are_cached_by_content_id() {
     let red = solid(4, 4, [255, 0, 0, 255]);
     let green = solid(4, 4, [0, 255, 0, 255]);
     fn mk(pixels: &[u8], id: u64) -> LayerInput<'_> {
-        LayerInput { key: 7, content_id: id, pixels, pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None }
+        LayerInput { key: 7, content_id: id, pixels: PixelData::Rgba(pixels), pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None }
     }
     c.render([4, 4], &[mk(&red, 1)]);
     c.render([4, 4], &[mk(&green, 1)]); // same content id: not re-uploaded
@@ -125,7 +125,7 @@ fn resizing_the_frame_bumps_output_generation() {
     assert_eq!(c.read_output().unwrap().len(), 32 * 16 * 4);
 }
 
-use reelforge_render::DrawItem;
+use reelforge_render::{DrawItem, PixelData};
 
 fn full(key: u64, pixels: &[u8], frame: [u32; 2]) -> LayerInput<'_> {
     layer(key, pixels, [1, 1], [frame[0] as f32, frame[1] as f32], Transform::default(), BlendMode::Normal)
@@ -541,4 +541,51 @@ fn plugins_run_with_params_time_and_several_passes() {
     let broken = plugin("t.broken", "", "", "fn effect(uv: vec2<f32>) -> vec4<f32> { return nope; }");
     c.render([32, 16], &[lay(vec![plugin_fx(&broken, &[], 0.0), plugin_fx(&shift, &[8.0], 0.0)])]);
     assert!(near(px(&c.read_output().unwrap(), 32, 20, 8), [255, 0, 0]));
+}
+
+
+/// YUV frames convert on the GPU exactly as the CPU reference does.
+#[test]
+fn yuv_layers_convert_like_the_cpu_reference() {
+    use reelforge_core::frame::{YuvLayout, YuvMatrix, YuvPlanes};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (16u32, 8u32);
+    let (cw, ch) = (w / 2, h / 2);
+    for layout in [YuvLayout::I420, YuvLayout::Nv12, YuvLayout::I420P10, YuvLayout::P010] {
+        for (matrix, full_range) in [(YuvMatrix::Bt709, false), (YuvMatrix::Bt601, true), (YuvMatrix::Bt2020, false)] {
+            // A gradient in Y and a different one in each chroma channel.
+            let bits = layout.bits();
+            let k = 1u32 << (bits - 8);
+            let word = |v: u32| -> Vec<u8> {
+                let v = (v * k) << layout.shift();
+                if layout.sample_bytes() == 1 { vec![v as u8] } else { (v as u16).to_le_bytes().to_vec() }
+            };
+            let y: Vec<u8> = (0..w * h).flat_map(|i| word(20 + (i % w) * 13 + (i / w) * 3)).collect();
+            let u: Vec<u32> = (0..cw * ch).map(|i| 40 + (i % cw) * 25).collect();
+            let v: Vec<u32> = (0..cw * ch).map(|i| 220 - (i / cw) * 40).collect();
+            let planes = if layout.interleaved() {
+                vec![y, u.iter().zip(&v).flat_map(|(a, b)| [word(*a), word(*b)].concat()).collect()]
+            } else {
+                vec![y, u.iter().flat_map(|a| word(*a)).collect(), v.iter().flat_map(|b| word(*b)).collect()]
+            };
+            let yuv = YuvPlanes { layout, width: w, height: h, planes, matrix, full_range };
+            let want = yuv.to_rgba();
+            let l = LayerInput {
+                key: 9,
+                content_id: layout as u64 * 10 + matrix as u64 * 2 + full_range as u64,
+                pixels: PixelData::Yuv(&yuv),
+                pixel_size: [w, h],
+                layer_size: [w as f32, h as f32],
+                transform: Transform::default(),
+                blend: BlendMode::Normal,
+                effects: Vec::new(),
+                mask: None,
+                wipe: None,
+            };
+            c.render([w, h], &[l]);
+            let got = c.read_output().unwrap();
+            let worst = got.iter().zip(&want).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| (*a as i32 - *b as i32).abs()).max().unwrap();
+            assert!(worst <= 2, "{layout:?} {matrix:?} full={full_range}: off by {worst}");
+        }
+    }
 }

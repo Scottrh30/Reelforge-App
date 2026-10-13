@@ -9,8 +9,8 @@
 
 use anyhow::{anyhow, Context as _, Result};
 use reelforge_core::{ClipId, FrameRate, Layer, Project, Time, TrackKind};
-use reelforge_media::{Fit, FrameSource, MixClip, Mixer, MovieWriter, Quality, VideoCodec, VideoFrame, WriterSettings};
-use reelforge_render::{wgpu, Compositor};
+use reelforge_media::{ColorOut, Fit, FrameSource, MixClip, Mixer, MovieWriter, Quality, VideoCodec, VideoFrame, WriterSettings};
+use reelforge_render::{wgpu, Compositor, DeepCurve};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -46,6 +46,10 @@ pub struct ExportSettings {
     pub fit: Fit,
     /// Which sequence of the project (0 is the main edit; others are compositions).
     pub sequence: usize,
+    /// Dynamic range and bit depth (10-bit/HDR only where the codec supports it).
+    pub color: ColorOut,
+    /// Target bitrate in kbit/s instead of the quality setting (H.264/H.265).
+    pub bitrate_kbps: Option<u32>,
 }
 
 impl ExportSettings {
@@ -132,7 +136,7 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
     let sr = FrameRate::new(rate as i64, 1);
     let crossfades = project.crossfades(seq);
     let mut out = Vec::new();
-    for t in sequence.tracks.iter().filter(|t| t.kind == TrackKind::Audio && !t.muted) {
+    for (ti, t) in sequence.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio && !t.muted) {
         for c in &t.clips {
             let [cl, cr] = balance(c.audio.pan);
             let [tl, tr] = balance(t.audio.pan);
@@ -167,10 +171,11 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                         let k = 1.0 / r.abs();
                         let stretch = |v: i64| (v as f64 * k).round() as i64;
                         (m.fade_in, m.fade_out) = if r < 0.0 { (stretch(m.fade_out), stretch(m.fade_in)) } else { (stretch(m.fade_in), stretch(m.fade_out)) };
-                        for key in &mut m.volume_keys {
+                        for key in m.volume_keys.iter_mut().chain(m.pan_keys.iter_mut()) {
                             key.0 = if r < 0.0 { len - stretch(key.0) } else { stretch(key.0) };
                         }
                         m.volume_keys.sort_by_key(|k| k.0);
+                        m.pan_keys.sort_by_key(|k| k.0);
                         (m.start, m.len) = (start, len);
                     }
                     if m.start < ws {
@@ -179,7 +184,7 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                         m.source_in += (cut as f64 * m.rate).round() as i64;
                         m.len -= cut;
                         m.fade_in = (m.fade_in - cut).max(0);
-                        m.volume_keys.iter_mut().for_each(|k| k.0 -= cut);
+                        m.volume_keys.iter_mut().chain(m.pan_keys.iter_mut()).for_each(|k| k.0 -= cut);
                     }
                     if m.start + m.len > we {
                         m.len = we - m.start;
@@ -199,6 +204,7 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                     m.id = ClipId(h.finish());
                     m.gain *= gain;
                     m.balance = [m.balance[0] * cl * tl, m.balance[1] * cr * tr];
+                    m.track = ti;
                     if m.gain > 0.0 {
                         out.push(m);
                     }
@@ -225,6 +231,13 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
             } else {
                 (db_to_gain(c.audio.volume_db) * track_gain, Vec::new())
             };
+            // Pan keys replace the clip's static pan; the track's pan stays in `balance`.
+            let (balance_lr, pan_keys) = if c.audio.is_pan_animated() {
+                let s0 = source_in.to_frame(sr);
+                ([tl, tr], c.audio.pan_keys.iter().map(|k| (k.at.to_frame(sr) - s0, k.pan)).collect())
+            } else {
+                ([cl * tl, cr * tr], Vec::new())
+            };
             let start_s = start.to_frame(sr);
             let clip = MixClip {
                 id: c.id,
@@ -235,10 +248,12 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                 rate: c.rate(),
                 len: end.to_frame(sr) - start_s,
                 gain,
-                balance: [cl * tl, cr * tr],
+                balance: balance_lr,
                 fade_in: fin.to_frame(sr),
                 fade_out: fout.to_frame(sr),
                 volume_keys,
+                pan_keys,
+                track: ti,
             };
             if clip.gain > 0.0 {
                 out.push(clip);
@@ -268,7 +283,7 @@ impl FrameProvider for ExactFrames {
                 }
                 _ => {
                     let r = reelforge_render::text::render_title(spec, frame_size);
-                    let f = VideoFrame { pts: Time::ZERO, width: r.width, height: r.height, rgba: r.rgba, generation: hash };
+                    let f = VideoFrame::from_rgba(Time::ZERO, r.width, r.height, r.rgba, hash);
                     self.titles.insert(l.clip.id, (hash, f.clone(), tick));
                     f
                 }
@@ -335,7 +350,15 @@ pub fn export_sequence(
         video: settings.video,
         hardware: settings.hardware,
         fit: settings.fit,
+        color: settings.color,
+        bitrate_kbps: settings.bitrate_kbps,
     })?;
+    // 10-bit, HDR and ProRes get the 16-bit render in the output's curve.
+    let deep = writer.wants_deep().then(|| match writer.color() {
+        ColorOut::HdrPq => DeepCurve::Pq,
+        ColorOut::HdrHlg => DeepCurve::Hlg,
+        ColorOut::Sdr8 | ColorOut::Sdr10 => DeepCurve::Srgb,
+    });
     let video_codec = writer.video_codec.clone();
 
     let mut compositor = Compositor::new(device, queue);
@@ -364,8 +387,16 @@ pub fn export_sequence(
         // Exact frame for every visible layer (two per dissolve), with keyframes applied.
         frames.tick += 1;
         scene.render(project, settings.sequence, t, &mut compositor, &mut frames, None)?;
-        let rgba = compositor.read_output().ok_or_else(|| anyhow!("GPU readback failed"))?;
-        writer.write_video(&rgba)?;
+        match deep {
+            Some(curve) => {
+                let px = compositor.read_output_deep(curve).ok_or_else(|| anyhow!("GPU readback failed"))?;
+                writer.write_video_deep(&px)?;
+            }
+            None => {
+                let rgba = compositor.read_output().ok_or_else(|| anyhow!("GPU readback failed"))?;
+                writer.write_video(&rgba)?;
+            }
+        }
 
         // Exactly the audio that belongs to this frame, so A/V never drift apart.
         if has_audio {

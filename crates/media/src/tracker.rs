@@ -2,7 +2,7 @@
 
 use crate::source::FrameSource;
 use anyhow::{anyhow, Result};
-use reelforge_core::track::{local_linear, luma_of_rgba, motion_between, FeatureTracker, Luma, PointTrack, Pyramid, TrackSample, Tracker, MIN_SCORE};
+use reelforge_core::track::{local_linear, motion_between, FeatureTracker, Luma, PointTrack, Pyramid, TrackSample, Tracker, MIN_SCORE};
 use reelforge_core::{MediaInfo, Time};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,7 +41,7 @@ pub fn track_points(
     let mut grab = |t: Time| -> Result<(Pyramid, usize, usize)> {
         let f = src.frame_at_blocking(t, wait).ok_or_else(|| anyhow!("no frame at {t}"))?;
         let (w, h) = (f.width as usize, f.height as usize);
-        Ok((Pyramid::new(luma_of_rgba(&f.rgba), w, h, levels), w, h))
+        Ok((Pyramid::new(f.luma(), w, h, levels), w, h))
     };
 
     // Points are in media pixels; frames may decode at that size or not (they

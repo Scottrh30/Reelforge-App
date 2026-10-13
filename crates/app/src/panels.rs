@@ -1389,20 +1389,25 @@ fn volume_slider(ui: &mut egui::Ui, db: &mut f32) -> egui::Response {
     .on_hover_text("Double-click the number to type a value")
 }
 
-/// Pan slider, -100 (left) .. +100 (right).
-fn pan_slider(ui: &mut egui::Ui, pan: &mut f32) {
+/// Pan slider, -100 (left) .. +100 (right). True when it changed the value.
+fn pan_slider(ui: &mut egui::Ui, pan: &mut f32) -> bool {
     let mut p = *pan * 100.0;
     let r = ui.add(egui::Slider::new(&mut p, -100.0..=100.0).fixed_decimals(0).custom_formatter(|v, _| match v.round() as i32 {
         0 => "C".into(),
         n if n < 0 => format!("L{}", -n),
         n => format!("R{n}"),
     }));
-    if r.double_clicked() {
+    let changed = if r.double_clicked() {
         *pan = 0.0;
+        true
     } else if r.changed() {
         *pan = p / 100.0;
-    }
+        true
+    } else {
+        false
+    };
     r.on_hover_text("Double-click to centre");
+    changed
 }
 
 fn clip_audio_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge_core::Clip) {
@@ -1466,7 +1471,49 @@ fn clip_audio_controls(ui: &mut egui::Ui, st: &mut EditorState, clip: &reelforge
         });
         ui.end_row();
         ui.weak("Pan");
-        pan_slider(ui, &mut a.pan);
+        if a.is_pan_animated() {
+            // Like volume: the slider shows/edits the pan at the playhead, keying it.
+            let mut pan = a.pan_at(src);
+            let r = ui.add_enabled_ui(in_clip, |ui| pan_slider(ui, &mut pan)).inner;
+            if r && in_clip {
+                a.set_pan_key(src, pan);
+            }
+        } else {
+            pan_slider(ui, &mut a.pan);
+        }
+        ui.end_row();
+
+        ui.weak("Pan keys");
+        ui.horizontal(|ui| {
+            let prev = a.pan_keys.iter().rev().map(|k| to_timeline(k.at)).find(|t| *t < playhead);
+            let next = a.pan_keys.iter().map(|k| to_timeline(k.at)).find(|t| *t > playhead);
+            if ui.add_enabled(prev.is_some(), egui::Button::new("◀")).on_hover_text("Previous pan keyframe").clicked() {
+                seek = prev;
+            }
+            let here = a.pan_key_index_at(src).filter(|_| in_clip);
+            let tip = if here.is_some() { "Remove the pan keyframe at the playhead" } else { "Add a pan keyframe at the playhead" };
+            if key_button(ui, here.is_some(), in_clip).on_hover_text(tip).clicked() {
+                match here {
+                    Some(i) => {
+                        a.pan_keys.remove(i);
+                    }
+                    None => {
+                        let pan = a.pan_at(src);
+                        a.set_pan_key(src, pan);
+                    }
+                }
+            }
+            if ui.add_enabled(next.is_some(), egui::Button::new("▶")).on_hover_text("Next pan keyframe").clicked() {
+                seek = next;
+            }
+            if a.is_pan_animated() {
+                ui.weak(format!("{}", a.pan_keys.len()));
+                if ui.small_button("Clear").on_hover_text("Remove all pan keyframes, keeping the pan at the playhead").clicked() {
+                    a.pan = a.pan_at(src);
+                    a.pan_keys.clear();
+                }
+            }
+        });
         ui.end_row();
         let max = clip.duration.as_secs_f64();
         for (label, value, other) in [("Fade in", &mut a.fade_in, before.fade_out), ("Fade out", &mut a.fade_out, before.fade_in)] {

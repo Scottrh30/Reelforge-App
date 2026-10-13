@@ -99,6 +99,10 @@ fn tidy_db(db: f32) -> f32 {
 /// Fade handle size and how close the pointer must be to grab one.
 const FADE_HANDLE: f32 = 7.0;
 
+fn db_label(db: f32) -> String {
+    if db <= crate::meters::FLOOR_DB { "-∞".into() } else { format!("{db:.0}") }
+}
+
 /// Maps between seconds and screen x for the current view.
 struct Mapping {
     x0: f32,
@@ -318,6 +322,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     };
     let mut mute_clicked = None;
     let mut lock_clicked = None;
+    let mut reset_meters = false;
     for (row, &ti) in rows.iter().enumerate() {
         let tr = &st.seq().tracks[ti];
         let r = row_rect(row);
@@ -402,6 +407,26 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         painter.add(egui::Shape::line(shackle, Stroke::new(1.4, ink)));
         if lresp.on_hover_text(if tr.locked { "Unlock track" } else { "Lock track: no edits, and ripples leave it alone" }).clicked() {
             lock_clicked = Some(ti);
+        }
+        // Audio tracks: a level meter along the bottom of the header (left and right).
+        if tr.kind == TrackKind::Audio {
+            let name = tr.name.clone();
+            if let Some(ch) = st.meters.tracks.get(ti).copied() {
+                let mr = Rect::from_min_max(Pos2::new(header.left() + 8.0, header.bottom() - 9.0), Pos2::new(header.right() - 8.0, header.bottom() - 4.0));
+                crate::meters::paint_track_meter(&painter, mr, &ch);
+                if body.contains_rect(mr) {
+                    let hover = ui.interact(mr, egui::Id::new(("track_meter", ti)), Sense::click());
+                    if hover.clicked() {
+                        reset_meters = true;
+                    }
+                    hover.on_hover_text(format!(
+                        "{}: peak {} dB (left) / {} dB (right). Click to reset the clip light.",
+                        name,
+                        db_label(ch[0].hold_db),
+                        db_label(ch[1].hold_db)
+                    ));
+                }
+            }
         }
         if tr.locked {
             // Hatch the lane so it's obvious nothing there can change.
@@ -543,6 +568,25 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
                 }
             }
 
+            // Pan keyframes: small cyan triangles along the bottom of audio clips,
+            // pointing the way the sound is panned.
+            if tr.kind == TrackKind::Audio && clip.audio.is_pan_animated() {
+                let kp = painter.with_clip_rect(vis);
+                for k in &clip.audio.pan_keys {
+                    let x = cr.left() + ((k.at - clip.source_in).as_secs_f64() as f32) * m.pps;
+                    let c = Pos2::new(x, cr.bottom() - 6.0);
+                    let dir = if k.pan < -0.05 { -1.0 } else if k.pan > 0.05 { 1.0 } else { 0.0 };
+                    let col = Color32::from_rgb(110, 210, 240);
+                    let ink = Stroke::new(1.0, Color32::from_black_alpha(160));
+                    if dir == 0.0 {
+                        kp.circle(c, 3.5, col, ink);
+                    } else {
+                        let tri = vec![c + Vec2::new(4.5 * dir, 0.0), c + Vec2::new(-3.5 * dir, -4.0), c + Vec2::new(-3.5 * dir, 4.0)];
+                        kp.add(egui::Shape::convex_polygon(tri, col, ink));
+                    }
+                }
+            }
+
             // Transform keyframes: small diamonds along the bottom of video clips.
             if tr.kind == TrackKind::Video && clip.anim.is_animated() {
                 let kp = painter.with_clip_rect(vis);
@@ -586,6 +630,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         }
     }
     st.thumbs = thumbs;
+    if reset_meters {
+        st.meters.reset_clips();
+    }
     if let Some(ti) = mute_clicked {
         st.toggle_mute(ti);
     }

@@ -203,6 +203,9 @@ pub fn paste_attributes(p: &Project, seq: usize, cb: &Clipboard, targets: &[Clip
             for k in &mut a.volume_keys {
                 k.at = k.at + by;
             }
+            for k in &mut a.pan_keys {
+                k.at = k.at + by;
+            }
             // Fades can't be longer than this clip.
             a.fade_in = a.fade_in.min(c.duration);
             a.fade_out = a.fade_out.min(c.duration - a.fade_in);

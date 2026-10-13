@@ -249,6 +249,10 @@ impl eframe::App for ReelforgeApp {
         if std::mem::take(&mut st.export_requested) {
             self.export.open(st);
         }
+        st.meters.poll(st.playback.audio.as_ref());
+        if st.meters.any_active() {
+            ctx.request_repaint();
+        }
         if let Some(i) = st.open_request.take() {
             st.open_sequence(i);
         }

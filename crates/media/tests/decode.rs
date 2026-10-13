@@ -58,7 +58,7 @@ fn sequential_and_random_access_land_on_exact_frames() {
         let frame = src.frame_at_blocking(t, wait).expect("frame");
         assert_eq!(frame.pts.to_frame(rate), f, "sequential frame {f}");
         assert_eq!((frame.width, frame.height), (640, 360));
-        assert_eq!(frame.rgba.len(), 640 * 360 * 4);
+        assert_eq!(frame.rgba().len(), 640 * 360 * 4);
     }
 
     // Random access, including backwards and mid-GOP targets.
@@ -108,7 +108,7 @@ fn bt709_colours_decode_accurately() {
     let mut src = FrameSource::open(&path, None).unwrap();
     let f = src.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
     let i = ((360 * 1280 + 640) * 4) as usize;
-    let got = [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2]];
+    let got = [f.rgba()[i], f.rgba()[i + 1], f.rgba()[i + 2]];
     for (g, w) in got.iter().zip([0x30, 0x80, 0xC0]) {
         assert!((*g as i32 - w).abs() <= 3, "got {got:?}, want [48, 128, 192]");
     }
@@ -170,6 +170,6 @@ fn proxies_are_small_all_keyframe_and_line_up_with_the_original() {
     let a = FrameSource::open(&path, Some((960, 540))).unwrap().frame_at_blocking(t, Duration::from_secs(5)).unwrap();
     let b = FrameSource::open(&out, None).unwrap().frame_at_blocking(t, Duration::from_secs(5)).unwrap();
     assert_eq!(b.pts.to_frame(rate), 40);
-    let diff: f64 = a.rgba.iter().zip(b.rgba.iter()).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as f64).sum::<f64>() / a.rgba.len() as f64;
+    let diff: f64 = a.rgba().iter().zip(b.rgba().iter()).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as f64).sum::<f64>() / a.rgba().len() as f64;
     assert!(diff < 4.0, "proxy frame differs from the original: {diff}");
 }

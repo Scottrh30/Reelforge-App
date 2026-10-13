@@ -5,7 +5,7 @@
 //! serves realtime playback (via the engine thread) and offline export.
 
 use crate::audio::{AudioReader, CHANNELS};
-use reelforge_core::audio::{db_to_gain, interpolate_db};
+use reelforge_core::audio::{balance, db_to_gain, interpolate, interpolate_db};
 use reelforge_core::{ClipAudio, ClipId};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -34,12 +34,26 @@ pub struct MixClip {
     /// negative when reversed, 0 for a freeze frame (silent). `source_in` is
     /// the media sample heard at `start`.
     pub rate: f64,
+    /// Pan automation as `(offset from start, pan -1…+1)`, sorted. When
+    /// non-empty, `balance` carries only the track's (and any enclosing
+    /// composition's) pan and the clip's own pan follows these keys.
+    pub pan_keys: Vec<(i64, f32)>,
+    /// Which track of the sequence being played this clip is heard on (for the
+    /// per-track meters). Clips inside a composition report the track the
+    /// composition sits on.
+    pub track: usize,
 }
+
+/// Tracks that get a level meter (later ones still play, unmetered).
+pub const MAX_TRACK_METERS: usize = 32;
+
+/// Peak level (linear, per channel) of each track's contribution to a block.
+pub type TrackPeaks = [[f32; 2]; MAX_TRACK_METERS];
 
 impl MixClip {
     /// A clip at unity gain, centred, without fades.
     pub fn plain(id: ClipId, path: PathBuf, start: i64, source_in: i64, len: i64) -> Self {
-        Self { id, path, start, source_in, len, gain: 1.0, balance: [1.0, 1.0], fade_in: 0, fade_out: 0, volume_keys: Vec::new(), rate: 1.0 }
+        Self { id, path, start, source_in, len, gain: 1.0, balance: [1.0, 1.0], fade_in: 0, fade_out: 0, volume_keys: Vec::new(), rate: 1.0, pan_keys: Vec::new(), track: 0 }
     }
 }
 
@@ -50,11 +64,13 @@ pub struct Mixer {
     scratch: Vec<f32>,
     /// Media read for a clip played at another speed, before resampling.
     span: Vec<f32>,
+    /// Each track's peak level in the last block rendered.
+    track_peaks: TrackPeaks,
 }
 
 impl Mixer {
     pub fn new(rate: u32) -> Self {
-        Self { rate, clips: Vec::new(), readers: HashMap::new(), scratch: Vec::new(), span: Vec::new() }
+        Self { rate, clips: Vec::new(), readers: HashMap::new(), scratch: Vec::new(), span: Vec::new(), track_peaks: [[0.0; 2]; MAX_TRACK_METERS] }
     }
 
     pub fn rate(&self) -> u32 {
@@ -75,9 +91,16 @@ impl Mixer {
         self.clips = clips;
     }
 
+    /// Peak level of each track in the last [`render`](Self::render), after its
+    /// volume and pan (before the master limiter).
+    pub fn track_peaks(&self) -> &TrackPeaks {
+        &self.track_peaks
+    }
+
     /// Render `out.len() / 2` stereo frames starting at timeline sample `pos`.
     pub fn render(&mut self, pos: i64, out: &mut [f32]) {
         out.fill(0.0);
+        self.track_peaks = [[0.0; 2]; MAX_TRACK_METERS];
         let frames = (out.len() / CHANNELS) as i64;
         let end = pos + frames;
         for clip in &self.clips {
@@ -123,6 +146,8 @@ impl Mixer {
             let [bl, br] = clip.balance;
             let fading = clip.fade_in > 0 || clip.fade_out > 0;
             let animated = !clip.volume_keys.is_empty();
+            let panning = !clip.pan_keys.is_empty();
+            let mut peak = [0.0f32; 2];
             for (k, (d, v)) in dst.chunks_exact_mut(CHANNELS).zip(self.scratch.chunks_exact(CHANNELS)).enumerate() {
                 let mut g = clip.gain;
                 let offset = s - clip.start + k as i64;
@@ -132,8 +157,20 @@ impl Mixer {
                 if animated {
                     g *= db_to_gain(interpolate_db(&clip.volume_keys, offset));
                 }
-                d[0] += v[0] * g * bl;
-                d[1] += v[1] * g * br;
+                let (mut l, mut r) = (bl, br);
+                if panning {
+                    let [pl, pr] = balance(interpolate(&clip.pan_keys, offset));
+                    (l, r) = (l * pl, r * pr);
+                }
+                let (a, b) = (v[0] * g * l, v[1] * g * r);
+                d[0] += a;
+                d[1] += b;
+                peak = [peak[0].max(a.abs()), peak[1].max(b.abs())];
+            }
+            if let Some(t) = self.track_peaks.get_mut(clip.track) {
+                // Clips on one track don't overlap, except across a crossfade, where
+                // the louder side is a fair reading.
+                *t = [t[0].max(peak[0]), t[1].max(peak[1])];
             }
         }
         for v in out.iter_mut() {

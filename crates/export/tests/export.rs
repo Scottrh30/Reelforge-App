@@ -4,8 +4,8 @@
 
 use reelforge_core::{BlendMode, Clip, ClipId, FrameRate, MediaAsset, MediaId, Project, Sequence, Time, Transform};
 use reelforge_export::{export_sequence, frame_range, Cancelled, ExportSettings};
-use reelforge_media::{probe, AudioReader, Fit, FrameSource, Quality, VideoCodec};
-use reelforge_render::{headless_device, Compositor, LayerInput};
+use reelforge_media::{probe, AudioReader, ColorOut, Fit, FrameSource, Quality, VideoCodec};
+use reelforge_render::{headless_device, Compositor, LayerInput, PixelData};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -68,6 +68,8 @@ fn settings(path: PathBuf) -> ExportSettings {
         hardware: false,
         fit: Fit::Letterbox,
         sequence: 0,
+        color: ColorOut::Sdr8,
+        bitrate_kbps: None,
     }
 }
 
@@ -78,14 +80,14 @@ fn reference_frame(c: &mut Compositor, a: &Path, b: &Path, t: f64) -> Vec<u8> {
     let id = (t * 1000.0) as u64;
     let fa = FrameSource::open(a, None).unwrap().frame_at_blocking(Time::from_secs_f64(t), wait).unwrap();
     let mut layers = vec![LayerInput {
-        key: 1, content_id: id, pixels: &fa.rgba, pixel_size: [fa.width, fa.height],
+        key: 1, content_id: id, pixels: (&fa.pixels).into(), pixel_size: [fa.width, fa.height],
         layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None,
     }];
     let fb;
     if t >= 1.0 {
         fb = FrameSource::open(b, None).unwrap().frame_at_blocking(Time::from_secs_f64(t - 1.0), wait).unwrap();
         layers.push(LayerInput {
-            key: 2, content_id: id, pixels: &fb.rgba, pixel_size: [fb.width, fb.height],
+            key: 2, content_id: id, pixels: (&fb.pixels).into(), pixel_size: [fb.width, fb.height],
             layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None,
         });
     }
@@ -150,14 +152,14 @@ fn exported_movie_matches_the_compositor_and_keeps_audio_in_sync() {
         let want = reference_frame(&mut c, &a, &b, t);
         let got = dec.frame_at_blocking(Time::from_frame(frame_no, rate), Duration::from_secs(5)).unwrap();
         assert_eq!(got.pts.to_frame(rate), frame_no);
-        let err = mean_abs_diff(&got.rgba, &want);
+        let err = mean_abs_diff(&got.rgba(), &want);
         assert!(err < 2.5, "frame {frame_no}: mean error {err:.2} levels");
 
         // Spot check the overlay: centre of B is at (420, 180).
         let i = (180 * 640 + 420) * 4;
         // 50% red over anything gives at least 0.5 linear red = 188 in sRGB.
         if frame_no >= 25 {
-            assert!(got.rgba[i] >= 180, "frame {frame_no}: half-transparent red layer missing ({:?})", &got.rgba[i..i + 3]);
+            assert!(got.rgba()[i] >= 180, "frame {frame_no}: half-transparent red layer missing ({:?})", &got.rgba()[i..i + 3]);
         }
     }
 
@@ -375,7 +377,7 @@ fn exported_dissolve_and_keyframed_motion() {
     let mut pixel = |frame: i64, x: u32, y: u32| {
         let f = dec.frame_at_blocking(Time::from_frame(frame, rate), Duration::from_secs(5)).unwrap();
         let i = ((y * 640 + x) * 4) as usize;
-        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+        [f.rgba()[i] as i32, f.rgba()[i + 1] as i32, f.rgba()[i + 2] as i32]
     };
     let close = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 6);
     // Corner (away from the square): red, mid-dissolve purple (linear-light 50/50), then blue.
@@ -428,7 +430,7 @@ fn exports_the_marked_range_with_keyframed_effects() {
     let mut pixel = |frame: i64| {
         let f = dec.frame_at_blocking(Time::from_frame(frame, rate), Duration::from_secs(5)).unwrap();
         let i = ((180 * 640 + 320) * 4) as usize;
-        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+        [f.rgba()[i] as i32, f.rgba()[i + 1] as i32, f.rgba()[i + 2] as i32]
     };
     let close = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 8);
     // The movie's first frame is the sequence at 1 s: red at 50% saturation, green keyed away.
@@ -466,7 +468,7 @@ fn exports_titles_with_their_transform_and_effects() {
     let mut pixel = |frame: i64, x: u32, y: u32| {
         let f = dec.frame_at_blocking(Time::from_frame(frame, rate), Duration::from_secs(5)).unwrap();
         let i = ((y * 640 + x) * 4) as usize;
-        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+        [f.rgba()[i] as i32, f.rgba()[i + 1] as i32, f.rgba()[i + 2] as i32]
     };
     let close = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 10);
     // The white box is centred 100 px right of the frame centre, and only there.
@@ -497,7 +499,7 @@ fn first_frame_centre(path: &Path) -> [i32; 3] {
     let mut dec = FrameSource::open(path, None).unwrap();
     let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
     let i = (((f.height / 2) * f.width + f.width / 2) * 4) as usize;
-    [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+    [f.rgba()[i] as i32, f.rgba()[i + 1] as i32, f.rgba()[i + 2] as i32]
 }
 
 #[test]
@@ -551,7 +553,7 @@ fn letterboxes_into_a_different_shape_and_exports_audio_alone() {
     let mut dec = FrameSource::open(&out, None).unwrap();
     let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
     assert_eq!((f.width, f.height), (360, 640));
-    let at = |x: u32, y: u32| f.rgba[((y * 360 + x) * 4) as usize] as i32;
+    let at = |x: u32, y: u32| f.rgba()[((y * 360 + x) * 4) as usize] as i32;
     assert!(at(180, 40) < 20, "black bar at the top");
     assert!(at(180, 320) > 230, "picture in the middle");
     assert!(at(180, 600) < 20, "black bar at the bottom");
@@ -563,7 +565,7 @@ fn letterboxes_into_a_different_shape_and_exports_audio_alone() {
     export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
     let mut dec = FrameSource::open(&out, None).unwrap();
     let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
-    let at = |x: u32, y: u32| f.rgba[((y * 360 + x) * 4) as usize] as i32;
+    let at = |x: u32, y: u32| f.rgba()[((y * 360 + x) * 4) as usize] as i32;
     assert!(at(180, 10) > 200 && at(5, 320) > 200 && at(180, 630) > 200, "no bars when cropping");
 
     // Audio only.
@@ -613,7 +615,7 @@ fn exports_composite_shots_with_their_transform_and_audio() {
     let wait = Duration::from_secs(5);
     let px = |f: &reelforge_media::VideoFrame, x: u32, y: u32| {
         let i = ((y * f.width + x) * 4) as usize;
-        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+        [f.rgba()[i] as i32, f.rgba()[i + 1] as i32, f.rgba()[i + 2] as i32]
     };
     let before = dec.frame_at_blocking(s(0.2), wait).unwrap();
     assert!(px(&before, 320, 180)[0] < 30, "nothing before the shot starts");
@@ -642,7 +644,7 @@ fn transparent_compositor_keeps_coverage() {
     let px: Vec<u8> = [255u8, 0, 0, 255].repeat(16 * 16);
     let t = Transform { scale: [0.5, 0.5], opacity: 0.5, ..Default::default() };
     let layer = LayerInput {
-        key: 1, content_id: 1, pixels: &px, pixel_size: [16, 16], layer_size: [64.0, 64.0],
+        key: 1, content_id: 1, pixels: PixelData::Rgba(&px), pixel_size: [16, 16], layer_size: [64.0, 64.0],
         transform: t, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None,
     };
     c.render([64, 64], &[layer]);
@@ -668,7 +670,7 @@ fn exports_masked_layers() {
     export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
     let mut dec = FrameSource::open(&out, None).unwrap();
     let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
-    let r = |x: u32, y: u32| f.rgba[((y * 640 + x) * 4) as usize] as i32;
+    let r = |x: u32, y: u32| f.rgba()[((y * 640 + x) * 4) as usize] as i32;
     assert!(r(40, 40) > 220, "kept: {}", r(40, 40));
     assert!(r(600, 40) < 20, "masked out: {}", r(600, 40));
     assert!(r(120, 180) < 20, "the subtracted hole: {}", r(120, 180));
@@ -698,7 +700,7 @@ fn exports_speed_changes_and_reverse() {
     let grey = |path: &Path, t: f64| {
         let mut d = FrameSource::open(path, None).unwrap();
         let f = d.frame_at_blocking(s(t), Duration::from_secs(5)).unwrap();
-        f.rgba[((32 * 64 + 32) * 4) as usize] as i32
+        f.rgba()[((32 * 64 + 32) * 4) as usize] as i32
     };
     for (speed, reverse, checks) in [(2.0f32, false, [(0.1, 0.2), (0.6, 1.2)]), (1.0, true, [(0.1, 1.88), (1.5, 0.48)])] {
         let mut q = p.clone();
@@ -743,11 +745,95 @@ fn exports_plugin_effects_that_animate_with_time() {
     let mut pixel = |frame: i64| {
         let f = dec.frame_at_blocking(Time::from_frame(frame, rate), Duration::from_secs(5)).unwrap();
         let i = ((180 * 640 + 320) * 4) as usize;
-        [f.rgba[i] as i32, f.rgba[i + 1] as i32, f.rgba[i + 2] as i32]
+        [f.rgba()[i] as i32, f.rgba()[i + 1] as i32, f.rgba()[i + 2] as i32]
     };
     let close = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 6);
     // Frame 0: red became green. Half a second in: linear 0.5 -> sRGB 188. After 1 s: black.
     assert!(close(pixel(0), [0, 254, 0]), "{:?}", pixel(0));
     assert!(close(pixel(12), [0, 190, 0]) || close(pixel(12), [0, 186, 0]), "{:?}", pixel(12));
     assert!(close(pixel(40), [0, 0, 0]), "{:?}", pixel(40));
+}
+
+
+/// `ffprobe` stream fields of the first video stream, as "key=value" lines.
+fn video_stream_info(path: &Path) -> String {
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt,color_transfer,color_primaries,color_space,bit_rate", "-of", "default=nw=1"])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The 10-bit luma code at the centre of the first frame (limited range: 64 black, 940 white).
+fn centre_luma_10bit(path: &Path, w: usize, h: usize) -> u16 {
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-"])
+        .output()
+        .unwrap();
+    let i = ((h / 2) * w + w / 2) * 2;
+    u16::from_le_bytes([out.stdout[i], out.stdout[i + 1]])
+}
+
+#[test]
+fn exports_10_bit_sdr_and_hdr_with_the_right_curves_and_tags() {
+    let Some(src) = ffmpeg("rf_white.mp4", &["-f", "lavfi", "-i", "color=c=white:s=320x180:r=25:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p"]) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &src));
+    let mut seq = Sequence::new("T", 320, 180, FrameRate::new(25, 1));
+    seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(1.0), None)];
+    p.sequences = vec![seq];
+    // White in the edit: 940 in 10-bit SDR, 203 nits in PQ (code ≈ 573), 75% in HLG (≈ 721).
+    for (color, pix, trc, want) in [
+        (ColorOut::Sdr10, "yuv420p10le", "bt709", 940),
+        (ColorOut::HdrPq, "yuv420p10le", "smpte2084", 573),
+        (ColorOut::HdrHlg, "yuv420p10le", "arib-std-b67", 721),
+    ] {
+        let out = std::env::temp_dir().join(format!("rf_deep_{color:?}.mp4"));
+        let mut st = settings(out.clone());
+        (st.width, st.height, st.end, st.video, st.color, st.include_audio) = (320, 180, s(0.4), Some(VideoCodec::H265), color, false);
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        let info = video_stream_info(&out);
+        assert!(info.contains(&format!("pix_fmt={pix}")), "{color:?}: {info}");
+        assert!(info.contains(&format!("color_transfer={trc}")), "{color:?}: {info}");
+        if color.is_hdr() {
+            assert!(info.contains("color_primaries=bt2020"), "{color:?}: {info}");
+        }
+        let y = centre_luma_10bit(&out, 320, 180) as i32;
+        assert!((y - want).abs() <= 6, "{color:?}: white is {y}, want {want}");
+    }
+    // H.264 can't do 10-bit/HDR: it falls back to 8-bit SDR rather than failing.
+    let out = std::env::temp_dir().join("rf_deep_h264.mp4");
+    let mut st = settings(out.clone());
+    (st.width, st.height, st.end, st.color, st.include_audio) = (320, 180, s(0.4), ColorOut::HdrPq, false);
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    assert!(video_stream_info(&out).contains("pix_fmt=yuv420p\n"), "{}", video_stream_info(&out));
+}
+
+#[test]
+fn a_target_bitrate_replaces_the_quality_setting() {
+    // Busy, noisy video, so the encoder needs every bit it's given.
+    let Some(src) = ffmpeg("rf_noise.mp4", &["-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=2,noise=alls=60:allf=t", "-c:v", "libx264", "-crf", "10", "-pix_fmt", "yuv420p"]) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &src));
+    let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+    seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(2.0), None)];
+    p.sequences = vec![seq];
+    let size_at = |kbps: Option<u32>| {
+        let out = std::env::temp_dir().join(format!("rf_rate_{}.mp4", kbps.unwrap_or(0)));
+        let mut st = settings(out.clone());
+        (st.include_audio, st.bitrate_kbps) = (false, kbps);
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        std::fs::metadata(&out).unwrap().len() as f64 * 8.0 / 2.0 / 1000.0 // kbit/s over 2 s
+    };
+    let low = size_at(Some(500));
+    let high = size_at(Some(3000));
+    assert!(low > 300.0 && low < 750.0, "500 kbit/s target came out at {low:.0}");
+    assert!(high > 1800.0 && high < 4500.0, "3000 kbit/s target came out at {high:.0}");
 }

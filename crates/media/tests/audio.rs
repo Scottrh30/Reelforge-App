@@ -174,6 +174,31 @@ fn mixer_follows_volume_keyframes() {
 }
 
 #[test]
+fn mixer_follows_pan_keyframes_and_meters_each_track() {
+    let Some(path) = make_clip() else { return };
+    let r = RATE as i64;
+    let mut m = Mixer::new(RATE);
+    // Track 2: hard left at 0 s sweeping to hard right at 2 s. Track 4: centred, half volume.
+    m.set_clips(vec![
+        MixClip { pan_keys: vec![(0, -1.0), (2 * r, 1.0)], track: 2, ..MixClip::plain(ClipId(1), path.clone(), 0, 0, 3 * r) },
+        MixClip { gain: 0.5, track: 4, ..MixClip::plain(ClipId(2), path, 0, 0, 3 * r) },
+    ]);
+    let mut block = vec![0.0; 1024 * 2];
+    m.render(0, &mut block);
+    let p = *m.track_peaks();
+    assert!(p[2][0] > 0.1 && p[2][1] < 0.01, "track 2 starts hard left: {:?}", p[2]);
+    assert!((p[4][0] - p[4][1]).abs() < 1e-4 && p[4][0] > 0.05, "track 4 centred: {:?}", p[4]);
+    assert!(p[4][0] < p[2][0], "track 4 is at half volume");
+    assert_eq!(p[0], [0.0, 0.0], "an empty track reads silent");
+    m.render(r, &mut block); // 1 s: centred
+    let p = *m.track_peaks();
+    assert!((p[2][0] - p[2][1]).abs() < 0.01, "centred halfway through the sweep: {:?}", p[2]);
+    m.render(2 * r + 100, &mut block); // past the last key: held hard right
+    let p = *m.track_peaks();
+    assert!(p[2][0] < 0.01 && p[2][1] > 0.1, "held hard right: {:?}", p[2]);
+}
+
+#[test]
 fn wav_without_channel_mask_is_not_silent() {
     // ffmpeg writes mono WAVs from lavfi with an unknown channel layout.
     let path = std::env::temp_dir().join("reelforge_nomask.wav");

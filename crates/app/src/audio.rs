@@ -22,7 +22,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, OutputCallbackInfo, SampleFormat, SizedSample};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
 use reelforge_core::{FrameRate, Time};
-use reelforge_media::{MixClip, Mixer};
+use reelforge_media::{MixClip, Mixer, TrackPeaks, MAX_TRACK_METERS};
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering::*};
 use std::sync::Arc;
 use std::time::Instant;
@@ -41,6 +41,8 @@ struct Block {
     data: Vec<f32>, // interleaved stereo; usually BLOCK_FRAMES long, scrub snippets vary
     /// Scrub audio doesn't drive the playback clock.
     scrub: bool,
+    /// Each track's peak in this block, published when it starts playing.
+    tracks: TrackPeaks,
 }
 
 enum Cmd {
@@ -67,6 +69,8 @@ struct Shared {
     /// so `fetch_max` on the bits is a lock-free float max.
     peak: [AtomicU32; 2],
     rms: [AtomicU32; 2],
+    /// Per-track peaks, the same way.
+    track_peak: [[AtomicU32; 2]; MAX_TRACK_METERS],
 }
 
 pub struct AudioEngine {
@@ -99,6 +103,7 @@ impl AudioEngine {
             epoch: Instant::now(),
             peak: [AtomicU32::new(0), AtomicU32::new(0)],
             rms: [AtomicU32::new(0), AtomicU32::new(0)],
+            track_peak: std::array::from_fn(|_| [AtomicU32::new(0), AtomicU32::new(0)]),
         });
         let (cmd_tx, cmd_rx) = bounded(64);
         let (block_tx, block_rx) = bounded::<Block>(QUEUE_BLOCKS);
@@ -144,6 +149,14 @@ impl AudioEngine {
         let take = |a: &AtomicU32| f32::from_bits(a.swap(0, AcqRel));
         let s = &self.shared;
         ([take(&s.peak[0]), take(&s.peak[1])], [take(&s.rms[0]), take(&s.rms[1])])
+    }
+
+    /// Peak level of each track (linear, per channel) since the last call.
+    pub fn take_track_levels(&self) -> TrackPeaks {
+        std::array::from_fn(|i| {
+            let t = &self.shared.track_peak[i];
+            [f32::from_bits(t[0].swap(0, AcqRel)), f32::from_bits(t[1].swap(0, AcqRel))]
+        })
     }
 
     /// Play a short snippet at `at` (call while paused, whenever the playhead moves).
@@ -205,7 +218,7 @@ fn mixer_thread(mut mixer: Mixer, cmds: Receiver<Cmd>, out: Sender<Block>) {
 
         let mut data = vec![0.0; BLOCK_FRAMES * 2];
         mixer.render(pos, &mut data);
-        let mut block = Some(Block { generation, start: pos, data, scrub: false });
+        let mut block = Some(Block { generation, start: pos, data, scrub: false, tracks: *mixer.track_peaks() });
         // Wait for room in the queue, staying responsive to commands.
         while let Some(b) = block.take() {
             select! {
@@ -222,7 +235,7 @@ fn mixer_thread(mut mixer: Mixer, cmds: Receiver<Cmd>, out: Sender<Block>) {
                         // Re-render this block with the new edit and keep going.
                         let mut data = vec![0.0; BLOCK_FRAMES * 2];
                         mixer.render(pos, &mut data);
-                        block = Some(Block { generation, start: pos, data, scrub: false });
+                        block = Some(Block { generation, start: pos, data, scrub: false, tracks: *mixer.track_peaks() });
                     }
                     Err(_) => return,
                 },
@@ -253,7 +266,7 @@ fn scrub_snippet(mixer: &mut Mixer, at: i64, generation: u64, rate: f64) -> Bloc
             data[k * 2 + 1] *= g;
         }
     }
-    Block { generation, start: at, data, scrub: true }
+    Block { generation, start: at, data, scrub: true, tracks: *mixer.track_peaks() }
 }
 
 fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, blocks: Receiver<Block>, shared: Arc<Shared>) -> Result<cpal::Stream>
@@ -281,7 +294,17 @@ where
                 current = None;
                 offset = 0;
                 match blocks.try_recv() {
-                    Ok(b) if b.generation == generation => current = Some(b),
+                    Ok(b) if b.generation == generation => {
+                        // This block's track levels are what's heard from now on.
+                        for (slot, lv) in shared.track_peak.iter().zip(b.tracks.iter()) {
+                            for c in 0..2 {
+                                if lv[c] > 0.0 {
+                                    slot[c].fetch_max(lv[c].to_bits(), AcqRel);
+                                }
+                            }
+                        }
+                        current = Some(b)
+                    }
                     Ok(_stale) => continue, // dropped here; freeing a Vec is acceptable at this size
                     Err(_) => break,        // underrun or stopped: play silence
                 }

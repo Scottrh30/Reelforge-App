@@ -105,7 +105,7 @@ fn worker_loop(queue: Arc<(Mutex<Queue>, Condvar)>, done: crossbeam_channel::Sen
         };
         let entry = open.remove(i);
         let (path, mut src) = entry;
-        let image = src.frame_at_blocking(Time(req.at), Duration::from_secs(5)).map(|f| ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba));
+        let image = src.frame_at_blocking(Time(req.at), Duration::from_secs(5)).map(|f| ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba()));
         open.push((path, src));
         if done.send((req.media, req.at, image)).is_err() {
             return;

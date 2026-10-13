@@ -492,6 +492,8 @@ impl Command for SetClipAudio {
             "Change crossfade"
         } else if self.old.volume_keys != self.new.volume_keys {
             "Change volume keyframes"
+        } else if self.old.pan_keys != self.new.pan_keys {
+            "Change pan keyframes"
         } else if (self.old.fade_in, self.old.fade_out) != (self.new.fade_in, self.new.fade_out) {
             "Change fade"
         } else {

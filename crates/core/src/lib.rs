@@ -11,6 +11,7 @@ pub mod clipboard;
 pub mod collect;
 pub mod edit;
 pub mod effects;
+pub mod frame;
 pub mod lut;
 pub mod mask;
 pub mod plugin;
@@ -24,7 +25,7 @@ pub mod transition;
 pub mod undo;
 
 pub use anim::{Curve, Interp, Key, Prop, TransformAnim};
-pub use audio::{ClipAudio, TrackAudio, VolumeKey};
+pub use audio::{ClipAudio, PanKey, TrackAudio, VolumeKey};
 pub use channels::Channel;
 pub use edit::{TrimMode, TrimPlan};
 pub use effects::{Effect, EffectCategory, EffectData, EffectKind, EffectValues, Param, ParamSpec, ParamUi};

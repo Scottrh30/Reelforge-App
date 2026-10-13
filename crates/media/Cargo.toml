@@ -11,3 +11,4 @@ ffmpeg-next.workspace = true
 crossbeam-channel.workspace = true
 anyhow.workspace = true
 log.workspace = true
+serde.workspace = true

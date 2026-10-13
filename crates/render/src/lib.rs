@@ -28,6 +28,38 @@ use std::collections::HashMap;
 
 pub use wgpu;
 
+mod yuv;
+pub use reelforge_core::frame::YuvPlanes;
+
+/// A layer's pixels as the compositor receives them.
+#[derive(Clone, Copy)]
+pub enum PixelData<'a> {
+    /// Tightly packed RGBA8, sRGB-encoded, straight alpha.
+    Rgba(&'a [u8]),
+    /// Decoded 4:2:0 YUV, converted to RGB on the GPU.
+    Yuv(&'a YuvPlanes),
+}
+
+impl PixelData<'_> {
+    /// The data really is a picture of `size` (and not empty).
+    fn matches(&self, size: [u32; 2]) -> bool {
+        size[0] > 0
+            && match self {
+                PixelData::Rgba(px) => px.len() as u64 == size[0] as u64 * size[1] as u64 * 4,
+                PixelData::Yuv(y) => [y.width, y.height] == size && y.planes.len() == if y.layout.interleaved() { 2 } else { 3 },
+            }
+    }
+}
+
+impl<'a> From<&'a reelforge_core::frame::Pixels> for PixelData<'a> {
+    fn from(p: &'a reelforge_core::frame::Pixels) -> Self {
+        match p {
+            reelforge_core::frame::Pixels::Rgba(b) => PixelData::Rgba(b),
+            reelforge_core::frame::Pixels::Yuv(y) => PixelData::Yuv(y),
+        }
+    }
+}
+
 pub mod plugin;
 pub mod text;
 
@@ -35,6 +67,19 @@ const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// Gamma-encoded 8-bit, which is what egui expects for user textures.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// The 16-bit export output (read back and converted to 16-bit integers).
+const DEEP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// The curve for a 16-bit export frame ([`Compositor::read_output_deep`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeepCurve {
+    /// sRGB-encoded BT.709 (SDR), as the 8-bit output but with more precision.
+    Srgb,
+    /// BT.2020 primaries, PQ (HDR10); SDR white at 203 nits.
+    Pq,
+    /// BT.2020 primaries, HLG; SDR white at 75% signal.
+    Hlg,
+}
 /// Draw calls per frame (a dissolve uses three).
 const MAX_DRAWS: usize = 128;
 const UNIFORM_SIZE: u64 = 128; // mat4 + vec2 + 2×f32 + 3×vec4
@@ -53,8 +98,8 @@ pub struct LayerInput<'a> {
     pub key: u64,
     /// Changes whenever `pixels` changes (e.g. a hash of media/pts/generation).
     pub content_id: u64,
-    /// Tightly packed RGBA8, sRGB-encoded.
-    pub pixels: &'a [u8],
+    /// The picture: RGBA8 (sRGB-encoded) or YUV planes.
+    pub pixels: PixelData<'a>,
     pub pixel_size: [u32; 2],
     /// Size of the layer in frame pixels at 100% scale (the media's native
     /// size, which can differ from `pixel_size` when decoding a proxy).
@@ -163,6 +208,8 @@ pub struct Compositor {
     fx_targets: HashMap<u64, FxTargets>,
     output_pipeline: wgpu::RenderPipeline,
     output_alpha_pipeline: wgpu::RenderPipeline,
+    /// 16-bit export outputs: sRGB, PQ, HLG.
+    deep_pipelines: [wgpu::RenderPipeline; 3],
     /// Render over transparency and keep the alpha in the output (for composite
     /// shots, which are layered again), instead of over opaque black.
     pub transparent: bool,
@@ -188,6 +235,8 @@ pub struct Compositor {
     targets: Option<Targets>,
     /// Bumped when the output texture is recreated (resize), so a UI can re-register it.
     pub output_generation: u64,
+    /// Converts YUV layers into their RGBA layer textures.
+    yuv: yuv::YuvConverter,
 }
 
 fn blend_state(mode: BlendMode) -> wgpu::BlendState {
@@ -391,7 +440,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&output_layout)],
             immediate_size: 0,
         });
-        let output_pipeline_for = |entry: &str| {
+        let output_pipeline_with = |entry: &str, format: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
                 layout: Some(&output_pl),
@@ -405,7 +454,7 @@ impl Compositor {
                     module: &output_shader,
                     entry_point: Some(entry),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: OUTPUT_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
@@ -414,8 +463,9 @@ impl Compositor {
                 cache: None,
             })
         };
-        let output_pipeline = output_pipeline_for("fs_output");
-        let output_alpha_pipeline = output_pipeline_for("fs_output_alpha");
+        let output_pipeline = output_pipeline_with("fs_output", OUTPUT_FORMAT);
+        let output_alpha_pipeline = output_pipeline_with("fs_output_alpha", OUTPUT_FORMAT);
+        let deep_pipelines = ["fs_deep_srgb", "fs_deep_pq", "fs_deep_hlg"].map(|e| output_pipeline_with(e, DEEP_FORMAT));
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("layer uniforms"),
@@ -456,6 +506,8 @@ impl Compositor {
             fx_targets: HashMap::new(),
             output_pipeline,
             output_alpha_pipeline,
+            deep_pipelines,
+            yuv: yuv::YuvConverter::new(device, LAYER_FORMAT),
             transparent: false,
             texture_layout,
             output_layout,
@@ -593,7 +645,8 @@ impl Compositor {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: LAYER_FORMAT,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                // Written by upload (RGBA) or by the YUV conversion pass.
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             });
             let view = texture.create_view(&Default::default());
@@ -608,12 +661,18 @@ impl Compositor {
             self.layers.insert(l.key, LayerTex { texture, bind_group, size: l.pixel_size, content_id: u64::MAX });
         }
         let t = self.layers.get_mut(&l.key).unwrap();
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            l.pixels,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
+        match l.pixels {
+            PixelData::Rgba(px) => self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                px,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            ),
+            PixelData::Yuv(planes) => {
+                let view = t.texture.create_view(&Default::default());
+                self.yuv.convert(&self.device, &self.queue, l.key, planes, &view);
+            }
+        }
         t.content_id = l.content_id;
     }
 
@@ -736,7 +795,7 @@ impl Compositor {
         };
 
         for l in all_layers() {
-            if l.pixels.len() as u64 == l.pixel_size[0] as u64 * l.pixel_size[1] as u64 * 4 && l.pixel_size[0] > 0 {
+            if l.pixels.matches(l.pixel_size) {
                 self.upload(l);
             }
             if let Some(m) = l.mask.filter(|m| m.pixels.len() as u64 == m.size[0] as u64 * m.size[1] as u64 && m.size[0] > 0) {
@@ -1112,6 +1171,7 @@ impl Compositor {
     /// Drop cached textures for layers not in `keep`.
     pub fn retain_layers(&mut self, keep: impl Fn(u64) -> bool) {
         self.layers.retain(|k, _| keep(*k));
+        self.yuv.retain(&keep);
         self.fx_targets.retain(|k, _| keep(*k));
         self.masks.retain(|k, _| keep(*k));
         self.tables.retain(|k, _| keep(k.0));
@@ -1151,6 +1211,112 @@ impl Compositor {
         drop(mapped);
         buf.unmap();
         Some(out)
+    }
+}
+
+impl Compositor {
+    /// Read the last rendered frame back as tightly packed 16-bit RGBA in
+    /// `curve` (for 10-bit and HDR export). Blocks on the GPU.
+    pub fn read_output_deep(&self, curve: DeepCurve) -> Option<Vec<u16>> {
+        let t = self.targets.as_ref()?;
+        let [w, h] = t.size;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("deep output"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEEP_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let row = 8 * w;
+        let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("deep readback"),
+            size: padded as u64 * h as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("deep output"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            });
+            let i = match curve {
+                DeepCurve::Srgb => 0,
+                DeepCurve::Pq => 1,
+                DeepCurve::Hlg => 2,
+            };
+            pass.set_pipeline(&self.deep_pipelines[i]);
+            pass.set_bind_group(0, &t.output_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        rx.recv().ok()?.ok()?;
+        let mapped = slice.get_mapped_range().ok()?;
+        let lut = half_to_unorm16();
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h as usize {
+            for px in mapped[y * padded as usize..][..row as usize].chunks_exact(2) {
+                out.push(lut[u16::from_le_bytes([px[0], px[1]]) as usize]);
+            }
+        }
+        drop(mapped);
+        buf.unmap();
+        Some(out)
+    }
+}
+
+/// Every half-float bit pattern clamped to 0..1 and scaled to 0..65535.
+fn half_to_unorm16() -> &'static [u16] {
+    static LUT: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| (0..=u16::MAX).map(|h| (half_to_f32(h).clamp(0.0, 1.0) * 65535.0).round() as u16).collect())
+}
+
+/// IEEE 754 half → f32 (NaN reads as 0).
+fn half_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = ((h >> 10) & 0x1f) as i32;
+    let frac = (h & 0x3ff) as f32;
+    match exp {
+        0 => sign * frac * 2f32.powi(-24),
+        31 => if frac == 0.0 { sign * f32::INFINITY } else { 0.0 },
+        e => sign * (1.0 + frac / 1024.0) * 2f32.powi(e - 15),
+    }
+}
+
+#[cfg(test)]
+mod half_tests {
+    use super::*;
+
+    #[test]
+    fn half_floats_decode() {
+        assert_eq!(half_to_f32(0x3c00), 1.0);
+        assert_eq!(half_to_f32(0x3800), 0.5);
+        assert_eq!(half_to_f32(0xc000), -2.0);
+        assert_eq!(half_to_f32(0x0001), 2f32.powi(-24));
+        let lut = half_to_unorm16();
+        assert_eq!((lut[0x3c00], lut[0x3800], lut[0xbc00], lut[0x4000]), (65535, 32768, 0, 65535));
     }
 }
 

@@ -33,14 +33,14 @@ fn title_frame(titles: &mut HashMap<ClipId, TitleCache>, id: ClipId, spec: &reel
     let hash = spec.content_hash(frame);
     let entry = titles.entry(id).or_insert_with(|| TitleCache {
         hash: hash ^ 1,
-        frame: VideoFrame { pts: Time::ZERO, width: 0, height: 0, rgba: Arc::from(Vec::new()), generation: 0 },
+        frame: VideoFrame::from_rgba(Time::ZERO, 0, 0, Arc::from(Vec::new()), 0),
         bounds: None,
         missing_font: false,
         last_used: Instant::now(),
     });
     if entry.hash != hash {
         let r = reelforge_render::text::render_title(spec, frame);
-        entry.frame = VideoFrame { pts: Time::ZERO, width: r.width, height: r.height, rgba: r.rgba, generation: hash };
+        entry.frame = VideoFrame::from_rgba(Time::ZERO, r.width, r.height, r.rgba, hash);
         (entry.hash, entry.bounds, entry.missing_font) = (hash, r.bounds, r.missing_font);
     }
     entry.last_used = Instant::now();
@@ -75,7 +75,7 @@ fn offline_frame(name: &str, size: [u32; 2]) -> VideoFrame {
         }
         o[3] = 255;
     }
-    VideoFrame { pts: Time::ZERO, width: w, height: h, rgba: Arc::from(rgba), generation: 0 }
+    VideoFrame::from_rgba(Time::ZERO, w, h, Arc::from(rgba), 0)
 }
 
 struct Gpu {

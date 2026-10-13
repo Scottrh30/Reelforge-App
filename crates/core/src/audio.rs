@@ -36,6 +36,13 @@ pub struct VolumeKey {
     pub db: f32,
 }
 
+/// A pan keyframe (-1 left … +1 right), anchored to source time like [`VolumeKey`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PanKey {
+    pub at: Time,
+    pub pan: f32,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClipAudio {
@@ -49,17 +56,25 @@ pub struct ClipAudio {
     /// Length of an equal-power crossfade with the clip that ends exactly where
     /// this one starts on the same track (0 = a plain cut).
     pub crossfade_in: Time,
+    /// Pan automation, sorted by `at`. When non-empty it replaces `pan`.
+    pub pan_keys: Vec<PanKey>,
 }
 
 impl Default for ClipAudio {
     fn default() -> Self {
-        Self { volume_db: 0.0, pan: 0.0, fade_in: Time::ZERO, fade_out: Time::ZERO, volume_keys: Vec::new(), crossfade_in: Time::ZERO }
+        Self { volume_db: 0.0, pan: 0.0, fade_in: Time::ZERO, fade_out: Time::ZERO, volume_keys: Vec::new(), crossfade_in: Time::ZERO, pan_keys: Vec::new() }
     }
 }
 
 /// Volume in dB at `x` along a sorted keyframe list: linear in dB between keys
 /// (sounds even), held flat before the first and after the last.
 pub fn interpolate_db(keys: &[(i64, f32)], x: i64) -> f32 {
+    interpolate(keys, x)
+}
+
+/// Linear interpolation along sorted `(position, value)` keys, held flat
+/// before the first and after the last (0 with no keys).
+pub fn interpolate(keys: &[(i64, f32)], x: i64) -> f32 {
     match keys {
         [] => 0.0,
         [(_, db)] => *db,
@@ -120,6 +135,46 @@ impl ClipAudio {
 
     pub fn key_index_at(&self, at: Time) -> Option<usize> {
         self.volume_keys.iter().position(|k| k.at == at)
+    }
+
+    pub fn is_pan_animated(&self) -> bool {
+        !self.pan_keys.is_empty()
+    }
+
+    /// Pan (-1…+1) at source time `t`: linear between keys, held at the ends.
+    pub fn pan_at(&self, t: Time) -> f32 {
+        let keys = &self.pan_keys;
+        if keys.is_empty() {
+            return self.pan;
+        }
+        let i = keys.partition_point(|k| k.at <= t);
+        if i == 0 {
+            return keys[0].pan;
+        }
+        if i == keys.len() {
+            return keys[i - 1].pan;
+        }
+        let (a, b) = (keys[i - 1], keys[i]);
+        if b.at == a.at {
+            return b.pan;
+        }
+        a.pan + (b.pan - a.pan) * ((t.0 - a.at.0) as f32 / (b.at.0 - a.at.0) as f32)
+    }
+
+    /// Add a pan key at source time `at`, replacing one already there.
+    pub fn set_pan_key(&mut self, at: Time, pan: f32) {
+        let pan = pan.clamp(-1.0, 1.0);
+        match self.pan_keys.iter_mut().find(|k| k.at == at) {
+            Some(k) => k.pan = pan,
+            None => {
+                let i = self.pan_keys.partition_point(|k| k.at < at);
+                self.pan_keys.insert(i, PanKey { at, pan });
+            }
+        }
+    }
+
+    pub fn pan_key_index_at(&self, at: Time) -> Option<usize> {
+        self.pan_keys.iter().position(|k| k.at == at)
     }
 
     /// Fades limited so they fit in a clip of `duration` (and can't overlap).
@@ -219,6 +274,25 @@ mod tests {
         assert_eq!(a.volume_keys.len(), 3, "same time replaces");
         a.set_key(Time(400), 99.0);
         assert_eq!(a.volume_keys[3].db, MAX_DB, "clamped");
+    }
+
+    #[test]
+    fn pan_keys_interpolate_linearly_and_hold_at_the_ends() {
+        let mut a = ClipAudio { pan: 0.25, ..Default::default() };
+        assert_eq!(a.pan_at(Time(50)), 0.25, "no keys: constant pan");
+        a.set_pan_key(Time(300), 1.0);
+        a.set_pan_key(Time(100), -1.0);
+        assert!(a.is_pan_animated());
+        assert_eq!(a.pan_at(Time(0)), -1.0);
+        assert_eq!(a.pan_at(Time(200)), 0.0);
+        assert_eq!(a.pan_at(Time(250)), 0.5);
+        assert_eq!(a.pan_at(Time(9999)), 1.0);
+        a.set_pan_key(Time(100), -9.0);
+        assert_eq!((a.pan_keys.len(), a.pan_keys[0].pan), (2, -1.0), "replaced and clamped");
+        assert_eq!(a.pan_key_index_at(Time(300)), Some(1));
+        // Older projects (no pan_keys) still load.
+        let old: ClipAudio = serde_json::from_str(r#"{"volume_db":0.0,"pan":0.5}"#).unwrap();
+        assert!(old.pan_keys.is_empty() && old.pan == 0.5);
     }
 
     #[test]

@@ -57,24 +57,80 @@ impl Channel {
 }
 
 pub struct Meters {
+    /// The master output.
     pub ch: [Channel; 2],
+    /// Each track of the sequence being played (by track index), peak only.
+    pub tracks: Vec<[Channel; 2]>,
     last: Instant,
 }
 
 impl Default for Meters {
     fn default() -> Self {
-        Self { ch: [Channel::default(); 2], last: Instant::now() }
+        Self { ch: [Channel::default(); 2], tracks: vec![[Channel::default(); 2]; reelforge_media::MAX_TRACK_METERS], last: Instant::now() }
     }
 }
 
 impl Meters {
-    pub fn update(&mut self, peaks: [f32; 2], rms: [f32; 2]) {
+    /// Feed the master levels and every track's peaks (once per frame).
+    pub fn update_all(&mut self, peaks: [f32; 2], rms: [f32; 2], tracks: &reelforge_media::TrackPeaks) {
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32().min(0.25);
         self.last = now;
         for c in 0..2 {
             self.ch[c].update(peaks[c], rms[c], dt, now);
         }
+        for (m, lv) in self.tracks.iter_mut().zip(tracks.iter()) {
+            for c in 0..2 {
+                m[c].update(lv[c], lv[c], dt, now);
+            }
+        }
+    }
+
+    /// Read the levels played since the last frame from the audio engine.
+    pub fn poll(&mut self, audio: Option<&crate::audio::AudioEngine>) {
+        if let Some(a) = audio {
+            let (p, r) = a.take_levels();
+            let t = a.take_track_levels();
+            self.update_all(p, r, &t);
+        }
+    }
+
+    /// Anything still moving (so the UI keeps repainting).
+    pub fn any_active(&self) -> bool {
+        self.ch.iter().any(Channel::active) || self.tracks.iter().flatten().any(Channel::active)
+    }
+
+    /// Reset every clip light.
+    pub fn reset_clips(&mut self) {
+        for c in self.ch.iter_mut().chain(self.tracks.iter_mut().flatten()) {
+            c.clipped = false;
+        }
+    }
+}
+
+/// A small horizontal stereo meter (one bar per channel), as in a track header.
+pub fn paint_track_meter(painter: &egui::Painter, rect: Rect, ch: &[Channel; 2]) {
+    painter.rect_filled(rect, 1.0, Color32::from_gray(22));
+    let gap = 1.0;
+    let h = ((rect.height() - gap) / 2.0).max(1.0);
+    let x_of = |db: f32| rect.left() + y_frac(db) * rect.width();
+    for (c, m) in ch.iter().enumerate() {
+        let y = rect.top() + c as f32 * (h + gap);
+        for (lo, hi) in [(FLOOR_DB, -18.0), (-18.0, -6.0), (-6.0, 0.0)] {
+            let top_db = m.peak_db.min(hi);
+            if top_db > lo {
+                let r = Rect::from_min_max(Pos2::new(x_of(lo), y), Pos2::new(x_of(top_db), y + h));
+                painter.rect_filled(r, 0.0, colour(hi - 0.1));
+            }
+        }
+        if m.hold_db > FLOOR_DB {
+            let x = x_of(m.hold_db);
+            painter.line_segment([Pos2::new(x, y), Pos2::new(x, y + h)], Stroke::new(1.5, colour(m.hold_db)));
+        }
+    }
+    if ch.iter().any(|m| m.clipped) {
+        let led = Rect::from_min_max(Pos2::new(rect.right() - 3.0, rect.top()), rect.max);
+        painter.rect_filled(led, 0.0, Color32::from_rgb(240, 40, 40));
     }
 }
 
@@ -94,10 +150,8 @@ fn y_frac(db: f32) -> f32 {
 }
 
 pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
-    if let Some(a) = &st.playback.audio {
-        let (p, r) = a.take_levels();
-        st.meters.update(p, r);
-    } else {
+    // Levels are read once a frame by the app (`Meters::poll`), for the track meters too.
+    if st.playback.audio.is_none() {
         ui.weak("No audio device");
         return;
     }
@@ -156,13 +210,11 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     }
 
     if resp.clicked() {
-        for c in &mut st.meters.ch {
-            c.clipped = false;
-        }
+        st.meters.reset_clips();
     }
     resp.on_hover_text("Master output. Bars: peak (dim) and RMS (bright); line: peak hold. Click to reset the clip lights.");
 
-    if st.meters.ch.iter().any(Channel::active) {
+    if st.meters.any_active() {
         ui.ctx().request_repaint();
     }
 }
@@ -193,6 +245,22 @@ mod tests {
         c.update(0.1, 0.07, 1.0, t0 + Duration::from_secs(2));
         assert!(c.hold_db < -10.0, "hold released after 1.5 s: {}", c.hold_db);
         assert!(c.clipped, "clip light latches");
+    }
+
+    #[test]
+    fn track_meters_follow_their_own_levels() {
+        let mut m = Meters::default();
+        let mut tracks = [[0.0f32; 2]; reelforge_media::MAX_TRACK_METERS];
+        tracks[2] = [0.5, 0.0];
+        m.update_all([0.5, 0.5], [0.3, 0.3], &tracks);
+        assert!((m.tracks[2][0].peak_db - -6.02).abs() < 0.05);
+        assert!(!m.tracks[2][1].active() && !m.tracks[0][0].active());
+        assert!(m.any_active());
+        tracks[2] = [1.0, 0.0];
+        m.update_all([1.0, 1.0], [0.7, 0.7], &tracks);
+        assert!(m.tracks[2][0].clipped);
+        m.reset_clips();
+        assert!(!m.tracks[2][0].clipped && !m.ch[0].clipped);
     }
 
     #[test]

@@ -3147,6 +3147,7 @@ dependencies = [
  "ffmpeg-next",
  "log",
  "reelforge-core",
+ "serde",
 ]
 
 [[package]]

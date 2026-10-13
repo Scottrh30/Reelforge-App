@@ -105,7 +105,7 @@ pub fn make_proxy(src: &Path, info: &MediaInfo, cancel: &AtomicBool, mut progres
         let t = Time::from_frame(i, rate);
         let f = source.frame_at_blocking(t, Duration::from_secs(30));
         match &f {
-            Some(f) if f.width == first.width && f.height == first.height => writer.write_video(&f.rgba)?,
+            Some(f) if f.width == first.width && f.height == first.height => writer.write_video(&f.rgba())?,
             _ => writer.write_video(&blank)?,
         }
         progress((i + 1) as f32 / frames as f32);

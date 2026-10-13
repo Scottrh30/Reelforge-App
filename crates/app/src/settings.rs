@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct Settings {
     /// Windows turned off in the Tabs menu.
     pub hidden_tabs: Vec<crate::app::Tab>,
+    /// Export settings saved under a name (File → Export… → Save as preset).
+    pub export_presets: Vec<crate::export_ui::UserPreset>,
     /// Decode video on the GPU when possible.
     pub hw_decode: bool,
     /// Show proxies (instead of the original files) in the viewer when they exist.
@@ -27,7 +29,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { hidden_tabs: Vec::new(), hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, autosave_minutes: 2, timeline_thumbnails: true, viewer_snapping: true }
+        Self { hidden_tabs: Vec::new(), export_presets: Vec::new(), hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, autosave_minutes: 2, timeline_thumbnails: true, viewer_snapping: true }
     }
 }
 

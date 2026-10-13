@@ -64,7 +64,7 @@ impl FrameCache {
 
     /// Keep `frame` (which lasts `dur`).
     pub fn insert(&self, key: &CacheKey, frame: &VideoFrame, dur: Time) {
-        let size = frame.rgba.len();
+        let size = frame.byte_len();
         let mut g = self.inner.lock().unwrap();
         if size > g.budget {
             return;
@@ -75,7 +75,7 @@ impl FrameCache {
         let old = g.files.entry(key.clone()).or_default().insert(pts, Entry { frame: frame.clone(), dur, stamp });
         if let Some(o) = old {
             g.lru.remove(&o.stamp);
-            g.used -= o.frame.rgba.len();
+            g.used -= o.frame.byte_len();
         }
         g.used += size;
         g.lru.insert(stamp, (key.clone(), pts));
@@ -131,7 +131,7 @@ impl Inner {
             let Some((_, (key, pts))) = self.lru.pop_first() else { break };
             if let Some(m) = self.files.get_mut(&key) {
                 if let Some(e) = m.remove(&pts) {
-                    self.used -= e.frame.rgba.len();
+                    self.used -= e.frame.byte_len();
                 }
                 if m.is_empty() {
                     self.files.remove(&key);
@@ -147,7 +147,7 @@ mod tests {
     use std::sync::Arc;
 
     fn frame(pts: f64, bytes: usize) -> VideoFrame {
-        VideoFrame { pts: Time::from_secs_f64(pts), width: 1, height: 1, rgba: Arc::from(vec![0u8; bytes]), generation: 0 }
+        VideoFrame::from_rgba(Time::from_secs_f64(pts), 1, 1, Arc::from(vec![0u8; bytes]), 0)
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! A video decoder running on its own thread.
 //!
-//! The thread decodes forward from the current position and pushes RGBA frames
-//! into a small bounded channel, so it naturally stays a few frames ahead of
+//! The thread decodes forward from the current position and pushes frames
+//! (YUV planes as decoded, converted to RGB later on the GPU; RGBA for the
+//! occasional format that isn't 4:2:0) into a small bounded channel, so it naturally stays a few frames ahead of
 //! playback and blocks when the consumer stops reading. Seeks carry a
 //! `generation` number; frames from before the latest seek are tagged with the
 //! old generation so the consumer can drop them.
@@ -11,21 +12,47 @@ use anyhow::{anyhow, Context as _, Result};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
 use ffmpeg_next as ff;
 use ff::software::scaling::{context::Context as Scaler, flag::Flags};
+use reelforge_core::frame::{Pixels, YuvLayout, YuvMatrix, YuvPlanes};
 use reelforge_core::{Rational, Time};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-/// A decoded frame, converted to tightly packed 8-bit RGBA.
+/// A decoded frame: YUV planes as the decoder made them, or RGBA.
 #[derive(Clone)]
 pub struct VideoFrame {
     /// Presentation time relative to the start of the stream.
     pub pts: Time,
     pub width: u32,
     pub height: u32,
-    pub rgba: Arc<[u8]>,
+    pub pixels: Pixels,
     pub generation: u64,
+}
+
+impl VideoFrame {
+    /// A frame from tightly packed RGBA8.
+    pub fn from_rgba(pts: Time, width: u32, height: u32, rgba: Arc<[u8]>, generation: u64) -> Self {
+        Self { pts, width, height, pixels: Pixels::Rgba(rgba), generation }
+    }
+
+    /// The pixels as RGBA8 (converted on the CPU if they're YUV).
+    pub fn rgba(&self) -> Arc<[u8]> {
+        self.pixels.to_rgba()
+    }
+
+    /// Memory used by the pixels.
+    pub fn byte_len(&self) -> usize {
+        self.pixels.byte_len()
+    }
+
+    /// Brightness 0–255 per pixel (for the motion tracker).
+    pub fn luma(&self) -> Vec<f32> {
+        match &self.pixels {
+            Pixels::Yuv(y) => y.luma(),
+            Pixels::Rgba(b) => reelforge_core::track::luma_of_rgba(b),
+        }
+    }
 }
 
 impl std::fmt::Debug for VideoFrame {
@@ -109,6 +136,38 @@ impl Drop for DecoderHandle {
 }
 
 type ScalerKey = (ff::format::Pixel, u32, u32, ff::util::color::Space, ff::util::color::Range);
+
+/// The 4:2:0 formats kept as YUV, and the layout they become.
+fn yuv_layout(fmt: ff::format::Pixel) -> Option<YuvLayout> {
+    use ff::format::Pixel as P;
+    match fmt {
+        P::YUV420P | P::YUVJ420P => Some(YuvLayout::I420),
+        P::NV12 => Some(YuvLayout::Nv12),
+        P::YUV420P10LE => Some(YuvLayout::I420P10),
+        P::P010LE => Some(YuvLayout::P010),
+        _ => None,
+    }
+}
+
+/// Copy a frame's planes into tight rows (FFmpeg pads each row to `stride`).
+fn pack_planes(f: &ff::frame::Video, layout: YuvLayout) -> Vec<Vec<u8>> {
+    let (w, h) = (f.width() as usize, f.height() as usize);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let b = layout.sample_bytes();
+    let shapes: Vec<(usize, usize)> = if layout.interleaved() { vec![(w * b, h), (cw * 2 * b, ch)] } else { vec![(w * b, h), (cw * b, ch), (cw * b, ch)] };
+    shapes
+        .into_iter()
+        .enumerate()
+        .map(|(i, (row, rows))| {
+            let (data, stride) = (f.data(i), f.stride(i));
+            let mut out = Vec::with_capacity(row * rows);
+            for y in 0..rows {
+                out.extend_from_slice(&data[y * stride..y * stride + row]);
+            }
+            out
+        })
+        .collect()
+}
 
 struct DecodeState {
     ictx: ff::format::context::Input,
@@ -353,6 +412,32 @@ impl DecodeState {
         let (dw, dh) = fit(sw, sh, self.max_size);
         let space = crate::color::effective_space(src.color_space(), sh);
         let range = src.color_range();
+
+        // 4:2:0 video stays YUV: the GPU converts it as it draws. Shrinking (for the
+        // viewer) is a cheap YUV-to-YUV scale; no colour conversion happens here.
+        if let Some(layout) = yuv_layout(fmt) {
+            let matrix = match space {
+                ff::util::color::Space::BT709 => YuvMatrix::Bt709,
+                ff::util::color::Space::BT2020NCL | ff::util::color::Space::BT2020CL => YuvMatrix::Bt2020,
+                _ => YuvMatrix::Bt601,
+            };
+            let full_range = range == ff::util::color::Range::JPEG || fmt == ff::format::Pixel::YUVJ420P;
+            let (planes, layout, w, h) = if (dw, dh) == (sw, sh) {
+                (pack_planes(src, layout), layout, sw, sh)
+            } else {
+                let (out_fmt, out_layout) = if layout.bits() > 8 { (ff::format::Pixel::YUV420P10LE, YuvLayout::I420P10) } else { (ff::format::Pixel::YUV420P, YuvLayout::I420) };
+                let key = (fmt, sw, sh, space, range);
+                if self.scaler.as_ref().map(|(_, k)| *k != key).unwrap_or(true) {
+                    self.scaler = Some((Scaler::get(fmt, sw, sh, out_fmt, dw, dh, Flags::BILINEAR)?, key));
+                }
+                let mut small = ff::frame::Video::empty();
+                self.scaler.as_mut().unwrap().0.run(src, &mut small)?;
+                (pack_planes(&small, out_layout), out_layout, dw, dh)
+            };
+            let yuv = YuvPlanes { layout, width: w, height: h, planes, matrix, full_range };
+            return Ok(VideoFrame { pts, width: w, height: h, pixels: Pixels::Yuv(Arc::new(yuv)), generation: self.generation });
+        }
+
         let key = (fmt, sw, sh, space, range);
         if self.scaler.as_ref().map(|(_, k)| *k != key).unwrap_or(true) {
             let mut s = Scaler::get(fmt, sw, sh, ff::format::Pixel::RGBA, dw, dh, Flags::BILINEAR)?;
@@ -370,7 +455,7 @@ impl DecodeState {
         for y in 0..dh as usize {
             packed.extend_from_slice(&data[y * stride..y * stride + row]);
         }
-        Ok(VideoFrame { pts, width: dw, height: dh, rgba: packed.into(), generation: self.generation })
+        Ok(VideoFrame::from_rgba(pts, dw, dh, packed.into(), self.generation))
     }
 }
 

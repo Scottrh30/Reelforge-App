@@ -55,7 +55,7 @@ fn writes_playable_h264_aac_mp4() {
     for (frame_no, want) in [(10, [230, 120, 30]), (45, [20, 160, 170])] {
         let f = src.frame_at_blocking(Time::from_frame(frame_no, rate), Duration::from_secs(5)).unwrap();
         let i = ((h / 2 * w + w / 2) * 4) as usize;
-        let got = [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2]];
+        let got = [f.rgba()[i], f.rgba()[i + 1], f.rgba()[i + 2]];
         for (g, w) in got.iter().zip(want) {
             assert!((*g as i32 - w).abs() <= 4, "frame {frame_no}: got {got:?}, want {want:?}");
         }

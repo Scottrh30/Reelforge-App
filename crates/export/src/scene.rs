@@ -235,7 +235,7 @@ impl Scene {
         if n.signature != Some(sig) || n.frame.is_none() {
             n.frame = n.compositor.read_output().map(|rgba| {
                 self.generation += 1;
-                VideoFrame { pts: t, width: size[0], height: size[1], rgba: Arc::from(rgba), generation: self.generation }
+                VideoFrame::from_rgba(t, size[0], size[1], Arc::from(rgba), self.generation)
             });
             n.signature = Some(sig);
         }
@@ -251,7 +251,7 @@ fn input(g: &Gathered) -> LayerInput<'_> {
     LayerInput {
         key: g.key,
         content_id: h.finish(),
-        pixels: &g.picture.frame.rgba,
+        pixels: (&g.picture.frame.pixels).into(),
         pixel_size: [g.picture.frame.width, g.picture.frame.height],
         layer_size: g.picture.size,
         transform: g.transform,

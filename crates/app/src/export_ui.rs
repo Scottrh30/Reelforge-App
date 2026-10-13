@@ -9,7 +9,7 @@ use eframe::egui_wgpu::wgpu;
 use egui::{Align2, RichText};
 use reelforge_core::{Project, Sequence, Time};
 use reelforge_export::{export_sequence, frame_range, Cancelled, ExportSettings, Progress, Report};
-use reelforge_media::{Fit, Quality, VideoCodec};
+use reelforge_media::{ColorOut, Fit, Quality, VideoCodec};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
@@ -19,7 +19,7 @@ use std::time::Duration;
 // ---- Presets ---------------------------------------------------------------
 
 /// The output size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Size {
     /// The sequence's size divided by 1, 2 or 4.
     Scaled(u32),
@@ -49,6 +49,7 @@ const COMMON_SIZES: [(u32, u32, &str); 6] = [
 pub enum Preset {
     YouTube1080,
     YouTube4k,
+    YouTubeHdr,
     Vertical,
     Portrait,
     Square,
@@ -62,19 +63,33 @@ pub enum Preset {
 }
 
 /// What a preset sets.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Spec {
     pub video: Option<VideoCodec>,
     pub size: Size,
     pub quality: Quality,
     pub fit: Fit,
     pub hardware: bool,
+    #[serde(default)]
+    pub color: ColorOut,
+    /// Target bitrate (kbit/s) instead of the quality setting.
+    #[serde(default)]
+    pub bitrate_kbps: Option<u32>,
+}
+
+/// Export settings you saved under a name (kept with the app's settings).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UserPreset {
+    pub name: String,
+    pub spec: Spec,
+    pub include_audio: bool,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 11] = [
+    pub const ALL: [Preset; 12] = [
         Preset::YouTube1080,
         Preset::YouTube4k,
+        Preset::YouTubeHdr,
         Preset::Vertical,
         Preset::Portrait,
         Preset::Square,
@@ -90,6 +105,7 @@ impl Preset {
         match self {
             Preset::YouTube1080 => "YouTube 1080p",
             Preset::YouTube4k => "YouTube 4K (H.265)",
+            Preset::YouTubeHdr => "YouTube 4K HDR (H.265, HLG)",
             Preset::Vertical => "Shorts / Reels / TikTok (9:16)",
             Preset::Portrait => "Instagram portrait (4:5)",
             Preset::Square => "Square (1:1)",
@@ -107,6 +123,7 @@ impl Preset {
         match self {
             Preset::YouTube1080 => "H.264 + AAC at 1920×1080, high quality. Plays everywhere.",
             Preset::YouTube4k => "H.265 + AAC at 3840×2160. Smaller files than H.264 at the same quality.",
+            Preset::YouTubeHdr => "10-bit HDR (HLG) H.265 at 3840×2160. Looks right on HDR and ordinary screens; glows and highlights above white get extra brightness on HDR ones.",
             Preset::Vertical => "1080×1920 for phone-first platforms. Wide footage is cropped to fill the frame.",
             Preset::Portrait => "1080×1350 for feeds. Wide footage is cropped to fill the frame.",
             Preset::Square => "1080×1080. Wide footage is cropped to fill the frame.",
@@ -121,11 +138,12 @@ impl Preset {
     }
 
     pub fn spec(self) -> Option<Spec> {
-        let s = |video, size, quality, fit, hardware| Some(Spec { video, size, quality, fit, hardware });
+        let s = |video, size, quality, fit, hardware| Some(Spec { video, size, quality, fit, hardware, color: ColorOut::Sdr8, bitrate_kbps: None });
         use VideoCodec as V;
         match self {
             Preset::YouTube1080 => s(Some(V::H264), Size::Fixed(1920, 1080), Quality::High, Fit::Letterbox, false),
             Preset::YouTube4k => s(Some(V::H265), Size::Fixed(3840, 2160), Quality::High, Fit::Letterbox, false),
+            Preset::YouTubeHdr => Some(Spec { color: ColorOut::HdrHlg, ..s(Some(V::H265), Size::Fixed(3840, 2160), Quality::High, Fit::Letterbox, false)? }),
             Preset::Vertical => s(Some(V::H264), Size::Fixed(1080, 1920), Quality::High, Fit::Crop, false),
             Preset::Portrait => s(Some(V::H264), Size::Fixed(1080, 1350), Quality::High, Fit::Crop, false),
             Preset::Square => s(Some(V::H264), Size::Fixed(1080, 1080), Quality::High, Fit::Crop, false),
@@ -138,6 +156,21 @@ impl Preset {
             Preset::Custom => None,
         }
     }
+}
+
+/// Changes to the saved presets asked for in the dialog.
+enum PresetEdit {
+    Save(String),
+    Delete(String),
+    CancelSave,
+}
+
+/// A sensible starting bitrate for a `w`×`h` export (about YouTube's
+/// recommendations: ~8 Mbit/s for 1080p H.264, less for H.265).
+fn suggested_kbps(w: u32, h: u32, codec: VideoCodec) -> u32 {
+    let bpp = if codec == VideoCodec::H265 { 0.08 } else { 0.13 };
+    let kbps = w as f64 * h as f64 * 30.0 * bpp / 1000.0;
+    ((kbps / 100.0).round() * 100.0).max(500.0) as u32
 }
 
 fn extension(video: Option<VideoCodec>) -> &'static str {
@@ -158,6 +191,10 @@ struct Dialog {
     include_audio: bool,
     /// Export only between the in and out points.
     marked_only: bool,
+    /// The saved preset these settings came from (while they still match it).
+    user_preset: Option<String>,
+    /// Name typed for "Save as preset" (`Some` while that box is open).
+    save_as: Option<String>,
 }
 
 impl Dialog {
@@ -181,9 +218,30 @@ impl Dialog {
     }
 
     /// Settings changed by hand that no longer match the preset make it "Custom".
-    fn update_preset(&mut self) {
+    fn update_preset(&mut self, saved: &[UserPreset]) {
         if self.preset.spec() != Some(self.spec) {
             self.preset = Preset::ALL.into_iter().find(|p| p.spec() == Some(self.spec)).unwrap_or(Preset::Custom);
+        }
+        if let Some(name) = &self.user_preset {
+            if !saved.iter().any(|u| &u.name == name && u.spec == self.spec) {
+                self.user_preset = None;
+            }
+        }
+    }
+
+    fn apply_user(&mut self, u: &UserPreset) {
+        self.spec = u.spec;
+        self.include_audio = u.include_audio;
+        self.user_preset = Some(u.name.clone());
+        self.preset = Preset::ALL.into_iter().find(|p| p.spec() == Some(self.spec)).unwrap_or(Preset::Custom);
+        self.fix_extension();
+    }
+
+    /// What the preset box shows.
+    fn preset_label(&self) -> String {
+        match &self.user_preset {
+            Some(n) => format!("★ {n}"),
+            None => self.preset.label().to_string(),
         }
     }
 }
@@ -265,6 +323,8 @@ impl ExportUi {
                 spec: Preset::YouTube1080.spec().unwrap(),
                 include_audio: true,
                 marked_only,
+                user_preset: None,
+                save_as: None,
             },
         };
         if self.last.is_none() {
@@ -381,6 +441,9 @@ impl ExportUi {
         let mut action = None::<bool>; // Some(true) = export now, Some(false) = add to queue
         let mut close = false;
         let busy = self.jobs.iter().any(|j| !j.state.is_over());
+        let saved_list = st.settings.export_presets.clone();
+        let saved_presets = &saved_list[..];
+        let mut preset_edit = None::<PresetEdit>;
 
         egui::Window::new("Export")
             .open(&mut open)
@@ -392,16 +455,64 @@ impl ExportUi {
                 egui::Grid::new("export_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                     ui.label("Preset");
                     ui.vertical(|ui| {
-                        let mut preset = d.preset;
-                        egui::ComboBox::from_id_salt("export_preset").width(300.0).selected_text(preset.label()).show_ui(ui, |ui| {
-                            for p in Preset::ALL {
-                                ui.selectable_value(&mut preset, p, p.label()).on_hover_text(p.hint());
+                        let mut preset = None;
+                        let mut user = None;
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("export_preset").width(300.0).selected_text(d.preset_label()).show_ui(ui, |ui| {
+                                for p in Preset::ALL {
+                                    if ui.selectable_label(d.user_preset.is_none() && d.preset == p, p.label()).on_hover_text(p.hint()).clicked() {
+                                        preset = Some(p);
+                                    }
+                                }
+                                if !saved_presets.is_empty() {
+                                    ui.separator();
+                                    ui.weak("Your presets");
+                                    for (i, u) in saved_presets.iter().enumerate() {
+                                        if ui.selectable_label(d.user_preset.as_deref() == Some(&u.name), format!("★ {}", u.name)).clicked() {
+                                            user = Some(i);
+                                        }
+                                    }
+                                }
+                            });
+                            if ui.button("Save as preset…").on_hover_text("Keep these settings under a name, for next time").clicked() {
+                                d.save_as = Some(d.user_preset.clone().unwrap_or_default());
+                            }
+                            if let Some(name) = d.user_preset.clone() {
+                                if ui.button("Delete preset").on_hover_text(format!("Forget the saved preset \"{name}\"")).clicked() {
+                                    preset_edit = Some(PresetEdit::Delete(name));
+                                }
                             }
                         });
-                        if preset != d.preset {
-                            d.apply(preset);
+                        if let Some(p) = preset {
+                            d.user_preset = None;
+                            d.apply(p);
                         }
-                        ui.weak(d.preset.hint());
+                        if let Some(i) = user {
+                            d.apply_user(&saved_presets[i]);
+                        }
+                        if let Some(name) = &mut d.save_as {
+                            ui.horizontal(|ui| {
+                                ui.label("Name");
+                                let r = ui.add(egui::TextEdit::singleline(name).desired_width(200.0).hint_text("e.g. Client review 720p"));
+                                if !r.has_focus() && name.is_empty() {
+                                    r.request_focus();
+                                }
+                                let ok = !name.trim().is_empty();
+                                let exists = saved_presets.iter().any(|u| u.name == name.trim());
+                                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if ui.add_enabled(ok, egui::Button::new(if exists { "Replace" } else { "Save" })).clicked() || (enter && ok) {
+                                    preset_edit = Some(PresetEdit::Save(name.trim().to_string()));
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    preset_edit = Some(PresetEdit::CancelSave);
+                                }
+                            });
+                        }
+                        if d.user_preset.is_some() {
+                            ui.weak("Your saved preset.");
+                        } else {
+                            ui.weak(d.preset.hint());
+                        }
                     });
                     ui.end_row();
 
@@ -450,7 +561,40 @@ impl ExportUi {
                             ui.end_row();
                         }
 
-                        if v.uses_quality() {
+                        if v.uses_bitrate() {
+                            ui.label("Rate");
+                            ui.horizontal(|ui| {
+                                let mut by_rate = d.spec.bitrate_kbps.is_some();
+                                if ui.radio(!by_rate, "Quality").on_hover_text("Constant quality: the file is as big as the picture needs").clicked() {
+                                    by_rate = false;
+                                }
+                                ui.add_enabled_ui(!by_rate, |ui| {
+                                    egui::ComboBox::from_id_salt("export_quality").selected_text(d.spec.quality.label()).show_ui(ui, |ui| {
+                                        for q in Quality::ALL {
+                                            ui.selectable_value(&mut d.spec.quality, q, q.label());
+                                        }
+                                    });
+                                });
+                                if ui.radio(by_rate, "Bitrate").on_hover_text("A target average bitrate: predictable file size (peaks go up to 1.5×)").clicked() && !by_rate {
+                                    by_rate = true;
+                                    let (w, h) = d.spec.size.resolve(sw, sh);
+                                    d.spec.bitrate_kbps = Some(suggested_kbps(w, h, v));
+                                }
+                                if !by_rate {
+                                    d.spec.bitrate_kbps = None;
+                                }
+                                if let Some(kbps) = &mut d.spec.bitrate_kbps {
+                                    let mut mbps = *kbps as f64 / 1000.0;
+                                    if ui.add(egui::DragValue::new(&mut mbps).speed(0.1).range(0.2..=400.0).suffix(" Mbit/s").fixed_decimals(1)).changed() {
+                                        *kbps = (mbps * 1000.0).round() as u32;
+                                    }
+                                    let secs = (range_end - range_start).as_secs_f64();
+                                    let mb = (*kbps as f64 * 1000.0 / 8.0 * secs + if d.include_audio && has_audio { 24_000.0 * secs } else { 0.0 }) / 1e6;
+                                    ui.weak(format!("≈ {mb:.0} MB"));
+                                }
+                            });
+                            ui.end_row();
+                        } else if v.uses_quality() {
                             ui.label("Quality");
                             egui::ComboBox::from_id_salt("export_quality").selected_text(d.spec.quality.label()).show_ui(ui, |ui| {
                                 for q in Quality::ALL {
@@ -459,6 +603,25 @@ impl ExportUi {
                             });
                             ui.end_row();
                         }
+
+                        ui.label("Colour");
+                        if v.supports_10bit() || v.supports_hdr() {
+                            ui.vertical(|ui| {
+                                egui::ComboBox::from_id_salt("export_color").width(220.0).selected_text(d.spec.color.label()).show_ui(ui, |ui| {
+                                    for c in ColorOut::ALL {
+                                        ui.selectable_value(&mut d.spec.color, c, c.label()).on_hover_text(c.hint());
+                                    }
+                                });
+                                ui.weak(d.spec.color.hint());
+                            });
+                        } else {
+                            let what = match v {
+                                VideoCodec::ProRes422 | VideoCodec::ProRes422Hq => "SDR, 10-bit (ProRes is always 10-bit)",
+                                _ => "SDR, 8-bit",
+                            };
+                            ui.weak(what).on_hover_text("10-bit and HDR need H.265");
+                        }
+                        ui.end_row();
 
                         ui.label("Encoder");
                         ui.add_enabled_ui(v.has_hardware_encoders(), |ui| {
@@ -488,7 +651,7 @@ impl ExportUi {
                 if d.spec.video != format_before {
                     d.fix_extension();
                 }
-                d.update_preset();
+                d.update_preset(saved_presets);
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -512,6 +675,28 @@ impl ExportUi {
                 });
             });
 
+        match preset_edit {
+            Some(PresetEdit::Save(name)) => {
+                let u = UserPreset { name: name.clone(), spec: d.spec, include_audio: d.include_audio };
+                let list = &mut st.settings.export_presets;
+                match list.iter_mut().find(|x| x.name == name) {
+                    Some(x) => *x = u,
+                    None => list.push(u),
+                }
+                list.sort_by_key(|x| x.name.to_lowercase());
+                d.user_preset = Some(name.clone());
+                d.save_as = None;
+                st.status = format!("Saved the export preset \"{name}\"");
+            }
+            Some(PresetEdit::Delete(name)) => {
+                st.settings.export_presets.retain(|x| x.name != name);
+                d.user_preset = None;
+                st.status = format!("Deleted the export preset \"{name}\"");
+            }
+            Some(PresetEdit::CancelSave) => d.save_as = None,
+            None => {}
+        }
+
         if let Some(now) = action {
             let d = d.clone();
             let mut path = PathBuf::from(d.path.trim());
@@ -531,6 +716,8 @@ impl ExportUi {
                 hardware: d.spec.hardware,
                 fit: d.spec.fit,
                 sequence: st.active,
+                color: d.spec.color,
+                bitrate_kbps: d.spec.bitrate_kbps.filter(|_| d.spec.video.is_some_and(|v| v.uses_bitrate())),
             };
             if self.enqueue(st, settings, d.preset) {
                 self.last = Some(d);
@@ -576,7 +763,16 @@ impl ExportUi {
                                 ui.label(RichText::new(&job.title).strong()).on_hover_text(job.settings.output_path().display().to_string());
                                 let s = &job.settings;
                                 let what = match s.video {
-                                    Some(v) => format!("{} · {}×{}", v.label(), s.width, s.height),
+                                    Some(v) => {
+                                        let mut w = format!("{} · {}×{}", v.label(), s.width, s.height);
+                                        if s.color != ColorOut::Sdr8 && (v.supports_10bit() || v.supports_hdr()) {
+                                            w += &format!(" · {}", s.color.label());
+                                        }
+                                        if let Some(k) = s.bitrate_kbps {
+                                            w += &format!(" · {:.1} Mbit/s", k as f64 / 1000.0);
+                                        }
+                                        w
+                                    }
                                     None => "WAV audio".into(),
                                 };
                                 match &job.state {
@@ -842,7 +1038,7 @@ mod tests {
     use super::*;
 
     fn dialog(path: &str) -> Dialog {
-        Dialog { path: path.into(), preset: Preset::Custom, spec: Preset::YouTube1080.spec().unwrap(), include_audio: true, marked_only: false }
+        Dialog { path: path.into(), preset: Preset::Custom, spec: Preset::YouTube1080.spec().unwrap(), include_audio: true, marked_only: false, user_preset: None, save_as: None }
     }
 
     #[test]
@@ -862,7 +1058,7 @@ mod tests {
             let mut d = dialog("x.mp4");
             d.apply(p);
             d.preset = Preset::Custom;
-            d.update_preset();
+            d.update_preset(&[]);
             assert_eq!(d.preset, p);
         }
     }
@@ -872,11 +1068,43 @@ mod tests {
         let mut d = dialog("a.mp4");
         d.apply(Preset::YouTube1080);
         d.spec.quality = Quality::Low;
-        d.update_preset();
+        d.update_preset(&[]);
         assert_eq!(d.preset, Preset::Custom);
         d.spec.quality = Quality::High;
-        d.update_preset();
+        d.update_preset(&[]);
         assert_eq!(d.preset, Preset::YouTube1080, "back to matching a preset");
+    }
+
+    #[test]
+    fn saved_presets_round_trip_and_follow_edits() {
+        let mut d = dialog("a.mp4");
+        d.apply(Preset::YouTube4k);
+        d.spec.color = ColorOut::Sdr10;
+        d.spec.bitrate_kbps = Some(25_000);
+        let saved = vec![UserPreset { name: "Client 4K".into(), spec: d.spec, include_audio: false }];
+        // Kept with the settings: they survive being written out and read back.
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: Vec<UserPreset> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, saved);
+
+        let mut e = dialog("b.mp4");
+        e.apply_user(&back[0]);
+        assert_eq!((e.spec, e.include_audio, e.preset_label()), (saved[0].spec, false, "★ Client 4K".to_string()));
+        e.update_preset(&back);
+        assert_eq!(e.user_preset.as_deref(), Some("Client 4K"), "still matches");
+        e.spec.bitrate_kbps = Some(10_000);
+        e.update_preset(&back);
+        assert_eq!(e.user_preset, None, "edited: no longer that preset");
+        // Presets saved before colour/bitrate existed still load.
+        let old: Spec = serde_json::from_str(r#"{"video":"H264","size":{"Scaled":1},"quality":"High","fit":"Letterbox","hardware":false}"#).unwrap();
+        assert_eq!((old.color, old.bitrate_kbps), (ColorOut::Sdr8, None));
+    }
+
+    #[test]
+    fn suggested_bitrates_are_sensible() {
+        assert_eq!(suggested_kbps(1920, 1080, VideoCodec::H264), 8100);
+        assert!(suggested_kbps(3840, 2160, VideoCodec::H265) > 15_000);
+        assert_eq!(suggested_kbps(64, 64, VideoCodec::H264), 500);
     }
 
     #[test]
