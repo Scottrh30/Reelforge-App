@@ -10,6 +10,7 @@ use reelforge_render::Compositor;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use crate::render_cache::RenderCache;
 use std::time::{Duration, Instant};
 
 /// Preview frames are decoded at most at this size; export will decode at full resolution.
@@ -84,7 +85,12 @@ struct Gpu {
     scene: Scene,
     texture: Option<egui::TextureId>,
     registered_generation: u64,
+    /// Renders frames for the render cache (off screen, read back).
+    cache_render: Option<(Compositor, Scene)>,
 }
+
+/// Texture key for a frame shown from the render cache.
+const CACHED_KEY: u64 = u64::MAX - 7;
 
 pub struct Preview {
     /// One decoder per clip (not per file), so two clips from the same file
@@ -98,6 +104,10 @@ pub struct Preview {
     /// True when every layer shows its exact frame for the playhead.
     pub exact: bool,
     pub error: Option<String>,
+    /// The cached frame on screen (its content id), while showing one.
+    shown_cached: Option<u64>,
+    /// The last frame came from the render cache.
+    pub from_cache: bool,
 }
 
 impl Preview {
@@ -105,9 +115,9 @@ impl Preview {
         let gpu = render_state.map(|rs| {
             let compositor = Compositor::new(&rs.device, &rs.queue);
             let scene = Scene::new(&rs.device, &rs.queue);
-            Gpu { render_state: rs, compositor, scene, texture: None, registered_generation: 0 }
+            Gpu { render_state: rs, compositor, scene, texture: None, registered_generation: 0, cache_render: None }
         });
-        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None }
+        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false }
     }
 
     /// The composited frame, ready to draw with `egui::Image`/`painter.image`.
@@ -137,8 +147,10 @@ impl Preview {
         self.titles.clear();
         self.offline.clear();
         self.last_signature = 0;
+        self.shown_cached = None;
         if let Some(g) = &mut self.gpu {
             g.scene.reset();
+            g.cache_render = None;
         }
     }
 
@@ -158,10 +170,43 @@ impl Preview {
     }
 
     /// Render sequence `seq` at `t`. `sources` says which file to decode for
-    /// each media item (the original, or its proxy).
-    pub fn update(&mut self, project: &Project, seq: usize, t: Time, playing: bool, sources: &HashMap<MediaId, PathBuf>) {
+    /// each media item (the original, or its proxy). A frame kept in `cache`
+    /// that's still right is shown as it is, without decoding anything.
+    pub fn update(&mut self, project: &Project, seq: usize, t: Time, playing: bool, sources: &HashMap<MediaId, PathBuf>, cache: &mut RenderCache) {
         let Some(sequence) = project.sequences.get(seq) else { return };
         self.error = None;
+
+        let frame = crate::render_cache::frame_index(t, sequence.frame_rate);
+        let recipe = reelforge_export::frame_recipe(project, seq, t, sources);
+        if let (Some(hit), Some(gpu)) = (cache.get(seq, frame, recipe), &mut self.gpu) {
+            let content = recipe ^ (frame as u64).rotate_left(32) ^ seq as u64;
+            if self.shown_cached != Some(content) || gpu.compositor.output_view().is_none() {
+                let frame_size = [sequence.width.max(2), sequence.height.max(2)];
+                let layer = reelforge_render::LayerInput {
+                    key: CACHED_KEY,
+                    content_id: content,
+                    pixels: reelforge_render::PixelData::Rgba(&hit.rgba),
+                    pixel_size: hit.size,
+                    layer_size: [frame_size[0] as f32, frame_size[1] as f32],
+                    transform: reelforge_core::Transform::default(),
+                    blend: reelforge_core::BlendMode::Normal,
+                    effects: Vec::new(),
+                    mask: None,
+                    wipe: None,
+                };
+                gpu.compositor.render(frame_size, &[layer]);
+                gpu.compositor.retain_layers(|k| k == CACHED_KEY);
+                self.shown_cached = Some(content);
+                // What's on screen no longer matches the scene's last picture.
+                self.last_signature = 0;
+            }
+            self.exact = true;
+            self.from_cache = true;
+            Self::register(gpu);
+            return;
+        }
+        self.shown_cached = None;
+        self.from_cache = false;
 
         // Warm up decoders for cuts coming up soon (including the early start of an
         // incoming dissolve), so the first frame is ready on time.
@@ -189,6 +234,7 @@ impl Preview {
             sources,
             exact: true,
             error: None,
+            blocking: false,
         };
         let unchanged = gpu.texture.is_some().then_some(self.last_signature);
         match gpu.scene.render(project, seq, t, &mut gpu.compositor, &mut frames, unchanged) {
@@ -204,9 +250,41 @@ impl Preview {
         if gpu.compositor.output_view().is_none() {
             return;
         }
+        Self::register(gpu);
+    }
 
-        // Hand the output texture to egui (re-register after a resize).
-        let view = gpu.compositor.output_view().expect("rendered");
+    /// Render `seq` at `t` exactly (waiting for every decoder), off screen, and
+    /// read it back as RGBA with its size: a frame for the render cache.
+    pub fn render_for_cache(&mut self, project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId, PathBuf>) -> Option<(Vec<u8>, [u32; 2])> {
+        let gpu = self.gpu.as_mut()?;
+        let (compositor, scene) = gpu.cache_render.get_or_insert_with(|| {
+            let rs = &gpu.render_state;
+            (Compositor::new(&rs.device, &rs.queue), Scene::new(&rs.device, &rs.queue))
+        });
+        let mut frames = PreviewFrames {
+            slots: &mut self.slots,
+            titles: &mut self.titles,
+            offline: &mut self.offline,
+            sources,
+            exact: true,
+            error: None,
+            blocking: true,
+        };
+        if let Err(e) = scene.render(project, seq, t, compositor, &mut frames, None) {
+            self.error = Some(format!("{e:#}"));
+            return None;
+        }
+        if let Some(e) = frames.error {
+            self.error = Some(e);
+            return None;
+        }
+        let size = compositor.output_size()?;
+        Some((compositor.read_output()?, size))
+    }
+
+    /// Hand the output texture to egui (re-register after a resize).
+    fn register(gpu: &mut Gpu) {
+        let Some(view) = gpu.compositor.output_view() else { return };
         let mut renderer = gpu.render_state.renderer.write();
         match gpu.texture {
             None => {
@@ -231,6 +309,8 @@ struct PreviewFrames<'a> {
     /// Every layer showed its exact frame.
     exact: bool,
     error: Option<String>,
+    /// Wait for each exact frame (rendering for the cache) instead of showing what's ready.
+    blocking: bool,
 }
 
 impl FrameProvider for PreviewFrames<'_> {
@@ -255,8 +335,13 @@ impl FrameProvider for PreviewFrames<'_> {
                 return Ok(None);
             }
         };
-        let frame = src.frame_at(l.source_time).cloned();
-        self.exact &= src.is_exact(l.source_time);
+        let frame = if self.blocking {
+            src.frame_at_blocking(l.source_time, Duration::from_secs(10))
+        } else {
+            let f = src.frame_at(l.source_time).cloned();
+            self.exact &= src.is_exact(l.source_time);
+            f
+        };
         Ok(frame.map(|frame| Picture { frame, size, media: media.id }))
     }
 }

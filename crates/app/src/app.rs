@@ -59,6 +59,8 @@ pub struct EditorState {
     pub project_path: Option<PathBuf>,
     /// Decoders + GPU compositor producing the viewer image.
     pub preview: Preview,
+    /// Finished frames from Render preview (Enter).
+    pub render_cache: crate::render_cache::RenderCache,
     /// A transform being changed interactively: the clip and its value before the gesture.
     /// Committed as one undo step when the mouse is released.
     live_edit: Option<LiveEdit>,
@@ -178,6 +180,7 @@ impl ReelforgeApp {
             }
         }
         app.state.settings.apply();
+        app.state.render_cache.set_budget_mb(app.state.settings.render_cache_mb);
         let (session, crashed) = crate::safety::Session::start();
         app.state.session = Some(session);
         app.state.recoveries = crashed;
@@ -241,7 +244,11 @@ impl eframe::App for ReelforgeApp {
         st.playback.tick(rate, end);
         st.playback.scrub_if_moved();
         let sources = st.decode_paths();
-        st.preview.update(&st.project, st.active, st.playback.playhead, st.playback.playing, &sources);
+        st.step_render_job(&sources);
+        if st.render_cache.job.is_some() {
+            ctx.request_repaint();
+        }
+        st.preview.update(&st.project, st.active, st.playback.playhead, st.playback.playing, &sources, &mut st.render_cache);
         if let Some(e) = st.preview.error.take() {
             st.status = e;
         }
@@ -409,6 +416,7 @@ impl EditorState {
             status: String::new(),
             project_path: None,
             preview,
+            render_cache: crate::render_cache::RenderCache::new(crate::settings::Settings::default().render_cache_mb),
             live_edit: None,
             meters: Default::default(),
             export_requested: false,
@@ -966,6 +974,83 @@ impl EditorState {
                 self.status = format!("Nudged {} frame{} {}", n, if n == 1 { "" } else { "s" }, if frames < 0 { "earlier" } else { "later" });
             }
             Err(e) => self.status = format!("Can't nudge: {e}"),
+        }
+    }
+
+    // ---- Render preview --------------------------------------------------------
+
+    /// Start rendering every frame between the marks (or of the whole sequence)
+    /// into the render cache.
+    pub fn render_preview(&mut self) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let (start, end) = s.marked_range().filter(|_| s.in_point.is_some() || s.out_point.is_some()).unwrap_or((Time::ZERO, s.duration()));
+        if end <= start {
+            self.status = "Nothing to render: the sequence is empty".into();
+            return;
+        }
+        let (first, last) = reelforge_export::frame_range(s.frame_rate, start, end);
+        self.playback.pause();
+        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end: last, first, rendered: 0, started: std::time::Instant::now() });
+        self.status = format!("Rendering preview: {} frames (Esc to stop)", last - first);
+    }
+
+    pub fn stop_render_preview(&mut self) {
+        if let Some(j) = self.render_cache.job.take() {
+            self.status = format!("Stopped rendering the preview ({} of {} frames done)", j.next - j.first, j.end - j.first);
+        }
+    }
+
+    /// Render the next frames of a render-preview run, for up to ~40 ms.
+    fn step_render_job(&mut self, sources: &HashMap<MediaId, PathBuf>) {
+        let Some(mut job) = self.render_cache.job.take() else { return };
+        if self.playback.playing {
+            self.status = format!("Stopped rendering the preview to play ({} of {} frames done)", job.next - job.first, job.end - job.first);
+            return;
+        }
+        if job.seq != self.active || job.seq >= self.project.sequences.len() {
+            self.status = "Stopped rendering the preview (another sequence was opened)".into();
+            return;
+        }
+        let rate = self.project.sequences[job.seq].frame_rate;
+        let budget = std::time::Instant::now();
+        while job.next < job.end && budget.elapsed() < std::time::Duration::from_millis(40) {
+            let t = Time::from_frame(job.next, rate);
+            let recipe = reelforge_export::frame_recipe(&self.project, job.seq, t, sources);
+            if !self.render_cache.has(job.seq, job.next, recipe) {
+                match self.preview.render_for_cache(&self.project, job.seq, t, sources) {
+                    Some((rgba, size)) => {
+                        let (rgba, size) = crate::render_cache::fit_for_cache(rgba, size);
+                        self.render_cache.insert(job.seq, job.next, recipe, size, rgba.into());
+                        job.rendered += 1;
+                    }
+                    None => {
+                        self.status = format!("Couldn't render the preview at {t}: {}", self.preview.error.take().unwrap_or_else(|| "no picture".into()));
+                        return;
+                    }
+                }
+            }
+            job.next += 1;
+        }
+        if job.next >= job.end {
+            let total = job.end - job.first;
+            let (bytes, kept) = self.render_cache.stats();
+            self.status = if job.rendered == 0 {
+                format!("Preview already rendered ({total} frames)")
+            } else {
+                format!(
+                    "Rendered the preview: {} of {total} frames in {:.1} s ({kept} kept, {} MB)",
+                    job.rendered,
+                    job.started.elapsed().as_secs_f64(),
+                    bytes >> 20
+                )
+            };
+            if kept < total as usize {
+                self.status += ". Not all fit: raise the render cache size in Settings";
+            }
+        } else {
+            self.status = format!("Rendering preview… {:.0}% (Esc to stop)", job.fraction() * 100.0);
+            self.render_cache.job = Some(job);
         }
     }
 
@@ -1992,6 +2077,26 @@ impl EditorState {
                     self.zoom_to_fit();
                 }
                 ui.separator();
+                if self.render_cache.job.is_some() {
+                    if ui.button("Stop rendering preview   Esc").clicked() {
+                        self.stop_render_preview();
+                    }
+                } else {
+                    let what = if self.seq().in_point.is_some() || self.seq().out_point.is_some() { "between the in and out marks" } else { "of the whole sequence" };
+                    if ui
+                        .button("Render preview          Enter")
+                        .on_hover_text(format!("Render every frame {what} once and keep it, so heavy effects and compositions play smoothly"))
+                        .clicked()
+                    {
+                        self.render_preview();
+                    }
+                }
+                let (bytes, n) = self.render_cache.stats();
+                if ui.add_enabled(n > 0, egui::Button::new("Clear render cache")).on_hover_text(format!("{n} frames kept ({} MB)", bytes >> 20)).clicked() {
+                    self.render_cache.clear();
+                    self.status = "Cleared the render cache".into();
+                }
+                ui.separator();
                 if ui.add_enabled(any, egui::Button::new("Delete clip          Del")).clicked() {
                     self.delete_selection();
                 }
@@ -2161,6 +2266,8 @@ impl EditorState {
                     self.status = "Mask drawing cancelled".into();
                 }
                 Key::Enter if self.mask_draw.is_some() => self.finish_mask_drawing(),
+                Key::Enter if self.render_cache.job.is_none() => self.render_preview(),
+                Key::Escape if self.render_cache.job.is_some() => self.stop_render_preview(),
                 Key::Escape => self.select_only(None),
                 Key::V => self.set_trim_mode(TrimMode::Normal),
                 Key::B => self.set_trim_mode(TrimMode::Ripple),

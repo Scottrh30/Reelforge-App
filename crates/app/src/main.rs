@@ -17,6 +17,7 @@ mod paste_attrs;
 mod playback;
 mod plugins;
 mod preview;
+mod render_cache;
 mod proxies;
 mod safety;
 mod settings;

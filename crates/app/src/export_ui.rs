@@ -458,7 +458,7 @@ impl ExportUi {
                         let mut preset = None;
                         let mut user = None;
                         ui.horizontal(|ui| {
-                            egui::ComboBox::from_id_salt("export_preset").width(300.0).selected_text(d.preset_label()).show_ui(ui, |ui| {
+                            egui::ComboBox::from_id_salt("export_preset").width(300.0).height(440.0).selected_text(d.preset_label()).show_ui(ui, |ui| {
                                 for p in Preset::ALL {
                                     if ui.selectable_label(d.user_preset.is_none() && d.preset == p, p.label()).on_hover_text(p.hint()).clicked() {
                                         preset = Some(p);

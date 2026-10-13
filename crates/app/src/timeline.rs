@@ -30,7 +30,13 @@ pub struct TimelineView {
     pub fit_request: bool,
     /// ...without saying so in the status bar (a sequence opened for the first time).
     pub fit_quietly: bool,
+    /// Which stretches of the ruler have rendered frames, worked out again only
+    /// when the edit, the render cache or the view changes.
+    cache_bar: Option<(CacheBarKey, Vec<(f32, f32)>)>,
 }
+
+/// What the rendered-frames bar was worked out for.
+type CacheBarKey = (u64, u64, usize, u32, u32, u32, u32);
 
 /// Track-header actions, applied after drawing.
 enum TrackAction {
@@ -42,7 +48,7 @@ enum TrackAction {
 
 impl Default for TimelineView {
     fn default() -> Self {
-        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None, marker_edit: None, fit_request: false, fit_quietly: false }
+        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None, marker_edit: None, fit_request: false, fit_quietly: false, cache_bar: None }
     }
 }
 
@@ -412,7 +418,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         if tr.kind == TrackKind::Audio {
             let name = tr.name.clone();
             if let Some(ch) = st.meters.tracks.get(ti).copied() {
-                let mr = Rect::from_min_max(Pos2::new(header.left() + 8.0, header.bottom() - 9.0), Pos2::new(header.right() - 8.0, header.bottom() - 4.0));
+                // Beside the mute and lock buttons, level with them.
+                let mr = Rect::from_min_max(Pos2::new(lbtn.right() + 6.0, lbtn.top() + 3.0), Pos2::new(header.right() - 8.0, lbtn.bottom() - 3.0));
                 crate::meters::paint_track_meter(&painter, mr, &ch);
                 if body.contains_rect(mr) {
                     let hover = ui.interact(mr, egui::Id::new(("track_meter", ti)), Sense::click());
@@ -1263,6 +1270,57 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     for (t, x) in &ticks {
         painter.line_segment([Pos2::new(*x, ruler.bottom() - 8.0), Pos2::new(*x, ruler.bottom())], Stroke::new(1.0, visuals.weak_text_color()));
         painter.text(Pos2::new(x + 3.0, ruler.top() + 3.0), Align2::LEFT_TOP, t.timecode(rate), FontId::monospace(10.0), visuals.weak_text_color());
+    }
+
+    // ---- Rendered preview: a green bar along the top of the ruler ----
+    if st.render_cache.stats().1 > 0 {
+        let key: CacheBarKey = (
+            st.rev,
+            st.render_cache.generation,
+            st.active,
+            m.scroll.to_bits(),
+            m.pps.to_bits(),
+            lanes.width().to_bits(),
+            st.settings.use_proxies as u32 + 2 * st.proxies.ready_count() as u32,
+        );
+        if st.timeline.cache_bar.as_ref().is_none_or(|(k, _)| *k != key) {
+            let sources = st.decode_paths();
+            let (seq, dur) = (st.active, st.seq().duration());
+            let mut runs: Vec<(f32, f32)> = Vec::new();
+            let mut last_frame = None;
+            let mut last_ok = false;
+            let mut x = lanes.left();
+            while x < lanes.right() {
+                let t = m.t(x);
+                let frame = crate::render_cache::frame_index(t, rate);
+                let ok = if last_frame == Some(frame) {
+                    last_ok
+                } else {
+                    t < dur && st.render_cache.has(seq, frame, reelforge_export::frame_recipe(&st.project, seq, t, &sources))
+                };
+                (last_frame, last_ok) = (Some(frame), ok);
+                if ok {
+                    match runs.last_mut() {
+                        Some(r) if r.1 >= x - 2.5 => r.1 = x + 2.0,
+                        _ => runs.push((x, x + 2.0)),
+                    }
+                }
+                x += 2.0;
+            }
+            st.timeline.cache_bar = Some((key, runs));
+        }
+        if let Some((_, runs)) = &st.timeline.cache_bar {
+            let lp = painter.with_clip_rect(lanes);
+            for (a, b) in runs {
+                lp.rect_filled(Rect::from_x_y_ranges(*a..=*b, ruler.top()..=ruler.top() + 3.0), 0.0, Color32::from_rgb(70, 200, 100));
+            }
+        }
+    }
+    if let Some(job) = &st.render_cache.job {
+        // The run's range, filling as it renders.
+        let lp = painter.with_clip_rect(lanes);
+        let (b, now) = (m.x(Time::from_frame(job.end, rate)), m.x(Time::from_frame(job.next, rate)));
+        lp.rect_filled(Rect::from_x_y_ranges(now..=b, ruler.top()..=ruler.top() + 3.0), 0.0, Color32::from_rgb(200, 170, 60).gamma_multiply(0.6));
     }
 
     // ---- In/out marks: highlight the range on the ruler, dim outside it ----

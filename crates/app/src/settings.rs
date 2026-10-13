@@ -19,6 +19,8 @@ pub struct Settings {
     pub auto_proxies: bool,
     /// Memory for keeping decoded frames, in MB.
     pub cache_mb: usize,
+    /// Memory for Render preview frames, in MB.
+    pub render_cache_mb: usize,
     /// Minutes between autosaves (0 = off).
     pub autosave_minutes: u32,
     /// Show picture thumbnails on video clips in the timeline.
@@ -29,7 +31,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { hidden_tabs: Vec::new(), export_presets: Vec::new(), hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, autosave_minutes: 2, timeline_thumbnails: true, viewer_snapping: true }
+        Self { hidden_tabs: Vec::new(), export_presets: Vec::new(), hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, render_cache_mb: 2048, autosave_minutes: 2, timeline_thumbnails: true, viewer_snapping: true }
     }
 }
 
@@ -65,6 +67,14 @@ pub fn window(ctx: &egui::Context, st: &mut EditorState, open: &mut bool) {
         });
         let (used, frames, hit) = FrameCache::global().stats();
         ui.weak(format!("Holding {frames} frames ({} MB) · {:.0}% of requests served from memory", used >> 20, hit * 100.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Render cache");
+            ui.add(egui::Slider::new(&mut s.render_cache_mb, 256..=32768).logarithmic(true).suffix(" MB"))
+                .on_hover_text("Memory for Render preview (Enter). A 1080p frame takes about 8 MB: 2 GB holds ~10 s at 25 fps.");
+        });
+        let (rused, rframes) = st.render_cache.stats();
+        ui.weak(format!("Holding {rframes} rendered frames ({} MB)", rused >> 20));
         ui.add_space(4.0);
         ui.checkbox(&mut s.timeline_thumbnails, "Picture thumbnails on timeline clips")
             .on_hover_text("Small frames along each video clip. They're decoded in the background (from proxies when there are some).");
@@ -110,6 +120,7 @@ pub fn window(ctx: &egui::Context, st: &mut EditorState, open: &mut bool) {
     });
     if st.settings != before {
         st.settings.apply();
+        st.render_cache.set_budget_mb(st.settings.render_cache_mb);
     }
     if clear_proxies {
         st.proxies.delete_all();

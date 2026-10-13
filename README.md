@@ -67,10 +67,22 @@ What works now:
   background; you can keep editing meanwhile. Export waits for every exact frame at full
   resolution and uses the same compositor and mixer as playback, so the file matches what you
   saw and heard
-  - **Presets**: YouTube 1080p, YouTube 4K (H.265), Shorts/Reels/TikTok 9:16 (1080×1920),
-    Instagram portrait 4:5, Square 1:1, ProRes 422 HQ and DNxHR HQ masters, a quick half-size
-    draft on the GPU, PNG/JPEG image sequences and audio-only WAV. Changing any setting turns
-    the preset into "Custom"
+  - **Presets**: YouTube 1080p, YouTube 4K (H.265), YouTube 4K HDR (H.265, HLG),
+    Shorts/Reels/TikTok 9:16 (1080×1920), Instagram portrait 4:5, Square 1:1, ProRes 422 HQ and
+    DNxHR HQ masters, a quick half-size draft on the GPU, PNG/JPEG image sequences and
+    audio-only WAV. Changing any setting turns the preset into "Custom"
+  - **Your own presets**: **Save as preset…** keeps the current settings under a name (marked
+    ★ in the list, with **Delete preset** next to it). They're kept with Reelforge's settings,
+    so they're there next time
+  - **Colour** (H.265): **SDR 8-bit**, **SDR 10-bit** (no banding in skies, fades and
+    vignettes), **HDR10 (PQ)** or **HDR (HLG)**, both 10-bit BT.2020. For HDR, white in the edit
+    becomes 203 nits (PQ) or 75% signal (HLG), the ITU-R BT.2408 reference, and anything the
+    edit pushes brighter than white (glow, exposure) keeps its extra brightness instead of
+    clipping. HDR10 files carry mastering metadata. 10-bit and HDR exports render at 16 bits per
+    channel; ProRes now gets real 10-bit input too. Other codecs stay 8-bit SDR
+  - **Rate** (H.264/H.265): a **Quality** setting (constant quality), or a target **Bitrate**
+    in Mbit/s with the estimated file size beside it (peaks may reach 1.5× the target). Picking
+    Bitrate suggests a sensible starting value for the size
   - **Formats**: H.264 or H.265 with AAC (MP4); ProRes 422 / 422 HQ and DNxHR SQ / HQ with
     24-bit PCM audio (MOV); PNG, JPEG or TIFF sequences (`name_00001.png`, …); WAV. The file
     extension follows the format
@@ -101,6 +113,13 @@ What works now:
   outgoing clip past its end and the incoming one before its start, so it needs unused media
   either side of the cut; if there isn't enough it's shortened (and the panel says so), and with
   none at all it stays a plain cut (red marker on the timeline)
+- **Pan keyframes**: the Controls panel's **Pan keys** row works like the volume keyframes
+  (previous/next, a diamond to add or remove one at the playhead, Clear); once a clip has pan
+  keys, moving the Pan slider keys the pan at the playhead. Small cyan arrows along the bottom
+  of the clip show each key and which way it's panned. The pan glides between keys (inside
+  compositions too) and exports exactly as heard
+- **Track meters**: every audio track shows a small left/right level meter in its header, after
+  its volume and pan (peak, with a peak-hold mark and a red clip light; click it to reset)
 - **Audio meters**: a Meters panel next to the timeline shows the master output: peak and RMS per
   channel, a 1.5 s peak-hold line with its value, and clip lights that stay lit until you click
 - **Trimming**: drag either edge of a clip to shorten or lengthen it (linked audio/video trim
@@ -185,6 +204,19 @@ What works now:
   the GPU can't handle a file
 - **Frame cache**: decoded frames are kept in memory (1 GB by default), shared between clips
   of the same file, so scrubbing back over footage you've already seen is instant
+- **YUV on the GPU**: most video (4:2:0, 8- or 10-bit, from software or hardware decoders) now
+  stays in the YUV form it's stored in until it reaches the graphics card, which converts it to
+  RGB as it draws. Decoding 1080p is about twice as fast as before (3.1 ms a frame instead of
+  6.0 ms in testing) and each frame takes 3.1 MB of memory instead of 8.3 MB, so the frame cache
+  holds 2.7× as many
+- **Render preview** (`Enter`, or **Edit → Render preview**): renders every frame between the
+  in and out marks (or the whole sequence) exactly, once, and keeps it, so stacks of effects and
+  compositions play back smoothly. A green bar along the top of the ruler shows which frames are
+  rendered, and the viewer says **Rendered** when the frame on screen comes from it. Editing
+  only makes the frames it changes stale (the bar goes away there); undo the edit and they're
+  good again. `Esc`, or pressing Play, stops a run. Rendered frames are kept in memory (viewer
+  size, at most 1080p), within the **Render cache** size in Settings (2 GB by default, about 10
+  s of 1080p at 25 fps); **Edit → Clear render cache** empties it
 - **Autosave and crash recovery**: the project is autosaved every 2 minutes (when it has
   changed). If Reelforge doesn't close properly, it offers to recover that work the next time
   it starts; **File > Open an autosave…** opens older ones. Saving always writes a new file and
@@ -194,8 +226,8 @@ What works now:
   "MEDIA OFFLINE" frame in the viewer. **Relink…** a file and Reelforge also looks for the
   other missing files in that folder (and its subfolders) by name; **Search a folder…** does
   it for all of them. Relinking can be undone. Export won't start while media is missing
-- **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, proxies, autosave
-  interval, and the proxy/autosave folders
+- **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, render cache size,
+  proxies, autosave interval, and the proxy/autosave folders
 - **Speed** (Controls panel, any footage or composition clip): 1–2000%, with one-click 25/50/
   100/200/400%, and **Reverse**. The clip keeps playing the same stretch of footage, so slow
   motion makes it longer (clips after it on its tracks move along) and fast motion shorter;
@@ -352,7 +384,7 @@ What works now:
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
 Not yet: glow and drop shadow reach only as far as the clip's own frame (a shadow from a
-full-frame clip is hidden), Bézier handles in the curve editor, keyframed audio pan, animated text
+full-frame clip is hidden), Bézier handles in the curve editor, animated text
 (per-letter reveals), and reordering tracks by dragging.
 See the roadmap at the bottom.
 
@@ -507,6 +539,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | \\ | Zoom the timeline to fit the sequence |
 | Alt while dragging a layer in the Viewer | Don't snap |
 | Enter / Esc while drawing a mask | Close the mask / cancel |
+| Enter | Render preview (in to out, or the whole sequence); Esc stops it |
 | Double-click a composition | Open it |
 | Right-click a media item | New composition from media, add, proxy, show in folder |
 | Alt+X | Clear in/out |
@@ -728,7 +761,33 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   ramps, which keeps the loudness constant across the transition for different material.
 - **Meters** read peak and RMS from the audio callback itself (lock-free: per-channel atomic
   float maximums that the UI swaps out each frame), so they show exactly what reaches the
-  device, including scrubbing.
+  device, including scrubbing. Track meters: each `MixClip` knows its track; the mixer records
+  every track's peak per block (after volume and pan), the block carries them to the callback,
+  and the callback publishes them the same lock-free way when the block starts playing, so the
+  track meters move with what's heard. Pan keys reach the mixer as `(offset, pan)` pairs like
+  volume keys and are applied per sample (`balance(interpolate(...))`), with the track's pan in
+  the clip's static balance.
+- **YUV frames** (`core/src/frame.rs`, `render/src/yuv.rs`): the decoder keeps I420, NV12,
+  yuv420p10 and P010 as tightly packed planes (`Pixels::Yuv`), shrinking them YUV-to-YUV when a
+  preview size is wanted; anything else is converted to RGBA as before. The compositor uploads
+  the planes as unsigned-integer textures and one pass converts them into the layer texture with
+  the frame's matrix (BT.601/709/2020) and range, interpolating the 4:2:0 chroma with MPEG-2
+  siting. `YuvPlanes::to_rgba` is the CPU version (thumbnails, proxies) and the reference the
+  GPU is tested against (within 2/255 for every layout).
+- **Render cache** (`app/src/render_cache.rs`): frames are keyed by (sequence, frame) and
+  stored with a *recipe*, `reelforge_export::frame_recipe`: a hash of everything that decides
+  the picture, computed from the project without decoding (media file and frame index, title
+  look, compositions recursively, evaluated transforms, effects, masks, transitions, proxy or
+  original). A kept frame is used only while its recipe matches, so invalidation is automatic
+  and exact. Rendering uses the preview's decoders in blocking mode with its own compositor,
+  ~40 ms of work per UI frame; frames above 1080p are box-filtered down. The ruler bar is
+  worked out per 2 px column and only again when the edit, cache or view changes.
+- **Deep export** (`Compositor::read_output_deep`, `output.wgsl`): for 10-bit, HDR and
+  ProRes, the float accumulation target goes through a last pass that applies sRGB, or BT.709 →
+  BT.2020 plus PQ (×203/10000) or HLG (×0.265, i.e. 75% signal at SDR white), into an
+  `Rgba16Float` target that's read back and turned into 16-bit integers; the writer feeds them
+  to swscale as RGBA64 with the BT.709 or BT.2020 matrix and tags the stream (and x265 gets the
+  HDR10 SEI).
 - **Scrubbing**: while paused, every playhead move asks the engine for a 60 ms snippet with
   4 ms de-click ramps. The mixer only renders the next snippet when the device is about to run
   dry, always at the newest position, so fast drags stay responsive.
@@ -745,15 +804,17 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 
 1. ~~Player and editor shell~~
 2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms, volume/pan, fades, scrubbing,
-   volume keyframes, crossfades, meters~~
-   (still to add: per-track meters, audio effects like EQ/compressor, keyframed pan)
+   volume keyframes, crossfades, meters, track meters, pan keyframes~~
+   (still to add: audio effects like EQ/compressor)
 3. ~~Compositor and editing: layers, transforms, opacity, blend modes, viewer gizmo, keyframes
    and a curve editor, cross-dissolves, trimming, ripple/roll/slip/slide, ripple delete, track
    locking~~
    (still to add: more blend modes, Bézier keyframe handles)
 4. ~~Export: H.264/H.265/ProRes/DNxHR/image sequences/WAV, presets including vertical video,
-   fit/fill/stretch, GPU encoders, an in/out range, an export queue~~
-   (still to add: 10-bit HEVC/HDR, custom bitrates, saving your own presets)
+   fit/fill/stretch, GPU encoders, an in/out range, an export queue, 10-bit/HDR10/HLG HEVC,
+   target bitrates, your own presets~~
+   (still to add: HDR footage in (it's decoded as SDR today), 10-bit/HDR for GPU encoders'
+   metadata)
 5. ~~**Effects**: the effect stack, keyframable parameters, colour correction, levels, curves,
    LUTs, blur, sharpen, chroma key, glow, drop shadow, vignette, an effects browser;
    dissolve, dip, wipe, iris, slide and push transitions~~
@@ -765,6 +826,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    per-point feather, planar tracking of whole surfaces (not just four features), automatic
    zoom to hide stabilisation edges, a 3D camera and lights, GPU particles, animated text
    presets.
-7. ~~**Performance**: proxy media, a frame cache, hardware decode~~
-   (still to add: GPU-side frame upload from hardware decoders without the copy back to memory,
-   render caching of effects)
+7. ~~**Performance**: proxy media, a frame cache, hardware decode, YUV frames converted on the
+   GPU, render preview~~
+   (still to add: true zero-copy from the hardware decoder, which needs D3D11/Vulkan texture
+   sharing with wgpu and a real Windows GPU to build against; render cache on disk)

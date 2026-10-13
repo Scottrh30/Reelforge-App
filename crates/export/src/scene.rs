@@ -245,6 +245,95 @@ impl Scene {
     }
 }
 
+/// A fingerprint of everything that decides what sequence `seq` looks like at
+/// `t`, worked out from the project alone (nothing is decoded or drawn): which
+/// media frames show (from which file: original or proxy, per `sources`),
+/// titles, compositions (recursively), transforms, blend modes, effects,
+/// masks and transitions. Two moments with the same recipe look identical, so
+/// a rendered frame can be reused while its recipe is unchanged.
+pub fn frame_recipe(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId, std::path::PathBuf>) -> u64 {
+    let mut h = DefaultHasher::new();
+    recipe_into(project, seq, t, sources, 0, &mut h);
+    h.finish()
+}
+
+fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId, std::path::PathBuf>, depth: usize, h: &mut DefaultHasher) {
+    let Some(s) = project.sequences.get(seq) else { return };
+    let frame_size = [s.width.max(2), s.height.max(2)];
+    frame_size.hash(h);
+    let layer = |l: &Layer, h: &mut DefaultHasher| {
+        let clip = l.clip;
+        clip.id.hash(h);
+        let layer_size = match (clip.nested, &clip.title) {
+            (Some(inner), _) => {
+                1u8.hash(h);
+                if depth < MAX_NESTING {
+                    recipe_into(project, inner, l.source_time, sources, depth + 1, h);
+                }
+                project.sequences.get(inner).map_or([0.0; 2], |s| [s.width as f32, s.height as f32])
+            }
+            (None, Some(spec)) => {
+                2u8.hash(h);
+                spec.content_hash(frame_size).hash(h);
+                [frame_size[0] as f32, frame_size[1] as f32]
+            }
+            (None, None) => {
+                3u8.hash(h);
+                match project.media(clip.media) {
+                    Some(m) => {
+                        let path = sources.get(&m.id).unwrap_or(&m.path);
+                        path.hash(h);
+                        // The media frame showing, not the exact time inside it.
+                        match &m.info.video {
+                            Some(v) if m.info.duration > Time::ZERO && v.frame_rate.fps() > 0.0 => l.source_time.to_frame(v.frame_rate).hash(h),
+                            _ => {} // a still: the same picture throughout
+                        }
+                        // Missing media shows a stand-in picture.
+                        path.exists().hash(h);
+                        m.info.video.as_ref().map_or([0.0; 2], |v| [v.width as f32, v.height as f32])
+                    }
+                    None => [0.0; 2],
+                }
+            }
+        };
+        let tr = &l.transform;
+        for f in tr.position.iter().chain(&tr.scale).chain([&tr.rotation, &tr.opacity]).chain(&tr.anchor).chain(&tr.crop) {
+            f.to_bits().hash(h);
+        }
+        tr.pin.map(|p| p.0.map(|c| c.map(f32::to_bits))).hash(h);
+        l.blend.hash(h);
+        for e in &l.effects {
+            e.kind.hash(h);
+            for v in e.values {
+                v.to_bits().hash(h);
+            }
+            e.table.as_ref().map(|t| t.id).hash(h);
+            if let Some(p) = &e.plugin {
+                p.revision.hash(h);
+                e.time.to_bits().hash(h);
+            }
+        }
+        if mask::any_active(&clip.masks) {
+            mask::mask_hash(&clip.masks, clip.source_time(t), layer_size).hash(h);
+        }
+    };
+    for item in project.video_layers_at(seq, t) {
+        match item {
+            VideoItem::Single(l) => {
+                0u8.hash(h);
+                layer(&l, h);
+            }
+            VideoItem::Dissolve { from, to, mix, kind } => {
+                1u8.hash(h);
+                layer(&from, h);
+                layer(&to, h);
+                mix.to_bits().hash(h);
+                kind.hash(h);
+            }
+        }
+    }
+}
+
 fn input(g: &Gathered) -> LayerInput<'_> {
     let mut h = DefaultHasher::new();
     (g.picture.media, g.picture.frame.pts, g.picture.frame.generation).hash(&mut h);
@@ -300,4 +389,51 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
         }
     }
     h.finish()
+}
+
+
+#[cfg(test)]
+mod recipe_tests {
+    use super::*;
+    use reelforge_core::{Clip, FrameRate, MediaAsset, MediaInfo, Sequence, VideoStreamInfo};
+
+    fn project() -> Project {
+        let mut p = Project::new();
+        p.media.push(MediaAsset {
+            id: MediaId(1),
+            path: "/nowhere/a.mp4".into(),
+            name: "a.mp4".into(),
+            info: MediaInfo {
+                duration: Time::from_secs_f64(10.0),
+                video: Some(VideoStreamInfo { width: 640, height: 360, frame_rate: FrameRate::new(25, 1), codec: "h264".into(), time_base: reelforge_core::Rational::new(1, 25) }),
+                audio: None,
+                container: String::new(),
+            },
+        });
+        let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+        seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(10.0), None)];
+        p.sequences = vec![seq];
+        p
+    }
+
+    #[test]
+    fn recipes_change_with_what_shows_and_nothing_else() {
+        let mut p = project();
+        let none = HashMap::new();
+        let at = |p: &Project, s: f64| frame_recipe(p, 0, Time::from_secs_f64(s), &none);
+        // Two moments inside one media frame (25 fps): same picture.
+        assert_eq!(at(&p, 1.0), at(&p, 1.01));
+        assert_ne!(at(&p, 1.0), at(&p, 1.04), "the next media frame");
+        let before = at(&p, 1.0);
+        // An edit that changes the picture changes the recipe…
+        p.sequences[0].tracks[0].clips[0].transform.opacity = 0.5;
+        assert_ne!(at(&p, 1.0), before);
+        p.sequences[0].tracks[0].clips[0].transform.opacity = 1.0;
+        assert_eq!(at(&p, 1.0), before, "…and undoing it brings the same recipe back");
+        // Playing a proxy instead of the original is a different picture.
+        let proxy = HashMap::from([(MediaId(1), std::path::PathBuf::from("/cache/a-proxy.mp4"))]);
+        assert_ne!(frame_recipe(&p, 0, Time::from_secs_f64(1.0), &proxy), before);
+        // An empty stretch of timeline.
+        assert_eq!(at(&p, 20.0), at(&p, 30.0));
+    }
 }

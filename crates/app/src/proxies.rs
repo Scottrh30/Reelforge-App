@@ -109,6 +109,11 @@ impl Proxies {
     }
 
     /// The proxy file for `src`, if it's ready.
+    /// How many proxies are ready (changes when one finishes).
+    pub fn ready_count(&self) -> usize {
+        self.states.values().filter(|s| matches!(s, ProxyState::Ready(_))).count()
+    }
+
     pub fn ready(&self, src: &Path) -> Option<&PathBuf> {
         match self.states.get(src) {
             Some(ProxyState::Ready(p)) => Some(p),

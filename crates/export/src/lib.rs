@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub mod scene;
-pub use scene::{FrameProvider, Picture, Scene};
+pub use scene::{frame_recipe, FrameProvider, Picture, Scene};
 
 /// Audio is always exported at 48 kHz, the video standard.
 pub const AUDIO_RATE: u32 = 48_000;

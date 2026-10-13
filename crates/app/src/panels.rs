@@ -558,6 +558,13 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState) {
             if !st.preview.exact {
                 ui.spinner();
             }
+            if st.preview.from_cache {
+                let green = Color32::from_rgb(70, 200, 100);
+                let r = ui.colored_label(green, "Rendered");
+                ui.painter().circle_filled(r.rect.left_center() - egui::vec2(7.0, 0.0), 3.5, green);
+                ui.add_space(10.0);
+                r.on_hover_text("This frame comes from Render preview (Enter): it plays without decoding or compositing");
+            }
         });
     });
 }
