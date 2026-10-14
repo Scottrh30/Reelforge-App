@@ -12,6 +12,11 @@ const RULER_H: f32 = 26.0;
 const ADD_ROW_H: f32 = 34.0;
 const TRACK_H: f32 = 52.0;
 const HEADER_W: f32 = 124.0;
+/// Height of the bar under the tracks with the zoom slider.
+const ZOOM_BAR_H: f32 = 28.0;
+/// How far the timeline zooms, in pixels per second of the sequence.
+pub const MIN_PPS: f32 = 2.0;
+pub const MAX_PPS: f32 = 2000.0;
 
 pub struct TimelineView {
     pub px_per_sec: f32,
@@ -171,7 +176,65 @@ pub fn tab(ui: &mut egui::Ui, st: &mut EditorState, comp: bool) {
             return;
         }
     }
-    show(ui, st);
+    // The tracks, with the zoom bar along the bottom.
+    let area = ui.available_rect_before_wrap();
+    let split = (area.bottom() - ZOOM_BAR_H).max(area.top());
+    let tracks = Rect::from_min_max(area.min, Pos2::new(area.right(), split));
+    let bar = Rect::from_min_max(Pos2::new(area.left(), split), area.max);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(tracks), |ui| show(ui, st));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| zoom_bar(ui, st, tracks.width()));
+    ui.allocate_rect(area, Sense::hover());
+}
+
+/// Change the zoom to `pps`, keeping the moment at `anchor_px` (pixels into the
+/// track area) where it is on screen.
+pub fn zoom_to(view: &mut TimelineView, pps: f32, anchor_px: f32) {
+    let anchor = view.scroll + anchor_px / view.px_per_sec;
+    view.px_per_sec = pps.clamp(MIN_PPS, MAX_PPS);
+    view.scroll = (anchor - anchor_px / view.px_per_sec).max(0.0);
+}
+
+/// Where zooming from the bar centres: the playhead if it's in view, else the middle.
+fn zoom_anchor(view: &TimelineView, playhead_secs: f32, lanes_w: f32) -> f32 {
+    let x = (playhead_secs - view.scroll) * view.px_per_sec;
+    if (0.0..=lanes_w).contains(&x) { x } else { lanes_w / 2.0 }
+}
+
+/// The bar under the timeline: zoom out, the zoom slider, zoom in, and fit.
+fn zoom_bar(ui: &mut egui::Ui, st: &mut EditorState, width: f32) {
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
+    ui.painter().hline(rect.x_range(), rect.top(), ui.visuals().widgets.noninteractive.bg_stroke);
+    let lanes_w = (width - HEADER_W).max(1.0);
+    let playhead = st.playback.playhead.as_secs_f64() as f32;
+    let anchor = zoom_anchor(&st.timeline, playhead, lanes_w);
+    let mut pps = st.timeline.px_per_sec;
+    ui.horizontal_centered(|ui| {
+        ui.add_space(6.0);
+        let shown = lanes_w / pps;
+        ui.weak(format!("{} in view", crate::panels::format_duration(Time::from_secs_f64(shown as f64))))
+            .on_hover_text("How much of the sequence fits across the timeline");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(6.0);
+            if ui.small_button("Fit").on_hover_text("Zoom to show the whole sequence").clicked() {
+                st.timeline.fit_request = true;
+            }
+            if ui.small_button("+").on_hover_text("Zoom in   Ctrl+wheel").clicked() {
+                pps *= 1.5;
+            }
+            let slider = egui::Slider::new(&mut pps, MIN_PPS..=MAX_PPS).logarithmic(true).show_value(false);
+            ui.spacing_mut().slider_width = 180.0;
+            ui.add(slider).on_hover_text("Timeline zoom");
+            if ui.small_button("−").on_hover_text("Zoom out   Ctrl+wheel").clicked() {
+                pps /= 1.5;
+            }
+            ui.weak("Zoom");
+        });
+    });
+    if pps != st.timeline.px_per_sec {
+        zoom_to(&mut st.timeline, pps, anchor);
+        ui.ctx().request_repaint();
+    }
 }
 
 /// The compositions as tabs along the top of the Composition Timeline, with "+".
@@ -263,7 +326,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         // The whole sequence across the track area, with a little room at the end.
         let width = (rect.width() - HEADER_W - 24.0).max(50.0);
         let secs = st.seq().duration().as_secs_f64().max(1.0) as f32;
-        st.timeline.px_per_sec = (width / secs).clamp(2.0, 2000.0);
+        st.timeline.px_per_sec = (width / secs).clamp(MIN_PPS, MAX_PPS);
         st.timeline.scroll = 0.0;
         if !std::mem::take(&mut st.timeline.fit_quietly) {
             st.status = "Zoomed the timeline to fit the sequence".into();
@@ -274,10 +337,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         if zoom != 1.0 {
             // Zoom around the pointer.
             if let Some(p) = resp.hover_pos() {
-                let m = Mapping { x0: rect.left() + HEADER_W, pps: st.timeline.px_per_sec, scroll: st.timeline.scroll };
-                let anchor = m.t(p.x).as_secs_f64() as f32;
-                st.timeline.px_per_sec = (st.timeline.px_per_sec * zoom).clamp(2.0, 2000.0);
-                st.timeline.scroll = (anchor - (p.x - m.x0) / st.timeline.px_per_sec).max(0.0);
+                let x0 = rect.left() + HEADER_W;
+                let pps = st.timeline.px_per_sec * zoom;
+                zoom_to(&mut st.timeline, pps, p.x - x0);
             }
         }
         // The wheel scrolls through the tracks when they don't all fit (Shift+wheel or a
@@ -1636,5 +1698,35 @@ fn marker_editor(ctx: &egui::Context, st: &mut EditorState) {
     } else if close || !open {
         st.timeline.marker_edit = None;
         st.commit_live_edit();
+    }
+}
+
+#[cfg(test)]
+mod zoom_tests {
+    use super::*;
+
+    #[test]
+    fn zooming_keeps_the_anchor_in_place() {
+        let mut v = TimelineView::default();
+        v.px_per_sec = 50.0;
+        v.scroll = 4.0;
+        // 200 px in is 4 + 200/50 = 8 s.
+        zoom_to(&mut v, 100.0, 200.0);
+        assert_eq!(v.px_per_sec, 100.0);
+        assert!((v.scroll + 200.0 / v.px_per_sec - 8.0).abs() < 1e-4);
+        // Can't scroll before the start, nor zoom past the limits.
+        zoom_to(&mut v, 1.0, 200.0);
+        assert_eq!((v.px_per_sec, v.scroll), (MIN_PPS, 0.0));
+        zoom_to(&mut v, 1e9, 0.0);
+        assert_eq!(v.px_per_sec, MAX_PPS);
+    }
+
+    #[test]
+    fn the_bar_zooms_around_the_playhead_when_it_is_in_view() {
+        let mut v = TimelineView::default();
+        v.px_per_sec = 10.0;
+        v.scroll = 0.0;
+        assert_eq!(zoom_anchor(&v, 30.0, 800.0), 300.0);
+        assert_eq!(zoom_anchor(&v, 120.0, 800.0), 400.0, "off screen: the middle");
     }
 }
