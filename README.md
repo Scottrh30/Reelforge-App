@@ -23,7 +23,7 @@ What works now:
 - FFmpeg decoding on a background thread, with frame-accurate seeking
 - Viewer with transport bar and timecode
 - Multi-track timeline: drag media from the bin onto a track, move clips between tracks,
-  razor split (`S`), delete (`Del`), scrub, zoom (`Ctrl` + scroll), pan (scroll)
+  razor split (`S`), delete (`Del`), scrub, zoom (`Ctrl` + scroll, or the zoom slider in the bar under the tracks), pan (scroll)
 - Undo/redo for every edit (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z`, or the **Undo** / **Redo**
   buttons in the menu bar, whose tooltips name the step)
 - **History** panel (a tab next to Media, or **Edit → Undo history**): every edit in order with
