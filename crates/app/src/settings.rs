@@ -21,6 +21,8 @@ pub struct Settings {
     pub cache_mb: usize,
     /// Memory for Render preview frames, in MB.
     pub render_cache_mb: usize,
+    /// Width of the track-name column on the left of the timeline (dragged to resize).
+    pub timeline_header_w: f32,
     /// Minutes between autosaves (0 = off).
     pub autosave_minutes: u32,
     /// Show picture thumbnails on video clips in the timeline.
@@ -31,7 +33,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { hidden_tabs: Vec::new(), export_presets: Vec::new(), hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, render_cache_mb: 2048, autosave_minutes: 2, timeline_thumbnails: true, viewer_snapping: true }
+        Self { hidden_tabs: Vec::new(), export_presets: Vec::new(), hw_decode: true, use_proxies: true, auto_proxies: true, cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB, render_cache_mb: 2048, timeline_header_w: crate::timeline::HEADER_W, autosave_minutes: 2, timeline_thumbnails: true, viewer_snapping: true }
     }
 }
 

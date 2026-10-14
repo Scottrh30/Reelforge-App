@@ -11,7 +11,13 @@ const RULER_H: f32 = 26.0;
 /// Height of the row under the tracks with the "add track" buttons.
 const ADD_ROW_H: f32 = 34.0;
 const TRACK_H: f32 = 52.0;
-const HEADER_W: f32 = 124.0;
+/// Default width of the track-header column; it can be dragged between the limits.
+pub const HEADER_W: f32 = 124.0;
+pub const MIN_HEADER_W: f32 = 100.0;
+pub const MAX_HEADER_W: f32 = 420.0;
+/// How far into the headers the resize handle reaches from their edge (it stays
+/// out of the track area, so trimming a clip that starts at 0:00 still works).
+const HEADER_GRIP: f32 = 6.0;
 /// Height of the bar under the tracks with the zoom slider.
 const ZOOM_BAR_H: f32 = 28.0;
 /// How far the timeline zooms, in pixels per second of the sequence.
@@ -20,6 +26,8 @@ pub const MAX_PPS: f32 = 2000.0;
 
 pub struct TimelineView {
     pub px_per_sec: f32,
+    /// Width of the track-header column (names, mute/lock, meters).
+    pub header_w: f32,
     /// Seconds scrolled off the left edge.
     pub scroll: f32,
     /// What dragging a clip edge does: a plain trim, a ripple, or a roll.
@@ -53,7 +61,7 @@ enum TrackAction {
 
 impl Default for TimelineView {
     fn default() -> Self {
-        Self { px_per_sec: 60.0, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None, marker_edit: None, fit_request: false, fit_quietly: false, cache_bar: None }
+        Self { px_per_sec: 60.0, header_w: HEADER_W, scroll: 0.0, mode: TrimMode::Normal, vscroll: 0.0, renaming: None, drag: None, marker_edit: None, fit_request: false, fit_quietly: false, cache_bar: None }
     }
 }
 
@@ -186,6 +194,11 @@ pub fn tab(ui: &mut egui::Ui, st: &mut EditorState, comp: bool) {
     ui.allocate_rect(area, Sense::hover());
 }
 
+/// The header width kept within its limits, and never more than half the timeline.
+pub fn clamp_header_w(w: f32, avail: f32) -> f32 {
+    w.clamp(MIN_HEADER_W, MAX_HEADER_W.min((avail * 0.5).max(MIN_HEADER_W)))
+}
+
 /// Change the zoom to `pps`, keeping the moment at `anchor_px` (pixels into the
 /// track area) where it is on screen.
 pub fn zoom_to(view: &mut TimelineView, pps: f32, anchor_px: f32) {
@@ -205,7 +218,7 @@ fn zoom_bar(ui: &mut egui::Ui, st: &mut EditorState, width: f32) {
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
     ui.painter().hline(rect.x_range(), rect.top(), ui.visuals().widgets.noninteractive.bg_stroke);
-    let lanes_w = (width - HEADER_W).max(1.0);
+    let lanes_w = (width - st.timeline.header_w).max(1.0);
     let playhead = st.playback.playhead.as_secs_f64() as f32;
     let anchor = zoom_anchor(&st.timeline, playhead, lanes_w);
     let mut pps = st.timeline.px_per_sec;
@@ -296,6 +309,7 @@ fn no_compositions(ui: &mut egui::Ui, st: &mut EditorState) {
 
 pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     let rate = st.seq().frame_rate;
+    let hw = clamp_header_w(st.timeline.header_w, ui.available_width());
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
@@ -324,7 +338,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     // ---- Zoom / scroll ----
     if std::mem::take(&mut st.timeline.fit_request) {
         // The whole sequence across the track area, with a little room at the end.
-        let width = (rect.width() - HEADER_W - 24.0).max(50.0);
+        let width = (rect.width() - hw - 24.0).max(50.0);
         let secs = st.seq().duration().as_secs_f64().max(1.0) as f32;
         st.timeline.px_per_sec = (width / secs).clamp(MIN_PPS, MAX_PPS);
         st.timeline.scroll = 0.0;
@@ -337,7 +351,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         if zoom != 1.0 {
             // Zoom around the pointer.
             if let Some(p) = resp.hover_pos() {
-                let x0 = rect.left() + HEADER_W;
+                let x0 = rect.left() + hw;
                 let pps = st.timeline.px_per_sec * zoom;
                 zoom_to(&mut st.timeline, pps, p.x - x0);
             }
@@ -354,7 +368,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             }
         }
     }
-    let m = Mapping { x0: rect.left() + HEADER_W, pps: st.timeline.px_per_sec, scroll: st.timeline.scroll };
+    let m = Mapping { x0: rect.left() + hw, pps: st.timeline.px_per_sec, scroll: st.timeline.scroll };
     let lanes = Rect::from_min_max(Pos2::new(m.x0, rect.top()), rect.max);
 
     // ---- Background and time grid (the ruler itself is drawn last, on top) ----
@@ -395,14 +409,16 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         let tr = &st.seq().tracks[ti];
         let r = row_rect(row);
         painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color));
-        let header = Rect::from_min_size(r.min, Vec2::new(HEADER_W, TRACK_H));
+        let header = Rect::from_min_size(r.min, Vec2::new(hw, TRACK_H));
         painter.rect_filled(header, 0.0, visuals.panel_fill);
-        let name_rect = Rect::from_min_size(header.min + Vec2::new(4.0, 4.0), Vec2::new(HEADER_W - 8.0, 20.0));
+        let name_rect = Rect::from_min_size(header.min + Vec2::new(4.0, 4.0), Vec2::new(hw - 8.0, 20.0));
         // Only fully visible headers take clicks (a half-hidden one sits under the ruler).
         let header_visible = body.contains_rect(header);
         if header_visible {
             // Right-click for the track menu; double-click the name to rename.
-            let hresp = ui.interact(header, egui::Id::new(("track_header", ti)), Sense::click());
+            // (Stopping short of the right edge, which is the resize handle.)
+            let hit = Rect::from_min_max(header.min, Pos2::new(header.right() - HEADER_GRIP, header.bottom()));
+            let hresp = ui.interact(hit, egui::Id::new(("track_header", ti)), Sense::click());
             if hresp.double_clicked() && name_rect.contains(hresp.interact_pointer_pos().unwrap_or_default()) {
                 track_action = Some(TrackAction::StartRename(ti));
             }
@@ -718,7 +734,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
     .into_iter()
     .enumerate()
     {
-        let w = (HEADER_W - 12.0) / 2.0;
+        let w = (hw - 12.0) / 2.0;
         let b = Rect::from_min_size(Pos2::new(rect.left() + 4.0 + i as f32 * (w + 4.0), add_top + 7.0), Vec2::new(w, 20.0));
         if !body.contains_rect(b) {
             continue;
@@ -1418,6 +1434,30 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
         }
     }
 
+    // ---- The right edge of the track headers: drag to resize them ----
+    let edge_x = rect.left() + hw;
+    let grip = Rect::from_min_max(Pos2::new(edge_x - HEADER_GRIP, rect.top()), Pos2::new(edge_x, rect.bottom()));
+    let gresp = ui.interact(grip, egui::Id::new("timeline_header_resize"), Sense::click_and_drag());
+    let active = gresp.hovered() || gresp.dragged();
+    if active {
+        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+    }
+    if gresp.dragged() {
+        if let Some(p) = gresp.interact_pointer_pos() {
+            st.timeline.header_w = clamp_header_w(p.x - rect.left(), rect.width());
+            ui.ctx().request_repaint();
+        }
+    }
+    if gresp.double_clicked() {
+        st.timeline.header_w = HEADER_W;
+    }
+    if gresp.drag_stopped() || gresp.double_clicked() {
+        st.settings.timeline_header_w = st.timeline.header_w;
+    }
+    let edge_color = if active { visuals.selection.stroke.color } else { visuals.widgets.noninteractive.bg_stroke.color };
+    painter.line_segment([Pos2::new(edge_x, rect.top()), Pos2::new(edge_x, rect.bottom())], Stroke::new(if active { 2.0 } else { 1.0 }, edge_color));
+    gresp.on_hover_text("Drag to resize the track headers · double-click to reset");
+
     // ---- Tool buttons in the corner above the track headers ----
     let mut picked = None;
     for (i, mode) in TrimMode::ALL.into_iter().enumerate() {
@@ -1428,7 +1468,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState) {
             TrimMode::Slip => ("Slip", "Y", "Slip: drag a clip to change which part of its media it shows; it stays where it is"),
             TrimMode::Slide => ("Slide", "U", "Slide: drag a clip along the timeline; the clips either side get longer/shorter to fit"),
         };
-        let w = (HEADER_W - 6.0) / TrimMode::ALL.len() as f32;
+        let w = (hw - 6.0) / TrimMode::ALL.len() as f32;
         let b = Rect::from_min_size(rect.left_top() + Vec2::new(3.0 + i as f32 * w, 4.0), Vec2::new(w - 2.0, RULER_H - 8.0));
         let bresp = ui.interact(b, egui::Id::new(("trim_tool", i)), Sense::click());
         let on = st.timeline.mode == mode;
@@ -1728,5 +1768,15 @@ mod zoom_tests {
         v.scroll = 0.0;
         assert_eq!(zoom_anchor(&v, 30.0, 800.0), 300.0);
         assert_eq!(zoom_anchor(&v, 120.0, 800.0), 400.0, "off screen: the middle");
+    }
+
+    #[test]
+    fn the_track_headers_stay_a_sensible_width() {
+        assert_eq!(clamp_header_w(200.0, 1400.0), 200.0);
+        assert_eq!(clamp_header_w(20.0, 1400.0), MIN_HEADER_W);
+        assert_eq!(clamp_header_w(5000.0, 1400.0), MAX_HEADER_W);
+        // Never more than half a narrow timeline, nor less than the minimum.
+        assert_eq!(clamp_header_w(400.0, 500.0), 250.0);
+        assert_eq!(clamp_header_w(400.0, 120.0), MIN_HEADER_W);
     }
 }

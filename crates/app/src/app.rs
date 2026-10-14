@@ -169,6 +169,7 @@ impl ReelforgeApp {
         if let Some(s) = cc.storage.and_then(|s| eframe::get_value::<crate::settings::Settings>(s, crate::settings::Settings::STORAGE_KEY)) {
             app.state.settings = s;
         }
+        app.state.timeline.header_w = app.state.settings.timeline_header_w;
         // The layout as it was left: panel sizes, which windows are where.
         match cc.storage.and_then(|s| eframe::get_value::<DockState<Tab>>(s, crate::tabs::STORAGE_KEY)).and_then(crate::tabs::checked_layout) {
             Some(dock) => app.dock = dock,
