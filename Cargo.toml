@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/media", "crates/render", "crates/export", "crates/app"]
+members = ["crates/core", "crates/media", "crates/render", "crates/export", "crates/engine", "crates/app", "crates/tauri-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ reelforge-core = { path = "crates/core" }
 reelforge-media = { path = "crates/media" }
 reelforge-render = { path = "crates/render" }
 reelforge-export = { path = "crates/export" }
+reelforge-engine = { path = "crates/engine" }
 
 anyhow = "1"
 log = "0.4"

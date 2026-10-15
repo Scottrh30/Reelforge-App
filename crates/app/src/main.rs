@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod audio;
+pub use reelforge_engine::{audio, playback, proxies, render_cache, safety, snap};
 mod collect_ui;
 mod curves;
 mod export_ui;
@@ -14,14 +14,9 @@ mod masks;
 mod meters;
 mod panels;
 mod paste_attrs;
-mod playback;
 mod plugins;
 mod preview;
-mod render_cache;
-mod proxies;
-mod safety;
 mod settings;
-mod snap;
 mod tabs;
 mod timeline;
 

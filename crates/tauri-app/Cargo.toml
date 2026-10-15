@@ -1,0 +1,35 @@
+[package]
+name = "reelforge-tauri"
+description = "Reelforge video editor with a web interface (Tauri): the same engine as the egui app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "reelforge-tauri"
+path = "src/main.rs"
+
+[dependencies]
+reelforge-core.workspace = true
+reelforge-media.workspace = true
+reelforge-render.workspace = true
+reelforge-export.workspace = true
+reelforge-engine.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rfd.workspace = true
+tauri = { version = "2.12", features = [] }
+# Viewer frames during playback go to the web view as JPEG (small enough to keep up).
+jpeg-encoder = "0.7"
+
+[features]
+# Serve the built interface (ui/dist) from inside the exe. Turn off
+# (--no-default-features) to load it from the Vite dev server instead (npm run dev).
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }

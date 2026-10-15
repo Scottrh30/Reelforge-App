@@ -401,9 +401,49 @@ crates/
   export/  Scene building shared by viewer and export (incl. compositions), the audio mix
            list, and offline render: exact frames -> compositor -> MovieWriter, with
            progress/cancel. Runs headless (tests use it without a window).
-  app/     eframe/egui desktop app (wgpu renderer), egui_dock panels, timeline, viewer,
-           cpal audio engine.
+  engine/  Everything an interface needs that isn't drawing: the editor model (Editor:
+           project, undo, selection, live edits, import, save/open), playback and the cpal
+           audio engine, the viewer picture (Preview), render cache, proxies, autosave and
+           crash recovery, meters, export presets. Shared by both apps.
+  app/     The egui desktop app (`reelforge`): egui_dock panels, timeline, viewer, every
+           editing tool.
+  tauri-app/
+           The Tauri app (`reelforge-tauri`): the same engine with a web interface
+           (Svelte + TypeScript in `ui/`). See "The Tauri app" below.
 ```
+
+## The Tauri app
+
+`reelforge-tauri` is Reelforge with a web interface: Tauri hosts a Svelte UI in the
+system's web view (WebView2 on Windows, WebKitGTK on Linux), and the Rust side gives it the
+shared engine through commands. It sits next to the egui app while it catches up with it.
+
+What it does today: the Media panel (import, drag to the timeline, right-click → New
+composition from media), the Viewer (with move and scale handles on the selected layer,
+and the transport), the Controls panel (transform, opacity, blend, speed, title text, clip
+volume and pan), the Editor and Composition timelines (select, box select, move between
+tracks, trim, ripple, roll, slip and slide, snapping, split, cut/copy/paste, mute and lock
+tracks, track meters, a zoom bar and resizable track names), History, the master meters,
+Export (built-in presets, progress, cancel), Settings, unsaved-changes prompts and crash
+recovery. Not yet: keyframes and curves, effects and masks editing, markers editing,
+transitions, tracking, plugins, proxies management and the export queue; projects using
+those still open and play, and the classic window edits them.
+
+How it works:
+- The editor lives on the main thread; Tauri runs (non-async) commands there, so each
+  command borrows it in turn. `tick` (called every animation frame) moves playback along
+  and renders the picture; the UI then fetches the full state only when the project's
+  revision changed, and the picture only when it changed.
+- The viewer picture is read back from the GPU, shrunk to the viewer's size and sent as
+  bytes: raw when paused (exact), JPEG while playing (small enough to keep up).
+- Thumbnails decode on worker threads (`thumbnail` is an async command).
+- On Windows the WebView2 loader is carried inside the exe (`src/webview2_shim.rs`), so it
+  needs no DLL beside it. WebView2 itself comes with Windows 10 and 11.
+
+Building it: `cd crates/tauri-app/ui && npm install && npm run build`, then
+`cargo build --release -p reelforge-tauri` (the build embeds `ui/dist`). For working on the
+interface, `npm run dev` serves it with live reload and
+`cargo run -p reelforge-tauri --no-default-features` loads it from there.
 
 ## Building on Windows 10/11
 

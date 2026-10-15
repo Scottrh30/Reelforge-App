@@ -1,0 +1,166 @@
+/* Reelforge: a quiet graphite workspace so the footage is the brightest thing
+   on screen. One accent, "tungsten" amber, marks what's active; red is kept
+   for the playhead and clipping. */
+
+:root {
+  --base: #1e1f22;
+  --panel: #26282c;
+  --raised: #2f3237;
+  --hover: #383b41;
+  --line: #3a3d43;
+  --line-soft: #2d3034;
+  --text: #d9dbdf;
+  --muted: #8b9099;
+  --faint: #60656e;
+  --accent: #f2a93b;
+  --accent-ink: #1e1f22;
+  --accent-soft: rgba(242, 169, 59, 0.16);
+  --red: #ff5d4f;
+  --green: #5cc27a;
+
+  /* Clip kinds: muted so many of them side by side stay calm. */
+  --clip-video: #3d6a96;
+  --clip-image: #4a7d8c;
+  --clip-audio: #3e7a55;
+  --clip-title: #6c55a8;
+  --clip-comp: #9a7330;
+
+  --radius: 4px;
+  --font: "IBM Plex Sans", system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--base);
+  color: var(--text);
+  font: 13px/1.4 var(--font);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 3px 10px;
+  min-height: 24px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover:not(:disabled) {
+  background: var(--hover);
+}
+button:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) {
+  background: #f6b955;
+}
+button.ghost {
+  background: none;
+  border-color: transparent;
+}
+button.ghost:hover:not(:disabled) {
+  background: var(--raised);
+}
+button.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+input[type="text"],
+input[type="number"],
+input[type="search"],
+select,
+textarea {
+  background: var(--base);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 3px 6px;
+  min-height: 24px;
+  min-width: 0;
+  user-select: text;
+  -webkit-user-select: text;
+}
+textarea {
+  resize: vertical;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+input[type="range"] {
+  accent-color: var(--accent);
+}
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--raised);
+  border: 2px solid var(--panel);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tc {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.muted {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
