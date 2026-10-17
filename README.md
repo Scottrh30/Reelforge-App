@@ -436,6 +436,12 @@ dragged onto details in the Viewer, tracked forward or backward in the backgroun
 applied to another layer (follow it, or corner-pin into the points), to one of the clip's
 masks, or to the clip itself (stabilise, with smoothing).
 
+Edit → Preferences: label colours (clips on the timeline by kind, and their names, with
+ready-made sets), interface colours (panels, wells, lines, text, highlight; five schemes),
+button colours (ordinary and main buttons, corner roundness) and fonts (any installed
+family for the interface and for figures, text size 80–140%). Changes show at once;
+Cancel puts back what was there, Save keeps them for next time.
+
 Not yet: keyframes and curves, effects editing, markers editing, transitions, plugins,
 proxies management and the export queue; projects using those still open and play, and
 the classic window edits them.
