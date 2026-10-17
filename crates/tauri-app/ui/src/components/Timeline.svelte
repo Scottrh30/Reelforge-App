@@ -684,6 +684,15 @@
     border-radius: 0;
     margin-left: -1px;
     padding: 3px 9px;
+    position: relative;
+  }
+  /* The buttons overlap by their 1px border; lift the chosen one (and the one
+     pointed at) so its whole outline shows, right edge included. */
+  .tools button:hover {
+    z-index: 1;
+  }
+  .tools button.on {
+    z-index: 2;
   }
   .tools button:first-child {
     border-radius: var(--radius) 0 0 var(--radius);
