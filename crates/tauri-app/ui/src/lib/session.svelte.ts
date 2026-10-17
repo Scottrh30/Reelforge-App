@@ -35,6 +35,8 @@ export const app = $state({
   activeMask: null as null | { clip: number; index: number },
   /// Drawing a freehand mask: the clip and the points so far (layer pixels).
   drawing: null as null | { clip: number; points: [number, number][] },
+  /// The Viewer's mask tool: dragging a mask moves it, or resizes it about its centre.
+  maskTool: null as null | "move" | "resize",
 });
 
 export function setPanel(name: string, on: boolean) {

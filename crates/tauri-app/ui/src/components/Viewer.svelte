@@ -3,6 +3,7 @@
   import { api, type Transform } from "../lib/api";
   import { actions } from "../lib/actions.svelte";
   import ViewerOverlay from "./ViewerOverlay.svelte";
+  import ViewerTools from "./ViewerTools.svelte";
 
   let box: HTMLDivElement | undefined = $state();
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -41,7 +42,7 @@
     const v = ins?.visual;
     if (!v || v.transform.pin || ins?.animated.length) return null;
     // Editing a mask or drawing one: the layer stays put.
-    if ((app.activeMask && app.activeMask.clip === ins!.id) || (app.drawing && app.drawing.clip === ins!.id)) return null;
+    if ((app.activeMask && app.activeMask.clip === ins!.id) || (app.drawing && app.drawing.clip === ins!.id) || (app.maskTool && ins!.masks.length)) return null;
     const t = v.transform;
     const [lw, lh] = v.layer_size;
     const cx = fit.x + (fit.W / 2 + t.position[0] - t.anchor[0] * t.scale[0]) * fit.k;
@@ -123,6 +124,7 @@
       </div>
     {/if}
     <ViewerOverlay {fit} {box} />
+    <ViewerTools />
   </div>
   <div class="transport">
     <button class="ghost" onclick={() => actions.act("start")} aria-label="Go to start" title="Go to start (Home)">

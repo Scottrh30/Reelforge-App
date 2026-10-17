@@ -66,6 +66,11 @@ export async function finishDrawing() {
 export function onKey(e: KeyboardEvent) {
   const t = e.target as HTMLElement;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+  if (app.maskTool && e.key === "Escape" && !app.drawing) {
+    e.preventDefault();
+    app.maskTool = null;
+    return;
+  }
   if (app.drawing && (e.key === "Enter" || e.key === "Escape")) {
     e.preventDefault();
     if (e.key === "Enter") finishDrawing();

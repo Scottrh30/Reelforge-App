@@ -428,7 +428,9 @@ Export (built-in presets, progress, cancel), Settings, unsaved-changes prompts a
 recovery.
 
 Masks: rectangles, ellipses and freehand shapes (click the points out in the Viewer),
-dragged by their points or moved whole, with add/subtract/intersect, invert, feather,
+made from the mask tools down the left of the Viewer (Rectangle, Ellipse, Freehand, Move
+and Resize; hover one for its name) or the Masks panel, dragged by their points or moved
+whole, with add/subtract/intersect, invert, feather,
 expansion, opacity and shape keyframes at the playhead. Motion tracking: 1, 2 or 4 points
 dragged onto details in the Viewer, tracked forward or backward in the background, then
 applied to another layer (follow it, or corner-pin into the points), to one of the clip's

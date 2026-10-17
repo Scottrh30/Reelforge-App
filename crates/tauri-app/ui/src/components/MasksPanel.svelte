@@ -37,6 +37,7 @@
       return;
     }
     app.activeMask = null;
+    app.maskTool = null;
     app.drawing = { clip: ins.id, points: [] };
     say("Click in the Viewer to place the mask's points; click the first point or press Enter to close it (Esc cancels)");
   }

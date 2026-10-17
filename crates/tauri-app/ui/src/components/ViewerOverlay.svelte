@@ -5,7 +5,7 @@
   import { app, run, say } from "../lib/session.svelte";
   import { api, type Pt } from "../lib/api";
   import { finishDrawing } from "../lib/actions.svelte";
-  import { layerToFrame, frameToLayer } from "../lib/geom";
+  import { layerToFrame, frameToLayer, inside } from "../lib/geom";
   import { livePump } from "../lib/live";
 
   let { fit, box }: { fit: { k: number; x: number; y: number }; box: HTMLElement | undefined } = $props();
@@ -20,6 +20,7 @@
   const active = $derived(app.activeMask && ins && app.activeMask.clip === ins.id ? app.activeMask.index : null);
   const drawing = $derived(app.drawing && ins && app.drawing.clip === ins.id ? app.drawing : null);
   const busyTracking = $derived(!!app.live?.tracking);
+  const tool = $derived(ins && ins.masks.length && !app.drawing ? app.maskTool : null);
 
   // Forget an edit target that no longer exists.
   $effect(() => {
@@ -45,8 +46,9 @@
     [c[0] - r, c[1] + r],
   ];
 
-  /// Drag mask `index`: one point (`point`), or all of them.
-  function dragMask(e: PointerEvent, index: number, point: number | null) {
+  /// Drag mask `index`: one point (`point`), all of them (`null`), or resize
+  /// it about its centre (`"resize"`; Shift changes only its width or height).
+  function dragMask(e: PointerEvent, index: number, point: number | null | "resize") {
     if (e.button !== 0 || !ins || !inv || app.live?.playing) return;
     e.stopPropagation();
     e.preventDefault();
@@ -56,11 +58,28 @@
     el.setPointerCapture(e.pointerId);
     const start = toLayer(e);
     const orig = ins.masks[index].handles.map((p) => [...p] as Pt);
+    const c: Pt = [orig.reduce((a, p) => a + p[0], 0) / orig.length, orig.reduce((a, p) => a + p[1], 0) / orig.length];
     const pump = livePump();
     const move = (ev: PointerEvent) => {
       const now = toLayer(ev);
-      const [dx, dy] = [now[0] - start[0], now[1] - start[1]];
-      const next = orig.map((p, j) => (point === null || point === j ? ([p[0] + dx, p[1] + dy] as Pt) : p));
+      let next: Pt[];
+      if (point === "resize") {
+        const d0 = Math.hypot(start[0] - c[0], start[1] - c[1]) || 1;
+        let [kx, ky] = [Math.hypot(now[0] - c[0], now[1] - c[1]) / d0, 0];
+        ky = kx;
+        if (ev.shiftKey) {
+          // Width or height only, whichever way the drag mostly goes.
+          const wide = Math.abs(start[0] - c[0]) >= Math.abs(start[1] - c[1]);
+          if (wide) [kx, ky] = [Math.abs(now[0] - c[0]) / (Math.abs(start[0] - c[0]) || 1), 1];
+          else [kx, ky] = [1, Math.abs(now[1] - c[1]) / (Math.abs(start[1] - c[1]) || 1)];
+        }
+        kx = Math.max(0.02, kx);
+        ky = Math.max(0.02, ky);
+        next = orig.map((p) => [c[0] + (p[0] - c[0]) * kx, c[1] + (p[1] - c[1]) * ky] as Pt);
+      } else {
+        const [dx, dy] = [now[0] - start[0], now[1] - start[1]];
+        next = orig.map((p, j) => (point === null || point === j ? ([p[0] + dx, p[1] + dy] as Pt) : p));
+      }
       pump.push(() => api.setMaskPoints(id, index, next));
     };
     const up = async () => {
@@ -71,6 +90,21 @@
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
+  }
+
+  /// With the Move or Resize tool: the mask under the pointer (the one being
+  /// edited first), and drag it.
+  function toolDown(e: PointerEvent) {
+    if (!ins || !inv || e.button !== 0) return;
+    e.stopPropagation();
+    const p = toLayer(e);
+    const order = ins.masks.map((_, i) => i).sort((a, b) => (a === active ? -1 : b === active ? 1 : b - a));
+    const hit = order.find((i) => ins.masks[i].mask.enabled && inside(ins.masks[i].outline, p));
+    if (hit === undefined) {
+      app.activeMask = null;
+      return;
+    }
+    dragMask(e, hit, app.maskTool === "resize" ? "resize" : null);
   }
 
   /// Drag tracker point `i`'s box onto a detail.
@@ -183,6 +217,11 @@
       {/each}
     {/if}
 
+    <!-- Move / Resize mask tools: dragging anywhere picks the mask under the pointer. -->
+    {#if tool}
+      <rect x="0" y="0" width="100%" height="100%" class="catch tool-{tool}" onpointerdown={toolDown} role="presentation" />
+    {/if}
+
     <!-- Freehand drawing. -->
     {#if drawing}
       <rect
@@ -272,6 +311,12 @@
   .catch {
     fill: transparent;
     pointer-events: all;
+  }
+  .tool-move {
+    cursor: move;
+  }
+  .tool-resize {
+    cursor: nwse-resize;
   }
   .draw {
     fill: none;
