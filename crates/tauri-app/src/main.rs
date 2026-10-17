@@ -63,6 +63,8 @@ struct Live {
     tracks: Vec<[f32; 2]>,
     export: Option<ExportStatus>,
     waveforms: usize,
+    /// A tracking run: the clip and how far along (0–1).
+    tracking: Option<(u64, f32)>,
 }
 
 #[derive(Serialize)]
@@ -99,6 +101,7 @@ fn tick() -> Res<Live> {
             tracks: m.tracks.iter().take(n).map(|t| [t[0].peak_db, t[1].peak_db]).collect(),
             export: export_status(),
             waveforms: e.waveforms.len(),
+            tracking: e.tracking.as_ref().map(|j| (j.clip.0, j.progress)),
         }
     })
 }
@@ -501,6 +504,154 @@ fn set_speed(id: u64, speed: f32, reverse: bool) -> Res<()> {
     ed(|e| e.set_speed(clip(id), speed, reverse))
 }
 
+// ---- Masks ---------------------------------------------------------------------
+
+/// Add a rectangle or ellipse mask in the middle of the clip. Returns its index.
+#[tauri::command]
+fn add_mask(id: u64, shape: String) -> Res<Option<usize>> {
+    use reelforge_core::mask::{Mask, MaskShape};
+    let shape = if shape == "ellipse" { MaskShape::Ellipse } else { MaskShape::Rectangle };
+    ed(|e| {
+        let size = e.seq().find_clip(clip(id)).map(|(_, c)| e.layer_size(c))?;
+        e.add_mask(clip(id), Mask::centred(shape, size))
+    })
+}
+
+/// Add a freehand mask through `points` (layer pixels). Returns its index.
+#[tauri::command]
+fn add_freehand_mask(id: u64, points: Vec<[f32; 2]>) -> Res<Option<usize>> {
+    ed(|e| {
+        if points.len() < 3 {
+            e.status = "A freehand mask needs at least 3 points".into();
+            return None;
+        }
+        e.add_mask(clip(id), reelforge_core::mask::Mask::freehand(points))
+    })
+}
+
+/// Replace the clip's masks (the Masks panel's settings). `done` ends the gesture.
+#[tauri::command]
+fn set_masks(id: u64, masks: Vec<reelforge_core::mask::Mask>, done: bool) -> Res<()> {
+    ed(|e| {
+        e.set_masks_live(clip(id), masks);
+        if done {
+            e.commit_live_edit();
+        }
+    })
+}
+
+/// Move a mask's points (dragging in the Viewer); `commit` ends the drag.
+#[tauri::command]
+fn set_mask_points(id: u64, index: usize, points: Vec<[f32; 2]>) -> Res<()> {
+    ed(|e| e.set_mask_points_live(clip(id), index, points))
+}
+
+/// Keyframing a mask's shape at the playhead: "animate" (on), "still" (off),
+/// "key" (add a key here) or "unkey" (remove the key here). One undo step.
+#[tauri::command]
+fn mask_op(id: u64, index: usize, op: String) -> Res<()> {
+    ed(|e| {
+        let Some((_, c)) = e.seq().find_clip(clip(id)) else { return };
+        let t = e.mask_time(c);
+        let mut masks = c.masks.clone();
+        let Some(m) = masks.get_mut(index) else { return };
+        match op.as_str() {
+            "animate" => m.set_animated(true, t),
+            "still" => m.set_animated(false, t),
+            "key" => {
+                let pts = m.points_at(t);
+                m.set_points_at(t, pts);
+            }
+            "unkey" if m.keys.len() > 1 => m.keys.retain(|k| k.at != t),
+            _ => return,
+        }
+        e.set_masks_live(clip(id), masks);
+        e.commit_live_edit();
+    })
+}
+
+// ---- Motion tracking ------------------------------------------------------------
+
+#[tauri::command]
+fn tracker_add(id: u64, mode: reelforge_core::track::TrackMode) -> Res<()> {
+    ed(|e| e.add_tracker(clip(id), mode))
+}
+
+/// Change how many points the tracker has.
+#[tauri::command]
+fn tracker_mode(id: u64, mode: reelforge_core::track::TrackMode) -> Res<()> {
+    ed(|e| {
+        let Some((_, c)) = e.seq().find_clip(clip(id)) else { return };
+        let (Some(mut t), layer, src) = (c.tracker.clone(), e.layer_size(c), e.track_time(c)) else { return };
+        t.set_mode(mode, layer, src);
+        e.set_tracker(clip(id), Some(t), "Change tracker points");
+    })
+}
+
+/// The feature box and search sizes (live: a drag on the numbers).
+#[tauri::command]
+fn tracker_sizes(id: u64, size: f32, search: f32) -> Res<()> {
+    ed(|e| {
+        let Some(mut t) = e.seq().find_clip(clip(id)).and_then(|(_, c)| c.tracker.clone()) else { return };
+        t.set_sizes(size.clamp(9.0, 201.0), search.clamp(2.0, 300.0));
+        e.set_tracker_live(clip(id), Some(t));
+    })
+}
+
+/// Move tracker point `point` to `pos` (layer pixels) at the playhead: on a
+/// tracked frame this corrects the track; elsewhere it's where tracking starts.
+#[tauri::command]
+fn tracker_move(id: u64, point: usize, pos: [f32; 2]) -> Res<()> {
+    ed(|e| {
+        if e.tracking.is_some() {
+            return;
+        }
+        let Some((_, c)) = e.seq().find_clip(clip(id)) else { return };
+        let (Some(mut t), [w, h], src) = (c.tracker.clone(), e.layer_size(c), e.track_time(c)) else { return };
+        let Some(p) = t.points.get_mut(point) else { return };
+        p.move_to(src, [pos[0].clamp(0.0, w), pos[1].clamp(0.0, h)]);
+        e.set_tracker_live(clip(id), Some(t));
+    })
+}
+
+/// "clear" (forget the tracked paths) or "remove" the tracker.
+#[tauri::command]
+fn tracker_op(id: u64, op: String) -> Res<()> {
+    ed(|e| {
+        let Some(t) = e.seq().find_clip(clip(id)).map(|(_, c)| c.tracker.clone()) else { return };
+        match op.as_str() {
+            "clear" => {
+                let mut t = t;
+                if let Some(t) = &mut t {
+                    t.clear_paths();
+                }
+                e.set_tracker(clip(id), t, "Clear track");
+            }
+            "remove" => e.set_tracker(clip(id), None, "Remove tracker"),
+            _ => {}
+        }
+    })
+}
+
+#[tauri::command]
+fn track_start(id: u64, forward: bool) -> Res<()> {
+    ed(|e| e.start_tracking(clip(id), forward))
+}
+
+#[tauri::command]
+fn track_cancel() -> Res<()> {
+    ed(|e| e.cancel_tracking())
+}
+
+/// Apply the tracked motion of `id` to `target` (itself = stabilise) or to its mask `mask`.
+#[tauri::command]
+fn track_apply(id: u64, target: u64, mask: Option<usize>, smoothing: f32) -> Res<()> {
+    ed(|e| match mask {
+        Some(i) => e.apply_track_to_mask(clip(id), i),
+        None => e.apply_track(clip(id), clip(target), smoothing.clamp(0.0, 120.0)),
+    })
+}
+
 // ---- Export ------------------------------------------------------------------
 
 #[derive(Clone, Default, Serialize)]
@@ -726,6 +877,19 @@ fn main() {
             set_title,
             set_clip_audio,
             set_speed,
+            add_mask,
+            add_freehand_mask,
+            set_masks,
+            set_mask_points,
+            mask_op,
+            tracker_add,
+            tracker_mode,
+            tracker_sizes,
+            tracker_move,
+            tracker_op,
+            track_start,
+            track_cancel,
+            track_apply,
             export_path_dialog,
             export_start,
             export_cancel,

@@ -1,7 +1,7 @@
 // Things the menus, buttons and shortcuts do, in one place so they behave the same everywhere.
 
 import { api } from "./api";
-import { app, run } from "./session.svelte";
+import { app, run, say } from "./session.svelte";
 
 /// A question in a dialog: the answer is the label of the button pressed (or null).
 export const ask = $state({ open: false, title: "", text: "", buttons: [] as string[], resolve: (_: string | null) => {} });
@@ -48,10 +48,33 @@ export const actions = {
   },
 };
 
+/// Close the freehand mask being drawn and add it.
+export async function finishDrawing() {
+  const d = app.drawing;
+  app.drawing = null;
+  if (!d) return;
+  if (d.points.length < 3) {
+    say("A freehand mask needs at least 3 points");
+    return;
+  }
+  app.note = "";
+  const i = await run(api.addFreehandMask(d.clip, d.points));
+  if (i != null) app.activeMask = { clip: d.clip, index: i };
+}
+
 /// Keyboard shortcuts (not while typing in a field).
 export function onKey(e: KeyboardEvent) {
   const t = e.target as HTMLElement;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+  if (app.drawing && (e.key === "Enter" || e.key === "Escape")) {
+    e.preventDefault();
+    if (e.key === "Enter") finishDrawing();
+    else {
+      app.drawing = null;
+      app.note = "";
+    }
+    return;
+  }
   if (ask.open || app.exportOpen || app.settingsOpen || (app.s?.recoveries.length ?? 0) > 0) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();

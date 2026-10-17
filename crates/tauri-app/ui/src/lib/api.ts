@@ -116,9 +116,52 @@ export interface Inspector {
   speed: number;
   reverse: boolean;
   effects: string[];
-  masks: number;
   animated: string[];
   linked: boolean;
+  layer_map: number[] | null;
+  layer_inv: number[] | null;
+  layer_px: Pt;
+  masks: MaskView[];
+  can_track: boolean;
+  tracker: TrackerView | null;
+  tracking: number | null;
+  tracking_elsewhere: boolean;
+}
+
+export type Pt = [number, number];
+
+export interface Mask {
+  name: string;
+  shape: "Rectangle" | "Ellipse" | "Freehand";
+  points: Pt[];
+  keys: { at: Ticks; points: Pt[] }[];
+  mode: "Add" | "Subtract" | "Intersect";
+  inverted: boolean;
+  feather: number;
+  expansion: number;
+  opacity: number;
+  enabled: boolean;
+}
+
+export interface MaskView {
+  mask: Mask;
+  outline: Pt[];
+  handles: Pt[];
+  key_here: boolean;
+}
+
+export type TrackMode = "Position" | "Transform" | "CornerPin";
+
+export interface TrackerView {
+  mode: TrackMode;
+  size: number;
+  search: number;
+  shown: Pt[];
+  paths: Pt[][];
+  frames: number;
+  range: [Ticks, Ticks] | null;
+  tracked: boolean;
+  targets: { clip: number; mask: number | null; label: string }[];
 }
 
 export interface PresetView {
@@ -182,6 +225,7 @@ export interface Live {
   tracks: [number, number][];
   export: ExportStatus | null;
   waveforms: number;
+  tracking: [number, number] | null;
 }
 
 export const api = {
@@ -221,6 +265,19 @@ export const api = {
   setTitle: (id: number, spec: TitleSpec) => invoke("set_title", { id, spec }),
   setClipAudio: (id: number, audio: ClipAudio) => invoke("set_clip_audio", { id, audio }),
   setSpeed: (id: number, speed: number, reverse: boolean) => invoke("set_speed", { id, speed, reverse }),
+  addMask: (id: number, shape: "rectangle" | "ellipse") => invoke<number | null>("add_mask", { id, shape }),
+  addFreehandMask: (id: number, points: Pt[]) => invoke<number | null>("add_freehand_mask", { id, points }),
+  setMasks: (id: number, masks: Mask[], done: boolean) => invoke("set_masks", { id, masks, done }),
+  setMaskPoints: (id: number, index: number, points: Pt[]) => invoke("set_mask_points", { id, index, points }),
+  maskOp: (id: number, index: number, op: "animate" | "still" | "key" | "unkey") => invoke("mask_op", { id, index, op }),
+  trackerAdd: (id: number, mode: TrackMode) => invoke("tracker_add", { id, mode }),
+  trackerMode: (id: number, mode: TrackMode) => invoke("tracker_mode", { id, mode }),
+  trackerSizes: (id: number, size: number, search: number) => invoke("tracker_sizes", { id, size, search }),
+  trackerMove: (id: number, point: number, pos: Pt) => invoke("tracker_move", { id, point, pos }),
+  trackerOp: (id: number, op: "clear" | "remove") => invoke("tracker_op", { id, op }),
+  trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
+  trackCancel: () => invoke("track_cancel"),
+  trackApply: (id: number, target: number, mask: number | null, smoothing: number) => invoke("track_apply", { id, target, mask, smoothing }),
   exportPathDialog: (extension: string) => invoke<string | null>("export_path_dialog", { extension }),
   exportStart: (preset: number, path: string, includeAudio: boolean, markedOnly: boolean) =>
     invoke("export_start", { preset, path, includeAudio, markedOnly }),

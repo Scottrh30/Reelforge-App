@@ -3,6 +3,8 @@
   import { app, run, timecode } from "../lib/session.svelte";
   import { api, type Transform, type Blend, type TitleSpec, type ClipAudio } from "../lib/api";
   import NumberField from "./NumberField.svelte";
+  import MasksPanel from "./MasksPanel.svelte";
+  import TrackingPanel from "./TrackingPanel.svelte";
 
   const ins = $derived(app.s?.inspector ?? null);
   const blends: Blend[] = ["Normal", "Add", "Multiply", "Screen"];
@@ -170,6 +172,13 @@
       </div>
     {/if}
 
+    {#if ins.visual}
+      <MasksPanel {ins} />
+    {/if}
+    {#if ins.can_track}
+      <TrackingPanel {ins} />
+    {/if}
+
     {#if ins.audio}
       <div class="group">
         <h4>Sound</h4>
@@ -188,12 +197,11 @@
       </div>
     {/if}
 
-    {#if ins.effects.length || ins.masks}
+    {#if ins.effects.length}
       <div class="group">
-        <h4>Effects and masks</h4>
+        <h4>Effects</h4>
         <ul>
           {#each ins.effects as fx}<li>{fx}</li>{/each}
-          {#if ins.masks}<li>{ins.masks} mask{ins.masks === 1 ? "" : "s"}</li>{/if}
         </ul>
         <p class="note">Shown here; edited in the classic window for now.</p>
       </div>

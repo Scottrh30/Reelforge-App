@@ -421,7 +421,7 @@ shared engine through commands. It sits next to the egui app while it catches up
 What it does today: the Media panel (import, drag to the timeline, right-click → New
 composition from media), the Viewer (with move and scale handles on the selected layer,
 and the transport), the Controls panel (transform, opacity, blend, speed, title text, clip
-volume and pan), the Editor and Composition timelines (select, box select, move between
+volume and pan, masks, motion tracking), the Editor and Composition timelines (select, box select, move between
 tracks, trim, ripple, roll, slip and slide, snapping, split, cut/copy/paste, mute and lock
 tracks, track meters, a zoom bar and resizable track names), History, the master meters,
 Export (built-in presets, progress, cancel), Settings, unsaved-changes prompts and crash

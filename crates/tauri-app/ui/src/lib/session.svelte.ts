@@ -31,6 +31,10 @@ export const app = $state({
   panels: loadPanels(),
   /// The left panel's tab.
   leftTab: "media" as "media" | "history",
+  /// The mask being edited in the Viewer (of the selected clip), by index.
+  activeMask: null as null | { clip: number; index: number },
+  /// Drawing a freehand mask: the clip and the points so far (layer pixels).
+  drawing: null as null | { clip: number; points: [number, number][] },
 });
 
 export function setPanel(name: string, on: boolean) {
@@ -165,6 +169,7 @@ export function start() {
       !!l &&
       !l.playing &&
       !l.export?.running &&
+      !l.tracking &&
       l.rev === prev.rev &&
       l.picture_rev === prev.pic &&
       l.picture_rev === viewer.have &&

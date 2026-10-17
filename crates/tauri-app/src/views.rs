@@ -2,6 +2,9 @@
 //! editor's state. Times are in ticks (`Time::TICKS_PER_SECOND` per second);
 //! ids are numbers.
 
+use reelforge_core::mask::Mask;
+use reelforge_core::track::TrackMode;
+use reelforge_core::transform::LayerMap;
 use reelforge_core::{BlendMode, Clip, ClipAudio, Project, Time, TitleSpec, TrackAudio, TrackKind, Transform};
 use reelforge_engine::editor::Editor;
 use reelforge_engine::proxies::ProxyState;
@@ -120,10 +123,111 @@ pub struct Inspector {
     pub speed: f32,
     pub reverse: bool,
     pub effects: Vec<String>,
-    pub masks: usize,
     /// Properties with keyframes (edited in the classic app for now).
     pub animated: Vec<&'static str>,
     pub linked: bool,
+    /// How the layer's pixels (origin at its centre) land on the frame at the
+    /// playhead: a 3×3 matrix, row by row (perspective when corner-pinned), and its inverse.
+    pub layer_map: Option<[f64; 9]>,
+    pub layer_inv: Option<[f64; 9]>,
+    /// The layer's size in its own pixels (what masks and trackers are measured in).
+    pub layer_px: [f32; 2],
+    pub masks: Vec<MaskView>,
+    /// Footage that can be tracked.
+    pub can_track: bool,
+    pub tracker: Option<TrackerView>,
+    /// Progress (0–1) of a tracking run on this clip.
+    pub tracking: Option<f32>,
+    /// A tracking run is going on for another clip.
+    pub tracking_elsewhere: bool,
+}
+
+#[derive(Serialize)]
+pub struct MaskView {
+    /// The whole mask (sent back, changed, by the Masks panel).
+    pub mask: Mask,
+    /// Its outline and its points as seen at the playhead, in layer pixels.
+    pub outline: Vec<[f32; 2]>,
+    pub handles: Vec<[f32; 2]>,
+    /// The shape is animated and has a key at the playhead.
+    pub key_here: bool,
+}
+
+#[derive(Serialize)]
+pub struct TrackerView {
+    pub mode: TrackMode,
+    pub size: f32,
+    pub search: f32,
+    /// Each point where it's shown at the playhead, and its tracked path (layer pixels).
+    pub shown: Vec<[f32; 2]>,
+    pub paths: Vec<Vec<[f32; 2]>>,
+    /// Frames where every point is tracked, and their first and last timeline times.
+    pub frames: usize,
+    pub range: Option<(i64, i64)>,
+    pub tracked: bool,
+    /// What the motion can be applied to.
+    pub targets: Vec<TargetView>,
+}
+
+#[derive(Serialize)]
+pub struct TargetView {
+    pub clip: u64,
+    /// A mask of the tracked clip, instead of a clip.
+    pub mask: Option<usize>,
+    pub label: String,
+}
+
+fn matrix(m: &LayerMap) -> [f64; 9] {
+    match m {
+        LayerMap::Affine(a) => [a.a as f64, a.c as f64, a.tx as f64, a.b as f64, a.d as f64, a.ty as f64, 0.0, 0.0, 1.0],
+        LayerMap::Projective(h) => h.0,
+    }
+}
+
+fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
+    let trk = c.tracker.as_ref()?;
+    let s = e.seq();
+    let src = e.track_time(c);
+    let frames = trk.frames();
+    let to_seq = |m: Time| c.timeline_of_media(m).unwrap_or(c.timeline_start);
+    let range = match (frames.first(), frames.last()) {
+        (Some(a), Some(b)) => {
+            let (x, y) = (to_seq(a.0), to_seq(b.0));
+            Some((x.min(y).0, x.max(y).0))
+        }
+        _ => None,
+    };
+    let mut targets = vec![TargetView {
+        clip: c.id.0,
+        mask: None,
+        label: match trk.mode {
+            TrackMode::CornerPin => "This clip: stabilise (perspective)".into(),
+            TrackMode::Transform => "This clip: stabilise (with rotation and scale)".into(),
+            TrackMode::Position => "This clip: stabilise".into(),
+        },
+    }];
+    for (i, m) in c.masks.iter().enumerate() {
+        targets.push(TargetView { clip: c.id.0, mask: Some(i), label: format!("Mask: {}", m.name) });
+    }
+    if let Some((ta, tb)) = range {
+        for tr in s.tracks.iter().filter(|t| t.kind == TrackKind::Video) {
+            for o in tr.clips.iter().filter(|o| o.id != c.id && o.timeline_start.0 < tb && o.timeline_end().0 > ta) {
+                let how = if trk.mode == TrackMode::CornerPin { "Pin into the points: " } else { "" };
+                targets.push(TargetView { clip: o.id.0, mask: None, label: format!("{how}{} ({})", o.display_name(&e.project), tr.name) });
+            }
+        }
+    }
+    Some(TrackerView {
+        mode: trk.mode,
+        size: trk.points[0].size,
+        search: trk.points[0].search,
+        shown: trk.shown_at(src),
+        paths: trk.points.iter().map(|p| p.path.iter().map(|s| s.pos).collect()).collect(),
+        frames: frames.len(),
+        range,
+        tracked: trk.is_tracked(),
+        targets,
+    })
 }
 
 #[derive(Serialize)]
@@ -284,7 +388,26 @@ pub fn state(e: &Editor) -> State {
                 animated.push(name);
             }
         }
+        let layer_px = e.layer_size(c);
+        let video = tr.kind == TrackKind::Video;
+        let map = video.then(|| c.transform_at(e.playback.playhead).layer_map(layer_px, [s.width as f32, s.height as f32]));
+        let mt = e.mask_time(c);
+        let masks = c
+            .masks
+            .iter()
+            .map(|m| MaskView { mask: m.clone(), outline: m.outline(mt), handles: m.points_at(mt), key_here: m.keys.iter().any(|k| k.at == mt) })
+            .collect();
+        let footage = c.title.is_none() && c.nested.is_none() && p.media(c.media).is_some_and(|m| m.info.video.is_some() && m.info.duration > Time::ZERO);
+        let job = e.tracking.as_ref().map(|j| (j.clip, j.progress));
         Inspector {
+            layer_map: map.as_ref().map(matrix),
+            layer_inv: map.and_then(|m| m.inverse()).as_ref().map(matrix),
+            layer_px,
+            masks,
+            can_track: video && footage,
+            tracker: if video { tracker_view(e, c) } else { None },
+            tracking: job.filter(|(id, _)| *id == c.id).map(|(_, p)| p),
+            tracking_elsewhere: job.is_some_and(|(id, _)| id != c.id),
             id: c.id.0,
             name: clip_name(p, c),
             kind,
@@ -298,7 +421,6 @@ pub fn state(e: &Editor) -> State {
             speed: c.speed,
             reverse: c.reverse,
             effects: c.effects.iter().map(|fx| fx.plugin.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| fx.kind.label().to_string())).collect(),
-            masks: c.masks.len(),
             animated,
             linked: s.link_group(c.id).len() > 1,
         }

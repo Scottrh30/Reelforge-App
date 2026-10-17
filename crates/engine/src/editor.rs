@@ -13,9 +13,11 @@ use crate::preview::Preview;
 use crate::render_cache::RenderCache;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use reelforge_core::edit::{plan_trim, ripple_delete, TrimPlan};
+use reelforge_core::mask::Mask;
+use reelforge_core::track::{ApplyOptions, TrackMode, Tracker};
 use reelforge_core::undo::{
     split_group, AddClip, AddTrack, Batch, Edge, ImportMedia, RemoveTrack, RenameTrack, SetClipAudio, SetClipTiming, SetClipVisual, SetLink,
-    SetTitle, SetTrackAudio, Timing,
+    SetTitle, SetTrackAudio, SetTracker, Timing,
 };
 use reelforge_core::*;
 use reelforge_render::text::FontEntry;
@@ -52,8 +54,25 @@ impl Default for Prefs {
     }
 }
 
+/// Messages from a tracking run.
+enum TrackMsg {
+    Progress(f32),
+    Done(Result<(Vec<Vec<reelforge_core::track::TrackSample>>, reelforge_media::TrackEnd), String>),
+}
+
+/// A motion-tracking run going on in the background.
+pub struct TrackJob {
+    seq: usize,
+    pub clip: ClipId,
+    rx: Receiver<TrackMsg>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// 0–1.
+    pub progress: f32,
+}
+
 /// An interactive edit in progress: what's being changed and its value before the gesture.
 enum LiveEdit {
+    Tracker(ClipId, Option<Tracker>),
     Visual(ClipId, ClipVisual),
     /// Trimming a clip (keyed by the clip grabbed): timings of every clip before, and the trim mode.
     Timing(ClipId, Vec<(ClipId, Timing)>, TrimMode),
@@ -70,6 +89,7 @@ impl LiveEdit {
             (LiveEdit::Title(a, _), LiveEdit::Title(b, _)) => a == b,
             (LiveEdit::ClipAudio(a, _), LiveEdit::ClipAudio(b, _)) => a == b,
             (LiveEdit::TrackAudio(a, _), LiveEdit::TrackAudio(b, _)) => a == b,
+            (LiveEdit::Tracker(a, _), LiveEdit::Tracker(b, _)) => a == b,
             _ => false,
         }
     }
@@ -117,6 +137,8 @@ pub struct Editor {
     pub session: Option<crate::safety::Session>,
     /// Crashed sessions found at startup, offered for recovery.
     pub recoveries: Vec<crate::safety::Recovery>,
+    /// A motion-tracking run in progress.
+    pub tracking: Option<TrackJob>,
 }
 
 impl Editor {
@@ -163,6 +185,7 @@ impl Editor {
             proxied_rev: 0,
             session: None,
             recoveries: Vec::new(),
+            tracking: None,
         }
     }
 
@@ -918,6 +941,10 @@ impl Editor {
                 new.map(|new| Box::new(SetTitle { seq, id, old, new }) as _)
             }
             LiveEdit::ClipAudio(id, old) => self.clip_audio(id).filter(|n| *n != old).map(|new| Box::new(SetClipAudio { seq, id, old, new }) as _),
+            LiveEdit::Tracker(id, old) => {
+                let new = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()).filter(|n| *n != old);
+                new.map(|new| Box::new(SetTracker { seq, id, old, new, label: "Move tracker" }) as _)
+            }
             LiveEdit::TrackAudio(track, old) => {
                 let new = self.seq().tracks.get(track).map(|t| t.audio).filter(|n| *n != old);
                 new.map(|new| Box::new(SetTrackAudio { seq, track, old, new }) as _)
@@ -926,6 +953,225 @@ impl Editor {
         if let Some(cmd) = cmd {
             self.execute(cmd);
         }
+    }
+
+    // ---- Masks --------------------------------------------------------------------
+
+    /// The size a clip's masks and tracker are in (its picture, or the frame for a title).
+    pub fn layer_size(&self, clip: &Clip) -> [f32; 2] {
+        match self.project.picture_size(clip) {
+            Some([w, h]) => [w as f32, h as f32],
+            None => [self.seq().width as f32, self.seq().height as f32],
+        }
+    }
+
+    /// The source time a clip's masks are seen at (the playhead, kept inside the clip).
+    pub fn mask_time(&self, clip: &Clip) -> Time {
+        clip.source_time(self.playback.playhead.max(clip.timeline_start).min(clip.timeline_end()))
+    }
+
+    /// The media time a clip's tracker is seen at.
+    pub fn track_time(&self, clip: &Clip) -> Time {
+        clip.media_at(self.playback.playhead.max(clip.timeline_start).min(clip.timeline_end()))
+    }
+
+    /// Add a mask to a clip as one undo step, named after its shape. Returns its index.
+    pub fn add_mask(&mut self, id: ClipId, mut mask: Mask) -> Option<usize> {
+        self.commit_live_edit();
+        let mut v = self.visual(id)?;
+        let n = v.masks.len();
+        mask.name = format!("{} {}", mask.shape.label(), n + 1);
+        v.masks.push(mask);
+        self.set_visual_live(id, v);
+        self.commit_live_edit();
+        self.status = "Mask added: drag its corners in the Viewer, or inside it to move it".into();
+        Some(n)
+    }
+
+    /// Replace a clip's masks as part of a gesture (or, followed by
+    /// `commit_live_edit`, as one step).
+    pub fn set_masks_live(&mut self, id: ClipId, masks: Vec<Mask>) {
+        let Some(mut v) = self.visual(id) else { return };
+        v.masks = masks;
+        self.set_visual_live(id, v);
+    }
+
+    /// Move mask `index`'s points to `points` as seen at the playhead (a
+    /// keyframe there if the shape is animated).
+    pub fn set_mask_points_live(&mut self, id: ClipId, index: usize, points: Vec<[f32; 2]>) {
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let t = self.mask_time(c);
+        let Some(mut v) = self.visual(id) else { return };
+        let Some(m) = v.masks.get_mut(index) else { return };
+        m.set_points_at(t, points);
+        self.set_visual_live(id, v);
+    }
+
+    // ---- Motion tracking -----------------------------------------------------------
+
+    /// Change a clip's tracker as part of a gesture (dragging it, a slider).
+    pub fn set_tracker_live(&mut self, id: ClipId, t: Option<Tracker>) {
+        let Some(before) = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()) else { return };
+        if before == t {
+            return;
+        }
+        self.begin_live(LiveEdit::Tracker(id, before));
+        if let Some((_, c)) = self.project.sequences[self.active].find_clip_mut(id) {
+            c.tracker = t;
+        }
+        self.touch();
+    }
+
+    /// Change a clip's tracker as one undo step.
+    pub fn set_tracker(&mut self, id: ClipId, t: Option<Tracker>, label: &'static str) {
+        self.commit_live_edit();
+        let Some(old) = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()) else { return };
+        if old != t {
+            self.execute(Box::new(SetTracker { seq: self.active, id, old, new: t, label }));
+        }
+    }
+
+    /// Put a new tracker on a footage clip, centred on its picture.
+    pub fn add_tracker(&mut self, id: ClipId, mode: TrackMode) {
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let Some([w, h]) = self.project.picture_size(c) else { return };
+        let layer = [w as f32, h as f32];
+        let src = self.track_time(c);
+        self.set_tracker(id, Some(Tracker::new(mode, [layer[0] / 2.0, layer[1] / 2.0], layer, src)), "Add tracker");
+        self.status = match mode {
+            TrackMode::Position => "Drag the tracker box in the Viewer onto a sharp detail, then press Track forward".into(),
+            TrackMode::Transform => "Drag boxes 1 and 2 onto two sharp details, well apart on the same object, then press Track forward".into(),
+            TrackMode::CornerPin => "Drag boxes 1–4 onto the corners of the surface (top left, top right, bottom right, bottom left), then press Track forward".into(),
+        };
+    }
+
+    /// Track the clip's points from the playhead to the end of the clip (or
+    /// back to its start), in the background.
+    pub fn start_tracking(&mut self, id: ClipId, forward: bool) {
+        self.commit_live_edit();
+        if self.tracking.is_some() {
+            return;
+        }
+        let frame = self.seq().frame_rate.frame_duration();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let (Some(track), Some(media)) = (c.tracker.clone(), self.project.media(c.media).cloned()) else { return };
+        let t = self.playback.playhead.max(c.timeline_start).min(c.timeline_end() - frame);
+        // Tracking works in media time; for a reversed clip "forward" on the timeline is backwards in the media.
+        let from = c.media_at(t);
+        let until = if forward { c.media_at(c.timeline_end() - frame) } else { c.media_at(c.timeline_start) };
+        let (tx, rx) = unbounded();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = cancel.clone();
+        self.playback.pause();
+        std::thread::Builder::new()
+            .name("tracker".into())
+            .spawn(move || {
+                let progress_tx = tx.clone();
+                let r = reelforge_media::track_points(&media.path, &media.info, &track, from, until, &stop, |p| {
+                    let _ = progress_tx.send(TrackMsg::Progress(p));
+                });
+                let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
+            })
+            .expect("tracker thread");
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0 });
+        self.status = "Tracking…".into();
+    }
+
+    pub fn cancel_tracking(&mut self) {
+        if let Some(j) = &self.tracking {
+            j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn poll_tracking(&mut self) {
+        let Some(job) = &mut self.tracking else { return };
+        let mut done = None;
+        while let Ok(m) = job.rx.try_recv() {
+            match m {
+                TrackMsg::Progress(p) => job.progress = p,
+                TrackMsg::Done(r) => done = Some(r),
+            }
+        }
+        let Some(result) = done else { return };
+        let job = self.tracking.take().unwrap();
+        match result {
+            Err(e) => self.status = format!("Tracking failed: {e}"),
+            Ok((samples, end)) => {
+                let n = samples.first().map_or(0, |s| s.len().saturating_sub(1));
+                let Some(old) = self.project.sequences.get(job.seq).and_then(|s| s.find_clip(job.clip)).and_then(|(_, c)| c.tracker.clone()) else { return };
+                let mut new = old.clone();
+                for (p, s) in new.points.iter_mut().zip(samples) {
+                    p.merge(s);
+                }
+                let rate = self.project.sequences[job.seq].frame_rate;
+                let many = new.points.len() > 1;
+                let status = match end {
+                    reelforge_media::TrackEnd::Done => format!("Tracked {n} frames"),
+                    reelforge_media::TrackEnd::Cancelled => format!("Tracking stopped after {n} frames"),
+                    reelforge_media::TrackEnd::Lost(t, i) => {
+                        let what = if many { format!("point {}", i + 1) } else { "the feature".into() };
+                        format!("Tracked {n} frames, then lost {what} at {} (source time): go there, drag it back onto its detail and track again", t.timecode(rate))
+                    }
+                };
+                let label = if many { "Track points" } else { "Track point" };
+                self.execute(Box::new(SetTracker { seq: job.seq, id: job.clip, old: Some(old), new: Some(new), label }));
+                self.status = status;
+            }
+        }
+    }
+
+    /// Make mask `index` of the tracked clip move with its tracked points.
+    pub fn apply_track_to_mask(&mut self, tracked: ClipId, index: usize) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(tracked) else { return };
+        let (Some(track), Some(mask)) = (&c.tracker, c.masks.get(index)) else { return };
+        let Some(m) = reelforge_core::track::follow_mask(c, mask, track) else {
+            self.status = "Nothing to apply: track the points first".into();
+            return;
+        };
+        let name = m.name.clone();
+        let mut v = c.visual();
+        v.masks[index] = m;
+        self.set_visual_live(tracked, v);
+        self.commit_live_edit();
+        self.status = format!("{name} now follows the tracked motion");
+    }
+
+    /// Make `target` follow the tracked motion of `tracked` (or, if they're the
+    /// same clip, hold it steady), as keyframes. `smoothing` (frames) keeps
+    /// slow camera moves when stabilising.
+    pub fn apply_track(&mut self, tracked: ClipId, target: ClipId, smoothing: f32) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let (Some((_, a)), Some((_, b))) = (s.find_clip(tracked), s.find_clip(target)) else { return };
+        let Some(track) = &a.tracker else { return };
+        if self.project.picture_size(a).is_none() {
+            return;
+        }
+        let (layer, target_layer) = (self.layer_size(a), self.layer_size(b));
+        let frame = [s.width as f32, s.height as f32];
+        let stabilise = tracked == target;
+        let opts = ApplyOptions { stabilise, smoothing: if stabilise { smoothing } else { 0.0 } };
+        let mode = track.mode;
+        let Some(anim) = reelforge_core::track::follow_keys(a, track, layer, frame, b, target_layer, opts) else {
+            self.status = if track.frames().is_empty() { "Nothing to apply: track every point first".into() } else { "Nothing to apply: the track doesn't overlap that clip".into() };
+            return;
+        };
+        if s.is_locked(target) {
+            self.status = LOCKED.into();
+            return;
+        }
+        let old = b.visual();
+        let new = ClipVisual { anim, ..old.clone() };
+        let name = b.display_name(&self.project).into_owned();
+        self.execute(Box::new(SetClipVisual { seq: self.active, id: target, old, new }));
+        self.status = match (stabilise, mode) {
+            (true, TrackMode::CornerPin) => "Stabilised: the clip is corner-pinned against the tracked perspective".into(),
+            (true, _) => "Stabilised: the clip now moves against the tracked motion (scale it up a little to hide the edges)".into(),
+            (false, TrackMode::CornerPin) => format!("{name} is now corner-pinned to the tracked surface"),
+            (false, TrackMode::Transform) => format!("{name} now follows the tracked position, rotation and scale"),
+            (false, TrackMode::Position) => format!("{name} now follows the tracked point"),
+        };
     }
 
     // ---- Files -------------------------------------------------------------------
@@ -1026,6 +1272,7 @@ impl Editor {
         while let Ok((id, peaks)) = self.waveform_rx.try_recv() {
             self.waveforms.insert(id, Arc::new(peaks));
         }
+        self.poll_tracking();
         let seq = &self.project.sequences[self.active];
         let (rate, end) = (seq.frame_rate, seq.duration());
         self.playback.tick(rate, end);
@@ -1137,6 +1384,36 @@ mod tests {
         assert_eq!(f.seq().tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 1);
         assert!(!f.is_dirty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn masks_and_trackers_are_undoable() {
+        let mut e = editor();
+        e.add_title();
+        let id = e.selection.unwrap();
+        let size = { let c = e.seq().find_clip(id).unwrap().1.clone(); e.layer_size(&c) };
+        let i = e.add_mask(id, Mask::centred(reelforge_core::mask::MaskShape::Ellipse, size)).unwrap();
+        assert_eq!(e.seq().find_clip(id).unwrap().1.masks[i].name, "Ellipse 1");
+        let steps = e.undo.position();
+        e.set_mask_points_live(id, i, vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]);
+        e.set_mask_points_live(id, i, vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]);
+        e.commit_live_edit();
+        assert_eq!(e.undo.position(), steps + 1, "a drag is one step");
+        assert_eq!(e.seq().find_clip(id).unwrap().1.masks[i].points[2], [20.0, 20.0]);
+        e.undo();
+        e.undo();
+        assert!(e.seq().find_clip(id).unwrap().1.masks.is_empty());
+
+        // Trackers: a title has no picture of its own, so set one directly.
+        let t = Tracker::new(TrackMode::Position, [50.0, 50.0], [100.0, 100.0], Time::ZERO);
+        e.set_tracker(id, Some(t.clone()), "Add tracker");
+        let mut moved = t.clone();
+        moved.points[0].move_to(Time::ZERO, [60.0, 40.0]);
+        e.set_tracker_live(id, Some(moved.clone()));
+        e.commit_live_edit();
+        assert_eq!(e.seq().find_clip(id).unwrap().1.tracker.as_ref(), Some(&moved));
+        e.undo();
+        assert_eq!(e.seq().find_clip(id).unwrap().1.tracker.as_ref(), Some(&t));
     }
 
     #[test]

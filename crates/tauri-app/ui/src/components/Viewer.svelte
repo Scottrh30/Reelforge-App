@@ -2,6 +2,7 @@
   import { app, run, viewer, timecode } from "../lib/session.svelte";
   import { api, type Transform } from "../lib/api";
   import { actions } from "../lib/actions.svelte";
+  import ViewerOverlay from "./ViewerOverlay.svelte";
 
   let box: HTMLDivElement | undefined = $state();
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -39,6 +40,8 @@
     const ins = app.s?.inspector;
     const v = ins?.visual;
     if (!v || v.transform.pin || ins?.animated.length) return null;
+    // Editing a mask or drawing one: the layer stays put.
+    if ((app.activeMask && app.activeMask.clip === ins!.id) || (app.drawing && app.drawing.clip === ins!.id)) return null;
     const t = v.transform;
     const [lw, lh] = v.layer_size;
     const cx = fit.x + (fit.W / 2 + t.position[0] - t.anchor[0] * t.scale[0]) * fit.k;
@@ -90,7 +93,15 @@
     {#if app.live?.from_cache}<span class="rendered" title="Shown from Render preview">Rendered</span>{/if}
     {#if app.live && !app.live.exact && !playing}<span class="muted" title="Some layers are still decoding">Catching up…</span>{/if}
   </div>
-  <div class="stage" bind:this={box} role="presentation" onpointerdown={() => sel && run(api.select(null, "none"))}>
+  <div
+    class="stage"
+    bind:this={box}
+    role="presentation"
+    onpointerdown={() => {
+      if (app.activeMask) app.activeMask = null;
+      else if (sel) run(api.select(null, "none"));
+    }}
+  >
     <canvas
       bind:this={canvas}
       style="left:{fit.x}px; top:{fit.y}px; width:{fit.w}px; height:{fit.h}px"
@@ -111,6 +122,7 @@
         {/each}
       </div>
     {/if}
+    <ViewerOverlay {fit} {box} />
   </div>
   <div class="transport">
     <button class="ghost" onclick={() => actions.act("start")} aria-label="Go to start" title="Go to start (Home)">
