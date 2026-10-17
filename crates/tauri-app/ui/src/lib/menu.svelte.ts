@@ -10,6 +10,8 @@ export interface MenuItem {
   separator?: boolean;
   /// A heading (not clickable).
   heading?: boolean;
+  /// Items of a submenu that opens beside this one.
+  submenu?: MenuItem[];
 }
 
 export const menu = $state({ open: false, x: 0, y: 0, items: [] as MenuItem[] });

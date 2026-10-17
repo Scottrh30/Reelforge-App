@@ -128,7 +128,7 @@
     margin-bottom: 8px;
   }
   h4 {
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--text-scale));
     font-weight: 600;
     color: var(--muted);
     margin: 0;
@@ -141,11 +141,11 @@
   .small {
     min-height: 22px;
     padding: 0 7px;
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
   .note {
     color: var(--faint);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     margin: 2px 0 8px;
   }
   .card {
@@ -199,13 +199,13 @@
   }
   .lbl {
     color: var(--muted);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
   .grow {
     flex: 1;
   }
   .muted {
     color: var(--muted);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
 </style>

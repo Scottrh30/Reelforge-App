@@ -2,6 +2,7 @@
 
 import { api } from "./api";
 import { app, run, say } from "./session.svelte";
+import { prefsDialog } from "./prefs.svelte";
 
 /// A question in a dialog: the answer is the label of the button pressed (or null).
 export const ask = $state({ open: false, title: "", text: "", buttons: [] as string[], resolve: (_: string | null) => {} });
@@ -80,7 +81,7 @@ export function onKey(e: KeyboardEvent) {
     }
     return;
   }
-  if (ask.open || app.exportOpen || app.settingsOpen || (app.s?.recoveries.length ?? 0) > 0) return;
+  if (ask.open || app.exportOpen || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const go = (f: () => unknown) => {

@@ -137,7 +137,7 @@
     flex-direction: column;
     gap: 2px;
     padding: 4px;
-    background: rgba(30, 31, 34, 0.88);
+    background: color-mix(in srgb, var(--base) 88%, transparent);
     border: 1px solid var(--line);
     border-radius: 7px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
@@ -200,11 +200,11 @@
   }
   .tip strong {
     font-weight: 600;
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--text-scale));
   }
   .tip span {
     color: var(--muted);
-    font-size: 11.5px;
+    font-size: calc(11.5px * var(--text-scale));
     line-height: 1.35;
   }
   .tip::before {

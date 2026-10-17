@@ -206,6 +206,18 @@ fn thumbnail(path: String, at: i64) -> Res<Response> {
     Ok(Response::new(out))
 }
 
+/// The font families installed on this computer (for Preferences > Fonts);
+/// empty until the background font scan has finished.
+#[tauri::command]
+fn font_families() -> Res<Vec<String>> {
+    ed(|e| {
+        let mut v: Vec<String> = e.fonts().map(|f| f.iter().map(|f| f.family.clone()).collect()).unwrap_or_default();
+        v.sort_by_key(|f| f.to_lowercase());
+        v.dedup();
+        v
+    })
+}
+
 #[tauri::command]
 fn waveform_rate() -> u32 {
     WAVEFORM_RATE
@@ -845,6 +857,7 @@ fn main() {
             frame,
             waveform,
             waveform_rate,
+            font_families,
             thumbnail,
             new_project,
             open_dialog,

@@ -674,7 +674,7 @@
   .chip {
     min-height: 22px;
     padding: 0 8px;
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     border-radius: 11px;
   }
   .tools {
@@ -714,7 +714,7 @@
     padding: 0 10px;
     border-right: 1px solid var(--line);
     border-bottom: 1px solid var(--line-soft);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
   .ruler {
     position: relative;
@@ -733,7 +733,7 @@
   .tlabel {
     position: absolute;
     top: 5px;
-    font-size: 11px;
+    font-size: calc(11px * var(--text-scale));
     color: var(--muted);
     white-space: nowrap;
   }
@@ -803,7 +803,7 @@
     height: 18px;
     width: 24px;
     padding: 0;
-    font-size: 11px;
+    font-size: calc(11px * var(--text-scale));
     font-weight: 600;
     display: grid;
     place-items: center;
@@ -823,7 +823,7 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    background: #17181b;
+    background: var(--well);
     border-radius: 2px;
     padding: 1px;
     min-width: 20px;
@@ -844,7 +844,7 @@
   }
   .addrow button {
     flex: 1;
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     padding: 2px 4px;
   }
   .hresize {
@@ -863,7 +863,7 @@
   .lanes {
     position: relative;
     overflow: hidden;
-    background: #1a1b1e;
+    background: var(--well);
   }
   .lane {
     position: relative;
@@ -874,7 +874,7 @@
     background: repeating-linear-gradient(135deg, transparent 0 8px, rgba(255, 255, 255, 0.025) 8px 16px);
   }
   .lane.dropping {
-    background: rgba(242, 169, 59, 0.07);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
   }
   .clip {
     position: absolute;
@@ -943,7 +943,8 @@
   }
   .label {
     position: relative;
-    font-size: 12px;
+    color: var(--clip-text);
+    font-size: calc(12px * var(--text-scale));
     padding: 2px 6px;
     white-space: nowrap;
     overflow: hidden;
@@ -953,7 +954,7 @@
   }
   .label b {
     font-weight: 600;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--text-scale));
     background: rgba(0, 0, 0, 0.3);
     border-radius: 3px;
     padding: 0 4px;
@@ -1026,7 +1027,7 @@
     top: 4px;
     background: var(--accent);
     color: var(--accent-ink);
-    font-size: 11px;
+    font-size: calc(11px * var(--text-scale));
     padding: 0 6px;
     border-radius: 3px;
     white-space: nowrap;
@@ -1047,7 +1048,7 @@
     padding: 4px 10px;
     border-top: 1px solid var(--line-soft);
     background: var(--panel);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
   .zoombar input {
     width: 180px;
@@ -1055,7 +1056,7 @@
   .z {
     min-height: 20px;
     padding: 0 7px;
-    font-size: 14px;
+    font-size: calc(14px * var(--text-scale));
     line-height: 1;
   }
   .dragghost {
@@ -1066,6 +1067,6 @@
     border-radius: 4px;
     padding: 2px 8px;
     pointer-events: none;
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
 </style>

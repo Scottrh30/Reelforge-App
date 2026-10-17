@@ -220,7 +220,7 @@
     border-bottom: 1px solid var(--line-soft);
   }
   h3 {
-    font-size: 15px;
+    font-size: calc(15px * var(--text-scale));
     font-weight: 600;
     margin: 4px 0 8px;
     overflow: hidden;
@@ -228,7 +228,7 @@
     white-space: nowrap;
   }
   h4 {
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--text-scale));
     font-weight: 600;
     color: var(--muted);
     margin: 0 0 8px;
@@ -284,7 +284,7 @@
   .link {
     padding: 0 3px;
     min-height: 18px;
-    font-size: 11px;
+    font-size: calc(11px * var(--text-scale));
   }
   .check {
     display: flex;
@@ -308,7 +308,7 @@
   }
   .note {
     color: var(--faint);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     margin: 4px 0 8px;
   }
   .muted {

@@ -146,18 +146,18 @@
     align-items: center;
     margin: 10px 2px 6px;
     font-weight: 600;
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     color: var(--muted);
   }
   .small {
     min-height: 20px;
     padding: 0 6px;
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
   .empty {
     color: var(--faint);
     margin: 2px 2px 8px;
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
   .comp {
     display: flex;
@@ -177,10 +177,10 @@
     text-overflow: ellipsis;
   }
   .badge {
-    font-size: 11px;
+    font-size: calc(11px * var(--text-scale));
     font-weight: 600;
-    color: #f0c27a;
-    background: rgba(154, 115, 48, 0.35);
+    color: color-mix(in srgb, var(--clip-comp) 45%, white);
+    background: color-mix(in srgb, var(--clip-comp) 40%, transparent);
     border-radius: 3px;
     padding: 0 5px;
   }
@@ -204,25 +204,25 @@
   }
   .pic {
     aspect-ratio: 16 / 9;
-    background: #15161a;
+    background: var(--well);
     position: relative;
   }
   .pic.audio {
-    background: #1a2a20;
+    background: color-mix(in srgb, var(--clip-audio) 30%, var(--well));
     display: grid;
     place-items: center;
   }
   .pic.audio svg {
     width: 70%;
     height: 50%;
-    fill: #5cc27a;
+    fill: color-mix(in srgb, var(--clip-audio) 60%, white);
     opacity: 0.8;
   }
   .flag {
     position: absolute;
     left: 4px;
     bottom: 4px;
-    font-size: 10.5px;
+    font-size: calc(10.5px * var(--text-scale));
     background: rgba(0, 0, 0, 0.7);
     border-radius: 3px;
     padding: 0 4px;
@@ -239,7 +239,7 @@
   }
   .detail {
     padding: 0 7px 6px;
-    font-size: 11.5px;
+    font-size: calc(11.5px * var(--text-scale));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

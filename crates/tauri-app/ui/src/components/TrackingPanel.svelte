@@ -125,19 +125,19 @@
     gap: 8px;
   }
   h4 {
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--text-scale));
     font-weight: 600;
     color: var(--muted);
     margin: 0;
   }
   .note {
     color: var(--faint);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     margin: 0;
   }
   .muted {
     color: var(--muted);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     margin: 0;
   }
   .row {

@@ -13,8 +13,8 @@
   --muted: #8b9099;
   --faint: #60656e;
   --accent: #f2a93b;
-  --accent-ink: #1e1f22;
-  --accent-soft: rgba(242, 169, 59, 0.16);
+  --accent-ink: var(--base);
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
   --red: #ff5d4f;
   --green: #5cc27a;
 
@@ -25,8 +25,26 @@
   --clip-title: #6c55a8;
   --clip-comp: #9a7330;
 
+  /* Clip names on the timeline. */
+  --clip-text: #ffffff;
+
+  /* Dark wells: the viewer's surround, timeline lanes, meters. */
+  --well: #17181b;
+
+  /* Buttons. */
+  --btn: #2f3237;
+  --btn-text: #d9dbdf;
+  --btn-hover: #383b41;
+  --btn-border: #3a3d43;
+  --btn-primary: #f2a93b;
+  --btn-primary-text: #1e1f22;
+
   --radius: 4px;
   --font: "IBM Plex Sans", system-ui, sans-serif;
+  /* Timecode and other figures. */
+  --font-tc: var(--font);
+  /* Text size, 1 = normal (Preferences > Fonts). */
+  --text-scale: 1;
   color-scheme: dark;
 }
 
@@ -45,7 +63,7 @@ body,
 body {
   background: var(--base);
   color: var(--text);
-  font: 13px/1.4 var(--font);
+  font: calc(13px * var(--text-scale)) / 1.4 var(--font);
   -webkit-font-smoothing: antialiased;
   user-select: none;
   -webkit-user-select: none;
@@ -61,8 +79,9 @@ textarea {
 }
 
 button {
-  background: var(--raised);
-  border: 1px solid var(--line);
+  background: var(--btn);
+  color: var(--btn-text);
+  border: 1px solid var(--btn-border);
   border-radius: var(--radius);
   padding: 3px 10px;
   min-height: 24px;
@@ -70,7 +89,7 @@ button {
   white-space: nowrap;
 }
 button:hover:not(:disabled) {
-  background: var(--hover);
+  background: var(--btn-hover);
 }
 button:active:not(:disabled) {
   transform: translateY(0.5px);
@@ -80,23 +99,27 @@ button:disabled {
   cursor: default;
 }
 button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
+  background: var(--btn-primary);
+  border-color: var(--btn-primary);
+  color: var(--btn-primary-text);
   font-weight: 600;
 }
 button.primary:hover:not(:disabled) {
-  background: #f6b955;
+  background: color-mix(in srgb, var(--btn-primary) 85%, white);
 }
 button.ghost {
   background: none;
   border-color: transparent;
+  color: var(--text);
+}
+button.ghost:disabled {
+  color: var(--faint);
 }
 button.ghost:hover:not(:disabled) {
   background: var(--raised);
 }
 button.on {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -150,6 +173,7 @@ input[type="checkbox"] {
 }
 
 .tc {
+  font-family: var(--font-tc);
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
 }

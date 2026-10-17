@@ -24,7 +24,7 @@
     padding: 8px;
   }
   p {
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     margin: 0 2px 8px;
   }
   ol {

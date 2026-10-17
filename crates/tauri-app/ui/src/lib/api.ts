@@ -234,6 +234,7 @@ export const api = {
   frame: (max_w: number, max_h: number, have: number, jpeg: boolean) => invoke<ArrayBuffer>("frame", { maxW: max_w, maxH: max_h, have, jpeg }),
   waveform: (media: number) => invoke<ArrayBuffer>("waveform", { media }),
   waveformRate: () => invoke<number>("waveform_rate"),
+  fontFamilies: () => invoke<string[]>("font_families"),
   thumbnail: (path: string, at: Ticks) => invoke<ArrayBuffer>("thumbnail", { path, at }),
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),

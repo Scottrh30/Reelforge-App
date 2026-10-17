@@ -3,6 +3,7 @@
   import { actions } from "../lib/actions.svelte";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
   import { api } from "../lib/api";
+  import { openPrefs } from "../lib/prefs.svelte";
 
   const panelNames: [string, string][] = [
     ["media", "Media"],
@@ -45,6 +46,16 @@
       { separator: true },
       { label: "Select all", hint: "Ctrl+A", run: () => actions.act("select_all") },
       { label: "Unlink audio and video", disabled: !s?.inspector?.linked, run: () => actions.act("unlink") },
+      { separator: true },
+      {
+        label: "Preferences",
+        submenu: [
+          { label: "Label colors…", run: () => openPrefs("labels") },
+          { label: "Interface colors…", run: () => openPrefs("ui") },
+          { label: "Button colors…", run: () => openPrefs("buttons") },
+          { label: "Fonts…", run: () => openPrefs("fonts") },
+        ],
+      },
     ];
   };
 
@@ -117,7 +128,7 @@
     background: var(--accent);
     color: var(--accent-ink);
     font-weight: 600;
-    font-size: 13px;
+    font-size: calc(13px * var(--text-scale));
     display: grid;
     place-items: center;
     margin-right: 8px;

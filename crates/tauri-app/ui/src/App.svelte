@@ -16,6 +16,14 @@
   import Splitter from "./components/Splitter.svelte";
   import ContextMenu from "./components/ContextMenu.svelte";
   import Dialogs from "./components/Dialogs.svelte";
+  import Preferences from "./components/Preferences.svelte";
+  import { look, apply } from "./lib/prefs.svelte";
+
+  // Colours and fonts from Edit > Preferences, put on the page whenever they change.
+  $effect(() => {
+    JSON.stringify(look);
+    apply(look);
+  });
 
   const stored = (k: string, d: number) => {
     try {
@@ -139,6 +147,7 @@
 {#if fileHover}<div class="filehover">Drop to import</div>{/if}
 <ContextMenu />
 <Dialogs />
+<Preferences />
 
 <style>
   .app {
@@ -208,7 +217,7 @@
     align-items: center;
     height: 26px;
     padding: 0 12px;
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     color: var(--muted);
   }
   .msg {
@@ -228,10 +237,10 @@
     inset: 8px;
     border: 2px dashed var(--accent);
     border-radius: 10px;
-    background: rgba(242, 169, 59, 0.06);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
     display: grid;
     place-items: center;
-    font-size: 18px;
+    font-size: calc(18px * var(--text-scale));
     color: var(--accent);
     pointer-events: none;
     z-index: 70;

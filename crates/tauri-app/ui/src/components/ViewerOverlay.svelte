@@ -305,7 +305,7 @@
     cursor: crosshair;
   }
   text {
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     font-weight: 600;
   }
   .catch {

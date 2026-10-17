@@ -181,7 +181,7 @@
     width: min(420px, calc(100vw - 32px));
   }
   h2 {
-    font-size: 16px;
+    font-size: calc(16px * var(--text-scale));
     font-weight: 600;
     margin: 0 0 4px;
   }
@@ -207,7 +207,7 @@
   }
   .hint {
     margin-left: 118px;
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     min-height: 2.8em;
   }
   .check {
@@ -237,7 +237,7 @@
     transition: width 0.2s;
   }
   .path {
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     word-break: break-all;
     margin-top: 4px;
   }

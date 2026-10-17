@@ -59,7 +59,7 @@
   .well {
     flex: 1;
     position: relative;
-    background: #141518;
+    background: var(--well);
     border-radius: 2px;
     overflow: hidden;
   }
@@ -88,7 +88,7 @@
   .scale {
     position: relative;
     width: 22px;
-    font-size: 10px;
+    font-size: calc(10px * var(--text-scale));
     color: var(--faint);
     margin-top: 8px;
   }
@@ -100,7 +100,7 @@
   .read {
     display: flex;
     gap: 4px;
-    font-size: 11px;
+    font-size: calc(11px * var(--text-scale));
     color: var(--muted);
   }
   .read span {

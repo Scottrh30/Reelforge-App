@@ -178,13 +178,13 @@
   }
   .rendered {
     color: var(--green);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
     font-weight: 600;
   }
   .stage {
     flex: 1;
     position: relative;
-    background: #141518;
+    background: var(--well);
     overflow: hidden;
     min-height: 120px;
   }
@@ -264,7 +264,7 @@
     gap: 8px;
     margin-left: 14px;
     padding: 2px 12px 2px 10px;
-    background: #17181b;
+    background: var(--well);
     border: 1px solid var(--line-soft);
     border-radius: 6px;
   }
@@ -272,7 +272,7 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #3b3326;
+    background: color-mix(in srgb, var(--accent) 18%, var(--well));
     align-self: center;
     transition: background 0.15s, box-shadow 0.15s;
   }
@@ -281,16 +281,16 @@
     box-shadow: 0 0 8px var(--accent);
   }
   .now {
-    font-size: 21px;
+    font-size: calc(21px * var(--text-scale));
     font-weight: 500;
     letter-spacing: 0.02em;
-    color: #eef0f3;
+    color: var(--text);
   }
   .total {
     color: var(--muted);
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
   .clock {
-    font-size: 12px;
+    font-size: calc(12px * var(--text-scale));
   }
 </style>
