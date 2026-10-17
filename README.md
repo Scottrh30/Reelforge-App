@@ -425,9 +425,18 @@ volume and pan, masks, motion tracking), the Editor and Composition timelines (s
 tracks, trim, ripple, roll, slip and slide, snapping, split, cut/copy/paste, mute and lock
 tracks, track meters, a zoom bar and resizable track names), History, the master meters,
 Export (built-in presets, progress, cancel), Settings, unsaved-changes prompts and crash
-recovery. Not yet: keyframes and curves, effects and masks editing, markers editing,
-transitions, tracking, plugins, proxies management and the export queue; projects using
-those still open and play, and the classic window edits them.
+recovery.
+
+Masks: rectangles, ellipses and freehand shapes (click the points out in the Viewer),
+dragged by their points or moved whole, with add/subtract/intersect, invert, feather,
+expansion, opacity and shape keyframes at the playhead. Motion tracking: 1, 2 or 4 points
+dragged onto details in the Viewer, tracked forward or backward in the background, then
+applied to another layer (follow it, or corner-pin into the points), to one of the clip's
+masks, or to the clip itself (stabilise, with smoothing).
+
+Not yet: keyframes and curves, effects editing, markers editing, transitions, plugins,
+proxies management and the export queue; projects using those still open and play, and
+the classic window edits them.
 
 How it works:
 - The editor lives on the main thread; Tauri runs (non-async) commands there, so each
