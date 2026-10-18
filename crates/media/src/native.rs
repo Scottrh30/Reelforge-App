@@ -142,6 +142,7 @@ pub(crate) fn compare_with_ffmpeg(path: &std::path::Path) -> (usize, f64) {
         (0..h).flat_map(|y| o.data(0)[y * o.stride(0)..y * o.stride(0) + w * 4].to_vec()).collect()
     };
     let (mut a, mut b) = (Vec::new(), Vec::new());
+    let (mut ya, mut yb): (Vec<ff::frame::Video>, Vec<ff::frame::Video>) = (Vec::new(), Vec::new());
     let mut packets = Vec::new();
     for (s, p) in ictx.packets() {
         if s.index() == index {
@@ -153,22 +154,49 @@ pub(crate) fn compare_with_ffmpeg(path: &std::path::Path) -> (usize, f64) {
         let mut f = ff::frame::Video::empty();
         while ffd.receive_frame(&mut f).is_ok() {
             a.push(rgba(&f));
+            ya.push(f.clone());
         }
         nat.send_packet(p).unwrap_or_else(|e| panic!("native decoder: {e}"));
         let mut g = ff::frame::Video::empty();
         while nat.receive_frame(&mut g) {
             b.push(rgba(&g));
+            yb.push(g.clone());
         }
     }
     ffd.send_eof().unwrap();
     let mut f = ff::frame::Video::empty();
     while ffd.receive_frame(&mut f).is_ok() {
         a.push(rgba(&f));
+        ya.push(f.clone());
     }
     nat.send_eof();
     let mut g = ff::frame::Video::empty();
     while nat.receive_frame(&mut g) {
         b.push(rgba(&g));
+        yb.push(g.clone());
+    }
+    if std::env::var_os("RF_VERBOSE").is_some() {
+        for (k, (fa, fb)) in ya.iter().zip(&yb).enumerate() {
+            for p in 0..3 {
+                if fa.format() != fb.format() || fa.planes() <= p {
+                    continue;
+                }
+                let (w, h) = if p == 0 { (fa.width() as usize, fa.height() as usize) } else { (fa.plane_width(p) as usize, fa.plane_height(p) as usize) };
+                let mut diffs = Vec::new();
+                for yy in 0..h {
+                    for xx in 0..w {
+                        let va = fa.data(p)[yy * fa.stride(p) + xx];
+                        let vb = fb.data(p)[yy * fb.stride(p) + xx];
+                        if (va as i32 - vb as i32).abs() > 2 {
+                            diffs.push((xx, yy, va, vb));
+                        }
+                    }
+                }
+                if !diffs.is_empty() {
+                    eprintln!("  yuv frame {k} plane {p}: {} samples differ, e.g. {:?}", diffs.len(), &diffs[..diffs.len().min(6)]);
+                }
+            }
+        }
     }
     assert_eq!(a.len(), b.len(), "frame counts differ");
     let mut worst = f64::INFINITY;
@@ -176,6 +204,27 @@ pub(crate) fn compare_with_ffmpeg(path: &std::path::Path) -> (usize, f64) {
         assert_eq!(x.len(), y.len(), "frame sizes differ");
         let mse = x.iter().zip(y).map(|(p, q)| { let d = *p as f64 - *q as f64; d * d }).sum::<f64>() / x.len() as f64;
         let psnr = if mse == 0.0 { 99.0 } else { 10.0 * (255.0f64 * 255.0 / mse).log10() };
+        if std::env::var_os("RF_VERBOSE").is_some() {
+            // Which 16×16 blocks differ noticeably.
+            let w = (x.len() / 4) as f64;
+            let width = std::env::var("RF_W").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(128);
+            let mut mbs = std::collections::BTreeSet::new();
+            for (i, (p, q)) in x.chunks(4).zip(y.chunks(4)).enumerate() {
+                if (p[0] as i32 - q[0] as i32).abs() > 8 {
+                    mbs.insert(((i % width) / 16, (i / width) / 16));
+                }
+            }
+            let _ = w;
+            eprintln!("  frame: {psnr:.1} dB, differing MBs {:?}", mbs.iter().take(12).collect::<Vec<_>>());
+            if let Some(&(mx, my)) = mbs.iter().next() {
+                for row in [0usize, 1, 2, 3, 8, 15] {
+                    let yy = my * 16 + row;
+                    let a: Vec<u8> = (0..16).map(|k| x[(yy * width + mx * 16 + k) * 4 + 1]).collect();
+                    let b: Vec<u8> = (0..16).map(|k| y[(yy * width + mx * 16 + k) * 4 + 1]).collect();
+                    eprintln!("    row {row}: ffmpeg {a:?}\n           native {b:?}");
+                }
+            }
+        }
         worst = worst.min(psnr);
     }
     (a.len(), worst)
@@ -229,7 +278,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rf-native-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok()?;
         let p = dir.join(name);
-        let src = format!("testsrc2=size={size}:rate={rate}:duration={}", 6.0 / rate as f64);
+        let frames = if name.ends_with(".mov") { 6.0 } else { 30.0 };
+        let src = format!("testsrc2=size={size}:rate={rate}:duration={}", frames / rate as f64);
         let ok = std::process::Command::new("ffmpeg")
             .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", &src])
             .args(args)
@@ -265,6 +315,75 @@ mod tests {
             ran += 1;
         }
         assert!(ran >= 7 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
+    #[test]
+    fn mpeg2_matches_ffmpeg() {
+        let m = |extra: &[&'static str]| -> Vec<&'static str> { [vec!["-c:v", "mpeg2video", "-q:v", "4"], extra.to_vec()].concat() };
+        let cases: Vec<(&str, &str, u32, Vec<&str>)> = vec![
+            ("intra.m2v", "320x180", 25, m(&["-g", "1"])),
+            ("ip.mpg", "320x180", 25, m(&["-bf", "0", "-g", "12"])),
+            ("ipb.ts", "320x180", 25, m(&["-bf", "2", "-g", "12"])),
+            ("ipb.mp4", "352x288", 25, m(&["-bf", "2", "-g", "15"])),
+            ("ildct.ts", "720x576", 25, m(&["-bf", "2", "-flags", "+ildct+ilme", "-top", "1"])),
+            ("p422.mxf", "320x180", 25, m(&["-pix_fmt", "yuv422p", "-bf", "2"])),
+            ("alt.m2v", "320x180", 25, m(&["-alternate_scan", "1", "-intra_vlc", "1", "-non_linear_quant", "1", "-qmax", "28", "-dc", "10", "-bf", "2"])),
+            ("hq.m2v", "1280x720", 25, vec!["-c:v", "mpeg2video", "-b:v", "8M", "-bf", "2", "-intra_matrix", "8,16,19,22,26,27,29,34,16,16,22,24,27,29,34,37,19,22,26,27,29,34,34,38,22,22,26,27,29,34,37,40,22,26,27,29,32,35,40,48,26,27,29,32,35,40,48,58,26,27,29,34,38,46,56,69,27,29,35,38,46,56,69,90"]),
+        ];
+        let mut ran = 0;
+        for (name, size, rate, args) in cases {
+            let Some(p) = clip_at(name, size, rate, &args) else {
+                eprintln!("{name}: ffmpeg couldn't make it, skipped");
+                continue;
+            };
+            check(&p, 40.0);
+            ran += 1;
+        }
+        assert!(ran >= 6 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
+    /// Field pictures, same-frame field references, 16×8 and dual-prime motion
+    /// and skipped macroblocks: FFmpeg's encoder never makes these, so random
+    /// streams that use them are generated and both decoders must agree.
+    #[test]
+    fn mpeg2_field_pictures_and_dual_prime_match_ffmpeg() {
+        use reelforge_codecs::mpeg2::testgen::{generate, Options};
+        let dir = std::env::temp_dir().join(format!("rf-native-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut bad = Vec::new();
+        for (i, (field_pictures, chroma_format)) in [(true, 1), (false, 1), (true, 2), (false, 2)].into_iter().enumerate() {
+            for seed in 0..3u64 {
+                let data = generate(Options { field_pictures, chroma_format, seed: seed * 7 + i as u64, b_only: None }, 10);
+                let p = dir.join(format!("gen{i}_{seed}.m2v"));
+                std::fs::write(&p, &data).unwrap();
+                let (n, psnr) = compare_with_ffmpeg(&p);
+                eprintln!("generated fields={field_pictures} chroma={chroma_format} seed={seed}: {n} frames, worst {psnr:.1} dB");
+                if n < 9 || psnr < 40.0 {
+                    bad.push(format!("fields={field_pictures} chroma={chroma_format} seed={seed}: {n} frames, {psnr:.1} dB"));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+    }
+
+    /// Every B-picture prediction direction × motion type, coded and skipped.
+    #[test]
+    fn mpeg2_b_picture_modes_match_ffmpeg() {
+        use reelforge_codecs::mpeg2::testgen::{generate, Options};
+        let dir = std::env::temp_dir().join(format!("rf-native-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for dirs in 1..=3 {
+            for mt in 1..=2 {
+                for coded in [false, true] {
+                    let data = generate(Options { field_pictures: false, chroma_format: 1, seed: 3, b_only: Some((dirs, mt, coded)) }, 4);
+                    let p = dir.join(format!("b{dirs}{mt}{coded}.m2v"));
+                    std::fs::write(&p, &data).unwrap();
+                    let (n, psnr) = compare_with_ffmpeg(&p);
+                    eprintln!("B dirs={dirs} mt={mt} coded={coded}: {n} frames, worst {psnr:.1} dB");
+                    assert!(n >= 4 && psnr >= 40.0, "B dirs={dirs} mt={mt} coded={coded}: {n} frames, {psnr:.1} dB");
+                }
+            }
+        }
     }
 
     #[test]

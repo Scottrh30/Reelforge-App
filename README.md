@@ -556,15 +556,18 @@ decoder by itself. Settings → **Use Reelforge's own decoders** turns them off.
 | Motion JPEG | done (JPEG via the pure-Rust zune-jpeg; fields of interlaced MJPEG woven) |
 | Apple ProRes 422 Proxy/LT/Standard/HQ, 4444, 4444 XQ (with alpha) | done, Reelforge's own (progressive and interlaced, 10-bit out, slices on all cores) |
 | DNxHD / DNxHR | done, Reelforge's own: every compression ID (DNxHD 8/10-bit incl. interlaced, DNxHR LB/SQ/HQ/HQX/444, 4:4:4 as YCbCr or RGB); macroblock rows on all cores. 12-bit and adaptive-interlace (CID 1260) are implemented but untested: FFmpeg can't make samples of them, and they fall back to FFmpeg if they fail. The VC-3 code tables are the standard's values (as published in FFmpeg's `dnxhddata.c`), in `crates/codecs/src/dnxhd_tables.rs` |
-| MPEG-2 | next |
+| MPEG-2 video | done, Reelforge's own: Main and 4:2:2 profiles (4:2:0/4:2:2/4:4:4), I/P/B pictures, frame and field pictures, frame/field/16×8/dual-prime motion, field DCT, alternate scan, custom quantiser matrices, any size (incl. >2800 lines); slices on all cores. Covers DVD/broadcast/HDV/XDCAM/IMX in MPG, TS, VOB, MXF, MP4. MPEG-1 video is left to FFmpeg |
 | H.264, VP9, HEVC | planned |
 | AV1 | planned (via rav1d, a pure-Rust port of dav1d) |
 
 Every decoder is tested against FFmpeg's output (`cargo test -p reelforge-media native`):
 each frame of generated test clips is converted to RGBA both ways and must match closely
-(ProRes: 65–73 dB PSNR in every profile; DNxHD/DNxHR: 64–81 dB; i.e. off by at most a rounding step).
+(ProRes: 65–73 dB PSNR in every profile; DNxHD/DNxHR: 64–81 dB; MPEG-2: 62–70 dB; i.e. off by
+at most a rounding step of the IDCT). FFmpeg's MPEG-2 encoder never makes field pictures,
+16×8 or dual-prime motion, so the tests also generate random streams that use them
+(`crates/codecs/src/mpeg2/testgen.rs`), and FFmpeg and Reelforge must decode them alike.
 Speed: ProRes 422 HQ 1080p decodes at about 27 fps per core (FFmpeg's hand-written SIMD
-manages about 120), so a typical 8-core PC plays it in real time with room to spare; DNxHR HQ is similar (about 23 fps per core).
+manages about 120), so a typical 8-core PC plays it in real time with room to spare; DNxHR HQ is similar (about 23 fps per core). MPEG-2 1080i at 25 Mbit/s: about 75 fps on one core.
 
 ## Building on Windows 10/11
 

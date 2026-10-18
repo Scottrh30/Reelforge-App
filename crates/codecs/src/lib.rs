@@ -10,6 +10,7 @@
 //! |---|---|---|
 //! | Motion JPEG | [`mjpeg`] | baseline and progressive JPEG per frame (zune-jpeg), AVI-style frames without Huffman tables |
 //! | DNxHD / DNxHR | [`dnxhd`] | every compression ID: DNxHD 8/10-bit, DNxHR LB/SQ/HQ/HQX/444, interlaced and adaptive-interlace; Reelforge's own |
+//! | MPEG-2 | [`mpeg2`] | Main and 4:2:2 profiles: I/P/B, frame and field pictures, all motion types; Reelforge's own |
 //! | Apple ProRes | [`prores`] | 422 Proxy/LT/Standard/HQ, 4444/XQ with alpha, progressive and interlaced; Reelforge's own |
 //!
 //! Every decoder is checked against FFmpeg's output in the media crate's tests.
@@ -19,6 +20,7 @@ pub mod dnxhd;
 mod dnxhd_tables;
 pub mod idct;
 pub mod mjpeg;
+pub mod mpeg2;
 pub mod prores;
 pub mod vlc;
 
@@ -57,7 +59,7 @@ impl Codec {
 
     /// Does Reelforge have its own decoder for this yet?
     pub fn available(self) -> bool {
-        matches!(self, Codec::Mjpeg | Codec::ProRes | Codec::Dnxhd)
+        matches!(self, Codec::Mjpeg | Codec::ProRes | Codec::Dnxhd | Codec::Mpeg2)
     }
 }
 
@@ -246,6 +248,7 @@ pub fn open(codec: Codec, info: &StreamInfo) -> Option<Box<dyn Decoder>> {
         Codec::Mjpeg => Some(Box::new(mjpeg::MjpegDecoder::new(info))),
         Codec::ProRes => Some(Box::new(prores::ProResDecoder::new(info))),
         Codec::Dnxhd => Some(Box::new(dnxhd::DnxhdDecoder::new(info))),
+        Codec::Mpeg2 => Some(Box::new(mpeg2::Mpeg2Decoder::new(info))),
         _ => None,
     }
 }
