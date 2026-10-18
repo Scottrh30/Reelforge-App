@@ -2,7 +2,7 @@
 
 A HitFilm-style video editor and compositor, written in Rust. Editing, audio, the GPU
 compositor, export (with presets, a queue and GPU encoders), proxies and crash safety are done;
-effects and compositing (compositions, motion tracking with corner pinning and planar tracking) are under way.
+effects and compositing (compositions, motion tracking with corner pinning, planar and mesh tracking) are under way.
 
 What works now:
 
@@ -345,6 +345,23 @@ What works now:
     corner pin. On a test clip of a poster swinging in perspective with a bar sweeping across
     it, the corners stay within 1 px of where they really are. It takes about 20 ms a frame at
     1080p on two cores, on top of decoding.
+  - **Mesh: a surface that bends**: for cloth, skin, a flag, paper, anything that doesn't stay
+    flat. A grid (2 × 2 to 8 × 8 cells; **Grid** in the panel) fills the four big corner handles
+    you drag over the surface; before tracking, the inner points can be dragged too, to follow a
+    curve. Many small features inside are followed, and every frame the grid's points are solved
+    for together (least squares): each feature pulls the corners of its cell so its spot lands
+    where it was found, while neighbouring points keep their shape relative to each other, so
+    the grid stays smooth and cells without detail move with their neighbours. Features that
+    disagree with the rest (something passing in front) are weighted down to nothing, and every
+    feature is re-checked against how it looked in the first frame, bent the way the grid has
+    bent since. **Apply to** another layer stretches it over the grid, frame by frame (a logo
+    on a shirt, a tattoo on an arm); a mask on the clip can follow the grid too. The warp is
+    shown under **Mesh warp** in the layer's Transform controls, with **Remove** to go back to
+    its own transform. On a test clip of a textured sheet rippling like a flag, the tracked 4 × 3
+    grid lays the sheet out within 0.8 px on average (the best any 4 × 3 grid could do there is
+    0.5 px; straight-edged cells can't follow a curve inside them). Its corners are its weak
+    spot, since the grid is extrapolated there: on the flag's free end they came within 7 px.
+    Use more cells for tighter bends, on surfaces with plenty of detail.
 
   Every point is found to a fraction of a pixel in each frame (centre-weighted normalised
   cross-correlation, so lighting changes and the surroundings of a turning feature don't throw
@@ -440,7 +457,8 @@ made from the mask tools down the left of the Viewer (Rectangle, Ellipse, Freeha
 and Resize; hover one for its name) or the Masks panel, dragged by their points or moved
 whole, with add/subtract/intersect, invert, feather,
 expansion, opacity and shape keyframes at the playhead. Motion tracking: 1, 2 or 4 points
-dragged onto details in the Viewer (or a whole flat surface: planar tracking), tracked forward or backward in the background, then
+dragged onto details in the Viewer (or a whole flat surface: planar tracking; or a bending
+one: mesh tracking, warping another layer over the tracked grid), tracked forward or backward in the background, then
 applied to another layer (follow it, or corner-pin into the points), to one of the clip's
 masks, or to the clip itself (stabilise, with smoothing).
 

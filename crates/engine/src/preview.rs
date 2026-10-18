@@ -203,6 +203,7 @@ impl Preview {
                     effects: Vec::new(),
                     mask: None,
                     wipe: None,
+                    mesh: None,
                 };
                 gpu.compositor.render(frame_size, &[layer]);
                 gpu.compositor.retain_layers(|k| k == CACHED_KEY);

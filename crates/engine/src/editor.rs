@@ -1629,6 +1629,7 @@ impl Editor {
             TrackMode::Transform => "Drag boxes 1 and 2 onto two sharp details, well apart on the same object, then press Track forward".into(),
             TrackMode::CornerPin => "Drag boxes 1–4 onto the corners of the surface (top left, top right, bottom right, bottom left), then press Track forward".into(),
             TrackMode::Planar => "Drag corners 1–4 onto the corners of a flat surface (top left, top right, bottom right, bottom left), then press Track forward".into(),
+            TrackMode::Mesh => "Drag the grid's four corners onto the surface (the grid fills them), then press Track forward".into(),
         };
     }
 
@@ -1711,6 +1712,23 @@ impl Editor {
         }
     }
 
+    /// Take a clip's mesh warp off (it goes back to its transform).
+    pub fn remove_mesh_warp(&mut self, id: ClipId) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        if c.mesh.is_none() {
+            return;
+        }
+        if self.seq().is_locked(id) {
+            self.status = LOCKED.into();
+            return;
+        }
+        let old = c.visual();
+        let new = ClipVisual { mesh: None, ..old.clone() };
+        self.execute(Box::new(SetClipVisual { seq: self.active, id, old, new }));
+        self.status = "Mesh warp removed".into();
+    }
+
     /// Make mask `index` of the tracked clip move with its tracked points.
     pub fn apply_track_to_mask(&mut self, tracked: ClipId, index: usize) {
         self.commit_live_edit();
@@ -1744,6 +1762,26 @@ impl Editor {
         let stabilise = tracked == target;
         let opts = ApplyOptions { stabilise, smoothing: if stabilise { smoothing } else { 0.0 } };
         let mode = track.mode;
+        if mode == TrackMode::Mesh {
+            if stabilise {
+                self.status = "A mesh track can't stabilise its own clip: apply it to another layer or a mask".into();
+                return;
+            }
+            let Some(mesh) = reelforge_core::track::follow_mesh(a, track, layer, frame, b) else {
+                self.status = if track.frames().is_empty() { "Nothing to apply: track the grid first".into() } else { "Nothing to apply: the track doesn't overlap that clip".into() };
+                return;
+            };
+            if s.is_locked(target) {
+                self.status = LOCKED.into();
+                return;
+            }
+            let old = b.visual();
+            let new = ClipVisual { mesh: Some(mesh), ..old.clone() };
+            let name = b.display_name(&self.project).into_owned();
+            self.execute(Box::new(SetClipVisual { seq: self.active, id: target, old, new }));
+            self.status = format!("{name} is now warped over the tracked grid");
+            return;
+        }
         let Some(anim) = reelforge_core::track::follow_keys(a, track, layer, frame, b, target_layer, opts) else {
             self.status = if track.frames().is_empty() { "Nothing to apply: track every point first".into() } else { "Nothing to apply: the track doesn't overlap that clip".into() };
             return;
@@ -1762,6 +1800,7 @@ impl Editor {
             (false, TrackMode::CornerPin | TrackMode::Planar) => format!("{name} is now corner-pinned to the tracked surface"),
             (false, TrackMode::Transform) => format!("{name} now follows the tracked position, rotation and scale"),
             (false, TrackMode::Position) => format!("{name} now follows the tracked point"),
+            (false, TrackMode::Mesh) => String::new(), // handled above
         };
     }
 

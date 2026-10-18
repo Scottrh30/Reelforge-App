@@ -742,12 +742,40 @@ fn tracker_move(id: u64, point: usize, pos: [f32; 2]) -> Res<()> {
         }
         let Some((_, c)) = e.seq().find_clip(clip(id)) else { return };
         let (Some(mut t), [w, h], src) = (c.tracker.clone(), e.layer_size(c), e.track_time(c)) else { return };
+        use reelforge_core::track::TrackMode;
         // A planar surface's corners may lie outside the picture (only the area inside is tracked).
-        let (lo, hi) = if t.mode == reelforge_core::track::TrackMode::Planar { ([-w, -h], [2.0 * w, 2.0 * h]) } else { ([0.0, 0.0], [w, h]) };
-        let Some(p) = t.points.get_mut(point) else { return };
-        p.move_to(src, [pos[0].clamp(lo[0], hi[0]), pos[1].clamp(lo[1], hi[1])]);
+        let (lo, hi) = if matches!(t.mode, TrackMode::Planar | TrackMode::Mesh) { ([-w, -h], [2.0 * w, 2.0 * h]) } else { ([0.0, 0.0], [w, h]) };
+        let pos = [pos[0].clamp(lo[0], hi[0]), pos[1].clamp(lo[1], hi[1])];
+        let corners = t.mesh_corners();
+        if t.mode == TrackMode::Mesh && !t.is_tracked() && corners.contains(&point) {
+            // Before tracking, the grid fills its four corners.
+            let shown = t.shown_at(src);
+            let mut quad = corners.map(|i| shown[i]);
+            quad[corners.iter().position(|&i| i == point).unwrap_or(0)] = pos;
+            t.fill_mesh(quad, src);
+        } else {
+            let Some(p) = t.points.get_mut(point) else { return };
+            p.move_to(src, pos);
+        }
         e.set_tracker_live(clip(id), Some(t));
     })
+}
+
+/// A mesh tracker's grid: cells across and down (its corners stay; tracked paths are cleared).
+#[tauri::command]
+fn tracker_grid(id: u64, cols: u8, rows: u8) -> Res<()> {
+    ed(|e| {
+        let Some((_, c)) = e.seq().find_clip(clip(id)) else { return };
+        let (Some(mut t), src) = (c.tracker.clone(), e.track_time(c)) else { return };
+        t.set_grid(cols, rows, src);
+        e.set_tracker(clip(id), Some(t), "Change mesh grid");
+    })
+}
+
+/// Take a clip's mesh warp off.
+#[tauri::command]
+fn mesh_remove(id: u64) -> Res<()> {
+    ed(|e| e.remove_mesh_warp(clip(id)))
 }
 
 /// "clear" (forget the tracked paths) or "remove" the tracker.
@@ -922,6 +950,8 @@ fn main() {
             tracker_add,
             tracker_mode,
             tracker_sizes,
+            tracker_grid,
+            mesh_remove,
             tracker_move,
             tracker_op,
             track_start,

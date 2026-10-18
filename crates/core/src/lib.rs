@@ -19,6 +19,8 @@ pub mod project;
 pub mod speed;
 pub mod time;
 pub mod title;
+pub mod meshtrack;
+pub mod meshwarp;
 pub mod planar;
 pub mod track;
 pub mod transform;

@@ -279,6 +279,8 @@ impl Command for SplitClip {
             anchor: clip.anchor,
             masks: clip.masks.clone(),
             tracker: clip.tracker.clone(),
+            // Mesh keys are at source times, so both halves keep them.
+            mesh: clip.mesh.clone(),
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;
@@ -1343,7 +1345,7 @@ mod tests {
         let t = Transform { position: [10.0, 5.0], scale: [0.5, 0.5], rotation: 15.0, opacity: 0.4, ..Default::default() };
         let old = ClipVisual::default();
         let effects = vec![crate::Effect::new(crate::EffectKind::Blur)];
-        let new = ClipVisual { transform: t, blend: BlendMode::Screen, anim: Default::default(), effects: effects.clone(), masks: Vec::new() };
+        let new = ClipVisual { transform: t, blend: BlendMode::Screen, anim: Default::default(), effects: effects.clone(), mesh: None, masks: Vec::new() };
         u.execute(&mut p, Box::new(SetClipVisual { seq: 0, id: ClipId(1001), old, new }));
         let cmd = split_group(&mut p, 0, ClipId(1001), Time::from_secs_f64(2.0)).unwrap();
         u.execute(&mut p, cmd);

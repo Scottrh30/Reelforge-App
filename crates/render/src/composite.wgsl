@@ -18,6 +18,10 @@ struct Layer {
     wipe2: vec4<f32>,
     // The part of the layer shown after cropping, as UVs (u0, v0, u1, v1).
     crop: vec4<f32>,
+    // A mesh warp: cells across, cells down, 1 when on (else 0), subdivisions per cell.
+    mesh: vec4<f32>,
+    // The grid's points in frame pixels, row by row, two to a vec4.
+    pts: array<vec4<f32>, 41>,
 };
 
 @group(0) @binding(0) var<uniform> layer: Layer;
@@ -29,6 +33,14 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
 };
 
+fn mesh_point(n: u32) -> vec2<f32> {
+    let v = layer.pts[n / 2u];
+    if (n % 2u == 0u) {
+        return v.xy;
+    }
+    return v.zw;
+}
+
 @vertex
 fn vs_layer(@builtin(vertex_index) i: u32) -> VsOut {
     // Two triangles covering the unit quad.
@@ -36,6 +48,31 @@ fn vs_layer(@builtin(vertex_index) i: u32) -> VsOut {
         vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
         vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
     );
+    if (layer.mesh.z > 0.5) {
+        // A mesh warp: every cell is cut into s × s little quads, each drawn as
+        // two triangles, with corners placed bilinearly inside the cell.
+        let cols = u32(layer.mesh.x);
+        let s = u32(layer.mesh.w);
+        let tri = i / 6u;
+        let corner = corners[i % 6u];
+        let sub = tri % (s * s);
+        let cell = tri / (s * s);
+        let cx = cell % cols;
+        let cy = cell / cols;
+        let f = (vec2(f32(sub % s), f32(sub / s)) + corner) / f32(s);
+        let w = cols + 1u;
+        let p00 = mesh_point(cy * w + cx);
+        let p10 = mesh_point(cy * w + cx + 1u);
+        let p01 = mesh_point((cy + 1u) * w + cx);
+        let p11 = mesh_point((cy + 1u) * w + cx + 1u);
+        let p = mix(mix(p00, p10, f.x), mix(p01, p11, f.x), f.y);
+        let frame = layer.wipe2.yz;
+        let g = (vec2(f32(cx), f32(cy)) + f) / vec2(layer.mesh.x, layer.mesh.y);
+        var out: VsOut;
+        out.pos = vec4(p.x / frame.x * 2.0 - 1.0, 1.0 - p.y / frame.y * 2.0, 0.0, 1.0);
+        out.uv = mix(layer.crop.xy, layer.crop.zw, g);
+        return out;
+    }
     // Only the cropped part of the layer is drawn: a smaller quad, sampling that part.
     let uv = mix(layer.crop.xy, layer.crop.zw, corners[i]);
     let local = (uv - vec2(0.5)) * layer.size;

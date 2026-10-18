@@ -283,6 +283,15 @@
           </div>
           {#if ins.keys?.pin_twisted}<span></span><span class="warn">Twisted: drag the corners apart</span>{/if}
         </div>
+        {#if ins.mesh_keys != null}
+          <div class="grid2">
+            <span class="lbl">Mesh warp</span>
+            <div class="row wrap">
+              <span class="note" title="Stretched over a mesh tracker's grid, frame by frame. Position, scale, rotation and corner pin don't apply while it's on">On ({ins.mesh_keys} {ins.mesh_keys === 1 ? "key" : "keys"})</span>
+              <button class="small" onclick={() => run(api.meshRemove(ins.id))} title="Take the mesh warp off: the layer goes back to its own transform">Remove</button>
+            </div>
+          </div>
+        {/if}
         <div class="grid2">
           <span class="lbl"><button class="key" class:here={pk("Opacity")?.key_here} class:anim={pk("Opacity")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Opacity"))} title={keyTip("Opacity")} aria-label="Keyframe opacity"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Opacity</span>
           <div class="row">

@@ -119,6 +119,10 @@ pub struct Clip {
     /// A motion tracker on this clip (see `track`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracker: Option<crate::track::Tracker>,
+    /// The layer stretched over a bending grid (from a mesh tracker): while
+    /// set, it replaces position, scale, rotation and corner pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<crate::meshwarp::MeshWarp>,
 }
 
 /// Everything about how a video clip looks, edited and undone as one unit.
@@ -129,6 +133,7 @@ pub struct ClipVisual {
     pub anim: TransformAnim,
     pub effects: Vec<Effect>,
     pub masks: Vec<crate::mask::Mask>,
+    pub mesh: Option<crate::meshwarp::MeshWarp>,
 }
 
 impl Clip {
@@ -155,6 +160,7 @@ impl Clip {
             anchor: Time::ZERO,
             masks: Vec::new(),
             tracker: None,
+            mesh: None,
         }
     }
 
@@ -180,11 +186,16 @@ impl Clip {
     }
 
     pub fn visual(&self) -> ClipVisual {
-        ClipVisual { transform: self.transform, blend: self.blend, anim: self.anim.clone(), effects: self.effects.clone(), masks: self.masks.clone() }
+        ClipVisual { transform: self.transform, blend: self.blend, anim: self.anim.clone(), effects: self.effects.clone(), masks: self.masks.clone(), mesh: self.mesh.clone() }
     }
 
     pub fn set_visual(&mut self, v: ClipVisual) {
-        (self.transform, self.blend, self.anim, self.effects, self.masks) = (v.transform, v.blend, v.anim, v.effects, v.masks);
+        (self.transform, self.blend, self.anim, self.effects, self.masks, self.mesh) = (v.transform, v.blend, v.anim, v.effects, v.masks, v.mesh);
+    }
+
+    /// The mesh warp's grid at sequence time `t`, if the clip has one.
+    pub fn mesh_at(&self, t: Time) -> Option<crate::meshwarp::MeshShape> {
+        self.mesh.as_ref()?.at(self.source_time(t))
     }
 
     /// The enabled effects evaluated at *source* time `src`, ready to render.

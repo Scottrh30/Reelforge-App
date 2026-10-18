@@ -281,3 +281,91 @@ fn planar_refuses_a_blank_shape() {
     let r = reelforge_media::track_points(&path, &info, &tr, Time::ZERO, Time::from_secs_f64(0.3), &AtomicBool::new(false), |_| {});
     assert!(r.unwrap_err().to_string().contains("too little detail"));
 }
+
+// ---- Mesh tracking --------------------------------------------------------------
+
+/// A sheet rippling like a flag (a travelling wave, strongest at its free end)
+/// while drifting: where (u, v) of the sheet is at frame k.
+fn sheet(k: usize, u: f32, v: f32) -> [f32; 2] {
+    let t = k as f32;
+    [130.0 + 220.0 * u + 1.5 * t, 60.0 + 150.0 * v + 10.0 * (u * 5.0 - t * 0.25).sin() * u + 0.3 * t * u]
+}
+
+/// Write `frames` frames of the rippling sheet to `path`.
+fn make_sheet_clip(path: &std::path::Path, frames: usize) -> bool {
+    let child = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", &format!("{W}x{H}"), "-r", "25", "-i", "-", "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else { return false };
+    let mut stdin = child.stdin.take().unwrap();
+    for k in 0..frames {
+        let mut img = vec![0u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                // Invert the sheet's map with Newton steps.
+                let (mut u, mut v) = ((x as f32 - 130.0) / 220.0, (y as f32 - 60.0) / 150.0);
+                for _ in 0..8 {
+                    let p = sheet(k, u, v);
+                    let e = 1e-3;
+                    let (pu, pv) = (sheet(k, u + e, v), sheet(k, u, v + e));
+                    let (a, b, c, d) = ((pu[0] - p[0]) / e, (pv[0] - p[0]) / e, (pu[1] - p[1]) / e, (pv[1] - p[1]) / e);
+                    let det = a * d - b * c;
+                    let (rx, ry) = (x as f32 - p[0], y as f32 - p[1]);
+                    u += (d * rx - b * ry) / det;
+                    v += (-c * rx + a * ry) / det;
+                }
+                let g = if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) { 30.0 + 160.0 * noise(u * 30.0, v * 20.0) + 50.0 * noise(u * 80.0 + 5.0, v * 55.0) } else { 70.0 + 0.05 * x as f32 };
+                img[y * W + x] = g.clamp(0.0, 255.0) as u8;
+            }
+        }
+        stdin.write_all(&img).unwrap();
+    }
+    drop(stdin);
+    child.wait().is_ok_and(|s| s.success())
+}
+
+#[test]
+fn mesh_tracks_a_rippling_sheet_on_video() {
+    let path = std::env::temp_dir().join("rf_track_mesh.mp4");
+    let frames = 30;
+    if !make_sheet_clip(&path, frames) {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    }
+    let info = probe(&path).unwrap();
+    let mut tr = Tracker::new(TrackMode::Mesh, [240.0, 135.0], [W as f32, H as f32], Time::ZERO);
+    tr.set_grid(4, 3, Time::ZERO);
+    // Put the grid's points on the sheet (as a user would after dragging its corners).
+    for (k, p) in tr.points.iter_mut().enumerate() {
+        let (i, j) = (k % 5, k / 5);
+        p.point = sheet(0, i as f32 / 4.0, j as f32 / 3.0);
+        p.search = 20.0;
+    }
+    let (samples, end) = reelforge_media::track_points(&path, &info, &tr, Time::ZERO, Time::from_secs_f64((frames - 1) as f64 / 25.0), &AtomicBool::new(false), |_| {}).unwrap();
+    assert_eq!(end, TrackEnd::Done);
+    // How well the tracked grid lays the sheet out, against the best a 4 × 3 grid can do.
+    let (mut sum, mut best_sum, mut worst, mut n) = (0f32, 0f32, 0f32, 0f32);
+    for k in 0..frames {
+        let tracked = reelforge_core::meshwarp::MeshShape { cols: 4, rows: 3, points: samples.iter().map(|s| s[k].pos).collect() };
+        let ideal = reelforge_core::meshwarp::MeshShape { cols: 4, rows: 3, points: (0..20).map(|q| sheet(k, (q % 5) as f32 / 4.0, (q / 5) as f32 / 3.0)).collect() };
+        for j in 0..=12 {
+            for i in 0..=16 {
+                let (gu, gv) = (i as f32 / 4.0, j as f32 / 4.0);
+                let cell = [(gu.floor() as u8).min(3), (gv.floor() as u8).min(2)];
+                let at = reelforge_core::meshwarp::MeshCoord { cell, f: [gu - cell[0] as f32, gv - cell[1] as f32] };
+                let truth = sheet(k, gu / 4.0, gv / 3.0);
+                let e = |p: [f32; 2]| ((p[0] - truth[0]).powi(2) + (p[1] - truth[1]).powi(2)).sqrt();
+                let (et, eb) = (e(tracked.apply(at)), e(ideal.apply(at)));
+                sum += et;
+                best_sum += eb;
+                worst = worst.max(et);
+                n += 1.0;
+            }
+        }
+    }
+    let (mean, best) = (sum / n, best_sum / n);
+    eprintln!("mesh on video: mean {mean:.2} px (best possible 4×3 grid {best:.2}), worst {worst:.2} px");
+    assert!(mean < best + 0.6, "mean {mean:.2} vs {best:.2}");
+}

@@ -81,14 +81,14 @@ fn reference_frame(c: &mut Compositor, a: &Path, b: &Path, t: f64) -> Vec<u8> {
     let fa = FrameSource::open(a, None).unwrap().frame_at_blocking(Time::from_secs_f64(t), wait).unwrap();
     let mut layers = vec![LayerInput {
         key: 1, content_id: id, pixels: (&fa.pixels).into(), pixel_size: [fa.width, fa.height],
-        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None,
+        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None,
     }];
     let fb;
     if t >= 1.0 {
         fb = FrameSource::open(b, None).unwrap().frame_at_blocking(Time::from_secs_f64(t - 1.0), wait).unwrap();
         layers.push(LayerInput {
             key: 2, content_id: id, pixels: (&fb.pixels).into(), pixel_size: [fb.width, fb.height],
-            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None,
+            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None,
         });
     }
     c.render([640, 360], &layers);
@@ -478,6 +478,46 @@ fn exports_titles_with_their_transform_and_effects() {
     assert!(close(pixel(37, 420, 180), [255, 188, 188]), "{:?}", pixel(37, 420, 180));
 }
 
+/// A mesh warp on a title (a still) follows its keys through the clip.
+#[test]
+fn exports_mesh_warped_titles_over_time() {
+    use reelforge_core::meshwarp::{MeshShape, MeshWarp};
+    use reelforge_core::TitleSpec;
+    let Some(red) = solid_clip("rf_red.mp4", "red", "640x360") else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &red));
+    let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+    seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(2.0), None)];
+    // A white box in the middle of a frame-sized title, laid over the left half of
+    // the frame at 0 s and the right half from 1 s.
+    let spec = TitleSpec { text: "I".into(), color: [255, 255, 255, 255], size: 40.0, background: true, background_color: [255, 255, 255, 255], background_padding: 30.0, shadow: false, ..TitleSpec::default() };
+    let mut t = Clip::new_title(ClipId(2), s(0.0), s(2.0), spec);
+    let left = MeshShape::filling([[0.0, 0.0], [320.0, 0.0], [320.0, 360.0], [0.0, 360.0]], 2, 2);
+    let right = left.map(|q| [q[0] + 320.0, q[1]]);
+    t.mesh = Some(MeshWarp { keys: vec![(s(0.0), left), (s(1.0), right)] });
+    seq.tracks[1].clips = vec![t];
+    p.sequences = vec![seq];
+
+    let out = std::env::temp_dir().join("rf_export_mesh.mp4");
+    let mut st = settings(out.clone());
+    st.include_audio = false;
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    let rate = FrameRate::new(25, 1);
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let mut pixel = |frame: i64, x: u32, y: u32| {
+        let f = dec.frame_at_blocking(Time::from_frame(frame, rate), Duration::from_secs(5)).unwrap();
+        let i = ((y * 640 + x) * 4) as usize;
+        [f.rgba()[i] as i32, f.rgba()[i + 1] as i32, f.rgba()[i + 2] as i32]
+    };
+    let close = |got: [i32; 3], want: [i32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 12);
+    assert!(close(pixel(0, 160, 180), [255, 255, 255]), "box in the left half at 0 s: {:?}", pixel(0, 160, 180));
+    assert!(close(pixel(0, 480, 180), [254, 0, 0]), "{:?}", pixel(0, 480, 180));
+    assert!(close(pixel(37, 480, 180), [255, 255, 255]), "box in the right half at 1.5 s: {:?}", pixel(37, 480, 180));
+    assert!(close(pixel(37, 160, 180), [254, 0, 0]), "{:?}", pixel(37, 160, 180));
+}
+
 /// Red video with a 440 Hz tone, 1 s, as a one-clip project (video + linked audio).
 fn red_with_tone() -> Option<(Project, PathBuf)> {
     let src = ffmpeg("rf_red_tone.mp4", &[
@@ -645,7 +685,7 @@ fn transparent_compositor_keeps_coverage() {
     let t = Transform { scale: [0.5, 0.5], opacity: 0.5, ..Default::default() };
     let layer = LayerInput {
         key: 1, content_id: 1, pixels: PixelData::Rgba(&px), pixel_size: [16, 16], layer_size: [64.0, 64.0],
-        transform: t, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None,
+        transform: t, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None,
     };
     c.render([64, 64], &[layer]);
     let out = c.read_output().unwrap();

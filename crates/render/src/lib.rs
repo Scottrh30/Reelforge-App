@@ -82,7 +82,10 @@ pub enum DeepCurve {
 }
 /// Draw calls per frame (a dissolve uses three).
 const MAX_DRAWS: usize = 128;
-const UNIFORM_SIZE: u64 = 128; // mat4 + vec2 + 2×f32 + 3×vec4
+const UNIFORM_SIZE: u64 = 128 + 16 + 41 * 16; // mat4 + vec2 + 2×f32 + 3×vec4, then a mesh header and 41 vec4 of points
+/// Little quads per mesh cell, across and down (a cell is bilinear; this many
+/// straight-edged pieces draw it smoothly).
+const MESH_SUBDIV: u32 = 6;
 /// Effect passes per frame.
 const MAX_FX_PASSES: usize = 256;
 /// 8 × vec4: params 0–7, texel/direction, extra (aspect, time, layer size),
@@ -112,6 +115,9 @@ pub struct LayerInput<'a> {
     pub mask: Option<MaskInput<'a>>,
     /// Reveal the layer with a moving edge (wipe transitions).
     pub wipe: Option<Wipe>,
+    /// Stretch the layer over this grid (frame pixels) instead of placing it by
+    /// its transform (only opacity and crop still apply).
+    pub mesh: Option<reelforge_core::meshwarp::MeshShape>,
 }
 
 /// A wipe: the layer shows where `q < progress`, with a soft edge. For a
@@ -998,16 +1004,17 @@ impl Compositor {
             /// to `clear`, premultiplied, for a dip), then composite the group into the frame.
             Group { a: Option<Draw>, b: Option<Draw>, over: usize, blend: BlendMode, clear: wgpu::Color },
         }
-        let mut uniforms: Vec<(Transform, [f32; 2], Option<Wipe>)> = Vec::new();
-        fn slot(u: &mut Vec<(Transform, [f32; 2], Option<Wipe>)>, t: Transform, size: [f32; 2], wipe: Option<Wipe>) -> usize {
-            u.push((t, size, wipe));
+        type Uniform<'m> = (Transform, [f32; 2], Option<Wipe>, Option<&'m reelforge_core::meshwarp::MeshShape>);
+        let mut uniforms: Vec<Uniform> = Vec::new();
+        fn slot<'m>(u: &mut Vec<Uniform<'m>>, t: Transform, size: [f32; 2], wipe: Option<Wipe>, mesh: Option<&'m reelforge_core::meshwarp::MeshShape>) -> usize {
+            u.push((t, size, wipe, mesh.filter(|m| m.is_valid())));
             u.len() - 1
         }
         let mut ops = Vec::new();
         for item in items {
             match item {
                 DrawItem::Layer(l) => {
-                    let draw = Draw { slot: slot(&mut uniforms, l.transform, l.layer_size, l.wipe), key: l.key, fx: processed.get(&l.key).copied() };
+                    let draw = Draw { slot: slot(&mut uniforms, l.transform, l.layer_size, l.wipe, l.mesh.as_ref()), key: l.key, fx: processed.get(&l.key).copied() };
                     ops.push(Op::Frame { draw, blend: l.blend })
                 }
                 DrawItem::Dissolve { from, to, mix, dip } => {
@@ -1031,9 +1038,9 @@ impl Compositor {
                             (true, true, wgpu::Color::TRANSPARENT)
                         }
                     };
-                    let a = draw_a.then(|| Draw { slot: slot(&mut uniforms, ta, from.layer_size, from.wipe), key: from.key, fx: processed.get(&from.key).copied() });
-                    let b = draw_b.then(|| Draw { slot: slot(&mut uniforms, tb, to.layer_size, to.wipe), key: to.key, fx: processed.get(&to.key).copied() });
-                    let over = slot(&mut uniforms, Transform::default(), frame, None);
+                    let a = draw_a.then(|| Draw { slot: slot(&mut uniforms, ta, from.layer_size, from.wipe, from.mesh.as_ref()), key: from.key, fx: processed.get(&from.key).copied() });
+                    let b = draw_b.then(|| Draw { slot: slot(&mut uniforms, tb, to.layer_size, to.wipe, to.mesh.as_ref()), key: to.key, fx: processed.get(&to.key).copied() });
+                    let over = slot(&mut uniforms, Transform::default(), frame, None, None);
                     ops.push(Op::Group { a, b, over, blend: to.blend, clear });
                 }
             }
@@ -1045,7 +1052,7 @@ impl Compositor {
 
         // Uniforms for every draw in one buffer, addressed by dynamic offset.
         let mut data = vec![0u8; self.uniform_stride as usize * uniforms.len().max(1)];
-        for (i, (t, size, wipe)) in uniforms.iter().enumerate() {
+        for (i, (t, size, wipe, mesh)) in uniforms.iter().enumerate() {
             // (Corner-pinned layers get a perspective matrix.)
             let mvp = t.layer_map(*size, frame).to_clip_space(frame);
             let mut floats: Vec<f32> = mvp.iter().flatten().copied().collect();
@@ -1055,6 +1062,15 @@ impl Compositor {
             floats.extend([w.axis[0], w.axis[1], w.axis[2], w.progress.clamp(0.0, 1.0)]);
             floats.extend([w.softness, frame[0], frame[1], 0.0]);
             floats.extend(t.crop_uv());
+            match mesh {
+                Some(m) => {
+                    floats.extend([m.cols as f32, m.rows as f32, 1.0, MESH_SUBDIV as f32]);
+                    let mut pts: Vec<f32> = m.points.iter().flatten().copied().collect();
+                    pts.resize(41 * 4, 0.0);
+                    floats.extend(pts);
+                }
+                None => floats.extend([0.0; 4]),
+            }
             let bytes: Vec<u8> = floats.iter().flat_map(|f| f.to_ne_bytes()).collect();
             let off = i * self.uniform_stride as usize;
             data[off..off + bytes.len()].copy_from_slice(&bytes);
@@ -1115,6 +1131,8 @@ impl Compositor {
         }
 
         let offset = |slot: usize| (slot as u64 * self.uniform_stride) as u32;
+        // Vertices for a draw: the plain quad, or every little quad of a mesh.
+        let verts: Vec<u32> = uniforms.iter().map(|u| u.3.map_or(6, |m| m.cols as u32 * m.rows as u32 * MESH_SUBDIV * MESH_SUBDIV * 6)).collect();
         // The texture to sample for a draw: the processed result, or the plain upload.
         let source = |d: &Draw| -> Option<&wgpu::BindGroup> {
             match d.fx {
@@ -1136,7 +1154,7 @@ impl Compositor {
                     pass.set_pipeline(if draw.fx.is_some() { &self.group_pipelines[blend] } else { &self.layer_pipelines[blend] });
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
                     pass.set_bind_group(1, bind, &[]);
-                    pass.draw(0..6, 0..1);
+                    pass.draw(0..verts[draw.slot], 0..1);
                 }
                 Op::Group { a, b, over, blend, clear } => {
                     drop(frame_pass.take());
@@ -1147,7 +1165,7 @@ impl Compositor {
                             gp.set_pipeline(if d.fx.is_some() { &self.sum_premul_pipeline } else { &self.sum_pipeline });
                             gp.set_bind_group(0, &self.uniform_bind, &[offset(d.slot)]);
                             gp.set_bind_group(1, bind, &[]);
-                            gp.draw(0..6, 0..1);
+                            gp.draw(0..verts[d.slot], 0..1);
                         }
                     }
                     let pass = frame_pass.insert(pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Load));

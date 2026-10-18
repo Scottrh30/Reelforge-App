@@ -371,6 +371,10 @@ impl Editor {
         let id = self.selection?;
         let (layer, _) = self.viewer_layers().into_iter().find(|(l, _)| l.id == id)?;
         let (_, c) = self.seq().find_clip(id)?;
+        // A mesh-warped layer isn't placed by its transform: no handles for it.
+        if c.mesh.is_some() {
+            return None;
+        }
         Some((layer, c.transform_at(self.playback.playhead)))
     }
 

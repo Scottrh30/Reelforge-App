@@ -226,6 +226,7 @@ export interface Inspector {
   masks: MaskView[];
   can_track: boolean;
   tracker: TrackerView | null;
+  mesh_keys: number | null;
   tracking: number | null;
   tracking_elsewhere: boolean;
 }
@@ -252,7 +253,7 @@ export interface MaskView {
   key_here: boolean;
 }
 
-export type TrackMode = "Position" | "Transform" | "CornerPin" | "Planar";
+export type TrackMode = "Position" | "Transform" | "CornerPin" | "Planar" | "Mesh";
 
 export interface TrackerView {
   mode: TrackMode;
@@ -264,6 +265,7 @@ export interface TrackerView {
   range: [Ticks, Ticks] | null;
   tracked: boolean;
   targets: { clip: number; mask: number | null; label: string }[];
+  grid: [number, number];
 }
 
 export interface Prefs {
@@ -563,6 +565,8 @@ export const api = {
   trackerAdd: (id: number, mode: TrackMode) => invoke("tracker_add", { id, mode }),
   trackerMode: (id: number, mode: TrackMode) => invoke("tracker_mode", { id, mode }),
   trackerSizes: (id: number, size: number, search: number) => invoke("tracker_sizes", { id, size, search }),
+  trackerGrid: (id: number, cols: number, rows: number) => invoke("tracker_grid", { id, cols, rows }),
+  meshRemove: (id: number) => invoke("mesh_remove", { id }),
   trackerMove: (id: number, point: number, pos: Pt) => invoke("tracker_move", { id, point, pos }),
   trackerOp: (id: number, op: "clear" | "remove") => invoke("tracker_op", { id, op }),
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),

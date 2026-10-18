@@ -155,6 +155,8 @@ pub struct Inspector {
     /// Footage that can be tracked.
     pub can_track: bool,
     pub tracker: Option<TrackerView>,
+    /// Keys of the clip's mesh warp, if it has one.
+    pub mesh_keys: Option<usize>,
     /// Progress (0–1) of a tracking run on this clip.
     pub tracking: Option<f32>,
     /// A tracking run is going on for another clip.
@@ -186,6 +188,8 @@ pub struct TrackerView {
     pub tracked: bool,
     /// What the motion can be applied to.
     pub targets: Vec<TargetView>,
+    /// A mesh tracker's cells across and down.
+    pub grid: [u8; 2],
 }
 
 #[derive(Serialize)]
@@ -216,22 +220,28 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
         }
         _ => None,
     };
-    let mut targets = vec![TargetView {
-        clip: c.id.0,
-        mask: None,
-        label: match trk.mode {
-            TrackMode::CornerPin | TrackMode::Planar => "This clip: stabilise (perspective)".into(),
-            TrackMode::Transform => "This clip: stabilise (with rotation and scale)".into(),
-            TrackMode::Position => "This clip: stabilise".into(),
-        },
-    }];
+    let mut targets = Vec::new();
+    let stabilise = match trk.mode {
+        TrackMode::CornerPin | TrackMode::Planar => Some("This clip: stabilise (perspective)"),
+        TrackMode::Transform => Some("This clip: stabilise (with rotation and scale)"),
+        TrackMode::Position => Some("This clip: stabilise"),
+        // A bending grid can't be undone by moving the clip.
+        TrackMode::Mesh => None,
+    };
+    if let Some(label) = stabilise {
+        targets.push(TargetView { clip: c.id.0, mask: None, label: label.into() });
+    }
     for (i, m) in c.masks.iter().enumerate() {
         targets.push(TargetView { clip: c.id.0, mask: Some(i), label: format!("Mask: {}", m.name) });
     }
     if let Some((ta, tb)) = range {
         for tr in s.tracks.iter().filter(|t| t.kind == TrackKind::Video) {
             for o in tr.clips.iter().filter(|o| o.id != c.id && o.timeline_start.0 < tb && o.timeline_end().0 > ta) {
-                let how = if trk.mode.is_perspective() { "Pin into the surface: " } else { "" };
+                let how = match trk.mode {
+                    TrackMode::Mesh => "Warp over the grid: ",
+                    m if m.is_perspective() => "Pin into the surface: ",
+                    _ => "",
+                };
                 targets.push(TargetView { clip: o.id.0, mask: None, label: format!("{how}{} ({})", o.display_name(&e.project), tr.name) });
             }
         }
@@ -246,6 +256,7 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
         range,
         tracked: trk.is_tracked(),
         targets,
+        grid: trk.grid,
     })
 }
 
@@ -425,6 +436,7 @@ pub fn state(e: &Editor) -> State {
             masks,
             can_track: video && footage,
             tracker: if video { tracker_view(e, c) } else { None },
+            mesh_keys: c.mesh.as_ref().map(|m| m.keys.len()),
             tracking: job.filter(|(id, _)| *id == c.id).map(|(_, p)| p),
             tracking_elsewhere: job.is_some_and(|(id, _)| id != c.id),
             id: c.id.0,

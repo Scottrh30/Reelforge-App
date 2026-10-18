@@ -192,13 +192,26 @@
     <!-- The motion tracker: search area, feature box and path for each point. -->
     {#if ins.tracker}
       {@const t = ins.tracker}
-      {#if t.mode === "Planar"}
+      {#if t.mode === "Mesh"}
+        <!-- A mesh tracker: the grid, big handles at its corners, small ones inside. -->
+        {@const [gc, gr] = t.grid}
+        {@const row = (j: number) => t.shown.slice(j * (gc + 1), (j + 1) * (gc + 1))}
+        {@const col = (i: number) => Array.from({ length: gr + 1 }, (_, j) => t.shown[j * (gc + 1) + i])}
+        <polygon points={pts([...row(0), ...col(gc).slice(1), ...row(gr).reverse().slice(1), ...col(0).reverse().slice(1, -1)])} class="plane" />
+        {#each Array.from({ length: gr + 1 }, (_, j) => j) as j}<polyline points={pts(row(j))} class="meshline" />{/each}
+        {#each Array.from({ length: gc + 1 }, (_, i) => i) as i}<polyline points={pts(col(i))} class="meshline" />{/each}
+        {#each t.shown as c, i}
+          {@const corner = i === 0 || i === gc || i === (gr + 1) * (gc + 1) - 1 || i === gr * (gc + 1)}
+          {@const [cx, cy] = toBox(c)}
+          <circle cx={cx} cy={cy} r={corner ? 6 : 3.5} class="corner" class:inner={!corner} stroke={corner ? POINT_COLOURS[[0, gc, (gr + 1) * (gc + 1) - 1, gr * (gc + 1)].indexOf(i)] : "white"} onpointerdown={(e) => dragTracker(e, i)} role="presentation" />
+        {/each}
+      {:else if t.mode === "Planar"}
         <!-- A planar tracker: the surface's outline, with a handle at each corner. -->
         <polygon points={pts(t.shown)} class="plane" />
       {:else if t.shown.length > 1}
         <polyline points={pts(t.shown.length > 2 ? [...t.shown, t.shown[0]] : t.shown)} class="joint" />
       {/if}
-      {#each t.shown as c, i}
+      {#each t.mode === "Mesh" ? [] : t.shown as c, i}
         {#if t.mode === "Planar"}
           {@const col = POINT_COLOURS[i % 4]}
           {#if t.paths[i]?.length > 1}
@@ -301,6 +314,16 @@
     stroke-width: 1.4;
     stroke-dasharray: 6 4;
     pointer-events: none;
+  }
+  .meshline {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.75);
+    stroke-width: 1;
+    pointer-events: none;
+  }
+  .corner.inner {
+    stroke-width: 1.5;
+    fill: rgba(0, 0, 0, 0.3);
   }
   .corner {
     fill: rgba(0, 0, 0, 0.35);

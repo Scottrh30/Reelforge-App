@@ -48,6 +48,8 @@ struct Gathered {
     mask: Option<(u64, Arc<MaskImage>)>,
     /// Revealed by a wipe transition.
     wipe: Option<Wipe>,
+    /// Stretched over a bending grid (a mesh warp).
+    mesh: Option<reelforge_core::meshwarp::MeshShape>,
 }
 
 /// Masks are rasterised at most this big (longer side); they're soft-edged
@@ -188,7 +190,9 @@ impl Scene {
         };
         let Some(picture) = picture else { return Ok(None) };
         let mask = self.mask_for(l.clip, l.clip.source_time(t), picture.size);
-        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects: l.effects.clone(), mask, wipe: None }))
+        // Keyed to the clip's own time, like its transform (a still's media time is always 0).
+        let mesh = l.clip.mesh_at(t);
+        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects: l.effects.clone(), mask, wipe: None, mesh }))
     }
 
     /// The clip's masks at source time `src` as an image (made again only when they change).
@@ -301,6 +305,7 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
             f.to_bits().hash(h);
         }
         tr.pin.map(|p| p.0.map(|c| c.map(f32::to_bits))).hash(h);
+        hash_mesh(clip.mesh_at(t).as_ref(), h);
         l.blend.hash(h);
         for e in &l.effects {
             e.kind.hash(h);
@@ -348,6 +353,16 @@ fn input(g: &Gathered) -> LayerInput<'_> {
         effects: g.effects.clone(),
         mask: g.mask.as_ref().map(|(hash, img)| MaskInput { content_id: *hash, pixels: &img.data, size: [img.width, img.height] }),
         wipe: g.wipe,
+        mesh: g.mesh.clone(),
+    }
+}
+
+fn hash_mesh(m: Option<&reelforge_core::meshwarp::MeshShape>, h: &mut DefaultHasher) {
+    if let Some(m) = m {
+        (m.cols, m.rows).hash(h);
+        for p in &m.points {
+            p.map(f32::to_bits).hash(h);
+        }
     }
 }
 
@@ -361,6 +376,7 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
             f.to_bits().hash(h);
         }
         l.transform.pin.map(|p| p.0.map(|c| c.map(f32::to_bits))).hash(h);
+        hash_mesh(l.mesh.as_ref(), h);
         l.blend.hash(h);
         l.mask.as_ref().map(|m| m.0).hash(h);
         l.wipe.map(|w| (w.iris, w.progress.to_bits(), w.axis.map(f32::to_bits))).hash(h);

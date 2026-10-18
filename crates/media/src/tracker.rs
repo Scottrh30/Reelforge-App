@@ -2,6 +2,8 @@
 
 use crate::source::FrameSource;
 use anyhow::{anyhow, Result};
+use reelforge_core::meshtrack::MeshTracker;
+use reelforge_core::meshwarp::MeshShape;
 use reelforge_core::planar::PlanarTracker;
 use reelforge_core::track::{local_linear, motion_between, FeatureTracker, Luma, PointTrack, Pyramid, TrackMode, TrackSample, Tracker, MIN_SCORE};
 use reelforge_core::{MediaInfo, Time};
@@ -50,6 +52,9 @@ pub fn track_points(
     let (pyr, w, h) = grab(from)?;
     if tracker.mode == TrackMode::Planar {
         return track_plane(tracker, pyr, (w, h), (v.width, v.height), step, from, until, cancel, &mut grab, &mut progress);
+    }
+    if tracker.mode == TrackMode::Mesh {
+        return track_mesh(tracker, pyr, (w, h), (v.width, v.height), step, from, until, cancel, &mut grab, &mut progress);
     }
     // The first frame, kept to compare each feature with how it looked then.
     let first = pyr.level(0).data.to_vec();
@@ -175,3 +180,52 @@ fn track_plane(
 
 /// In [`TrackEnd::Lost`]: the whole surface was lost (planar tracking), not one point.
 pub const SURFACE: usize = usize::MAX;
+
+/// Mesh tracking (see [`reelforge_core::meshtrack`]): the points are the grid's,
+/// row by row, each following the surface under it.
+#[allow(clippy::too_many_arguments)]
+fn track_mesh(
+    tracker: &Tracker,
+    pyr: Pyramid,
+    (w, h): (usize, usize),
+    (mw, mh): (u32, u32),
+    step: Time,
+    from: Time,
+    until: Time,
+    cancel: &AtomicBool,
+    grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
+    progress: &mut impl FnMut(f32),
+) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
+    let (sx, sy) = (w as f32 / mw as f32, h as f32 / mh as f32);
+    let start: Vec<[f32; 2]> = tracker.points.iter().map(|p| p.shown_at(from)).collect();
+    let grid = MeshShape { cols: tracker.grid[0], rows: tracker.grid[1], points: start.iter().map(|p| [p[0] * sx, p[1] * sy]).collect() };
+    if !grid.is_valid() || grid.is_folded() {
+        return Err(anyhow!("the grid is folded over: drag its corners back so it isn't twisted"));
+    }
+    let search = tracker.points[0].search * sx;
+    let mut mesh = MeshTracker::new(&pyr, grid, search).map_err(|_| anyhow!("there's too little detail inside the grid to follow: put it over a surface with some texture or print on it"))?;
+    let mut out: Vec<Vec<TrackSample>> = start.iter().map(|&p| vec![TrackSample { at: from, pos: p, score: 1.0 }]).collect();
+    let backwards = until < from;
+    let total = ((until - from).0.abs() / step.0.max(1)).max(1) as f32;
+    let mut t = from;
+    let mut n = 0.0;
+    loop {
+        t = if backwards { t - step } else { t + step };
+        if (backwards && t < until) || (!backwards && t > until) || t < Time::ZERO {
+            return Ok((out, TrackEnd::Done));
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Ok((out, TrackEnd::Cancelled));
+        }
+        let (pyr, _, _) = grab(t)?;
+        let Ok(g) = mesh.step(&pyr) else {
+            return Ok((out, TrackEnd::Lost(t, SURFACE)));
+        };
+        let score = mesh.agreement.clamp(0.0, 1.0);
+        for (o, p) in out.iter_mut().zip(&g.points) {
+            o.push(TrackSample { at: t, pos: [p[0] / sx, p[1] / sy], score });
+        }
+        n += 1.0;
+        progress((n / total).min(1.0));
+    }
+}

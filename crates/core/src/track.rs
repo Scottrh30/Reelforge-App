@@ -484,16 +484,22 @@ pub enum TrackMode {
     /// inside them (see [`crate::planar`]): the corners themselves needn't
     /// have any detail, or even be in the picture.
     Planar,
+    /// A grid of points over a surface that bends (cloth, skin, a flag), see
+    /// [`crate::meshtrack`]: the four outer corners are placed, the grid fills
+    /// them, and every point moves with what's under it.
+    Mesh,
 }
 
 impl TrackMode {
-    pub const ALL: [TrackMode; 4] = [TrackMode::Position, TrackMode::Transform, TrackMode::CornerPin, TrackMode::Planar];
+    pub const ALL: [TrackMode; 5] = [TrackMode::Position, TrackMode::Transform, TrackMode::CornerPin, TrackMode::Planar, TrackMode::Mesh];
 
+    /// Points for this mode (a mesh: with the default 4 × 4 grid).
     pub fn points(self) -> usize {
         match self {
             TrackMode::Position => 1,
             TrackMode::Transform => 2,
             TrackMode::CornerPin | TrackMode::Planar => 4,
+            TrackMode::Mesh => (DEFAULT_GRID as usize + 1) * (DEFAULT_GRID as usize + 1),
         }
     }
 
@@ -508,9 +514,13 @@ impl TrackMode {
             TrackMode::Transform => "Position, rotation and scale (2 points)",
             TrackMode::CornerPin => "Corner pin / perspective (4 points)",
             TrackMode::Planar => "Planar: a whole flat surface",
+            TrackMode::Mesh => "Mesh: a surface that bends",
         }
     }
 }
+
+/// Cells across and down a new mesh tracker.
+pub const DEFAULT_GRID: u8 = 4;
 
 /// A clip's motion tracker: its points (each tracked on its own, but always
 /// together) and what they measure.
@@ -519,8 +529,16 @@ impl TrackMode {
 pub struct Tracker {
     pub mode: TrackMode,
     /// `mode.points()` points. For a corner pin they're the top-left,
-    /// top-right, bottom-right and bottom-left of the surface.
+    /// top-right, bottom-right and bottom-left of the surface. For a mesh,
+    /// the grid's points row by row from the top left.
     pub points: Vec<PointTrack>,
+    /// A mesh's cells across and down.
+    #[serde(default, skip_serializing_if = "is_no_grid")]
+    pub grid: [u8; 2],
+}
+
+fn is_no_grid(g: &[u8; 2]) -> bool {
+    *g == [0, 0]
 }
 
 /// Projects saved before multi-point tracking had a single `PointTrack` here.
@@ -531,6 +549,8 @@ enum TrackerRepr {
         #[serde(default)]
         mode: TrackMode,
         points: Vec<PointTrack>,
+        #[serde(default)]
+        grid: [u8; 2],
     },
     Single(PointTrack),
 }
@@ -538,21 +558,25 @@ enum TrackerRepr {
 impl From<TrackerRepr> for Tracker {
     fn from(r: TrackerRepr) -> Self {
         let mut t = match r {
-            TrackerRepr::Multi { mode, points } => Tracker { mode, points },
-            TrackerRepr::Single(p) => Tracker { mode: TrackMode::Position, points: vec![p] },
+            TrackerRepr::Multi { mode, points, grid } => Tracker { mode, points, grid },
+            TrackerRepr::Single(p) => Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0] },
         };
         if t.points.is_empty() {
             t.points.push(PointTrack::default());
         }
-        let (first, mode) = (t.points[0].clone(), t.mode);
-        t.points.resize(mode.points(), first);
+        if t.mode == TrackMode::Mesh && t.grid[0] == 0 {
+            t.grid = [DEFAULT_GRID, DEFAULT_GRID];
+        }
+        let n = t.point_count();
+        let first = t.points[0].clone();
+        t.points.resize(n, first);
         t
     }
 }
 
 impl From<PointTrack> for Tracker {
     fn from(p: PointTrack) -> Self {
-        Tracker { mode: TrackMode::Position, points: vec![p] }
+        Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0] }
     }
 }
 
@@ -561,9 +585,13 @@ impl Tracker {
     /// of a `layer`-sized picture.
     pub fn new(mode: TrackMode, centre: [f32; 2], layer: [f32; 2], start: Time) -> Self {
         let first = PointTrack { point: centre, start, ..Default::default() };
-        let mut t = Tracker { mode: TrackMode::Position, points: vec![first] };
+        let mut t = Tracker { mode: TrackMode::Position, points: vec![first], grid: [0, 0] };
         t.set_mode(mode, layer, start);
-        if mode != TrackMode::Position {
+        if mode == TrackMode::Mesh {
+            // A grid filling the box around the centre.
+            let q = Self::layout(TrackMode::Planar, centre, layer);
+            t.fill_mesh([q[0], q[1], q[2], q[3]], start);
+        } else if mode != TrackMode::Position {
             // Spread out around the centre, not with one point on it.
             let pts = Self::layout(mode, centre, layer);
             for (p, q) in t.points.iter_mut().zip(pts) {
@@ -580,13 +608,32 @@ impl Tracker {
         match mode {
             TrackMode::Position => vec![c],
             TrackMode::Transform => vec![clamp([c[0] - dx, c[1]]), clamp([c[0] + dx, c[1]])],
-            TrackMode::CornerPin | TrackMode::Planar => vec![[c[0] - dx, c[1] - dy], [c[0] + dx, c[1] - dy], [c[0] + dx, c[1] + dy], [c[0] - dx, c[1] + dy]].into_iter().map(clamp).collect(),
+            TrackMode::CornerPin | TrackMode::Planar | TrackMode::Mesh => vec![[c[0] - dx, c[1] - dy], [c[0] + dx, c[1] - dy], [c[0] + dx, c[1] + dy], [c[0] - dx, c[1] + dy]].into_iter().map(clamp).collect(),
         }
     }
 
     /// Switch mode, keeping the points there are and adding (or dropping) the
     /// rest. Added points sit around the first one, at source time `t`.
     pub fn set_mode(&mut self, mode: TrackMode, layer: [f32; 2], t: Time) {
+        if self.mode == TrackMode::Mesh && mode != TrackMode::Mesh {
+            // Keep the mesh's outer corners, in order, as the first points.
+            let c = self.mesh_corners();
+            let pts = std::mem::take(&mut self.points);
+            self.points = c.iter().map(|&i| pts[i].clone()).collect();
+            self.grid = [0, 0];
+        }
+        if mode == TrackMode::Mesh && self.mode != TrackMode::Mesh {
+            // A grid filling the four corners (or a box around the first point).
+            let shown = self.shown_at(t);
+            let quad = if shown.len() >= 4 { [shown[0], shown[1], shown[2], shown[3]] } else {
+                let q = Self::layout(TrackMode::Planar, shown[0], layer);
+                [q[0], q[1], q[2], q[3]]
+            };
+            self.mode = mode;
+            self.grid = [DEFAULT_GRID, DEFAULT_GRID];
+            self.fill_mesh(quad, t);
+            return;
+        }
         self.mode = mode;
         let n = mode.points();
         if self.points.len() > n {
@@ -600,6 +647,40 @@ impl Tracker {
             let i = self.points.len();
             self.points.push(PointTrack { point: spots[i], start: t, path: Vec::new(), ..template.clone() });
         }
+    }
+
+    /// How many points it has (a mesh's depend on its grid).
+    pub fn point_count(&self) -> usize {
+        match self.mode {
+            TrackMode::Mesh => (self.grid[0].max(1) as usize + 1) * (self.grid[1].max(1) as usize + 1),
+            m => m.points(),
+        }
+    }
+
+    /// A mesh's outer corner points: top left, top right, bottom right, bottom left.
+    pub fn mesh_corners(&self) -> [usize; 4] {
+        let (c, r) = (self.grid[0].max(1) as usize, self.grid[1].max(1) as usize);
+        [0, c, (r + 1) * (c + 1) - 1, r * (c + 1)]
+    }
+
+    /// Lay a mesh's points out as an even grid filling `quad`, starting at
+    /// source time `t` (forgetting any tracked paths: a new grid is a new track).
+    pub fn fill_mesh(&mut self, quad: [[f32; 2]; 4], t: Time) {
+        let (c, r) = (self.grid[0].max(1), self.grid[1].max(1));
+        let m = crate::meshwarp::MeshShape::filling(quad, c, r);
+        let template = PointTrack { path: Vec::new(), start: t, ..self.points[0].clone() };
+        self.points = m.points.iter().map(|&p| PointTrack { point: p, ..template.clone() }).collect();
+    }
+
+    /// Change a mesh's grid (cells across and down), keeping its outer corners at `t`.
+    pub fn set_grid(&mut self, cols: u8, rows: u8, t: Time) {
+        if self.mode != TrackMode::Mesh {
+            return;
+        }
+        let shown = self.shown_at(t);
+        let quad = self.mesh_corners().map(|i| shown[i]);
+        self.grid = [cols.clamp(1, crate::meshwarp::MAX_CELLS), rows.clamp(1, crate::meshwarp::MAX_CELLS)];
+        self.fill_mesh(quad, t);
     }
 
     /// Where each point is shown at source time `t`.
@@ -667,6 +748,8 @@ pub fn motion_between(mode: TrackMode, from: &[[f32; 2]], to: &[[f32; 2]]) -> Op
             let (x0, y0, x1, y1) = (a0[0] as f64, a0[1] as f64, a1[0] as f64, a1[1] as f64);
             Some(Homography([a, -b, x1 - (a * x0 - b * y0), b, a, y1 - (b * x0 + a * y0), 0.0, 0.0, 1.0]))
         }
+        // A mesh bends: there's no one map for it (see `follow_mesh`).
+        TrackMode::Mesh => None,
         TrackMode::CornerPin | TrackMode::Planar => {
             let f: [[f32; 2]; 4] = from.get(..4)?.try_into().ok()?;
             let t: [[f32; 2]; 4] = to.get(..4)?.try_into().ok()?;
@@ -891,6 +974,43 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
     Some(anim)
 }
 
+/// A mesh warp laying `target` over a mesh tracker's grid at every tracked
+/// frame it overlaps (its keys outside that range are kept). `layer` is the
+/// tracked clip's picture size and `frame` the sequence's.
+pub fn follow_mesh(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f32; 2], target: &Clip) -> Option<crate::meshwarp::MeshWarp> {
+    if tracker.mode != TrackMode::Mesh {
+        return None;
+    }
+    let to_seq = |src: Time| tracked.timeline_of_media(src).unwrap_or(tracked.timeline_start);
+    let mut keys: Vec<(Time, crate::meshwarp::MeshShape)> = tracker
+        .frames()
+        .into_iter()
+        .filter_map(|(src, pts)| {
+            let t = to_seq(src);
+            if t < target.timeline_start || t > target.timeline_end() {
+                return None;
+            }
+            // From the tracked clip's pixels to the frame, through its own transform then.
+            let m = tracked.transform_at(t).layer_map(layer, frame);
+            let points = pts.iter().map(|p| m.apply([p[0] - layer[0] / 2.0, p[1] - layer[1] / 2.0])).collect();
+            let shape = crate::meshwarp::MeshShape { cols: tracker.grid[0], rows: tracker.grid[1], points };
+            (shape.is_valid() && !shape.is_folded()).then(|| (target.source_time(t), shape))
+        })
+        .collect();
+    keys.sort_by_key(|k| k.0);
+    keys.dedup_by_key(|k| k.0);
+    let (a, b) = (keys.first()?.0, keys.last()?.0);
+    let mut w = target.mesh.clone().unwrap_or_default();
+    // A different grid can't be blended with: start again.
+    if w.keys.first().is_some_and(|k| k.1.cols != tracker.grid[0] || k.1.rows != tracker.grid[1]) {
+        w.keys.clear();
+    }
+    w.keys.retain(|k| k.0 < a || k.0 > b);
+    w.keys.extend(keys);
+    w.keys.sort_by_key(|k| k.0);
+    Some(w)
+}
+
 /// Make a mask on the tracked clip itself move with the tracked points: shape
 /// keys at every tracked frame, the shape as it is at the first tracked frame
 /// moved (turned, scaled, put in perspective, by mode) as the points have
@@ -902,13 +1022,21 @@ pub fn follow_mask(clip: &Clip, mask: &crate::mask::Mask, tracker: &Tracker) -> 
     let (t0, ref_pts) = frames.first().cloned()?;
     let base = mask.points_at(t0);
     let mut m = mask.clone();
-    let keys: Vec<(Time, Vec<[f32; 2]>)> = frames
-        .iter()
-        .filter_map(|(at, p)| {
-            let h = motion_between(tracker.mode, &ref_pts, p)?;
-            Some((*at, base.iter().map(|q| h.apply(*q)).collect()))
-        })
-        .collect();
+    let keys: Vec<(Time, Vec<[f32; 2]>)> = if tracker.mode == TrackMode::Mesh {
+        // Each mask point keeps its place on the bending grid.
+        let grid = |pts: &[[f32; 2]]| crate::meshwarp::MeshShape { cols: tracker.grid[0], rows: tracker.grid[1], points: pts.to_vec() };
+        let reference = grid(&ref_pts);
+        let at: Vec<crate::meshwarp::MeshCoord> = base.iter().map(|q| reference.locate(*q)).collect::<Option<_>>()?;
+        frames.iter().map(|(t, p)| (*t, at.iter().map(|c| grid(p).apply(*c)).collect())).collect()
+    } else {
+        frames
+            .iter()
+            .filter_map(|(at, p)| {
+                let h = motion_between(tracker.mode, &ref_pts, p)?;
+                Some((*at, base.iter().map(|q| h.apply(*q)).collect()))
+            })
+            .collect()
+    };
     let (a, b) = (keys.iter().map(|k| k.0).min()?, keys.iter().map(|k| k.0).max()?);
     m.keys.retain(|k| k.at < a || k.at > b);
     for (at, points) in keys {
@@ -1023,7 +1151,7 @@ mod tests {
         let s = |t: f64, p: [f32; 2]| TrackSample { at: secs(t), pos: p, score: 1.0 };
         let a = PointTrack { path: vec![s(0.0, [100.0, 100.0]), s(1.0, [100.0, 100.0])], ..Default::default() };
         let b = PointTrack { path: vec![s(0.0, [120.0, 100.0]), s(1.0, [100.0, 140.0])], ..Default::default() };
-        Tracker { mode: TrackMode::Transform, points: vec![a, b] }
+        Tracker { mode: TrackMode::Transform, points: vec![a, b], grid: [0, 0] }
     }
 
     #[test]
@@ -1061,7 +1189,54 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        Tracker { mode: TrackMode::CornerPin, points }
+        Tracker { mode: TrackMode::CornerPin, points, grid: [0, 0] }
+    }
+
+    /// A mesh track warps another layer over its grid (on the frame, through the
+    /// tracked clip's own transform), and masks keep their place on the grid.
+    #[test]
+    fn mesh_tracks_warp_layers_and_bend_masks() {
+        let secs = Time::from_secs_f64;
+        let mut tracked = Clip::new(ClipId(1), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
+        tracked.transform.position = [10.0, 0.0]; // moved 10 px right on the frame
+        let target = Clip::new(ClipId(2), MediaId(2), secs(1.0), secs(0.0), secs(4.0), None);
+        let (layer, frame) = ([400.0, 300.0], [400.0, 300.0]);
+        // A 2 × 1 grid whose middle column bows down 20 px by the second frame.
+        let g0 = crate::meshwarp::MeshShape::filling([[100.0, 100.0], [300.0, 100.0], [300.0, 200.0], [100.0, 200.0]], 2, 1);
+        let mut g1 = g0.clone();
+        g1.points[1][1] += 20.0;
+        g1.points[4][1] += 20.0;
+        let points = (0..6)
+            .map(|i| PointTrack {
+                path: [(&g0, 1.0), (&g1, 2.0)].iter().map(|(g, t)| TrackSample { at: secs(*t), pos: g.points[i], score: 1.0 }).collect(),
+                ..Default::default()
+            })
+            .collect();
+        let tr = Tracker { mode: TrackMode::Mesh, points, grid: [2, 1] };
+        let w = follow_mesh(&tracked, &tr, layer, frame, &target).unwrap();
+        // Keys at the target's source times (it starts at 1 s), shifted by the tracked clip's position.
+        assert_eq!(w.keys.len(), 2);
+        assert_eq!(w.keys[0].0, secs(0.0));
+        assert_eq!(w.keys[1].0, secs(1.0));
+        assert!(close2(w.keys[1].1.points[1], [210.0, 120.0], 1e-3), "{:?}", w.keys[1].1.points[1]);
+        // A mask point halfway along the top edge bows with it.
+        let mask = crate::mask::Mask { points: vec![[150.0, 100.0], [200.0, 150.0]], ..Default::default() };
+        let mm = follow_mask(&tracked, &mask, &tr).unwrap();
+        let last = &mm.keys.last().unwrap().points;
+        assert!(close2(last[0], [150.0, 110.0], 1e-3), "{:?}", last[0]);
+        assert!(close2(last[1], [200.0, 170.0], 1e-3), "{:?}", last[1]);
+        // Switching away from a mesh keeps its outer corners.
+        let mut t2 = tr.clone();
+        t2.set_mode(TrackMode::Planar, layer, secs(1.0));
+        assert_eq!(t2.shown_at(secs(1.0)), vec![[100.0, 100.0], [300.0, 100.0], [300.0, 200.0], [100.0, 200.0]]);
+        // And a new mesh fills a planar tracker's corners.
+        t2.clear_paths();
+        t2.set_mode(TrackMode::Mesh, layer, secs(1.0));
+        assert_eq!((t2.grid, t2.points.len()), ([DEFAULT_GRID, DEFAULT_GRID], 25));
+        t2.set_grid(3, 2, secs(1.0));
+        assert_eq!(t2.points.len(), 12);
+        let back: Tracker = serde_json::from_str(&serde_json::to_string(&t2).unwrap()).unwrap();
+        assert_eq!(back, t2);
     }
 
     /// A planar track's four corners apply exactly as a four-point track's do.

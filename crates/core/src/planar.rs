@@ -135,16 +135,6 @@ impl PlanarTracker {
         }
     }
 
-    fn random(&mut self) -> u64 {
-        // xorshift64*: deterministic, so a track comes out the same every time.
-        let mut x = self.rng;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.rng = x;
-        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-
     /// Follow the surface into the next frame. Returns its corners there.
     pub fn step(&mut self, pyr: &Pyramid) -> Result<[[f32; 2]; 4], PlanarError> {
         // Predict with the surface's last motion (constant velocity in the plane).
@@ -163,7 +153,7 @@ impl PlanarTracker {
         }
         let src: Vec<[f32; 2]> = found.iter().map(|&i| self.features[i].on_plane).collect();
         let dst: Vec<[f32; 2]> = found.iter().map(|&i| results[i].0).collect();
-        let Some((h, inliers)) = self.ransac(&src, &dst) else { return Err(PlanarError::Lost) };
+        let Some((h, inliers)) = ransac(&src, &dst, self.tol, &mut self.rng) else { return Err(PlanarError::Lost) };
         let agree = inliers.iter().filter(|&&b| b).count();
         // Judge by the features followed for a while: new ones may sit on
         // something that isn't the surface.
@@ -233,65 +223,76 @@ impl PlanarTracker {
         }
         Ok(self.corners())
     }
-
-    /// The map most features agree with: (map, which ones agree).
-    fn ransac(&mut self, src: &[[f32; 2]], dst: &[[f32; 2]]) -> Option<(Homography, Vec<bool>)> {
-        let n = src.len();
-        let tol2 = self.tol * self.tol;
-        let count = |h: &Homography| -> (usize, Vec<bool>) {
-            let v: Vec<bool> = src
-                .iter()
-                .zip(dst)
-                .map(|(s, d)| {
-                    let p = h.apply(*s);
-                    let (dx, dy) = (p[0] - d[0], p[1] - d[1]);
-                    dx * dx + dy * dy <= tol2
-                })
-                .collect();
-            (v.iter().filter(|&&b| b).count(), v)
-        };
-        // A fit to all of them is the first guess (right when nothing is in the way).
-        let mut best = fit_homography(src, dst).map(|h| count(&h)).map(|(c, v)| (c, v, 0)).unwrap_or((0, vec![false; n], 0));
-        for _ in 0..250 {
-            let mut idx = [0usize; 4];
-            let mut k = 0;
-            let mut guard = 0;
-            while k < 4 && guard < 50 {
-                guard += 1;
-                let r = (self.random() % n as u64) as usize;
-                if !idx[..k].contains(&r) {
-                    idx[k] = r;
-                    k += 1;
-                }
-            }
-            if k < 4 {
-                continue;
-            }
-            let f = idx.map(|i| src[i]);
-            let t = idx.map(|i| dst[i]);
-            let Some(h) = Homography::from_quads(&f, &t) else { continue };
-            let (c, v) = count(&h);
-            if c > best.0 {
-                best = (c, v, 1);
-                if c == n {
-                    break;
-                }
-            }
-        }
-        if best.0 < 4 {
-            return None;
-        }
-        // Least squares over the agreeing ones, then once more with the new set.
-        let pick = |v: &[bool]| -> (Vec<[f32; 2]>, Vec<[f32; 2]>) { src.iter().zip(dst).zip(v).filter(|(_, &b)| b).map(|((s, d), _)| (*s, *d)).unzip() };
-        let (a, b) = pick(&best.1);
-        let h = fit_homography(&a, &b)?;
-        let (_, v) = count(&h);
-        let (a, b) = pick(&v);
-        let h2 = fit_homography(&a, &b).unwrap_or(h);
-        let (_, v2) = count(&h2);
-        Some((h2, v2))
-    }
 }
+
+/// The map most pairs agree with (within `tol` pixels): (map, which ones agree).
+pub(crate) fn ransac(src: &[[f32; 2]], dst: &[[f32; 2]], tol: f32, rng: &mut u64) -> Option<(Homography, Vec<bool>)> {
+    let n = src.len();
+    let tol2 = tol * tol;
+    let count = |h: &Homography| -> (usize, Vec<bool>) {
+        let v: Vec<bool> = src
+            .iter()
+            .zip(dst)
+            .map(|(s, d)| {
+                let p = h.apply(*s);
+                let (dx, dy) = (p[0] - d[0], p[1] - d[1]);
+                dx * dx + dy * dy <= tol2
+            })
+            .collect();
+        (v.iter().filter(|&&b| b).count(), v)
+    };
+    // A fit to all of them is the first guess (right when nothing is in the way).
+    let mut best = fit_homography(src, dst).map(|h| count(&h)).map(|(c, v)| (c, v, 0)).unwrap_or((0, vec![false; n], 0));
+    for _ in 0..250 {
+        let mut idx = [0usize; 4];
+        let mut k = 0;
+        let mut guard = 0;
+        while k < 4 && guard < 50 {
+            guard += 1;
+            let r = (random(rng) % n as u64) as usize;
+            if !idx[..k].contains(&r) {
+                idx[k] = r;
+                k += 1;
+            }
+        }
+        if k < 4 {
+            continue;
+        }
+        let f = idx.map(|i| src[i]);
+        let t = idx.map(|i| dst[i]);
+        let Some(h) = Homography::from_quads(&f, &t) else { continue };
+        let (c, v) = count(&h);
+        if c > best.0 {
+            best = (c, v, 1);
+            if c == n {
+                break;
+            }
+        }
+    }
+    if best.0 < 4 {
+        return None;
+    }
+    // Least squares over the agreeing ones, then once more with the new set.
+    let pick = |v: &[bool]| -> (Vec<[f32; 2]>, Vec<[f32; 2]>) { src.iter().zip(dst).zip(v).filter(|(_, &b)| b).map(|((s, d), _)| (*s, *d)).unzip() };
+    let (a, b) = pick(&best.1);
+    let h = fit_homography(&a, &b)?;
+    let (_, v) = count(&h);
+    let (a, b) = pick(&v);
+    let h2 = fit_homography(&a, &b).unwrap_or(h);
+    let (_, v2) = count(&h2);
+    Some((h2, v2))
+}
+
+/// xorshift64*: deterministic, so a track comes out the same every time.
+pub(crate) fn random(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+}
+
 
 /// Is the map sane for this surface: corners still a convex four-sided shape
 /// of reasonable size (not flipped, folded or collapsed)?
@@ -328,7 +329,7 @@ fn reprojection_ok(h: &Homography, src: &[[f32; 2]], dst: &[[f32; 2]], tol: f32)
 }
 
 /// Run `f` on every item, spread over the cores.
-fn par_map<T: Send, R: Send + Default + Clone>(items: &mut [T], f: impl Fn(&mut T) -> R + Sync) -> Vec<R> {
+pub(crate) fn par_map<T: Send, R: Send + Default + Clone>(items: &mut [T], f: impl Fn(&mut T) -> R + Sync) -> Vec<R> {
     let mut out = vec![R::default(); items.len()];
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
     if threads == 1 || items.len() < 8 {
@@ -352,7 +353,7 @@ fn par_map<T: Send, R: Send + Default + Clone>(items: &mut [T], f: impl Fn(&mut 
 }
 
 /// Run `f(index, item)` on every item, spread over the cores.
-fn par_map_enumerated<T: Send, R: Send + Default + Clone>(items: &mut [T], f: impl Fn(usize, &mut T) -> R + Sync) -> Vec<R> {
+pub(crate) fn par_map_enumerated<T: Send, R: Send + Default + Clone>(items: &mut [T], f: impl Fn(usize, &mut T) -> R + Sync) -> Vec<R> {
     let mut out = vec![R::default(); items.len()];
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
     let per = items.len().div_ceil(threads).max(1);
@@ -371,7 +372,7 @@ fn par_map_enumerated<T: Send, R: Send + Default + Clone>(items: &mut [T], f: im
 
 /// Refine `h` by iteratively re-weighted least squares (Tukey's biweight with
 /// cut-off `c` pixels): pairs that fit badly count less, and past `c` not at all.
-fn robust_refit(mut h: Homography, src: &[[f32; 2]], dst: &[[f32; 2]], c: f32) -> Option<Homography> {
+pub(crate) fn robust_refit(mut h: Homography, src: &[[f32; 2]], dst: &[[f32; 2]], c: f32) -> Option<Homography> {
     for _ in 0..4 {
         let w: Vec<f64> = src
             .iter()
@@ -517,7 +518,7 @@ pub fn fit_homography(src: &[[f32; 2]], dst: &[[f32; 2]]) -> Option<Homography> 
 }
 
 /// [`fit_homography`] with a weight per pair.
-fn fit_homography_weighted(src: &[[f32; 2]], dst: &[[f32; 2]], weights: Option<&[f64]>) -> Option<Homography> {
+pub(crate) fn fit_homography_weighted(src: &[[f32; 2]], dst: &[[f32; 2]], weights: Option<&[f64]>) -> Option<Homography> {
     let n = src.len().min(dst.len());
     if n < 4 {
         return None;
@@ -570,7 +571,7 @@ fn fit_homography_weighted(src: &[[f32; 2]], dst: &[[f32; 2]], weights: Option<&
 }
 
 /// Gaussian elimination with partial pivoting.
-fn solve(mut a: [[f64; 8]; 8], mut b: [f64; 8]) -> Option<[f64; 8]> {
+pub(crate) fn solve(mut a: [[f64; 8]; 8], mut b: [f64; 8]) -> Option<[f64; 8]> {
     for col in 0..8 {
         let piv = (col..8).max_by(|&p, &q| a[p][col].abs().total_cmp(&a[q][col].abs()))?;
         if a[piv][col].abs() < 1e-12 {

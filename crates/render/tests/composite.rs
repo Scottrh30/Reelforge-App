@@ -8,7 +8,7 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
 }
 
 fn layer<'a>(key: u64, pixels: &'a [u8], px: [u32; 2], size: [f32; 2], t: Transform, blend: BlendMode) -> LayerInput<'a> {
-    LayerInput { key, content_id: 1, pixels: PixelData::Rgba(pixels), pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new(), mask: None, wipe: None }
+    LayerInput { key, content_id: 1, pixels: PixelData::Rgba(pixels), pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new(), mask: None, wipe: None, mesh: None }
 }
 
 fn px(img: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
@@ -104,7 +104,7 @@ fn textures_are_cached_by_content_id() {
     let red = solid(4, 4, [255, 0, 0, 255]);
     let green = solid(4, 4, [0, 255, 0, 255]);
     fn mk(pixels: &[u8], id: u64) -> LayerInput<'_> {
-        LayerInput { key: 7, content_id: id, pixels: PixelData::Rgba(pixels), pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None }
+        LayerInput { key: 7, content_id: id, pixels: PixelData::Rgba(pixels), pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None }
     }
     c.render([4, 4], &[mk(&red, 1)]);
     c.render([4, 4], &[mk(&green, 1)]); // same content id: not re-uploaded
@@ -581,11 +581,39 @@ fn yuv_layers_convert_like_the_cpu_reference() {
                 effects: Vec::new(),
                 mask: None,
                 wipe: None,
+                mesh: None,
             };
             c.render([w, h], &[l]);
             let got = c.read_output().unwrap();
             let worst = got.iter().zip(&want).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| (*a as i32 - *b as i32).abs()).max().unwrap();
             assert!(worst <= 2, "{layout:?} {matrix:?} full={full_range}: off by {worst}");
         }
+    }
+}
+
+/// A mesh warp puts each part of the layer where its grid says: a layer whose
+/// left half is red and right half blue, over a 2 × 1 grid on the frame's
+/// right half, then with the middle column pulled left.
+#[test]
+fn mesh_warp_places_the_layer_over_its_grid() {
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (8u32, 8u32);
+    let mut img = Vec::new();
+    for _y in 0..h {
+        for x in 0..w {
+            img.extend(if x < w / 2 { [255, 0, 0, 255] } else { [0, 0, 255, 255] });
+        }
+    }
+    let grid = |mid: f32| reelforge_core::meshwarp::MeshShape { cols: 2, rows: 1, points: vec![[32.0, 0.0], [mid, 0.0], [64.0, 0.0], [32.0, 32.0], [mid, 32.0], [64.0, 32.0]] };
+    for (mid, red_until) in [(48.0, 48), (40.0, 40)] {
+        let mut l = layer(1, &img, [w, h], [8.0, 8.0], Transform::default(), BlendMode::Normal);
+        l.mesh = Some(grid(mid));
+        c.render([64, 32], &[l]);
+        let out = c.read_output().unwrap();
+        assert!(near(px(&out, 64, 10, 16), [0, 0, 0]), "left of the grid is empty: {:?}", px(&out, 64, 10, 16));
+        assert!(near(px(&out, 64, 34, 16), [255, 0, 0]), "red starts the grid");
+        assert!(near(px(&out, 64, red_until - 3, 16), [255, 0, 0]), "red up to the middle column at {mid}");
+        assert!(near(px(&out, 64, red_until + 3, 16), [0, 0, 255]), "blue after it at {mid}: {:?}", px(&out, 64, red_until + 3, 16));
+        assert!(near(px(&out, 64, 62, 2), [0, 0, 255]), "blue to the right edge");
     }
 }
