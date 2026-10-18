@@ -227,6 +227,8 @@ struct DecodeState {
     hw_format: Option<i32>,
     /// Where decoding has got to (pts of the last frame seen), for resuming after a fallback.
     position: Time,
+    /// Packets read ahead while finding a keyframe after a seek, to decode first.
+    pending: std::collections::VecDeque<ff::Packet>,
 }
 
 /// Open a decoder for `params`: on the GPU if `hw`, else in software (multi-threaded).
@@ -272,15 +274,23 @@ impl DecodeState {
         }
         let frame_dur = Time::from_rational(Rational::new(rate.den, rate.num));
 
-        // Reelforge's own decoder when it has one for this codec; else FFmpeg's.
-        let (decoder, hw_format) = match crate::native::open(&st.parameters()) {
-            Some(n) => (Video::Native(n), None),
-            None => {
-                // Stills and tiny files gain nothing from the GPU.
-                let small = { let p = st.parameters(); unsafe { (*p.as_ptr()).width * (*p.as_ptr()).height < 640 * 360 } };
-                let (d, hw) = open_decoder(st.parameters(), crate::hw::enabled() && !small)?;
-                (Video::Ff(d), hw)
-            }
+        // Stills and tiny files gain nothing from the GPU.
+        let small = { let p = st.parameters(); unsafe { (*p.as_ptr()).width * (*p.as_ptr()).height < 640 * 360 } };
+        let want_hw = crate::hw::enabled() && !small;
+        // The delivery codecs go to the graphics card first when it can take them
+        // (faster and lighter than any CPU decoder); then Reelforge's own decoder;
+        // then FFmpeg's.
+        let gpu_first = want_hw && crate::native::codec_of(st.parameters().id()).is_some_and(|c| c.gpu_friendly());
+        let gpu = if gpu_first { open_decoder(st.parameters(), true).ok().filter(|(_, hw)| hw.is_some()) } else { None };
+        let (decoder, hw_format) = match gpu {
+            Some((d, hw)) => (Video::Ff(d), hw),
+            None => match crate::native::open(&st.parameters()) {
+                Some(n) => (Video::Native(n), None),
+                None => {
+                    let (d, hw) = open_decoder(st.parameters(), want_hw && !gpu_first)?;
+                    (Video::Ff(d), hw)
+                }
+            },
         };
 
         Ok(Self {
@@ -298,6 +308,7 @@ impl DecodeState {
             eof,
             hw_format,
             position: Time::ZERO,
+            pending: Default::default(),
         })
     }
 
@@ -312,12 +323,96 @@ impl DecodeState {
         self.scaler = None;
         // Re-decode from the keyframe before where we were, skipping what was already delivered.
         let resume = self.discard_before.unwrap_or(self.position + self.frame_dur);
-        let us = resume.to_pts(Rational::new(1, AV_TIME_BASE))
-            + Time::from_pts(self.start_pts, self.time_base).to_pts(Rational::new(1, AV_TIME_BASE));
-        let _ = self.ictx.seek(us, ..us);
+        self.seek_to_keyframe(resume);
         self.discard_before = Some(resume);
         self.held = None;
         Ok(())
+    }
+
+    /// The next packet: read-ahead from a seek first, then the file.
+    fn next_packet(&mut self, packet: &mut ff::Packet) -> bool {
+        match self.pending.pop_front() {
+            Some(p) => {
+                *packet = p;
+                true
+            }
+            None => packet.read(&mut self.ictx).is_ok(),
+        }
+    }
+
+    /// Back to the very start of the file. Timestamp seeks to the start of a
+    /// transport stream can land just past its first keyframe; a byte seek can't.
+    /// False for containers that don't seek by byte (MP4…), whose index gets it right.
+    fn rewind(&mut self) -> bool {
+        // SAFETY: a valid, open format context.
+        unsafe {
+            let ctx = self.ictx.as_mut_ptr();
+            let fmt = (*ctx).iformat;
+            if fmt.is_null() || (*fmt).flags & ff::ffi::AVFMT_NO_BYTE_SEEK as i32 != 0 {
+                return false;
+            }
+            ff::ffi::av_seek_frame(ctx, -1, 0, ff::ffi::AVSEEK_FLAG_BYTE as i32) >= 0
+        }
+    }
+
+    /// Position the input so that decoding starts at a keyframe at or before `to`.
+    /// Containers with an index (MP4, MKV…) land there directly; transport and
+    /// program streams (TS, MPG, VOB) are searched by timestamp and can land
+    /// mid-GOP, or on a keyframe after the target: then this steps back further.
+    /// The packets read while checking are kept in `pending`, from the keyframe on.
+    fn seek_to_keyframe(&mut self, to: Time) {
+        let base = Time::from_pts(self.start_pts, self.time_base);
+        let us = |t: Time| t.to_pts(Rational::new(1, AV_TIME_BASE)) + base.to_pts(Rational::new(1, AV_TIME_BASE));
+        let mut margin = Time::ZERO;
+        loop {
+            self.pending.clear();
+            let at = if to > margin { to - margin } else { Time::ZERO };
+            let rewound = at == Time::ZERO && margin > Time::ZERO && self.rewind();
+            if !rewound {
+                if let Err(e) = self.ictx.seek(us(at), ..us(at)) {
+                    log::warn!("seek to {to} failed: {e}");
+                }
+            }
+            // Read up to the first keyframe of our stream (within reason).
+            let mut key_pts = None;
+            let mut skipped = Vec::new();
+            let mut hit_end = false;
+            for _ in 0..4000 {
+                let mut p = ff::Packet::empty();
+                if p.read(&mut self.ictx).is_err() {
+                    hit_end = true;
+                    break;
+                }
+                if p.stream() != self.stream_index {
+                    continue;
+                }
+                if p.is_key() {
+                    key_pts = Some(p.pts().or(p.dts()).unwrap_or(self.start_pts));
+                    self.pending.push_back(p);
+                    break;
+                }
+                skipped.push(p);
+            }
+            let Some(kp) = key_pts else {
+                if hit_end && at > Time::ZERO && margin < Time::from_secs_f64(60.0) {
+                    // Landed after the last keyframe: step back.
+                    margin = if margin == Time::ZERO { Time::from_secs_f64(1.0) } else { margin + margin };
+                    continue;
+                }
+                // No keyframe flags to go by: decode from where the seek landed.
+                self.pending.extend(skipped);
+                return;
+            };
+            if skipped.is_empty() && margin == Time::ZERO && Time::from_pts(kp - self.start_pts, self.time_base) <= to {
+                return; // the common case: straight onto a keyframe
+            }
+            let key_at = Time::from_pts(kp - self.start_pts, self.time_base);
+            if key_at <= to || at == Time::ZERO || margin >= Time::from_secs_f64(60.0) {
+                // Packets after the keyframe come straight from the file.
+                return;
+            }
+            margin = if margin == Time::ZERO { Time::from_secs_f64(1.0) } else { margin + margin };
+        }
     }
 
     fn run(mut self, cmds: Receiver<Cmd>, out: Sender<VideoFrame>) -> Result<()> {
@@ -331,7 +426,7 @@ impl DecodeState {
 
             let mut eof = true;
             let mut packet = ff::Packet::empty();
-            while packet.read(&mut self.ictx).is_ok() {
+            while self.next_packet(&mut packet) {
                 if packet.stream() != self.stream_index {
                     continue;
                 }
@@ -392,12 +487,8 @@ impl DecodeState {
             Cmd::Stop => Flow::Stop,
             Cmd::Seek { to, generation } => {
                 self.generation = generation;
-                let us = to.to_pts(Rational::new(1, AV_TIME_BASE))
-                    + Time::from_pts(self.start_pts, self.time_base).to_pts(Rational::new(1, AV_TIME_BASE));
                 // Land on the keyframe at or before the target; we decode forward from there.
-                if let Err(e) = self.ictx.seek(us, ..us) {
-                    log::warn!("seek to {to} failed: {e}");
-                }
+                self.seek_to_keyframe(to);
                 self.decoder.flush();
                 self.discard_before = Some(to);
                 self.held = None;

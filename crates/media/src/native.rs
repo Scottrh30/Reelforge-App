@@ -85,6 +85,7 @@ fn pixel(f: Format) -> ff::format::Pixel {
         Format::Yuv420P10 => P::YUV420P10LE,
         Format::Yuv422P10 => P::YUV422P10LE,
         Format::Yuv444P10 => P::YUV444P10LE,
+        Format::Yuv420P12 => P::YUV420P12LE,
         Format::Yuv422P12 => P::YUV422P12LE,
         Format::Yuv444P12 => P::YUV444P12LE,
         Format::Yuva444P10 => P::YUVA444P10LE,
@@ -342,6 +343,71 @@ mod tests {
         assert!(ran >= 6 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
     }
 
+    /// H.264, HEVC, VP9 and AV1 through the pure-Rust decoder libraries.
+    #[test]
+    fn h264_hevc_vp9_av1_match_ffmpeg() {
+        let x264 = |extra: &[&'static str]| -> Vec<&'static str> { [vec!["-c:v", "libx264", "-preset", "fast", "-crf", "20"], extra.to_vec()].concat() };
+        let x265 = |extra: &[&'static str]| -> Vec<&'static str> { [vec!["-c:v", "libx265", "-preset", "fast", "-crf", "24", "-x265-params", "log-level=error"], extra.to_vec()].concat() };
+        let vp9 = |extra: &[&'static str]| -> Vec<&'static str> { [vec!["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "1M"], extra.to_vec()].concat() };
+        let cases: Vec<(&str, &str, u32, Vec<&str>)> = vec![
+            ("baseline.mp4", "320x180", 25, x264(&["-profile:v", "baseline"])),
+            ("main.mp4", "320x180", 25, x264(&["-profile:v", "main", "-bf", "3"])),
+            ("high.mkv", "352x288", 25, x264(&["-profile:v", "high", "-bf", "3", "-x264-params", "weightp=2:b-pyramid=normal:slices=3"])),
+            ("annexb.ts", "320x180", 25, x264(&["-bf", "2"])),
+            ("odd264.mp4", "302x170", 25, x264(&[])),
+            ("hevc.mp4", "320x180", 25, x265(&["-bf", "3"])),
+            ("hevc10.mkv", "320x180", 25, x265(&["-pix_fmt", "yuv420p10le"])),
+            ("hevc.ts", "320x180", 25, x265(&[])),
+            ("vp9.webm", "320x180", 25, vp9(&[])),
+            ("vp9_10.webm", "320x180", 25, vp9(&["-pix_fmt", "yuv420p10le"])),
+            ("vp9_444.mkv", "320x180", 25, vp9(&["-pix_fmt", "yuv444p"])),
+            ("av1.mp4", "320x180", 25, vec!["-c:v", "libsvtav1", "-preset", "12", "-crf", "35", "-svtav1-params", "log=0"]),
+            ("av1_10.mkv", "320x180", 25, vec!["-c:v", "libsvtav1", "-preset", "12", "-crf", "35", "-pix_fmt", "yuv420p10le"]),
+            ("aom.webm", "320x180", 25, vec!["-c:v", "libaom-av1", "-cpu-used", "8", "-crf", "35", "-row-mt", "1"]),
+        ];
+        let mut ran = 0;
+        let mut bad = Vec::new();
+        for (name, size, rate, args) in cases {
+            let Some(p) = clip_at(name, size, rate, &args) else {
+                eprintln!("{name}: ffmpeg couldn't make it, skipped");
+                continue;
+            };
+            let (n, psnr) = compare_with_ffmpeg(&p);
+            eprintln!("{name}: {n} frames, worst {psnr:.1} dB");
+            if n < 25 || psnr < 50.0 {
+                bad.push(format!("{name}: {n} frames, {psnr:.1} dB"));
+            }
+            ran += 1;
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+        assert!(ran >= 8 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
+    /// What the libraries don't decode (interlaced or 10-bit H.264) is reported as an
+    /// error, which hands the file to FFmpeg.
+    #[test]
+    fn unsupported_h264_is_reported() {
+        for (name, args) in [
+            ("interlaced264.mp4", vec!["-c:v", "libx264", "-flags", "+ildct+ilme", "-x264-params", "interlaced=1"]),
+            ("hi10.mp4", vec!["-c:v", "libx264", "-pix_fmt", "yuv420p10le"]),
+        ] {
+            let Some(p) = clip_at(name, "320x180", 25, &args) else { continue };
+            crate::init();
+            let mut ictx = ff::format::input(&p).unwrap();
+            let st = ictx.streams().best(ff::media::Type::Video).unwrap();
+            let index = st.index();
+            let mut nat = open(&st.parameters()).unwrap();
+            let mut failed = false;
+            for (s, packet) in ictx.packets() {
+                if s.index() == index && nat.send_packet(&packet).is_err() {
+                    failed = true;
+                    break;
+                }
+            }
+            assert!(failed, "{name} should be refused");
+        }
+    }
+
     /// Field pictures, same-frame field references, 16×8 and dual-prime motion
     /// and skipped macroblocks: FFmpeg's encoder never makes these, so random
     /// streams that use them are generated and both decoders must agree.
@@ -402,6 +468,54 @@ mod tests {
         assert_eq!(f.pts, reelforge_core::Time::from_secs_f64(0.2));
     }
 
+    /// Transport streams are searched by timestamp, so a seek can land mid-GOP or
+    /// past the last keyframe; frames must still be exact (right time, real picture).
+    /// Indexed containers and every library decoder are checked the same way.
+    #[test]
+    fn seeking_in_transport_streams_lands_on_the_frame() {
+        let cases: Vec<(&str, Vec<&str>)> = vec![
+            ("seek264.ts", vec!["-c:v", "libx264", "-bf", "3", "-x264-params", "open-gop=1:keyint=50"]),
+            ("seek_m2.ts", vec!["-c:v", "mpeg2video", "-bf", "2", "-g", "12"]),
+            ("seek265.ts", vec!["-c:v", "libx265", "-x265-params", "log-level=error:open-gop=1:keyint=50"]),
+            ("seek264.mp4", vec!["-c:v", "libx264", "-bf", "3", "-g", "50"]),
+            ("seek265.mkv", vec!["-c:v", "libx265", "-x265-params", "log-level=error:open-gop=1:keyint=50"]),
+            ("seekvp9.webm", vec!["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-g", "50"]),
+            ("seekav1.mkv", vec!["-c:v", "libsvtav1", "-preset", "12", "-g", "50", "-svtav1-params", "log=0"]),
+        ];
+        for (name, args) in cases {
+            let dir = std::env::temp_dir().join(format!("rf-native-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join(name);
+            let ok = std::process::Command::new("ffmpeg")
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=8"])
+                .args(&args)
+                .arg(&p)
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                continue;
+            }
+            // One source, seeking back and forth (the decoder is flushed, not rebuilt).
+            let mut src = crate::FrameSource::open(&p, Some((320, 180))).unwrap();
+            for (t, frame) in [(5.0, 125), (2.3, 57), (7.7, 192), (7.95, 198), (0.5, 12), (6.1, 152)] {
+                let f = src.frame_at_blocking(reelforge_core::Time::from_secs_f64(t), std::time::Duration::from_secs(10)).unwrap();
+                assert_eq!(f.pts, reelforge_core::Time::from_secs_f64(frame as f64 / 25.0), "{name} at {t}s");
+                // testsrc2's left bar is red: a frame decoded without its references isn't.
+                let rgba = f.rgba();
+                let mut red = 0;
+                let mut all = 0;
+                for y in (30..160).step_by(10) {
+                    for x in (5..40).step_by(5) {
+                        let px = &rgba[(y * f.width as usize + x) * 4..][..3];
+                        red += usize::from(px[0] > 180 && px[1] < 80 && px[2] < 80);
+                        all += 1;
+                    }
+                }
+                assert!(red * 10 >= all * 7, "{name} at {t}s: only {red}/{all} red");
+            }
+        }
+    }
+
     #[test]
     fn a_broken_packet_falls_back_to_ffmpeg() {
         // Garbage instead of a ProRes frame: the native decoder refuses it.
@@ -446,3 +560,4 @@ mod bench {
         eprintln!("native: {n} frames {:.1} fps; ffmpeg (1 thread): {m} frames {:.1} fps", n as f64 / nt, m as f64 / ft);
     }
 }
+

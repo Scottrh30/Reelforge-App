@@ -17,7 +17,7 @@ What works now:
   **Reset layout** shows them all at their starting sizes. Hidden windows stay hidden the next
   time you start Reelforge
 - Import video/image/audio via **File → Import**, `Ctrl+I`, or drag files from Explorer
-- FFmpeg decoding on a background thread, with frame-accurate seeking
+- FFmpeg decoding on a background thread, with frame-accurate seeking (transport and program streams too: TS, MTS, MPG and VOB are searched by timestamp, so a seek steps back until it starts from a keyframe at or before the target)
 - Viewer with transport bar and timecode
 - Multi-track timeline: drag media from the bin onto a track, move clips between tracks,
   razor split (`S`), delete (`Del`), scrub, zoom (`Ctrl` + scroll, or the zoom slider in the bar under the tracks), pan (scroll); drag the right edge of the track names to widen them (double-click it to reset)
@@ -549,7 +549,10 @@ reload and `cargo run -p reelforge-tauri --no-default-features` loads it from th
 the files (MP4, MOV, MKV, AVI…), and its packets go to Reelforge's decoder when there is
 one for the codec; the decoded pictures then go through the same scaling, colour and
 caching as FFmpeg's. If a native decoder can't read a file, that file switches to FFmpeg's
-decoder by itself. Settings → **Use Reelforge's own decoders** turns them off.
+decoder by itself. Settings → **Use Reelforge's own decoders** turns them off. For H.264, HEVC, VP9 and AV1,
+hardware decoding (Settings → **Hardware video decoding**, on by default) is tried first when the
+graphics card supports the codec, being faster and lighter than any CPU decoder; Reelforge's
+decoders take those codecs when it's off or the card can't.
 
 | Codec | Status |
 |---|---|
@@ -557,17 +560,21 @@ decoder by itself. Settings → **Use Reelforge's own decoders** turns them off.
 | Apple ProRes 422 Proxy/LT/Standard/HQ, 4444, 4444 XQ (with alpha) | done, Reelforge's own (progressive and interlaced, 10-bit out, slices on all cores) |
 | DNxHD / DNxHR | done, Reelforge's own: every compression ID (DNxHD 8/10-bit incl. interlaced, DNxHR LB/SQ/HQ/HQX/444, 4:4:4 as YCbCr or RGB); macroblock rows on all cores. 12-bit and adaptive-interlace (CID 1260) are implemented but untested: FFmpeg can't make samples of them, and they fall back to FFmpeg if they fail. The VC-3 code tables are the standard's values (as published in FFmpeg's `dnxhddata.c`), in `crates/codecs/src/dnxhd_tables.rs` |
 | MPEG-2 video | done, Reelforge's own: Main and 4:2:2 profiles (4:2:0/4:2:2/4:4:4), I/P/B pictures, frame and field pictures, frame/field/16×8/dual-prime motion, field DCT, alternate scan, custom quantiser matrices, any size (incl. >2800 lines); slices on all cores. Covers DVD/broadcast/HDV/XDCAM/IMX in MPG, TS, VOB, MXF, MP4. MPEG-1 video is left to FFmpeg |
-| H.264, VP9, HEVC | planned |
-| AV1 | planned (via rav1d, a pure-Rust port of dav1d) |
+| H.264 | done, via a pure-Rust decoder library: Baseline/Main/High, CAVLC and CABAC, B-frames, weighted prediction, 8×8 transforms, multiple slices; progressive 8-bit 4:2:0. Interlaced, 10-bit and 4:2:2 H.264 (some camcorders and pro cameras) go to FFmpeg |
+| HEVC (H.265) | done, via a pure-Rust decoder library: Main and Main 10 (4:2:0, 8/10-bit), tiles, WPP; 4:2:2/4:4:4 go to FFmpeg |
+| VP9 | done, via a pure-Rust decoder library: profiles 0–3 (8/10/12-bit, 4:2:0 to 4:4:4) |
+| AV1 | done, via a pure-Rust decoder library: Main profile, 8/10-bit 4:2:0 and monochrome, film grain |
 
 Every decoder is tested against FFmpeg's output (`cargo test -p reelforge-media native`):
 each frame of generated test clips is converted to RGBA both ways and must match closely
 (ProRes: 65–73 dB PSNR in every profile; DNxHD/DNxHR: 64–81 dB; MPEG-2: 62–70 dB; i.e. off by
-at most a rounding step of the IDCT). FFmpeg's MPEG-2 encoder never makes field pictures,
+at most a rounding step of the IDCT; H.264, HEVC, VP9 and AV1 come out identical to FFmpeg's,
+across 14 encoder configurations). FFmpeg's MPEG-2 encoder never makes field pictures,
 16×8 or dual-prime motion, so the tests also generate random streams that use them
 (`crates/codecs/src/mpeg2/testgen.rs`), and FFmpeg and Reelforge must decode them alike.
 Speed: ProRes 422 HQ 1080p decodes at about 27 fps per core (FFmpeg's hand-written SIMD
-manages about 120), so a typical 8-core PC plays it in real time with room to spare; DNxHR HQ is similar (about 23 fps per core). MPEG-2 1080i at 25 Mbit/s: about 75 fps on one core.
+manages about 120), so a typical 8-core PC plays it in real time with room to spare; DNxHR HQ is similar (about 23 fps per core). MPEG-2 1080i at 25 Mbit/s: about 75 fps on one core. The H.264/HEVC/VP9/AV1 decoders use all
+cores; on 2 cores 1080p runs at about 75 fps (H.264, HEVC), 45 (VP9) and 28 (AV1).
 
 ## Building on Windows 10/11
 

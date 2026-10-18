@@ -1,6 +1,6 @@
 [package]
 name = "reelforge-codecs"
-description = "Reelforge's own video decoders, in Rust (MJPEG, ProRes, DNxHD/DNxHR, MPEG-2, …). No FFmpeg in here: the media crate feeds them compressed packets."
+description = "Reelforge's own video decoders, in Rust (MJPEG, ProRes, DNxHD/DNxHR, MPEG-2, H.264, HEVC, VP9, AV1). No FFmpeg in here: the media crate feeds them compressed packets."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,3 +8,8 @@ license.workspace = true
 [dependencies]
 zune-jpeg = "0.5"
 zune-core = "0.5"
+filmcraft-h264 = { git = "https://github.com/storytold/filmcraft", rev = "6c3948a36c80e4996d924766ba7157eec4fca85e" }
+filmcraft-hevc = { git = "https://github.com/storytold/filmcraft", rev = "6c3948a36c80e4996d924766ba7157eec4fca85e" }
+filmcraft-vp9 = { git = "https://github.com/storytold/filmcraft", rev = "6c3948a36c80e4996d924766ba7157eec4fca85e" }
+filmcraft-av1 = { git = "https://github.com/storytold/filmcraft", rev = "6c3948a36c80e4996d924766ba7157eec4fca85e" }
+log = { workspace = true }

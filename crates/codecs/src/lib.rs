@@ -11,12 +11,15 @@
 //! | Motion JPEG | [`mjpeg`] | baseline and progressive JPEG per frame (zune-jpeg), AVI-style frames without Huffman tables |
 //! | DNxHD / DNxHR | [`dnxhd`] | every compression ID: DNxHD 8/10-bit, DNxHR LB/SQ/HQ/HQX/444, interlaced and adaptive-interlace; Reelforge's own |
 //! | MPEG-2 | [`mpeg2`] | Main and 4:2:2 profiles: I/P/B, frame and field pictures, all motion types; Reelforge's own |
+//! | H.264, HEVC, VP9, AV1 | `external` | pure-Rust decoder libraries: H.264 progressive 8-bit 4:2:0 (Baseline/Main/High), HEVC Main/Main 10, VP9 profiles 0–3, AV1 Main |
 //! | Apple ProRes | [`prores`] | 422 Proxy/LT/Standard/HQ, 4444/XQ with alpha, progressive and interlaced; Reelforge's own |
 //!
 //! Every decoder is checked against FFmpeg's output in the media crate's tests.
 
 pub mod bits;
 pub mod dnxhd;
+mod external;
+pub use external::{Av1Decoder, H264Decoder, HevcDecoder, Vp9Decoder};
 mod dnxhd_tables;
 pub mod idct;
 pub mod mjpeg;
@@ -57,9 +60,15 @@ impl Codec {
         }
     }
 
+    /// Codecs graphics cards commonly decode: hardware decoding, when it's on and
+    /// works, is preferred to the CPU decoder for these.
+    pub fn gpu_friendly(self) -> bool {
+        matches!(self, Codec::H264 | Codec::Hevc | Codec::Vp9 | Codec::Av1)
+    }
+
     /// Does Reelforge have its own decoder for this yet?
     pub fn available(self) -> bool {
-        matches!(self, Codec::Mjpeg | Codec::ProRes | Codec::Dnxhd | Codec::Mpeg2)
+        true
     }
 }
 
@@ -74,6 +83,7 @@ pub enum Format {
     Yuv420P10,
     Yuv422P10,
     Yuv444P10,
+    Yuv420P12,
     Yuv422P12,
     Yuv444P12,
     /// 4:4:4 with an alpha plane (ProRes 4444).
@@ -101,7 +111,7 @@ impl Format {
     /// Chroma subsampling: (horizontal, vertical) shift.
     pub fn chroma_shift(self) -> (u32, u32) {
         match self {
-            Format::Yuv420P8 | Format::Yuv420P10 => (1, 1),
+            Format::Yuv420P8 | Format::Yuv420P10 | Format::Yuv420P12 => (1, 1),
             Format::Yuv422P8 | Format::Yuv422P10 | Format::Yuv422P12 => (1, 0),
             _ => (0, 0),
         }
@@ -249,7 +259,10 @@ pub fn open(codec: Codec, info: &StreamInfo) -> Option<Box<dyn Decoder>> {
         Codec::ProRes => Some(Box::new(prores::ProResDecoder::new(info))),
         Codec::Dnxhd => Some(Box::new(dnxhd::DnxhdDecoder::new(info))),
         Codec::Mpeg2 => Some(Box::new(mpeg2::Mpeg2Decoder::new(info))),
-        _ => None,
+        Codec::H264 => Some(Box::new(H264Decoder::new(info))),
+        Codec::Hevc => Some(Box::new(HevcDecoder::new(info))),
+        Codec::Vp9 => Some(Box::new(Vp9Decoder::new(info))),
+        Codec::Av1 => Some(Box::new(Av1Decoder::new(info))),
     }
 }
 
