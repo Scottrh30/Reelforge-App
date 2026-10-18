@@ -277,6 +277,7 @@ export interface Prefs {
   viewer_snapping: boolean;
   hw_decode: boolean;
   cache_mb: number;
+  native_decoders: boolean;
 }
 
 export interface SettingsInfo {
@@ -291,6 +292,7 @@ export interface SettingsInfo {
   proxy_bytes: number;
   proxy_dir: string;
   autosave_dir: string;
+  native: string[];
 }
 
 export type GizmoHandle = { kind: "corner" | "edge"; index: number } | { kind: "rotate" | "anchor" };

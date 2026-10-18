@@ -351,6 +351,8 @@ struct SettingsInfo {
     proxy_bytes: u64,
     proxy_dir: String,
     autosave_dir: String,
+    /// The codecs Reelforge decodes itself.
+    native: Vec<&'static str>,
 }
 
 #[tauri::command]
@@ -374,6 +376,7 @@ fn settings_info() -> Res<SettingsInfo> {
             proxy_bytes,
             proxy_dir: dir.display().to_string(),
             autosave_dir: reelforge_engine::safety::autosave_dir().display().to_string(),
+            native: reelforge_media::codecs::Codec::ALL.into_iter().filter(|c| c.available()).map(|c| c.label()).collect(),
         }
     })
 }

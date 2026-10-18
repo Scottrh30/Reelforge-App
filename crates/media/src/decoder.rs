@@ -169,9 +169,48 @@ fn pack_planes(f: &ff::frame::Video, layout: YuvLayout) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// FFmpeg's decoder, or Reelforge's own (see `native.rs`).
+enum Video {
+    Ff(ff::decoder::Video),
+    Native(crate::native::NativeVideo),
+}
+
+impl Video {
+    /// Decode a packet. The error is FFmpeg's (`Ok(Err)`) or the native decoder's (`Err`).
+    fn send_packet(&mut self, p: &ff::Packet) -> std::result::Result<std::result::Result<(), ff::Error>, reelforge_codecs::Error> {
+        match self {
+            Video::Ff(d) => Ok(d.send_packet(p)),
+            Video::Native(d) => d.send_packet(p).map(Ok),
+        }
+    }
+    fn receive_frame(&mut self, f: &mut ff::frame::Video) -> bool {
+        match self {
+            Video::Ff(d) => d.receive_frame(f).is_ok(),
+            Video::Native(d) => d.receive_frame(f),
+        }
+    }
+    fn send_eof(&mut self) {
+        match self {
+            Video::Ff(d) => {
+                let _ = d.send_eof();
+            }
+            Video::Native(d) => d.send_eof(),
+        }
+    }
+    fn flush(&mut self) {
+        match self {
+            Video::Ff(d) => d.flush(),
+            Video::Native(d) => d.flush(),
+        }
+    }
+    fn is_native(&self) -> bool {
+        matches!(self, Video::Native(_))
+    }
+}
+
 struct DecodeState {
     ictx: ff::format::context::Input,
-    decoder: ff::decoder::Video,
+    decoder: Video,
     stream_index: usize,
     time_base: Rational,
     start_pts: i64,
@@ -233,9 +272,16 @@ impl DecodeState {
         }
         let frame_dur = Time::from_rational(Rational::new(rate.den, rate.num));
 
-        // Stills and tiny files gain nothing from the GPU.
-        let small = { let p = st.parameters(); unsafe { (*p.as_ptr()).width * (*p.as_ptr()).height < 640 * 360 } };
-        let (decoder, hw_format) = open_decoder(st.parameters(), crate::hw::enabled() && !small)?;
+        // Reelforge's own decoder when it has one for this codec; else FFmpeg's.
+        let (decoder, hw_format) = match crate::native::open(&st.parameters()) {
+            Some(n) => (Video::Native(n), None),
+            None => {
+                // Stills and tiny files gain nothing from the GPU.
+                let small = { let p = st.parameters(); unsafe { (*p.as_ptr()).width * (*p.as_ptr()).height < 640 * 360 } };
+                let (d, hw) = open_decoder(st.parameters(), crate::hw::enabled() && !small)?;
+                (Video::Ff(d), hw)
+            }
+        };
 
         Ok(Self {
             ictx,
@@ -255,12 +301,13 @@ impl DecodeState {
         })
     }
 
-    /// The GPU decoder failed: carry on in software from where we were.
+    /// The GPU decoder (or Reelforge's own) failed: carry on with FFmpeg's
+    /// software decoder from where we were.
     fn fall_back_to_software(&mut self) -> Result<()> {
-        log::warn!("hardware decoding failed; switching this file to software decoding");
+        log::warn!("{} decoding failed; switching this file to FFmpeg's software decoder", if self.decoder.is_native() { "Reelforge's own" } else { "hardware" });
         let params = self.ictx.stream(self.stream_index).ok_or_else(|| anyhow!("stream vanished"))?.parameters();
         let (decoder, _) = open_decoder(params, false)?;
-        self.decoder = decoder;
+        self.decoder = Video::Ff(decoder);
         self.hw_format = None;
         self.scaler = None;
         // Re-decode from the keyframe before where we were, skipping what was already delivered.
@@ -289,12 +336,20 @@ impl DecodeState {
                     continue;
                 }
                 eof = false;
-                if let Err(e) = self.decoder.send_packet(&packet) {
-                    if self.hw_format.is_some() && !matches!(e, ff::Error::Other { errno: ff::util::error::EAGAIN }) {
+                match self.decoder.send_packet(&packet) {
+                    Err(e) => {
+                        log::warn!("Reelforge's decoder: {e}");
                         self.fall_back_to_software()?;
                         continue 'outer;
                     }
-                    log::warn!("send_packet: {e}");
+                    Ok(Err(e)) => {
+                        if self.hw_format.is_some() && !matches!(e, ff::Error::Other { errno: ff::util::error::EAGAIN }) {
+                            self.fall_back_to_software()?;
+                            continue 'outer;
+                        }
+                        log::warn!("send_packet: {e}");
+                    }
+                    Ok(Ok(())) => {}
                 }
                 match self.drain(&cmds, &out)? {
                     Flow::Continue => {}
@@ -306,7 +361,7 @@ impl DecodeState {
 
             if eof {
                 // Flush the decoder's delayed frames, then park until told to seek or stop.
-                let _ = self.decoder.send_eof();
+                self.decoder.send_eof();
                 match self.drain(&cmds, &out)? {
                     Flow::Stop => return Ok(()),
                     Flow::Restart => continue 'outer,
@@ -354,7 +409,7 @@ impl DecodeState {
     /// Pull every frame the decoder has ready and hand it to the consumer.
     fn drain(&mut self, cmds: &Receiver<Cmd>, out: &Sender<VideoFrame>) -> Result<Flow> {
         let mut decoded = ff::frame::Video::empty();
-        while self.decoder.receive_frame(&mut decoded).is_ok() {
+        while self.decoder.receive_frame(&mut decoded) {
             let ts = decoded.timestamp().or(decoded.pts()).unwrap_or(self.start_pts);
             let pts = Time::from_pts(ts - self.start_pts, self.time_base);
             self.position = pts;

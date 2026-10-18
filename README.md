@@ -543,6 +543,29 @@ Building it: `cd crates/tauri-app/ui && npm install && npm run build`, then
 `target/release/reelforge`). For working on the interface, `npm run dev` serves it with live
 reload and `cargo run -p reelforge-tauri --no-default-features` loads it from there.
 
+## Reelforge's own decoders
+
+`crates/codecs` holds video decoders written for Reelforge, in Rust. FFmpeg still reads
+the files (MP4, MOV, MKV, AVI…), and its packets go to Reelforge's decoder when there is
+one for the codec; the decoded pictures then go through the same scaling, colour and
+caching as FFmpeg's. If a native decoder can't read a file, that file switches to FFmpeg's
+decoder by itself. Settings → **Use Reelforge's own decoders** turns them off.
+
+| Codec | Status |
+|---|---|
+| Motion JPEG | done (JPEG via the pure-Rust zune-jpeg; fields of interlaced MJPEG woven) |
+| Apple ProRes 422 Proxy/LT/Standard/HQ, 4444, 4444 XQ (with alpha) | done, Reelforge's own (progressive and interlaced, 10-bit out, slices on all cores) |
+| DNxHD / DNxHR | next |
+| MPEG-2 | planned |
+| H.264, VP9, HEVC | planned |
+| AV1 | planned (via rav1d, a pure-Rust port of dav1d) |
+
+Every decoder is tested against FFmpeg's output (`cargo test -p reelforge-media native`):
+each frame of generated test clips is converted to RGBA both ways and must match closely
+(ProRes: 65–73 dB PSNR in every profile, i.e. off by at most a rounding step).
+Speed: ProRes 422 HQ 1080p decodes at about 27 fps per core (FFmpeg's hand-written SIMD
+manages about 120), so a typical 8-core PC plays it in real time with room to spare.
+
 ## Building on Windows 10/11
 
 You need three things: Rust, LLVM (for FFmpeg bindgen), and FFmpeg *shared* dev libraries.

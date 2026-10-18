@@ -58,6 +58,8 @@ pub struct Prefs {
     pub hw_decode: bool,
     /// Memory for keeping decoded frames, in MB.
     pub cache_mb: usize,
+    /// Decode with Reelforge's own decoders where it has them (else FFmpeg).
+    pub native_decoders: bool,
 }
 
 impl Default for Prefs {
@@ -73,6 +75,7 @@ impl Default for Prefs {
             viewer_snapping: true,
             hw_decode: true,
             cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB,
+            native_decoders: true,
         }
     }
 }
@@ -88,6 +91,7 @@ impl Editor {
         self.render_cache.set_budget_mb(self.prefs.render_cache_mb);
         self.playback.scrub_audio = self.prefs.scrub_audio;
         reelforge_media::hw::set_enabled(self.prefs.hw_decode);
+        reelforge_media::codecs::set_enabled(self.prefs.native_decoders);
         reelforge_media::FrameCache::global().set_budget_mb(self.prefs.cache_mb.clamp(128, 65536));
     }
 }

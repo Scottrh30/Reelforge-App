@@ -10,6 +10,7 @@ pub mod decoder;
 pub mod encode;
 pub mod hw;
 pub mod mixer;
+pub mod native;
 pub mod probe;
 pub mod proxy;
 pub mod source;
@@ -21,6 +22,7 @@ pub use decoder::{DecoderHandle, VideoFrame};
 pub use encode::{is_hardware_encoder, sequence_file, ColorOut, Fit, MovieWriter, Quality, VideoCodec, WriterSettings};
 pub use mixer::{MixClip, Mixer, TrackPeaks, MAX_TRACK_METERS};
 pub use probe::probe;
+pub use reelforge_codecs as codecs;
 pub use source::FrameSource;
 pub use tracker::{track_point, track_points, TrackEnd};
 
