@@ -9,14 +9,18 @@
 //! | Codec | Module | Notes |
 //! |---|---|---|
 //! | Motion JPEG | [`mjpeg`] | baseline and progressive JPEG per frame (zune-jpeg), AVI-style frames without Huffman tables |
+//! | DNxHD / DNxHR | [`dnxhd`] | every compression ID: DNxHD 8/10-bit, DNxHR LB/SQ/HQ/HQX/444, interlaced and adaptive-interlace; Reelforge's own |
 //! | Apple ProRes | [`prores`] | 422 Proxy/LT/Standard/HQ, 4444/XQ with alpha, progressive and interlaced; Reelforge's own |
 //!
 //! Every decoder is checked against FFmpeg's output in the media crate's tests.
 
 pub mod bits;
+pub mod dnxhd;
+mod dnxhd_tables;
 pub mod idct;
 pub mod mjpeg;
 pub mod prores;
+pub mod vlc;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -53,7 +57,7 @@ impl Codec {
 
     /// Does Reelforge have its own decoder for this yet?
     pub fn available(self) -> bool {
-        matches!(self, Codec::Mjpeg | Codec::ProRes)
+        matches!(self, Codec::Mjpeg | Codec::ProRes | Codec::Dnxhd)
     }
 }
 
@@ -73,6 +77,9 @@ pub enum Format {
     /// 4:4:4 with an alpha plane (ProRes 4444).
     Yuva444P10,
     Yuva444P12,
+    /// Planar RGB, stored green, blue, red (DNxHR 444).
+    Gbrp10,
+    Gbrp12,
 }
 
 impl Format {
@@ -238,6 +245,7 @@ pub fn open(codec: Codec, info: &StreamInfo) -> Option<Box<dyn Decoder>> {
     match codec {
         Codec::Mjpeg => Some(Box::new(mjpeg::MjpegDecoder::new(info))),
         Codec::ProRes => Some(Box::new(prores::ProResDecoder::new(info))),
+        Codec::Dnxhd => Some(Box::new(dnxhd::DnxhdDecoder::new(info))),
         _ => None,
     }
 }

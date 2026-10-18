@@ -89,6 +89,8 @@ fn pixel(f: Format) -> ff::format::Pixel {
         Format::Yuv444P12 => P::YUV444P12LE,
         Format::Yuva444P10 => P::YUVA444P10LE,
         Format::Yuva444P12 => P::YUVA444P12LE,
+        Format::Gbrp10 => P::GBRP10LE,
+        Format::Gbrp12 => P::GBRP12LE,
     }
 }
 
@@ -220,6 +222,49 @@ mod tests {
             let Some(p) = clip(name, args) else { return };
             check(&p, 45.0);
         }
+    }
+
+    /// A clip at a given size and rate (DNxHD's fixed profiles need exact ones).
+    fn clip_at(name: &str, size: &str, rate: u32, args: &[&str]) -> Option<PathBuf> {
+        let dir = std::env::temp_dir().join(format!("rf-native-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let p = dir.join(name);
+        let src = format!("testsrc2=size={size}:rate={rate}:duration={}", 6.0 / rate as f64);
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", &src])
+            .args(args)
+            .arg(&p)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(p)
+    }
+
+    #[test]
+    fn dnxhd_matches_ffmpeg() {
+        let hr = |p: &'static str| -> Vec<&'static str> { vec!["-c:v", "dnxhd", "-profile:v", p] };
+        let cases: Vec<(&str, &str, u32, Vec<&str>)> = vec![
+            ("lb.mov", "320x180", 25, hr("dnxhr_lb")),
+            ("sq.mov", "320x180", 25, hr("dnxhr_sq")),
+            ("hq.mov", "320x180", 25, hr("dnxhr_hq")),
+            ("odd.mov", "302x170", 25, hr("dnxhr_hq")),
+            ("hqx.mov", "320x180", 25, [hr("dnxhr_hqx"), vec!["-pix_fmt", "yuv422p10le"]].concat()),
+            ("hr444.mov", "320x180", 25, [hr("dnxhr_444"), vec!["-pix_fmt", "yuv444p10le"]].concat()),
+            ("hr444rgb.mov", "320x180", 25, [hr("dnxhr_444"), vec!["-pix_fmt", "gbrp10le"]].concat()),
+            ("d36.mov", "1920x1080", 25, vec!["-c:v", "dnxhd", "-b:v", "36M"]),
+            ("d185x.mov", "1920x1080", 25, vec!["-c:v", "dnxhd", "-b:v", "185M", "-pix_fmt", "yuv422p10le"]),
+            ("d90.mov", "1280x720", 25, vec!["-c:v", "dnxhd", "-b:v", "90M"]),
+            ("dint.mov", "1920x1080", 25, vec!["-c:v", "dnxhd", "-b:v", "120M", "-flags", "+ildct"]),
+        ];
+        let mut ran = 0;
+        for (name, size, rate, args) in cases {
+            let Some(p) = clip_at(name, size, rate, &args) else {
+                eprintln!("{name}: ffmpeg couldn't make it, skipped");
+                continue;
+            };
+            check(&p, 45.0);
+            ran += 1;
+        }
+        assert!(ran >= 7 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
     }
 
     #[test]
