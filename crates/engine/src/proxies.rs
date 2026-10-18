@@ -30,6 +30,8 @@ pub struct Proxies {
     updates: Receiver<(PathBuf, ProxyState)>,
     /// Set to stop the job in progress (and the worker) when the app closes.
     stop: Arc<AtomicBool>,
+    /// Files whose proxy was deleted by hand: not made again automatically.
+    declined: std::collections::HashSet<PathBuf>,
 }
 
 impl Default for Proxies {
@@ -67,7 +69,7 @@ impl Proxies {
                 }
             })
             .expect("proxy thread");
-        Self { states: HashMap::new(), jobs, updates, stop }
+        Self { states: HashMap::new(), jobs, updates, stop, declined: Default::default() }
     }
 
     /// Note which files already have proxies, and queue new ones for heavy
@@ -79,7 +81,7 @@ impl Proxies {
             }
             if let Some(p) = proxy::existing_proxy(&m.path) {
                 self.states.insert(m.path.clone(), ProxyState::Ready(p));
-            } else if auto && proxy::worth_a_proxy(&m.info) {
+            } else if auto && proxy::worth_a_proxy(&m.info) && !self.declined.contains(&m.path) {
                 self.request(&m.path, &m.info);
             }
         }
@@ -90,6 +92,7 @@ impl Proxies {
         if matches!(self.states.get(src), Some(ProxyState::Queued | ProxyState::Building(_) | ProxyState::Ready(_))) {
             return;
         }
+        self.declined.remove(src);
         self.states.insert(src.to_owned(), ProxyState::Queued);
         let _ = self.jobs.send(Job { src: src.to_owned(), info: info.clone() });
     }
@@ -131,6 +134,41 @@ impl Proxies {
         self.states.remove(src);
     }
 
+    /// Delete `src`'s proxy file (close decoders using it first); it isn't
+    /// made again automatically until asked for.
+    pub fn delete(&mut self, src: &Path) -> std::io::Result<()> {
+        let file = match self.states.get(src) {
+            Some(ProxyState::Ready(p)) => Some(p.clone()),
+            _ => proxy::existing_proxy(src),
+        };
+        self.states.remove(src);
+        self.declined.insert(src.to_owned());
+        match file {
+            Some(f) => std::fs::remove_file(f),
+            None => Ok(()),
+        }
+    }
+
+    /// Changes whenever any proxy's state does (for interfaces that redraw on change).
+    pub fn signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut v: Vec<(&PathBuf, String)> = self
+            .states
+            .iter()
+            .map(|(k, s)| {
+                let s = match s {
+                    ProxyState::Building(f) => format!("b{}", (f * 100.0) as u32),
+                    other => format!("{other:?}"),
+                };
+                (k, s)
+            })
+            .collect();
+        v.sort();
+        v.hash(&mut h);
+        h.finish()
+    }
+
     /// Delete every proxy file (in use ones may stay until they're closed).
     pub fn delete_all(&mut self) {
         let dir = proxy::cache_dir().join("proxies");
@@ -139,6 +177,9 @@ impl Proxies {
                 let _ = std::fs::remove_file(e.path());
             }
         }
+        // Not made again automatically (until asked for).
+        let gone: Vec<PathBuf> = self.states.iter().filter(|(_, s)| matches!(s, ProxyState::Ready(_))).map(|(k, _)| k.clone()).collect();
+        self.declined.extend(gone);
         self.states.retain(|_, s| matches!(s, ProxyState::Queued | ProxyState::Building(_)));
     }
 }

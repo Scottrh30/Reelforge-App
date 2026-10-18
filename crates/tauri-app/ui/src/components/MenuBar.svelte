@@ -28,6 +28,7 @@
     { label: "Import media…", hint: "Ctrl+I", run: actions.importMedia },
     { label: "Export…", hint: "Ctrl+M", run: actions.exportOpen },
     { label: "Export queue", checked: app.queueOpen, run: () => (app.queueOpen = !app.queueOpen) },
+    { label: "Collect project…", run: () => (app.collectOpen = true) },
     { separator: true },
     { label: "Settings…", run: () => (app.settingsOpen = true) },
   ];
@@ -81,6 +82,14 @@
     { label: "Mark out", hint: "O", run: () => actions.act("mark_out") },
     { label: "Clear in and out", run: () => actions.act("clear_marks") },
     { separator: true },
+    { label: "Add marker", hint: "M", run: () => actions.act("add_marker") },
+    { label: "Previous marker", hint: "Shift+↑", run: () => actions.act("prev_marker") },
+    { label: "Next marker", hint: "Shift+↓", run: () => actions.act("next_marker") },
+    { label: "Previous edit point", hint: "↑", run: () => actions.act("prev_edit") },
+    { label: "Next edit point", hint: "↓", run: () => actions.act("next_edit") },
+    { separator: true },
+    { label: "Keyframe curves", checked: app.timelineTab === "curves", run: () => (app.timelineTab = app.timelineTab === "curves" ? (app.s?.active ? "comp" : "edit") : "curves") },
+    { separator: true },
     { label: "Add video track", run: () => actions.act("add_video_track") },
     { label: "Add audio track", run: () => actions.act("add_audio_track") },
     { separator: true },
@@ -92,6 +101,7 @@
     { label: "Space plays, S splits, I and O mark in and out", disabled: true },
     { label: "V B N Y U pick the select, ripple, roll, slip and slide tools", disabled: true },
     { label: "E opens the effects browser", disabled: true },
+    { label: "M adds a marker; ↑ ↓ jump between cuts and markers", disabled: true },
     { label: "Ctrl + mouse wheel zooms the timeline", disabled: true },
   ];
 </script>

@@ -20,6 +20,7 @@
   import ExportQueue from "./components/ExportQueue.svelte";
   import EffectsBrowser from "./components/EffectsBrowser.svelte";
   import PluginsDialog from "./components/PluginsDialog.svelte";
+  import CollectDialog from "./components/CollectDialog.svelte";
   import Preferences from "./components/Preferences.svelte";
   import { look, apply } from "./lib/prefs.svelte";
 
@@ -141,6 +142,9 @@
   </div>
   <footer class="status">
     <span class="msg">{app.note || app.live?.status || ""}</span>
+    {#if app.live?.collect?.running && !app.collectOpen}
+      <button class="ghost link" onclick={() => (app.collectOpen = true)}>Collecting {Math.round((app.live.collect.bytes / Math.max(1, app.live.collect.total)) * 100)}%</button>
+    {/if}
     {#if app.live?.export.summary}
       <button class="ghost link" onclick={() => (app.queueOpen = true)}>{app.live.export.summary}</button>
     {/if}
@@ -155,6 +159,7 @@
 <ExportQueue />
 <EffectsBrowser />
 <PluginsDialog />
+<CollectDialog />
 <Preferences />
 
 <style>

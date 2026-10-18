@@ -15,7 +15,14 @@
   // Edits made here go to the editor at once; the Controls show the editor's
   // values, so while dragging we keep a local copy to avoid flicker.
   let draft = $state<Transform | null>(null);
-  const t = $derived(draft ?? ins?.visual?.transform ?? null);
+  // What's shown is the transform at the playhead (keyframes applied).
+  const t = $derived(draft ?? ins?.keys?.shown ?? ins?.visual?.transform ?? null);
+  const pk = (prop: string) => ins?.keys?.props.find((p) => p.prop === prop);
+  const keyTip = (prop: string) => {
+    const k = pk(prop);
+    if (!ins?.keys?.on_clip) return "Move the playhead onto the clip to set keyframes";
+    return k?.key_here ? "Remove the keyframe here" : k?.animated ? "Add a keyframe at the playhead" : "Animate: add a keyframe at the playhead";
+  };
   // A different clip selected: drop the local copy.
   let shownId: number | null = null;
   $effect(() => {
@@ -117,28 +124,28 @@
     {#if t && ins.visual}
       <div class="group">
         <h4>Transform</h4>
-        {#if ins.animated.length}
-          <p class="note">Keyframed: {ins.animated.join(", ")}. Keyframes are edited in the classic window for now; the values below are the starting ones.</p>
+        {#if ins.keys && !ins.keys.on_clip && ins.animated.length}
+          <p class="note">The playhead is off this clip: keyframed values show the nearest key. Move onto the clip to change them.</p>
         {/if}
         <div class="grid3">
-          <span class="lbl">Position</span>
+          <span class="lbl"><button class="key" class:here={pk("Position")?.key_here} class:anim={pk("Position")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Position"))} title={keyTip("Position")} aria-label="Keyframe position"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Position</span>
           <NumberField label="Position X" value={t.position[0]} digits={0} oninput={(v) => setT((n) => (n.position[0] = v))} oncommit={commit} />
           <NumberField label="Position Y" value={t.position[1]} digits={0} oninput={(v) => setT((n) => (n.position[1] = v))} oncommit={commit} />
           <span class="lbl">
-            Scale
+            <button class="key" class:here={pk("Scale")?.key_here} class:anim={pk("Scale")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Scale"))} title={keyTip("Scale")} aria-label="Keyframe scale"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Scale
             <button class="ghost link" class:on={linkScale} onclick={() => (linkScale = !linkScale)} title="Keep width and height together" aria-label="Link scale">⛓</button>
           </span>
           <NumberField label="Scale X" value={t.scale[0] * 100} step={0.5} digits={1} suffix="%" oninput={(v) => setT((n) => { const k = v / 100; if (linkScale && n.scale[0] !== 0) n.scale[1] *= k / n.scale[0]; n.scale[0] = k; })} oncommit={commit} />
           <NumberField label="Scale Y" value={t.scale[1] * 100} step={0.5} digits={1} suffix="%" oninput={(v) => setT((n) => { const k = v / 100; if (linkScale && n.scale[1] !== 0) n.scale[0] *= k / n.scale[1]; n.scale[1] = k; })} oncommit={commit} />
-          <span class="lbl">Rotation</span>
+          <span class="lbl"><button class="key" class:here={pk("Rotation")?.key_here} class:anim={pk("Rotation")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Rotation"))} title={keyTip("Rotation")} aria-label="Keyframe rotation"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Rotation</span>
           <NumberField label="Rotation" value={t.rotation} step={0.5} digits={1} suffix="°" oninput={(v) => setT((n) => (n.rotation = v))} oncommit={commit} />
           <span></span>
-          <span class="lbl">Anchor</span>
+          <span class="lbl"><button class="key" class:here={pk("Anchor")?.key_here} class:anim={pk("Anchor")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Anchor"))} title={keyTip("Anchor")} aria-label="Keyframe anchor"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Anchor</span>
           <NumberField label="Anchor X" value={t.anchor[0]} digits={0} oninput={(v) => setT((n) => (n.anchor[0] = v))} oncommit={commit} />
           <NumberField label="Anchor Y" value={t.anchor[1]} digits={0} oninput={(v) => setT((n) => (n.anchor[1] = v))} oncommit={commit} />
         </div>
         <div class="grid2">
-          <span class="lbl">Opacity</span>
+          <span class="lbl"><button class="key" class:here={pk("Opacity")?.key_here} class:anim={pk("Opacity")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Opacity"))} title={keyTip("Opacity")} aria-label="Keyframe opacity"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Opacity</span>
           <div class="row">
             <input
               type="range"
@@ -298,6 +305,36 @@
   }
   .reset {
     margin-top: 10px;
+  }
+  .key {
+    width: 16px;
+    height: 18px;
+    min-height: 0;
+    padding: 0;
+    margin-left: -2px;
+    display: grid;
+    place-items: center;
+    background: none;
+    border: 0;
+    flex: none;
+  }
+  .key path {
+    fill: none;
+    stroke: var(--faint);
+    stroke-width: 1.2;
+  }
+  .key:hover:not(:disabled) path {
+    stroke: var(--text);
+  }
+  .key.anim path {
+    stroke: var(--accent);
+  }
+  .key.here path {
+    fill: var(--accent);
+    stroke: var(--accent);
+  }
+  .key:disabled {
+    opacity: 0.5;
   }
   .note {
     color: var(--faint);

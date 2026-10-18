@@ -463,8 +463,30 @@ runs it at once; Add to queue lines up several. The export queue (File → Expor
 or the status bar) floats over the bottom right while you keep editing: progress, fps
 and time left, cancel, reorder, retry, show in folder, pause after the current one.
 
-Not yet: keyframe curves (the graph view), markers editing, transitions and proxies
-management; projects using those still open and play, and the classic window edits them.
+Keyframes: the ◆ beside Position, Scale, Rotation, Anchor and Opacity (and every effect
+setting) adds or removes a key at the playhead; once a property has keys, changing it in
+the Controls panel or dragging the layer in the Viewer sets the key there. The **Curves**
+tab (beside the timelines, or Timeline → Keyframe curves) draws the selected clip's
+keyframes as graphs: tick channels on the left, drag keys in time and value (Shift:
+value only), double-click a line to add a key or a key to delete it, and right-click a
+key for Linear, Ease in and out, or Hold.
+
+Markers: **M** adds one at the playhead; drag it along the ruler (it snaps), double-click
+it to name and colour it, right-click for more. **↑ / ↓** jump between cuts and markers,
+**Shift + ↑ / ↓** between markers only (also in the Timeline menu).
+
+Proxies: right-click footage in the Media panel to make, retry or delete its proxy (its
+progress shows on the thumbnail); "Proxies on/off" in the Viewer switches between the
+proxies and the originals; Settings opens the proxy folder or deletes them all. Export
+always uses the originals.
+
+Missing media: the Media panel says how many files can't be found; click "Missing ·
+Relink" on one to find it (the others in that folder are found too), or "Search a
+folder…" to find them all by name. File → Collect project… copies the project and every
+file it uses into one folder, in the background, with progress, and can open the copy.
+
+Not yet: transitions; projects using them still open and play, and the classic window
+edits them.
 
 How it works:
 - The editor lives on the main thread; Tauri runs (non-async) commands there, so each

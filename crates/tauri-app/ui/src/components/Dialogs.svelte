@@ -33,6 +33,13 @@
         <span>Render cache</span>
         <div class="row"><input type="number" min="256" max="32768" step="256" bind:value={prefs.render_cache_mb} style="width:100px" /> MB</div>
       </label>
+      <div class="field">
+        <span>Proxies</span>
+        <div class="row">
+          <button onclick={async () => run(api.openFolder(await api.proxyFolder()))}>Open the proxy folder</button>
+          <button onclick={() => run(api.proxiesDeleteAll())} title="Free the disk space; heavy footage won't get new ones by itself until you ask (Media panel, right-click)">Delete all proxies</button>
+        </div>
+      </div>
       <div class="buttons">
         <button onclick={() => (app.settingsOpen = false)}>Cancel</button>
         <button class="primary" onclick={async () => (await run(api.setPrefs(prefs!)), (app.settingsOpen = false))}>Save settings</button>

@@ -14,6 +14,8 @@
 mod webview2_shim;
 mod export;
 mod fx;
+mod keys;
+mod ops;
 mod views;
 
 use reelforge_core::undo::Edge;
@@ -66,6 +68,10 @@ struct Live {
     waveforms: usize,
     /// Changes when the installed plugins change.
     plugins_rev: u64,
+    /// Changes when any proxy's state does.
+    proxies: u64,
+    /// A Collect project in progress (or just finished).
+    collect: Option<ops::CollectView>,
     /// A tracking run: the clip and how far along (0–1).
     tracking: Option<(u64, f32)>,
 }
@@ -85,6 +91,7 @@ fn tick() -> Res<Live> {
         fx::poll(e);
         export::pump(e);
         e.tick();
+        let collect = ops::view(e);
         let m = &e.meters;
         let n = e.seq().tracks.len();
         Live {
@@ -107,6 +114,8 @@ fn tick() -> Res<Live> {
             export: export::view(),
             waveforms: e.waveforms.len(),
             plugins_rev: fx::PLUGINS_REV.load(std::sync::atomic::Ordering::Relaxed),
+            proxies: e.proxies.signature(),
+            collect,
             tracking: e.tracking.as_ref().map(|j| (j.clip.0, j.progress)),
         }
     })
@@ -452,6 +461,11 @@ fn action(name: String) -> Res<()> {
             let rate = e.seq().frame_rate;
             e.playback.step(1, rate);
         }
+        "prev_edit" => e.jump(false),
+        "next_edit" => e.jump(true),
+        "prev_marker" => e.jump_marker(false),
+        "next_marker" => e.jump_marker(true),
+        "add_marker" => e.add_marker(),
         "nudge_left" => e.nudge(-1),
         "nudge_right" => e.nudge(1),
         other => e.status = format!("Unknown action {other}"),
@@ -488,12 +502,8 @@ fn set_track_audio(index: usize, audio: TrackAudio) -> Res<()> {
 
 #[tauri::command]
 fn set_transform(id: u64, transform: Transform) -> Res<()> {
-    ed(|e| {
-        if let Some(mut v) = e.visual(clip(id)) {
-            v.transform = transform;
-            e.set_visual_live(clip(id), v);
-        }
-    })
+    // As seen at the playhead: keyframed properties get a key there.
+    ed(|e| e.set_transform_live(clip(id), transform))
 }
 
 #[tauri::command]
@@ -831,6 +841,27 @@ fn main() {
             fx::plugins_reload,
             fx::plugins_live,
             fx::open_folder,
+            keys::transform_key,
+            keys::key_move,
+            keys::key_interp,
+            keys::key_delete,
+            keys::key_add,
+            ops::marker_colors,
+            ops::marker_add,
+            ops::marker_set,
+            ops::marker_remove,
+            ops::proxy_make,
+            ops::proxy_delete,
+            ops::proxies_delete_all,
+            ops::proxies_use,
+            ops::proxy_folder,
+            ops::relink_media,
+            ops::relink_search,
+            ops::collect_plan,
+            ops::collect_pick_folder,
+            ops::collect_start,
+            ops::collect_stop,
+            ops::collect_dismiss,
         ])
         .build(tauri::generate_context!());
     let app = match app {

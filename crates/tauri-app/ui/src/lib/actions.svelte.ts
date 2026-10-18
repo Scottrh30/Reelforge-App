@@ -81,7 +81,7 @@ export function onKey(e: KeyboardEvent) {
     }
     return;
   }
-  if (ask.open || app.exportOpen || app.effectsOpen || app.pluginsOpen || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
+  if (ask.open || app.exportOpen || app.effectsOpen || app.pluginsOpen || app.collectOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const go = (f: () => unknown) => {
@@ -111,6 +111,10 @@ export function onKey(e: KeyboardEvent) {
       return go(() => actions.act(e.altKey ? "nudge_left" : "prev_frame"));
     case "ArrowRight":
       return go(() => actions.act(e.altKey ? "nudge_right" : "next_frame"));
+    case "ArrowUp":
+      return go(() => actions.act(e.shiftKey ? "prev_marker" : "prev_edit"));
+    case "ArrowDown":
+      return go(() => actions.act(e.shiftKey ? "next_marker" : "next_edit"));
     case "Home":
       return go(() => actions.act("start"));
     case "End":
@@ -141,5 +145,7 @@ export function onKey(e: KeyboardEvent) {
       return go(() => (app.tool = "slide"));
     case "e":
       return go(() => (app.effectsOpen = true));
+    case "m":
+      return go(() => actions.act("add_marker"));
   }
 }

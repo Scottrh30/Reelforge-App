@@ -1,6 +1,6 @@
 use crate::app::EditorState;
 use egui::{Align, Color32, Layout, RichText, Sense, Vec2};
-use reelforge_core::{ClipVisual, Prop, Transform};
+use reelforge_core::{Prop, Transform};
 use reelforge_core::{MediaId, Time};
 
 pub fn media_bin(ui: &mut egui::Ui, st: &mut EditorState) {
@@ -699,20 +699,7 @@ pub fn inspector(ui: &mut egui::Ui, st: &mut EditorState) {
 /// Write an edit made to the *displayed* (evaluated) transform back to the clip:
 /// animated properties get a keyframe at source time `src` (only if `can_key`,
 /// i.e. the playhead is on the clip); static ones change the clip's base value.
-pub fn apply_transform_edit(v: &mut ClipVisual, shown: &Transform, edited: &Transform, src: Time, can_key: bool) {
-    for p in Prop::ALL {
-        if !shown.prop_differs(p, edited) {
-            continue;
-        }
-        if v.anim.prop_animated(p) {
-            if can_key {
-                v.anim.set_key(p, src, edited);
-            }
-        } else {
-            v.transform.copy_prop(p, edited);
-        }
-    }
-}
+pub use reelforge_engine::editor::apply_transform_edit;
 
 /// Position / scale / rotation / opacity / blend for a video clip, each with a
 /// keyframe button. Edits apply live and become one undo step on release.

@@ -5,6 +5,7 @@
 //! (`reelforge-tauri`) are both built on these.
 
 pub mod audio;
+pub mod collect;
 pub mod editor;
 pub mod meters;
 pub mod playback;

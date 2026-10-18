@@ -58,6 +58,10 @@ pub struct MediaView {
     pub missing: bool,
     /// "", "queued", "building 40%", "ready" or "failed".
     pub proxy: String,
+    /// Why the proxy failed.
+    pub proxy_error: Option<String>,
+    /// Footage that can have a proxy.
+    pub proxyable: bool,
     pub detail: String,
 }
 
@@ -72,7 +76,7 @@ pub struct SeqView {
     pub duration: i64,
     pub in_point: Option<i64>,
     pub out_point: Option<i64>,
-    pub markers: Vec<(i64, String)>,
+    pub markers: Vec<crate::ops::MarkerView>,
     pub tracks: Vec<TrackView>,
 }
 
@@ -122,8 +126,10 @@ pub struct Inspector {
     pub speed: f32,
     pub reverse: bool,
     pub effects: Vec<crate::fx::EffectView>,
-    /// Properties with keyframes (edited in the classic app for now).
+    /// Transform properties with keyframes.
     pub animated: Vec<&'static str>,
+    /// Keyframes: the transform's buttons and the curve editor's channels (video clips).
+    pub keys: Option<crate::keys::KeysView>,
     pub linked: bool,
     /// How the layer's pixels (origin at its centre) land on the frame at the
     /// playhead: a 3×3 matrix, row by row (perspective when corner-pinned), and its inverse.
@@ -275,6 +281,10 @@ pub fn state(e: &Editor) -> State {
                 (Some(_), false) => "image",
                 (None, _) => "audio",
             };
+            let proxy_error = match e.proxies.state(&m.path) {
+                Some(ProxyState::Failed(err)) => Some(err.clone()),
+                _ => None,
+            };
             let proxy = match e.proxies.state(&m.path) {
                 None => String::new(),
                 Some(ProxyState::Queued) => "queued".into(),
@@ -307,6 +317,8 @@ pub fn state(e: &Editor) -> State {
                 has_audio: m.info.audio.is_some(),
                 missing: !m.path.exists(),
                 proxy,
+                proxy_error,
+                proxyable: kind == "video",
                 detail: detail.join(" · "),
             }
         })
@@ -354,7 +366,7 @@ pub fn state(e: &Editor) -> State {
         duration: s.duration().0,
         in_point: s.in_point.map(|t| t.0),
         out_point: s.out_point.map(|t| t.0),
-        markers: s.markers.iter().map(|m| (m.at.0, m.name.clone())).collect(),
+        markers: crate::ops::markers(s),
         tracks,
     };
     let inspector = e.selection.and_then(|id| s.find_clip(id)).map(|(ti, c)| {
@@ -413,6 +425,7 @@ pub fn state(e: &Editor) -> State {
             reverse: c.reverse,
             effects: crate::fx::views(e, c),
             animated,
+            keys: video.then(|| crate::keys::view(e, c)),
             linked: s.link_group(c.id).len() > 1,
         }
     });

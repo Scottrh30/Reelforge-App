@@ -18,7 +18,13 @@ export const app = $state({
   /// Shown in the status bar when the UI itself has something to say.
   note: "",
   /// The timeline tab in front: the main edit or the composition timeline.
-  timelineTab: "edit" as "edit" | "comp",
+  timelineTab: "edit" as "edit" | "comp" | "curves",
+  /// The curve editor's shown channels, per clip.
+  curvesShown: {} as Record<number, string[]>,
+  /// The Collect project window.
+  collectOpen: false,
+  /// A marker being named / recoloured (its index).
+  markerEdit: null as number | null,
   tool: "select" as "select" | "ripple" | "roll" | "slip" | "slide",
   snapping: true,
   exportOpen: false,
@@ -64,6 +70,7 @@ export const viewer = {
 let busy = false;
 let lastRev = -1;
 let lastPlugins = -1;
+let lastProxies = -1;
 let lastPlayhead = -1;
 let lastPlayheadFetch = 0;
 let waveCount = -1;
@@ -95,10 +102,11 @@ export async function refresh(force = false) {
   // Keyframed values in the Controls panel follow the playhead (a few times a
   // second while playing).
   const ins = app.s?.inspector;
-  const keyed = !!ins && (ins.effects.some((f) => f.animated) || ins.masks.some((m) => m.mask.keys.length > 0) || ins.animated.length > 0);
+  const keyed = !!ins && (ins.effects.some((f) => f.animated) || ins.masks.some((m) => m.mask.keys.length > 0) || !!ins.keys);
   const now = performance.now();
   const moved = keyed && live.playhead !== lastPlayhead && (!live.playing || now - lastPlayheadFetch > 250);
-  if (force || moved || live.rev !== lastRev || live.plugins_rev !== lastPlugins || !app.s) {
+  if (force || moved || live.rev !== lastRev || live.plugins_rev !== lastPlugins || live.proxies !== lastProxies || !app.s) {
+    lastProxies = live.proxies;
     lastRev = live.rev;
     lastPlugins = live.plugins_rev;
     lastPlayhead = live.playhead;

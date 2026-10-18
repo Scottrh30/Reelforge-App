@@ -81,6 +81,8 @@ enum LiveEdit {
     Title(ClipId, TitleSpec),
     ClipAudio(ClipId, ClipAudio),
     TrackAudio(usize, TrackAudio),
+    /// The sequence's markers (dragging one, typing its name).
+    Markers(Vec<Marker>),
 }
 
 impl LiveEdit {
@@ -92,6 +94,7 @@ impl LiveEdit {
             (LiveEdit::ClipAudio(a, _), LiveEdit::ClipAudio(b, _)) => a == b,
             (LiveEdit::TrackAudio(a, _), LiveEdit::TrackAudio(b, _)) => a == b,
             (LiveEdit::Tracker(a, _), LiveEdit::Tracker(b, _)) => a == b,
+            (LiveEdit::Markers(_), LiveEdit::Markers(_)) => true,
             _ => false,
         }
     }
@@ -951,10 +954,205 @@ impl Editor {
                 let new = self.seq().tracks.get(track).map(|t| t.audio).filter(|n| *n != old);
                 new.map(|new| Box::new(SetTrackAudio { seq, track, old, new }) as _)
             }
+            LiveEdit::Markers(old) => {
+                let new = self.seq().markers.clone();
+                (new != old).then(|| Box::new(reelforge_core::undo::SetMarkers { seq, old, new }) as _)
+            }
         };
         if let Some(cmd) = cmd {
             self.execute(cmd);
         }
+    }
+
+    // ---- Keyframes ------------------------------------------------------------------
+
+    /// The clip's source time at the playhead (held at the clip's ends) and
+    /// whether the playhead is on the clip (keyframes can only be set there).
+    pub fn key_time(&self, clip: &Clip) -> (Time, bool) {
+        let ph = self.playback.playhead;
+        (clip.source_time(ph.max(clip.timeline_start).min(clip.timeline_end())), clip.contains(ph))
+    }
+
+    /// Change a clip's transform as it's seen at the playhead (a live edit):
+    /// keyframed properties get a key there, the others change for the whole clip.
+    pub fn set_transform_live(&mut self, id: ClipId, edited: Transform) {
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let (src, on_clip) = self.key_time(c);
+        let Some(mut v) = self.visual(id) else { return };
+        let shown = v.anim.eval(&v.transform, src);
+        apply_transform_edit(&mut v, &shown, &edited, src, on_clip);
+        if v.anim.is_animated() && !on_clip && Prop::ALL.iter().any(|p| shown.prop_differs(*p, &edited) && v.anim.prop_animated(*p)) {
+            self.status = "Keyframed: move the playhead onto the clip to change it".into();
+        }
+        self.set_visual_live(id, v);
+    }
+
+    /// The keyframe button of a transform property: removes the key at the
+    /// playhead if there is one, otherwise adds one there. One undo step.
+    pub fn toggle_transform_key(&mut self, id: ClipId, prop: Prop) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let (src, on_clip) = self.key_time(c);
+        if !on_clip {
+            self.status = "Move the playhead onto the clip to set a keyframe".into();
+            return;
+        }
+        let Some(mut v) = self.visual(id) else { return };
+        let shown = v.anim.eval(&v.transform, src);
+        if v.anim.has_key(prop, src) {
+            v.anim.remove_key(prop, src);
+            if !v.anim.prop_animated(prop) {
+                // The last key gone: keep the value it had.
+                v.transform.copy_prop(prop, &shown);
+            }
+        } else {
+            v.anim.set_key(prop, src, &shown);
+        }
+        self.set_visual_live(id, v);
+        self.commit_live_edit();
+    }
+
+    // ---- Markers ----------------------------------------------------------------------
+
+    /// M: a marker at the playhead.
+    pub fn add_marker(&mut self) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let at = self.playback.playhead.snap(s.frame_rate);
+        if s.markers.iter().any(|m| m.at == at) {
+            self.status = "There's already a marker here".into();
+            return;
+        }
+        let old = s.markers.clone();
+        let mut new = old.clone();
+        new.push(Marker { at, name: s.next_marker_name(), color: Default::default() });
+        new.sort_by_key(|m| m.at);
+        self.execute(Box::new(reelforge_core::undo::SetMarkers { seq: self.active, old, new }));
+        self.status = format!("Marker at {} (double-click it on the ruler to name it)", at.timecode(self.seq().frame_rate));
+    }
+
+    /// Change the markers as part of a gesture (dragging one, typing its name);
+    /// `commit_live_edit` makes it one undo step. Kept in time order.
+    pub fn set_markers_live(&mut self, mut markers: Vec<Marker>) {
+        markers.sort_by_key(|m| m.at);
+        let before = self.seq().markers.clone();
+        if before == markers {
+            return;
+        }
+        self.begin_live(LiveEdit::Markers(before));
+        self.project.sequences[self.active].markers = markers;
+        self.touch();
+    }
+
+    pub fn remove_marker(&mut self, index: usize) {
+        self.commit_live_edit();
+        let old = self.seq().markers.clone();
+        if index >= old.len() {
+            return;
+        }
+        let mut new = old.clone();
+        new.remove(index);
+        self.execute(Box::new(reelforge_core::undo::SetMarkers { seq: self.active, old, new }));
+    }
+
+    /// Jump to the previous / next cut, marker or in/out point.
+    pub fn jump(&mut self, forward: bool) {
+        let s = self.seq();
+        let rate = s.frame_rate;
+        let now = self.playback.playhead;
+        let half = Time(rate.frame_duration().0 / 2);
+        let points = s.edit_points();
+        let to = if forward { points.into_iter().find(|&p| p > now + half) } else { points.into_iter().rev().find(|&p| p + half < now) };
+        if let Some(t) = to {
+            let what = s.markers.iter().find(|m| m.at == t).map(|m| m.name.clone());
+            self.playback.pause();
+            self.playback.seek(t);
+            self.status = match what {
+                Some(name) => format!("{} · {name}", t.timecode(rate)),
+                None => t.timecode(rate),
+            };
+        }
+    }
+
+    /// Jump to the previous / next marker only.
+    pub fn jump_marker(&mut self, forward: bool) {
+        let s = self.seq();
+        let rate = s.frame_rate;
+        let now = self.playback.playhead;
+        let half = Time(rate.frame_duration().0 / 2);
+        let m = if forward { s.markers.iter().find(|m| m.at > now + half) } else { s.markers.iter().rev().find(|m| m.at + half < now) };
+        match m.cloned() {
+            Some(m) => {
+                self.playback.pause();
+                self.playback.seek(m.at);
+                self.status = format!("{} · {}", m.at.timecode(rate), m.name);
+            }
+            None => self.status = if forward { "No more markers after this" } else { "No markers before this" }.into(),
+        }
+    }
+
+    // ---- Relinking --------------------------------------------------------------------
+
+    /// Point missing media `id` at `new_path`; then look in that folder for any
+    /// other missing files with their original names.
+    pub fn relink(&mut self, id: MediaId, new_path: PathBuf) {
+        let Some(m) = self.project.media(id).cloned() else { return };
+        let mut pairs = vec![(m.path.clone(), new_path.clone())];
+        if let Some(dir) = new_path.parent() {
+            let others: Vec<PathBuf> = reelforge_core::undo::missing_media(&self.project)
+                .into_iter()
+                .filter(|o| *o != id)
+                .filter_map(|o| self.project.media(o).map(|m| m.path.clone()))
+                .collect();
+            pairs.extend(crate::safety::find_by_name(dir, &others));
+        }
+        self.apply_relinks(pairs);
+    }
+
+    /// Search a folder (and its subfolders) for every missing file by name.
+    pub fn find_missing_in(&mut self, dir: &Path) {
+        let missing: Vec<PathBuf> = reelforge_core::undo::missing_media(&self.project).into_iter().filter_map(|o| self.project.media(o).map(|m| m.path.clone())).collect();
+        let pairs = crate::safety::find_by_name(dir, &missing);
+        if pairs.is_empty() {
+            self.status = format!("None of the missing files are in {}", dir.display());
+        } else {
+            self.apply_relinks(pairs);
+        }
+    }
+
+    fn apply_relinks(&mut self, pairs: Vec<(PathBuf, PathBuf)>) {
+        self.commit_live_edit();
+        let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+        let mut problems = Vec::new();
+        for (old_path, new_path) in pairs {
+            let Some(old) = self.project.media.iter().find(|m| m.path == old_path).cloned() else { continue };
+            match reelforge_media::probe(&new_path) {
+                Ok(info) => {
+                    if old.info.video.is_some() != info.video.is_some() || old.info.audio.is_some() != info.audio.is_some() {
+                        problems.push(format!("{} has different streams from the original", new_path.display()));
+                    }
+                    let name = new_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let new = MediaAsset { id: old.id, path: new_path, name, info };
+                    cmds.push(Box::new(reelforge_core::undo::RelinkMedia { id: old.id, old, new }));
+                }
+                Err(e) => problems.push(format!("{}: {e:#}", new_path.display())),
+            }
+        }
+        let n = cmds.len();
+        if n > 0 {
+            self.execute(Box::new(Batch { name: "Relink media".into(), cmds }));
+            self.preview.reset(); // reopen decoders on the new files
+            for m in self.project.media.clone() {
+                self.compute_waveform(&m);
+            }
+        }
+        let left = reelforge_core::undo::missing_media(&self.project).len();
+        self.status = format!(
+            "Relinked {n} file{}{}{}",
+            if n == 1 { "" } else { "s" },
+            if left > 0 { format!("; {left} still missing") } else { String::new() },
+            if problems.is_empty() { String::new() } else { format!(" ({})", problems.join("; ")) }
+        );
     }
 
     // ---- Masks --------------------------------------------------------------------
@@ -1320,6 +1518,77 @@ mod tests {
     }
 
     #[test]
+    fn transform_keys_toggle_and_edits_key_animated_properties() {
+        let mut e = editor();
+        e.add_title();
+        let id = e.selection.unwrap();
+        let sec = Time::from_secs_f64(1.0);
+        // Not on the clip: no key.
+        e.seek(Time(sec.0 * 100));
+        e.toggle_transform_key(id, Prop::Position);
+        assert!(!e.visual(id).unwrap().anim.is_animated());
+        e.seek(Time::ZERO);
+        e.toggle_transform_key(id, Prop::Position);
+        assert_eq!(e.visual(id).unwrap().anim.key_count(Prop::Position), 1);
+        // Editing an animated property sets a key at the playhead; others stay static.
+        e.seek(sec);
+        let mut t = e.visual(id).unwrap().transform;
+        t.position = [100.0, 50.0];
+        t.rotation = 30.0;
+        e.set_transform_live(id, t);
+        e.commit_live_edit();
+        let v = e.visual(id).unwrap();
+        assert_eq!(v.anim.key_count(Prop::Position), 2);
+        assert_eq!(v.transform.position, [0.0, 0.0], "the static value stays");
+        assert_eq!(v.transform.rotation, 30.0, "not keyframed: changed for the whole clip");
+        let half = v.anim.eval(&v.transform, Time(sec.0 / 2));
+        assert_eq!(half.position, [50.0, 25.0]);
+        // Toggling the key here removes it; removing the last keeps its value.
+        e.toggle_transform_key(id, Prop::Position);
+        e.seek(Time::ZERO);
+        e.toggle_transform_key(id, Prop::Position);
+        let v = e.visual(id).unwrap();
+        assert!(!v.anim.prop_animated(Prop::Position));
+        e.undo();
+        assert_eq!(e.visual(id).unwrap().anim.key_count(Prop::Position), 1, "each toggle is one undo step");
+    }
+
+    #[test]
+    fn markers_add_move_rename_remove_and_jump() {
+        let mut e = editor();
+        e.add_title();
+        let rate = e.seq().frame_rate;
+        let sec = Time::from_secs_f64(1.0).snap(rate);
+        e.seek(sec);
+        e.add_marker();
+        e.add_marker(); // same place: refused
+        e.seek(Time(sec.0 * 3));
+        e.add_marker();
+        assert_eq!(e.seq().markers.len(), 2);
+        let steps = e.undo.position();
+        // Drag the second one before the first: kept in time order, one undo step.
+        let mut list = e.seq().markers.clone();
+        list[1].at = Time(sec.0 / 2);
+        list[1].name = "Start".into();
+        e.set_markers_live(list.clone());
+        list[1].at = Time(sec.0 / 4);
+        e.set_markers_live(list);
+        e.commit_live_edit();
+        assert_eq!(e.undo.position(), steps + 1);
+        assert_eq!(e.seq().markers[0].name, "Start");
+        assert_eq!(e.seq().markers[0].at, Time(sec.0 / 4));
+        e.seek(Time::ZERO);
+        e.jump_marker(true);
+        assert_eq!(e.playback.playhead, Time(sec.0 / 4));
+        e.jump_marker(true);
+        assert_eq!(e.playback.playhead, sec);
+        e.remove_marker(0);
+        assert_eq!(e.seq().markers.len(), 1);
+        e.undo();
+        assert_eq!(e.seq().markers.len(), 2);
+    }
+
+    #[test]
     fn titles_and_tracks_undo_and_redo() {
         let mut e = editor();
         let tracks = e.seq().tracks.len();
@@ -1425,5 +1694,23 @@ mod tests {
         assert_eq!((e.active, e.comp_open), (1, 1));
         e.undo();
         assert_eq!(e.active, 0, "undoing the composition goes back to the edit");
+    }
+}
+
+/// Apply an edit of the transform as seen at source time `src` (`shown`) to
+/// `edited`: keyframed properties get a key at `src` (when `can_key`), the
+/// others change the clip's static value.
+pub fn apply_transform_edit(v: &mut ClipVisual, shown: &Transform, edited: &Transform, src: Time, can_key: bool) {
+    for p in Prop::ALL {
+        if !shown.prop_differs(p, edited) {
+            continue;
+        }
+        if v.anim.prop_animated(p) {
+            if can_key {
+                v.anim.set_key(p, src, edited);
+            }
+        } else {
+            v.transform.copy_prop(p, edited);
+        }
     }
 }

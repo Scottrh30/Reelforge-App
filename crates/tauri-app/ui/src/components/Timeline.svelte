@@ -1,10 +1,12 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { app, run, tps, fps, timecode, shortTime, snapToFrame } from "../lib/session.svelte";
-  import { api, type ClipView, type TrackView } from "../lib/api";
+  import { api, type ClipView, type TrackView, type MarkerColor } from "../lib/api";
+  import { livePump } from "../lib/live";
   import { openMenu } from "../lib/menu.svelte";
   import { view, geo, perSequence, TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack } from "../lib/timeline.svelte";
   import Thumb from "./Thumb.svelte";
+  import CurvesPanel from "./CurvesPanel.svelte";
 
   const SNAP_PX = 8;
   const EDGE_PX = 6;
@@ -87,7 +89,7 @@
     for (const tr of seq?.tracks ?? []) for (const c of tr.clips) if (!exclude.has(c.id)) out.push(c.start, clipEnd(c));
     if (seq?.in_point != null) out.push(seq.in_point);
     if (seq?.out_point != null) out.push(seq.out_point);
-    for (const [m] of seq?.markers ?? []) out.push(m);
+    for (const m of seq?.markers ?? []) out.push(m.at);
     return out;
   }
   /// The nearest target to time `t` within SNAP_PX, or null.
@@ -364,16 +366,93 @@
   }
 
   // ---- Tabs ----
-  async function showTab(tab: "edit" | "comp") {
+  async function showTab(tab: "edit" | "comp" | "curves") {
     app.timelineTab = tab;
+    if (tab === "curves") return;
     if (tab === "edit") await run(api.openSequence(0));
     else if ((s?.sequences.length ?? 0) > 1) await run(api.openSequence(s!.comp_open || 1));
   }
   // The tab follows the sequence being edited (e.g. opened from the Media panel).
+  // (Only when the sequence changes: the Curves tab stays open while editing.)
+  let tabFor = -1;
   $effect(() => {
     const a = s?.active ?? 0;
-    untrack(() => (app.timelineTab = a === 0 ? "edit" : "comp"));
+    untrack(() => {
+      if (a !== tabFor) {
+        if (tabFor !== -1 || app.timelineTab !== "curves") app.timelineTab = a === 0 ? "edit" : "comp";
+        tabFor = a;
+      }
+    });
   });
+
+  // ---- Markers ----
+  const markerPump = livePump();
+  let colors = $state<[MarkerColor, string][]>([]);
+  $effect(() => {
+    api.markerColors().then((c) => (colors = c));
+  });
+
+  /// Drag a marker along the ruler (snapping like clips); a click without moving goes to it.
+  function markerDown(e: PointerEvent, i: number) {
+    if (e.button !== 0 || !seq) return;
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const mk = seq.markers[i];
+    const ruler = el.parentElement!.getBoundingClientRect();
+    const targets = snapTargets(new Set()).filter((t) => t !== mk.at);
+    const x0 = e.clientX;
+    let moved = false;
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.abs(ev.clientX - x0) < 3) return;
+      moved = true;
+      let t = snapToFrame(tAt(ev.clientX - ruler.left));
+      if (!ev.altKey) t = snapTo(t, targets) ?? t;
+      markerPump.push(() => api.markerSet(i, t, mk.name, mk.color));
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      if (moved) {
+        await markerPump.done();
+        await run(api.commit());
+      } else api.seek(mk.at);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
+  function markerMenu(e: MouseEvent, i: number) {
+    const mk = seq?.markers[i];
+    if (!mk) return;
+    openMenu(e, [
+      { heading: true, label: `${mk.name || "Marker"} · ${timecode(mk.at)}` },
+      { label: "Rename…", run: () => (app.markerEdit = i) },
+      { label: "Colour", submenu: colors.map(([c]) => ({ label: c, checked: mk.color === c, run: () => setMarker(i, { color: c }, true) })) },
+      { label: "Go to marker", run: () => api.seek(mk.at) },
+      { separator: true },
+      { label: "Delete marker", run: () => run(api.markerRemove(i)) },
+    ]);
+  }
+
+  async function setMarker(i: number, ch: Partial<{ name: string; color: MarkerColor }>, done: boolean) {
+    const mk = seq?.markers[i];
+    if (!mk) return;
+    await api.markerSet(i, mk.at, ch.name ?? mk.name, ch.color ?? mk.color);
+    if (done) await run(api.commit());
+  }
+  let rulerEl = $state<HTMLDivElement | null>(null);
+  let markerName = $state("");
+  $effect(() => {
+    const i = app.markerEdit;
+    if (i != null) untrack(() => (markerName = seq?.markers[i]?.name ?? ""));
+  });
+  async function closeMarkerEdit(keep: boolean) {
+    const i = app.markerEdit;
+    app.markerEdit = null;
+    if (i == null) return;
+    if (keep) await setMarker(i, { name: markerName.trim() }, true);
+  }
 
   // ---- Ruler ----
   const ticks = $derived.by(() => {
@@ -437,6 +516,7 @@
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected={app.timelineTab === "edit"} class:active={app.timelineTab === "edit"} onclick={() => showTab("edit")}>Editor Timeline</button>
       <button role="tab" aria-selected={app.timelineTab === "comp"} class:active={app.timelineTab === "comp"} onclick={() => showTab("comp")}>Composition Timeline</button>
+      <button role="tab" aria-selected={app.timelineTab === "curves"} class:active={app.timelineTab === "curves"} onclick={() => showTab("curves")} title="The selected clip's keyframes as graphs">Curves</button>
     </div>
     {#if app.timelineTab === "comp"}
       <div class="comps">
@@ -447,6 +527,7 @@
       </div>
     {/if}
     <span class="grow"></span>
+    {#if app.timelineTab !== "curves"}
     <div class="tools" role="radiogroup" aria-label="Edit tool">
       {#each tools as [id, label, key, tip]}
         <button role="radio" aria-checked={app.tool === id} class:on={app.tool === id} onclick={() => (app.tool = id)} title="{tip} ({key})">{label}</button>
@@ -454,9 +535,12 @@
     </div>
     <button class:on={app.snapping} onclick={() => (app.snapping = !app.snapping)} title="Snap to cuts, the playhead and markers (hold Alt to drag freely)">Snap</button>
     <button onclick={() => run(api.action("split"))} title="Split at the playhead (S)">Split</button>
+    {/if}
   </div>
 
-  {#if app.timelineTab === "comp" && (s?.sequences.length ?? 0) < 2}
+  {#if app.timelineTab === "curves"}
+    <CurvesPanel />
+  {:else if app.timelineTab === "comp" && (s?.sequences.length ?? 0) < 2}
     <div class="empty">
       <p><strong>No compositions yet.</strong></p>
       <p class="muted">A composition is a shot built from layers (footage, titles, effects) on its own timeline, then used in your edit like one clip.</p>
@@ -468,7 +552,7 @@
       <div class="corner">
         <span class="muted tc">{timecode(app.live?.playhead ?? 0)}</span>
       </div>
-      <div class="ruler" role="slider" aria-label="Playhead" aria-valuenow={app.live?.playhead ?? 0} tabindex="-1" onpointerdown={rulerDown} onwheel={wheel}>
+      <div class="ruler" bind:this={rulerEl} role="slider" aria-label="Playhead" aria-valuenow={app.live?.playhead ?? 0} tabindex="-1" onpointerdown={rulerDown} onwheel={wheel}>
         {#if seq.in_point != null || seq.out_point != null}
           {@const a = x(seq.in_point ?? 0)}
           {@const b = x(seq.out_point ?? seq.duration)}
@@ -478,9 +562,45 @@
           <span class="tick" style="left:{tk.px}px"></span>
           <span class="tlabel tc" style="left:{tk.px + 4}px">{tk.label}</span>
         {/each}
-        {#each seq.markers as [m, name]}
-          <span class="marker" style="left:{x(m)}px" title={name}></span>
+        {#each seq.markers as mk, i}
+          <span
+            class="marker"
+            role="button"
+            tabindex="-1"
+            style="left:{x(mk.at)}px; --mc:{mk.rgb}"
+            title="{mk.name || 'Marker'} · {timecode(mk.at)} — drag to move, double-click to rename, right-click for more"
+            onpointerdown={(e) => markerDown(e, i)}
+            ondblclick={(e) => (e.stopPropagation(), (app.markerEdit = i))}
+            oncontextmenu={(e) => (e.preventDefault(), e.stopPropagation(), markerMenu(e, i))}
+          ></span>
+          {#if mk.name}<span class="mlabel" style="left:{x(mk.at) + 7}px; --mc:{mk.rgb}">{mk.name}</span>{/if}
         {/each}
+        {#if app.markerEdit != null && seq.markers[app.markerEdit]}
+          {@const mk = seq.markers[app.markerEdit]}
+          <div class="medit" style="left:{(rulerEl?.getBoundingClientRect().left ?? 0) + Math.max(4, x(mk.at) - 20)}px; top:{(rulerEl?.getBoundingClientRect().bottom ?? 0) + 4}px" role="dialog" aria-label="Marker" tabindex="-1" onpointerdown={(e) => e.stopPropagation()}>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input
+              type="text"
+              bind:value={markerName}
+              autofocus
+              aria-label="Marker name"
+              placeholder="Marker name"
+              onkeydown={(e) => {
+                if (e.key === "Enter") closeMarkerEdit(true);
+                if (e.key === "Escape") closeMarkerEdit(false);
+                e.stopPropagation();
+              }}
+            />
+            <div class="swatches">
+              {#each colors as [c, rgb]}
+                <button class="sw" class:on={mk.color === c} style="background:{rgb}" title={c} aria-label={c} onclick={() => setMarker(app.markerEdit!, { color: c }, true)}></button>
+              {/each}
+              <span class="grow"></span>
+              <button class="small" onclick={() => (run(api.markerRemove(app.markerEdit!)), (app.markerEdit = null))}>Delete</button>
+              <button class="small primary" onclick={() => closeMarkerEdit(true)}>Done</button>
+            </div>
+          </div>
+        {/if}
         <span class="head" style="left:{playX}px"></span>
       </div>
 
@@ -599,6 +719,9 @@
         {/if}
         {#if snapLine !== null}<div class="snapline" style="left:{x(snapLine)}px"></div>{/if}
         {#if dropAt}<div class="dropline" style="left:{x(dropAt.t)}px"><span>{app.dragMedia?.name}</span></div>{/if}
+        {#each seq.markers as mk}
+          <div class="mline" style="left:{x(mk.at)}px; --mc:{mk.rgb}"></div>
+        {/each}
         <div class="playhead" style="left:{playX}px"></div>
         {#if rows.every((r) => r.clips.length === 0)}
           <div class="lanehint">Drag clips here from the Media panel, or double-click one to add it</div>
@@ -757,11 +880,70 @@
   .marker {
     position: absolute;
     bottom: 1px;
-    width: 9px;
-    height: 9px;
-    margin-left: -4.5px;
-    background: #6fb3ff;
+    width: 10px;
+    height: 10px;
+    margin-left: -5px;
+    background: var(--mc);
     transform: rotate(45deg);
+    cursor: ew-resize;
+    z-index: 2;
+    border: 1px solid rgba(0, 0, 0, 0.35);
+  }
+  .marker:hover {
+    filter: brightness(1.2);
+  }
+  .mlabel {
+    position: absolute;
+    bottom: 0;
+    font-size: calc(10.5px * var(--text-scale));
+    color: var(--mc);
+    white-space: nowrap;
+    pointer-events: none;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mline {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px dashed color-mix(in srgb, var(--mc) 55%, transparent);
+    pointer-events: none;
+  }
+  .medit {
+    position: fixed;
+    z-index: 30;
+    width: 240px;
+    padding: 8px;
+    background: var(--raised);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .swatches {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .sw {
+    width: 18px;
+    height: 18px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 50%;
+    border: 2px solid transparent;
+  }
+  .sw.on {
+    border-color: var(--text);
+  }
+  .medit .small {
+    min-height: 22px;
+    padding: 0 7px;
+    font-size: calc(12px * var(--text-scale));
   }
   .head {
     position: absolute;

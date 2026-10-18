@@ -48,6 +48,8 @@ export interface MediaView {
   has_audio: boolean;
   missing: boolean;
   proxy: string;
+  proxy_error: string | null;
+  proxyable: boolean;
   detail: string;
 }
 
@@ -90,8 +92,65 @@ export interface SeqView {
   duration: Ticks;
   in_point: Ticks | null;
   out_point: Ticks | null;
-  markers: [Ticks, string][];
+  markers: MarkerView[];
   tracks: TrackView[];
+}
+
+export type MarkerColor = "Yellow" | "Red" | "Green" | "Blue" | "Purple";
+
+export interface MarkerView {
+  at: Ticks;
+  name: string;
+  color: MarkerColor;
+  rgb: string;
+}
+
+export type Interp = "Linear" | "Ease" | "Hold";
+
+export interface KeyView {
+  at: Ticks;
+  value: number;
+  interp: Interp;
+}
+
+export interface ChannelView {
+  id: string;
+  name: string;
+  group: string;
+  unit: string;
+  range: [number, number] | null;
+  value: number;
+  keys: KeyView[];
+  samples: number[];
+}
+
+export interface KeysView {
+  on_clip: boolean;
+  shown: Transform;
+  props: { prop: string; animated: boolean; key_here: boolean; count: number }[];
+  channels: ChannelView[];
+  span: [Ticks, Ticks];
+}
+
+export interface CollectPlanView {
+  files: number;
+  bytes: number;
+  already: number;
+  missing: string[];
+  project_file: string;
+  replaces: boolean;
+  unsaved: boolean;
+}
+
+export interface CollectView {
+  running: boolean;
+  bytes: number;
+  total: number;
+  file: string;
+  index: number;
+  count: number;
+  stopping: boolean;
+  done: null | { ok: boolean; error: string; project_file: string; folder: string; copied: number; reused: number; bytes: number; missing: string[]; seconds: number };
 }
 
 export interface SeqInfo {
@@ -117,6 +176,7 @@ export interface Inspector {
   reverse: boolean;
   effects: EffectView[];
   animated: string[];
+  keys: KeysView | null;
   linked: boolean;
   layer_map: number[] | null;
   layer_inv: number[] | null;
@@ -337,6 +397,8 @@ export interface Live {
   export: QueueView;
   waveforms: number;
   plugins_rev: number;
+  proxies: number;
+  collect: CollectView | null;
   tracking: [number, number] | null;
 }
 
@@ -415,5 +477,26 @@ export const api = {
   pluginsReload: () => invoke<string>("plugins_reload"),
   pluginsLive: (on: boolean) => invoke("plugins_live", { on }),
   openFolder: (path: string) => invoke("open_folder", { path }),
+  transformKey: (id: number, prop: string) => invoke("transform_key", { id, prop }),
+  keyMove: (id: number, channel: string, index: number, at: Ticks, value: number, keepTime: boolean) => invoke<number | null>("key_move", { id, channel, index, at: Math.round(at), value, keepTime }),
+  keyInterp: (id: number, channel: string, index: number, interp: Interp) => invoke("key_interp", { id, channel, index, interp }),
+  keyDelete: (id: number, channel: string, index: number) => invoke("key_delete", { id, channel, index }),
+  keyAdd: (id: number, channel: string, at: Ticks) => invoke<number | null>("key_add", { id, channel, at: Math.round(at) }),
+  markerColors: () => invoke<[MarkerColor, string][]>("marker_colors"),
+  markerAdd: () => invoke("marker_add"),
+  markerSet: (index: number, at: Ticks, name: string, color: MarkerColor) => invoke("marker_set", { index, at: Math.round(at), name, color }),
+  markerRemove: (index: number) => invoke("marker_remove", { index }),
+  proxyMake: (media: number) => invoke("proxy_make", { media }),
+  proxyDelete: (media: number) => invoke("proxy_delete", { media }),
+  proxiesDeleteAll: () => invoke("proxies_delete_all"),
+  proxiesUse: (on: boolean) => invoke("proxies_use", { on }),
+  proxyFolder: () => invoke<string>("proxy_folder"),
+  relinkMedia: (media: number) => invoke("relink_media", { media }),
+  relinkSearch: () => invoke("relink_search"),
+  collectPlan: (dest: string, name: string, includeUnused: boolean, includeFonts: boolean) => invoke<CollectPlanView>("collect_plan", { dest, name, includeUnused, includeFonts }),
+  collectPickFolder: () => invoke<string | null>("collect_pick_folder"),
+  collectStart: (dest: string, name: string, includeUnused: boolean, includeFonts: boolean) => invoke("collect_start", { dest, name, includeUnused, includeFonts }),
+  collectStop: () => invoke("collect_stop"),
+  collectDismiss: () => invoke("collect_dismiss"),
   showInFolder: (path: string) => invoke("show_in_folder", { path }),
 };

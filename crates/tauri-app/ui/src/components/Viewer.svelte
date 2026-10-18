@@ -40,10 +40,13 @@
   const sel = $derived.by(() => {
     const ins = app.s?.inspector;
     const v = ins?.visual;
-    if (!v || v.transform.pin || ins?.animated.length) return null;
+    const shownT = ins?.keys?.shown ?? v?.transform;
+    if (!v || !shownT || shownT.pin) return null;
+    // Keyframed and the playhead off the clip: nothing to move.
+    if (ins!.animated.length && !ins!.keys?.on_clip) return null;
     // Editing a mask or drawing one: the layer stays put.
     if ((app.activeMask && app.activeMask.clip === ins!.id) || (app.drawing && app.drawing.clip === ins!.id) || (app.maskTool && ins!.masks.length)) return null;
-    const t = v.transform;
+    const t = shownT;
     const [lw, lh] = v.layer_size;
     const cx = fit.x + (fit.W / 2 + t.position[0] - t.anchor[0] * t.scale[0]) * fit.k;
     const cy = fit.y + (fit.H / 2 + t.position[1] - t.anchor[1] * t.scale[1]) * fit.k;
@@ -84,6 +87,7 @@
   }
 
   const playing = $derived(app.live?.playing ?? false);
+  const proxies = $derived((app.s?.media ?? []).filter((m) => m.proxy === "ready").length);
 </script>
 
 <div class="viewer">
@@ -92,6 +96,14 @@
     <span class="muted">{app.s ? `${app.s.seq.width}×${app.s.seq.height} · ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</span>
     <span class="grow"></span>
     {#if app.live?.from_cache}<span class="rendered" title="Shown from Render preview">Rendered</span>{/if}
+    {#if proxies > 0}
+      <button
+        class="chip"
+        class:on={app.s?.prefs.use_proxies}
+        onclick={() => run(api.proxiesUse(!app.s?.prefs.use_proxies))}
+        title="Play the small proxy copies (smooth) or the original files (full quality). Export always uses the originals.">{app.s?.prefs.use_proxies ? "Proxies on" : "Proxies off"}</button
+      >
+    {/if}
     {#if app.live && !app.live.exact && !playing}<span class="muted" title="Some layers are still decoding">Catching up…</span>{/if}
   </div>
   <div
@@ -157,6 +169,12 @@
 </div>
 
 <style>
+  .chip {
+    min-height: 20px;
+    padding: 0 8px;
+    font-size: calc(11.5px * var(--text-scale));
+    border-radius: 10px;
+  }
   .viewer {
     height: 100%;
     display: flex;

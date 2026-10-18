@@ -6,6 +6,9 @@
 
   let filter = $state("");
   const media = $derived((app.s?.media ?? []).filter((m) => m.name.toLowerCase().includes(filter.trim().toLowerCase())));
+  const missing = $derived((app.s?.media ?? []).filter((m) => m.missing).length);
+  const proxyLabel = (m: MediaView) =>
+    m.proxy === "ready" ? (app.s?.prefs.use_proxies ? "Proxy" : "Proxy off") : m.proxy === "failed" ? "Proxy failed" : m.proxy === "queued" ? "Proxy queued" : m.proxy.replace("building", "Proxy");
   const comps = $derived((app.s?.sequences ?? []).map((s, i) => ({ ...s, index: i })).slice(1));
 
   function mediaMenu(e: MouseEvent, m: MediaView) {
@@ -16,7 +19,21 @@
       { label: `Add to ${seq} at playhead`, run: () => run(api.addToTimeline(m.id, null, app.live?.playhead ?? 0)) },
       { label: `Append to end of ${seq}`, run: () => run(api.addToTimeline(m.id, null, null)) },
       { separator: true },
-      { label: "Show in folder", run: () => run(api.showInFolder(m.path)) },
+      ...(m.missing
+        ? [
+            { label: "Find the file (relink)…", run: () => run(api.relinkMedia(m.id)) },
+            { label: "Search a folder for missing files…", run: () => run(api.relinkSearch()) },
+          ]
+        : m.proxyable
+          ? [
+              m.proxy === "ready"
+                ? { label: "Delete proxy", hint: app.s?.prefs.use_proxies ? "in use" : "", run: () => run(api.proxyDelete(m.id)) }
+                : m.proxy === "failed"
+                  ? { label: "Retry proxy", run: () => run(api.proxyMake(m.id)) }
+                  : { label: m.proxy ? `Proxy ${m.proxy}` : "Make proxy", disabled: !!m.proxy, run: () => run(api.proxyMake(m.id)) },
+            ]
+          : []),
+      { label: "Show in folder", disabled: m.missing, run: () => run(api.showInFolder(m.path)) },
     ]);
   }
 
@@ -85,6 +102,12 @@
     {/each}
 
     <div class="section"><span>Media</span><span class="muted">{app.s?.media.length ?? 0}</span></div>
+    {#if missing > 0}
+      <div class="missing" role="alert">
+        <span>{missing} file{missing === 1 ? "" : "s"} can't be found.</span>
+        <button class="small" onclick={() => run(api.relinkSearch())} title="Look for them by name in a folder and its subfolders">Search a folder…</button>
+      </div>
+    {/if}
     {#if (app.s?.media.length ?? 0) === 0}
       <p class="empty">Import footage, pictures and sound, or drop files anywhere on the window.</p>
     {/if}
@@ -109,7 +132,11 @@
                 {/each}
               </svg>
             {/if}
-            {#if m.missing}<span class="flag bad">Missing</span>{:else if m.proxy}<span class="flag">Proxy {m.proxy}</span>{/if}
+            {#if m.missing}
+              <button class="flag bad" onclick={(e) => (e.stopPropagation(), run(api.relinkMedia(m.id)))} onpointerdown={(e) => e.stopPropagation()} title="Can't be found at {m.path}. Click to find it">Missing · Relink</button>
+            {:else if m.proxy}
+              <span class="flag" class:bad={m.proxy === "failed"} class:ready={m.proxy === "ready"} title={m.proxy_error ?? (m.proxy === "ready" ? "A small copy for smooth editing; export uses the original" : "")}>{proxyLabel(m)}</span>
+            {/if}
           </div>
           <div class="name" title={m.path}>{m.name}</div>
           <div class="muted detail">{m.detail}</div>
@@ -120,6 +147,29 @@
 </div>
 
 <style>
+  .missing {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 0 8px 8px;
+    padding: 6px 8px;
+    border-radius: 5px;
+    border: 1px solid color-mix(in srgb, var(--red) 55%, transparent);
+    background: color-mix(in srgb, var(--red) 12%, transparent);
+    font-size: calc(12px * var(--text-scale));
+  }
+  .missing span {
+    flex: 1;
+  }
+  .missing .small {
+    min-height: 22px;
+    padding: 0 7px;
+    font-size: calc(12px * var(--text-scale));
+  }
+  .flag.ready {
+    color: #7fdc8c;
+  }
   .panel {
     height: 100%;
     display: flex;
@@ -229,6 +279,15 @@
   }
   .flag.bad {
     background: #8a1f1a;
+  }
+  button.flag {
+    min-height: 0;
+    border: 0;
+    color: #fff;
+    cursor: pointer;
+  }
+  button.flag:hover {
+    background: #b0281f;
   }
   .card .name {
     padding: 4px 7px 0;
