@@ -104,6 +104,9 @@ button.primary {
   color: var(--btn-primary-text);
   font-weight: 600;
 }
+button.primary:disabled {
+  opacity: 0.45;
+}
 button.primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--btn-primary) 85%, white);
 }

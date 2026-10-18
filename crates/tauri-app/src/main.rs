@@ -12,6 +12,8 @@
 
 #[cfg(all(windows, target_env = "gnu"))]
 mod webview2_shim;
+mod export;
+mod fx;
 mod views;
 
 use reelforge_core::undo::Edge;
@@ -20,8 +22,7 @@ use reelforge_engine::editor::{Editor, Prefs, MEDIA_EXTENSIONS, WAVEFORM_RATE};
 use serde::Serialize;
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use tauri::ipc::Response;
 
 thread_local! {
@@ -31,10 +32,10 @@ thread_local! {
 /// Where the settings file is (set at startup).
 static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-type Res<T> = Result<T, String>;
+pub(crate) type Res<T> = Result<T, String>;
 
 /// Run `f` on the editor.
-fn ed<R>(f: impl FnOnce(&mut Editor) -> R) -> Res<R> {
+pub(crate) fn ed<R>(f: impl FnOnce(&mut Editor) -> R) -> Res<R> {
     EDITOR.with(|cell| match cell.try_borrow_mut() {
         Ok(mut e) => e.as_mut().map(f).ok_or_else(|| "the editor isn't running on this thread".to_string()),
         Err(_) => Err("the editor is busy".into()),
@@ -61,8 +62,10 @@ struct Live {
     master: MeterView,
     /// Peak dB (left, right) of each track of the sequence shown.
     tracks: Vec<[f32; 2]>,
-    export: Option<ExportStatus>,
+    export: export::QueueView,
     waveforms: usize,
+    /// Changes when the installed plugins change.
+    plugins_rev: u64,
     /// A tracking run: the clip and how far along (0–1).
     tracking: Option<(u64, f32)>,
 }
@@ -79,6 +82,8 @@ struct MeterView {
 #[tauri::command]
 fn tick() -> Res<Live> {
     ed(|e| {
+        fx::poll(e);
+        export::pump(e);
         e.tick();
         let m = &e.meters;
         let n = e.seq().tracks.len();
@@ -99,8 +104,9 @@ fn tick() -> Res<Live> {
                 clipped: [m.ch[0].clipped, m.ch[1].clipped],
             },
             tracks: m.tracks.iter().take(n).map(|t| [t[0].peak_db, t[1].peak_db]).collect(),
-            export: export_status(),
+            export: export::view(),
             waveforms: e.waveforms.len(),
+            plugins_rev: fx::PLUGINS_REV.load(std::sync::atomic::Ordering::Relaxed),
             tracking: e.tracking.as_ref().map(|j| (j.clip.0, j.progress)),
         }
     })
@@ -306,7 +312,7 @@ fn set_prefs(prefs: Prefs) -> Res<()> {
     })
 }
 
-fn save_settings(e: &Editor) {
+pub(crate) fn save_settings(e: &Editor) {
     if let Some(p) = SETTINGS_PATH.get() {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -664,110 +670,7 @@ fn track_apply(id: u64, target: u64, mask: Option<usize>, smoothing: f32) -> Res
     })
 }
 
-// ---- Export ------------------------------------------------------------------
-
-#[derive(Clone, Default, Serialize)]
-struct ExportStatus {
-    running: bool,
-    done: u64,
-    total: u64,
-    /// Seconds left (estimated).
-    remaining: Option<f64>,
-    path: String,
-    /// Set when it finishes: what happened.
-    message: Option<String>,
-    failed: bool,
-}
-
-struct ExportJob {
-    cancel: Arc<AtomicBool>,
-    status: Arc<Mutex<ExportStatus>>,
-}
-
-static EXPORT: Mutex<Option<ExportJob>> = Mutex::new(None);
-
-fn export_status() -> Option<ExportStatus> {
-    EXPORT.lock().ok()?.as_ref().map(|j| j.status.lock().unwrap().clone())
-}
-
-/// Ask where to export to; returns the chosen path.
-#[tauri::command]
-fn export_path_dialog(extension: String) -> Res<Option<String>> {
-    let name = ed(|e| e.project_path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "export".into()))?;
-    let path = rfd::FileDialog::new().add_filter(extension.to_uppercase(), &[extension.as_str()]).set_file_name(format!("{name}.{extension}")).save_file();
-    Ok(path.map(|p| p.display().to_string()))
-}
-
-/// Export the sequence shown with built-in preset `preset`.
-#[tauri::command]
-fn export_start(preset: usize, path: String, include_audio: bool, marked_only: bool) -> Res<()> {
-    use reelforge_engine::presets::Preset;
-    if EXPORT.lock().unwrap().as_ref().is_some_and(|j| j.status.lock().unwrap().running) {
-        return Err("An export is already running".into());
-    }
-    let spec = Preset::ALL.get(preset).and_then(|p| p.spec()).ok_or("unknown preset")?;
-    let (project, settings, gpu) = ed(|e| {
-        e.commit_live_edit();
-        let s = e.seq();
-        let (w, h) = spec.size.resolve(s.width, s.height);
-        let (start, end) = if marked_only { s.marked_range().unwrap_or((Time::ZERO, s.duration())) } else { (Time::ZERO, s.duration()) };
-        let settings = reelforge_export::ExportSettings {
-            path: PathBuf::from(&path),
-            width: w,
-            height: h,
-            quality: spec.quality,
-            include_audio,
-            start,
-            end,
-            video: spec.video,
-            hardware: spec.hardware,
-            fit: spec.fit,
-            sequence: e.active,
-            color: spec.color,
-            bitrate_kbps: spec.bitrate_kbps,
-        };
-        (e.project.clone(), settings, e.preview.gpu())
-    })?;
-    let (device, queue) = gpu.ok_or("No graphics device to render with")?;
-    let cancel = Arc::new(AtomicBool::new(false));
-    let status = Arc::new(Mutex::new(ExportStatus { running: true, path: path.clone(), ..Default::default() }));
-    *EXPORT.lock().unwrap() = Some(ExportJob { cancel: cancel.clone(), status: status.clone() });
-    std::thread::spawn(move || {
-        let st = status.clone();
-        let result = reelforge_export::export_sequence(&project, &settings, &device, &queue, |p| {
-            let mut s = st.lock().unwrap();
-            (s.done, s.total, s.remaining) = (p.done, p.total, p.remaining().map(|d| d.as_secs_f64()));
-            !cancel.load(Ordering::Relaxed)
-        });
-        let mut s = status.lock().unwrap();
-        s.running = false;
-        match result {
-            Ok(r) => s.message = Some(format!("Exported {} ({} frames, {}×{}, {}) in {:.1} s", r.path.display(), r.frames, r.width, r.height, r.video_codec, r.elapsed.as_secs_f64())),
-            Err(e) if e.downcast_ref::<reelforge_export::Cancelled>().is_some() => s.message = Some("Export cancelled".into()),
-            Err(e) => {
-                s.message = Some(format!("Export failed: {e:#}"));
-                s.failed = true;
-            }
-        }
-    });
-    Ok(())
-}
-
-#[tauri::command]
-fn export_cancel() {
-    if let Some(j) = EXPORT.lock().unwrap().as_ref() {
-        j.cancel.store(true, Ordering::Relaxed);
-    }
-}
-
-/// Forget a finished export (the UI has shown its result).
-#[tauri::command]
-fn export_dismiss() {
-    let mut g = EXPORT.lock().unwrap();
-    if g.as_ref().is_some_and(|j| !j.status.lock().unwrap().running) {
-        *g = None;
-    }
-}
+// ---- Files on disk ------------------------------------------------------------
 
 /// Open the folder holding `path` in the file manager.
 #[tauri::command]
@@ -835,6 +738,7 @@ fn main() {
                 }
                 let _ = SETTINGS_PATH.set(path);
             }
+            fx::startup(&mut e);
             e.start_session();
             e.status = "Import media with File > Import, or drop files onto the window.".into();
             // `reelforge-tauri project.rfproj` opens it; media files are imported and laid out.
@@ -903,11 +807,30 @@ fn main() {
             track_start,
             track_cancel,
             track_apply,
-            export_path_dialog,
-            export_start,
-            export_cancel,
-            export_dismiss,
             show_in_folder,
+            export::export_options,
+            export::export_suggest,
+            export::export_path_dialog,
+            export::export_preset_save,
+            export::export_preset_delete,
+            export::export_add,
+            export::export_job,
+            export::export_run,
+            export::export_clear,
+            fx::effect_add,
+            fx::effect_op,
+            fx::effect_param,
+            fx::effect_key,
+            fx::effect_curves,
+            fx::effect_lut,
+            fx::effect_catalog,
+            fx::plugins_list,
+            fx::plugins_install,
+            fx::plugins_new,
+            fx::plugins_remove,
+            fx::plugins_reload,
+            fx::plugins_live,
+            fx::open_folder,
         ])
         .build(tauri::generate_context!());
     let app = match app {

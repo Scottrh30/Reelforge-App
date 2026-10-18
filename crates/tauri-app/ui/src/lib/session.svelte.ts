@@ -22,6 +22,11 @@ export const app = $state({
   tool: "select" as "select" | "ripple" | "roll" | "slip" | "slide",
   snapping: true,
   exportOpen: false,
+  /// The export queue window (not modal: editing goes on while it renders).
+  queueOpen: false,
+  /// The effects browser and the Plugins window.
+  effectsOpen: false,
+  pluginsOpen: false,
   settingsOpen: false,
   /// Media being dragged from the Media panel (pointer position in the window).
   dragMedia: null as null | { id: number; name: string; x: number; y: number },
@@ -58,6 +63,9 @@ export const viewer = {
 
 let busy = false;
 let lastRev = -1;
+let lastPlugins = -1;
+let lastPlayhead = -1;
+let lastPlayheadFetch = 0;
 let waveCount = -1;
 
 /// Run a command, then refresh at once (rather than waiting for the next frame).
@@ -84,8 +92,17 @@ export function say(text: string) {
 export async function refresh(force = false) {
   const live = await api.tick();
   app.live = live;
-  if (force || live.rev !== lastRev || !app.s) {
+  // Keyframed values in the Controls panel follow the playhead (a few times a
+  // second while playing).
+  const ins = app.s?.inspector;
+  const keyed = !!ins && (ins.effects.some((f) => f.animated) || ins.masks.some((m) => m.mask.keys.length > 0) || ins.animated.length > 0);
+  const now = performance.now();
+  const moved = keyed && live.playhead !== lastPlayhead && (!live.playing || now - lastPlayheadFetch > 250);
+  if (force || moved || live.rev !== lastRev || live.plugins_rev !== lastPlugins || !app.s) {
     lastRev = live.rev;
+    lastPlugins = live.plugins_rev;
+    lastPlayhead = live.playhead;
+    lastPlayheadFetch = now;
     app.s = await api.state();
   }
   if (live.waveforms !== waveCount) {
@@ -170,7 +187,7 @@ export function start() {
     const quiet =
       !!l &&
       !l.playing &&
-      !l.export?.running &&
+      !l.export.jobs.some((j) => j.state === "running") &&
       !l.tracking &&
       l.rev === prev.rev &&
       l.picture_rev === prev.pic &&

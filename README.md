@@ -442,9 +442,29 @@ button colours (ordinary and main buttons, corner roundness) and fonts (any inst
 family for the interface and for figures, text size 80–140%). Changes show at once;
 Cancel puts back what was there, Save keeps them for next time.
 
-Not yet: keyframes and curves, effects editing, markers editing, transitions, plugins,
-proxies management and the export queue; projects using those still open and play, and
-the classic window edits them.
+Effects: the Effects section of the Controls panel holds the clip's stack (top applied
+first): add from its menu or from the effects browser (**E**, or Edit → Effects…, with a
+search box), switch effects off, reorder, duplicate, reset and remove them, fold them
+shut, and edit every setting (drag or type the numbers; menus and tick boxes for plugin
+choices). The ◆ beside a setting keyframes it at the playhead; once a setting has keys,
+changing it sets the key there. Curves has its own curve editor (Master, Red, Green,
+Blue: drag points, click the line to add one, right-click to remove), and LUT a .cube
+file picker.
+
+Plugins (Edit → Plugins…): install from a folder or a .zip, make a new one from the
+starter template, open the plugin folder, reload, remove (with a confirmation), and
+reload automatically when a plugin's files change; a plugin that doesn't load says
+why (file, line and column).
+
+Export: every setting the classic window has (format, size including custom, fit,
+quality or target bitrate with a size estimate, 10-bit/HDR, GPU encoder, sound, range),
+built-in presets, and your own presets (Save as preset…, kept in the settings). Export
+runs it at once; Add to queue lines up several. The export queue (File → Export queue,
+or the status bar) floats over the bottom right while you keep editing: progress, fps
+and time left, cancel, reorder, retry, show in folder, pause after the current one.
+
+Not yet: keyframe curves (the graph view), markers editing, transitions and proxies
+management; projects using those still open and play, and the classic window edits them.
 
 How it works:
 - The editor lives on the main thread; Tauri runs (non-async) commands there, so each

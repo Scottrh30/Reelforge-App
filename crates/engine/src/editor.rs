@@ -46,11 +46,13 @@ pub struct Prefs {
     pub autosave_minutes: u32,
     /// Size limit of the render cache.
     pub render_cache_mb: usize,
+    /// Export settings saved under a name.
+    pub export_presets: Vec<crate::presets::UserPreset>,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { use_proxies: true, auto_proxies: true, autosave_minutes: 2, render_cache_mb: 2048 }
+        Self { use_proxies: true, auto_proxies: true, autosave_minutes: 2, render_cache_mb: 2048, export_presets: Vec::new() }
     }
 }
 

@@ -31,7 +31,6 @@ pub struct State {
     pub selected: Vec<u64>,
     pub inspector: Option<Inspector>,
     pub recoveries: Vec<String>,
-    pub presets: Vec<PresetView>,
     pub prefs: reelforge_engine::editor::Prefs,
 }
 
@@ -122,7 +121,7 @@ pub struct Inspector {
     pub audio: Option<ClipAudio>,
     pub speed: f32,
     pub reverse: bool,
-    pub effects: Vec<String>,
+    pub effects: Vec<crate::fx::EffectView>,
     /// Properties with keyframes (edited in the classic app for now).
     pub animated: Vec<&'static str>,
     pub linked: bool,
@@ -235,14 +234,6 @@ pub struct VisualView {
     pub transform: Transform,
     pub blend: BlendMode,
     pub layer_size: [f32; 2],
-}
-
-#[derive(Serialize)]
-pub struct PresetView {
-    pub index: usize,
-    pub label: &'static str,
-    pub hint: &'static str,
-    pub extension: &'static str,
 }
 
 fn clip_kind(p: &Project, kind: TrackKind, c: &Clip) -> &'static str {
@@ -420,7 +411,7 @@ pub fn state(e: &Editor) -> State {
             audio: (tr.kind == TrackKind::Audio).then(|| c.audio.clone()),
             speed: c.speed,
             reverse: c.reverse,
-            effects: c.effects.iter().map(|fx| fx.plugin.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| fx.kind.label().to_string())).collect(),
+            effects: crate::fx::views(e, c),
             animated,
             linked: s.link_group(c.id).len() > 1,
         }
@@ -452,11 +443,6 @@ pub fn state(e: &Editor) -> State {
         selected: e.selected_with_links().iter().map(|c| c.0).collect(),
         inspector,
         recoveries: e.recoveries.iter().map(|r| r.describe()).collect(),
-        presets: reelforge_engine::presets::Preset::ALL
-            .iter()
-            .enumerate()
-            .map(|(index, p)| PresetView { index, label: p.label(), hint: p.hint(), extension: reelforge_engine::presets::extension(p.spec().and_then(|s| s.video)) })
-            .collect(),
         prefs: e.prefs.clone(),
     }
 }

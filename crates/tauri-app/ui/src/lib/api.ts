@@ -115,7 +115,7 @@ export interface Inspector {
   audio: ClipAudio | null;
   speed: number;
   reverse: boolean;
-  effects: string[];
+  effects: EffectView[];
   animated: string[];
   linked: boolean;
   layer_map: number[] | null;
@@ -164,18 +164,140 @@ export interface TrackerView {
   targets: { clip: number; mask: number | null; label: string }[];
 }
 
-export interface PresetView {
-  index: number;
-  label: string;
-  hint: string;
-  extension: string;
-}
-
 export interface Prefs {
   use_proxies: boolean;
   auto_proxies: boolean;
   autosave_minutes: number;
   render_cache_mb: number;
+  export_presets: UserPreset[];
+}
+
+// ---- Effects ----
+
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin";
+
+export interface Curves {
+  master: Pt[];
+  red: Pt[];
+  green: Pt[];
+  blue: Pt[];
+}
+
+export interface ParamView {
+  name: string;
+  value: number;
+  default: number;
+  min: number;
+  max: number;
+  suffix: string;
+  step: number;
+  decimals: number;
+  ui: "number" | "toggle" | "choice";
+  options: string[];
+  animated: boolean;
+  key_here: boolean;
+}
+
+export interface EffectView {
+  label: string;
+  kind: EffectKind;
+  enabled: boolean;
+  plugin: string | null;
+  missing: boolean;
+  params: ParamView[];
+  curves: Curves | null;
+  lut: string | null;
+  lut_error: string | null;
+  animated: boolean;
+}
+
+export interface CatalogItem {
+  kind: EffectKind;
+  plugin: string | null;
+  label: string;
+  description: string;
+  author: string;
+  version: string;
+}
+
+export interface CatalogGroup {
+  label: string;
+  items: CatalogItem[];
+}
+
+export interface PluginView {
+  folder: string;
+  place: string;
+  ok: boolean;
+  name: string;
+  id: string;
+  version: string;
+  author: string;
+  category: string;
+  description: string;
+  params: number;
+  passes: number;
+  error: string | null;
+  removable: boolean;
+}
+
+export interface PluginsView {
+  entries: PluginView[];
+  live_reload: boolean;
+  folder: string;
+}
+
+// ---- Export ----
+
+export type VideoCodec = "H264" | "H265" | "ProRes422" | "ProRes422Hq" | "DnxhrSq" | "DnxhrHq" | "PngSequence" | "JpegSequence" | "TiffSequence";
+export type Quality = "High" | "Medium" | "Low";
+export type Fit = "Letterbox" | "Crop" | "Stretch";
+export type ColorOut = "Sdr8" | "Sdr10" | "HdrPq" | "HdrHlg";
+export type Size = { Scaled: number } | { Fixed: [number, number] };
+
+export interface Spec {
+  video: VideoCodec | null;
+  size: Size;
+  quality: Quality;
+  fit: Fit;
+  hardware: boolean;
+  color: ColorOut;
+  bitrate_kbps: number | null;
+}
+
+export interface UserPreset {
+  name: string;
+  spec: Spec;
+  include_audio: boolean;
+}
+
+export interface ExportOptions {
+  codecs: { id: VideoCodec; label: string; extension: string; sequence: boolean; quality: boolean; bitrate: boolean; ten_bit: boolean; hdr: boolean; hardware: boolean }[];
+  qualities: [Quality, string][];
+  fits: [Fit, string][];
+  colors: { id: ColorOut; label: string; hint: string }[];
+  sizes: [number, number, string][];
+  presets: { index: number; label: string; hint: string; spec: Spec | null }[];
+}
+
+export interface JobView {
+  id: number;
+  title: string;
+  detail: string;
+  state: "waiting" | "running" | "done" | "failed" | "cancelled";
+  done: number;
+  total: number;
+  fps: number | null;
+  remaining: number | null;
+  cancelling: boolean;
+  message: string | null;
+  file: string;
+}
+
+export interface QueueView {
+  jobs: JobView[];
+  run: boolean;
+  summary: string | null;
 }
 
 export interface State {
@@ -197,18 +319,7 @@ export interface State {
   selected: number[];
   inspector: Inspector | null;
   recoveries: string[];
-  presets: PresetView[];
   prefs: Prefs;
-}
-
-export interface ExportStatus {
-  running: boolean;
-  done: number;
-  total: number;
-  remaining: number | null;
-  path: string;
-  message: string | null;
-  failed: boolean;
 }
 
 export interface Live {
@@ -223,8 +334,9 @@ export interface Live {
   from_cache: boolean;
   master: { peak: [number, number]; rms: [number, number]; hold: [number, number]; clipped: [boolean, boolean] };
   tracks: [number, number][];
-  export: ExportStatus | null;
+  export: QueueView;
   waveforms: number;
+  plugins_rev: number;
   tracking: [number, number] | null;
 }
 
@@ -279,10 +391,29 @@ export const api = {
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
   trackCancel: () => invoke("track_cancel"),
   trackApply: (id: number, target: number, mask: number | null, smoothing: number) => invoke("track_apply", { id, target, mask, smoothing }),
-  exportPathDialog: (extension: string) => invoke<string | null>("export_path_dialog", { extension }),
-  exportStart: (preset: number, path: string, includeAudio: boolean, markedOnly: boolean) =>
-    invoke("export_start", { preset, path, includeAudio, markedOnly }),
-  exportCancel: () => invoke("export_cancel"),
-  exportDismiss: () => invoke("export_dismiss"),
+  exportOptions: () => invoke<ExportOptions>("export_options"),
+  exportSuggest: (ext: string) => invoke<{ path: string; preset: number; has_audio: boolean }>("export_suggest", { ext }),
+  exportPathDialog: (current: string, extension: string) => invoke<string | null>("export_path_dialog", { current, extension }),
+  exportPresetSave: (name: string, spec: Spec, includeAudio: boolean) => invoke("export_preset_save", { name, spec, includeAudio }),
+  exportPresetDelete: (name: string) => invoke("export_preset_delete", { name }),
+  exportAdd: (spec: Spec, path: string, includeAudio: boolean, markedOnly: boolean, preset: string | null, start: boolean) =>
+    invoke("export_add", { spec, path, includeAudio, markedOnly, preset, start }),
+  exportJob: (id: number, op: "cancel" | "remove" | "retry" | "up") => invoke("export_job", { id, op }),
+  exportRun: (on: boolean) => invoke("export_run", { on }),
+  exportClear: () => invoke("export_clear"),
+  effectAdd: (id: number, kind: EffectKind, plugin: string | null) => invoke("effect_add", { id, kind, plugin }),
+  effectOp: (id: number, index: number, op: "up" | "down" | "remove" | "toggle" | "duplicate" | "reset") => invoke("effect_op", { id, index, op }),
+  effectParam: (id: number, index: number, param: number, value: number) => invoke("effect_param", { id, index, param, value }),
+  effectKey: (id: number, index: number, param: number) => invoke("effect_key", { id, index, param }),
+  effectCurves: (id: number, index: number, curves: Curves) => invoke("effect_curves", { id, index, curves }),
+  effectLut: (id: number, index: number) => invoke("effect_lut", { id, index }),
+  effectCatalog: () => invoke<CatalogGroup[]>("effect_catalog"),
+  pluginsList: () => invoke<PluginsView>("plugins_list"),
+  pluginsInstall: (zip: boolean) => invoke<string | null>("plugins_install", { zip }),
+  pluginsNew: () => invoke<string>("plugins_new"),
+  pluginsRemove: (folder: string) => invoke<string>("plugins_remove", { folder }),
+  pluginsReload: () => invoke<string>("plugins_reload"),
+  pluginsLive: (on: boolean) => invoke("plugins_live", { on }),
+  openFolder: (path: string) => invoke("open_folder", { path }),
   showInFolder: (path: string) => invoke("show_in_folder", { path }),
 };

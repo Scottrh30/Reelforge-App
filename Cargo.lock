@@ -4570,6 +4570,7 @@ dependencies = [
  "reelforge-render",
  "serde",
  "serde_json",
+ "zip",
 ]
 
 [[package]]

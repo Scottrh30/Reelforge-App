@@ -5,6 +5,7 @@
   import NumberField from "./NumberField.svelte";
   import MasksPanel from "./MasksPanel.svelte";
   import TrackingPanel from "./TrackingPanel.svelte";
+  import EffectsPanel from "./EffectsPanel.svelte";
 
   const ins = $derived(app.s?.inspector ?? null);
   const blends: Blend[] = ["Normal", "Add", "Multiply", "Screen"];
@@ -173,6 +174,7 @@
     {/if}
 
     {#if ins.visual}
+      <EffectsPanel {ins} />
       <MasksPanel {ins} />
     {/if}
     {#if ins.can_track}
@@ -197,15 +199,6 @@
       </div>
     {/if}
 
-    {#if ins.effects.length}
-      <div class="group">
-        <h4>Effects</h4>
-        <ul>
-          {#each ins.effects as fx}<li>{fx}</li>{/each}
-        </ul>
-        <p class="note">Shown here; edited in the classic window for now.</p>
-      </div>
-    {/if}
   {/if}
 </div>
 
@@ -313,9 +306,5 @@
   }
   .muted {
     color: var(--muted);
-  }
-  ul {
-    margin: 0;
-    padding-left: 18px;
   }
 </style>

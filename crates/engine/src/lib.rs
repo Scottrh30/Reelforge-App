@@ -8,6 +8,7 @@ pub mod audio;
 pub mod editor;
 pub mod meters;
 pub mod playback;
+pub mod plugins;
 pub mod presets;
 pub mod preview;
 pub mod proxies;

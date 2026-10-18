@@ -27,6 +27,7 @@
     { separator: true },
     { label: "Import media…", hint: "Ctrl+I", run: actions.importMedia },
     { label: "Export…", hint: "Ctrl+M", run: actions.exportOpen },
+    { label: "Export queue", checked: app.queueOpen, run: () => (app.queueOpen = !app.queueOpen) },
     { separator: true },
     { label: "Settings…", run: () => (app.settingsOpen = true) },
   ];
@@ -46,6 +47,9 @@
       { separator: true },
       { label: "Select all", hint: "Ctrl+A", run: () => actions.act("select_all") },
       { label: "Unlink audio and video", disabled: !s?.inspector?.linked, run: () => actions.act("unlink") },
+      { separator: true },
+      { label: "Effects…", hint: "E", run: () => (app.effectsOpen = true) },
+      { label: "Plugins…", run: () => (app.pluginsOpen = true) },
       { separator: true },
       {
         label: "Preferences",
@@ -87,6 +91,7 @@
     { heading: true, label: "Reelforge (web interface)" },
     { label: "Space plays, S splits, I and O mark in and out", disabled: true },
     { label: "V B N Y U pick the select, ripple, roll, slip and slide tools", disabled: true },
+    { label: "E opens the effects browser", disabled: true },
     { label: "Ctrl + mouse wheel zooms the timeline", disabled: true },
   ];
 </script>

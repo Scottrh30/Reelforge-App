@@ -16,6 +16,10 @@
   import Splitter from "./components/Splitter.svelte";
   import ContextMenu from "./components/ContextMenu.svelte";
   import Dialogs from "./components/Dialogs.svelte";
+  import ExportDialog from "./components/ExportDialog.svelte";
+  import ExportQueue from "./components/ExportQueue.svelte";
+  import EffectsBrowser from "./components/EffectsBrowser.svelte";
+  import PluginsDialog from "./components/PluginsDialog.svelte";
   import Preferences from "./components/Preferences.svelte";
   import { look, apply } from "./lib/prefs.svelte";
 
@@ -137,8 +141,8 @@
   </div>
   <footer class="status">
     <span class="msg">{app.note || app.live?.status || ""}</span>
-    {#if app.live?.export?.running}
-      <button class="ghost link" onclick={() => (app.exportOpen = true)}>Exporting {Math.round((app.live.export.done / Math.max(1, app.live.export.total)) * 100)}%</button>
+    {#if app.live?.export.summary}
+      <button class="ghost link" onclick={() => (app.queueOpen = true)}>{app.live.export.summary}</button>
     {/if}
     <span class="muted">{app.s ? `${app.s.seq.width}×${app.s.seq.height} @ ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</span>
   </footer>
@@ -147,6 +151,10 @@
 {#if fileHover}<div class="filehover">Drop to import</div>{/if}
 <ContextMenu />
 <Dialogs />
+<ExportDialog />
+<ExportQueue />
+<EffectsBrowser />
+<PluginsDialog />
 <Preferences />
 
 <style>

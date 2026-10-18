@@ -81,7 +81,7 @@ export function onKey(e: KeyboardEvent) {
     }
     return;
   }
-  if (ask.open || app.exportOpen || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
+  if (ask.open || app.exportOpen || app.effectsOpen || app.pluginsOpen || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const go = (f: () => unknown) => {
@@ -139,5 +139,7 @@ export function onKey(e: KeyboardEvent) {
       return go(() => (app.tool = "slip"));
     case "u":
       return go(() => (app.tool = "slide"));
+    case "e":
+      return go(() => (app.effectsOpen = true));
   }
 }
