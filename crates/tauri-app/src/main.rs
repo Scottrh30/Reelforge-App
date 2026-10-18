@@ -16,6 +16,7 @@ mod export;
 mod fx;
 mod keys;
 mod ops;
+mod trans;
 mod views;
 
 use reelforge_core::undo::Edge;
@@ -56,6 +57,8 @@ struct Live {
     picture_rev: u64,
     playhead: i64,
     playing: bool,
+    /// Playback speed from J/K/L (1 = normal, negative = backwards).
+    shuttle: f64,
     status: String,
     dirty: bool,
     clock: &'static str,
@@ -99,6 +102,7 @@ fn tick() -> Res<Live> {
             picture_rev: e.preview.picture_rev,
             playhead: e.playback.playhead.0,
             playing: e.playback.playing,
+            shuttle: e.playback.shuttle,
             status: e.status.clone(),
             dirty: e.is_dirty(),
             clock: e.playback.clock_name(),
@@ -466,6 +470,21 @@ fn action(name: String) -> Res<()> {
         "prev_marker" => e.jump_marker(false),
         "next_marker" => e.jump_marker(true),
         "add_marker" => e.add_marker(),
+        "shuttle_back" => {
+            let end = e.seq().duration();
+            e.playback.shuttle(-1.0, end);
+        }
+        "shuttle_stop" => {
+            e.playback.pause();
+            e.playback.shuttle = 1.0;
+        }
+        "shuttle_forward" => {
+            let end = e.seq().duration();
+            e.playback.shuttle(1.0, end);
+        }
+        "freeze_frame" => e.freeze_frame_at_playhead(),
+        "dissolve" => e.toggle_transition_at_playhead(TrackKind::Video),
+        "crossfade" => e.toggle_transition_at_playhead(TrackKind::Audio),
         "nudge_left" => e.nudge(-1),
         "nudge_right" => e.nudge(1),
         other => e.status = format!("Unknown action {other}"),
@@ -862,6 +881,12 @@ fn main() {
             ops::collect_start,
             ops::collect_stop,
             ops::collect_dismiss,
+            trans::transition_list,
+            trans::transition_apply,
+            trans::transition_kind,
+            trans::transition_length,
+            trans::transition_remove,
+            trans::speed_ramp,
         ])
         .build(tauri::generate_context!());
     let app = match app {

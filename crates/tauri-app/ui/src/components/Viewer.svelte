@@ -163,12 +163,21 @@
       <span class="tc now">{timecode(app.live?.playhead ?? 0)}</span>
       <span class="tc total">/ {timecode(app.s?.seq.duration ?? 0)}</span>
     </div>
+    {#if app.live && app.live.playing && app.live.shuttle !== 1}
+      <span class="shuttle" title="J / L change the speed, K stops (no sound while shuttling)">{app.live.shuttle < 0 ? `◀◀ ${Math.abs(app.live.shuttle)}×` : `▶▶ ${app.live.shuttle}×`}</span>
+    {/if}
     <span class="grow"></span>
     <span class="muted clock" title="What drives playback">{app.live?.clock ?? ""}</span>
   </div>
 </div>
 
 <style>
+  .shuttle {
+    margin-left: 10px;
+    color: var(--accent);
+    font-weight: 600;
+    font-family: var(--font-tc);
+  }
   .chip {
     min-height: 20px;
     padding: 0 8px;

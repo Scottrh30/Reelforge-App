@@ -77,6 +77,8 @@ pub struct SeqView {
     pub in_point: Option<i64>,
     pub out_point: Option<i64>,
     pub markers: Vec<crate::ops::MarkerView>,
+    /// Transitions and crossfades at cuts.
+    pub transitions: Vec<crate::trans::TransitionMark>,
     pub tracks: Vec<TrackView>,
 }
 
@@ -130,6 +132,12 @@ pub struct Inspector {
     pub animated: Vec<&'static str>,
     /// Keyframes: the transform's buttons and the curve editor's channels (video clips).
     pub keys: Option<crate::keys::KeysView>,
+    /// The transition (or crossfade) from the clip just before this one.
+    pub transition_in: Option<crate::trans::TransitionIn>,
+    /// Footage playing forwards: a speed ramp can be made.
+    pub can_ramp: bool,
+    /// Moving footage (speed, freeze frames).
+    pub footage: bool,
     pub linked: bool,
     /// How the layer's pixels (origin at its centre) land on the frame at the
     /// playhead: a 3×3 matrix, row by row (perspective when corner-pinned), and its inverse.
@@ -367,6 +375,7 @@ pub fn state(e: &Editor) -> State {
         in_point: s.in_point.map(|t| t.0),
         out_point: s.out_point.map(|t| t.0),
         markers: crate::ops::markers(s),
+        transitions: crate::trans::marks(p, e.active),
         tracks,
     };
     let inspector = e.selection.and_then(|id| s.find_clip(id)).map(|(ti, c)| {
@@ -426,6 +435,9 @@ pub fn state(e: &Editor) -> State {
             effects: crate::fx::views(e, c),
             animated,
             keys: video.then(|| crate::keys::view(e, c)),
+            transition_in: crate::trans::transition_in(e, c, tr.kind),
+            can_ramp: !p.is_still(c.media) && c.title.is_none() && !c.reverse && c.speed > 0.0,
+            footage: !p.is_still(c.media) && c.title.is_none(),
             linked: s.link_group(c.id).len() > 1,
         }
     });

@@ -102,6 +102,7 @@ export function onKey(e: KeyboardEvent) {
     if (k === "v") return go(() => actions.act("paste"));
     if (k === "a") return go(() => actions.act("select_all"));
     if (k === "t") return go(actions.addTitle);
+    if (k === "d") return go(() => actions.act(e.shiftKey ? "crossfade" : "dissolve"));
     return;
   }
   switch (e.key) {
@@ -147,5 +148,14 @@ export function onKey(e: KeyboardEvent) {
       return go(() => (app.effectsOpen = true));
     case "m":
       return go(() => actions.act("add_marker"));
+    case "j":
+      return go(() => actions.act("shuttle_back"));
+    case "k":
+      return go(() => actions.act("shuttle_stop"));
+    case "l":
+      return go(() => actions.act("shuttle_forward"));
+    case "f":
+      if (e.shiftKey) return go(() => actions.act("freeze_frame"));
+      return;
   }
 }

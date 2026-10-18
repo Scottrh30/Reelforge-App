@@ -6,11 +6,56 @@
   import MasksPanel from "./MasksPanel.svelte";
   import TrackingPanel from "./TrackingPanel.svelte";
   import EffectsPanel from "./EffectsPanel.svelte";
+  import { tps } from "../lib/session.svelte";
+  import { livePump } from "../lib/live";
+  import type { Transition, TransitionKind } from "../lib/api";
 
   const ins = $derived(app.s?.inspector ?? null);
   const blends: Blend[] = ["Normal", "Add", "Multiply", "Screen"];
   const speeds = [0.25, 0.5, 1, 2, 4];
   let linkScale = $state(true);
+
+  // Speed: a typed or dragged speed applies when it's let go.
+  let speedDraft = $state<number | null>(null);
+  async function applySpeed() {
+    if (!ins || speedDraft == null) return;
+    const v = Math.max(1, speedDraft);
+    speedDraft = null;
+    await run(api.setSpeed(ins.id, v / 100, ins.reverse));
+  }
+  let rampOpen = $state(false);
+  let ramp = $state({ from: 100, to: 25, steps: 8, smooth: true });
+  const rampPath = $derived.by(() => {
+    const n = ramp.steps;
+    const hi = Math.max(ramp.from, ramp.to, 1);
+    let d = "";
+    for (let i = 0; i < n; i++) {
+      const u0 = n > 1 ? i / (n - 1) : 0;
+      const u = ramp.smooth ? u0 * u0 * (3 - 2 * u0) : u0;
+      const sp = ramp.from + (ramp.to - ramp.from) * u;
+      const y = 28 - (sp / hi) * 26;
+      d += `${i ? "L" : "M"}${(i / n) * 100},${y}H${((i + 1) / n) * 100}`;
+    }
+    return d;
+  });
+  async function applyRamp() {
+    if (!ins) return;
+    await run(api.speedRamp(ins.id, ramp.from / 100, ramp.to / 100, ramp.steps, ramp.smooth));
+    rampOpen = false;
+  }
+
+  // Transition in.
+  let kinds = $state<TransitionKind[]>([]);
+  $effect(() => {
+    api.transitionList().then((k) => (kinds = k));
+  });
+  const xfPump = livePump();
+  let xfDraft = $state<number | null>(null);
+  async function commitXf() {
+    await xfPump.done();
+    await run(api.commit());
+    xfDraft = null;
+  }
 
   // Edits made here go to the editor at once; the Controls show the editor's
   // values, so while dragging we keep a local copy to avoid flicker.
@@ -94,11 +139,70 @@
       <div class="group">
         <h4>Speed</h4>
         <div class="row wrap">
-          {#each speeds as s}
-            <button class:on={!ins.reverse && Math.abs(ins.speed - s) < 1e-3} onclick={() => run(api.setSpeed(ins.id, s, false))}>{s * 100}%</button>
+          {#each speeds as sp}
+            <button class:on={!ins.reverse && Math.abs(ins.speed - sp) < 1e-3} onclick={() => run(api.setSpeed(ins.id, sp, false))}>{sp * 100}%</button>
           {/each}
           <label class="check"><input type="checkbox" checked={ins.reverse} onchange={(e) => run(api.setSpeed(ins.id, ins.speed || 1, e.currentTarget.checked))} /> Reverse</label>
         </div>
+        <div class="grid2">
+          <span class="lbl">Exactly</span>
+          <div class="row">
+            <NumberField label="Speed" value={speedDraft ?? (ins.speed === 0 ? 0 : ins.speed * 100)} min={1} max={2000} step={1} digits={0} suffix=" %" oninput={(v) => (speedDraft = v)} oncommit={applySpeed} />
+            {#if ins.speed === 0}<span class="muted">Freeze frame</span>{/if}
+          </div>
+        </div>
+        <div class="row wrap tools">
+          <button class="small" onclick={() => run(api.action("freeze_frame"))} title="Hold the frame at the playhead for 2 s; the rest of the clip moves later (Shift+F)">Freeze frame at playhead</button>
+          <button class="small" class:on={rampOpen} disabled={!ins.can_ramp} onclick={() => (rampOpen = !rampOpen)} title={ins.can_ramp ? "Speed up or slow down gradually across the clip" : "Ramps work on clips playing forwards"}>Speed ramp…</button>
+        </div>
+        {#if rampOpen && ins.can_ramp}
+          <div class="ramp">
+            <div class="grid2">
+              <span class="lbl">From</span>
+              <NumberField label="Ramp from" value={ramp.from} min={1} max={2000} step={1} digits={0} suffix=" %" oninput={(v) => (ramp.from = v)} oncommit={() => {}} />
+              <span class="lbl">To</span>
+              <NumberField label="Ramp to" value={ramp.to} min={1} max={2000} step={1} digits={0} suffix=" %" oninput={(v) => (ramp.to = v)} oncommit={() => {}} />
+              <span class="lbl">Steps</span>
+              <select bind:value={ramp.steps} aria-label="Steps">
+                {#each [4, 6, 8, 12, 16, 24] as n}<option value={n}>{n} parts</option>{/each}
+              </select>
+            </div>
+            <label class="check"><input type="checkbox" bind:checked={ramp.smooth} /> Ease in and out</label>
+            <svg class="rampgraph" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"><path d={rampPath} /></svg>
+            <p class="note">The clip is cut into {ramp.steps} parts that play at speeds going from {Math.round(ramp.from)}% to {Math.round(ramp.to)}%. Later clips move to make room.</p>
+            <div class="row">
+              <button class="small primary" onclick={applyRamp}>Make the ramp</button>
+              <button class="small" onclick={() => (rampOpen = false)}>Cancel</button>
+            </div>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    {#if ins.transition_in}
+      {@const tx = ins.transition_in}
+      <div class="group">
+        <h4>{tx.kind ? "Transition in" : "Crossfade in"}</h4>
+        <div class="grid2">
+          {#if tx.kind}
+            <span class="lbl">Kind</span>
+            <select value={tx.kind} aria-label="Transition" onchange={(e) => run(api.transitionKind(ins.id, e.currentTarget.value as Transition))}>
+              {#each kinds as k}<option value={k.kind} title={k.description}>{k.label}</option>{/each}
+            </select>
+          {/if}
+          <span class="lbl">Length</span>
+          <div class="row">
+            <NumberField label="Transition length" value={xfDraft ?? tx.length / tps()} min={0} max={tx.limit / tps()} step={0.02} digits={2} suffix=" s" oninput={(v) => ((xfDraft = v), xfPump.push(() => api.transitionLength(ins.id, v * tps())))} oncommit={commitXf} />
+            {#if tx.length > 0}<button class="small" onclick={() => run(api.transitionRemove(ins.id))}>Remove</button>{/if}
+          </div>
+        </div>
+        {#if tx.length === 0}
+          <p class="note">A plain cut. Set a length{tx.kind ? " and a kind" : ""} to {tx.kind ? "blend" : "crossfade"} from the clip before.</p>
+        {:else if tx.actual === 0}
+          <p class="warn">No spare media at the cut, so it plays as a plain cut. Trim the clips to leave unused media either side.</p>
+        {:else if tx.actual < tx.length}
+          <p class="warn">Only {(tx.actual / tps()).toFixed(2)} s of spare media at the cut.</p>
+        {/if}
       </div>
     {/if}
 
@@ -335,6 +439,44 @@
   }
   .key:disabled {
     opacity: 0.5;
+  }
+  .small {
+    min-height: 22px;
+    padding: 0 7px;
+    font-size: calc(12px * var(--text-scale));
+  }
+  .tools {
+    margin-top: 8px;
+  }
+  .ramp {
+    margin-top: 8px;
+    padding: 8px;
+    border: 1px solid var(--line-soft);
+    border-radius: 6px;
+    background: var(--base);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ramp .grid2 {
+    margin-top: 0;
+  }
+  .rampgraph {
+    width: 100%;
+    height: 34px;
+    background: var(--well);
+    border-radius: 4px;
+  }
+  .rampgraph path {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+  }
+  .warn {
+    color: #f0a050;
+    font-size: calc(12px * var(--text-scale));
+    margin: 6px 0 0;
   }
   .note {
     color: var(--faint);

@@ -8,7 +8,7 @@
 
 use crate::project::{scale, Clip, ClipId, Project};
 use crate::time::Time;
-use crate::undo::{split_group, AddClip, Batch, Command, MoveClip};
+use crate::undo::{split_group, AddClip, Batch, Command, MoveClip, SplitClip};
 
 /// One clip's speed settings and timing, for undo.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -117,6 +117,77 @@ pub fn change_speed(p: &Project, seq: usize, id: ClipId, speed: f32, reverse: bo
         }
     }
     Ok(Box::new(Batch { name: "Change speed".into(), cmds }))
+}
+
+/// A speed ramp: split clip `id` (and its linked clips) into `steps` equal
+/// parts and play them at speeds going from `from` to `to` (fractions, 1 =
+/// normal), evenly or easing in and out (`smooth`). The parts stay butted
+/// together; when the ramp gets longer, the clips after it move later. Works on
+/// clips playing forwards.
+pub fn speed_ramp(p: &mut Project, seq: usize, id: ClipId, from: f32, to: f32, steps: usize, smooth: bool) -> Result<Box<dyn Command>, &'static str> {
+    let s = &p.sequences[seq];
+    if s.is_locked(id) {
+        return Err("the clip is on a locked track");
+    }
+    let Some((ti, c)) = s.find_clip(id) else { return Err("clip not found") };
+    if p.is_still(c.media) {
+        return Err("still images and titles have no speed to change");
+    }
+    if c.reverse || c.speed == 0.0 {
+        return Err("ramps work on clips playing forwards: set the speed back to normal first");
+    }
+    let (from, to) = (from.clamp(0.01, 20.0), to.clamp(0.01, 20.0));
+    let rate = s.frame_rate;
+    let (start, end) = (c.timeline_start, c.timeline_end());
+    let steps = steps.clamp(2, 48) as i64;
+    let mut cuts: Vec<Time> = (1..steps).map(|k| Time(start.0 + (end.0 - start.0) * k / steps).snap(rate)).filter(|t| *t > start && *t < end).collect();
+    cuts.dedup();
+    if cuts.is_empty() {
+        return Err("the clip is too short for a ramp");
+    }
+    let mut scratch = p.clone();
+    let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+    // Split from the right, so the original keeps its id as the first part.
+    for &at in cuts.iter().rev() {
+        let targets: Vec<ClipId> = scratch.sequences[seq].link_group(id).into_iter().filter(|(_, c)| c.contains(at) && c.timeline_start < at).map(|(_, c)| c.id).collect();
+        let new_link = Some(p.alloc_id());
+        for cid in targets {
+            let mut sc = SplitClip::new(seq, cid, at, ClipId(p.alloc_id()));
+            sc.new_link = new_link;
+            sc.apply(&mut scratch);
+            cmds.push(Box::new(sc));
+        }
+    }
+    let pieces: Vec<ClipId> = std::iter::once(start)
+        .chain(cuts.iter().copied())
+        .filter_map(|b| scratch.sequences[seq].tracks[ti].clips.iter().find(|c| c.timeline_start == b).map(|c| c.id))
+        .collect();
+    let n = pieces.len();
+    let mut prev_end = start;
+    for (i, piece) in pieces.iter().enumerate() {
+        let u = i as f32 / (n - 1).max(1) as f32;
+        let u = if smooth { u * u * (3.0 - 2.0 * u) } else { u };
+        let speed = from + (to - from) * u;
+        // Close any gap a faster part before this one left.
+        let Some((_, pc)) = scratch.sequences[seq].find_clip(*piece) else { continue };
+        let delta = prev_end - pc.timeline_start;
+        if delta != Time::ZERO {
+            let moves: Vec<MoveClip> = scratch.sequences[seq]
+                .link_group(*piece)
+                .into_iter()
+                .map(|(lti, lc)| MoveClip { seq, id: lc.id, from: (lti, lc.timeline_start), to: (lti, lc.timeline_start + delta) })
+                .collect();
+            for mut mv in moves {
+                mv.apply(&mut scratch);
+                cmds.push(Box::new(mv));
+            }
+        }
+        let mut cmd = change_speed(&scratch, seq, *piece, speed, false)?;
+        cmd.apply(&mut scratch);
+        cmds.push(cmd);
+        prev_end = scratch.sequences[seq].find_clip(*piece).map_or(prev_end, |(_, c)| c.timeline_end());
+    }
+    Ok(Box::new(Batch { name: "Speed ramp".into(), cmds }))
 }
 
 /// Insert a freeze frame of `len` at `at` in video clip `id`: the clip is
@@ -267,5 +338,42 @@ mod tests {
         assert_eq!(p.clip_limits(f).0, Time(-(i64::MAX / 4)));
         u.undo(&mut p);
         assert_eq!(p.sequences[0].tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn a_speed_ramp_splits_and_slows_down_gradually() {
+        let mut p = project();
+        let mut u = UndoStack::default();
+        let before = p.clone();
+        let cmd = speed_ramp(&mut p, 0, ClipId(1), 1.0, 0.5, 4, false).unwrap();
+        u.execute(&mut p, cmd);
+        let q = &p.sequences[0];
+        let v: Vec<&Clip> = q.tracks[0].clips.iter().filter(|c| c.id != ClipId(3)).collect();
+        assert_eq!(v.len(), 4, "four parts on the video track");
+        let speeds: Vec<f32> = v.iter().map(|c| c.speed).collect();
+        assert!((speeds[0] - 1.0).abs() < 1e-4 && (speeds[3] - 0.5).abs() < 1e-4 && speeds[1] > speeds[2], "{speeds:?}");
+        // Butted together, each playing on from the last (within a frame: lengths are whole frames).
+        let frame = s(1.0 / 30.0).0;
+        for w in v.windows(2) {
+            assert_eq!(w[0].timeline_end(), w[1].timeline_start);
+            assert!((media_span(w[0]).1 .0 - media_span(w[1]).0 .0).abs() <= frame, "{:?} {:?}", media_span(w[0]), media_span(w[1]));
+        }
+        assert!(close(media_span(v[0]).0, s(2.0)) && (media_span(v[3]).1 .0 - s(6.0).0).abs() <= frame);
+        // About 1 + 1.2 + 1.5 + 2 = 5.7 s long; the clip after moved to make room.
+        let end = v[3].timeline_end();
+        assert!((end.as_secs_f64() - 5.7).abs() < 0.1, "{}", end.as_secs_f64());
+        assert_eq!(q.find_clip(ClipId(3)).unwrap().1.timeline_start, end);
+        // The linked audio is ramped the same way.
+        let a: Vec<&Clip> = q.tracks[2].clips.iter().collect();
+        assert_eq!(a.len(), 4);
+        assert_eq!(a[3].timeline_end(), end);
+        // One undo step puts it all back.
+        u.undo(&mut p);
+        assert_eq!(p.sequences[0].tracks[0].clips.len(), before.sequences[0].tracks[0].clips.len());
+        assert_eq!(p.sequences[0].find_clip(ClipId(1)).unwrap().1.duration, s(4.0));
+        // Not on reversed clips.
+        let cmd = change_speed(&p, 0, ClipId(1), 1.0, true).unwrap();
+        u.execute(&mut p, cmd);
+        assert!(speed_ramp(&mut p, 0, ClipId(1), 1.0, 0.5, 4, true).is_err());
     }
 }

@@ -93,7 +93,39 @@ export interface SeqView {
   in_point: Ticks | null;
   out_point: Ticks | null;
   markers: MarkerView[];
+  transitions: TransitionMark[];
   tracks: TrackView[];
+}
+
+export type Transition =
+  | "Dissolve" | "DipToBlack" | "DipToWhite" | "WipeLeft" | "WipeRight" | "WipeUp" | "WipeDown" | "Iris"
+  | "SlideLeft" | "SlideRight" | "SlideUp" | "SlideDown" | "PushLeft" | "PushRight" | "PushUp" | "PushDown";
+
+export interface TransitionMark {
+  track: number;
+  left: number;
+  right: number;
+  cut: Ticks;
+  start: Ticks;
+  end: Ticks;
+  requested: Ticks;
+  label: string;
+  empty: boolean;
+  audio: boolean;
+}
+
+export interface TransitionIn {
+  kind: Transition | null;
+  length: Ticks;
+  actual: Ticks;
+  limit: Ticks;
+}
+
+export interface TransitionKind {
+  kind: Transition;
+  label: string;
+  description: string;
+  group: string;
 }
 
 export type MarkerColor = "Yellow" | "Red" | "Green" | "Blue" | "Purple";
@@ -177,6 +209,9 @@ export interface Inspector {
   effects: EffectView[];
   animated: string[];
   keys: KeysView | null;
+  transition_in: TransitionIn | null;
+  can_ramp: boolean;
+  footage: boolean;
   linked: boolean;
   layer_map: number[] | null;
   layer_inv: number[] | null;
@@ -387,6 +422,7 @@ export interface Live {
   picture_rev: number;
   playhead: Ticks;
   playing: boolean;
+  shuttle: number;
   status: string;
   dirty: boolean;
   clock: string;
@@ -498,5 +534,11 @@ export const api = {
   collectStart: (dest: string, name: string, includeUnused: boolean, includeFonts: boolean) => invoke("collect_start", { dest, name, includeUnused, includeFonts }),
   collectStop: () => invoke("collect_stop"),
   collectDismiss: () => invoke("collect_dismiss"),
+  transitionList: () => invoke<TransitionKind[]>("transition_list"),
+  transitionApply: (kind: Transition, id: number | null) => invoke("transition_apply", { kind, id }),
+  transitionKind: (id: number, kind: Transition) => invoke("transition_kind", { id, kind }),
+  transitionLength: (id: number, length: Ticks) => invoke("transition_length", { id, length: Math.round(length) }),
+  transitionRemove: (id: number) => invoke("transition_remove", { id }),
+  speedRamp: (id: number, from: number, to: number, steps: number, smooth: boolean) => invoke("speed_ramp", { id, from, to, steps, smooth }),
   showInFolder: (path: string) => invoke("show_in_folder", { path }),
 };

@@ -3,12 +3,34 @@
   // built-in effect and installed plugin by category, with a search box.
   // Add puts the effect at the end of the selected clip's stack.
   import { app, run } from "../lib/session.svelte";
-  import { api, type CatalogGroup, type CatalogItem } from "../lib/api";
+  import { api, type CatalogGroup, type CatalogItem, type TransitionKind } from "../lib/api";
 
   let groups = $state<CatalogGroup[]>([]);
   let search = $state("");
   let input = $state<HTMLInputElement | null>(null);
   let added = $state("");
+  let tab = $state<"effects" | "transitions">("effects");
+  let kinds = $state<TransitionKind[]>([]);
+  $effect(() => {
+    if (app.effectsOpen && !kinds.length) api.transitionList().then((k) => (kinds = k));
+  });
+  // A transition goes into the selected clip (from the clip just before it), or
+  // onto the video cut nearest the playhead.
+  const into = $derived(app.s?.inspector?.transition_in?.kind ? app.s.inspector : null);
+  const tShown = $derived.by(() => {
+    const groups: { label: string; items: TransitionKind[] }[] = [];
+    for (const k of kinds.filter((k) => !q || [k.label, k.description, k.group].some((x) => x.toLowerCase().includes(q)))) {
+      let g = groups.find((x) => x.label === k.group);
+      if (!g) groups.push((g = { label: k.group, items: [] }));
+      g.items.push(k);
+    }
+    return groups;
+  });
+  async function applyT(k: TransitionKind) {
+    await run(api.transitionApply(k.kind, into ? into.id : null));
+    added = k.label;
+    setTimeout(() => (added === k.label ? (added = "") : null), 2500);
+  }
 
   // Reload the list when the window opens and whenever the plugins change.
   $effect(() => {
@@ -50,14 +72,37 @@
   <div class="scrim" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && (app.effectsOpen = false)}>
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="fx-title">
       <header>
-        <h2 id="fx-title">Effects</h2>
+        <h2 id="fx-title" class="sr">Effects and transitions</h2>
+        <div class="tabs" role="tablist">
+          <button role="tab" aria-selected={tab === "effects"} class:active={tab === "effects"} onclick={() => (tab = "effects")}>Effects</button>
+          <button role="tab" aria-selected={tab === "transitions"} class:active={tab === "transitions"} onclick={() => (tab = "transitions")}>Transitions</button>
+        </div>
         <span class="for">
-          {#if target}Adding to <b>{target.name}</b>{:else}<span class="warn">Select a video, picture or title clip to add effects to it</span>{/if}
+          {#if tab === "transitions"}
+            {#if into}Into <b>{into.name}</b> from the clip before it{:else}On the video cut nearest the playhead{/if}
+          {:else if target}Adding to <b>{target.name}</b>{:else}<span class="warn">Select a video, picture or title clip to add effects to it</span>{/if}
         </span>
         <button class="ghost close" onclick={() => (app.effectsOpen = false)} aria-label="Close">✕</button>
       </header>
-      <input bind:this={input} type="search" bind:value={search} placeholder="Search: blur, key, colour…" aria-label="Search effects" />
+      <input bind:this={input} type="search" bind:value={search} placeholder={tab === "effects" ? "Search: blur, key, colour…" : "Search: dissolve, wipe, push…"} aria-label="Search effects" />
       <div class="list">
+        {#if tab === "transitions"}
+          {#each tShown as g}
+            <h3>{g.label}</h3>
+            {#each g.items as k}
+              <div class="item">
+                <div class="text">
+                  <span class="name">{k.label}</span>
+                  <span class="desc">{k.description}</span>
+                </div>
+                <button onclick={() => applyT(k)}>{added === k.label ? "Applied ✓" : "Apply"}</button>
+              </div>
+            {/each}
+          {:else}
+            <p class="muted">Nothing matches “{search}”.</p>
+          {/each}
+          <p class="muted foot">A transition plays over the cut between two clips that touch on a track (1 s to start with; drag its ends on the timeline to change it). Ctrl+D toggles a cross-dissolve at the playhead, Ctrl+Shift+D an audio crossfade.</p>
+        {:else}
         {#each shown as g}
           <h3>{g.label}</h3>
           {#each g.items as it}
@@ -72,6 +117,7 @@
         {:else}
           <p class="muted">Nothing matches “{search}”.</p>
         {/each}
+        {/if}
       </div>
       <footer>
         <span class="muted">{plugins} plugin{plugins === 1 ? "" : "s"} installed</span>
@@ -84,6 +130,34 @@
 {/if}
 
 <style>
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .tabs {
+    display: flex;
+    gap: 2px;
+  }
+  .tabs button {
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--muted);
+    padding: 2px 8px;
+    font-weight: 600;
+  }
+  .tabs button.active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+  .foot {
+    font-size: calc(12px * var(--text-scale));
+    margin: 10px 2px 4px;
+  }
   .scrim {
     position: fixed;
     inset: 0;

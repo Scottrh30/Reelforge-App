@@ -83,6 +83,8 @@ enum LiveEdit {
     TrackAudio(usize, TrackAudio),
     /// The sequence's markers (dragging one, typing its name).
     Markers(Vec<Marker>),
+    /// A video clip's transition length (dragging it).
+    Dissolve(ClipId, Time),
 }
 
 impl LiveEdit {
@@ -95,6 +97,7 @@ impl LiveEdit {
             (LiveEdit::TrackAudio(a, _), LiveEdit::TrackAudio(b, _)) => a == b,
             (LiveEdit::Tracker(a, _), LiveEdit::Tracker(b, _)) => a == b,
             (LiveEdit::Markers(_), LiveEdit::Markers(_)) => true,
+            (LiveEdit::Dissolve(a, _), LiveEdit::Dissolve(b, _)) => a == b,
             _ => false,
         }
     }
@@ -621,9 +624,183 @@ impl Editor {
     pub fn set_speed(&mut self, id: ClipId, speed: f32, reverse: bool) {
         self.commit_live_edit();
         match reelforge_core::speed::change_speed(&self.project, self.active, id, speed, reverse) {
-            Ok(cmd) => self.execute(cmd),
+            Ok(cmd) => {
+                self.execute(cmd);
+                self.status = match (speed, reverse) {
+                    (s, _) if s == 0.0 => "Freeze frame: holds the clip's first frame".into(),
+                    (s, false) => format!("Speed {:.0}%", s * 100.0),
+                    (s, true) => format!("Speed {:.0}%, reversed", s * 100.0),
+                };
+            }
             Err(e) => self.status = format!("Can't change the speed: {e}"),
         }
+    }
+
+    /// Hold the frame at the playhead for 2 s in the selected video clip (or
+    /// the top one under the playhead), pushing the rest of it later.
+    pub fn freeze_frame_at_playhead(&mut self) {
+        self.commit_live_edit();
+        let t = self.playback.playhead.snap(self.seq().frame_rate);
+        let s = self.seq();
+        let p = &self.project;
+        let footage = |c: &Clip| c.contains(t) && !p.is_still(c.media) && c.speed != 0.0;
+        let is_video = |id: ClipId| s.find_clip(id).is_some_and(|(ti, c)| s.tracks[ti].kind == TrackKind::Video && footage(c));
+        let top = || s.tracks.iter().rev().filter(|tr| tr.kind == TrackKind::Video && !tr.muted).find_map(|tr| tr.clips.iter().find(|c| footage(c))).map(|c| c.id);
+        let Some(id) = self.selection.filter(|id| is_video(*id)).or_else(top) else {
+            self.status = "Put the playhead over a video clip to freeze a frame of it".into();
+            return;
+        };
+        let len = Time::from_secs_f64(2.0).snap(s.frame_rate);
+        match reelforge_core::speed::freeze_frame(&mut self.project, self.active, id, t, len) {
+            Ok((cmd, fid)) => {
+                self.execute(cmd);
+                self.select_only(Some(fid));
+                self.status = "Added a 2 s freeze frame: trim it to change its length".into();
+            }
+            Err(e) => self.status = format!("Can't freeze a frame: {e}"),
+        }
+    }
+
+    /// Ramp clip `id`'s speed from `from` to `to` over `steps` parts (see
+    /// `reelforge_core::speed::speed_ramp`).
+    pub fn speed_ramp(&mut self, id: ClipId, from: f32, to: f32, steps: usize, smooth: bool) {
+        self.commit_live_edit();
+        match reelforge_core::speed::speed_ramp(&mut self.project, self.active, id, from, to, steps, smooth) {
+            Ok(cmd) => {
+                self.execute(cmd);
+                self.select_only(Some(id));
+                self.status = format!("Speed ramp from {:.0}% to {:.0}% in {steps} steps", from * 100.0, to * 100.0);
+            }
+            Err(e) => self.status = format!("Can't ramp the speed: {e}"),
+        }
+    }
+
+    // ---- Transitions ----------------------------------------------------------------
+
+    /// The incoming clip of the cut nearest the playhead on a `kind` track
+    /// (preferring the selected clips), within a second unless selected.
+    fn cut_near_playhead(&self, kind: TrackKind) -> Option<ClipId> {
+        let t = self.playback.playhead;
+        let seq = self.seq();
+        let mut cuts: Vec<(Time, ClipId)> = Vec::new();
+        for tr in seq.tracks.iter().filter(|t| t.kind == kind) {
+            for pair in tr.clips.windows(2) {
+                if pair[0].timeline_end() == pair[1].timeline_start {
+                    cuts.push((Time((pair[1].timeline_start.0 - t.0).abs()), pair[1].id));
+                }
+            }
+        }
+        let selected: Vec<ClipId> = reelforge_core::undo::expand_links(&self.project, self.active, &self.selected_ids());
+        let preferred = cuts.iter().filter(|(_, id)| selected.contains(id) || self.project.clip_before(self.active, *id).is_some_and(|l| selected.contains(&l)));
+        preferred
+            .min_by_key(|(d, _)| *d)
+            .or_else(|| cuts.iter().filter(|(d, _)| *d <= Time(Time::TICKS_PER_SECOND)).min_by_key(|(d, _)| *d))
+            .map(|(_, id)| *id)
+    }
+
+    fn transition_status(&self, id: ClipId, what: &str) -> String {
+        match self.project.crossfade_into(self.active, id) {
+            Some(x) if x.is_empty() => format!("{what} added, but there's no spare media at the cut, so it plays as a plain cut"),
+            Some(x) if x.len() < x.requested => format!("{what}: {:.2} s (limited by spare media)", x.len().as_secs_f64()),
+            Some(x) => format!("{what}: {:.2} s", x.len().as_secs_f64()),
+            None => format!("{what} removed"),
+        }
+    }
+
+    /// Put a transition of `kind` on the video cut nearest the playhead (1 s if it had none).
+    pub fn apply_transition(&mut self, kind: reelforge_core::Transition) {
+        self.commit_live_edit();
+        let Some(id) = self.cut_near_playhead(TrackKind::Video) else {
+            self.status = "No cut between two video clips near the playhead: move the playhead to a cut first".into();
+            return;
+        };
+        self.apply_transition_to(id, kind);
+    }
+
+    /// Put a transition of `kind` into clip `id` (from the clip before it).
+    pub fn apply_transition_to(&mut self, id: ClipId, kind: reelforge_core::Transition) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        if self.project.clip_before(self.active, id).is_none() {
+            self.status = "A transition needs a clip just before this one on its track".into();
+            return;
+        }
+        let mut cmds: Vec<Box<dyn Command>> = vec![Box::new(reelforge_core::transition::SetTransition { seq: self.active, id, old: c.transition, new: kind })];
+        if c.dissolve_in == Time::ZERO {
+            let one_sec = Time::from_secs_f64(1.0).snap(self.seq().frame_rate);
+            cmds.push(Box::new(reelforge_core::undo::SetDissolve { seq: self.active, id, old: Time::ZERO, new: one_sec }));
+        }
+        self.execute(Box::new(Batch { name: format!("Add {}", kind.label().to_lowercase()), cmds }));
+        self.select_only(Some(id));
+        self.status = self.transition_status(id, kind.label());
+    }
+
+    /// Change the kind of the transition into clip `id`.
+    pub fn set_transition_kind(&mut self, id: ClipId, kind: reelforge_core::Transition) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        if c.transition != kind {
+            self.execute(Box::new(reelforge_core::transition::SetTransition { seq: self.active, id, old: c.transition, new: kind }));
+        }
+    }
+
+    /// A video clip's transition length (live: dragging; `commit_live_edit` ends it).
+    pub fn set_dissolve_live(&mut self, id: ClipId, d: Time) {
+        let Some(before) = self.seq().find_clip(id).map(|(_, c)| c.dissolve_in) else { return };
+        let d = d.max(Time::ZERO);
+        if before == d {
+            return;
+        }
+        self.begin_live(LiveEdit::Dissolve(id, before));
+        if let Some((_, c)) = self.project.sequences[self.active].find_clip_mut(id) {
+            c.dissolve_in = d;
+        }
+        self.touch();
+    }
+
+    /// Ctrl+D (video) / Ctrl+Shift+D (audio): add a 1 s dissolve or crossfade
+    /// at the cut nearest the playhead, or take it away if there is one.
+    pub fn toggle_transition_at_playhead(&mut self, kind: TrackKind) {
+        self.commit_live_edit();
+        let what = if kind == TrackKind::Audio { "Crossfade" } else { "Cross-dissolve" };
+        let Some(id) = self.cut_near_playhead(kind) else {
+            self.status = format!("No cut between two {} clips near the playhead", if kind == TrackKind::Audio { "audio" } else { "video" });
+            return;
+        };
+        let one_sec = Time::from_secs_f64(1.0).snap(self.seq().frame_rate);
+        match kind {
+            TrackKind::Audio => {
+                let Some(old) = self.clip_audio(id) else { return };
+                let mut new = old.clone();
+                new.crossfade_in = if old.crossfade_in > Time::ZERO { Time::ZERO } else { one_sec };
+                self.execute(Box::new(SetClipAudio { seq: self.active, id, old, new }));
+            }
+            TrackKind::Video => {
+                let Some(old) = self.seq().find_clip(id).map(|(_, c)| c.dissolve_in) else { return };
+                let new = if old > Time::ZERO { Time::ZERO } else { one_sec };
+                self.execute(Box::new(reelforge_core::undo::SetDissolve { seq: self.active, id, old, new }));
+            }
+        }
+        self.select_only(Some(id));
+        self.status = self.transition_status(id, what);
+    }
+
+    /// Take away the transition (or audio crossfade) into clip `id`.
+    pub fn remove_transition(&mut self, id: ClipId) {
+        self.commit_live_edit();
+        let Some((ti, c)) = self.seq().find_clip(id) else { return };
+        if self.seq().tracks[ti].kind == TrackKind::Audio {
+            let old = c.audio.clone();
+            if old.crossfade_in > Time::ZERO {
+                let mut new = old.clone();
+                new.crossfade_in = Time::ZERO;
+                self.execute(Box::new(SetClipAudio { seq: self.active, id, old, new }));
+            }
+        } else if c.dissolve_in > Time::ZERO {
+            let old = c.dissolve_in;
+            self.execute(Box::new(reelforge_core::undo::SetDissolve { seq: self.active, id, old, new: Time::ZERO }));
+        }
+        self.status = "Transition removed".into();
     }
 
     // ---- Tracks ---------------------------------------------------------------
@@ -953,6 +1130,10 @@ impl Editor {
             LiveEdit::TrackAudio(track, old) => {
                 let new = self.seq().tracks.get(track).map(|t| t.audio).filter(|n| *n != old);
                 new.map(|new| Box::new(SetTrackAudio { seq, track, old, new }) as _)
+            }
+            LiveEdit::Dissolve(id, old) => {
+                let new = self.seq().find_clip(id).map(|(_, c)| c.dissolve_in).filter(|n| *n != old);
+                new.map(|new| Box::new(reelforge_core::undo::SetDissolve { seq, id, old, new }) as _)
             }
             LiveEdit::Markers(old) => {
                 let new = self.seq().markers.clone();

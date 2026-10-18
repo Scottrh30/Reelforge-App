@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { app, run, tps, fps, timecode, shortTime, snapToFrame } from "../lib/session.svelte";
-  import { api, type ClipView, type TrackView, type MarkerColor } from "../lib/api";
+  import { api, type ClipView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu } from "../lib/menu.svelte";
   import { view, geo, perSequence, TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack } from "../lib/timeline.svelte";
@@ -355,7 +355,44 @@
       { separator: true },
       { label: "Unlink audio and video", disabled: c.link == null, run: () => run(api.action("unlink")) },
       { label: "Open composition", disabled: c.kind !== "comp", run: () => openCompFromClip(c) },
+      { separator: true },
+      ...(touchesBefore(c)
+        ? [
+            c.kind === "audio"
+              ? { label: c.dissolve_in || hasXfade(c) ? "Remove crossfade" : "Crossfade from the clip before", run: () => (hasXfade(c) ? run(api.transitionRemove(c.id)) : setXfadeOn(c.id)) }
+              : {
+                  label: "Transition from the clip before",
+                  submenu: [
+                    ...kinds.map((k) => ({ label: k.label, run: () => run(api.transitionApply(k.kind, c.id)) })),
+                    ...(hasXfade(c) ? [{ separator: true }, { label: "Remove transition", run: () => run(api.transitionRemove(c.id)) }] : []),
+                  ],
+                },
+          ]
+        : []),
+      ...(c.kind === "video" || c.kind === "audio" || c.kind === "comp"
+        ? [
+            {
+              label: "Speed",
+              submenu: [
+                ...[0.25, 0.5, 1, 2, 4].map((sp) => ({ label: `${sp * 100}%`, checked: !c.reverse && Math.abs(c.speed - sp) < 1e-3, run: () => run(api.setSpeed(c.id, sp, false)) })),
+                { separator: true },
+                { label: "Reverse", checked: c.reverse, run: () => run(api.setSpeed(c.id, c.speed || 1, !c.reverse)) },
+                { label: "Freeze frame at playhead", hint: "Shift+F", run: () => run(api.action("freeze_frame")) },
+              ],
+            },
+          ]
+        : []),
     ]);
+  }
+  /// Does another clip end exactly where this one starts on its track?
+  function touchesBefore(c: ClipView): boolean {
+    const tr = seq?.tracks.find((t) => t.clips.some((x) => x.id === c.id));
+    return !!tr?.clips.some((x) => x.id !== c.id && clipEnd(x) === c.start);
+  }
+  const hasXfade = (c: ClipView) => !!seq?.transitions.some((t) => t.right === c.id);
+  async function setXfadeOn(id: number) {
+    await api.transitionLength(id, snapToFrame(tps()));
+    await run(api.commit());
   }
   function openCompFromClip(c: ClipView) {
     const i = s?.sequences.findIndex((q) => q.name === c.name) ?? -1;
@@ -384,6 +421,62 @@
       }
     });
   });
+
+  // ---- Transitions ----
+  const xfadePump = livePump();
+  let kinds = $state<TransitionKind[]>([]);
+  $effect(() => {
+    api.transitionList().then((k) => (kinds = k));
+  });
+
+  /// Drag either end of a transition: its length grows or shrinks about the cut.
+  function xfadeEdge(e: PointerEvent, tx: TransitionMark) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const r = lanesEl!.getBoundingClientRect();
+    const move = (ev: PointerEvent) => {
+      const t = tAt(ev.clientX - r.left);
+      const len = snapToFrame(2 * Math.abs(t - tx.cut));
+      xfadePump.push(() => api.transitionLength(tx.right, len));
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      await xfadePump.done();
+      await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
+  function xfadeMenu(e: MouseEvent, tx: TransitionMark) {
+    e.preventDefault();
+    e.stopPropagation();
+    const T1 = tps();
+    const len = (tx.requested / T1).toFixed(2);
+    const groups = [...new Set(kinds.map((k) => k.group))];
+    openMenu(e, [
+      { heading: true, label: `${tx.label} · ${len} s` },
+      ...(tx.audio
+        ? []
+        : groups.map((g) => ({
+            label: g,
+            submenu: kinds.filter((k) => k.group === g).map((k) => ({ label: k.label, checked: k.label === tx.label, run: () => run(api.transitionKind(tx.right, k.kind as Transition)) })),
+          }))),
+      { label: "Half a second", run: () => setXfade(tx, 0.5) },
+      { label: "One second", run: () => setXfade(tx, 1) },
+      { label: "Two seconds", run: () => setXfade(tx, 2) },
+      { separator: true },
+      { label: "Select the clip after it", run: () => run(api.select(tx.right, "only")) },
+      { label: tx.audio ? "Remove crossfade" : "Remove transition", run: () => run(api.transitionRemove(tx.right)) },
+    ]);
+  }
+  async function setXfade(tx: TransitionMark, secs: number) {
+    await api.transitionLength(tx.right, snapToFrame(secs * tps()));
+    await run(api.commit());
+  }
 
   // ---- Markers ----
   const markerPump = livePump();
@@ -706,6 +799,29 @@
                       <span class="label">{c.name}</span>
                     </div>
                   {/if}
+                {/if}
+              {/each}
+              {#each seq.transitions.filter((t) => t.track === tr.index) as tx (tx.right)}
+                {#if tx.empty}
+                  <span class="xcut" style="left:{x(tx.cut)}px" title="{tx.label}: no spare media at this cut, so it plays as a plain cut. Trim the clips to leave unused media either side."></span>
+                {:else}
+                  {@const xl = x(tx.start)}
+                  {@const xw = Math.max(6, x(tx.end) - xl)}
+                  <div
+                    class="xfade"
+                    class:audio={tx.audio}
+                    style="left:{xl}px; width:{xw}px"
+                    role="button"
+                    tabindex="-1"
+                    title="{tx.label}, {((tx.end - tx.start) / T).toFixed(2)} s{tx.end - tx.start < tx.requested ? ' (limited by spare media)' : ''} — drag an end to change its length, right-click for more"
+                    onpointerdown={(e) => (e.stopPropagation(), e.button === 0 && run(api.select(tx.right, "only")))}
+                    oncontextmenu={(e) => xfadeMenu(e, tx)}
+                  >
+                    <svg viewBox="0 0 10 10" preserveAspectRatio="none" aria-hidden="true"><path d="M0 0 L10 10 M0 10 L10 0" /></svg>
+                    {#if xw > 56}<span class="xlabel">{xw > 110 ? `${tx.label} ` : ""}{((tx.end - tx.start) / T).toFixed(1)}s</span>{/if}
+                    <span class="xedge l" role="presentation" onpointerdown={(e) => xfadeEdge(e, tx)}></span>
+                    <span class="xedge r" role="presentation" onpointerdown={(e) => xfadeEdge(e, tx)}></span>
+                  </div>
                 {/if}
               {/each}
             </div>
@@ -1060,6 +1176,69 @@
     position: relative;
     height: 52px;
     border-bottom: 1px solid var(--line-soft);
+  }
+  .xfade {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    z-index: 3;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.16);
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .xfade:hover {
+    background: rgba(255, 255, 255, 0.24);
+  }
+  .xfade svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .xfade path {
+    stroke: rgba(255, 255, 255, 0.75);
+    stroke-width: 1.2;
+    vector-effect: non-scaling-stroke;
+    fill: none;
+  }
+  .xlabel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 1px;
+    text-align: center;
+    font-size: calc(10px * var(--text-scale));
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .xedge {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: ew-resize;
+  }
+  .xedge.l {
+    left: -1px;
+  }
+  .xedge.r {
+    right: -1px;
+  }
+  .xedge:hover {
+    background: rgba(255, 255, 255, 0.35);
+  }
+  .xcut {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    width: 3px;
+    margin-left: -1.5px;
+    background: #dc3c3c;
+    z-index: 3;
   }
   .lane.locked {
     background: repeating-linear-gradient(135deg, transparent 0 8px, rgba(255, 255, 255, 0.025) 8px 16px);

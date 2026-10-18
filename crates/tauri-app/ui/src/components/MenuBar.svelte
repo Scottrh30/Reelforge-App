@@ -76,6 +76,10 @@
   const timeline = (): MenuItem[] => [
     { label: "Play / pause", hint: "Space", run: () => actions.act("play") },
     { label: "Split at playhead", hint: "S", run: () => actions.act("split") },
+    { label: "Cross-dissolve at playhead", hint: "Ctrl+D", run: () => actions.act("dissolve") },
+    { label: "Audio crossfade at playhead", hint: "Ctrl+Shift+D", run: () => actions.act("crossfade") },
+    { label: "Transitions…", run: () => (app.effectsOpen = true) },
+    { label: "Freeze frame at playhead", hint: "Shift+F", run: () => actions.act("freeze_frame") },
     { label: "Add title", hint: "Ctrl+T", run: actions.addTitle },
     { separator: true },
     { label: "Mark in", hint: "I", run: () => actions.act("mark_in") },
@@ -102,6 +106,7 @@
     { label: "V B N Y U pick the select, ripple, roll, slip and slide tools", disabled: true },
     { label: "E opens the effects browser", disabled: true },
     { label: "M adds a marker; ↑ ↓ jump between cuts and markers", disabled: true },
+    { label: "J K L shuttle backwards, stop and forwards (press again to go faster)", disabled: true },
     { label: "Ctrl + mouse wheel zooms the timeline", disabled: true },
   ];
 </script>

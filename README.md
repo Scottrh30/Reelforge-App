@@ -485,8 +485,20 @@ Relink" on one to find it (the others in that folder are found too), or "Search 
 folder…" to find them all by name. File → Collect project… copies the project and every
 file it uses into one folder, in the background, with progress, and can open the copy.
 
-Not yet: transitions; projects using them still open and play, and the classic window
-edits them.
+Transitions: **Ctrl+D** toggles a cross-dissolve at the cut nearest the playhead
+(**Ctrl+Shift+D** an audio crossfade); the Transitions tab of the effects browser puts any
+of the 16 kinds (dissolves, dips, wipes, iris, slides, pushes) on the selected clip's cut
+or the nearest one. On the timeline a transition is a box over the cut: drag either end
+to change its length, right-click to change its kind or remove it. The Controls panel
+shows the transition into the selected clip (kind and length), and warns when there
+isn't enough spare media at the cut.
+
+Speed: presets, an exact percentage, reverse, **Shift+F** for a 2 s freeze frame at the
+playhead, and **Speed ramp…**: the clip is cut into 4–24 parts whose speeds go from one
+percentage to another (evenly or easing in and out), one undo step; later clips move to
+make room. **J / K / L** shuttle backwards, stop and forwards (press again for 2×, 4×, 8×).
+
+The Tauri app now does everything the classic window does.
 
 How it works:
 - The editor lives on the main thread; Tauri runs (non-async) commands there, so each
