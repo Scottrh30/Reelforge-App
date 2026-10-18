@@ -1,12 +1,12 @@
 [package]
 name = "reelforge-tauri"
-description = "Reelforge video editor with a web interface (Tauri): the same engine as the egui app."
+description = "Reelforge video editor: the app (a Tauri window with a Svelte interface) on the shared engine."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "reelforge-tauri"
+name = "reelforge"
 path = "src/main.rs"
 
 [dependencies]

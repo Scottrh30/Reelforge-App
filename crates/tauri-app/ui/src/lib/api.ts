@@ -70,6 +70,7 @@ export interface ClipView {
   fade_in: Ticks;
   fade_out: Ticks;
   effects: number;
+  audio: ClipAudio | null;
 }
 
 export interface TrackView {
@@ -162,6 +163,10 @@ export interface KeysView {
   props: { prop: string; animated: boolean; key_here: boolean; count: number }[];
   channels: ChannelView[];
   span: [Ticks, Ticks];
+  prev_key: Ticks | null;
+  next_key: Ticks | null;
+  interp_here: "Linear" | "Ease" | "Hold" | null;
+  pin_twisted: boolean;
 }
 
 export interface CollectPlanView {
@@ -197,6 +202,8 @@ export interface Inspector {
   id: number;
   name: string;
   kind: ClipKind;
+  title_missing_font: boolean;
+  gizmo: Gizmo | null;
   track: string;
   start: Ticks;
   duration: Ticks;
@@ -265,6 +272,50 @@ export interface Prefs {
   autosave_minutes: number;
   render_cache_mb: number;
   export_presets: UserPreset[];
+  scrub_audio: boolean;
+  timeline_thumbnails: boolean;
+  viewer_snapping: boolean;
+  hw_decode: boolean;
+  cache_mb: number;
+}
+
+export interface SettingsInfo {
+  hw_api: string;
+  hw_status: string;
+  cache_frames: number;
+  cache_mb: number;
+  cache_hits: number;
+  render_frames: number;
+  render_mb: number;
+  proxies: number;
+  proxy_bytes: number;
+  proxy_dir: string;
+  autosave_dir: string;
+}
+
+export type GizmoHandle = { kind: "corner" | "edge"; index: number } | { kind: "rotate" | "anchor" };
+
+export interface Gizmo {
+  corners: Pt[];
+  edges: Pt[];
+  stem_base: Pt;
+  stem_dir: Pt;
+  anchor: Pt;
+  full: Pt[];
+  pinned: boolean;
+  cropped: boolean;
+}
+
+export interface ViewerHover {
+  handle: GizmoHandle;
+  dir: number | null;
+  tip: string;
+}
+
+export interface ViewerFeedback {
+  readout: string;
+  guides_x: number[];
+  guides_y: number[];
 }
 
 // ---- Effects ----
@@ -436,6 +487,31 @@ export interface Live {
   proxies: number;
   collect: CollectView | null;
   tracking: [number, number] | null;
+  render: number | null;
+  render_gen: number;
+}
+
+export interface AttrOffers {
+  from: string;
+  targets: number;
+  visual: boolean;
+  corner_pin: boolean;
+  effects: number;
+  masks: number;
+  audio: boolean;
+  text_style: boolean;
+}
+
+export interface AttrSet {
+  transform: boolean;
+  crop: boolean;
+  corner_pin: boolean;
+  blend: boolean;
+  effects: boolean;
+  replace_effects: boolean;
+  masks: boolean;
+  audio: boolean;
+  text_style: boolean;
 }
 
 export const api = {
@@ -541,4 +617,17 @@ export const api = {
   transitionRemove: (id: number) => invoke("transition_remove", { id }),
   speedRamp: (id: number, from: number, to: number, steps: number, smooth: boolean) => invoke("speed_ramp", { id, from, to, steps, smooth }),
   showInFolder: (path: string) => invoke("show_in_folder", { path }),
+  openAutosaveDialog: () => invoke("open_autosave_dialog"),
+  renderedRuns: (step: number) => invoke<[number, number][]>("rendered_runs", { step }),
+  fontFaces: () => invoke<{ path: string | null; index: number; name: string }[]>("font_faces"),
+  placeTitle: (id: number, place: "centre" | "lower_third" | "top") => invoke("place_title", { id, place }),
+  viewerHover: (at: Pt, ctrl: boolean, scale: number) => invoke<ViewerHover | null>("viewer_hover", { at, ctrl, scale }),
+  viewerPress: (at: Pt, ctrl: boolean, scale: number) => invoke<"handle" | "move" | "none">("viewer_press", { at, ctrl, scale }),
+  viewerDrag: (at: Pt, shift: boolean, alt: boolean, scale: number) => invoke<ViewerFeedback>("viewer_drag", { at, shift, alt, scale }),
+  viewerRelease: () => invoke("viewer_release"),
+  settingsInfo: () => invoke<SettingsInfo>("settings_info"),
+  transformOp: (id: number, op: "anchor_centre" | "crop_clear" | "pin_on" | "pin_off" | "pin_reset" | "fit" | "fill" | "reset") => invoke("transform_op", { id, op }),
+  transformInterp: (id: number, interp: "Linear" | "Ease" | "Hold") => invoke("transform_interp", { id, interp }),
+  attrOffers: () => invoke<AttrOffers | null>("attr_offers"),
+  pasteAttributes: (set: AttrSet) => invoke("paste_attributes", { set }),
 };

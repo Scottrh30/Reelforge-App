@@ -21,6 +21,7 @@
   import EffectsBrowser from "./components/EffectsBrowser.svelte";
   import PluginsDialog from "./components/PluginsDialog.svelte";
   import CollectDialog from "./components/CollectDialog.svelte";
+  import PasteAttributes from "./components/PasteAttributes.svelte";
   import Preferences from "./components/Preferences.svelte";
   import { look, apply } from "./lib/prefs.svelte";
 
@@ -43,6 +44,14 @@
   let bottomH = $state(stored("bottomH", 340));
   let metersW = $state(stored("metersW", 64));
   let fileHover = $state(false);
+  // Tabs > Reset layout: the panel sizes as they start out.
+  $effect(() => {
+    if (!app.layoutReset) return;
+    [leftW, rightW, bottomH, metersW] = [300, 320, 340, 64];
+    try {
+      for (const k of ["leftW", "rightW", "bottomH", "metersW", "timelineHeader"]) localStorage.removeItem(k);
+    } catch {}
+  });
 
   const left = $derived(app.panels.media || app.panels.history);
   $effect(() => {
@@ -160,6 +169,7 @@
 <EffectsBrowser />
 <PluginsDialog />
 <CollectDialog />
+<PasteAttributes />
 <Preferences />
 
 <style>

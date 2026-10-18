@@ -4,6 +4,7 @@
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
   import { api } from "../lib/api";
   import { openPrefs } from "../lib/prefs.svelte";
+  import { view } from "../lib/timeline.svelte";
 
   const panelNames: [string, string][] = [
     ["media", "Media"],
@@ -22,6 +23,7 @@
   const file = (): MenuItem[] => [
     { label: "New project", hint: "Ctrl+N", run: actions.newProject },
     { label: "Open…", hint: "Ctrl+O", run: actions.open },
+    { label: "Open an autosave…", run: actions.openAutosave },
     { label: "Save", hint: "Ctrl+S", run: actions.save },
     { label: "Save as…", hint: "Ctrl+Shift+S", run: actions.saveAs },
     { separator: true },
@@ -43,6 +45,7 @@
       { label: "Cut", hint: "Ctrl+X", disabled: !has, run: () => actions.act("cut") },
       { label: "Copy", hint: "Ctrl+C", disabled: !has, run: () => actions.act("copy") },
       { label: "Paste", hint: "Ctrl+V", run: () => actions.act("paste") },
+      { label: "Paste attributes…", hint: "Ctrl+Alt+V", run: () => (app.pasteAttrsOpen = true) },
       { label: "Delete", hint: "Del", disabled: !has, run: () => actions.act("delete") },
       { label: "Ripple delete", hint: "Shift+Del", disabled: !has, run: () => actions.act("ripple_delete") },
       { separator: true },
@@ -71,6 +74,14 @@
       label: "Show all windows",
       run: () => panelNames.forEach(([k]) => setPanel(k, true)),
     },
+    {
+      label: "Reset layout",
+      run: () => {
+        panelNames.forEach(([k]) => setPanel(k, true));
+        view.headerW = 140;
+        app.layoutReset++;
+      },
+    },
   ];
 
   const timeline = (): MenuItem[] => [
@@ -81,6 +92,13 @@
     { label: "Transitions…", run: () => (app.effectsOpen = true) },
     { label: "Freeze frame at playhead", hint: "Shift+F", run: () => actions.act("freeze_frame") },
     { label: "Add title", hint: "Ctrl+T", run: actions.addTitle },
+    { label: "Nudge selected clips earlier", hint: ",", run: () => actions.act("nudge_left") },
+    { label: "Nudge selected clips later", hint: ".", run: () => actions.act("nudge_right") },
+    { separator: true },
+    app.live?.render != null
+      ? { label: `Stop rendering the preview (${Math.round((app.live.render ?? 0) * 100)}%)`, hint: "Esc", run: () => actions.act("stop_render_preview") }
+      : { label: "Render preview", hint: "Enter", run: () => actions.act("render_preview") },
+    { label: "Zoom to fit", hint: "\\", run: () => (view.fit = true) },
     { separator: true },
     { label: "Mark in", hint: "I", run: () => actions.act("mark_in") },
     { label: "Mark out", hint: "O", run: () => actions.act("mark_out") },
@@ -98,16 +116,19 @@
     { label: "Add audio track", run: () => actions.act("add_audio_track") },
     { separator: true },
     { label: "New composition", run: () => run(api.newComposite()) },
+    { label: "Make composition from selection", hint: "Ctrl+G", run: () => actions.act("make_composite") },
   ];
 
   const help = (): MenuItem[] => [
-    { heading: true, label: "Reelforge (web interface)" },
+    { heading: true, label: "Reelforge" },
     { label: "Space plays, S splits, I and O mark in and out", disabled: true },
     { label: "V B N Y U pick the select, ripple, roll, slip and slide tools", disabled: true },
     { label: "E opens the effects browser", disabled: true },
     { label: "M adds a marker; ↑ ↓ jump between cuts and markers", disabled: true },
     { label: "J K L shuttle backwards, stop and forwards (press again to go faster)", disabled: true },
-    { label: "Ctrl + mouse wheel zooms the timeline", disabled: true },
+    { label: "Ctrl + mouse wheel zooms the timeline; \\ fits the whole sequence", disabled: true },
+    { label: "Enter renders the preview (Esc stops); , and . nudge clips (Shift: 10 frames)", disabled: true },
+    { label: "Ctrl+G makes a composition; Ctrl+Alt+V pastes attributes", disabled: true },
   ];
 </script>
 

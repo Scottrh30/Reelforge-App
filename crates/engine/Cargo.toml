@@ -1,6 +1,6 @@
 [package]
 name = "reelforge-engine"
-description = "Reelforge's editor engine without a user interface: the editing model, playback and audio, the viewer picture, caches and safety nets. Shared by the egui and Tauri apps."
+description = "Reelforge's editor engine without a user interface: the editing model, playback and audio, the viewer picture, caches and safety nets. Used by the app (crates/tauri-app)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

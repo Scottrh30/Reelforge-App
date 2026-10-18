@@ -1,7 +1,8 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { app, run, tps, fps, timecode, shortTime, snapToFrame } from "../lib/session.svelte";
-  import { api, type ClipView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind } from "../lib/api";
+  import { app, run, tps, fps, timecode, shortTime, snapToFrame, say } from "../lib/session.svelte";
+  import { MIN_DB, MAX_DB, volKeys, volumeAt, setVolKey, clampedFades, fadeCurve, tidyDb, dbText, dbGain } from "../lib/audio";
+  import { api, type ClipAudio, type ClipView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu } from "../lib/menu.svelte";
   import { view, geo, perSequence, TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack } from "../lib/timeline.svelte";
@@ -423,6 +424,114 @@
   });
 
   // ---- Transitions ----
+  // ---- Volume line, keys and fades on audio clips ----
+  // The band the line moves in, inside the clip (40 px high): below the name.
+  const VOL_TOP = 15,
+    VOL_BOTTOM = 36,
+    FADE_H = 8;
+  const dbY = (db: number) => VOL_BOTTOM - ((Math.max(MIN_DB, Math.min(MAX_DB, db)) - MIN_DB) / (MAX_DB - MIN_DB)) * (VOL_BOTTOM - VOL_TOP);
+  const yDb = (y: number) => Math.max(MIN_DB, Math.min(MAX_DB, MIN_DB + ((VOL_BOTTOM - y) / (VOL_BOTTOM - VOL_TOP)) * (MAX_DB - MIN_DB)));
+  // x inside the clip of source time `at`.
+  const srcX = (c: ClipView, at: number) => ((at - c.source_in) / T) * view.pps;
+  function volPoints(c: ClipView, w: number): string {
+    const a = c.audio!;
+    const pts = [`0,${dbY(volumeAt(a, c.source_in))}`];
+    for (const k of volKeys(a)) {
+      const px = srcX(c, k.at);
+      if (px > 0 && px < w) pts.push(`${px},${dbY(k.db)}`);
+    }
+    pts.push(`${w},${dbY(volumeAt(a, c.source_in + c.duration))}`);
+    return pts.join(" ");
+  }
+  function fadePath(c: ClipView, out: boolean): string {
+    const [fi, fo] = clampedFades(c.audio!, c.duration);
+    const len = out ? fo : fi;
+    const fw = (len / T) * view.pps;
+    if (fw < 1) return "";
+    const w = (c.duration / T) * view.pps;
+    const steps = Math.max(4, Math.min(48, Math.round(fw / 3)));
+    let d = "";
+    for (let i = 0; i <= steps; i++) {
+      const u = i / steps;
+      const px = out ? w - fw + u * fw : u * fw;
+      const g = out ? fadeCurve(1 - u) : fadeCurve(u);
+      d += `${i ? "L" : "M"}${px.toFixed(1)},${(40 - g * 40).toFixed(1)}`;
+    }
+    // Close along the top edge: the shaded, faded-out part.
+    return d + (out ? `L${w},0L${w - fw},0Z` : `L${fw},0L0,0Z`);
+  }
+  const volPump = livePump();
+  /// A gesture on the volume line, a key, or a fade handle of audio clip `c`.
+  function volDown(e: PointerEvent, c: ClipView, tr: TrackView, what: "line" | "key" | "fadein" | "fadeout", index = -1) {
+    if (e.button !== 0 || !c.audio || tr.locked) return;
+    e.stopPropagation();
+    const el = e.currentTarget as Element;
+    const clipEl = el.closest(".clip") as HTMLElement;
+    const box = clipEl.getBoundingClientRect();
+    const orig = $state.snapshot(c.audio) as ClipAudio;
+    if (!selected.has(c.id)) run(api.select(c.id, "only"));
+    const frameT = T / fps();
+    const atX = (cx: number) => snapToFrame(c.start + ((cx - box.left) / view.pps) * T);
+    if (what === "key" && (e.altKey || e.detail >= 2)) {
+      const n = structuredClone(orig);
+      n.volume_keys = volKeys(n).filter((_, i) => i !== index);
+      run(api.setClipAudio(c.id, n).then(() => api.commit()));
+      say("Removed the volume keyframe");
+      return;
+    }
+    if (what === "line" && (e.ctrlKey || e.metaKey)) {
+      const n = structuredClone(orig);
+      const src = c.source_in + Math.max(0, Math.min(c.duration, atX(e.clientX) - c.start));
+      setVolKey(n, src, volKeys(n).length ? volumeAt(n, src) : n.volume_db);
+      run(api.setClipAudio(c.id, n).then(() => api.commit()));
+      say("Added a volume keyframe");
+      return;
+    }
+    (el as HTMLElement).setPointerCapture?.(e.pointerId);
+    const y0 = e.clientY - box.top;
+    let moved = false;
+    const move = (ev: PointerEvent) => {
+      moved = true;
+      const n = structuredClone(orig);
+      const y = ev.clientY - box.top;
+      if (what === "fadein" || what === "fadeout") {
+        const [fi, fo] = clampedFades(orig, c.duration);
+        const t = atX(ev.clientX);
+        if (what === "fadeout") n.fade_out = Math.max(0, Math.min(c.duration - fi, c.start + c.duration - t));
+        else n.fade_in = Math.max(0, Math.min(c.duration - fo, t - c.start));
+        say(`Fade ${what === "fadeout" ? "out" : "in"}: ${((what === "fadeout" ? n.fade_out : n.fade_in) / T).toFixed(2)} s`);
+      } else if (what === "key") {
+        const keys = volKeys(n).map((k) => ({ ...k }));
+        const lo = index > 0 ? keys[index - 1].at + frameT : c.source_in;
+        const hi = index + 1 < keys.length ? keys[index + 1].at - frameT : c.source_in + c.duration;
+        const at = Math.max(lo, Math.min(Math.max(lo, hi), c.source_in + (atX(ev.clientX) - c.start)));
+        const db = tidyDb(yDb(y));
+        keys[index] = { at: Math.round(at), db };
+        n.volume_keys = keys;
+        say(`Volume key: ${db > 0 ? "+" : ""}${db.toFixed(1)} dB at ${timecode(c.start + (at - c.source_in))}`);
+      } else {
+        const delta = yDb(y) - yDb(y0);
+        if (volKeys(n).length) {
+          n.volume_keys = volKeys(n).map((k) => ({ at: k.at, db: tidyDb(Math.max(MIN_DB, Math.min(MAX_DB, k.db + delta))) }));
+          say(`Volume keys ${delta >= 0 ? "+" : ""}${delta.toFixed(1)} dB`);
+        } else {
+          n.volume_db = tidyDb(Math.max(MIN_DB, Math.min(MAX_DB, orig.volume_db + delta)));
+          say(`Clip volume: ${n.volume_db > 0 ? "+" : ""}${n.volume_db.toFixed(1)} dB`);
+        }
+      }
+      volPump.push(() => api.setClipAudio(c.id, n));
+    };
+    const up = async () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (!moved) return;
+      await volPump.done();
+      await run(api.commit());
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
   const xfadePump = livePump();
   let kinds = $state<TransitionKind[]>([]);
   $effect(() => {
@@ -535,6 +644,16 @@
     if (done) await run(api.commit());
   }
   let rulerEl = $state<HTMLDivElement | null>(null);
+  // Rendered preview: a green bar along the top of the ruler (frames as runs).
+  let rendered = $state<[number, number][]>([]);
+  $effect(() => {
+    void app.live?.render_gen;
+    void s?.rev;
+    void s?.active;
+    const step = Math.max(1, Math.floor((2 * fps()) / Math.max(1, view.pps)));
+    const timer = setTimeout(() => api.renderedRuns(step).then((r) => (rendered = r)).catch(() => {}), 150);
+    return () => clearTimeout(timer);
+  });
   let markerName = $state("");
   $effect(() => {
     const i = app.markerEdit;
@@ -570,7 +689,9 @@
   ];
 
   // ---- Waveforms ----
-  function wave(canvas: HTMLCanvasElement, p: { media: number; from: number; secs: number; w: number; h: number; speed: number; rev: number }) {
+  // Scaled by the clip's volume (and keys), its fades and the track volume, so
+  // it shows what you'll hear; square-rooted so quiet passages stay visible.
+  function wave(canvas: HTMLCanvasElement, p: { media: number; from: number; secs: number; w: number; h: number; speed: number; rev: number; audio: ClipAudio | null; srcIn: number; dur: number; offset: number; trackDb: number }) {
     const draw = (q: typeof p) => {
       const data = app.waveforms.get(q.media);
       const dpr = window.devicePixelRatio || 1;
@@ -587,7 +708,17 @@
         const s1 = (q.from + ((i + 1) / canvas.width) * q.secs * q.speed) * rate;
         let peak = 0;
         for (let k = Math.floor(s0); k <= Math.max(Math.floor(s0), Math.floor(s1)) && k < data.length; k++) if (k >= 0 && data[k] > peak) peak = data[k];
-        const h = (peak / 255) * mid;
+        // Gain at this column: seconds into the clip -> its source time.
+        let gain = dbGain(q.trackDb);
+        const a = q.audio;
+        if (a) {
+          const into = q.offset + (i / canvas.width) * q.secs;
+          gain *= dbGain(volumeAt(a, q.srcIn + into * T));
+          const [fi, fo] = clampedFades(a, q.dur);
+          if (fi > 0) gain *= fadeCurve((into * T) / fi);
+          if (fo > 0) gain *= fadeCurve((q.dur - into * T) / fo);
+        }
+        const h = Math.sqrt(Math.min(1, (peak / 255) * gain)) * mid;
         g.fillRect(i, mid - h, 1, Math.max(1, 2 * h));
       }
     };
@@ -651,6 +782,10 @@
           {@const b = x(seq.out_point ?? seq.duration)}
           <div class="marks" style="left:{a}px; width:{Math.max(0, b - a)}px"></div>
         {/if}
+        {#each rendered as [a, b]}
+          {@const xa = x((a / fps()) * T)}
+          <div class="rendered" style="left:{xa}px; width:{Math.max(1, x((b / fps()) * T) - xa)}px" title="Rendered preview"></div>
+        {/each}
         {#each ticks as tk}
           <span class="tick" style="left:{tk.px}px"></span>
           <span class="tlabel tc" style="left:{tk.px + 4}px">{tk.label}</span>
@@ -767,7 +902,7 @@
                     oncontextmenu={(e) => clipMenu(e, c)}
                     ondblclick={() => c.kind === "comp" && openCompFromClip(c)}
                   >
-                    {#if (c.kind === "video" || c.kind === "image") && w > 70 && mediaById.get(c.media) && !mediaById.get(c.media)!.missing}
+                    {#if (c.kind === "video" || c.kind === "image") && w > 70 && app.s?.prefs.timeline_thumbnails !== false && mediaById.get(c.media) && !mediaById.get(c.media)!.missing}
                       <div class="thumb"><Thumb path={mediaById.get(c.media)!.path} at={c.source_in} /></div>
                     {/if}
                     {#if c.kind === "audio" && w > 4}
@@ -777,15 +912,29 @@
                         <canvas
                           class="wave"
                           style="left:{vis0}px; width:{vis1 - vis0}px"
-                          use:wave={{ media: c.media, from: c.source_in / T + (vis0 / view.pps) * c.speed, secs: (vis1 - vis0) / view.pps, w: vis1 - vis0, h: TRACK_H - 14, speed: c.speed, rev: app.waveforms.size }}
+                          use:wave={{ media: c.media, from: c.source_in / T + (vis0 / view.pps) * c.speed, secs: (vis1 - vis0) / view.pps, w: vis1 - vis0, h: TRACK_H - 14, speed: c.speed, rev: app.waveforms.size, audio: c.audio, srcIn: c.source_in, dur: c.duration, offset: vis0 / view.pps, trackDb: tr.audio.volume_db }}
                         ></canvas>
                       {/if}
                     {/if}
-                    {#if c.kind === "audio" && c.fade_in > 0}
-                      <span class="fade in" style="width:{(c.fade_in / T) * view.pps}px"></span>
-                    {/if}
-                    {#if c.kind === "audio" && c.fade_out > 0}
-                      <span class="fade out" style="width:{(c.fade_out / T) * view.pps}px"></span>
+                    {#if c.kind === "audio" && c.audio && w > 6}
+                      {@const [fi, fo] = clampedFades(c.audio, c.duration)}
+                      {@const vw = Math.max(2, w)}
+                      <svg class="vol" width={vw} height="40" aria-hidden="true">
+                        <path class="fadeshade" d={fadePath(c, false)} />
+                        <path class="fadeshade" d={fadePath(c, true)} />
+                        <polyline role="presentation" class="volhit" points={volPoints(c, vw)} onpointerdown={(e) => volDown(e, c, tr, "line")}><title>Volume {dbText(volumeAt(c.audio, c.source_in))}: drag up or down; Ctrl+click to add a keyframe</title></polyline>
+                        <polyline class="volline" points={volPoints(c, vw)} />
+                        {#each volKeys(c.audio) as k, i}
+                          {@const kx = srcX(c, k.at)}
+                          {#if kx >= -5 && kx <= vw + 5}
+                            <path role="presentation" class="volkey" d="M{kx} {dbY(k.db) - 4.5}l4.5 4.5-4.5 4.5-4.5-4.5Z" onpointerdown={(e) => volDown(e, c, tr, "key", i)}><title>{dbText(k.db)} — drag to move, Alt+click or double-click to remove</title></path>
+                          {/if}
+                        {/each}
+                        {#if w > 24}
+                          <rect role="presentation" class="fadeh" x={Math.max(0.5, Math.min(vw - FADE_H - 0.5, (fi / T) * view.pps - FADE_H / 2))} y="1" width={FADE_H} height={FADE_H} rx="1.5" onpointerdown={(e) => volDown(e, c, tr, "fadein")}><title>Fade in {(fi / T).toFixed(2)} s — drag</title></rect>
+                          <rect role="presentation" class="fadeh" x={Math.max(0.5, Math.min(vw - FADE_H - 0.5, vw - (fo / T) * view.pps - FADE_H / 2))} y="1" width={FADE_H} height={FADE_H} rx="1.5" onpointerdown={(e) => volDown(e, c, tr, "fadeout")}><title>Fade out {(fo / T).toFixed(2)} s — drag</title></rect>
+                        {/if}
+                      </svg>
                     {/if}
                     <span class="label" style="padding-left:{Math.max(6, -l + 6)}px">
                       {#if c.kind === "comp"}<b>Comp</b>{/if}{c.name}{#if c.speed !== 1 || c.reverse}<i> {c.reverse ? "−" : ""}{Math.round(c.speed * 100)}%</i>{/if}{#if c.effects}<i> fx {c.effects}</i>{/if}
@@ -970,6 +1119,13 @@
     border-bottom: 1px solid var(--line-soft);
     background: var(--panel);
     cursor: text;
+  }
+  .rendered {
+    position: absolute;
+    top: 0;
+    height: 3px;
+    background: rgb(70, 200, 100);
+    pointer-events: none;
   }
   .tick {
     position: absolute;
@@ -1311,6 +1467,47 @@
     opacity: 0.9;
     border-right: 1px solid rgba(0, 0, 0, 0.3);
   }
+  .vol {
+    position: absolute;
+    left: 0;
+    top: 0;
+    overflow: visible;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .fadeshade {
+    fill: rgba(0, 0, 0, 0.42);
+    stroke: rgb(255, 230, 150);
+    stroke-width: 1.2;
+  }
+  .volline {
+    fill: none;
+    stroke: rgb(255, 210, 80);
+    stroke-width: 1.5;
+  }
+  .volhit {
+    fill: none;
+    stroke: transparent;
+    stroke-width: 8;
+    pointer-events: stroke;
+    cursor: ns-resize;
+  }
+  .volkey {
+    fill: rgb(255, 210, 80);
+    stroke: rgba(0, 0, 0, 0.65);
+    stroke-width: 1;
+    pointer-events: all;
+    cursor: grab;
+  }
+  .volkey:hover,
+  .fadeh:hover {
+    fill: rgb(255, 196, 64);
+  }
+  .fadeh {
+    fill: rgba(255, 255, 255, 0.8);
+    pointer-events: all;
+    cursor: ew-resize;
+  }
   .label {
     position: relative;
     color: var(--clip-text);
@@ -1340,21 +1537,6 @@
     top: 1px;
     height: calc(100% - 2px);
     pointer-events: none;
-  }
-  .fade {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    pointer-events: none;
-    background: rgba(0, 0, 0, 0.35);
-  }
-  .fade.in {
-    left: 0;
-    clip-path: polygon(0 0, 100% 0, 0 100%);
-  }
-  .fade.out {
-    right: 0;
-    clip-path: polygon(0 0, 100% 0, 100% 100%);
   }
   .box {
     position: absolute;

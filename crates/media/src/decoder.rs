@@ -447,7 +447,7 @@ impl DecodeState {
         let mut rgba = ff::frame::Video::empty();
         self.scaler.as_mut().unwrap().0.run(src, &mut rgba)?;
 
-        // Repack: FFmpeg rows are padded to `stride`, egui/wgpu want tight rows.
+        // Repack: FFmpeg rows are padded to `stride`, wgpu wants tight rows.
         let row = dw as usize * 4;
         let stride = rgba.stride(0);
         let data = rgba.data(0);

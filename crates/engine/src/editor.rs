@@ -48,11 +48,47 @@ pub struct Prefs {
     pub render_cache_mb: usize,
     /// Export settings saved under a name.
     pub export_presets: Vec<crate::presets::UserPreset>,
+    /// Play the sound under the playhead while scrubbing.
+    pub scrub_audio: bool,
+    /// Pictures along video clips in the timeline.
+    pub timeline_thumbnails: bool,
+    /// Layers dragged in the viewer snap to the frame and to each other (Alt: free).
+    pub viewer_snapping: bool,
+    /// Decode video on the graphics card when possible.
+    pub hw_decode: bool,
+    /// Memory for keeping decoded frames, in MB.
+    pub cache_mb: usize,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { use_proxies: true, auto_proxies: true, autosave_minutes: 2, render_cache_mb: 2048, export_presets: Vec::new() }
+        Self {
+            use_proxies: true,
+            auto_proxies: true,
+            autosave_minutes: 2,
+            render_cache_mb: 2048,
+            export_presets: Vec::new(),
+            scrub_audio: true,
+            timeline_thumbnails: true,
+            viewer_snapping: true,
+            hw_decode: true,
+            cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB,
+        }
+    }
+}
+
+impl Editor {
+    /// Use new preferences: push them into the parts of the engine that use them.
+    pub fn set_prefs(&mut self, prefs: Prefs) {
+        self.prefs = prefs;
+        self.apply_prefs();
+    }
+
+    pub fn apply_prefs(&mut self) {
+        self.render_cache.set_budget_mb(self.prefs.render_cache_mb);
+        self.playback.scrub_audio = self.prefs.scrub_audio;
+        reelforge_media::hw::set_enabled(self.prefs.hw_decode);
+        reelforge_media::FrameCache::global().set_budget_mb(self.prefs.cache_mb.clamp(128, 65536));
     }
 }
 
@@ -607,8 +643,139 @@ impl Editor {
         let ids = self.selected_ids();
         let by = Time(self.seq().frame_rate.frame_duration().0 * frames);
         match reelforge_core::undo::nudge_clips(&self.project, self.active, &ids, by) {
-            Ok(cmd) => self.execute(cmd),
+            Ok(cmd) => {
+                self.execute(cmd);
+                let n = frames.unsigned_abs();
+                self.status = format!("Nudged {} frame{} {}", n, if n == 1 { "" } else { "s" }, if frames < 0 { "earlier" } else { "later" });
+            }
             Err(e) => self.status = format!("Can't nudge: {e}"),
+        }
+    }
+
+    /// Paste the chosen attributes of the copied clip onto the selected clips, as one undo step.
+    pub fn paste_attributes(&mut self, set: reelforge_core::attrs::AttrSet) {
+        self.commit_live_edit();
+        let ids = self.selected_ids();
+        if self.clipboard.is_empty() {
+            self.status = "Paste attributes: copy a clip first (Ctrl+C), then select the clips to paste onto".into();
+            return;
+        }
+        match reelforge_core::attrs::paste_attributes(&self.project, self.active, &self.clipboard, &ids, set) {
+            Ok((cmd, n)) => {
+                self.execute(cmd);
+                self.status = format!("Pasted attributes onto {n} clip{}", if n == 1 { "" } else { "s" });
+            }
+            Err(e) => self.status = format!("Paste attributes: {e}"),
+        }
+    }
+
+    /// The clips "Make composition" would take: the selected clips if there are
+    /// several, else everything entirely between the in and out marks (on
+    /// unlocked tracks) if they're set, else the selected clip.
+    pub fn composite_candidates(&self) -> Vec<ClipId> {
+        let s = self.seq();
+        let selected = self.selected_ids();
+        if selected.len() > 1 {
+            return selected;
+        }
+        if s.in_point.is_some() || s.out_point.is_some() {
+            if let Some((a, b)) = s.marked_range() {
+                return s.tracks.iter().filter(|t| !t.locked).flat_map(|t| &t.clips).filter(|c| c.timeline_start >= a && c.timeline_end() <= b).map(|c| c.id).collect();
+            }
+        }
+        selected
+    }
+
+    /// Turn the candidate clips into a composition clip (Ctrl+G).
+    pub fn make_composite(&mut self) {
+        self.commit_live_edit();
+        let ids = self.composite_candidates();
+        let name = reelforge_core::undo::next_composite_name(&self.project);
+        match reelforge_core::undo::make_composite(&mut self.project, self.active, &ids, name) {
+            Ok(cmd) => {
+                let (clip, index) = (cmd.clip, cmd.index);
+                self.execute(Box::new(cmd));
+                self.select_only(Some(clip));
+                self.status = format!("Made {}: double-click it to edit inside", self.project.sequences[index].name);
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    // ---- Render preview --------------------------------------------------------
+
+    /// Start rendering every frame between the marks (or of the whole sequence)
+    /// into the render cache, a little each tick.
+    pub fn render_preview(&mut self) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let (start, end) = s.marked_range().filter(|_| s.in_point.is_some() || s.out_point.is_some()).unwrap_or((Time::ZERO, s.duration()));
+        if end <= start {
+            self.status = "Nothing to render: the sequence is empty".into();
+            return;
+        }
+        let (first, last) = reelforge_export::frame_range(s.frame_rate, start, end);
+        self.playback.pause();
+        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end: last, first, rendered: 0, started: std::time::Instant::now() });
+        self.status = format!("Rendering preview: {} frames (Esc to stop)", last - first);
+    }
+
+    pub fn stop_render_preview(&mut self) {
+        if let Some(j) = self.render_cache.job.take() {
+            self.status = format!("Stopped rendering the preview ({} of {} frames done)", j.next - j.first, j.end - j.first);
+        }
+    }
+
+    /// How far a render-preview run has got (0–1), while one runs.
+    pub fn render_progress(&self) -> Option<f32> {
+        self.render_cache.job.as_ref().map(|j| j.fraction())
+    }
+
+    /// Render the next frames of a render-preview run, for up to ~40 ms.
+    fn step_render_job(&mut self, sources: &HashMap<MediaId, PathBuf>) {
+        let Some(mut job) = self.render_cache.job.take() else { return };
+        if self.playback.playing {
+            self.status = format!("Stopped rendering the preview to play ({} of {} frames done)", job.next - job.first, job.end - job.first);
+            return;
+        }
+        if job.seq != self.active || job.seq >= self.project.sequences.len() {
+            self.status = "Stopped rendering the preview (another sequence was opened)".into();
+            return;
+        }
+        let rate = self.project.sequences[job.seq].frame_rate;
+        let budget = std::time::Instant::now();
+        while job.next < job.end && budget.elapsed() < std::time::Duration::from_millis(40) {
+            let t = Time::from_frame(job.next, rate);
+            let recipe = reelforge_export::frame_recipe(&self.project, job.seq, t, sources);
+            if !self.render_cache.has(job.seq, job.next, recipe) {
+                match self.preview.render_for_cache(&self.project, job.seq, t, sources) {
+                    Some((rgba, size)) => {
+                        let (rgba, size) = crate::render_cache::fit_for_cache(rgba, size);
+                        self.render_cache.insert(job.seq, job.next, recipe, size, rgba.into());
+                        job.rendered += 1;
+                    }
+                    None => {
+                        self.status = format!("Couldn't render the preview at {t}: {}", self.preview.error.take().unwrap_or_else(|| "no picture".into()));
+                        return;
+                    }
+                }
+            }
+            job.next += 1;
+        }
+        if job.next >= job.end {
+            let total = job.end - job.first;
+            let (bytes, kept) = self.render_cache.stats();
+            self.status = if job.rendered == 0 {
+                format!("Preview already rendered ({total} frames)")
+            } else {
+                format!("Rendered the preview: {} of {total} frames in {:.1} s ({kept} kept, {} MB)", job.rendered, job.started.elapsed().as_secs_f64(), bytes >> 20)
+            };
+            if kept < total as usize {
+                self.status += ". Not all fit: raise the render cache size in Settings";
+            }
+        } else {
+            self.status = format!("Rendering preview… {:.0}% (Esc to stop)", job.fraction() * 100.0);
+            self.render_cache.job = Some(job);
         }
     }
 
@@ -1168,6 +1335,31 @@ impl Editor {
         self.set_visual_live(id, v);
     }
 
+    /// Move a title to a placement preset: "centre", "lower_third" (bottom left,
+    /// inside the title-safe area) or "top". One undo step.
+    pub fn place_title(&mut self, id: ClipId, place: &str) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let frame = [self.seq().width as f32, self.seq().height as f32];
+        let bounds = self.preview.title_bounds(id);
+        let pos = match (place, bounds) {
+            ("centre", _) => [0.0, 0.0],
+            ("lower_third", Some(b)) => [frame[0] * 0.10 - b[0], frame[1] * 0.85 - b[3]],
+            ("top", Some(b)) => [0.0, frame[1] * 0.10 - b[1]],
+            _ => {
+                self.status = "Show the title in the viewer first, so its size is known".into();
+                return;
+            }
+        };
+        let (src, on_clip) = self.key_time(c);
+        let Some(v) = self.visual(id) else { return };
+        let mut moved = v.anim.eval(&v.transform, src);
+        moved.position = pos;
+        self.set_transform_live(id, moved);
+        let _ = on_clip;
+        self.commit_live_edit();
+    }
+
     /// The keyframe button of a transform property: removes the key at the
     /// playhead if there is one, otherwise adds one there. One undo step.
     pub fn toggle_transform_key(&mut self, id: ClipId, prop: Prop) {
@@ -1575,6 +1767,46 @@ impl Editor {
         Ok(())
     }
 
+    /// Open an autosave file as a new, unsaved project (so Save asks where,
+    /// rather than writing over the autosave).
+    pub fn open_autosave(&mut self, path: PathBuf) {
+        self.open_project_path(path.clone());
+        if self.project_path.as_deref() == Some(path.as_path()) {
+            self.project_path = None;
+            self.saved_rev = self.rev.wrapping_sub(1);
+            if let Some(s) = &mut self.session {
+                s.set_project(None);
+            }
+            self.status = format!("Opened the autosave {}: save it to keep it", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        }
+    }
+
+    /// The runs of frames (first, last + 1) of the active sequence that Render
+    /// preview has finished, looking at every `step`th frame.
+    pub fn rendered_runs(&self, step: i64) -> Vec<(i64, i64)> {
+        let mut runs: Vec<(i64, i64)> = Vec::new();
+        if self.render_cache.stats().1 == 0 {
+            return runs;
+        }
+        let step = step.max(1);
+        let sources = self.decode_paths();
+        let s = self.seq();
+        let rate = s.frame_rate;
+        let last = reelforge_export::frame_range(rate, Time::ZERO, s.duration()).1;
+        let mut f = 0;
+        while f < last {
+            let t = Time::from_frame(f, rate);
+            if self.render_cache.has(self.active, f, reelforge_export::frame_recipe(&self.project, self.active, t, &sources)) {
+                match runs.last_mut() {
+                    Some(r) if r.1 >= f => r.1 = (f + step).min(last),
+                    _ => runs.push((f, (f + step).min(last))),
+                }
+            }
+            f += step;
+        }
+        runs
+    }
+
     pub fn open_project_path(&mut self, path: PathBuf) {
         match load_project(&path) {
             Ok(p) => {
@@ -1660,6 +1892,7 @@ impl Editor {
         self.playback.scrub_if_moved();
         self.meters.poll(self.playback.audio.as_ref());
         let sources = self.decode_paths();
+        self.step_render_job(&sources);
         self.preview.update(&self.project, self.active, self.playback.playhead, self.playback.playing, &sources, &mut self.render_cache);
         if let Some(e) = self.preview.error.take() {
             self.status = e;
@@ -1696,6 +1929,120 @@ mod tests {
 
     fn editor() -> Editor {
         Editor::new(None, None)
+    }
+
+    /// A small real video file made with the ffmpeg CLI (tests skip without it).
+    fn clip_file(dir: &Path, name: &str) -> Option<PathBuf> {
+        let p = dir.join(name);
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25:duration=1", "-pix_fmt", "yuv420p"])
+            .arg(&p)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(p)
+    }
+
+    #[test]
+    fn relinking_points_media_at_the_moved_files_and_undoes() {
+        let dir = std::env::temp_dir().join(format!("rf-engine-relink-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("new/sub")).unwrap();
+        let (Some(a), Some(b)) = (clip_file(&dir.join("new"), "a.mp4"), clip_file(&dir.join("new/sub"), "b.mp4")) else { return };
+        let mut e = editor();
+        let info = reelforge_media::probe(&a).unwrap();
+        for (id, name) in [(1, "a.mp4"), (2, "b.mp4")] {
+            e.project.media.push(MediaAsset { id: MediaId(id), path: dir.join("old").join(name), name: name.into(), info: info.clone() });
+        }
+        assert_eq!(reelforge_core::undo::missing_media(&e.project).len(), 2);
+        // Relinking one file finds the other in the same folder tree by name.
+        let mut pairs = vec![(dir.join("old/a.mp4"), a.clone())];
+        pairs.extend(crate::safety::find_by_name(&dir.join("new"), &[dir.join("old/b.mp4")]));
+        e.apply_relinks(pairs);
+        assert!(reelforge_core::undo::missing_media(&e.project).is_empty(), "{}", e.status);
+        assert_eq!(e.project.media(MediaId(2)).unwrap().path, b);
+        assert!(e.status.starts_with("Relinked 2 files"), "{}", e.status);
+        e.undo();
+        assert_eq!(reelforge_core::undo::missing_media(&e.project).len(), 2, "one undo step");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn history_jumps_back_and_forward() {
+        let mut e = editor();
+        e.add_track(TrackKind::Video);
+        e.add_title();
+        e.add_marker();
+        assert_eq!(e.undo.entries().len(), 3);
+        let titled = e.selection.expect("the new title is selected");
+        let rev = e.rev;
+        e.history_go_to(1); // just after adding the track
+        assert!(e.rev > rev, "jumping counts as a change");
+        assert!(e.seq().markers.is_empty());
+        assert!(e.seq().find_clip(titled).is_none());
+        e.history_go_to(3);
+        assert_eq!(e.seq().markers.len(), 1);
+        assert!(e.seq().find_clip(titled).is_some());
+        e.history_go_to(0);
+        assert_eq!(e.seq().tracks.len(), 3);
+        assert_eq!(e.undo.entries().len(), 3, "undone steps stay listed");
+        e.redo();
+        assert_eq!(e.seq().tracks.len(), 4);
+    }
+
+    #[test]
+    fn edits_are_unsaved_until_saved() {
+        let dir = std::env::temp_dir().join(format!("rf-engine-dirty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = editor();
+        assert!(!e.is_dirty(), "a new project has nothing to save");
+        e.add_track(TrackKind::Video);
+        assert!(e.is_dirty());
+        e.save_to(&dir.join("p.rfproj")).unwrap();
+        assert!(!e.is_dirty());
+        let saved: Project = serde_json::from_str(&std::fs::read_to_string(dir.join("p.rfproj")).unwrap()).unwrap();
+        assert_eq!(saved.sequences[0].tracks.len(), 4);
+        // An autosave opened is a new, unsaved project (Save asks where).
+        e.open_autosave(dir.join("p.rfproj"));
+        assert_eq!(e.project_path, None);
+        assert!(e.is_dirty());
+        assert_eq!(e.seq().tracks.len(), 4);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn composites_paste_attributes_and_nudges() {
+        let mut e = editor();
+        e.add_title();
+        let a = e.selection.unwrap();
+        // Nudge: two frames later, one undo step.
+        let start = e.seq().find_clip(a).unwrap().1.timeline_start;
+        e.nudge(2);
+        let frame = e.seq().frame_rate.frame_duration();
+        assert_eq!(e.seq().find_clip(a).unwrap().1.timeline_start, start + Time(frame.0 * 2));
+        assert!(e.status.starts_with("Nudged 2 frames later"), "{}", e.status);
+        // Paste attributes: nothing copied yet.
+        e.paste_attributes(reelforge_core::attrs::AttrSet::default());
+        assert!(e.status.starts_with("Paste attributes: copy a clip first"));
+        // Make a composition from the selected title.
+        let comps = e.project.sequences.len();
+        e.make_composite();
+        assert_eq!(e.project.sequences.len(), comps + 1, "{}", e.status);
+        let c = e.selection.unwrap();
+        assert!(e.seq().find_clip(c).unwrap().1.nested.is_some());
+        e.undo();
+        assert!(e.seq().find_clip(a).is_some());
+    }
+
+    #[test]
+    fn render_preview_needs_something_to_render_and_stops() {
+        let mut e = editor();
+        e.render_preview();
+        assert!(e.status.starts_with("Nothing to render"), "{}", e.status);
+        e.add_title();
+        e.render_preview();
+        assert!(e.render_progress().is_some());
+        e.stop_render_preview();
+        assert!(e.render_progress().is_none());
+        assert!(e.status.starts_with("Stopped rendering"));
     }
 
     #[test]

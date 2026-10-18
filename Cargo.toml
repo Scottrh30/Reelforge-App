@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/media", "crates/render", "crates/export", "crates/engine", "crates/app", "crates/tauri-app"]
+members = ["crates/core", "crates/media", "crates/render", "crates/export", "crates/engine", "crates/tauri-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,16 +20,12 @@ env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
 crossbeam-channel = "0.5"
 ffmpeg-next = "9"
-eframe = { version = "0.36", features = ["wgpu", "persistence"] }
-egui = "0.36"
-egui_dock = { version = "0.21", features = ["serde"] }
 rfd = "0.17"
 serde_json = "1"
 cpal = "0.18"
-# Must match the wgpu version egui-wgpu uses, so the app can share eframe's device.
 wgpu = "30"
 pollster = "0.4"
-# Text titles: glyph outlines and rasterising (both already used by egui).
+# Text titles: glyph outlines and rasterising.
 ab_glyph = "0.2"
 ttf-parser = "0.25"
 epaint_default_fonts = "0.36"

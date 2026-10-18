@@ -6,26 +6,22 @@ effects and compositing (compositions, motion tracking with corner pinning) are 
 
 What works now:
 
-- Dockable panel layout (Media, Viewer, Controls, Editor Timeline, Composition Timeline, Curves, Meters) — drag tabs to rearrange
+- One window, built from panels: Media and History on the left, the Viewer in the middle,
+  Controls on the right, and along the bottom the Editor Timeline, Composition Timeline and
+  Curves tabs with the Meters beside them
 - **Divider bars** between the panels: drag one to make the panels on either side bigger or
-  smaller (the pointer turns into a resize arrow over it, and the bar lights up). The grip dots
-  mark the middle of each bar. Double-click a bar to split its two sides evenly. Panels stop at
-  about 70 points so nothing disappears. The layout (sizes, and which windows are where) is
-  remembered the next time you start Reelforge; **Tabs → Reset layout** puts it back
-- **Tabs menu** (next to Edit): a tick box for every window (Viewer, Media, History, Controls,
-  Editor Timeline, Composition Timeline, Curves, Meters). Untick one to take it out of the
-  layout; tick it to bring it back beside the windows it normally shares a panel with (or in
-  its usual place if those are hidden too). The menu stays open so you can change several at
-  once. **Show all** brings back everything hidden, **Reset layout** puts every window back
-  where it started. Hidden windows stay hidden the next time you start Reelforge. Opening a
-  composition, or **Edit → Undo history**, brings back the window it needs
+  smaller. The sizes are remembered the next time you start Reelforge; **Tabs → Reset layout**
+  puts them back
+- **Tabs menu**: a tick for every window (Media, History, Viewer, Controls, Timeline, Meters).
+  Untick one to hide it, tick it to bring it back; **Show all windows** brings back everything,
+  **Reset layout** shows them all at their starting sizes. Hidden windows stay hidden the next
+  time you start Reelforge
 - Import video/image/audio via **File → Import**, `Ctrl+I`, or drag files from Explorer
 - FFmpeg decoding on a background thread, with frame-accurate seeking
 - Viewer with transport bar and timecode
 - Multi-track timeline: drag media from the bin onto a track, move clips between tracks,
   razor split (`S`), delete (`Del`), scrub, zoom (`Ctrl` + scroll, or the zoom slider in the bar under the tracks), pan (scroll); drag the right edge of the track names to widen them (double-click it to reset)
-- Undo/redo for every edit (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z`, or the **Undo** / **Redo**
-  buttons in the menu bar, whose tooltips name the step)
+- Undo/redo for every edit (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z`, or the Edit menu, which names the step)
 - **History** panel (a tab next to Media, or **Edit → Undo history**): every edit in order with
   how long ago it was made. Click any step to jump back to just after it (or **Start** to undo
   everything); the steps after it stay listed, greyed and struck through, so you can click
@@ -319,7 +315,7 @@ What works now:
     composition you're working on, with a tab for each composition along its top and **+** for
     a new one. The Editor Timeline always shows the main edit. Switching between the two tabs
     switches what the Viewer, Controls and export work on; each sequence remembers its playhead,
-    zoom and scroll. If you dock the two side by side, click the one not in use to switch
+    zoom and scroll
   - **Double-click** a composition clip (or **Open** in the Controls or Media panel) to open it
     in the Composition Timeline. **+ New** in the Media panel starts an empty one, and **Add at
     playhead** puts a composition into whatever you're editing (compositions can contain
@@ -397,28 +393,29 @@ crates/
   media/   FFmpeg probing, MovieWriter (H.264/AAC encoder + muxer), threaded video decoder + FrameSource ("give me the frame at time t"),
            AudioReader (random-access resampled audio), Mixer (renders the timeline's audio).
   render/  wgpu compositor: transformed layers, blend modes, linear-light float pipeline,
-           pixel readback. No egui dependency, so export can use it headless.
+           pixel readback. No interface dependency, so export can use it headless.
   export/  Scene building shared by viewer and export (incl. compositions), the audio mix
            list, and offline render: exact frames -> compositor -> MovieWriter, with
            progress/cancel. Runs headless (tests use it without a window).
   engine/  Everything an interface needs that isn't drawing: the editor model (Editor:
            project, undo, selection, live edits, import, save/open), playback and the cpal
            audio engine, the viewer picture (Preview), render cache, proxies, autosave and
-           crash recovery, meters, export presets. Shared by both apps.
-  app/     The egui desktop app (`reelforge`): egui_dock panels, timeline, viewer, every
-           editing tool.
+           crash recovery, meters, export presets, plugins, Collect project, the viewer
+           gizmo's maths. No interface code.
   tauri-app/
-           The Tauri app (`reelforge-tauri`): the same engine with a web interface
-           (Svelte + TypeScript in `ui/`). See "The Tauri app" below.
+           The app (`reelforge`): a Tauri window hosting the interface (Svelte +
+           TypeScript in `ui/`), which reaches the engine through commands. See "The app"
+           below.
 ```
 
-## The Tauri app
+## The app
 
-`reelforge-tauri` is Reelforge with a web interface: Tauri hosts a Svelte UI in the
-system's web view (WebView2 on Windows, WebKitGTK on Linux), and the Rust side gives it the
-shared engine through commands. It sits next to the egui app while it catches up with it.
+`reelforge` is a Tauri window: it hosts the Svelte interface in the system's web view
+(WebView2 on Windows, WebKitGTK on Linux), and the Rust side gives it the engine through
+commands. (Until this version there was also a "classic" egui window; everything it did
+moved here and it was retired.)
 
-What it does today: the Media panel (import, drag to the timeline, right-click → New
+What it does, panel by panel: the Media panel (import, drag to the timeline, right-click → New
 composition from media), the Viewer (with move and scale handles on the selected layer,
 and the transport), the Controls panel (transform, opacity, blend, speed, title text, clip
 volume and pan, masks, motion tracking), the Editor and Composition timelines (select, box select, move between
@@ -456,7 +453,7 @@ starter template, open the plugin folder, reload, remove (with a confirmation), 
 reload automatically when a plugin's files change; a plugin that doesn't load says
 why (file, line and column).
 
-Export: every setting the classic window has (format, size including custom, fit,
+Export: every setting (format, size including custom, fit,
 quality or target bitrate with a size estimate, 10-bit/HDR, GPU encoder, sound, range),
 built-in presets, and your own presets (Save as preset…, kept in the settings). Export
 runs it at once; Add to queue lines up several. The export queue (File → Export queue,
@@ -498,10 +495,40 @@ playhead, and **Speed ramp…**: the clip is cut into 4–24 parts whose speeds 
 percentage to another (evenly or easing in and out), one undo step; later clips move to
 make room. **J / K / L** shuttle backwards, stop and forwards (press again for 2×, 4×, 8×).
 
-The Tauri app now does everything the classic window does.
+Viewer: click a layer to select it (the topmost one under the pointer), drag inside it to
+move it (snapping to the frame and the other layers, with red guide lines; Alt places it
+freely, Shift keeps it straight). The gizmo's corner handles scale (Shift: X and Y
+separately), edge handles stretch (Shift: both ways; Ctrl + an edge crops it), the stem above
+the top edge or just outside a corner rotates (Shift: 15° steps), Ctrl + the cross moves the
+anchor point (it snaps to the middle, corners and edges), and a corner-pinned layer shows its
+four corners to drag. A readout by the pointer says what's changing.
+
+Audio: the Controls panel has the clip's volume and pan (each with keyframes: ◀ ◆ ▶ and Clear),
+fades and Reset audio; with no clip selected it shows every audio track's volume and pan. On
+the timeline each audio clip has its volume line: drag it up or down, Ctrl+click it to add a
+key, drag keys, Alt+click (or double-click) one to remove it, and drag the small handles at the
+top corners for the fades.
+
+Titles: font (every installed face, searchable), size and colour, alignment, line and letter
+spacing, outline, shadow (colour, opacity, distance, angle, softness), a box behind the text
+(colour, opacity, padding) and Centre / Lower third / Top placement.
+
+Transform: position, scale (linked or not), rotation, anchor, crop, opacity, blend, corner pin
+(on/off and Reset corners), each with ◆ keyframes; ◀ ▶ jump between keyframes and the menu
+beside them sets how the keys at the playhead move on (Linear, Ease, Hold); Reset, Fit, Fill
+and Centre anchor.
+
+Also: **Enter** renders the preview between the marks (or the whole sequence; **Esc** stops,
+a green bar along the ruler shows what's rendered), **Ctrl+G** makes a composition from the
+selected clips (or everything between the marks), **Ctrl+Alt+V** pastes chosen attributes of
+the copied clip onto the selected ones, **,** and **.** nudge clips a frame (Shift: ten),
+**\\** fits the whole sequence in the timeline, File → Open an autosave…, and Settings for
+hardware decoding, the frame and render cache sizes, audio scrubbing, timeline thumbnails and
+viewer snapping.
 
 How it works:
-- The editor lives on the main thread; Tauri runs (non-async) commands there, so each
+- The editor (`reelforge_engine::editor::Editor`) lives on the main thread; Tauri runs
+  (non-async) commands there, so each
   command borrows it in turn. `tick` (called every animation frame) moves playback along
   and renders the picture; the UI then fetches the full state only when the project's
   revision changed, and the picture only when it changed.
@@ -512,9 +539,9 @@ How it works:
   needs no DLL beside it. WebView2 itself comes with Windows 10 and 11.
 
 Building it: `cd crates/tauri-app/ui && npm install && npm run build`, then
-`cargo build --release -p reelforge-tauri` (the build embeds `ui/dist`). For working on the
-interface, `npm run dev` serves it with live reload and
-`cargo run -p reelforge-tauri --no-default-features` loads it from there.
+`cargo build --release -p reelforge-tauri` (the build embeds `ui/dist`; the program is
+`target/release/reelforge`). For working on the interface, `npm run dev` serves it with live
+reload and `cargo run -p reelforge-tauri --no-default-features` loads it from there.
 
 ## Building on Windows 10/11
 
@@ -557,7 +584,8 @@ Open a **new** terminal so the variables take effect.
 
 ```powershell
 cd reelforge
-cargo run --release -p reelforge
+cd crates\tauri-app\ui; npm install; npm run build; cd ..\..\..
+cargo run --release -p reelforge-tauri
 ```
 
 Run the tests (the media tests generate a clip with the `ffmpeg` CLI from `C:\ffmpeg\bin`, and
@@ -593,7 +621,8 @@ export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
 # mingw-w64 lacks d3d12video.h, which FFmpeg's headers include; a one-line stub
 # (`typedef struct ID3D12VideoDevice ID3D12VideoDevice;`) in ./stubs is enough for bindgen.
 export BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnu="--sysroot=/usr/x86_64-w64-mingw32 -I/usr/x86_64-w64-mingw32/include -I$PWD/stubs"
-cargo build --release -p reelforge --target x86_64-pc-windows-gnu
+(cd crates/tauri-app/ui && npm install && npm run build)
+cargo build --release -p reelforge-tauri --target x86_64-pc-windows-gnu
 ```
 
 Ship `reelforge.exe` with the `bin/*.dll` files from the FFmpeg build next to it.
@@ -678,11 +707,11 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   `Rgba8UnormSrgb` texture (cached, re-uploaded only when the frame changes), drawn as a
   transformed quad into an `Rgba16Float` target with a fixed-function blend state per blend
   mode (premultiplied alpha), then encoded to sRGB. So a 50% fade between red and blue is
-  computed in linear light, the way HitFilm and other compositors do it. The app shares
-  eframe's wgpu device and shows the output texture directly in the Viewer, with no CPU copy.
+  computed in linear light, the way HitFilm and other compositors do it. The viewer picture
+  is read back from the GPU and sent to the interface (raw when paused, JPEG while playing).
   The same transform math (`crates/core/src/transform.rs`) drives the GPU and the on-canvas
   gizmo, so they always agree.
-- **Decoders are per clip** (`app/src/preview.rs`), so two clips of the same file at different
+- **Decoders are per clip** (`engine/src/preview.rs`), so two clips of the same file at different
   times don't fight over one decoder. While playing, decoders for cuts in the next 1.5 s are
   opened early; idle ones close after 4 s.
 - **Export** (`crates/export`): for each output frame it asks every visible clip's decoder
@@ -725,13 +754,13 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   masks and the tracker all agree. Crop is stored as fractions of the layer per side; the
   compositor draws a smaller quad sampling just that part of the texture (`crop_uv`), so it
   costs nothing. `with_anchor_kept_in_place` moves the pivot without moving the picture.
-- **The gizmo** (`app/src/gizmo.rs`) computes every drag from the transform at the start of the
-  drag and the pointer now (scale as the ratio of the pointer's offsets from the anchor in the
-  layer's rotated axes; rotation accumulated frame to frame so it can go past 180°), and writes
-  through the same `apply_transform_edit` as the Controls panel.
-- **Thumbnails** (`app/src/thumbs.rs`): one background thread with a LIFO queue (newest request
-  first, old ones dropped) decodes small frames with a `FrameSource`; requests snap to a time grid
-  chosen from how much media a tile covers, and the nearest decoded picture stands in meanwhile.
+- **The gizmo** (`engine/src/gizmo.rs`, driven by `tauri-app/src/viewer.rs`) computes every
+  drag from the transform at the start of the drag and the pointer now (scale as the ratio of
+  the pointer's offsets from the anchor in the layer's rotated axes; rotation accumulated move
+  to move so it can go past 180°), in frame pixels with the viewer's zoom passed in for the grab
+  distances, and writes through the same `set_transform_live` as the Controls panel.
+- **Thumbnails** (the `thumbnail` command): decoded off the main thread with a small pool of
+  open `FrameSource`s, sent as JPEG, and cached by the interface.
 - **Effects** (`core/src/effects.rs`, `render/src/effects.wgsl`): an `Effect` is a kind plus
   parameters, each a static value or a keyframe `Curve`. `Project::video_layers_at` evaluates
   them at the frame's source time into `EffectValues`. The compositor runs each layer that has
@@ -751,7 +780,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   LRU of decoded frames keyed by (file, decode size, pts) that every preview decoder fills and
   reads. `proxy.rs` writes all-intra H.264 at ≤960×540, sampling the source once per nominal
   frame so proxies line up with variable-frame-rate originals.
-- **Safety** (`app/src/safety.rs`): every save goes through `write_atomic` (write, fsync,
+- **Safety** (`engine/src/safety.rs`): every save goes through `write_atomic` (write, fsync,
   rename). Each running app holds an OS file lock on its session file; at start-up, a session
   file nobody holds a lock on means that run crashed, and its autosave is offered back.
 - **Titles** (`core/src/title.rs`, `render/src/text.rs`): a title is a clip with a
@@ -793,8 +822,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   ghosts), shifting selected clips by the same number of tracks of their kind. The clipboard
   stores clips with times relative to the earliest one and tracks as "n-th video/audio track";
   pasting simulates the paste on a copy of the project to add tracks and find the first time
-  where everything fits, then makes it one undoable batch with fresh ids and links. egui only
-  reports Ctrl+V when the system clipboard holds text, so copying leaves a short note there
+  where everything fits, then makes it one undoable batch with fresh ids and links
 - **Masks** (`core/src/mask.rs`, `render/src/mask.wgsl`): a mask is points in the layer's own
   pixels (four corners for a rectangle or ellipse, any number for freehand) plus optional shape
   keys. `rasterize` fills each outline (even-odd scanlines), computes the distance to the outline
@@ -816,7 +844,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   homography; `follow_keys` composes it with the target's transform (or, stabilising, applies
   its inverse, optionally against a Gaussian-smoothed camera path) and writes position /
   rotation / scale keys, or corner-pin keys
-- **Plugins** (`core/src/plugin.rs`, `render/src/plugin.rs`, `app/src/plugins.rs`): the
+- **Plugins** (`core/src/plugin.rs`, `render/src/plugin.rs`, `engine/src/plugins.rs`): the
   manifest is parsed into a `PluginDef` (parameter specs interned as `&'static`, like the
   built-in effects' tables, so reloading the same manifest leaks nothing) and published in a
   global registry that `Effect` (kind `Plugin` plus a `PluginRef` id) looks up for its
@@ -831,7 +859,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   index); built-in shaders only declare the first 64. A plugin's revision and the clip time
   are part of the frame signature, so reloads and animated plugins re-render. The app's
   manager fingerprints plugin files once a second for live reload.
-- **Collect** (`core/src/collect.rs`, `app/src/collect_ui.rs`): `Project::for_each_path_mut`
+- **Collect** (`core/src/collect.rs`, `engine/src/collect.rs`): `Project::for_each_path_mut`
   visits every file reference (media, LUT effect data, title fonts), so planning, relative
   saving and resolving can't miss one. `plan_collect` picks clash-free names (compared without
   case, as Windows would) and reuses an existing file only if it has the same size and date.
@@ -845,10 +873,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   `SetTitle` commands. Keys move by the difference of the two clips' `source_in` (keys live in
   each clip's own time); mask points scale by the ratio of picture sizes. **Nudge** is
   `nudge_clips` in `undo.rs`, which reuses `move_targets`, so links, locks and overlaps behave
-  exactly as when dragging. Ctrl+Alt+V reaches the app as a Paste event (egui turns Ctrl+V into
-  one), so the shortcut handler replays the frame's `ModifiersChanged` events to know whether
-  Alt was down at that moment, even if all the keys were released within the same frame.
-- **Viewer snapping** (`app/src/snap.rs`): a drag is computed from the layer's transform when
+  exactly as when dragging.
+- **Viewer snapping** (`engine/src/snap.rs`): a drag is computed from the layer's transform when
   it began plus the pointer's total movement (so snapping never accumulates); the moving
   layer's bounding box is snapped on each axis to the nearest of the frame's and other
   layers' edges and centres within 8 screen pixels.
@@ -858,7 +884,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   unchanged vertex shader draws the quad and the GPU interpolates texture coordinates in
   perspective. Hit testing, the gizmo, masks and the tracker overlay all go through
   `layer_map`, so they agree with what's drawn. Pin keys are a `Curve<Pin>` like any property
-- **Curves** (`core/src/channels.rs`, `app/src/curves.rs`): `Channel` addresses any keyframeable
+- **Curves** (`core/src/channels.rs`, `ui/src/components/CurvesPanel.svelte`): `Channel` addresses any keyframeable
   number on a clip (a transform component or an effect parameter), with uniform get/set/move
   operations, so the curve editor doesn't care what it's editing. A drag re-applies the move
   to a copy of the clip taken when it started, which keeps keys in order and makes the whole
@@ -885,7 +911,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   the frame's matrix (BT.601/709/2020) and range, interpolating the 4:2:0 chroma with MPEG-2
   siting. `YuvPlanes::to_rgba` is the CPU version (thumbnails, proxies) and the reference the
   GPU is tested against (within 2/255 for every layout).
-- **Render cache** (`app/src/render_cache.rs`): frames are keyed by (sequence, frame) and
+- **Render cache** (`engine/src/render_cache.rs`): frames are keyed by (sequence, frame) and
   stored with a *recipe*, `reelforge_export::frame_recipe`: a hash of everything that decides
   the picture, computed from the project without decoding (media file and frame index, title
   look, compositions recursively, evaluated transforms, effects, masks, transitions, proxy or
@@ -902,12 +928,12 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 - **Scrubbing**: while paused, every playhead move asks the engine for a 60 ms snippet with
   4 ms de-click ramps. The mixer only renders the next snippet when the device is about to run
   dry, always at the newest position, so fast drags stay responsive.
-- **Audio engine** (`app/src/audio.rs`): a mixer thread renders the timeline into 1024-frame
+- **Audio engine** (`engine/src/audio.rs`): a mixer thread renders the timeline into 1024-frame
   blocks with `Mixer` and queues ~130 ms ahead; the cpal callback (realtime: no locks, no
   decoding) copies blocks to the device and publishes which timeline sample is reaching the
   speakers, corrected for output latency. Play/stop bump a generation number so stale blocks
   are dropped instantly on seek.
-- **Playback clock** (`app/src/playback.rs`) reads that position, so video is slaved to audio.
+- **Playback clock** (`engine/src/playback.rs`) reads that position, so video is slaved to audio.
   With no device, or if audio fails to start within 500 ms, it falls back to wall-clock time.
   The status bar shows which clock is in use.
 

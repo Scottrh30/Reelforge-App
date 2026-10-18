@@ -157,3 +157,47 @@ pub fn extension(video: Option<VideoCodec>) -> &'static str {
 pub fn format_label(video: Option<VideoCodec>) -> &'static str {
     video.map_or("Audio only (WAV)", |v| v.label())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presets_set_sizes() {
+        let master = Preset::MasterProRes.spec().unwrap();
+        assert_eq!(master.size.resolve(2560, 1440), (2560, 1440), "masters keep the sequence size");
+        let v = Preset::Vertical.spec().unwrap();
+        assert_eq!((v.size.resolve(1920, 1080), v.fit), ((1080, 1920), Fit::Crop));
+        assert!(Preset::AudioWav.spec().unwrap().video.is_none());
+        assert_eq!(extension(None), "wav");
+        assert_eq!(Preset::Draft.spec().unwrap().size.resolve(1920, 1080), (960, 540));
+        assert!(Preset::Custom.spec().is_none());
+    }
+
+    #[test]
+    fn saved_presets_round_trip() {
+        let mut spec = Preset::YouTube4k.spec().unwrap();
+        spec.color = ColorOut::Sdr10;
+        spec.bitrate_kbps = Some(25_000);
+        let saved = vec![UserPreset { name: "Client 4K".into(), spec, include_audio: false }];
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: Vec<UserPreset> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, saved);
+        // Presets saved before colour/bitrate existed still load.
+        let old: Spec = serde_json::from_str(r#"{"video":"H264","size":{"Scaled":1},"quality":"High","fit":"Letterbox","hardware":false}"#).unwrap();
+        assert_eq!((old.color, old.bitrate_kbps), (ColorOut::Sdr8, None));
+    }
+
+    #[test]
+    fn suggested_bitrates_are_sensible() {
+        assert_eq!(suggested_kbps(1920, 1080, VideoCodec::H264), 8100);
+        assert!(suggested_kbps(3840, 2160, VideoCodec::H265) > 15_000);
+        assert_eq!(suggested_kbps(64, 64, VideoCodec::H264), 500);
+    }
+
+    #[test]
+    fn odd_sequence_sizes_scale_to_even_ones() {
+        assert_eq!(Size::Scaled(2).resolve(1918, 1078), (958, 538));
+        assert_eq!(Size::Scaled(4).resolve(6, 6), (2, 2));
+    }
+}

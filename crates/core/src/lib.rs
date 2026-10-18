@@ -1,6 +1,6 @@
 //! Engine-agnostic core of Reelforge.
 //!
-//! Nothing in here knows about FFmpeg, wgpu or egui. Keeping the project model
+//! Nothing in here knows about FFmpeg, wgpu or the interface. Keeping the project model
 //! pure makes it easy to test, serialize, and drive from a headless renderer later.
 
 pub mod anim;

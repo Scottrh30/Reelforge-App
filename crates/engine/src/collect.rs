@@ -103,3 +103,50 @@ pub fn run_collect(plan: &CollectPlan, cancel: &AtomicBool, mut progress: impl F
     Ok(Report { project_file: plan.project_file.clone(), copied, reused, bytes: done, missing: plan.missing.clone(), seconds: started.elapsed().as_secs_f64() })
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reelforge_core::collect::{plan_collect, CollectOptions};
+    use reelforge_core::{Clip, ClipId, MediaAsset, MediaId, MediaInfo, Project, Sequence, Time};
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn collects_copies_and_the_moved_folder_opens() {
+        let root = std::env::temp_dir().join(format!("rf_collect_engine_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (src, dest, moved) = (root.join("src"), root.join("out"), root.join("moved"));
+        std::fs::create_dir_all(&src).unwrap();
+        let data: Vec<u8> = (0..9_000_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(src.join("big.mov"), &data).unwrap();
+        let mut p = Project::new();
+        let info = MediaInfo { duration: Time::ZERO, video: None, audio: None, container: String::new() };
+        p.media = vec![MediaAsset { id: MediaId(1), path: src.join("big.mov"), name: "big.mov".into(), info }];
+        let mut seq = Sequence::new("S", 640, 360, reelforge_core::FrameRate::new(25, 1));
+        seq.tracks[0].clips.push(Clip::new(ClipId(5), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.0), None));
+        p.sequences = vec![seq];
+
+        let plan = plan_collect(&p, &dest, &safe_name("My: film?"), CollectOptions::default());
+        assert_eq!(plan.project_file, dest.join("My_ film_.rfproj"));
+        let mut calls = 0;
+        let rep = run_collect(&plan, &AtomicBool::new(false), |_, _, _| calls += 1).unwrap();
+        assert_eq!((rep.copied, rep.reused, rep.bytes), (1, 0, 9_000_000));
+        assert!(calls >= 3, "progress during the copy");
+        assert_eq!(std::fs::read(dest.join("Media/big.mov")).unwrap(), data);
+        assert!(!dest.join("Media/big.mov.part").exists());
+        // Collecting again reuses the copy.
+        let rep = run_collect(&plan_collect(&p, &dest, "My_ film_", CollectOptions::default()), &AtomicBool::new(false), |_, _, _| {}).unwrap();
+        assert_eq!((rep.copied, rep.reused), (0, 1));
+        // Move the whole folder, open the project: the media is found there.
+        std::fs::rename(&dest, &moved).unwrap();
+        let q = crate::editor::load_project(&moved.join("My_ film_.rfproj")).unwrap();
+        assert_eq!(q.media[0].path, moved.join("Media").join("big.mov"));
+        assert!(q.media[0].path.exists());
+        // A stopped copy leaves no half-written file.
+        let stop = AtomicBool::new(true);
+        let err = copy_file(&src.join("big.mov"), &root.join("x/big.mov"), &stop, |_| {}).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert!(!root.join("x/big.mov").exists() && !root.join("x/big.mov.part").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}

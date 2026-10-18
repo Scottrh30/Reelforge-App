@@ -326,3 +326,37 @@ pub fn view(e: &mut reelforge_engine::editor::Editor) -> Option<CollectView> {
         })
     })
 }
+
+// ---- Paste attributes ----------------------------------------------------------
+
+/// What the copied clip can give (for the Paste attributes dialog).
+#[derive(Serialize)]
+pub struct AttrOffers {
+    pub from: String,
+    pub targets: usize,
+    pub visual: bool,
+    pub corner_pin: bool,
+    pub effects: usize,
+    pub masks: usize,
+    pub audio: bool,
+    pub text_style: bool,
+}
+
+/// None when nothing has been copied.
+#[tauri::command]
+pub fn attr_offers() -> Res<Option<AttrOffers>> {
+    ed(|e| {
+        if e.clipboard.is_empty() {
+            return None;
+        }
+        let src = reelforge_core::attrs::Source::of(&e.clipboard);
+        let o = src.offers();
+        let from = src.video.or(src.audio).map(|c| c.display_name(&e.project).into_owned()).unwrap_or_default();
+        Some(AttrOffers { from, targets: e.selected_ids().len(), visual: o.visual, corner_pin: o.corner_pin, effects: o.effects, masks: o.masks, audio: o.audio, text_style: o.text_style })
+    })
+}
+
+#[tauri::command]
+pub fn paste_attributes(set: reelforge_core::attrs::AttrSet) -> Res<()> {
+    ed(|e| e.paste_attributes(set))
+}

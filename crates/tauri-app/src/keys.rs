@@ -8,7 +8,15 @@ use reelforge_engine::editor::Editor;
 use serde::Serialize;
 
 /// The transform properties with a keyframe button, by name.
-const PROPS: [(Prop, &str); 6] = [(Prop::Position, "Position"), (Prop::Scale, "Scale"), (Prop::Rotation, "Rotation"), (Prop::Opacity, "Opacity"), (Prop::Anchor, "Anchor"), (Prop::Crop, "Crop")];
+const PROPS: [(Prop, &str); 7] = [
+    (Prop::Position, "Position"),
+    (Prop::Scale, "Scale"),
+    (Prop::Rotation, "Rotation"),
+    (Prop::Opacity, "Opacity"),
+    (Prop::Anchor, "Anchor"),
+    (Prop::Crop, "Crop"),
+    (Prop::Pin, "Pin"),
+];
 
 /// How many points of each animated curve are sent.
 const SAMPLES: usize = 240;
@@ -44,6 +52,13 @@ pub struct KeysView {
     pub channels: Vec<ChannelView>,
     /// The time span the curve editor shows (the clip, a little either side), timeline ticks.
     pub span: (i64, i64),
+    /// The transform keys just before and after the playhead (timeline ticks).
+    pub prev_key: Option<i64>,
+    pub next_key: Option<i64>,
+    /// How the transform keys at the playhead move on (when there are some there).
+    pub interp_here: Option<Interp>,
+    /// The corner pin is on but its corners cross over.
+    pub pin_twisted: bool,
 }
 
 #[derive(Serialize)]
@@ -90,6 +105,8 @@ pub fn view(e: &Editor, c: &Clip) -> KeysView {
     let rate = e.seq().frame_rate;
     let pad = Time((c.duration.0 / 20).max(rate.frame_duration().0));
     let (t0, t1) = (c.timeline_start - pad, c.timeline_end() + pad);
+    let ph = e.playback.playhead;
+    let times: Vec<Time> = v.anim.key_times().into_iter().map(|t| timeline_of(c, t)).collect();
     let channels = v
         .channels()
         .into_iter()
@@ -136,10 +153,72 @@ pub fn view(e: &Editor, c: &Clip) -> KeysView {
             .collect(),
         channels,
         span: (t0.0, t1.0),
+        prev_key: times.iter().rev().copied().find(|t| *t < ph).map(|t| t.0),
+        next_key: times.iter().copied().find(|t| *t > ph).map(|t| t.0),
+        interp_here: v.anim.interp_at(src).filter(|_| on_clip),
+        pin_twisted: shown.pin.is_some() && shown.valid_pin().is_none(),
     }
 }
 
 // ---- Commands ----------------------------------------------------------------------
+
+/// One-click transform changes, each one undo step: "anchor_centre",
+/// "crop_clear", "pin_on", "pin_off", "pin_reset", "fit", "fill", "reset".
+#[tauri::command]
+pub fn transform_op(id: u64, op: String) -> Res<()> {
+    ed(|e| {
+        let id = ClipId(id);
+        e.commit_live_edit();
+        let Some((_, c)) = e.seq().find_clip(id) else { return };
+        let native = e.layer_size(c);
+        let frame = e.frame_px();
+        let (src, _) = e.key_time(c);
+        let Some(mut v) = e.visual(id) else { return };
+        let mut t = v.anim.eval(&v.transform, src);
+        match op.as_str() {
+            "anchor_centre" => t = t.with_anchor_kept_in_place([0.0, 0.0], frame),
+            "crop_clear" => t.crop = [0.0; 4],
+            "pin_on" | "pin_reset" => t.pin = Some(t.pin_of_transform(native, frame)),
+            "fit" | "fill" => {
+                let k = Transform::fit_scale(native, frame, op == "fill");
+                t.scale = [k, k];
+                t.position = [0.0, 0.0];
+            }
+            "pin_off" | "reset" => {
+                if op == "reset" {
+                    v.transform = Transform::default();
+                    v.anim = Default::default();
+                } else {
+                    v.transform.pin = None;
+                    v.anim.pin.0.clear();
+                }
+                e.set_visual_live(id, v);
+                e.commit_live_edit();
+                return;
+            }
+            _ => return,
+        }
+        e.set_transform_live(id, t);
+        e.commit_live_edit();
+    })
+}
+
+/// How the transform keys at the playhead move towards the next ones.
+#[tauri::command]
+pub fn transform_interp(id: u64, interp: Interp) -> Res<()> {
+    ed(|e| {
+        let id = ClipId(id);
+        e.commit_live_edit();
+        let Some((_, c)) = e.seq().find_clip(id) else { return };
+        let (src, on_clip) = e.key_time(c);
+        let Some(mut v) = e.visual(id) else { return };
+        if on_clip {
+            v.anim.set_interp_at(src, interp);
+            e.set_visual_live(id, v);
+            e.commit_live_edit();
+        }
+    })
+}
 
 /// The keyframe button of a transform property ("Position", "Scale", …).
 #[tauri::command]

@@ -1,3 +1,4 @@
+import { SvelteMap } from "svelte/reactivity";
 // The editor as the interface sees it: the last full state, the live values
 // polled every frame, and the loop that keeps both (and the picture) fresh.
 
@@ -23,6 +24,9 @@ export const app = $state({
   curvesShown: {} as Record<number, string[]>,
   /// The Collect project window.
   collectOpen: false,
+  pasteAttrsOpen: false,
+  /// Bumped by Tabs > Reset layout.
+  layoutReset: 0,
   /// A marker being named / recoloured (its index).
   markerEdit: null as number | null,
   tool: "select" as "select" | "ripple" | "roll" | "slip" | "slide",
@@ -36,7 +40,8 @@ export const app = $state({
   settingsOpen: false,
   /// Media being dragged from the Media panel (pointer position in the window).
   dragMedia: null as null | { id: number; name: string; x: number; y: number },
-  waveforms: new Map<number, Uint8Array>(),
+  // Reactive, so clips redraw their waveform when it arrives.
+  waveforms: new SvelteMap<number, Uint8Array>(),
   waveformRate: 100,
   /// Which windows are shown (the Tabs menu).
   panels: loadPanels(),
@@ -96,6 +101,7 @@ export function say(text: string) {
 }
 
 /// `force`: fetch the full state even if the project didn't change (a new selection, say).
+let lastPicture = -1;
 export async function refresh(force = false) {
   const live = await api.tick();
   app.live = live;
@@ -105,7 +111,10 @@ export async function refresh(force = false) {
   const keyed = !!ins && (ins.effects.some((f) => f.animated) || ins.masks.some((m) => m.mask.keys.length > 0) || !!ins.keys);
   const now = performance.now();
   const moved = keyed && live.playhead !== lastPlayhead && (!live.playing || now - lastPlayheadFetch > 250);
-  if (force || moved || live.rev !== lastRev || live.plugins_rev !== lastPlugins || live.proxies !== lastProxies || !app.s) {
+  // A title's outline is known once it has been drawn: fetch it then.
+  const outline = !!ins?.visual && !ins.gizmo && !live.playing && live.picture_rev !== lastPicture;
+  lastPicture = live.picture_rev;
+  if (force || moved || outline || live.rev !== lastRev || live.plugins_rev !== lastPlugins || live.proxies !== lastProxies || !app.s) {
     lastProxies = live.proxies;
     lastRev = live.rev;
     lastPlugins = live.plugins_rev;

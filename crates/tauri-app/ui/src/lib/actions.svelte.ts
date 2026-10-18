@@ -3,6 +3,7 @@
 import { api } from "./api";
 import { app, run, say } from "./session.svelte";
 import { prefsDialog } from "./prefs.svelte";
+import { view } from "./timeline.svelte";
 
 /// A question in a dialog: the answer is the label of the button pressed (or null).
 export const ask = $state({ open: false, title: "", text: "", buttons: [] as string[], resolve: (_: string | null) => {} });
@@ -36,6 +37,9 @@ export const actions = {
   },
   async open() {
     if (await checkUnsaved()) await run(api.openDialog());
+  },
+  async openAutosave() {
+    if (await checkUnsaved()) await run(api.openAutosaveDialog());
   },
   save: () => run(api.save(false)),
   saveAs: () => run(api.save(true)),
@@ -81,7 +85,7 @@ export function onKey(e: KeyboardEvent) {
     }
     return;
   }
-  if (ask.open || app.exportOpen || app.effectsOpen || app.pluginsOpen || app.collectOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
+  if (ask.open || app.exportOpen || app.effectsOpen || app.pluginsOpen || app.collectOpen || app.pasteAttrsOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const go = (f: () => unknown) => {
@@ -99,7 +103,9 @@ export function onKey(e: KeyboardEvent) {
     if (k === "m") return go(actions.exportOpen);
     if (k === "c") return go(() => actions.act("copy"));
     if (k === "x") return go(() => actions.act("cut"));
+    if (k === "v" && e.altKey) return go(() => (app.pasteAttrsOpen = true));
     if (k === "v") return go(() => actions.act("paste"));
+    if (k === "g") return go(() => actions.act("make_composite"));
     if (k === "a") return go(() => actions.act("select_all"));
     if (k === "t") return go(actions.addTitle);
     if (k === "d") return go(() => actions.act(e.shiftKey ? "crossfade" : "dissolve"));
@@ -125,7 +131,18 @@ export function onKey(e: KeyboardEvent) {
     case "Backspace":
       return go(() => actions.act("delete"));
     case "Escape":
-      return go(() => actions.act("deselect"));
+      return go(() => actions.act(app.live?.render != null ? "stop_render_preview" : "deselect"));
+    case "Enter":
+      if (app.live?.render == null) return go(() => actions.act("render_preview"));
+      return;
+    case ",":
+    case "<":
+      return go(() => actions.act(e.shiftKey ? "nudge_left_10" : "nudge_left"));
+    case ".":
+    case ">":
+      return go(() => actions.act(e.shiftKey ? "nudge_right_10" : "nudge_right"));
+    case "\\":
+      return go(() => (view.fit = true));
   }
   switch (k) {
     case "s":

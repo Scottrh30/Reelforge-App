@@ -110,6 +110,8 @@ pub struct ClipView {
     pub fade_in: i64,
     pub fade_out: i64,
     pub effects: usize,
+    /// Audio clips: the levels, keyframes and fades (for the volume line).
+    pub audio: Option<ClipAudio>,
 }
 
 /// The selected clip, for the Controls panel.
@@ -124,6 +126,10 @@ pub struct Inspector {
     pub source_in: i64,
     pub visual: Option<VisualView>,
     pub title: Option<TitleSpec>,
+    /// The title's font file couldn't be found (the built-in one is used).
+    pub title_missing_font: bool,
+    /// The transform gizmo in the viewer (frame pixels), when the layer shows at the playhead.
+    pub gizmo: Option<reelforge_engine::gizmo::Geometry>,
     pub audio: Option<ClipAudio>,
     pub speed: f32,
     pub reverse: bool,
@@ -360,6 +366,7 @@ pub fn state(e: &Editor) -> State {
                     fade_in: c.audio.fade_in.0,
                     fade_out: c.audio.fade_out.0,
                     effects: c.effects.len(),
+                    audio: (t.kind == TrackKind::Audio).then(|| c.audio.clone()),
                 })
                 .collect(),
         })
@@ -429,6 +436,8 @@ pub fn state(e: &Editor) -> State {
             source_in: c.source_in.0,
             visual,
             title: c.title.clone(),
+            title_missing_font: c.title.is_some() && e.preview.title_missing_font(c.id),
+            gizmo: if video { crate::viewer::geometry(e) } else { None },
             audio: (tr.kind == TrackKind::Audio).then(|| c.audio.clone()),
             speed: c.speed,
             reverse: c.reverse,

@@ -2,12 +2,16 @@
   // The modal windows: Settings, questions, and crash recovery (Export is ExportDialog).
   import { untrack } from "svelte";
   import { app, run } from "../lib/session.svelte";
-  import { api, type Prefs } from "../lib/api";
+  import { api, type Prefs, type SettingsInfo } from "../lib/api";
   import { ask } from "../lib/actions.svelte";
 
   let prefs = $state<Prefs | null>(null);
+  let info = $state<SettingsInfo | null>(null);
   $effect(() => {
-    if (app.settingsOpen && app.s) prefs = { ...app.s.prefs };
+    if (app.settingsOpen && app.s) {
+      prefs = { ...app.s.prefs };
+      api.settingsInfo().then((i) => (info = i));
+    }
   });
 
   function key(e: KeyboardEvent) {
@@ -23,22 +27,40 @@
   <div class="scrim">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="set-title">
       <h2 id="set-title">Settings</h2>
-      <label class="check"><input type="checkbox" bind:checked={prefs.use_proxies} /> Play proxies in the viewer when they're ready</label>
-      <label class="check"><input type="checkbox" bind:checked={prefs.auto_proxies} /> Make proxies for large footage by themselves</label>
+      <h3>Playback</h3>
+      <label class="check" title="Decode on the graphics card. Falls back to software by itself if it doesn't work. Applies to clips opened from now on."><input type="checkbox" bind:checked={prefs.hw_decode} /> Hardware video decoding{info ? ` (${info.hw_api})` : ""}</label>
+      {#if info}<p class="info">Status: {info.hw_status}</p>{/if}
+      <label class="check"><input type="checkbox" bind:checked={prefs.scrub_audio} /> Audio scrubbing: hear the sound under the playhead while dragging it or stepping frames</label>
+      <label class="check"><input type="checkbox" bind:checked={prefs.timeline_thumbnails} /> Picture thumbnails on timeline clips</label>
+      <label class="check"><input type="checkbox" bind:checked={prefs.viewer_snapping} /> Snap layers in the Viewer to the frame and each other (hold Alt to place freely)</label>
       <label class="field">
-        <span>Autosave every</span>
-        <div class="row"><input type="number" min="0" max="60" bind:value={prefs.autosave_minutes} style="width:80px" /> minutes (0 turns it off)</div>
+        <span>Frame cache</span>
+        <div class="row"><input type="number" min="128" max="16384" step="128" bind:value={prefs.cache_mb} style="width:100px" /> MB</div>
       </label>
-      <label class="field">
+      {#if info}<p class="info">Holding {info.cache_frames} frames ({info.cache_mb} MB) · {Math.round(info.cache_hits * 100)}% of requests served from memory</p>{/if}
+      <label class="field" title="Memory for Render preview (Enter). A 1080p frame takes about 8 MB: 2 GB holds ~10 s at 25 fps.">
         <span>Render cache</span>
         <div class="row"><input type="number" min="256" max="32768" step="256" bind:value={prefs.render_cache_mb} style="width:100px" /> MB</div>
       </label>
-      <div class="field">
-        <span>Proxies</span>
-        <div class="row">
-          <button onclick={async () => run(api.openFolder(await api.proxyFolder()))}>Open the proxy folder</button>
-          <button onclick={() => run(api.proxiesDeleteAll())} title="Free the disk space; heavy footage won't get new ones by itself until you ask (Media panel, right-click)">Delete all proxies</button>
-        </div>
+      {#if info}<p class="info">Holding {info.render_frames} rendered frames ({info.render_mb} MB)</p>{/if}
+
+      <h3>Proxies</h3>
+      <label class="check" title="Small all-keyframe copies of heavy footage. Export always uses the original files."><input type="checkbox" bind:checked={prefs.use_proxies} /> Play proxies in the viewer when they're ready</label>
+      <label class="check" title="Above 1080p, and 720p or more in HEVC, AV1, VP9, ProRes or DNxHD. You can make one for any clip from the Media panel."><input type="checkbox" bind:checked={prefs.auto_proxies} /> Make proxies for heavy footage by themselves</label>
+      {#if info}<p class="info">{info.proxies} prox{info.proxies === 1 ? "y" : "ies"}, {info.proxy_bytes >= 1e9 ? `${(info.proxy_bytes / 1e9).toFixed(1)} GB` : `${Math.round(info.proxy_bytes / 1e6)} MB`}</p>{/if}
+      <div class="row">
+        <button onclick={async () => run(api.openFolder(await api.proxyFolder()))}>Open the proxy folder</button>
+        <button disabled={info?.proxies === 0} onclick={async () => (await run(api.proxiesDeleteAll()), (info = await api.settingsInfo()))} title="Free the disk space; heavy footage won't get new ones by itself until you ask (Media panel, right-click)">Delete all proxies</button>
+      </div>
+
+      <h3>Safety</h3>
+      <label class="field">
+        <span>Autosave every</span>
+        <div class="row"><input type="number" min="0" max="60" bind:value={prefs.autosave_minutes} style="width:80px" /> minutes {prefs.autosave_minutes === 0 ? "(off)" : ""}</div>
+      </label>
+      {#if info}<p class="info path" title={info.autosave_dir}>Autosaves are kept in {info.autosave_dir}</p>{/if}
+      <div class="row">
+        <button onclick={() => info && run(api.openFolder(info.autosave_dir))}>Open the autosave folder</button>
       </div>
       <div class="buttons">
         <button onclick={() => (app.settingsOpen = false)}>Cancel</button>
@@ -97,6 +119,27 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  .dialog:has(#set-title) {
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+  }
+  h3 {
+    font-size: calc(12.5px * var(--text-scale));
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 8px 0 0;
+  }
+  .info {
+    color: var(--faint);
+    font-size: calc(12px * var(--text-scale));
+    margin: -4px 0 0 26px;
+  }
+  .info.path {
+    margin-left: 0;
+    word-break: break-all;
   }
   .dialog.small {
     width: min(420px, calc(100vw - 32px));

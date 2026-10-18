@@ -1,12 +1,13 @@
 //! The parts of Reelforge that don't depend on a user interface toolkit:
 //! the editor model ([`editor::Editor`]), playback and audio output, the
 //! viewer picture, the render cache, proxies, autosave and crash recovery,
-//! meters and export presets. The egui app (`reelforge`) and the Tauri app
-//! (`reelforge-tauri`) are both built on these.
+//! meters, export presets, plugins, Collect project and the viewer gizmo.
+//! The app (`crates/tauri-app`, the `reelforge` program) is built on these.
 
 pub mod audio;
 pub mod collect;
 pub mod editor;
+pub mod gizmo;
 pub mod meters;
 pub mod playback;
 pub mod plugins;

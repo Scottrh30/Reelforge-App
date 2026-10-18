@@ -17,6 +17,7 @@ mod fx;
 mod keys;
 mod ops;
 mod trans;
+mod viewer;
 mod views;
 
 use reelforge_core::undo::Edge;
@@ -77,6 +78,10 @@ struct Live {
     collect: Option<ops::CollectView>,
     /// A tracking run: the clip and how far along (0–1).
     tracking: Option<(u64, f32)>,
+    /// A render-preview run: how far along (0–1).
+    render: Option<f32>,
+    /// Bumped when the render cache gains or loses frames.
+    render_gen: u64,
 }
 
 #[derive(Serialize)]
@@ -121,6 +126,8 @@ fn tick() -> Res<Live> {
             proxies: e.proxies.signature(),
             collect,
             tracking: e.tracking.as_ref().map(|j| (j.clip.0, j.progress)),
+            render: e.render_progress(),
+            render_gen: e.render_cache.generation,
         }
     })
 }
@@ -255,6 +262,20 @@ fn open_dialog() -> Res<()> {
     ed(|e| e.open_project_path(path))
 }
 
+/// File > Open an autosave…: pick one from the autosave folder and open it unsaved.
+#[tauri::command]
+fn open_autosave_dialog() -> Res<()> {
+    let dir = reelforge_engine::safety::autosave_dir();
+    let Some(path) = rfd::FileDialog::new().set_directory(&dir).add_filter("Reelforge project", &["rfproj"]).pick_file() else { return Ok(()) };
+    ed(|e| e.open_autosave(path))
+}
+
+/// Frame runs (first, end) the render preview has finished, checking every `step`th frame.
+#[tauri::command]
+fn rendered_runs(step: i64) -> Res<Vec<(i64, i64)>> {
+    ed(|e| e.rendered_runs(step))
+}
+
 #[tauri::command]
 fn open_path(path: String) -> Res<()> {
     ed(|e| e.open_project_path(PathBuf::from(path)))
@@ -315,11 +336,52 @@ fn dismiss_recovery(index: usize) -> Res<()> {
     ed(|e| e.dismiss_recovery(index))
 }
 
+/// What the Settings dialog shows beside the choices: how the caches and
+/// hardware decoding are doing, and where proxies and autosaves are kept.
+#[derive(Serialize)]
+struct SettingsInfo {
+    hw_api: &'static str,
+    hw_status: String,
+    cache_frames: usize,
+    cache_mb: usize,
+    cache_hits: f32,
+    render_frames: usize,
+    render_mb: usize,
+    proxies: usize,
+    proxy_bytes: u64,
+    proxy_dir: String,
+    autosave_dir: String,
+}
+
+#[tauri::command]
+fn settings_info() -> Res<SettingsInfo> {
+    ed(|e| {
+        let (used, frames, hits) = reelforge_media::FrameCache::global().stats();
+        let (rused, rframes) = e.render_cache.stats();
+        let dir = reelforge_media::proxy::cache_dir().join("proxies");
+        let (proxy_bytes, proxies) = std::fs::read_dir(&dir)
+            .map(|rd| rd.flatten().filter_map(|f| f.metadata().ok()).filter(|m| m.is_file()).fold((0, 0), |(b, n), m| (b + m.len(), n + 1)))
+            .unwrap_or((0, 0));
+        SettingsInfo {
+            hw_api: reelforge_media::hw::api_name(),
+            hw_status: reelforge_media::hw::status(),
+            cache_frames: frames,
+            cache_mb: used >> 20,
+            cache_hits: hits,
+            render_frames: rframes,
+            render_mb: rused >> 20,
+            proxies,
+            proxy_bytes,
+            proxy_dir: dir.display().to_string(),
+            autosave_dir: reelforge_engine::safety::autosave_dir().display().to_string(),
+        }
+    })
+}
+
 #[tauri::command]
 fn set_prefs(prefs: Prefs) -> Res<()> {
     ed(|e| {
-        e.prefs = prefs;
-        e.render_cache.set_budget_mb(e.prefs.render_cache_mb);
+        e.set_prefs(prefs);
         e.touch();
         save_settings(e);
     })
@@ -487,6 +549,11 @@ fn action(name: String) -> Res<()> {
         "crossfade" => e.toggle_transition_at_playhead(TrackKind::Audio),
         "nudge_left" => e.nudge(-1),
         "nudge_right" => e.nudge(1),
+        "nudge_left_10" => e.nudge(-10),
+        "nudge_right_10" => e.nudge(10),
+        "render_preview" => e.render_preview(),
+        "stop_render_preview" => e.stop_render_preview(),
+        "make_composite" => e.make_composite(),
         other => e.status = format!("Unknown action {other}"),
     })
 }
@@ -534,6 +601,22 @@ fn set_blend(id: u64, blend: BlendMode) -> Res<()> {
             e.commit_live_edit();
         }
     })
+}
+
+/// Every installed font face for titles (empty until the background scan finishes).
+#[tauri::command]
+fn font_faces() -> Res<Vec<reelforge_core::FontChoice>> {
+    ed(|e| {
+        let mut v: Vec<reelforge_core::FontChoice> = e.fonts().map(|f| f.iter().map(|f| f.choice()).collect()).unwrap_or_default();
+        v.sort_by_key(|f| f.name.to_lowercase());
+        v.dedup_by(|a, b| a.name == b.name);
+        v
+    })
+}
+
+#[tauri::command]
+fn place_title(id: u64, place: String) -> Res<()> {
+    ed(|e| e.place_title(clip(id), &place))
 }
 
 #[tauri::command]
@@ -724,9 +807,9 @@ fn webview2_ready() -> bool {
         }
         None => {
             webview2_shim::message(
-                "Reelforge's new interface needs Microsoft Edge WebView2, which isn't installed on this PC.\n\n\
+                "Reelforge needs Microsoft Edge WebView2, which isn't installed on this PC.\n\n\
                  Install the \"Evergreen WebView2 Runtime\" from\nhttps://developer.microsoft.com/microsoft-edge/webview2/\n\n\
-                 Meanwhile, reelforge.exe (the classic interface) works without it.",
+                 (Windows 10 and 11 usually have it already; it comes with Microsoft Edge.)",
             );
             false
         }
@@ -762,15 +845,14 @@ fn main() {
             if let Ok(dir) = app.path().app_config_dir() {
                 let path = dir.join("settings.json");
                 if let Some(p) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Prefs>(&b).ok()) {
-                    e.prefs = p;
-                    e.render_cache.set_budget_mb(e.prefs.render_cache_mb);
+                    e.set_prefs(p);
                 }
                 let _ = SETTINGS_PATH.set(path);
             }
             fx::startup(&mut e);
             e.start_session();
             e.status = "Import media with File > Import, or drop files onto the window.".into();
-            // `reelforge-tauri project.rfproj` opens it; media files are imported and laid out.
+            // `reelforge project.rfproj` opens it; media files are imported and laid out.
             let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
             if let Some(p) = args.iter().find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("rfproj"))) {
                 e.open_project_path(p.clone());
@@ -801,6 +883,7 @@ fn main() {
             recover,
             dismiss_recovery,
             set_prefs,
+            settings_info,
             add_to_timeline,
             new_composition_from_media,
             new_composite,
@@ -821,6 +904,8 @@ fn main() {
             set_transform,
             set_blend,
             set_title,
+            font_faces,
+            place_title,
             set_clip_audio,
             set_speed,
             add_mask,
@@ -866,6 +951,16 @@ fn main() {
             keys::key_delete,
             keys::key_add,
             ops::marker_colors,
+            ops::attr_offers,
+            keys::transform_op,
+            keys::transform_interp,
+            viewer::viewer_hover,
+            viewer::viewer_press,
+            viewer::viewer_drag,
+            viewer::viewer_release,
+            open_autosave_dialog,
+            rendered_runs,
+            ops::paste_attributes,
             ops::marker_add,
             ops::marker_set,
             ops::marker_remove,

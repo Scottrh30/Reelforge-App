@@ -1,8 +1,8 @@
 //! GPU compositor: blends transformed layers into a frame with wgpu.
 //!
-//! Independent of egui: the app hands it eframe's device/queue and shows the
-//! output texture in the viewer; export (next phase) and the tests drive it
-//! headless and read the pixels back.
+//! Independent of any interface: the editor gives it a device and queue and
+//! reads the output back for the viewer; export and the tests drive it
+//! headless too.
 //!
 //! Pipeline per frame:
 //! 1. upload each layer's RGBA8 frame to an `Rgba8UnormSrgb` texture (cached;
@@ -65,7 +65,7 @@ pub mod text;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-/// Gamma-encoded 8-bit, which is what egui expects for user textures.
+/// Gamma-encoded 8-bit, which is what the viewer shows.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The 16-bit export output (read back and converted to 16-bit integers).
 const DEEP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;

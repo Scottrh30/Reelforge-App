@@ -1,7 +1,7 @@
 //! Builds the viewer image: finds the visible video layers at the playhead,
 //! pulls their frames from per-clip decoders, and composites them on the GPU
-//! into a texture. The app shows that texture (egui draws it directly; the
-//! web interface reads it back with [`Preview::read_output`]).
+//! into a texture. The app reads it back with [`Preview::read_output`] and
+//! sends it to the web interface.
 
 use reelforge_render::wgpu;
 use reelforge_core::{ClipId, Layer, MediaId, Project, Time};

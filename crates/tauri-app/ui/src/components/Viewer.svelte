@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, run, viewer, timecode } from "../lib/session.svelte";
-  import { api, type Transform } from "../lib/api";
+  import { api, type Pt } from "../lib/api";
+  import { livePump } from "../lib/live";
   import { actions } from "../lib/actions.svelte";
   import ViewerOverlay from "./ViewerOverlay.svelte";
   import ViewerTools from "./ViewerTools.svelte";
@@ -36,59 +37,124 @@
     return { k, x: (boxSize.w - W * k) / 2, y: (boxSize.h - H * k) / 2, w: W * k, h: H * k, W, H };
   });
 
-  // The selected layer's outline, in box pixels (anchor and corner pin ignored for the outline).
-  const sel = $derived.by(() => {
+  // The selected layer's gizmo (from the editor, in frame pixels), unless a
+  // mask is being edited or drawn on it.
+  const giz = $derived.by(() => {
     const ins = app.s?.inspector;
-    const v = ins?.visual;
-    const shownT = ins?.keys?.shown ?? v?.transform;
-    if (!v || !shownT || shownT.pin) return null;
-    // Keyframed and the playhead off the clip: nothing to move.
-    if (ins!.animated.length && !ins!.keys?.on_clip) return null;
-    // Editing a mask or drawing one: the layer stays put.
-    if ((app.activeMask && app.activeMask.clip === ins!.id) || (app.drawing && app.drawing.clip === ins!.id) || (app.maskTool && ins!.masks.length)) return null;
-    const t = shownT;
-    const [lw, lh] = v.layer_size;
-    const cx = fit.x + (fit.W / 2 + t.position[0] - t.anchor[0] * t.scale[0]) * fit.k;
-    const cy = fit.y + (fit.H / 2 + t.position[1] - t.anchor[1] * t.scale[1]) * fit.k;
-    return { id: ins!.id, cx, cy, w: Math.abs(lw * t.scale[0] * fit.k), h: Math.abs(lh * t.scale[1] * fit.k), rot: t.rotation, t };
+    const g = ins?.gizmo;
+    if (!ins || !g) return null;
+    if ((app.activeMask && app.activeMask.clip === ins.id) || (app.drawing && app.drawing.clip === ins.id) || (app.maskTool && ins.masks.length)) return null;
+    return g;
+  });
+  const toBox = (p: Pt): Pt => [fit.x + p[0] * fit.k, fit.y + p[1] * fit.k];
+  const ptsAttr = (list: Pt[]) => list.map((p) => toBox(p).join(",")).join(" ");
+  const dist = (a: Pt, b: Pt) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const small = $derived(!!giz && (dist(giz.corners[0], giz.corners[1]) * fit.k < 32 || dist(giz.corners[1], giz.corners[2]) * fit.k < 32));
+  const stemTip = $derived.by((): Pt | null => {
+    if (!giz) return null;
+    const [bx, by] = toBox(giz.stem_base);
+    return [bx + giz.stem_dir[0] * 26, by + giz.stem_dir[1] * 26];
   });
 
-  function drag(e: PointerEvent, what: "move" | "scale") {
-    if (!sel || e.button !== 0) return;
-    e.stopPropagation();
+  // Ctrl held: edges crop and the anchor can be grabbed.
+  let ctrl = $state(false);
+  // (Releasing Ctrl itself can still report ctrlKey on some systems.)
+  const keys = (e: KeyboardEvent) => (ctrl = e.type === "keyup" && (e.key === "Control" || e.key === "Meta") ? false : e.ctrlKey || e.metaKey);
+
+  /// Client pixels → frame pixels.
+  function framePt(e: PointerEvent): Pt {
+    const r = box!.getBoundingClientRect();
+    return [(e.clientX - r.left - fit.x) / fit.k, (e.clientY - r.top - fit.y) / fit.k];
+  }
+
+  // Hovering: the handle under the pointer sets the cursor and tooltip.
+  let cursor = $state("default");
+  let tip = $state("");
+  let hoverBusy = false;
+  async function hover(e: PointerEvent) {
+    if (e.buttons || hoverBusy || !giz) {
+      if (!giz) (cursor = "default"), (tip = "");
+      return;
+    }
+    hoverBusy = true;
+    try {
+      const h = await api.viewerHover(framePt(e), e.ctrlKey || e.metaKey, fit.k);
+      if (!h) {
+        cursor = "default";
+        tip = "";
+      } else {
+        tip = h.tip;
+        if (h.handle.kind === "rotate") cursor = "grab";
+        else if (h.handle.kind === "anchor") cursor = "crosshair";
+        else {
+          const a = (((h.dir ?? 0) % 180) + 180) % 180;
+          cursor = ["ew-resize", "nwse-resize", "ns-resize", "nesw-resize"][Math.floor((a + 22.5) / 45) % 4];
+        }
+      }
+    } finally {
+      hoverBusy = false;
+    }
+  }
+
+  // Dragging: a handle of the selected layer, or the layer itself.
+  let readout = $state<{ text: string; x: number; y: number } | null>(null);
+  let guides = $state<{ xs: number[]; ys: number[] }>({ xs: [], ys: [] });
+  const dragPump = livePump();
+  function press(e: PointerEvent) {
+    if (e.button !== 0) return;
+    if (app.activeMask) {
+      app.activeMask = null;
+      return;
+    }
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
-    const start = { x: e.clientX, y: e.clientY };
-    const t0: Transform = structuredClone($state.snapshot(sel.t)) as Transform;
-    const { cx, cy, id } = sel;
-    const r0 = Math.hypot(start.x - (box!.getBoundingClientRect().left + cx), start.y - (box!.getBoundingClientRect().top + cy)) || 1;
+    const r = box!.getBoundingClientRect();
+    // Listen straight away: the button can come up before the editor answers.
+    let released = false;
+    const pressed = api
+      .viewerPress(framePt(e), e.ctrlKey || e.metaKey, fit.k)
+      .then((what) => {
+        if (what === "move") cursor = "move";
+        else if (what === "handle" && cursor === "grab") cursor = "grabbing";
+        return what;
+      })
+      .catch(() => "none" as const)
+      .finally(() => run(Promise.resolve()));
     const move = (ev: PointerEvent) => {
-      const t = structuredClone(t0);
-      if (what === "move") {
-        let dx = (ev.clientX - start.x) / fit.k;
-        let dy = (ev.clientY - start.y) / fit.k;
-        if (ev.shiftKey) Math.abs(dx) > Math.abs(dy) ? (dy = 0) : (dx = 0);
-        t.position = [Math.round(t0.position[0] + dx), Math.round(t0.position[1] + dy)];
-      } else {
-        const b = box!.getBoundingClientRect();
-        const r = Math.hypot(ev.clientX - (b.left + cx), ev.clientY - (b.top + cy));
-        const f = r / r0;
-        t.scale = [t0.scale[0] * f, t0.scale[1] * f];
-      }
-      api.setTransform(id, t);
+      if (released) return;
+      const p = framePt(ev);
+      const [sx, sy] = [ev.clientX - r.left, ev.clientY - r.top];
+      const [shift, alt] = [ev.shiftKey, ev.altKey];
+      dragPump.push(async () => {
+        if ((await pressed) === "none" || released) return;
+        const f = await api.viewerDrag(p, shift, alt, fit.k);
+        if (released) return;
+        readout = { text: f.readout, x: sx, y: sy };
+        guides = { xs: f.guides_x, ys: f.guides_y };
+      });
     };
-    const up = () => {
+    const up = async () => {
+      released = true;
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
-      run(api.commit());
+      el.removeEventListener("pointercancel", up);
+      await pressed;
+      await dragPump.done();
+      readout = null;
+      guides = { xs: [], ys: [] };
+      cursor = "default";
+      await run(api.viewerRelease());
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
   }
 
   const playing = $derived(app.live?.playing ?? false);
   const proxies = $derived((app.s?.media ?? []).filter((m) => m.proxy === "ready").length);
 </script>
+
+<svelte:window onkeydown={keys} onkeyup={keys} onblur={() => (ctrl = false)} />
 
 <div class="viewer">
   <div class="head">
@@ -106,15 +172,7 @@
     {/if}
     {#if app.live && !app.live.exact && !playing}<span class="muted" title="Some layers are still decoding">Catching up…</span>{/if}
   </div>
-  <div
-    class="stage"
-    bind:this={box}
-    role="presentation"
-    onpointerdown={() => {
-      if (app.activeMask) app.activeMask = null;
-      else if (sel) run(api.select(null, "none"));
-    }}
-  >
+  <div class="stage" bind:this={box} role="presentation" style="cursor:{cursor}" title={tip} onpointerdown={press} onpointermove={hover}>
     <canvas
       bind:this={canvas}
       style="left:{fit.x}px; top:{fit.y}px; width:{fit.w}px; height:{fit.h}px"
@@ -123,18 +181,45 @@
     {#if (app.s?.seq.duration ?? 0) === 0}
       <div class="hint">Drag media to the timeline to see it here</div>
     {/if}
-    {#if sel}
-      <div
-        class="gizmo"
-        role="presentation"
-        style="left:{sel.cx}px; top:{sel.cy}px; width:{sel.w}px; height:{sel.h}px; transform: translate(-50%, -50%) rotate({sel.rot}deg)"
-        onpointerdown={(e) => drag(e, "move")}
-      >
-        {#each ["nw", "ne", "sw", "se"] as c}
-          <span class="handle {c}" role="presentation" onpointerdown={(e) => drag(e, "scale")}></span>
-        {/each}
-      </div>
+    {#if giz}
+      <svg class="gizmo" aria-hidden="true">
+        {#if giz.pinned}
+          <polygon points={ptsAttr(giz.corners)} class="pin" />
+          <line class="diag" x1={toBox(giz.corners[0])[0]} y1={toBox(giz.corners[0])[1]} x2={toBox(giz.corners[2])[0]} y2={toBox(giz.corners[2])[1]} />
+          <line class="diag" x1={toBox(giz.corners[1])[0]} y1={toBox(giz.corners[1])[1]} x2={toBox(giz.corners[3])[0]} y2={toBox(giz.corners[3])[1]} />
+          {#each giz.corners as c}
+            <circle class="pinc" cx={toBox(c)[0]} cy={toBox(c)[1]} r="5" />
+          {/each}
+        {:else}
+          {#if giz.cropped}<polygon points={ptsAttr(giz.full)} class="full" />{/if}
+          <polygon points={ptsAttr(giz.corners)} class="box" />
+          {#if stemTip}
+            <line class="stem" x1={toBox(giz.stem_base)[0]} y1={toBox(giz.stem_base)[1]} x2={stemTip[0]} y2={stemTip[1]} />
+            <circle class="rot" cx={stemTip[0]} cy={stemTip[1]} r="4.5" />
+          {/if}
+          {#each giz.corners as c}
+            <rect class="h fill" x={toBox(c)[0] - 3.5} y={toBox(c)[1] - 3.5} width="7" height="7" rx="1" />
+          {/each}
+          {#if !small}
+            {#each giz.edges as c}
+              {#if ctrl}
+                <circle class="crop" cx={toBox(c)[0]} cy={toBox(c)[1]} r="3.5" />
+              {:else}
+                <rect class="h" x={toBox(c)[0] - 3.5} y={toBox(c)[1] - 3.5} width="7" height="7" rx="1" />
+              {/if}
+            {/each}
+          {/if}
+          {@const [ax, ay] = toBox(giz.anchor)}
+          {#if ctrl}<circle class="anchorhot" cx={ax} cy={ay} r="7" />{/if}
+          <circle class="anchor" cx={ax} cy={ay} r="5" />
+          <line class="anchor" x1={ax - 9} y1={ay} x2={ax + 9} y2={ay} />
+          <line class="anchor" x1={ax} y1={ay - 9} x2={ax} y2={ay + 9} />
+        {/if}
+      </svg>
     {/if}
+    {#each guides.xs as gx}<div class="guide v" style="left:{fit.x + gx * fit.k}px; top:{fit.y}px; height:{fit.h}px"></div>{/each}
+    {#each guides.ys as gy}<div class="guide h" style="top:{fit.y + gy * fit.k}px; left:{fit.x}px; width:{fit.w}px"></div>{/each}
+    {#if readout?.text}<div class="readout" style="left:{readout.x + 16}px; top:{readout.y + 16}px">{readout.text}</div>{/if}
     <ViewerOverlay {fit} {box} />
     <ViewerTools />
   </div>
@@ -230,37 +315,84 @@
   }
   .gizmo {
     position: absolute;
-    border: 1.5px solid var(--accent);
-    cursor: move;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
   }
-  .handle {
+  .gizmo .box {
+    fill: none;
+    stroke: rgb(255, 196, 64);
+    stroke-width: 1.5;
+  }
+  .gizmo .full {
+    fill: none;
+    stroke: rgba(255, 196, 64, 0.45);
+    stroke-dasharray: 4 4;
+  }
+  .gizmo .h {
+    fill: rgb(20, 20, 20);
+    stroke: rgb(255, 196, 64);
+    stroke-width: 1.5;
+  }
+  .gizmo .h.fill {
+    fill: rgb(255, 196, 64);
+  }
+  .gizmo .crop {
+    fill: rgb(120, 200, 255);
+  }
+  .gizmo .stem,
+  .gizmo line.anchor {
+    stroke: rgb(255, 196, 64);
+    stroke-width: 1.2;
+  }
+  .gizmo .rot,
+  .gizmo circle.anchor {
+    fill: rgba(20, 20, 20, 0.6);
+    stroke: rgb(255, 196, 64);
+    stroke-width: 1.5;
+  }
+  .gizmo circle.anchor {
+    fill: none;
+  }
+  .gizmo .anchorhot {
+    fill: rgba(120, 200, 255, 0.5);
+  }
+  .gizmo .pin {
+    fill: none;
+    stroke: rgb(255, 120, 200);
+    stroke-width: 1.5;
+  }
+  .gizmo .diag {
+    stroke: rgba(255, 120, 200, 0.35);
+  }
+  .gizmo .pinc {
+    fill: rgb(20, 20, 20);
+    stroke: rgb(255, 120, 200);
+    stroke-width: 2;
+  }
+  .guide {
     position: absolute;
-    width: 10px;
-    height: 10px;
-    background: #fff;
-    border: 1.5px solid var(--accent);
-    border-radius: 2px;
+    background: rgb(255, 70, 70);
+    pointer-events: none;
   }
-  .handle.nw {
-    left: -6px;
-    top: -6px;
-    cursor: nwse-resize;
+  .guide.v {
+    width: 1.5px;
   }
-  .handle.ne {
-    right: -6px;
-    top: -6px;
-    cursor: nesw-resize;
+  .guide.h {
+    height: 1.5px;
   }
-  .handle.sw {
-    left: -6px;
-    bottom: -6px;
-    cursor: nesw-resize;
-  }
-  .handle.se {
-    right: -6px;
-    bottom: -6px;
-    cursor: nwse-resize;
+  .readout {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(0, 0, 0, 0.8);
+    color: #fff;
+    padding: 3px 6px;
+    border-radius: 3px;
+    font-size: calc(12px * var(--text-scale));
+    white-space: nowrap;
+    z-index: 5;
   }
   .transport {
     display: flex;

@@ -1,11 +1,13 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { app, run, timecode } from "../lib/session.svelte";
-  import { api, type Transform, type Blend, type TitleSpec, type ClipAudio } from "../lib/api";
+  import { api, type Transform, type Blend, type TitleSpec, type ClipAudio, type TrackAudio } from "../lib/api";
   import NumberField from "./NumberField.svelte";
   import MasksPanel from "./MasksPanel.svelte";
   import TrackingPanel from "./TrackingPanel.svelte";
   import EffectsPanel from "./EffectsPanel.svelte";
+  import AudioPanel from "./AudioPanel.svelte";
+  import TitlePanel from "./TitlePanel.svelte";
   import { tps } from "../lib/session.svelte";
   import { livePump } from "../lib/live";
   import type { Transition, TransitionKind } from "../lib/api";
@@ -106,6 +108,18 @@
     api.setClipAudio(ins.id, n);
   }
 
+  // Track volume and pan (shown when no clip is selected).
+  let trackDraft = $state<Record<number, TrackAudio>>({});
+  function setTrack(index: number, cur: TrackAudio, change: Partial<TrackAudio>) {
+    const n = { ...$state.snapshot(cur), ...change };
+    trackDraft[index] = n;
+    api.setTrackAudio(index, n);
+  }
+  async function commitTrack(index: number) {
+    await run(api.commit());
+    delete trackDraft[index];
+  }
+
   const hex = (c: number[]) => "#" + c.slice(0, 3).map((v) => v.toString(16).padStart(2, "0")).join("");
   const fromHex = (h: string, a: number): [number, number, number, number] => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16), a];
 </script>
@@ -124,6 +138,26 @@
       {/if}
       <p class="muted">Select a clip on the timeline to change how it looks and sounds.</p>
     </div>
+    {#if app.s && app.s.seq.tracks.some((t) => t.kind === "audio")}
+      <div class="group">
+        <h4>Track levels</h4>
+        <div class="grid2 tracks">
+          {#each app.s.seq.tracks.filter((t) => t.kind === "audio") as tr (tr.index)}
+            {@const ta = trackDraft[tr.index] ?? tr.audio}
+            <span class="lbl tname" title={tr.name}>{tr.name}</span>
+            <div class="row">
+              <input type="range" min="-60" max="12" step="0.5" value={ta.volume_db} aria-label="{tr.name} volume" oninput={(e) => setTrack(tr.index, ta, { volume_db: +e.currentTarget.value })} onchange={() => commitTrack(tr.index)} ondblclick={() => (setTrack(tr.index, ta, { volume_db: 0 }), commitTrack(tr.index))} />
+              <span class="tc val">{ta.volume_db <= -60 ? "−∞" : `${ta.volume_db > 0 ? "+" : ""}${ta.volume_db.toFixed(1)}`} dB</span>
+            </div>
+            <span class="lbl sub">Pan</span>
+            <div class="row">
+              <input type="range" min="-1" max="1" step="0.02" value={ta.pan} aria-label="{tr.name} pan" oninput={(e) => setTrack(tr.index, ta, { pan: +e.currentTarget.value })} onchange={() => commitTrack(tr.index)} ondblclick={() => (setTrack(tr.index, ta, { pan: 0 }), commitTrack(tr.index))} />
+              <span class="tc val">{Math.abs(ta.pan) < 0.005 ? "C" : ta.pan < 0 ? `L${Math.round(-ta.pan * 100)}` : `R${Math.round(ta.pan * 100)}`}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
   {:else}
     <div class="group">
       <h3 title={ins.name}>{ins.name}</h3>
@@ -148,7 +182,7 @@
           <span class="lbl">Exactly</span>
           <div class="row">
             <NumberField label="Speed" value={speedDraft ?? (ins.speed === 0 ? 0 : ins.speed * 100)} min={1} max={2000} step={1} digits={0} suffix=" %" oninput={(v) => (speedDraft = v)} oncommit={applySpeed} />
-            {#if ins.speed === 0}<span class="muted">Freeze frame</span>{/if}
+            {#if ins.speed === 0}<span class="muted">Freeze frame</span><button class="small" onclick={() => run(api.setSpeed(ins.id, 1, false))} title="Turn it back into moving footage at 100%">Play from here</button>{/if}
           </div>
         </div>
         <div class="row wrap tools">
@@ -207,22 +241,7 @@
     {/if}
 
     {#if ins.title}
-      <div class="group">
-        <h4>Title</h4>
-        <textarea
-          rows="3"
-          value={ins.title.text}
-          aria-label="Title text"
-          oninput={(e) => setTitle((s) => (s.text = e.currentTarget.value))}
-          onblur={commit}
-        ></textarea>
-        <div class="grid2">
-          <span class="lbl">Size</span>
-          <NumberField label="Text size" value={ins.title.size} min={4} max={2000} step={1} digits={0} suffix=" px" oninput={(v) => setTitle((s) => (s.size = v))} oncommit={commit} />
-          <span class="lbl">Colour</span>
-          <input type="color" value={hex(ins.title.color)} aria-label="Text colour" onchange={(e) => setTitle((s) => (s.color = fromHex(e.currentTarget.value, s.color[3])), true)} />
-        </div>
-      </div>
+      <TitlePanel {ins} />
     {/if}
 
     {#if t && ins.visual}
@@ -247,6 +266,22 @@
           <span class="lbl"><button class="key" class:here={pk("Anchor")?.key_here} class:anim={pk("Anchor")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Anchor"))} title={keyTip("Anchor")} aria-label="Keyframe anchor"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Anchor</span>
           <NumberField label="Anchor X" value={t.anchor[0]} digits={0} oninput={(v) => setT((n) => (n.anchor[0] = v))} oncommit={commit} />
           <NumberField label="Anchor Y" value={t.anchor[1]} digits={0} oninput={(v) => setT((n) => (n.anchor[1] = v))} oncommit={commit} />
+          <span class="lbl"><button class="key" class:here={pk("Crop")?.key_here} class:anim={pk("Crop")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Crop"))} title={keyTip("Crop")} aria-label="Keyframe crop"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Crop</span>
+          <NumberField label="Crop left" value={t.crop[0] * 100} min={0} max={100} step={0.2} digits={1} suffix="% L" oninput={(v) => setT((n) => (n.crop[0] = v / 100))} oncommit={commit} />
+          <NumberField label="Crop top" value={t.crop[1] * 100} min={0} max={100} step={0.2} digits={1} suffix="% T" oninput={(v) => setT((n) => (n.crop[1] = v / 100))} oncommit={commit} />
+          <span class="lbl"><button class="small clear" disabled={!t.crop.some((c) => c > 0)} onclick={() => run(api.transformOp(ins.id, "crop_clear"))} title="Show the whole layer">Clear</button></span>
+          <NumberField label="Crop right" value={t.crop[2] * 100} min={0} max={100} step={0.2} digits={1} suffix="% R" oninput={(v) => setT((n) => (n.crop[2] = v / 100))} oncommit={commit} />
+          <NumberField label="Crop bottom" value={t.crop[3] * 100} min={0} max={100} step={0.2} digits={1} suffix="% B" oninput={(v) => setT((n) => (n.crop[3] = v / 100))} oncommit={commit} />
+        </div>
+        <div class="grid2">
+          <span class="lbl">{#if t.pin}<button class="key" class:here={pk("Pin")?.key_here} class:anim={pk("Pin")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Pin"))} title={keyTip("Pin")} aria-label="Keyframe corner pin"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>{/if}Corner pin</span>
+          <div class="row wrap">
+            <label class="check" title="Stretch the layer in perspective so its four corners land wherever you put them (drag them in the Viewer). Position, scale, rotation and anchor don't apply while it's on"><input type="checkbox" checked={!!t.pin} onchange={(e) => run(api.transformOp(ins.id, e.currentTarget.checked ? "pin_on" : "pin_off"))} /> {t.pin ? "On" : "Off"}</label>
+            {#if t.pin}
+              <button class="small" onclick={() => run(api.transformOp(ins.id, "pin_reset"))} title="Back to the layer's own rectangle (from its position, scale and rotation)">Reset corners</button>
+            {/if}
+          </div>
+          {#if ins.keys?.pin_twisted}<span></span><span class="warn">Twisted: drag the corners apart</span>{/if}
         </div>
         <div class="grid2">
           <span class="lbl"><button class="key" class:here={pk("Opacity")?.key_here} class:anim={pk("Opacity")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Opacity"))} title={keyTip("Opacity")} aria-label="Keyframe opacity"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Opacity</span>
@@ -268,19 +303,28 @@
             {#each blends as b}<option value={b}>{b}</option>{/each}
           </select>
         </div>
-        <button
-          class="reset"
-          onclick={async () => {
-            setT((n) => {
-              n.position = [0, 0];
-              n.scale = [1, 1];
-              n.rotation = 0;
-              n.opacity = 1;
-              n.anchor = [0, 0];
-            });
-            await commit();
-          }}>Reset transform</button
-        >
+        {#if ins.keys && (ins.keys.prev_key != null || ins.keys.next_key != null)}
+          <div class="grid2">
+            <span class="lbl">Keyframes</span>
+            <div class="row">
+              <button class="small" disabled={ins.keys.prev_key == null} onclick={() => run(api.seek(ins.keys!.prev_key!))} title="Previous transform keyframe" aria-label="Previous keyframe">◀</button>
+              <button class="small" disabled={ins.keys.next_key == null} onclick={() => run(api.seek(ins.keys!.next_key!))} title="Next transform keyframe" aria-label="Next keyframe">▶</button>
+              {#if ins.keys.interp_here}
+                <select value={ins.keys.interp_here} aria-label="Interpolation" title="How the keyframe(s) here move towards the next one" onchange={(e) => run(api.transformInterp(ins.id, e.currentTarget.value as "Linear" | "Ease" | "Hold"))}>
+                  <option value="Linear">Linear</option>
+                  <option value="Ease">Ease in and out</option>
+                  <option value="Hold">Hold</option>
+                </select>
+              {/if}
+            </div>
+          </div>
+        {/if}
+        <div class="row tools wrap">
+          <button class="small" onclick={() => run(api.transformOp(ins.id, "reset"))} title="Default transform; removes transform keyframes">Reset</button>
+          <button class="small" onclick={() => run(api.transformOp(ins.id, "fit"))} title="Scale to fit inside the frame">Fit</button>
+          <button class="small" onclick={() => run(api.transformOp(ins.id, "fill"))} title="Scale to cover the whole frame">Fill</button>
+          <button class="small" disabled={!t.anchor[0] && !t.anchor[1]} onclick={() => run(api.transformOp(ins.id, "anchor_centre"))} title="Put the anchor back in the middle of the layer, keeping the picture where it is">Centre anchor</button>
+        </div>
       </div>
     {/if}
 
@@ -293,21 +337,7 @@
     {/if}
 
     {#if ins.audio}
-      <div class="group">
-        <h4>Sound</h4>
-        <div class="grid2">
-          <span class="lbl">Volume</span>
-          <div class="row">
-            <input type="range" min="-60" max="12" step="0.5" value={ins.audio.volume_db} aria-label="Volume" oninput={(e) => setAudio((a) => (a.volume_db = +e.currentTarget.value))} onchange={commit} />
-            <span class="tc val">{ins.audio.volume_db > 0 ? "+" : ""}{ins.audio.volume_db.toFixed(1)} dB</span>
-          </div>
-          <span class="lbl">Pan</span>
-          <div class="row">
-            <input type="range" min="-1" max="1" step="0.02" value={ins.audio.pan} aria-label="Pan" oninput={(e) => setAudio((a) => (a.pan = +e.currentTarget.value))} onchange={commit} ondblclick={() => (setAudio((a) => (a.pan = 0)), commit())} />
-            <span class="tc val">{ins.audio.pan === 0 ? "C" : ins.audio.pan < 0 ? `L${Math.round(-ins.audio.pan * 100)}` : `R${Math.round(ins.audio.pan * 100)}`}</span>
-          </div>
-        </div>
-      </div>
+      <AudioPanel {ins} />
     {/if}
 
   {/if}
@@ -396,19 +426,21 @@
     align-items: center;
     margin-left: 6px;
   }
-  textarea {
-    width: 100%;
+  .tname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
   }
-  input[type="color"] {
-    width: 48px;
-    height: 24px;
-    padding: 0;
-    border: 1px solid var(--line);
-    background: none;
-    border-radius: var(--radius);
+  .sub {
+    padding-left: 10px;
   }
-  .reset {
-    margin-top: 10px;
+  .tracks {
+    margin-top: 0;
+  }
+  .clear {
+    margin-left: 18px;
+    min-height: 20px !important;
   }
   .key {
     width: 16px;
