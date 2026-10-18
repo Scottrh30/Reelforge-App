@@ -565,6 +565,11 @@ decoders take those codecs when it's off or the card can't.
 | VP9 | done, via a pure-Rust decoder library: profiles 0–3 (8/10/12-bit, 4:2:0 to 4:4:4) |
 | AV1 | done, via a pure-Rust decoder library: Main profile, 8/10-bit 4:2:0 and monochrome, film grain |
 
+The H.264, HEVC, VP9 and AV1 decoder libraries are fetched by Cargo from
+<https://github.com/Scottrh30/Reelforge> at a fixed commit (the `rev` in
+`crates/codecs/Cargo.toml`); to pick up changes made there, set `rev` to the new commit and run
+`cargo update -p filmcraft-h264 -p filmcraft-hevc -p filmcraft-vp9 -p filmcraft-av1`.
+
 Every decoder is tested against FFmpeg's output (`cargo test -p reelforge-media native`):
 each frame of generated test clips is converted to RGBA both ways and must match closely
 (ProRes: 65–73 dB PSNR in every profile; DNxHD/DNxHR: 64–81 dB; MPEG-2: 62–70 dB; i.e. off by

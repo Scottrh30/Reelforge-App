@@ -728,7 +728,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.6",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1147,7 +1147,7 @@ dependencies = [
 [[package]]
 name = "filmcraft-av1"
 version = "0.9.0"
-source = "git+https://github.com/storytold/filmcraft?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
+source = "git+https://github.com/Scottrh30/Reelforge?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
 dependencies = [
  "filmcraft-bitstream",
  "rayon",
@@ -1157,12 +1157,12 @@ dependencies = [
 [[package]]
 name = "filmcraft-bitstream"
 version = "0.9.0"
-source = "git+https://github.com/storytold/filmcraft?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
+source = "git+https://github.com/Scottrh30/Reelforge?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
 
 [[package]]
 name = "filmcraft-h264"
 version = "0.9.0"
-source = "git+https://github.com/storytold/filmcraft?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
+source = "git+https://github.com/Scottrh30/Reelforge?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
 dependencies = [
  "filmcraft-bitstream",
  "rayon",
@@ -1172,7 +1172,7 @@ dependencies = [
 [[package]]
 name = "filmcraft-hevc"
 version = "0.9.0"
-source = "git+https://github.com/storytold/filmcraft?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
+source = "git+https://github.com/Scottrh30/Reelforge?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
 dependencies = [
  "filmcraft-bitstream",
  "rayon",
@@ -1182,7 +1182,7 @@ dependencies = [
 [[package]]
 name = "filmcraft-vp9"
 version = "0.9.0"
-source = "git+https://github.com/storytold/filmcraft?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
+source = "git+https://github.com/Scottrh30/Reelforge?rev=6c3948a36c80e4996d924766ba7157eec4fca85e#6c3948a36c80e4996d924766ba7157eec4fca85e"
 dependencies = [
  "filmcraft-bitstream",
  "rayon",
