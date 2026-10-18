@@ -331,10 +331,67 @@
 
   // ---- Tracks ----
   let renaming = $state<number | null>(null);
+
+  // Rows of one kind, top to bottom as shown: [first row, row count].
+  function kindRange(kind: string): [number, number] {
+    const first = rows.findIndex((r) => r.kind === kind);
+    return [first, rows.filter((r) => r.kind === kind).length];
+  }
+  // The track index for being shown at row `vis` among `kind`'s rows (video is shown upside down).
+  function indexAt(kind: string, vis: number): number {
+    const nv = rows.filter((r) => r.kind === "video").length;
+    return kind === "video" ? nv - 1 - vis : nv + vis;
+  }
+  /// Where a track would go if moved one row up (-1) or down (+1) on screen, or null.
+  function stepTarget(tr: TrackView, dir: number): number | null {
+    const [first, n] = kindRange(tr.kind);
+    const vis = rows.findIndex((r) => r.index === tr.index) - first + dir;
+    return vis < 0 || vis >= n ? null : indexAt(tr.kind, vis);
+  }
+
+  // Dragging a track header up or down: `gap` is the row boundary the insertion line is at.
+  let trackDrag = $state<{ index: number; kind: string; y0: number; active: boolean; gap: number } | null>(null);
+  function headerDown(e: PointerEvent, tr: TrackView) {
+    if (e.button !== 0 || renaming != null) return;
+    if ((e.target as HTMLElement).closest("button, input")) return;
+    trackDrag = { index: tr.index, kind: tr.kind, y0: e.clientY, active: false, gap: rows.findIndex((r) => r.index === tr.index) };
+    const el = e.currentTarget as HTMLElement;
+    const stack = el.parentElement!;
+    const move = (ev: PointerEvent) => {
+      if (!trackDrag) return;
+      if (!trackDrag.active && Math.abs(ev.clientY - trackDrag.y0) < 5) return;
+      trackDrag.active = true;
+      const y = ev.clientY - stack.getBoundingClientRect().top;
+      const [first, n] = kindRange(trackDrag.kind);
+      trackDrag.gap = Math.max(first, Math.min(first + n, Math.round(y / TRACK_H)));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      const d = trackDrag;
+      trackDrag = null;
+      if (!d?.active) return;
+      const [first] = kindRange(d.kind);
+      const from = rows.findIndex((r) => r.index === d.index);
+      // Dropping below its own row shifts everything after it up by one.
+      const vis = (d.gap > from ? d.gap - 1 : d.gap) - first;
+      const to = indexAt(d.kind, vis);
+      if (to !== d.index) run(api.moveTrack(d.index, to));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
   function trackMenu(e: MouseEvent, tr: TrackView) {
+    const upTo = stepTarget(tr, -1);
+    const downTo = stepTarget(tr, 1);
     openMenu(e, [
       { heading: true, label: tr.name },
       { label: "Rename track…", run: () => (renaming = tr.index) },
+      { label: "Move track up", disabled: upTo == null, run: () => upTo != null && run(api.moveTrack(tr.index, upTo)) },
+      { label: "Move track down", disabled: downTo == null, run: () => downTo != null && run(api.moveTrack(tr.index, downTo)) },
       { label: tr.muted ? (tr.kind === "video" ? "Show track" : "Unmute track") : tr.kind === "video" ? "Hide track" : "Mute track", run: () => run(api.trackOp(tr.index, "mute")) },
       { label: tr.locked ? "Unlock track" : "Lock track", run: () => run(api.trackOp(tr.index, "lock")) },
       { separator: true },
@@ -836,7 +893,16 @@
         <div class="hstack" style="transform: translateY({-view.vscroll}px)">
           {#each rows as tr (tr.index)}
             {@const lv = app.live?.tracks[tr.index]}
-            <div class="th" class:muted-track={tr.muted} oncontextmenu={(e) => trackMenu(e, tr)} role="group" aria-label={tr.name}>
+            <div
+              class="th"
+              class:muted-track={tr.muted}
+              class:dragging-track={trackDrag?.active && trackDrag.index === tr.index}
+              oncontextmenu={(e) => trackMenu(e, tr)}
+              onpointerdown={(e) => headerDown(e, tr)}
+              role="group"
+              aria-label={tr.name}
+              title="Drag to move the track up or down"
+            >
               {#if renaming === tr.index}
                 <!-- svelte-ignore a11y_autofocus -->
                 <input
@@ -872,6 +938,9 @@
               </div>
             </div>
           {/each}
+          {#if trackDrag?.active}
+            <div class="track-drop" style="top:{trackDrag.gap * TRACK_H - 1}px"></div>
+          {/if}
           <div class="addrow">
             <button onclick={() => run(api.action("add_video_track"))} title="Add a video track">+ Video</button>
             <button onclick={() => run(api.action("add_audio_track"))} title="Add an audio track">+ Audio</button>
@@ -1252,6 +1321,26 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .th {
+    cursor: grab;
+  }
+  .th.dragging-track {
+    opacity: 0.45;
+    cursor: grabbing;
+  }
+  .hstack {
+    position: relative;
+  }
+  .track-drop {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--accent);
+    border-radius: 2px;
+    pointer-events: none;
+    z-index: 2;
   }
   .muted-track .tname {
     color: var(--faint);

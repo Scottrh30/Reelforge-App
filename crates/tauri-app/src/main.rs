@@ -572,8 +572,9 @@ fn seek(t: i64) -> Res<()> {
 }
 
 #[tauri::command]
-fn track_op(index: usize, op: String, name: Option<String>) -> Res<()> {
+fn track_op(index: usize, op: String, name: Option<String>, to: Option<usize>) -> Res<()> {
     ed(|e| match op.as_str() {
+        "move" => e.move_track(index, to.unwrap_or(index)),
         "mute" => e.toggle_mute(index),
         "lock" => e.toggle_lock(index),
         "delete" => e.delete_track(index),
@@ -741,8 +742,10 @@ fn tracker_move(id: u64, point: usize, pos: [f32; 2]) -> Res<()> {
         }
         let Some((_, c)) = e.seq().find_clip(clip(id)) else { return };
         let (Some(mut t), [w, h], src) = (c.tracker.clone(), e.layer_size(c), e.track_time(c)) else { return };
+        // A planar surface's corners may lie outside the picture (only the area inside is tracked).
+        let (lo, hi) = if t.mode == reelforge_core::track::TrackMode::Planar { ([-w, -h], [2.0 * w, 2.0 * h]) } else { ([0.0, 0.0], [w, h]) };
         let Some(p) = t.points.get_mut(point) else { return };
-        p.move_to(src, [pos[0].clamp(0.0, w), pos[1].clamp(0.0, h)]);
+        p.move_to(src, [pos[0].clamp(lo[0], hi[0]), pos[1].clamp(lo[1], hi[1])]);
         e.set_tracker_live(clip(id), Some(t));
     })
 }

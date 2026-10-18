@@ -2,7 +2,7 @@
 
 A HitFilm-style video editor and compositor, written in Rust. Editing, audio, the GPU
 compositor, export (with presets, a queue and GPU encoders), proxies and crash safety are done;
-effects and compositing (compositions, motion tracking with corner pinning) are under way.
+effects and compositing (compositions, motion tracking with corner pinning and planar tracking) are under way.
 
 What works now:
 
@@ -178,7 +178,9 @@ What works now:
 - **Tracks**: as many video and audio tracks as you need. **+ Video** / **+ Audio** under the
   track headers (or **Edit → Tracks**) add one; new video tracks go on top. Right-click a
   header to rename, add or delete a track (deleting takes its clips with it, and can be undone);
-  double-click a track's name to rename it. When the tracks don't fit, the mouse wheel scrolls
+  double-click a track's name to rename it. Drag a track's header up or down to reorder the
+  stack (its clips go with it; video tracks stay above the audio tracks), or use **Move track
+  up/down** on the right-click menu. When the tracks don't fit, the mouse wheel scrolls
   through them (Shift+wheel moves along the timeline)
 - **Text titles** (**Edit → Add title at playhead**, `Ctrl+T`, or **New title** in the Media
   panel): a 5 s title on the top free video track (a new track is made if none has room).
@@ -334,6 +336,15 @@ What works now:
     screen replacement. If that layer already has a corner pin (say you adjusted its corners
     at the first tracked frame), it keeps that shape and moves with the surface instead.
     **This clip: stabilise (perspective)** holds the surface flat and still.
+  - **Planar: a whole flat surface**: drag the four round corner handles onto the corners of
+    a screen, a sign, a wall or a table top. Instead of four details, everything with detail
+    *inside* the shape is tracked (around a hundred small features), and the surface's
+    perspective is fitted to all of them every frame, ignoring the ones that disagree (a hand
+    or a passing car in front, a reflection). So the corners can sit on blank areas or even
+    outside the picture, and the surface can be partly covered. Apply it the same ways as a
+    corner pin. On a test clip of a poster swinging in perspective with a bar sweeping across
+    it, the corners stay within 1 px of where they really are. It takes about 20 ms a frame at
+    1080p on two cores, on top of decoding.
 
   Every point is found to a fraction of a pixel in each frame (centre-weighted normalised
   cross-correlation, so lighting changes and the surroundings of a turning feature don't throw
@@ -380,8 +391,8 @@ What works now:
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
 Not yet: glow and drop shadow reach only as far as the clip's own frame (a shadow from a
-full-frame clip is hidden), Bézier handles in the curve editor, animated text
-(per-letter reveals), and reordering tracks by dragging.
+full-frame clip is hidden), Bézier handles in the curve editor, and animated text
+(per-letter reveals).
 See the roadmap at the bottom.
 
 ## Layout
@@ -429,7 +440,7 @@ made from the mask tools down the left of the Viewer (Rectangle, Ellipse, Freeha
 and Resize; hover one for its name) or the Masks panel, dragged by their points or moved
 whole, with add/subtract/intersect, invert, feather,
 expansion, opacity and shape keyframes at the playhead. Motion tracking: 1, 2 or 4 points
-dragged onto details in the Viewer, tracked forward or backward in the background, then
+dragged onto details in the Viewer (or a whole flat surface: planar tracking), tracked forward or backward in the background, then
 applied to another layer (follow it, or corner-pin into the points), to one of the clip's
 masks, or to the clip itself (stabilise, with smoothing).
 
@@ -1002,7 +1013,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 6. **Compositing**: ~~compositions (nested sequences), motion tracking (1, 2 and 4
    points: follow, stabilise with smoothing, corner pin / screen replacement), corner pin,
    masks~~, titles and track management are done. Still to come: Bézier mask curves and
-   per-point feather, planar tracking of whole surfaces (not just four features), automatic
+   per-point feather, automatic
    zoom to hide stabilisation edges, a 3D camera and lights, GPU particles, animated text
    presets.
 7. ~~**Performance**: proxy media, a frame cache, hardware decode, YUV frames converted on the

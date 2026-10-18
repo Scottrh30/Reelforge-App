@@ -252,7 +252,7 @@ export interface MaskView {
   key_here: boolean;
 }
 
-export type TrackMode = "Position" | "Transform" | "CornerPin";
+export type TrackMode = "Position" | "Transform" | "CornerPin" | "Planar";
 
 export interface TrackerView {
   mode: TrackMode;
@@ -548,6 +548,7 @@ export const api = {
   historyGoTo: (pos: number) => invoke("history_go_to", { pos }),
   seek: (t: Ticks) => invoke("seek", { t: Math.max(0, Math.round(t)) }),
   trackOp: (index: number, op: "mute" | "lock" | "delete" | "rename", name?: string) => invoke("track_op", { index, op, name }),
+  moveTrack: (index: number, to: number) => invoke("track_op", { index, op: "move", to }),
   setTrackAudio: (index: number, audio: TrackAudio) => invoke("set_track_audio", { index, audio }),
   setTransform: (id: number, transform: Transform) => invoke("set_transform", { id, transform }),
   setBlend: (id: number, blend: Blend) => invoke("set_blend", { id, blend }),

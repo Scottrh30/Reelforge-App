@@ -182,3 +182,102 @@ fn four_points_track_perspective() {
     }
     assert!(Pin(q1).is_valid());
 }
+
+// ---- Planar tracking ------------------------------------------------------------
+
+/// Smooth random texture (value noise) in 0–1 for the planar test's poster.
+fn noise(x: f32, y: f32) -> f32 {
+    let (xi, yi) = (x.floor() as i64, y.floor() as i64);
+    let (fx, fy) = (x - x.floor(), y - y.floor());
+    let r = |a: i64, b: i64| -> f32 {
+        let mut s = (a.wrapping_mul(374_761_393) ^ b.wrapping_mul(668_265_263)) as u64;
+        s = (s ^ (s >> 13)).wrapping_mul(1_274_126_177);
+        (s >> 40) as f32 / (1u64 << 24) as f32
+    };
+    let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let top = r(xi, yi) * (1.0 - sx) + r(xi + 1, yi) * sx;
+    let bot = r(xi, yi + 1) * (1.0 - sx) + r(xi + 1, yi + 1) * sx;
+    top * (1.0 - sy) + bot * sy
+}
+
+/// A textured poster (with plain margins, so its corners have no detail of
+/// their own) swinging in perspective, while a dark bar sweeps across it.
+#[test]
+fn planar_tracks_a_surface_through_perspective_and_a_passing_bar() {
+    let path = std::env::temp_dir().join("rf_track_planar.mp4");
+    let frames = 40;
+    let child = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", &format!("{W}x{H}"), "-r", "25", "-i", "-", "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p"])
+        .arg(&path)
+        .stdin(std::process::Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    };
+    let mut stdin = child.stdin.take().unwrap();
+    for k in 0..frames {
+        let inv = card_map(k, true).inverse().unwrap();
+        let bar = 60.0 + 9.0 * k as f32;
+        let mut img = vec![0u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let [u, v] = inv.apply([x as f32 + 0.5, y as f32 + 0.5]);
+                let mut g = 50.0 + 0.1 * x as f32;
+                if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) {
+                    // Plain margin round the edge, print in the middle.
+                    let inner = (0.12..=0.88).contains(&u) && (0.12..=0.88).contains(&v);
+                    g = if inner { 40.0 + 150.0 * noise(u * 30.0, v * 22.0) + 50.0 * noise(u * 80.0 + 9.0, v * 60.0) } else { 200.0 };
+                }
+                if (x as f32 - bar).abs() < 14.0 {
+                    g = 15.0;
+                }
+                img[y * W + x] = g.clamp(0.0, 255.0) as u8;
+            }
+        }
+        stdin.write_all(&img).unwrap();
+    }
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+
+    let info = probe(&path).unwrap();
+    let mut tr = Tracker::new(TrackMode::Planar, [240.0, 135.0], [W as f32, H as f32], Time::ZERO);
+    let corners = quad(0, true);
+    for (p, c) in tr.points.iter_mut().zip(corners) {
+        p.point = c;
+        p.search = 20.0;
+    }
+    let (samples, end) = reelforge_media::track_points(&path, &info, &tr, Time::ZERO, Time::from_secs_f64(1.56), &AtomicBool::new(false), |_| {}).unwrap();
+    assert_eq!(end, TrackEnd::Done);
+    let mut worst = 0f32;
+    for (i, p) in samples.iter().enumerate() {
+        assert_eq!(p.len(), frames);
+        for (k, s) in p.iter().enumerate() {
+            let truth = quad(k, true)[i];
+            let e = ((s.pos[0] - truth[0]).powi(2) + (s.pos[1] - truth[1]).powi(2)).sqrt();
+            if std::env::var("RF_DEBUG").is_ok() && e > 1.0 {
+                eprintln!("corner {i} frame {k}: d=({:+.2},{:+.2}) agreement {:.2}", s.pos[0] - truth[0], s.pos[1] - truth[1], s.score);
+            }
+            worst = worst.max(e);
+        }
+    }
+    eprintln!("planar on video: worst corner error {worst:.2} px");
+    assert!(worst < 1.5, "corners off by up to {worst:.2} px");
+}
+
+#[test]
+fn planar_refuses_a_blank_shape() {
+    let path = std::env::temp_dir().join("rf_track_blank.mp4");
+    let ok = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x707070:s=320x240:r=25:d=0.4", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+        .arg(&path)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        return;
+    }
+    let info = probe(&path).unwrap();
+    let tr = Tracker::new(TrackMode::Planar, [160.0, 120.0], [320.0, 240.0], Time::ZERO);
+    let r = reelforge_media::track_points(&path, &info, &tr, Time::ZERO, Time::from_secs_f64(0.3), &AtomicBool::new(false), |_| {});
+    assert!(r.unwrap_err().to_string().contains("too little detail"));
+}

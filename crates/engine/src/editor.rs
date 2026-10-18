@@ -16,7 +16,7 @@ use reelforge_core::edit::{plan_trim, ripple_delete, TrimPlan};
 use reelforge_core::mask::Mask;
 use reelforge_core::track::{ApplyOptions, TrackMode, Tracker};
 use reelforge_core::undo::{
-    split_group, AddClip, AddTrack, Batch, Edge, ImportMedia, RemoveTrack, RenameTrack, SetClipAudio, SetClipTiming, SetClipVisual, SetLink,
+    split_group, AddClip, AddTrack, Batch, MoveTrack, Edge, ImportMedia, RemoveTrack, RenameTrack, SetClipAudio, SetClipTiming, SetClipVisual, SetLink,
     SetTitle, SetTrackAudio, SetTracker, Timing,
 };
 use reelforge_core::*;
@@ -993,6 +993,15 @@ impl Editor {
         }
     }
 
+    /// Move a track to `to` in the stack (among tracks of its own kind).
+    pub fn move_track(&mut self, from: usize, to: usize) {
+        self.commit_live_edit();
+        match MoveTrack::new(&self.project, self.active, from, to) {
+            Ok(cmd) => self.execute(Box::new(cmd)),
+            Err(why) => self.status = format!("Can't move that track: {why}"),
+        }
+    }
+
     pub fn rename_track(&mut self, index: usize, name: String) {
         let Some(old) = self.seq().tracks.get(index).map(|t| t.name.clone()) else { return };
         if name.is_empty() || name == old {
@@ -1619,6 +1628,7 @@ impl Editor {
             TrackMode::Position => "Drag the tracker box in the Viewer onto a sharp detail, then press Track forward".into(),
             TrackMode::Transform => "Drag boxes 1 and 2 onto two sharp details, well apart on the same object, then press Track forward".into(),
             TrackMode::CornerPin => "Drag boxes 1–4 onto the corners of the surface (top left, top right, bottom right, bottom left), then press Track forward".into(),
+            TrackMode::Planar => "Drag corners 1–4 onto the corners of a flat surface (top left, top right, bottom right, bottom left), then press Track forward".into(),
         };
     }
 
@@ -1685,6 +1695,10 @@ impl Editor {
                 let status = match end {
                     reelforge_media::TrackEnd::Done => format!("Tracked {n} frames"),
                     reelforge_media::TrackEnd::Cancelled => format!("Tracking stopped after {n} frames"),
+                    reelforge_media::TrackEnd::Lost(t, reelforge_media::tracker::SURFACE) => format!(
+                        "Tracked {n} frames, then lost the surface at {} (source time): too much of it was covered, blurred or out of frame. Go there, drag the corners back onto it and track again",
+                        t.timecode(rate)
+                    ),
                     reelforge_media::TrackEnd::Lost(t, i) => {
                         let what = if many { format!("point {}", i + 1) } else { "the feature".into() };
                         format!("Tracked {n} frames, then lost {what} at {} (source time): go there, drag it back onto its detail and track again", t.timecode(rate))
@@ -1743,9 +1757,9 @@ impl Editor {
         let name = b.display_name(&self.project).into_owned();
         self.execute(Box::new(SetClipVisual { seq: self.active, id: target, old, new }));
         self.status = match (stabilise, mode) {
-            (true, TrackMode::CornerPin) => "Stabilised: the clip is corner-pinned against the tracked perspective".into(),
+            (true, TrackMode::CornerPin | TrackMode::Planar) => "Stabilised: the clip is corner-pinned against the tracked perspective".into(),
             (true, _) => "Stabilised: the clip now moves against the tracked motion (scale it up a little to hide the edges)".into(),
-            (false, TrackMode::CornerPin) => format!("{name} is now corner-pinned to the tracked surface"),
+            (false, TrackMode::CornerPin | TrackMode::Planar) => format!("{name} is now corner-pinned to the tracked surface"),
             (false, TrackMode::Transform) => format!("{name} now follows the tracked position, rotation and scale"),
             (false, TrackMode::Position) => format!("{name} now follows the tracked point"),
         };

@@ -13,12 +13,16 @@
     ["Position", "Position (1 point)"],
     ["Transform", "Position, rotation and scale (2 points)"],
     ["CornerPin", "Corner pin / perspective (4 points)"],
+    ["Planar", "Planar: a whole flat surface"],
   ];
   const hints: Record<TrackMode, string> = {
     Position: "Drag the box in the Viewer onto a sharp detail (a corner, a mark, a light), then track. The outer box is how far it may move per frame.",
     Transform: "Put the two boxes on sharp details of the same object, as far apart as you can: the line between them gives the rotation and scale.",
     CornerPin: "Put boxes 1 to 4 on the surface's top-left, top-right, bottom-right and bottom-left corners (or on details near them).",
+    Planar:
+      "Drag corners 1 to 4 onto a flat surface's top-left, top-right, bottom-right and bottom-left corners (a screen, a sign, a wall, a table). Everything with detail inside the shape is tracked, so the corners can sit on blank areas or even outside the picture, and the surface can be partly covered.",
   };
+  const perspective = (m: TrackMode) => m === "CornerPin" || m === "Planar";
 
   let newMode = $state<TrackMode>("Position");
   let smoothing = $state(0);
@@ -66,9 +70,11 @@
       <select value={t.mode} aria-label="Tracker points" onchange={(e) => run(api.trackerMode(ins.id, e.currentTarget.value as TrackMode))}>
         {#each modes as [m, label]}<option value={m}>{label}</option>{/each}
       </select>
-      <span class="lbl">Feature box</span>
-      <NumberField label="Feature box size" value={t.size} min={9} max={201} step={0.5} digits={0} suffix=" px" oninput={(v) => sizes(v, t.search)} oncommit={commit} />
-      <span class="lbl" title="How far a feature may move between frames. Raise it for fast motion; lower is less likely to jump to a look-alike">Search</span>
+      {#if t.mode !== "Planar"}
+        <span class="lbl">Feature box</span>
+        <NumberField label="Feature box size" value={t.size} min={9} max={201} step={0.5} digits={0} suffix=" px" oninput={(v) => sizes(v, t.search)} oncommit={commit} />
+      {/if}
+      <span class="lbl" title={t.mode === "Planar" ? "How far the surface may move between frames. Raise it for fast motion" : "How far a feature may move between frames. Raise it for fast motion; lower is less likely to jump to a look-alike"}>Search</span>
       <NumberField label="Search area" value={t.search} min={2} max={300} step={0.5} digits={0} suffix=" px" oninput={(v) => sizes(t.size, v)} oncommit={commit} />
     </div>
 
@@ -96,7 +102,7 @@
         <select bind:value={target} aria-label="Apply the motion to">
           {#each t.targets as c}<option value={key(c)}>{c.label}</option>{/each}
         </select>
-        {#if stabilising && t.mode !== "CornerPin"}
+        {#if stabilising && !perspective(t.mode)}
           <span class="lbl" title="0 locks the shot completely. Higher keeps slow, deliberate camera moves and only takes out the shake: 10 to 30 frames suits most handheld footage">Smoothing</span>
           <NumberField label="Smoothing" value={smoothing} min={0} max={120} step={0.25} digits={0} suffix=" frames" oninput={(v) => (smoothing = v)} oncommit={() => {}} />
         {/if}
@@ -104,7 +110,7 @@
       <div class="row">
         <button class="primary" disabled={!chosen} onclick={() => chosen && run(api.trackApply(ins.id, chosen.clip, chosen.mask, smoothing))} title="Writes keyframes (undoable)">Apply</button>
       </div>
-      {#if t.mode === "CornerPin" && chosen && chosen.clip !== ins.id}
+      {#if perspective(t.mode) && chosen && chosen.clip !== ins.id}
         <p class="note">A layer that isn't pinned is pinned straight into the four points. To place it differently on the surface, adjust its corner pin at the first tracked frame and apply again.</p>
       {/if}
     {/if}

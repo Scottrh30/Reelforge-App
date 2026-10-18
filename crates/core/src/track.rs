@@ -392,6 +392,18 @@ impl FeatureTracker {
         self.templates[0].is_flat()
     }
 
+    /// Expect the feature at `p` in the next frame (the next search starts there).
+    pub fn aim(&mut self, p: [f32; 2]) {
+        self.velocity = [p[0] - self.pos[0], p[1] - self.pos[1]];
+    }
+
+    /// Put the feature at `p` (e.g. where a surface it lies on says it is),
+    /// forgetting its last movement.
+    pub fn place(&mut self, p: [f32; 2]) {
+        self.pos = p;
+        self.velocity = [0.0, 0.0];
+    }
+
     /// Search around `around`: coarse levels first, each finer one refining.
     fn search_from(&self, pyr: &Pyramid, around: [f32; 2]) -> ([f32; 2], f32) {
         let top = self.templates.len() - 1;
@@ -468,17 +480,26 @@ pub enum TrackMode {
     Transform,
     /// Four points around a flat surface: its perspective, for a corner pin.
     CornerPin,
+    /// The four corners of a flat surface, followed by tracking the whole area
+    /// inside them (see [`crate::planar`]): the corners themselves needn't
+    /// have any detail, or even be in the picture.
+    Planar,
 }
 
 impl TrackMode {
-    pub const ALL: [TrackMode; 3] = [TrackMode::Position, TrackMode::Transform, TrackMode::CornerPin];
+    pub const ALL: [TrackMode; 4] = [TrackMode::Position, TrackMode::Transform, TrackMode::CornerPin, TrackMode::Planar];
 
     pub fn points(self) -> usize {
         match self {
             TrackMode::Position => 1,
             TrackMode::Transform => 2,
-            TrackMode::CornerPin => 4,
+            TrackMode::CornerPin | TrackMode::Planar => 4,
         }
+    }
+
+    /// Does it measure a surface's perspective (four corners, for a corner pin)?
+    pub fn is_perspective(self) -> bool {
+        matches!(self, TrackMode::CornerPin | TrackMode::Planar)
     }
 
     pub fn label(self) -> &'static str {
@@ -486,6 +507,7 @@ impl TrackMode {
             TrackMode::Position => "Position (1 point)",
             TrackMode::Transform => "Position, rotation and scale (2 points)",
             TrackMode::CornerPin => "Corner pin / perspective (4 points)",
+            TrackMode::Planar => "Planar: a whole flat surface",
         }
     }
 }
@@ -558,7 +580,7 @@ impl Tracker {
         match mode {
             TrackMode::Position => vec![c],
             TrackMode::Transform => vec![clamp([c[0] - dx, c[1]]), clamp([c[0] + dx, c[1]])],
-            TrackMode::CornerPin => vec![[c[0] - dx, c[1] - dy], [c[0] + dx, c[1] - dy], [c[0] + dx, c[1] + dy], [c[0] - dx, c[1] + dy]].into_iter().map(clamp).collect(),
+            TrackMode::CornerPin | TrackMode::Planar => vec![[c[0] - dx, c[1] - dy], [c[0] + dx, c[1] - dy], [c[0] + dx, c[1] + dy], [c[0] - dx, c[1] + dy]].into_iter().map(clamp).collect(),
         }
     }
 
@@ -645,7 +667,7 @@ pub fn motion_between(mode: TrackMode, from: &[[f32; 2]], to: &[[f32; 2]]) -> Op
             let (x0, y0, x1, y1) = (a0[0] as f64, a0[1] as f64, a1[0] as f64, a1[1] as f64);
             Some(Homography([a, -b, x1 - (a * x0 - b * y0), b, a, y1 - (b * x0 + a * y0), 0.0, 0.0, 1.0]))
         }
-        TrackMode::CornerPin => {
+        TrackMode::CornerPin | TrackMode::Planar => {
             let f: [[f32; 2]; 4] = from.get(..4)?.try_into().ok()?;
             let t: [[f32; 2]; 4] = to.get(..4)?.try_into().ok()?;
             if !Pin(f).is_valid() || !Pin(t).is_valid() {
@@ -791,7 +813,7 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
     let applied: Vec<Homography> = if !opts.stabilise {
         raw
     } else {
-        let smoothed = (opts.smoothing > 0.0 && tracker.mode != TrackMode::CornerPin).then(|| smooth_motions(&raw, opts.smoothing));
+        let smoothed = (opts.smoothing > 0.0 && !tracker.mode.is_perspective()).then(|| smooth_motions(&raw, opts.smoothing));
         raw.iter()
             .enumerate()
             .map(|(i, m)| {
@@ -809,9 +831,9 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
     // the clip's own at each frame.
     let base_at = |t: Time| if opts.stabilise { target.transform_at(clamp_t(t)) } else { target.transform_at(clamp_t(t0)) };
     let pinned = target.transform_at(clamp_t(t0)).valid_pin().is_some();
-    let use_pin = pinned || tracker.mode == TrackMode::CornerPin;
+    let use_pin = pinned || tracker.mode.is_perspective();
     // Straight into the tracked points: a corner pin following onto an unpinned layer.
-    let into_points = tracker.mode == TrackMode::CornerPin && !opts.stabilise && !pinned;
+    let into_points = tracker.mode.is_perspective() && !opts.stabilise && !pinned;
     let c = [frame[0] / 2.0, frame[1] / 2.0];
 
     let mut anim = target.anim.clone();
@@ -1040,6 +1062,28 @@ mod tests {
             })
             .collect();
         Tracker { mode: TrackMode::CornerPin, points }
+    }
+
+    /// A planar track's four corners apply exactly as a four-point track's do.
+    #[test]
+    fn planar_tracks_apply_like_corner_pins() {
+        let secs = Time::from_secs_f64;
+        let tracked = Clip::new(ClipId(1), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
+        let target = Clip::new(ClipId(2), MediaId(2), secs(0.0), secs(0.0), secs(4.0), None);
+        let (layer, frame) = ([400.0, 300.0], [400.0, 300.0]);
+        let q0 = [[100.0, 100.0], [300.0, 100.0], [300.0, 200.0], [100.0, 200.0]];
+        let q1 = [[120.0, 90.0], [310.0, 120.0], [290.0, 230.0], [110.0, 210.0]];
+        let pin = quad_track(&[q0, q1]);
+        let planar = Tracker { mode: TrackMode::Planar, ..pin.clone() };
+        assert!(TrackMode::Planar.is_perspective() && TrackMode::Planar.points() == 4);
+        for opts in [ApplyOptions::default(), ApplyOptions { stabilise: true, smoothing: 10.0 }] {
+            let t = if opts.stabilise { &tracked } else { &target };
+            let a = follow_keys(&tracked, &pin, layer, frame, t, layer, opts).unwrap();
+            let b = follow_keys(&tracked, &planar, layer, frame, t, layer, opts).unwrap();
+            assert_eq!(keys(&a.pin), keys(&b.pin));
+        }
+        let back: Tracker = serde_json::from_str(&serde_json::to_string(&planar).unwrap()).unwrap();
+        assert_eq!(back, planar);
     }
 
     #[test]

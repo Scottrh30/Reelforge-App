@@ -2,7 +2,8 @@
 
 use crate::source::FrameSource;
 use anyhow::{anyhow, Result};
-use reelforge_core::track::{local_linear, motion_between, FeatureTracker, Luma, PointTrack, Pyramid, TrackSample, Tracker, MIN_SCORE};
+use reelforge_core::planar::PlanarTracker;
+use reelforge_core::track::{local_linear, motion_between, FeatureTracker, Luma, PointTrack, Pyramid, TrackMode, TrackSample, Tracker, MIN_SCORE};
 use reelforge_core::{MediaInfo, Time};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,6 +48,9 @@ pub fn track_points(
     // Points are in media pixels; frames may decode at that size or not (they
     // do at full size here), so scale between the two.
     let (pyr, w, h) = grab(from)?;
+    if tracker.mode == TrackMode::Planar {
+        return track_plane(tracker, pyr, (w, h), (v.width, v.height), step, from, until, cancel, &mut grab, &mut progress);
+    }
     // The first frame, kept to compare each feature with how it looked then.
     let first = pyr.level(0).data.to_vec();
     let (sx, sy) = (w as f32 / v.width as f32, h as f32 / v.height as f32);
@@ -122,3 +126,52 @@ pub fn track_point(
     let (mut v, end) = track_points(path, info, &Tracker::from(track.clone()), from, until, cancel, progress)?;
     Ok((v.pop().unwrap_or_default(), end))
 }
+
+/// Planar tracking (see [`reelforge_core::planar`]): the four points are the
+/// surface's corners, moved together by the surface's tracked perspective.
+#[allow(clippy::too_many_arguments)]
+fn track_plane(
+    tracker: &Tracker,
+    pyr: Pyramid,
+    (w, h): (usize, usize),
+    (mw, mh): (u32, u32),
+    step: Time,
+    from: Time,
+    until: Time,
+    cancel: &AtomicBool,
+    grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
+    progress: &mut impl FnMut(f32),
+) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
+    let (sx, sy) = (w as f32 / mw as f32, h as f32 / mh as f32);
+    let start: Vec<[f32; 2]> = tracker.points.iter().map(|p| p.shown_at(from)).collect();
+    let quad: [[f32; 2]; 4] = std::array::from_fn(|i| [start[i][0] * sx, start[i][1] * sy]);
+    let search = tracker.points[0].search * sx;
+    let mut plane = PlanarTracker::new(&pyr, quad, search).map_err(|_| anyhow!("there's too little detail inside the shape to follow: draw it around a surface with some texture or print on it"))?;
+    let mut out: Vec<Vec<TrackSample>> = start.iter().map(|&p| vec![TrackSample { at: from, pos: p, score: 1.0 }]).collect();
+    let backwards = until < from;
+    let total = ((until - from).0.abs() / step.0.max(1)).max(1) as f32;
+    let mut t = from;
+    let mut n = 0.0;
+    loop {
+        t = if backwards { t - step } else { t + step };
+        if (backwards && t < until) || (!backwards && t > until) || t < Time::ZERO {
+            return Ok((out, TrackEnd::Done));
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Ok((out, TrackEnd::Cancelled));
+        }
+        let (pyr, _, _) = grab(t)?;
+        let Ok(corners) = plane.step(&pyr) else {
+            return Ok((out, TrackEnd::Lost(t, SURFACE)));
+        };
+        let score = plane.agreement.clamp(0.0, 1.0);
+        for (o, c) in out.iter_mut().zip(corners) {
+            o.push(TrackSample { at: t, pos: [c[0] / sx, c[1] / sy], score });
+        }
+        n += 1.0;
+        progress((n / total).min(1.0));
+    }
+}
+
+/// In [`TrackEnd::Lost`]: the whole surface was lost (planar tracking), not one point.
+pub const SURFACE: usize = usize::MAX;

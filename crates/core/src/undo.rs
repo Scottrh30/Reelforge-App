@@ -871,6 +871,48 @@ impl Command for RemoveTrack {
     }
 }
 
+/// Move a track to another place in the stack. Video tracks stay among the
+/// video tracks and audio among audio (index 0 is the bottom video track).
+pub struct MoveTrack {
+    pub seq: usize,
+    pub from: usize,
+    pub to: usize,
+}
+
+impl MoveTrack {
+    pub fn new(p: &Project, seq: usize, from: usize, to: usize) -> Result<Self, &'static str> {
+        let s = &p.sequences[seq];
+        let (Some(a), Some(b)) = (s.tracks.get(from), s.tracks.get(to)) else { return Err("no such track") };
+        if a.kind != b.kind {
+            return Err(if a.kind == TrackKind::Video { "video tracks stay above the audio tracks" } else { "audio tracks stay below the video tracks" });
+        }
+        if from == to {
+            return Err("it's already there");
+        }
+        Ok(Self { seq, from, to })
+    }
+}
+
+impl Command for MoveTrack {
+    fn name(&self) -> &str {
+        "Move track"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        let tracks = &mut p.sequences[self.seq].tracks;
+        if self.from < tracks.len() && self.to < tracks.len() {
+            let t = tracks.remove(self.from);
+            tracks.insert(self.to, t);
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        let tracks = &mut p.sequences[self.seq].tracks;
+        if self.from < tracks.len() && self.to < tracks.len() {
+            let t = tracks.remove(self.to);
+            tracks.insert(self.from, t);
+        }
+    }
+}
+
 pub struct RenameTrack {
     pub seq: usize,
     pub index: usize,
@@ -1468,6 +1510,36 @@ mod track_tests {
 
     fn s(x: f64) -> Time {
         Time::from_secs_f64(x)
+    }
+
+    #[test]
+    fn moving_a_track_keeps_its_clips_and_undoes() {
+        let mut p = Project::new(); // V1, V2, A1
+        let mut u = UndoStack::default();
+        let v = AddTrack::new(&p, 0, TrackKind::Video);
+        u.execute(&mut p, Box::new(v));
+        p.sequences[0].tracks[0].clips.push(Clip::new(ClipId(7), MediaId(1), s(0.0), s(0.0), s(1.0), None));
+        let names = |p: &Project| p.sequences[0].tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        let before = names(&p);
+        assert_eq!(before, ["Video 1", "Video 2", "Video 3", "Audio 1"]);
+        // Not across kinds, not onto itself.
+        assert!(MoveTrack::new(&p, 0, 0, 3).is_err());
+        assert!(MoveTrack::new(&p, 0, 1, 1).is_err());
+        // Bottom to top: its clip goes with it.
+        let m = MoveTrack::new(&p, 0, 0, 2).unwrap();
+        u.execute(&mut p, Box::new(m));
+        assert_eq!(names(&p)[..3], ["Video 2", "Video 3", "Video 1"]);
+        assert_eq!(p.sequences[0].find_clip(ClipId(7)).unwrap().0, 2);
+        // Top to middle.
+        let m = MoveTrack::new(&p, 0, 2, 1).unwrap();
+        u.execute(&mut p, Box::new(m));
+        assert_eq!(names(&p)[..3], ["Video 2", "Video 1", "Video 3"]);
+        u.undo(&mut p);
+        u.undo(&mut p);
+        assert_eq!(names(&p), before);
+        assert_eq!(p.sequences[0].find_clip(ClipId(7)).unwrap().0, 0);
+        u.redo(&mut p);
+        assert_eq!(names(&p)[..3], ["Video 2", "Video 3", "Video 1"]);
     }
 
     #[test]

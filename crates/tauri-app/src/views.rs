@@ -220,7 +220,7 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
         clip: c.id.0,
         mask: None,
         label: match trk.mode {
-            TrackMode::CornerPin => "This clip: stabilise (perspective)".into(),
+            TrackMode::CornerPin | TrackMode::Planar => "This clip: stabilise (perspective)".into(),
             TrackMode::Transform => "This clip: stabilise (with rotation and scale)".into(),
             TrackMode::Position => "This clip: stabilise".into(),
         },
@@ -231,7 +231,7 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
     if let Some((ta, tb)) = range {
         for tr in s.tracks.iter().filter(|t| t.kind == TrackKind::Video) {
             for o in tr.clips.iter().filter(|o| o.id != c.id && o.timeline_start.0 < tb && o.timeline_end().0 > ta) {
-                let how = if trk.mode == TrackMode::CornerPin { "Pin into the points: " } else { "" };
+                let how = if trk.mode.is_perspective() { "Pin into the surface: " } else { "" };
                 targets.push(TargetView { clip: o.id.0, mask: None, label: format!("{how}{} ({})", o.display_name(&e.project), tr.name) });
             }
         }

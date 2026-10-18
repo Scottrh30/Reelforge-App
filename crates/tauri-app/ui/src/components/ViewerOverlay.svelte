@@ -192,27 +192,40 @@
     <!-- The motion tracker: search area, feature box and path for each point. -->
     {#if ins.tracker}
       {@const t = ins.tracker}
-      {#if t.shown.length > 1}
+      {#if t.mode === "Planar"}
+        <!-- A planar tracker: the surface's outline, with a handle at each corner. -->
+        <polygon points={pts(t.shown)} class="plane" />
+      {:else if t.shown.length > 1}
         <polyline points={pts(t.shown.length > 2 ? [...t.shown, t.shown[0]] : t.shown)} class="joint" />
       {/if}
       {#each t.shown as c, i}
-        {@const col = POINT_COLOURS[i % 4]}
-        {#if t.paths[i]?.length > 1}
-          <polyline points={pts(t.paths[i])} class="path" stroke={col} />
-        {/if}
-        <polygon points={pts(square(c, t.size / 2 + t.search))} class="search" stroke={col} />
-        <polygon
-          points={pts(square(c, t.size / 2))}
-          class="feature"
-          stroke={col}
-          onpointerdown={(e) => dragTracker(e, i)}
-          role="presentation"
-        />
-        {@const [cx, cy] = toBox(c)}
-        <circle cx={cx} cy={cy} r="2.5" fill={col} />
-        {#if t.shown.length > 1}
-          {@const [lx, ly] = toBox(square(c, t.size / 2)[0])}
-          <text x={lx + 2} y={ly - 3} fill={col}>{i + 1}</text>
+        {#if t.mode === "Planar"}
+          {@const col = POINT_COLOURS[i % 4]}
+          {#if t.paths[i]?.length > 1}
+            <polyline points={pts(t.paths[i])} class="path" stroke={col} />
+          {/if}
+          {@const [cx, cy] = toBox(c)}
+          <circle cx={cx} cy={cy} r="6" class="corner" stroke={col} onpointerdown={(e) => dragTracker(e, i)} role="presentation" />
+          <text x={cx + 8} y={cy - 7} fill={col}>{i + 1}</text>
+        {:else}
+          {@const col = POINT_COLOURS[i % 4]}
+          {#if t.paths[i]?.length > 1}
+            <polyline points={pts(t.paths[i])} class="path" stroke={col} />
+          {/if}
+          <polygon points={pts(square(c, t.size / 2 + t.search))} class="search" stroke={col} />
+          <polygon
+            points={pts(square(c, t.size / 2))}
+            class="feature"
+            stroke={col}
+            onpointerdown={(e) => dragTracker(e, i)}
+            role="presentation"
+          />
+          {@const [cx, cy] = toBox(c)}
+          <circle cx={cx} cy={cy} r="2.5" fill={col} />
+          {#if t.shown.length > 1}
+            {@const [lx, ly] = toBox(square(c, t.size / 2)[0])}
+            <text x={lx + 2} y={ly - 3} fill={col}>{i + 1}</text>
+          {/if}
         {/if}
       {/each}
     {/if}
@@ -281,6 +294,19 @@
     stroke-width: 1;
     pointer-events: all;
     cursor: crosshair;
+  }
+  .plane {
+    fill: rgba(242, 169, 59, 0.08);
+    stroke: rgba(255, 255, 255, 0.8);
+    stroke-width: 1.4;
+    stroke-dasharray: 6 4;
+    pointer-events: none;
+  }
+  .corner {
+    fill: rgba(0, 0, 0, 0.35);
+    stroke-width: 2;
+    cursor: move;
+    pointer-events: all;
   }
   .joint {
     fill: none;
