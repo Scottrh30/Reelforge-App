@@ -76,6 +76,32 @@
     openMenu({ clientX: r.left, clientY: r.bottom + 2, preventDefault() {}, stopPropagation() {} } as MouseEvent, items);
   }
 
+  // Colours: 0xRRGGBB numbers ↔ "#rrggbb".
+  const hex = (v: number) => "#" + Math.round(v).toString(16).padStart(6, "0").slice(-6);
+  const unhex = (h: string) => parseInt(h.replace("#", ""), 16) || 0;
+  function typedHex(i: number, pi: number, el: HTMLInputElement, pv: ParamView) {
+    const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(el.value.trim());
+    if (!m) {
+      el.value = hex(value(i, pi, pv));
+      return;
+    }
+    const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
+    setNow(i, pi, unhex(h));
+  }
+
+  // Energy blade tools.
+  const BLADE_COLOURS: [string, string][] = [
+    ["Blue", "#1f6bff"],
+    ["Green", "#22e04a"],
+    ["Red", "#ff1a12"],
+    ["Purple", "#9a3dff"],
+    ["Yellow", "#ffc21a"],
+    ["Orange", "#ff6a10"],
+    ["Cyan", "#18e0ff"],
+    ["White", "#d8e4ff"],
+  ];
+  let igniteSecs = $state(0.3);
+
   const keyTip = (p: ParamView) => (p.key_here ? "Remove the keyframe here" : p.animated ? "Add a keyframe at the playhead" : "Animate: add a keyframe at the playhead");
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 </script>
@@ -117,6 +143,7 @@
         {#if fx.params.length}
           <div class="params">
             {#each fx.params as p, pi}
+              {#if p.section}<span class="sec">{p.section}</span>{/if}
               <span class="lbl" title={p.name}>{p.name}</span>
               <button class="key" class:here={p.key_here} class:anim={p.animated} onclick={() => run(api.effectKey(ins.id, i, pi))} title={keyTip(p)} aria-label="{keyTip(p)}: {p.name}">
                 <svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg>
@@ -124,6 +151,9 @@
               <div class="ctl">
                 {#if p.ui === "toggle"}
                   <input type="checkbox" checked={value(i, pi, p) >= 0.5} aria-label={p.name} onchange={(e) => setNow(i, pi, e.currentTarget.checked ? 1 : 0)} />
+                {:else if p.ui === "color"}
+                  <input type="color" class="pick" value={hex(value(i, pi, p))} aria-label="{p.name}" oninput={(e) => set(i, pi, unhex(e.currentTarget.value))} onchange={commit} />
+                  <input type="text" class="hex" value={hex(value(i, pi, p))} spellcheck="false" aria-label="{p.name} hex code" onblur={(e) => typedHex(i, pi, e.currentTarget, p)} onkeydown={(e) => e.key === "Enter" && typedHex(i, pi, e.currentTarget, p)} />
                 {:else if p.ui === "choice"}
                   <select value={Math.round(value(i, pi, p))} aria-label={p.name} onchange={(e) => setNow(i, pi, +e.currentTarget.value)}>
                     {#each p.options as o, oi}<option value={oi}>{o}</option>{/each}
@@ -139,6 +169,21 @@
                 {/if}
               </div>
             {/each}
+          </div>
+        {/if}
+        {#if fx.kind === "EnergyBlade"}
+          <div class="blade">
+            <div class="presets" role="group" aria-label="Blade colour presets">
+              {#each BLADE_COLOURS as [name, c], k}
+                <button class="dot" style="--c:{c}" title="{name} blade" aria-label="{name} blade" onclick={() => run(api.bladePreset(ins.id, i, k))}></button>
+              {/each}
+            </div>
+            <div class="row ignite">
+              <button class="small" onclick={() => run(api.bladeIgnite(ins.id, i, false, igniteSecs))} title="Keyframe the length from 0 to 100% starting at the playhead">Ignite here</button>
+              <button class="small" onclick={() => run(api.bladeIgnite(ins.id, i, true, igniteSecs))} title="Keyframe the length from 100 to 0% starting at the playhead">Retract here</button>
+              <NumberField label="Ignition time" value={igniteSecs} min={0.02} max={10} step={0.01} digits={2} suffix=" s" oninput={(v) => (igniteSecs = v)} oncommit={() => {}} />
+            </div>
+            <p class="note">Drag the hilt (H) and tip in the Viewer, or drag the blade to move it. To make it follow a prop, track the prop in the Track panel and apply the track to this blade.</p>
           </div>
         {/if}
         {#if fx.kind === "Curves" && fx.curves}
@@ -314,6 +359,65 @@
     padding: 0 4px;
     color: var(--muted);
     flex: none;
+  }
+  .sec {
+    grid-column: 1 / -1;
+    font-size: calc(11px * var(--text-scale));
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--faint);
+    padding-top: 6px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .sec:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+  .pick {
+    width: 34px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: none;
+    flex: none;
+  }
+  .hex {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--mono, ui-monospace, monospace);
+  }
+  .blade {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .dot {
+    width: 20px;
+    height: 20px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--c) 40%, white);
+    background: radial-gradient(circle, white 0 22%, var(--c) 60%);
+    box-shadow: 0 0 6px var(--c);
+  }
+  .dot:hover {
+    transform: scale(1.12);
+  }
+  .ignite {
+    flex-wrap: wrap;
+  }
+  .ignite :global(.num) {
+    width: 76px;
   }
   .lut .file {
     flex: 1;

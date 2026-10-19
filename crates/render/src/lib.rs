@@ -399,7 +399,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow"]
+        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -949,6 +949,17 @@ impl Compositor {
                     }
                     EffectKind::Levels => {
                         push("fs_levels", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::EnergyBlade => {
+                        // A seed per blade (its place in the stack) so two blades flicker apart.
+                        let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        u[24..28].copy_from_slice(&e.prev.unwrap_or([e.values[0], e.values[1], e.values[2], e.values[3]]));
+                        u[28..32].copy_from_slice(&e.values[16..20]);
+                        push("fs_blade", cur, Second::None, o1, u);
                         cur = o1;
                     }
                     EffectKind::Plugin => {

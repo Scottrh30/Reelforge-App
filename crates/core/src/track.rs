@@ -761,6 +761,58 @@ pub fn motion_between(mode: TrackMode, from: &[[f32; 2]], to: &[[f32; 2]]) -> Op
     }
 }
 
+/// Where an energy blade's hilt and tip (`ends`, in the tracked clip's media
+/// pixels, as placed at media time `reference`) go at each tracked frame,
+/// moving with the tracked points. Mesh tracks aren't supported (`None`).
+///
+/// One point moves the blade; two points also turn and stretch it (rotation
+/// and scale about the points' middle); corner pins and planar tracks carry
+/// it in perspective. Left-out `axes` keep the blade's own value for that
+/// part. Returns (media time, [hilt, tip]) per tracked frame.
+pub fn follow_blade(tracker: &Tracker, ends: [[f32; 2]; 2], reference: Time, axes: Axes) -> Option<Vec<(Time, [[f32; 2]; 2])>> {
+    if tracker.mode == TrackMode::Mesh {
+        return None;
+    }
+    let frames = tracker.frames();
+    // The tracked frame nearest the reference time.
+    let ref_pts = frames.iter().min_by_key(|(t, _)| (t.0 - reference.0).abs())?.1.clone();
+    let mid = |p: &[[f32; 2]]| {
+        let n = p.len().max(1) as f32;
+        p.iter().fold([0.0, 0.0], |a, q| [a[0] + q[0] / n, a[1] + q[1] / n])
+    };
+    let c0 = mid(&ref_pts);
+    let out: Vec<_> = frames
+        .iter()
+        .filter_map(|(t, pts)| {
+            let h = motion_between(tracker.mode, &ref_pts, pts)?;
+            let c1 = mid(pts);
+            let d = axes.mask([c1[0] - c0[0], c1[1] - c0[1]]);
+            let moved = match tracker.mode {
+                TrackMode::CornerPin | TrackMode::Planar => {
+                    // In perspective, then back by the left-out part of the surface's move.
+                    let full = [c1[0] - c0[0], c1[1] - c0[1]];
+                    ends.map(|p| {
+                        let q = h.apply(p);
+                        [q[0] - (full[0] - d[0]), q[1] - (full[1] - d[1])]
+                    })
+                }
+                _ => {
+                    let sim = Similar::of(&h);
+                    let angle = if tracker.mode == TrackMode::Transform && axes.rotation { sim.angle.to_radians() as f32 } else { 0.0 };
+                    let k = if tracker.mode == TrackMode::Transform && axes.scale { sim.scale as f32 } else { 1.0 };
+                    let (sn, cs) = angle.sin_cos();
+                    ends.map(|p| {
+                        let (x, y) = (p[0] - c0[0], p[1] - c0[1]);
+                        [c0[0] + k * (cs * x - sn * y) + d[0], c0[1] + k * (sn * x + cs * y) + d[1]]
+                    })
+                }
+            };
+            Some((*t, moved))
+        })
+        .collect();
+    (!out.is_empty()).then_some(out)
+}
+
 /// The 2×2 linear map that `h` is close to around point `p` (its derivative).
 pub fn local_linear(h: &Homography, p: [f32; 2]) -> [[f32; 2]; 2] {
     let e = 0.5;
@@ -1106,6 +1158,28 @@ pub fn follow_mask(clip: &Clip, mask: &crate::mask::Mask, tracker: &Tracker) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn blade_follows_two_points_with_rotation_and_chosen_axes() {
+        let s = |x: f64| Time::from_secs_f64(x);
+        let mut t = Tracker::new(TrackMode::Transform, [100.0, 100.0], [400.0, 300.0], s(0.0));
+        // Two markers on a prop: they turn 90° about their middle (150, 100) and move 20 px right.
+        let path = |a: [f32; 2], b: [f32; 2]| vec![TrackSample { at: s(0.0), pos: a, score: 1.0 }, TrackSample { at: s(1.0), pos: b, score: 1.0 }];
+        t.points[0].path = path([100.0, 100.0], [170.0, 50.0]);
+        t.points[1].path = path([200.0, 100.0], [170.0, 150.0]);
+        let ends = [[150.0, 100.0], [150.0, 0.0]];
+        let f = follow_blade(&t, ends, s(0.0), Axes::ALL).unwrap();
+        let [h, tip] = f.last().unwrap().1;
+        assert!((h[0] - 170.0).abs() < 0.01 && (h[1] - 100.0).abs() < 0.01, "hilt moved with the middle: {h:?}");
+        assert!((tip[0] - 270.0).abs() < 0.01 && (tip[1] - 100.0).abs() < 0.01, "tip turned 90°: {tip:?}");
+        // Rotation only: no move, still turned.
+        let f = follow_blade(&t, ends, s(0.0), Axes { x: false, y: false, rotation: true, scale: false }).unwrap();
+        let [h, tip] = f.last().unwrap().1;
+        assert!((h[0] - 150.0).abs() < 0.01 && (tip[0] - 250.0).abs() < 0.01, "{h:?} {tip:?}");
+        // A mesh can't carry a blade.
+        t.mode = TrackMode::Mesh;
+        assert!(follow_blade(&t, ends, s(0.0), Axes::ALL).is_none());
+    }
+
     use super::*;
     use crate::project::{ClipId, MediaId};
 

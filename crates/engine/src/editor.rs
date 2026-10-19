@@ -1094,6 +1094,30 @@ impl Editor {
         self.status = "Added a title: type its text in the Controls panel".into();
     }
 
+    /// An energy blade on its own transparent layer above everything: as long
+    /// as the selected video clip (or 5 seconds from the playhead).
+    pub fn add_blade_layer(&mut self) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let rate = s.frame_rate;
+        let (start, dur) = match self.selection.and_then(|id| s.find_clip(id)).filter(|(_, c)| c.title.is_none()) {
+            Some((_, c)) if c.media != MediaId::GENERATED || c.nested.is_some() => (c.timeline_start, c.duration),
+            _ => (self.playback.playhead.snap(rate), Time::from_secs_f64(5.0).snap(rate)),
+        };
+        let mut spec = TitleSpec::for_frame(s.height);
+        spec.text = String::new();
+        // A new track on top, so it's above the footage it's drawn over.
+        let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
+        let track = add.index;
+        let id = ClipId(self.project.alloc_id());
+        let mut clip = Clip::new_title(id, start, dur, spec);
+        clip.effects.push(Effect::new(EffectKind::EnergyBlade));
+        let cmds: Vec<Box<dyn Command>> = vec![Box::new(add), Box::new(AddClip { seq: self.active, track, clip })];
+        self.execute(Box::new(Batch { name: "Add energy blade layer".into(), cmds }));
+        self.select_only(Some(id));
+        self.status = "Added an energy blade layer: drag its hilt and tip in the Viewer".into();
+    }
+
     /// A new, empty composition the size of the current sequence, opened for editing.
     pub fn new_composite(&mut self) {
         self.commit_live_edit();
@@ -1746,6 +1770,100 @@ impl Editor {
         self.status = format!("{name} now follows the tracked motion");
     }
 
+    /// Make energy blade `index` (an effect of `target`, which may be the
+    /// tracked clip itself or a layer over it) follow the tracked motion: its
+    /// hilt and tip keep where they are at the playhead and move, turn and
+    /// stretch with the tracked points, as keyframes over the tracked span.
+    pub fn apply_track_to_blade(&mut self, tracked: ClipId, target: ClipId, index: usize, axes: Axes) {
+        use reelforge_core::effects::blade;
+        if !axes.x && !axes.y && !axes.rotation && !axes.scale {
+            self.status = "Nothing to apply: tick at least one of X, Y, rotation or scale".into();
+            return;
+        }
+        self.commit_live_edit();
+        let s = self.seq();
+        let (Some((_, a)), Some((_, b))) = (s.find_clip(tracked), s.find_clip(target)) else { return };
+        let Some(track) = &a.tracker else { return };
+        let Some(fx) = b.effects.get(index).filter(|f| f.kind == EffectKind::EnergyBlade) else { return };
+        if s.is_locked(target) {
+            self.status = LOCKED.into();
+            return;
+        }
+        let (la, lb) = (self.layer_size(a), self.layer_size(b));
+        let frame = [s.width as f32, s.height as f32];
+        let same = tracked == target;
+        // Timeline time ↔ the two clips' layer pixels (via the frame, for another layer).
+        let to_seq = |m: Time| a.timeline_of_media(m).unwrap_or(a.timeline_start);
+        let clamp_b = |t: Time| t.max(b.timeline_start).min(b.timeline_end());
+        let into_a = |t: Time, p: [f32; 2]| -> Option<[f32; 2]> {
+            if same {
+                return Some(p);
+            }
+            let q = b.transform_at(clamp_b(t)).layer_map(lb, frame).apply([p[0] - lb[0] / 2.0, p[1] - lb[1] / 2.0]);
+            let r = a.transform_at(t).layer_map(la, frame).inverse()?.apply(q);
+            Some([r[0] + la[0] / 2.0, r[1] + la[1] / 2.0])
+        };
+        let into_b = |t: Time, p: [f32; 2]| -> Option<[f32; 2]> {
+            if same {
+                return Some(p);
+            }
+            let q = a.transform_at(t).layer_map(la, frame).apply([p[0] - la[0] / 2.0, p[1] - la[1] / 2.0]);
+            let r = b.transform_at(clamp_b(t)).layer_map(lb, frame).inverse()?.apply(q);
+            Some([r[0] + lb[0] / 2.0, r[1] + lb[1] / 2.0])
+        };
+        // The blade where it is at the playhead, in the tracked clip's pixels.
+        let ref_media = self.track_time(a);
+        let ref_seq = to_seq(ref_media);
+        let src = b.source_time(clamp_b(ref_seq));
+        let pct = |i: usize| fx.value_at(i, src) / 100.0;
+        let ends_b = [[pct(blade::HILT_X) * lb[0], pct(blade::HILT_Y) * lb[1]], [pct(blade::TIP_X) * lb[0], pct(blade::TIP_Y) * lb[1]]];
+        let (Some(h), Some(t)) = (into_a(ref_seq, ends_b[0]), into_a(ref_seq, ends_b[1])) else { return };
+        let Some(path) = reelforge_core::track::follow_blade(track, [h, t], ref_media, axes) else {
+            self.status = if track.mode == TrackMode::Mesh {
+                "A mesh track can't carry a blade: use a single, two-point, four-point or planar track".into()
+            } else {
+                "Nothing to apply: track the points first".into()
+            };
+            return;
+        };
+        let mut keys: Vec<(Time, [f32; 4])> = Vec::new();
+        for (m, [h, t]) in path {
+            let at = to_seq(m);
+            if at < b.timeline_start || at > b.timeline_end() {
+                continue;
+            }
+            let (Some(h), Some(t)) = (into_b(at, h), into_b(at, t)) else { continue };
+            keys.push((b.source_time(at), [h[0] / lb[0] * 100.0, h[1] / lb[1] * 100.0, t[0] / lb[0] * 100.0, t[1] / lb[1] * 100.0]));
+        }
+        let (Some(first), Some(last)) = (keys.first().map(|k| k.0), keys.last().map(|k| k.0)) else {
+            self.status = "Nothing to apply: the track doesn't overlap that layer".into();
+            return;
+        };
+        let (lo, hi) = (first.min(last), first.max(last));
+        let mut v = b.visual();
+        let e = &mut v.effects[index];
+        e.normalize();
+        for (j, i) in [blade::HILT_X, blade::HILT_Y, blade::TIP_X, blade::TIP_Y].into_iter().enumerate() {
+            let p = &mut e.params[i];
+            // A part left out keeps the blade's own value (and keys).
+            let moves = match i {
+                blade::HILT_X | blade::TIP_X => axes.x || axes.rotation || axes.scale,
+                _ => axes.y || axes.rotation || axes.scale,
+            };
+            if !moves {
+                continue;
+            }
+            p.keys.0.retain(|k| k.at < lo || k.at > hi);
+            for (at, val) in &keys {
+                p.keys.set(*at, val[j]);
+            }
+        }
+        let name = if same { "The blade".to_string() } else { format!("The blade on {}", b.display_name(&self.project)) };
+        self.set_visual_live(target, v);
+        self.commit_live_edit();
+        self.status = format!("{name} now follows the tracked motion ({} keyframes)", keys.len());
+    }
+
     /// Make `target` follow the tracked motion of `tracked` (or, if they're the
     /// same clip, hold it steady), as keyframes. `smoothing` (frames) keeps
     /// slow camera moves when stabilising.
@@ -2035,6 +2153,54 @@ mod tests {
         assert!(e.status.starts_with("Relinked 2 files"), "{}", e.status);
         e.undo();
         assert_eq!(reelforge_core::undo::missing_media(&e.project).len(), 2, "one undo step");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn energy_blades_follow_a_track_on_their_own_layer_or_the_clip() {
+        use reelforge_core::effects::blade;
+        use reelforge_core::track::TrackSample;
+        let dir = std::env::temp_dir().join(format!("rf-engine-blade-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(f) = clip_file(&dir, "a.mp4") else { return };
+        let mut e = editor();
+        let info = reelforge_media::probe(&f).unwrap();
+        e.project.media.push(MediaAsset { id: MediaId(1), path: f, name: "a.mp4".into(), info });
+        (e.project.sequences[0].width, e.project.sequences[0].height) = (160, 90);
+        let id = ClipId(e.project.alloc_id());
+        let mut c = Clip::new(id, MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.0), None);
+        // A prop moving 16 px (10% of the width) to the right over half a second.
+        let mut t = Tracker::new(TrackMode::Position, [80.0, 45.0], [160.0, 90.0], Time::ZERO);
+        t.points[0].path = vec![
+            TrackSample { at: Time::ZERO, pos: [80.0, 45.0], score: 1.0 },
+            TrackSample { at: Time::from_secs_f64(0.5), pos: [96.0, 45.0], score: 1.0 },
+        ];
+        c.tracker = Some(t);
+        c.effects.push(Effect::new(EffectKind::EnergyBlade));
+        let v = e.seq().tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+        e.project.sequences[0].tracks[v].clips.push(c);
+        e.select_only(Some(id));
+
+        // On its own layer above, as long as the clip.
+        e.add_blade_layer();
+        let layer = e.selection.unwrap();
+        let (_, b) = e.seq().find_clip(layer).unwrap();
+        assert_eq!((b.timeline_start, b.duration), (Time::ZERO, Time::from_secs_f64(1.0)));
+        assert_eq!(b.display_name(&e.project), "Energy blade");
+        e.apply_track_to_blade(id, layer, 0, Axes::ALL);
+        let (_, b) = e.seq().find_clip(layer).unwrap();
+        let x = |c: &Clip, at: f64| c.effects[0].value_at(blade::HILT_X, Time::from_secs_f64(at));
+        assert!((x(b, 0.0) - 40.0).abs() < 0.01 && (x(b, 0.5) - 50.0).abs() < 0.01, "{} {} ({})", x(b, 0.0), x(b, 0.5), e.status);
+        assert!((b.effects[0].value_at(blade::TIP_X, Time::from_secs_f64(0.5)) - 72.0).abs() < 0.01);
+        assert!(b.effects[0].params[blade::HILT_Y].keys.is_animated(), "Y keyed too");
+
+        // On the tracked clip itself, X only.
+        e.apply_track_to_blade(id, id, 0, Axes { x: true, y: false, rotation: false, scale: false });
+        let (_, c) = e.seq().find_clip(id).unwrap();
+        assert!((x(c, 0.5) - 50.0).abs() < 0.01, "{}", e.status);
+        assert!(!c.effects[0].params[blade::HILT_Y].keys.is_animated(), "Y left alone");
+        e.undo();
+        assert!(!e.seq().find_clip(id).unwrap().1.effects[0].params[blade::HILT_X].keys.is_animated(), "one undo step");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -104,6 +104,7 @@
     { label: "Transitions…", run: () => (app.effectsOpen = true) },
     { label: "Freeze frame at playhead", hint: "Shift+F", run: () => actions.act("freeze_frame") },
     { label: "Add title", hint: "Ctrl+T", run: actions.addTitle },
+    { label: "Add energy blade layer", run: () => run(api.addBladeLayer()) },
     { label: "Nudge selected clips earlier", hint: ",", run: () => actions.act("nudge_left") },
     { label: "Nudge selected clips later", hint: ".", run: () => actions.act("nudge_right") },
     { separator: true },

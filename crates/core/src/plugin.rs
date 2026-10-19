@@ -16,7 +16,7 @@
 //! render crate's job (`reelforge_render::plugin`). See PLUGINS.md for how to
 //! write one.
 
-use crate::effects::{EffectCategory, ParamSpec, ParamUi, MAX_PARAMS};
+use crate::effects::{EffectCategory, ParamSpec, ParamUi, PLUGIN_MAX_PARAMS as MAX_PARAMS};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

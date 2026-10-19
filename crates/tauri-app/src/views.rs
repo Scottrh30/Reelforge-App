@@ -208,6 +208,8 @@ pub struct TargetView {
     pub clip: u64,
     /// A mask of the tracked clip, instead of a clip.
     pub mask: Option<usize>,
+    /// An energy blade effect of `clip` (its index in the stack), instead of the clip.
+    pub blade: Option<usize>,
     pub label: String,
 }
 
@@ -240,10 +242,19 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
         TrackMode::Mesh => None,
     };
     if let Some(label) = stabilise {
-        targets.push(TargetView { clip: c.id.0, mask: None, label: label.into() });
+        targets.push(TargetView { clip: c.id.0, mask: None, blade: None, label: label.into() });
     }
     for (i, m) in c.masks.iter().enumerate() {
-        targets.push(TargetView { clip: c.id.0, mask: Some(i), label: format!("Mask: {}", m.name) });
+        targets.push(TargetView { clip: c.id.0, mask: Some(i), blade: None, label: format!("Mask: {}", m.name) });
+    }
+    // Energy blades: on this clip, or (below) on layers over it.
+    let blades = |o: &Clip| -> Vec<usize> { o.effects.iter().enumerate().filter(|(_, f)| f.kind == reelforge_core::EffectKind::EnergyBlade).map(|(i, _)| i).collect() };
+    let blade_label = |list: &[usize], i: usize| if list.len() > 1 { format!("Energy blade {}", list.iter().position(|&j| j == i).unwrap_or(0) + 1) } else { "Energy blade".to_string() };
+    if trk.mode != TrackMode::Mesh {
+        let list = blades(c);
+        for &i in &list {
+            targets.push(TargetView { clip: c.id.0, mask: None, blade: Some(i), label: format!("{}: hilt and tip (this clip)", blade_label(&list, i)) });
+        }
     }
     if let Some((ta, tb)) = range {
         for tr in s.tracks.iter().filter(|t| t.kind == TrackKind::Video) {
@@ -253,7 +264,13 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
                     m if m.is_perspective() => "Pin into the surface: ",
                     _ => "",
                 };
-                targets.push(TargetView { clip: o.id.0, mask: None, label: format!("{how}{} ({})", o.display_name(&e.project), tr.name) });
+                targets.push(TargetView { clip: o.id.0, mask: None, blade: None, label: format!("{how}{} ({})", o.display_name(&e.project), tr.name) });
+                if trk.mode != TrackMode::Mesh {
+                    let list = blades(o);
+                    for &i in &list {
+                        targets.push(TargetView { clip: o.id.0, mask: None, blade: Some(i), label: format!("{}: hilt and tip ({}, {})", blade_label(&list, i), o.display_name(&e.project), tr.name) });
+                    }
+                }
             }
         }
     }
@@ -295,6 +312,9 @@ fn clip_kind(p: &Project, kind: TrackKind, c: &Clip) -> &'static str {
 fn clip_name(p: &Project, c: &Clip) -> String {
     if let Some(t) = &c.title {
         let first = t.text.lines().next().unwrap_or("").trim();
+        if first.is_empty() && c.effects.iter().any(|e| e.kind == reelforge_core::EffectKind::EnergyBlade) {
+            return "Energy blade".into();
+        }
         return if first.is_empty() { "Title".into() } else { first.to_string() };
     }
     if let Some(s) = c.nested {

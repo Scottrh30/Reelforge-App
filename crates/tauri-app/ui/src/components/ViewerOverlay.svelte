@@ -133,6 +133,61 @@
     el.addEventListener("pointerup", up);
   }
 
+  // Energy blades of the selected clip: hilt and tip handles (% of the layer).
+  type Blade = { index: number; hilt: Pt; tip: Pt; colour: string };
+  const blades = $derived.by((): Blade[] => {
+    if (!ins) return [];
+    return ins.effects.flatMap((fx, index) => {
+      if (fx.kind !== "EnergyBlade" || !fx.enabled || fx.params.length < 6) return [];
+      const v = (k: number) => fx.params[k].value;
+      const at = (x: number, y: number): Pt => [(x / 100) * size[0], (y / 100) * size[1]];
+      const c = Math.round(v(5)).toString(16).padStart(6, "0");
+      return [{ index, hilt: at(v(0), v(1)), tip: at(v(2), v(3)), colour: `#${c}` }];
+    });
+  });
+  /// Drag a blade's hilt, tip, or (`"both"`) the whole blade.
+  function dragBlade(e: PointerEvent, b: Blade, part: "hilt" | "tip" | "both") {
+    if (e.button !== 0 || !ins || !inv || app.live?.playing || busyTracking) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = ins.id;
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const start = toLayer(e);
+    const pct = (p: Pt): Pt => [(p[0] / size[0]) * 100, (p[1] / size[1]) * 100];
+    const pump = livePump();
+    const move = (ev: PointerEvent) => {
+      const now = toLayer(ev);
+      const d: Pt = [now[0] - start[0], now[1] - start[1]];
+      const shift = (p: Pt): Pt => pct([p[0] + d[0], p[1] + d[1]]);
+      const sets: [number, number][] = [];
+      if (part !== "tip") {
+        const h = shift(b.hilt);
+        sets.push([0, h[0]], [1, h[1]]);
+      }
+      if (part !== "hilt") {
+        let t = shift(b.tip);
+        if (part === "tip" && ev.shiftKey) {
+          // Shift: keep the blade's length, only turn it.
+          const L = Math.hypot(b.tip[0] - b.hilt[0], b.tip[1] - b.hilt[1]);
+          const [px, py] = [b.tip[0] + d[0] - b.hilt[0], b.tip[1] + d[1] - b.hilt[1]];
+          const k = L / (Math.hypot(px, py) || 1);
+          t = pct([b.hilt[0] + px * k, b.hilt[1] + py * k]);
+        }
+        sets.push([2, t[0]], [3, t[1]]);
+      }
+      pump.push(() => Promise.all(sets.map(([k, v]) => api.effectParam(id, b.index, k, v))));
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      await pump.done();
+      await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
   // Freehand: each click adds a point; clicking the first one (or Enter, or a double-click) closes it.
   let hover = $state<Pt | null>(null);
   function drawClick(e: MouseEvent) {
@@ -188,6 +243,19 @@
         {/each}
       {/if}
     {/each}
+
+    <!-- Energy blades: a line from hilt to tip, with handles at both ends. -->
+    {#if !drawing}
+      {#each blades as b}
+        {@const [hx, hy] = toBox(b.hilt)}
+        {@const [tx, ty] = toBox(b.tip)}
+        <line x1={hx} y1={hy} x2={tx} y2={ty} class="bladeline" onpointerdown={(e) => dragBlade(e, b, "both")} role="presentation" />
+        <line x1={hx} y1={hy} x2={tx} y2={ty} class="bladeaxis" />
+        <circle cx={tx} cy={ty} r="6" class="bladeend" stroke={b.colour} onpointerdown={(e) => dragBlade(e, b, "tip")} role="presentation"><title>Blade tip: drag to aim (Shift keeps the length)</title></circle>
+        <circle cx={hx} cy={hy} r="8" class="bladeend hilt" stroke={b.colour} onpointerdown={(e) => dragBlade(e, b, "hilt")} role="presentation"><title>Blade hilt: drag to move this end</title></circle>
+        <text x={hx} y={hy + 4} text-anchor="middle" class="bladetag">H</text>
+      {/each}
+    {/if}
 
     <!-- The motion tracker: search area, feature box and path for each point. -->
     {#if ins.tracker}
@@ -370,6 +438,29 @@
   .draw {
     fill: none;
     stroke-width: 1.5;
+  }
+  .bladeline {
+    stroke: transparent;
+    stroke-width: 14;
+    pointer-events: stroke;
+    cursor: move;
+  }
+  .bladeaxis {
+    stroke: rgba(255, 255, 255, 0.75);
+    stroke-width: 1;
+    stroke-dasharray: 5 4;
+    pointer-events: none;
+  }
+  .bladeend {
+    fill: rgba(0, 0, 0, 0.45);
+    stroke-width: 2;
+    pointer-events: all;
+    cursor: crosshair;
+  }
+  .bladetag {
+    fill: white;
+    font-size: calc(10px * var(--text-scale));
+    pointer-events: none;
   }
   .draw.ghost {
     opacity: 0.6;

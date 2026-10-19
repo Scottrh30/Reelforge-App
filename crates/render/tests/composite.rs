@@ -381,6 +381,48 @@ fn sharpen_glow_and_drop_shadow() {
 }
 
 #[test]
+fn energy_blade_core_glow_colour_length_and_motion_blur() {
+    use reelforge_core::effects::blade as b;
+    let Some(mut c) = setup() else { return };
+    let black = solid(200, 100, [0, 0, 0, 255]);
+    // A 200×100 black layer; a horizontal blade from (20%, 50%) to (80%, 50%): x 40–160 at y 50.
+    let base = [(b::HILT_X, 20.0), (b::HILT_Y, 50.0), (b::TIP_X, 80.0), (b::TIP_Y, 50.0), (b::FLICKER, 0.0), (b::WOBBLE, 0.0), (b::TAPER, 0.0), (b::CORE_WIDTH, 8.0), (b::GLOW_SIZE, 20.0)];
+    let draw = |c: &mut reelforge_render::Compositor, v: EffectValues| {
+        c.render([200, 100], &[with_fx(layer(1, &black, [200, 100], [200.0, 100.0], Transform::default(), BlendMode::Normal), vec![v])]);
+        c.read_output().unwrap()
+    };
+    let out = draw(&mut c, fx(EffectKind::EnergyBlade, &base));
+    let core = px(&out, 200, 100, 50);
+    assert!(core[0] > 230 && core[1] > 230 && core[2] > 240, "white-hot core: {core:?}");
+    let glow = px(&out, 200, 100, 62);
+    assert!(glow[2] > 60 && glow[2] > glow[0] + 30, "blue glow beside the blade: {glow:?}");
+    let far = px(&out, 200, 100, 98);
+    assert!(far[2] < glow[2] / 2, "fades with distance: {far:?}");
+    assert!(px(&out, 200, 190, 50)[2] < core[2] / 2, "nothing much past the tip");
+
+    // Red blade.
+    let mut red = base.to_vec();
+    red.push((b::BLADE_COLOR, 0xff0000 as f32));
+    let g = px(&draw(&mut c, fx(EffectKind::EnergyBlade, &red)), 200, 100, 62);
+    assert!(g[0] > 60 && g[0] > g[2] + 30, "red glow: {g:?}");
+
+    // Half length: the blade ends at x 100.
+    let mut half = base.to_vec();
+    half.push((b::LENGTH, 50.0));
+    let out = draw(&mut c, fx(EffectKind::EnergyBlade, &half));
+    assert!(px(&out, 200, 70, 50)[0] > 230 && px(&out, 200, 140, 50)[0] < 120, "{:?} {:?}", px(&out, 200, 70, 50), px(&out, 200, 140, 50));
+
+    // Motion blur: a frame ago the blade was 30 px higher, so the sweep between glows.
+    let mut v = fx(EffectKind::EnergyBlade, &[base.as_slice(), &[(b::MOTION_BLUR, 100.0)]].concat());
+    v.prev = Some([20.0, 20.0, 80.0, 20.0]);
+    let out = draw(&mut c, v.clone());
+    let between = px(&out, 200, 100, 35);
+    v.prev = None;
+    let sharp = px(&draw(&mut c, v), 200, 100, 35);
+    assert!(between[2] > sharp[2] + 30, "smeared over its sweep: {between:?} vs {sharp:?}");
+}
+
+#[test]
 fn wipes_dips_and_iris() {
     use reelforge_render::{DrawItem, Wipe};
     let Some(mut c) = setup() else { return };
@@ -488,7 +530,7 @@ fn plugin(id: &str, manifest_extra: &str, params: &str, source: &str) -> std::sy
 fn plugin_fx(def: &std::sync::Arc<reelforge_core::plugin::PluginDef>, values: &[f32], time: f32) -> EffectValues {
     let mut v = [0.0; reelforge_core::effects::MAX_PARAMS];
     v[..values.len()].copy_from_slice(values);
-    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time }
+    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None }
 }
 
 #[test]

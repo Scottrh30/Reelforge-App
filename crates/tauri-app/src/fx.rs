@@ -80,8 +80,10 @@ pub struct ParamView {
     /// Change per pixel dragged.
     pub step: f32,
     pub decimals: u8,
-    /// "number", "toggle" or "choice".
+    /// "number", "toggle", "choice" or "color" (`value` is 0xRRGGBB).
     pub ui: &'static str,
+    /// A heading to show above this parameter.
+    pub section: Option<&'static str>,
     pub options: Vec<&'static str>,
     pub animated: bool,
     /// There's a keyframe at the playhead.
@@ -112,7 +114,9 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                         ParamUi::Number => ("number", Vec::new()),
                         ParamUi::Toggle => ("toggle", Vec::new()),
                         ParamUi::Choice(o) => ("choice", o.to_vec()),
+                        ParamUi::Color => ("color", Vec::new()),
                     };
+                    let section = fx.kind.sections().iter().find(|(at, _)| *at == i).map(|(_, h)| *h);
                     ParamView {
                         name: s.name,
                         value: fx.value_at(i, src),
@@ -123,6 +127,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                         step: s.speed,
                         decimals: if s.speed < 0.1 { 2 } else { 1 },
                         ui,
+                        section,
                         options,
                         animated: keys.is_animated(),
                         key_here: in_clip && keys.index_at(src).is_some(),
@@ -244,6 +249,69 @@ pub fn effect_param(id: u64, index: usize, param: usize, value: f32) -> Res<()> 
                 p.value = v;
             }
         });
+    })
+}
+
+/// Set energy blade `index`'s colours to ready-made preset `preset`
+/// (see [`reelforge_core::effects::blade::PRESETS`]): one undo step. Animated
+/// colours get a key at the playhead.
+#[tauri::command]
+pub fn blade_preset(id: u64, index: usize, preset: usize) -> Res<()> {
+    use reelforge_core::effects::blade;
+    let Some(&(name, glow, core)) = blade::PRESETS.get(preset) else { return Err("no such colour".into()) };
+    ed(|e| {
+        e.commit_live_edit();
+        edit(e, id, |list, src, in_clip| {
+            let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::EnergyBlade) else { return };
+            fx.normalize();
+            for (i, v) in [(blade::BLADE_COLOR, glow), (blade::CORE_COLOR, core)] {
+                let p = &mut fx.params[i];
+                if p.keys.is_animated() {
+                    if in_clip {
+                        p.keys.set(src, v as f32);
+                    }
+                } else {
+                    p.value = v as f32;
+                }
+            }
+        });
+        e.commit_live_edit();
+        e.status = format!("{name} blade");
+    })
+}
+
+/// Keyframe the blade's Length so it switches on (0 → 100 %) or off
+/// (`retract`, 100 → 0 %) over `seconds` from the playhead: one undo step.
+#[tauri::command]
+pub fn blade_ignite(id: u64, index: usize, retract: bool, seconds: f32) -> Res<()> {
+    use reelforge_core::effects::blade;
+    ed(|e| {
+        e.commit_live_edit();
+        let r = edit(e, id, |list, src, in_clip| {
+            let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::EnergyBlade) else { return Ok(()) };
+            if !in_clip {
+                return Err("Move the playhead onto the clip first");
+            }
+            fx.normalize();
+            let end = src + Time::from_secs_f64(seconds.clamp(0.02, 10.0) as f64);
+            let (a, b) = if retract { (100.0, 0.0) } else { (0.0, 100.0) };
+            let p = &mut fx.params[blade::LENGTH];
+            p.keys.0.retain(|k| k.at < src || k.at > end);
+            p.keys.set(src, a);
+            p.keys.set(end, b);
+            // Fast at first, settling at the end: the classic snap-out.
+            if let Some(k) = p.keys.0.iter_mut().find(|k| k.at == src) {
+                k.interp = reelforge_core::anim::Interp::Ease;
+            }
+            Ok(())
+        });
+        match r {
+            Some(Err(m)) => e.status = m.into(),
+            _ => {
+                e.commit_live_edit();
+                e.status = if retract { "The blade retracts from the playhead".into() } else { "The blade ignites from the playhead".into() };
+            }
+        }
     })
 }
 

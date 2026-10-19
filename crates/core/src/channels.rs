@@ -53,7 +53,8 @@ impl ClipVisual {
             Channel::Transform(Prop::Crop, 3),
         ];
         for (i, e) in self.effects.iter().enumerate() {
-            v.extend((0..e.param_specs().len()).map(|p| Channel::Effect(i, p)));
+            // Colours have no curve to draw.
+            v.extend((0..e.param_specs().len()).filter(|&p| e.spec(p).is_some_and(|s| s.ui != crate::effects::ParamUi::Color)).map(|p| Channel::Effect(i, p)));
         }
         v
     }

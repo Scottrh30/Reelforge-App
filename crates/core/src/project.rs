@@ -177,6 +177,9 @@ impl Clip {
     /// What to call the clip in the UI: the media name, a title's first line, or a composition's name.
     pub fn display_name<'a>(&'a self, p: &'a Project) -> std::borrow::Cow<'a, str> {
         if let Some(t) = &self.title {
+            if t.text.trim().is_empty() && self.effects.iter().any(|e| e.kind == crate::effects::EffectKind::EnergyBlade) {
+                return std::borrow::Cow::Borrowed("Energy blade");
+            }
             return std::borrow::Cow::Owned(t.label());
         }
         if let Some(s) = self.nested {
@@ -201,6 +204,13 @@ impl Clip {
     /// The enabled effects evaluated at *source* time `src`, ready to render.
     pub fn effects_at(&self, src: Time) -> Vec<EffectValues> {
         eval_stack(&self.effects, src)
+    }
+
+    /// [`Self::effects_at`] for sequence time `t`, with motion blur measured
+    /// over the `frame` before it.
+    pub fn effects_moving(&self, t: Time, frame: Time) -> Vec<EffectValues> {
+        let prev = self.source_time((t - frame).max(self.timeline_start));
+        crate::effects::eval_stack_moving(&self.effects, self.source_time(t), Some(prev))
     }
 
     /// The (possibly animated) transform at sequence time `t`.
@@ -679,10 +689,11 @@ impl Project {
     pub fn video_layers_at(&self, seq: usize, t: Time) -> Vec<VideoItem<'_>> {
         let s = &self.sequences[seq];
         let dissolves = self.dissolves(seq);
-        fn layer<'a>(p: &Project, track: usize, c: &'a Clip, t: Time) -> Layer<'a> {
+        let frame = s.frame_rate.frame_duration();
+        fn layer<'a>(p: &Project, track: usize, c: &'a Clip, t: Time, frame: Time) -> Layer<'a> {
             let source_time = if p.is_still(c.media) { Time::ZERO } else { c.media_at(t) };
             // Keys are anchored to source time (also for stills, like the transform's).
-            Layer { track, clip: c, source_time, transform: c.transform_at(t), blend: c.blend, effects: c.effects_at(c.source_time(t)) }
+            Layer { track, clip: c, source_time, transform: c.transform_at(t), blend: c.blend, effects: c.effects_moving(t, frame) }
         }
         let mut out = Vec::new();
         for (ti, tr) in s.tracks.iter().enumerate() {
@@ -692,9 +703,9 @@ impl Project {
             if let Some(x) = dissolves.iter().find(|x| x.track == ti && !x.is_empty() && t >= x.start() && t < x.end()) {
                 let (Some((_, a)), Some((_, b))) = (s.find_clip(x.left), s.find_clip(x.right)) else { continue };
                 let mix = (t - x.start()).0 as f32 / x.len().0 as f32;
-                out.push(VideoItem::Dissolve { from: layer(self, ti, a, t), to: layer(self, ti, b, t), mix, kind: b.transition });
+                out.push(VideoItem::Dissolve { from: layer(self, ti, a, t, frame), to: layer(self, ti, b, t, frame), mix, kind: b.transition });
             } else if let Some(c) = tr.clip_at(t) {
-                let l = layer(self, ti, c, t);
+                let l = layer(self, ti, c, t, frame);
                 if l.transform.opacity > 0.0 {
                     out.push(VideoItem::Single(l));
                 }

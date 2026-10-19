@@ -55,18 +55,19 @@
   const t = $derived(ins?.tracker ?? null);
   const progress = $derived(ins && app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null);
   const elsewhere = $derived(!!ins && !!app.live?.tracking && app.live.tracking[0] !== ins.id);
-  const key = (c: { clip: number; mask: number | null }) => `${c.clip}:${c.mask ?? ""}`;
+  const key = (c: { clip: number; mask: number | null; blade: number | null }) => `${c.clip}:${c.mask ?? ""}:${c.blade ?? ""}`;
 
   // Pick a sensible target: another layer or a mask before stabilising this one.
   $effect(() => {
     const list = t?.targets ?? [];
     if (!list.some((c) => key(c) === target)) {
-      const first = list.find((c) => c.clip !== ins?.id || c.mask !== null) ?? list[0];
+      const first = list.find((c) => c.clip !== ins?.id || c.mask !== null || c.blade !== null) ?? list[0];
       target = first ? key(first) : "";
     }
   });
   const chosen = $derived(t?.targets.find((c) => key(c) === target) ?? null);
-  const stabilising = $derived(!!ins && chosen?.clip === ins.id && chosen?.mask === null);
+  const stabilising = $derived(!!ins && chosen?.clip === ins.id && chosen?.mask === null && chosen?.blade === null);
+  const toBlade = $derived(chosen?.blade != null);
   const toMask = $derived(chosen?.mask != null);
   const anyAxis = $derived(axes.x || axes.y || (t?.mode === "Transform" && (axes.rotation || axes.scale)));
 
@@ -86,7 +87,7 @@
   }
   function apply() {
     if (!ins || !chosen) return;
-    run(api.trackApply(ins.id, chosen.clip, chosen.mask, smoothing, { ...axes }));
+    run(api.trackApply(ins.id, chosen.clip, chosen.mask, chosen.blade, smoothing, { ...axes }));
   }
 </script>
 
@@ -203,7 +204,9 @@
           <div class="row">
             <button class="primary wide" disabled={!chosen || (!toMask && !anyAxis)} onclick={apply} title="Writes keyframes (undoable)">Apply</button>
           </div>
-          {#if t.mode === "Mesh" && chosen && chosen.clip !== ins.id}
+          {#if toBlade}
+            <p class="note">The blade keeps where its hilt and tip are at the playhead and moves with the tracked points from there. For a prop with two markers, a two-point track also turns and stretches it.</p>
+          {:else if t.mode === "Mesh" && chosen && chosen.clip !== ins.id}
             <p class="note">The layer is stretched over the grid and bends with it (Controls → Transform: remove the mesh warp to go back).</p>
           {:else if perspective(t.mode) && chosen && chosen.clip !== ins.id}
             <p class="note">An unpinned layer is pinned straight into the four points. To place it differently, adjust its corner pin at the first tracked frame and apply again.</p>

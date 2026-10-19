@@ -433,6 +433,12 @@ fn add_title() -> Res<()> {
     ed(|e| e.add_title())
 }
 
+/// An energy blade on its own transparent layer, over the selected clip.
+#[tauri::command]
+fn add_blade_layer() -> Res<()> {
+    ed(|e| e.add_blade_layer())
+}
+
 // ---- Selection and edits --------------------------------------------------------
 
 /// `mode`: "only" (plain click), "toggle" (Ctrl+click) or "none" (click empty space).
@@ -809,11 +815,12 @@ fn track_cancel() -> Res<()> {
 
 /// Apply the tracked motion of `id` to `target` (itself = stabilise) or to its mask `mask`.
 #[tauri::command]
-fn track_apply(id: u64, target: u64, mask: Option<usize>, smoothing: f32, axes: Option<reelforge_core::track::Axes>) -> Res<()> {
+fn track_apply(id: u64, target: u64, mask: Option<usize>, blade: Option<usize>, smoothing: f32, axes: Option<reelforge_core::track::Axes>) -> Res<()> {
     let axes = axes.unwrap_or(reelforge_core::track::Axes::ALL);
-    ed(|e| match mask {
-        Some(i) => e.apply_track_to_mask(clip(id), i),
-        None => e.apply_track_axes(clip(id), clip(target), smoothing.clamp(0.0, 120.0), axes),
+    ed(|e| match (mask, blade) {
+        (Some(i), _) => e.apply_track_to_mask(clip(id), i),
+        (None, Some(i)) => e.apply_track_to_blade(clip(id), clip(target), i, axes),
+        (None, None) => e.apply_track_axes(clip(id), clip(target), smoothing.clamp(0.0, 120.0), axes),
     })
 }
 
@@ -925,6 +932,7 @@ fn main() {
             add_composite,
             open_sequence,
             add_title,
+            add_blade_layer,
             select,
             select_many,
             select_all,
@@ -972,6 +980,8 @@ fn main() {
             fx::effect_op,
             fx::effect_param,
             fx::effect_key,
+            fx::blade_preset,
+            fx::blade_ignite,
             fx::effect_curves,
             fx::effect_lut,
             fx::effect_catalog,

@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Most parameters any effect has (the GPU uniform holds this many).
-pub const MAX_PARAMS: usize = 16;
+pub const MAX_PARAMS: usize = 20;
+/// Most parameters a plugin may have (its shader sees params 0–15).
+pub const PLUGIN_MAX_PARAMS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EffectKind {
@@ -40,6 +42,9 @@ pub enum EffectKind {
     Lut,
     /// An installed plugin (which one is in `Effect::plugin`; see [`crate::plugin`]).
     Plugin,
+    /// A glowing energy blade (a light sword) drawn from a hilt point to a tip
+    /// point, with a hot core, coloured glow, flicker and motion blur.
+    EnergyBlade,
 }
 
 /// Where an effect is listed in the effects browser.
@@ -86,6 +91,21 @@ pub enum ParamUi {
     Toggle,
     /// A menu: the index of the chosen option.
     Choice(&'static [&'static str]),
+    /// A colour: the value is `0xRRGGBB` (sRGB) as a whole number. Between
+    /// keyframes each channel is interpolated.
+    Color,
+}
+
+/// `0xRRGGBB` → sRGB channels 0–1.
+pub fn unpack_rgb(v: f32) -> [f32; 3] {
+    let c = v.round().clamp(0.0, 16_777_215.0) as u32;
+    [((c >> 16) & 255) as f32 / 255.0, ((c >> 8) & 255) as f32 / 255.0, (c & 255) as f32 / 255.0]
+}
+
+/// sRGB channels 0–1 → `0xRRGGBB`.
+pub fn pack_rgb(c: [f32; 3]) -> f32 {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    ((b(c[0]) << 16) | (b(c[1]) << 8) | b(c[2])) as f32
 }
 
 /// Describes one parameter: its name, range and how the UI should show it.
@@ -142,6 +162,71 @@ const DROP_SHADOW: [ParamSpec; 4] = [
     spec("Opacity", 60.0, 0.0, 100.0, " %", 0.5),
 ];
 const LUT: [ParamSpec; 1] = [spec("Strength", 100.0, 0.0, 100.0, " %", 0.5)];
+const fn color(name: &'static str, rgb: u32) -> ParamSpec {
+    ParamSpec { name, default: rgb as f32, min: 0.0, max: 16_777_215.0, suffix: "", speed: 1.0, ui: ParamUi::Color }
+}
+const fn choice(name: &'static str, options: &'static [&'static str]) -> ParamSpec {
+    ParamSpec { name, default: 0.0, min: 0.0, max: (options.len() - 1) as f32, suffix: "", speed: 1.0, ui: ParamUi::Choice(options) }
+}
+
+/// Energy blade parameter indices.
+pub mod blade {
+    pub const HILT_X: usize = 0;
+    pub const HILT_Y: usize = 1;
+    pub const TIP_X: usize = 2;
+    pub const TIP_Y: usize = 3;
+    pub const LENGTH: usize = 4;
+    pub const BLADE_COLOR: usize = 5;
+    pub const CORE_COLOR: usize = 6;
+    pub const CORE_WIDTH: usize = 7;
+    pub const CORE_SOFTNESS: usize = 8;
+    pub const TAPER: usize = 9;
+    pub const TIP_SHAPE: usize = 10;
+    pub const GLOW_SIZE: usize = 11;
+    pub const GLOW_INTENSITY: usize = 12;
+    pub const HAZE: usize = 13;
+    pub const OPACITY: usize = 14;
+    pub const FLICKER: usize = 15;
+    pub const FLICKER_SPEED: usize = 16;
+    pub const WOBBLE: usize = 17;
+    pub const MOTION_BLUR: usize = 18;
+    pub const BLEND: usize = 19;
+    /// Ready-made blade colours: name, blade colour, core colour.
+    pub const PRESETS: [(&str, u32, u32); 8] = [
+        ("Blue", 0x1f6bff, 0xf2f7ff),
+        ("Green", 0x22e04a, 0xf2fff2),
+        ("Red", 0xff1a12, 0xfff2ee),
+        ("Purple", 0x9a3dff, 0xf8f0ff),
+        ("Yellow", 0xffc21a, 0xfffbea),
+        ("Orange", 0xff6a10, 0xfff4ea),
+        ("Cyan", 0x18e0ff, 0xf0feff),
+        ("White", 0xd8e4ff, 0xffffff),
+    ];
+}
+
+const BLADE: [ParamSpec; 20] = [
+    spec("Hilt X", 40.0, -100.0, 200.0, " %", 0.1),
+    spec("Hilt Y", 78.0, -100.0, 200.0, " %", 0.1),
+    spec("Tip X", 62.0, -100.0, 200.0, " %", 0.1),
+    spec("Tip Y", 18.0, -100.0, 200.0, " %", 0.1),
+    spec("Length", 100.0, 0.0, 100.0, " %", 0.5),
+    color("Blade colour", 0x1f6bff),
+    color("Core colour", 0xf2f7ff),
+    spec("Core width", 9.0, 0.0, 200.0, " px", 0.1),
+    spec("Core softness", 35.0, 0.0, 100.0, " %", 0.5),
+    spec("Taper", 15.0, 0.0, 100.0, " %", 0.5),
+    choice("Tip", &["Rounded", "Pointed", "Flat"]),
+    spec("Glow size", 36.0, 0.0, 500.0, " px", 0.25),
+    spec("Glow intensity", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Outer haze", 35.0, 0.0, 200.0, " %", 0.5),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Flicker", 12.0, 0.0, 100.0, " %", 0.5),
+    spec("Flicker speed", 14.0, 0.0, 60.0, " Hz", 0.1),
+    spec("Wobble", 8.0, 0.0, 100.0, " %", 0.5),
+    spec("Motion blur", 50.0, 0.0, 100.0, " %", 0.5),
+    choice("Blend", &["Add (light)", "Screen"]),
+];
+
 const VIGNETTE: [ParamSpec; 3] = [
     spec("Amount", 50.0, 0.0, 100.0, " %", 0.5),
     spec("Size", 70.0, 0.0, 150.0, " %", 0.5),
@@ -149,7 +234,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 10] = [
+    pub const ALL: [EffectKind; 11] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -160,6 +245,7 @@ impl EffectKind {
         EffectKind::Glow,
         EffectKind::DropShadow,
         EffectKind::Vignette,
+        EffectKind::EnergyBlade,
     ];
 
     pub fn label(self) -> &'static str {
@@ -175,6 +261,7 @@ impl EffectKind {
             EffectKind::DropShadow => "Drop shadow",
             EffectKind::Lut => "LUT (.cube)",
             EffectKind::Plugin => "Plugin",
+            EffectKind::EnergyBlade => "Energy blade",
         }
     }
 
@@ -183,7 +270,7 @@ impl EffectKind {
             EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey => EffectCategory::Keying,
-            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette => EffectCategory::Stylize,
+            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade => EffectCategory::Stylize,
             EffectKind::Plugin => EffectCategory::Plugins,
         }
     }
@@ -202,6 +289,7 @@ impl EffectKind {
             EffectKind::DropShadow => "A soft shadow behind a title, logo or keyed subject.",
             EffectKind::Vignette => "Darken the edges to draw the eye to the middle.",
             EffectKind::Plugin => "An installed plugin.",
+            EffectKind::EnergyBlade => "A glowing light-sword blade with a hot core, flicker and motion blur. Drag its hilt and tip in the Viewer, or attach it to a track.",
         }
     }
 
@@ -217,8 +305,19 @@ impl EffectKind {
             EffectKind::Glow => &GLOW,
             EffectKind::DropShadow => &DROP_SHADOW,
             EffectKind::Lut => &LUT,
+            EffectKind::EnergyBlade => &BLADE,
             // A plugin's parameters depend on which plugin: see `Effect::param_specs`.
             EffectKind::Plugin => &[],
+        }
+    }
+}
+
+impl EffectKind {
+    /// Headings to show above some parameters, as (first parameter, heading).
+    pub fn sections(self) -> &'static [(usize, &'static str)] {
+        match self {
+            EffectKind::EnergyBlade => &[(0, "Blade"), (5, "Colour"), (7, "Core"), (11, "Glow"), (15, "Flicker"), (18, "Motion")],
+            _ => &[],
         }
     }
 }
@@ -259,6 +358,9 @@ pub struct EffectValues {
     pub plugin: Option<Arc<crate::plugin::PluginDef>>,
     /// The clip's source time, in seconds (plugins can animate with it).
     pub time: f32,
+    /// For an energy blade with motion blur: where its hilt and tip were one
+    /// frame earlier (hilt x, y, tip x, y, in % of the layer).
+    pub prev: Option<[f32; 4]>,
 }
 
 impl EffectValues {
@@ -277,6 +379,7 @@ impl EffectValues {
             EffectKind::DropShadow => v[3] == 0.0,
             // Missing plugins are skipped.
             EffectKind::Plugin => self.plugin.is_none(),
+            EffectKind::EnergyBlade => v[blade::OPACITY] == 0.0 || v[blade::LENGTH] == 0.0 || (v[blade::CORE_WIDTH] == 0.0 && v[blade::GLOW_INTENSITY] == 0.0),
         }
     }
 }
@@ -340,6 +443,10 @@ impl Effect {
         let Some(p) = self.params.get(i) else { return s.default };
         match s.ui {
             ParamUi::Number => p.keys.value_at(t, p.value).clamp(s.min, s.max),
+            ParamUi::Color => {
+                let keys: Curve<[f32; 3]> = Curve(p.keys.0.iter().map(|k| crate::anim::Key { at: k.at, value: unpack_rgb(k.value), interp: k.interp }).collect());
+                pack_rgb(keys.value_at(t, unpack_rgb(p.value)))
+            }
             // A checkbox or menu changes at its keyframes (holding the last key's
             // value until the next), never sliding through values in between.
             _ => {
@@ -355,12 +462,22 @@ impl Effect {
     }
 
     pub fn eval(&self, t: Time) -> EffectValues {
+        self.eval_moving(t, None)
+    }
+
+    /// [`Self::eval`], also noting where an energy blade was at `prev` (one
+    /// frame earlier) for its motion blur.
+    pub fn eval_moving(&self, t: Time, prev: Option<Time>) -> EffectValues {
+        let prev = match (self.kind, prev) {
+            (EffectKind::EnergyBlade, Some(p)) => Some([0, 1, 2, 3].map(|i| self.value_at(i, p))),
+            _ => None,
+        };
         let mut values = [0.0; MAX_PARAMS];
         for (i, v) in values.iter_mut().enumerate().take(self.param_specs().len()) {
             *v = self.value_at(i, t);
         }
         let plugin = if self.kind == EffectKind::Plugin { self.plugin_def() } else { None };
-        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32 }
+        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev }
     }
 
     /// The lookup table this effect needs, if any (a curve, or a loaded .cube file).
@@ -392,7 +509,12 @@ impl Effect {
 
 /// The enabled effects of a stack at source time `t`, skipping ones that do nothing.
 pub fn eval_stack(effects: &[Effect], t: Time) -> Vec<EffectValues> {
-    effects.iter().filter(|e| e.enabled).map(|e| e.eval(t)).filter(|v| !v.is_identity()).collect()
+    eval_stack_moving(effects, t, None)
+}
+
+/// [`eval_stack`], with `prev` the source time one frame earlier (for motion blur).
+pub fn eval_stack_moving(effects: &[Effect], t: Time, prev: Option<Time>) -> Vec<EffectValues> {
+    effects.iter().filter(|e| e.enabled).map(|e| e.eval_moving(t, prev)).filter(|v| !v.is_identity()).collect()
 }
 
 #[cfg(test)]
@@ -425,6 +547,32 @@ mod tests {
         assert_eq!(eval_stack(std::slice::from_ref(&e), Time::from_secs_f64(1.0)).len(), 1);
         e.enabled = false;
         assert!(eval_stack(&[e], Time::from_secs_f64(1.0)).is_empty());
+    }
+
+    #[test]
+    fn colours_pack_and_interpolate_per_channel() {
+        assert_eq!(unpack_rgb(pack_rgb([1.0, 0.0, 0.5])), [1.0, 0.0, 128.0 / 255.0]);
+        assert_eq!(pack_rgb([1.0, 1.0, 1.0]), 16_777_215.0);
+        let mut e = Effect::new(EffectKind::EnergyBlade);
+        let p = &mut e.params[blade::BLADE_COLOR];
+        p.keys.set(Time::from_secs_f64(0.0), 0xff0000 as f32);
+        p.keys.set(Time::from_secs_f64(1.0), 0x0000ff as f32);
+        // Halfway: half red, half blue (not the number halfway between the two codes).
+        let mid = unpack_rgb(e.value_at(blade::BLADE_COLOR, Time::from_secs_f64(0.5)));
+        assert!((mid[0] - 0.5).abs() < 0.01 && mid[1] == 0.0 && (mid[2] - 0.5).abs() < 0.01, "{mid:?}");
+    }
+
+    #[test]
+    fn blade_notes_where_it_was_a_frame_ago() {
+        let mut e = Effect::new(EffectKind::EnergyBlade);
+        e.params[blade::TIP_X].keys.set(Time::from_secs_f64(0.0), 10.0);
+        e.params[blade::TIP_X].keys.set(Time::from_secs_f64(1.0), 90.0);
+        let v = &eval_stack_moving(std::slice::from_ref(&e), Time::from_secs_f64(0.5), Some(Time::from_secs_f64(0.25)))[0];
+        assert_eq!(v.values[blade::TIP_X], 50.0);
+        assert_eq!(v.prev.unwrap()[2], 30.0);
+        assert!(Effect::new(EffectKind::Blur).eval_moving(Time::ZERO, Some(Time::ZERO)).prev.is_none());
+        e.params[blade::LENGTH].value = 0.0;
+        assert!(eval_stack(&[e], Time::ZERO).is_empty(), "a retracted blade draws nothing");
     }
 
     #[test]

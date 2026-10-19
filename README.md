@@ -169,6 +169,32 @@ What works now:
   - **Glow**: threshold, radius, intensity and softness; bright areas bloom outwards
   - **Drop shadow**: distance, angle, softness and opacity, from the layer's alpha
   - **Vignette**: amount, size and softness
+  - **Energy blade** (Light & stylize): a glowing light-sword blade drawn from a hilt point to
+    a tip point, added onto the picture as light. Drag the round **H** handle (hilt) and the tip
+    handle in the Viewer, or drag the dashed line to move the whole blade; Shift while dragging
+    the tip keeps its length and only turns it. Its settings, all keyframable, in sections:
+    - *Blade*: hilt and tip position (% of the layer, so they can go off the edge) and
+      **Length**, for switching it on and off. **Ignite here** / **Retract here** keyframe the
+      length from 0 to 100 % (or back) from the playhead over the time you set (0.3 s by default)
+    - *Colour*: **Blade colour** (the glow) and **Core colour** (the hot centre), each with a
+      colour picker and hex code, plus one-click presets: blue, green, red, purple, yellow,
+      orange, cyan and white. Animated colours blend channel by channel between keyframes
+    - *Core*: width, softness of its edge, **Taper** towards the tip, and the tip's shape
+      (rounded, pointed or flat)
+    - *Glow*: size, intensity, a wide faint **Outer haze**, and the blade's overall opacity
+    - *Flicker*: how much and how fast the glow pulses (smooth noise, different for each blade),
+      and **Wobble**, an unsteady edge along the blade
+    - *Motion*: **Motion blur** smears the blade over its sweep since the previous frame
+      (100 % = the whole frame), so fast swings streak like real footage; **Blend** is *Add
+      (light)* or *Screen*, which keeps bright backgrounds from blowing out
+    - **Timeline → Add energy blade layer** puts a blade on its own transparent layer on a new top
+      track, as long as the selected clip, so it can have its own blend mode or opacity, and
+      you can stack several blades
+    - **Following a prop**: track the prop in the **Track** panel (single point to move the
+      blade; two points, such as two marks on a stick, to also turn and stretch it; four-point or
+      planar for perspective), put the blade where it belongs at the playhead, then choose
+      *Energy blade: hilt and tip* under **Apply to**. Blades on the tracked clip and on layers
+      over it are listed, and the X/Y/rotation/scale boxes choose which parts of the motion it takes
   - The **browser** (`E`, or **Edit → Effects & transitions…**) lists every effect by category
     (Colour, Blur & sharpen, Keying, Light & stylize) and every transition, with a search box
     and a one-line description of each; **Add** puts an effect on the selected clip

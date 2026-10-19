@@ -49,6 +49,12 @@ impl Lerp for f32 {
     }
 }
 
+impl Lerp for [f32; 3] {
+    fn lerp(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+        [f32::lerp(a[0], b[0], t), f32::lerp(a[1], b[1], t), f32::lerp(a[2], b[2], t)]
+    }
+}
+
 impl Lerp for [f32; 2] {
     fn lerp(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
         [f32::lerp(a[0], b[0], t), f32::lerp(a[1], b[1], t)]

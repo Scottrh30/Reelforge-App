@@ -279,7 +279,7 @@ export interface TrackerView {
   frames: number;
   range: [Ticks, Ticks] | null;
   tracked: boolean;
-  targets: { clip: number; mask: number | null; label: string }[];
+  targets: { clip: number; mask: number | null; blade: number | null; label: string }[];
   grid: [number, number];
 }
 
@@ -339,7 +339,7 @@ export interface ViewerFeedback {
 
 // ---- Effects ----
 
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "EnergyBlade";
 
 export interface Curves {
   master: Pt[];
@@ -357,7 +357,9 @@ export interface ParamView {
   suffix: string;
   step: number;
   decimals: number;
-  ui: "number" | "toggle" | "choice";
+  ui: "number" | "toggle" | "choice" | "color";
+  /// A heading to show above this parameter.
+  section: string | null;
   options: string[];
   animated: boolean;
   key_here: boolean;
@@ -557,6 +559,7 @@ export const api = {
   addComposite: (index: number) => invoke("add_composite", { index }),
   openSequence: (index: number) => invoke("open_sequence", { index }),
   addTitle: () => invoke("add_title"),
+  addBladeLayer: () => invoke("add_blade_layer"),
   select: (id: number | null, mode: "only" | "toggle" | "none") => invoke("select", { id, mode }),
   selectMany: (ids: number[], add: boolean) => invoke("select_many", { ids, add }),
   moveClips: (lead: number, track: number, start: Ticks) => invoke("move_clips", { lead, track, start }),
@@ -587,7 +590,7 @@ export const api = {
   trackerOp: (id: number, op: "clear" | "remove") => invoke("tracker_op", { id, op }),
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
   trackCancel: () => invoke("track_cancel"),
-  trackApply: (id: number, target: number, mask: number | null, smoothing: number, axes?: TrackAxes) => invoke("track_apply", { id, target, mask, smoothing, axes }),
+  trackApply: (id: number, target: number, mask: number | null, blade: number | null, smoothing: number, axes?: TrackAxes) => invoke("track_apply", { id, target, mask, blade, smoothing, axes }),
   exportOptions: () => invoke<ExportOptions>("export_options"),
   exportSuggest: (ext: string) => invoke<{ path: string; preset: number; has_audio: boolean }>("export_suggest", { ext }),
   exportPathDialog: (current: string, extension: string) => invoke<string | null>("export_path_dialog", { current, extension }),
@@ -602,6 +605,8 @@ export const api = {
   effectOp: (id: number, index: number, op: "up" | "down" | "remove" | "toggle" | "duplicate" | "reset") => invoke("effect_op", { id, index, op }),
   effectParam: (id: number, index: number, param: number, value: number) => invoke("effect_param", { id, index, param, value }),
   effectKey: (id: number, index: number, param: number) => invoke("effect_key", { id, index, param }),
+  bladePreset: (id: number, index: number, preset: number) => invoke("blade_preset", { id, index, preset }),
+  bladeIgnite: (id: number, index: number, retract: boolean, seconds: number) => invoke("blade_ignite", { id, index, retract, seconds }),
   effectCurves: (id: number, index: number, curves: Curves) => invoke("effect_curves", { id, index, curves }),
   effectLut: (id: number, index: number) => invoke("effect_lut", { id, index }),
   effectCatalog: () => invoke<CatalogGroup[]>("effect_catalog"),
