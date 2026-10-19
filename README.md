@@ -468,6 +468,13 @@ button colours (ordinary and main buttons, corner roundness) and fonts (any inst
 family for the interface and for figures, text size 80–140%). Changes show at once;
 Cancel puts back what was there, Save keeps them for next time.
 
+Viewer zoom and pan: the mouse wheel over the picture zooms in and out about the pointer
+(10% of fit up to 3200%); drag with the middle mouse button (or turn on the hand in the Viewer's
+top bar and drag) to move around; Shift+wheel moves sideways. The top bar shows the zoom with
+− / + buttons, **1:1** for actual pixels, and clicking the percentage fits the whole frame
+again. Zoomed in, the picture is fetched at the size it's shown (up to the sequence's own
+resolution), so it stays sharp, and handles, masks and trackers stay on it.
+
 The **Effects** panel (a tab next to Media) lists every effect and transition by name, in
 folders by group (Colour, Blur & sharpen, Keying, Light & stylize, installed plugins in their
 groups, Transitions), with a search box. Double-click a name to add it to the selected clip

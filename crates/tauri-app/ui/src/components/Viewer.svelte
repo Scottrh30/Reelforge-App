@@ -15,13 +15,30 @@
     const ro = new ResizeObserver(() => {
       const r = box!.getBoundingClientRect();
       boxSize = { w: r.width, h: r.height };
-      const dpr = window.devicePixelRatio || 1;
-      viewer.width = Math.max(64, r.width * dpr);
-      viewer.height = Math.max(36, r.height * dpr);
-      viewer.have = -1;
     });
     ro.observe(box);
     return () => ro.disconnect();
+  });
+
+  // Zoom (1 = the whole frame fitted in the Viewer) and pan (screen pixels the
+  // frame is moved from the middle). The wheel zooms about the pointer; the
+  // middle button, or the Hand tool, drags the picture around.
+  let zoom = $state(1);
+  let pan = $state({ x: 0, y: 0 });
+  let hand = $state(false);
+  let panning = $state(false);
+
+  // The picture is fetched at the size it's shown (up to the sequence's own), so a
+  // zoomed-in view stays sharp.
+  $effect(() => {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(64, Math.round(Math.min(fit.w, fit.W * 1.0001) * dpr));
+    const h = Math.max(36, Math.round(Math.min(fit.h, fit.H * 1.0001) * dpr));
+    if (w !== Math.round(viewer.width) || h !== Math.round(viewer.height)) {
+      viewer.width = w;
+      viewer.height = h;
+      viewer.have = -1;
+    }
   });
 
   $effect(() => {
@@ -29,13 +46,89 @@
     viewer.have = -1;
   });
 
-  // Where the sequence frame sits inside the box (fitted, centred).
+  // Where the sequence frame sits inside the box: fitted and centred, then zoomed and panned.
   const fit = $derived.by(() => {
     const W = app.s?.seq.width ?? 1920;
     const H = app.s?.seq.height ?? 1080;
-    const k = Math.min(boxSize.w / W, boxSize.h / H);
-    return { k, x: (boxSize.w - W * k) / 2, y: (boxSize.h - H * k) / 2, w: W * k, h: H * k, W, H };
+    const k0 = Math.min(boxSize.w / W, boxSize.h / H);
+    const k = k0 * zoom;
+    return { k, k0, x: (boxSize.w - W * k) / 2 + pan.x, y: (boxSize.h - H * k) / 2 + pan.y, w: W * k, h: H * k, W, H };
   });
+
+  /// Keep part of the picture in view however far it's dragged.
+  function clampPan(p: { x: number; y: number }, k: number) {
+    const W = fit.W * k;
+    const H = fit.H * k;
+    const mx = (boxSize.w + W) / 2 - 60;
+    const my = (boxSize.h + H) / 2 - 60;
+    return { x: Math.max(-mx, Math.min(mx, p.x)), y: Math.max(-my, Math.min(my, p.y)) };
+  }
+
+  /// Zoom to `k` (frame pixels → screen pixels), keeping the frame point under (sx, sy) where it is.
+  function zoomTo(k: number, sx = boxSize.w / 2, sy = boxSize.h / 2) {
+    const kMin = fit.k0 * 0.1;
+    const kMax = 32;
+    const nk = Math.max(kMin, Math.min(kMax, k));
+    const fx = (sx - fit.x) / fit.k;
+    const fy = (sy - fit.y) / fit.k;
+    const nx = sx - fx * nk;
+    const ny = sy - fy * nk;
+    zoom = nk / fit.k0;
+    pan = clampPan({ x: nx - (boxSize.w - fit.W * nk) / 2, y: ny - (boxSize.h - fit.H * nk) / 2 }, nk);
+  }
+
+  function fitView() {
+    zoom = 1;
+    pan = { x: 0, y: 0 };
+  }
+
+  function wheel(e: WheelEvent) {
+    e.preventDefault();
+    const r = box!.getBoundingClientRect();
+    if (e.shiftKey && !e.ctrlKey) {
+      // Shift+wheel: move sideways.
+      pan = clampPan({ x: pan.x - (e.deltaY || e.deltaX), y: pan.y }, fit.k);
+      return;
+    }
+    // Lines (a mouse) or pixels (a touchpad): about 12% per notch.
+    const d = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+    zoomTo(fit.k * Math.exp(-d * 0.0012), e.clientX - r.left, e.clientY - r.top);
+  }
+
+  /// Middle button anywhere, or the left with the Hand tool: drag the picture around.
+  function panDown(e: PointerEvent) {
+    if (!(e.button === 1 || (e.button === 0 && hand))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const el = box!;
+    el.setPointerCapture(e.pointerId);
+    panning = true;
+    const start = { ...pan };
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const move = (ev: PointerEvent) => (pan = clampPan({ x: start.x + ev.clientX - x0, y: start.y + ev.clientY - y0 }, fit.k));
+    const up = () => {
+      panning = false;
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  }
+
+  // Another frame size (a composition opened, the sequence changed): fit again.
+  let lastSize = "";
+  $effect(() => {
+    const key = `${fit.W}x${fit.H}`;
+    if (key !== lastSize) {
+      lastSize = key;
+      fitView();
+    }
+  });
+
+  const zoomLabel = $derived(zoom === 1 && pan.x === 0 && pan.y === 0 ? `Fit (${Math.round(fit.k * 100)}%)` : `${Math.round(fit.k * 100)}%`);
 
   // The selected layer's gizmo (from the editor, in frame pixels), unless a
   // mask is being edited or drawn on it.
@@ -171,8 +264,28 @@
       >
     {/if}
     {#if app.live && !app.live.exact && !playing}<span class="muted" title="Some layers are still decoding">Catching up…</span>{/if}
+    <div class="zoom" role="group" aria-label="Viewer zoom">
+      <button class="chip" class:on={hand} onclick={() => (hand = !hand)} title="Hand: drag the picture around (or drag with the middle mouse button anywhere)" aria-pressed={hand}>
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M5.5 8V3.2a1 1 0 0 1 2 0V7.5M7.5 7V2.3a1 1 0 0 1 2 0V7M9.5 7V3a1 1 0 0 1 2 0v5.2M11.5 6.5a1 1 0 0 1 2 0V10c0 2.8-2 4.5-4.5 4.5S5 13.5 3.6 11.4L2.4 9.6a1 1 0 0 1 1.6-1.2L5.5 10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
+      <button class="chip" onclick={() => zoomTo(fit.k / 1.25)} title="Zoom out (or the mouse wheel over the picture)" aria-label="Zoom out">−</button>
+      <button class="chip zlevel" onclick={fitView} title="Fit the whole frame in the Viewer">{zoomLabel}</button>
+      <button class="chip" onclick={() => zoomTo(fit.k * 1.25)} title="Zoom in (or the mouse wheel over the picture)" aria-label="Zoom in">+</button>
+      <button class="chip" onclick={() => zoomTo(1)} title="Actual pixels: one frame pixel to one screen pixel">1:1</button>
+    </div>
   </div>
-  <div class="stage" bind:this={box} role="presentation" style="cursor:{cursor}" title={tip} onpointerdown={press} onpointermove={hover}>
+  <div
+    class="stage"
+    bind:this={box}
+    role="presentation"
+    style="cursor:{panning ? 'grabbing' : hand ? 'grab' : cursor}"
+    title={tip}
+    onpointerdowncapture={panDown}
+    onpointerdown={press}
+    onpointermove={hover}
+    onwheel={wheel}
+    onauxclick={(e) => e.button === 1 && e.preventDefault()}
+  >
     <canvas
       bind:this={canvas}
       style="left:{fit.x}px; top:{fit.y}px; width:{fit.w}px; height:{fit.h}px"
@@ -262,6 +375,25 @@
     color: var(--accent);
     font-weight: 600;
     font-family: var(--font-tc);
+  }
+  .zoom {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+  }
+  .zoom .chip {
+    min-width: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .zoom .zlevel {
+    min-width: 76px;
+    font-family: var(--font-tc);
+  }
+  .chip.on {
+    border-color: var(--accent);
+    color: var(--accent);
   }
   .chip {
     min-height: 20px;
