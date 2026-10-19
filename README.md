@@ -468,6 +468,19 @@ button colours (ordinary and main buttons, corner roundness) and fonts (any inst
 family for the interface and for figures, text size 80–140%). Changes show at once;
 Cancel puts back what was there, Save keeps them for next time.
 
+The **Effects** panel (a tab next to Media) lists every effect and transition by name, in
+folders by group (Colour, Blur & sharpen, Keying, Light & stylize, installed plugins in their
+groups, Transitions), with a search box. Double-click a name to add it to the selected clip
+(a transition goes in at the selected clip's start, or the cut nearest the playhead), or drag
+it onto a clip on the timeline. Open folders are remembered.
+
+Panels dock: Media, Effects, History and Controls are tabs in the left or right dock. Drag a
+tab along its dock to reorder, onto the other dock's tabs to move it there, or anywhere else
+to float it in its own window (drag its title bar to move it, its corner to resize it; drop
+the title bar on a dock's tabs, or use ⇤ / ⇥, to dock it again). Right-click a tab for the
+same, and to close it; **Tabs** shows and hides panels, and **Tabs → Reset layout** puts
+everything back. The arrangement is remembered.
+
 Effects: the Effects section of the Controls panel holds the clip's stack (top applied
 first): add from its menu or from the effects browser (**E**, or Edit → Effects…, with a
 search box), switch effects off, reorder, duplicate, reset and remove them, fold them

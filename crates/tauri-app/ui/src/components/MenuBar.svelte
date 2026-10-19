@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { PANEL_LABEL, showPanel, type PanelId } from "../lib/dock.svelte";
   import { app, run, setPanel } from "../lib/session.svelte";
   import { actions } from "../lib/actions.svelte";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
@@ -8,6 +9,7 @@
 
   const panelNames: [string, string][] = [
     ["media", "Media"],
+    ["effects", "Effects"],
     ["history", "History"],
     ["viewer", "Viewer"],
     ["controls", "Controls"],
@@ -68,7 +70,16 @@
   };
 
   const tabs = (): MenuItem[] => [
-    ...panelNames.map(([k, label]) => ({ label, checked: app.panels[k], run: () => setPanel(k, !app.panels[k]) })),
+    ...panelNames.map(([k, label]) => ({
+      label,
+      checked: app.panels[k],
+      run: () => {
+        const on = !app.panels[k];
+        setPanel(k, on);
+        // Switched on: in front in its dock (or raised, if it floats).
+        if (on && k in PANEL_LABEL) showPanel(k as PanelId);
+      },
+    })),
     { separator: true },
     {
       label: "Show all windows",

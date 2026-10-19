@@ -299,7 +299,24 @@
     if (!h) return null;
     return { ...h, t: snapToFrame(h.secs * T) };
   });
+  // ---- An effect or transition dragged in from the Effects panel: onto a clip ----
+  const fxTarget = $derived.by(() => {
+    const d = app.dragEffect;
+    if (!d) return null;
+    const h = hitTrack(d.x, d.y);
+    if (!h || h.track == null) return null;
+    const tr = seq?.tracks[h.track];
+    if (!tr || tr.kind !== "video") return null;
+    const t = h.secs * T;
+    return tr.clips.find((c) => c.start <= t && t < clipEnd(c)) ?? null;
+  });
   function windowUp() {
+    const fx = app.dragEffect;
+    if (fx && fxTarget) {
+      if (fx.kind) run(api.effectAdd(fxTarget.id, fx.kind, fx.plugin));
+      else if (fx.transition) run(api.transitionApply(fx.transition, fxTarget.id));
+      return;
+    }
     const d = app.dragMedia;
     const at = dropAt;
     if (d && at) {
@@ -961,6 +978,7 @@
                   <div
                     class="clip {c.kind}"
                     class:sel={selected.has(c.id)}
+                    class:fxdrop={fxTarget?.id === c.id}
                     class:moving={ghost}
                     class:dim={tr.muted}
                     style="left:{l}px; width:{Math.max(2, w)}px"
@@ -1699,6 +1717,10 @@
     padding: 0 7px;
     font-size: calc(14px * var(--text-scale));
     line-height: 1;
+  }
+  .clip.fxdrop {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
   }
   .dragghost {
     position: fixed;

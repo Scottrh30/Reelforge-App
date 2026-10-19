@@ -7,10 +7,10 @@
   import { onKey, question, checkUnsaved } from "./lib/actions.svelte";
   import { hitTrack } from "./lib/timeline.svelte";
   import MenuBar from "./components/MenuBar.svelte";
-  import MediaPanel from "./components/MediaPanel.svelte";
-  import History from "./components/History.svelte";
   import Viewer from "./components/Viewer.svelte";
-  import Controls from "./components/Controls.svelte";
+  import Dock from "./components/Dock.svelte";
+  import FloatPanel from "./components/FloatPanel.svelte";
+  import { dock, resetDock } from "./lib/dock.svelte";
   import Timeline from "./components/Timeline.svelte";
   import Meters from "./components/Meters.svelte";
   import Splitter from "./components/Splitter.svelte";
@@ -48,15 +48,16 @@
   $effect(() => {
     if (!app.layoutReset) return;
     [leftW, rightW, bottomH, metersW] = [300, 320, 340, 64];
+    resetDock();
     try {
       for (const k of ["leftW", "rightW", "bottomH", "metersW", "timelineHeader"]) localStorage.removeItem(k);
     } catch {}
   });
 
-  const left = $derived(app.panels.media || app.panels.history);
-  $effect(() => {
-    if (!app.panels[app.leftTab]) app.leftTab = app.panels.media ? "media" : "history";
-  });
+  // Each dock's panels that are switched on (Tabs menu); a dock with none is hidden.
+  const leftShown = $derived(dock.left.filter((p) => app.panels[p]));
+  const rightShown = $derived(dock.right.filter((p) => app.panels[p]));
+  const floating = $derived(dock.float.filter((p) => app.panels[p]));
 
   onMount(() => {
     start();
@@ -109,15 +110,9 @@
   <MenuBar />
   <div class="work">
     <div class="upper" style="flex: 1 1 0">
-      {#if left}
-        <section class="pane" style="width:{leftW}px" aria-label="Media">
-          <div class="tabs" role="tablist">
-            {#if app.panels.media}<button role="tab" aria-selected={app.leftTab === "media"} class:active={app.leftTab === "media"} onclick={() => (app.leftTab = "media")}>Media</button>{/if}
-            {#if app.panels.history}<button role="tab" aria-selected={app.leftTab === "history"} class:active={app.leftTab === "history"} onclick={() => (app.leftTab = "history")}>History</button>{/if}
-          </div>
-          <div class="body">
-            {#if app.leftTab === "media"}<MediaPanel />{:else}<History />{/if}
-          </div>
+      {#if leftShown.length}
+        <section class="pane" style="width:{leftW}px" aria-label="Left dock">
+          <Dock side="left" shown={leftShown} />
         </section>
         <Splitter bind:value={leftW} key="leftW" min={200} max={700} />
       {/if}
@@ -126,11 +121,10 @@
       {:else}
         <div class="grow"></div>
       {/if}
-      {#if app.panels.controls}
+      {#if rightShown.length}
         <Splitter bind:value={rightW} key="rightW" sign={-1} min={220} max={700} />
-        <section class="pane" style="width:{rightW}px" aria-label="Controls">
-          <div class="tabs"><span class="tabtitle">Controls</span></div>
-          <div class="body"><Controls /></div>
+        <section class="pane" style="width:{rightW}px" aria-label="Right dock">
+          <Dock side="right" shown={rightShown} />
         </section>
       {/if}
     </div>
@@ -160,6 +154,8 @@
     <span class="muted">{app.s ? `${app.s.seq.width}×${app.s.seq.height} @ ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</span>
   </footer>
 </div>
+
+{#each floating as id, i (id)}<FloatPanel {id} z={i} />{/each}
 
 {#if fileHover}<div class="filehover">Drop to import</div>{/if}
 <ContextMenu />
@@ -205,34 +201,6 @@
   }
   .grow {
     flex: 1 1 auto;
-  }
-  .tabs {
-    display: flex;
-    gap: 2px;
-    padding: 4px 8px 0;
-    border-bottom: 1px solid var(--line-soft);
-    min-height: 31px;
-    align-items: flex-end;
-  }
-  .tabs button {
-    background: none;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    border-radius: 0;
-    color: var(--muted);
-    padding: 3px 10px;
-  }
-  .tabs button.active {
-    color: var(--text);
-    border-bottom-color: var(--accent);
-  }
-  .tabtitle {
-    padding: 3px 4px 6px;
-    font-weight: 500;
-  }
-  .body {
-    flex: 1;
-    min-height: 0;
   }
   .status {
     display: flex;

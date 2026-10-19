@@ -2,10 +2,10 @@ import { SvelteMap } from "svelte/reactivity";
 // The editor as the interface sees it: the last full state, the live values
 // polled every frame, and the loop that keeps both (and the picture) fresh.
 
-import { api, type Live, type State, type Ticks } from "./api";
+import { api, type EffectKind, type Live, type State, type Ticks, type Transition } from "./api";
 
 function loadPanels(): Record<string, boolean> {
-  const all = { media: true, history: true, viewer: true, controls: true, timeline: true, meters: true };
+  const all = { media: true, effects: true, history: true, viewer: true, controls: true, timeline: true, meters: true };
   try {
     return { ...all, ...JSON.parse(localStorage.getItem("panels") ?? "{}") };
   } catch {
@@ -40,13 +40,13 @@ export const app = $state({
   settingsOpen: false,
   /// Media being dragged from the Media panel (pointer position in the window).
   dragMedia: null as null | { id: number; name: string; x: number; y: number },
+  /// An effect or transition being dragged from the Effects panel.
+  dragEffect: null as null | { name: string; kind: EffectKind | null; plugin: string | null; transition: Transition | null; x: number; y: number },
   // Reactive, so clips redraw their waveform when it arrives.
   waveforms: new SvelteMap<number, Uint8Array>(),
   waveformRate: 100,
   /// Which windows are shown (the Tabs menu).
   panels: loadPanels(),
-  /// The left panel's tab.
-  leftTab: "media" as "media" | "history",
   /// The mask being edited in the Viewer (of the selected clip), by index.
   activeMask: null as null | { clip: number; index: number },
   /// Drawing a freehand mask: the clip and the points so far (layer pixels).
