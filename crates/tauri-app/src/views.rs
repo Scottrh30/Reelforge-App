@@ -30,6 +30,9 @@ pub struct State {
     /// Selected clips and the clips linked to them.
     pub selected: Vec<u64>,
     pub inspector: Option<Inspector>,
+    /// Clips of the open sequence with a tracker, for the Track panel (which
+    /// can work with one while something else is selected).
+    pub trackers: Vec<TrackSource>,
     pub recoveries: Vec<String>,
     pub prefs: reelforge_engine::editor::Prefs,
 }
@@ -190,6 +193,14 @@ pub struct TrackerView {
     pub targets: Vec<TargetView>,
     /// A mesh tracker's cells across and down.
     pub grid: [u8; 2],
+}
+
+#[derive(Serialize)]
+pub struct TrackSource {
+    pub id: u64,
+    pub name: String,
+    pub track: String,
+    pub tracker: TrackerView,
 }
 
 #[derive(Serialize)]
@@ -462,6 +473,12 @@ pub fn state(e: &Editor) -> State {
             linked: s.link_group(c.id).len() > 1,
         }
     });
+    let trackers = s
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Video)
+        .flat_map(|t| t.clips.iter().filter_map(move |c| Some(TrackSource { id: c.id.0, name: clip_name(p, c), track: t.name.clone(), tracker: tracker_view(e, c)? })))
+        .collect();
     let entries = e.undo.entries();
     State {
         rev: e.rev,
@@ -488,6 +505,7 @@ pub fn state(e: &Editor) -> State {
         selection: e.selection.map(|c| c.0),
         selected: e.selected_with_links().iter().map(|c| c.0).collect(),
         inspector,
+        trackers,
         recoveries: e.recoveries.iter().map(|r| r.describe()).collect(),
         prefs: e.prefs.clone(),
     }

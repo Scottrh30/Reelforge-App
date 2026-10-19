@@ -14,7 +14,7 @@ use crate::render_cache::RenderCache;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use reelforge_core::edit::{plan_trim, ripple_delete, TrimPlan};
 use reelforge_core::mask::Mask;
-use reelforge_core::track::{ApplyOptions, TrackMode, Tracker};
+use reelforge_core::track::{ApplyOptions, Axes, TrackMode, Tracker};
 use reelforge_core::undo::{
     split_group, AddClip, AddTrack, Batch, MoveTrack, Edge, ImportMedia, RemoveTrack, RenameTrack, SetClipAudio, SetClipTiming, SetClipVisual, SetLink,
     SetTitle, SetTrackAudio, SetTracker, Timing,
@@ -1750,6 +1750,16 @@ impl Editor {
     /// same clip, hold it steady), as keyframes. `smoothing` (frames) keeps
     /// slow camera moves when stabilising.
     pub fn apply_track(&mut self, tracked: ClipId, target: ClipId, smoothing: f32) {
+        self.apply_track_axes(tracked, target, smoothing, Axes::ALL);
+    }
+
+    /// [`Self::apply_track`] with only the chosen parts of the motion
+    /// (X and Y position; rotation and scale for two-point tracks).
+    pub fn apply_track_axes(&mut self, tracked: ClipId, target: ClipId, smoothing: f32, axes: Axes) {
+        if !axes.x && !axes.y && !axes.rotation && !axes.scale {
+            self.status = "Nothing to apply: tick at least one of X, Y, rotation or scale".into();
+            return;
+        }
         self.commit_live_edit();
         let s = self.seq();
         let (Some((_, a)), Some((_, b))) = (s.find_clip(tracked), s.find_clip(target)) else { return };
@@ -1760,14 +1770,14 @@ impl Editor {
         let (layer, target_layer) = (self.layer_size(a), self.layer_size(b));
         let frame = [s.width as f32, s.height as f32];
         let stabilise = tracked == target;
-        let opts = ApplyOptions { stabilise, smoothing: if stabilise { smoothing } else { 0.0 } };
+        let opts = ApplyOptions { stabilise, smoothing: if stabilise { smoothing } else { 0.0 }, axes };
         let mode = track.mode;
         if mode == TrackMode::Mesh {
             if stabilise {
                 self.status = "A mesh track can't stabilise its own clip: apply it to another layer or a mask".into();
                 return;
             }
-            let Some(mesh) = reelforge_core::track::follow_mesh(a, track, layer, frame, b) else {
+            let Some(mesh) = reelforge_core::track::follow_mesh(a, track, layer, frame, b, axes) else {
                 self.status = if track.frames().is_empty() { "Nothing to apply: track the grid first".into() } else { "Nothing to apply: the track doesn't overlap that clip".into() };
                 return;
             };
@@ -1783,7 +1793,13 @@ impl Editor {
             return;
         }
         let Some(anim) = reelforge_core::track::follow_keys(a, track, layer, frame, b, target_layer, opts) else {
-            self.status = if track.frames().is_empty() { "Nothing to apply: track every point first".into() } else { "Nothing to apply: the track doesn't overlap that clip".into() };
+            self.status = if track.frames().is_empty() {
+                "Nothing to apply: track every point first".into()
+            } else if !axes.x && !axes.y && !(mode == TrackMode::Transform && (axes.rotation || axes.scale)) {
+                "Nothing to apply: tick X or Y position".into()
+            } else {
+                "Nothing to apply: the track doesn't overlap that clip".into()
+            };
             return;
         };
         if s.is_locked(target) {

@@ -4,7 +4,8 @@
   import { api, type Transform, type Blend, type TitleSpec, type ClipAudio, type TrackAudio } from "../lib/api";
   import NumberField from "./NumberField.svelte";
   import MasksPanel from "./MasksPanel.svelte";
-  import TrackingPanel from "./TrackingPanel.svelte";
+  import { showPanel } from "../lib/dock.svelte";
+  import { setPanel } from "../lib/session.svelte";
   import EffectsPanel from "./EffectsPanel.svelte";
   import AudioPanel from "./AudioPanel.svelte";
   import TitlePanel from "./TitlePanel.svelte";
@@ -342,7 +343,10 @@
       <MasksPanel {ins} />
     {/if}
     {#if ins.can_track}
-      <TrackingPanel {ins} />
+      <div class="trackrow">
+        <span>Motion tracking{ins.tracker ? `: ${ins.tracker.mode === "Position" ? "single point" : ins.tracker.mode === "Transform" ? "two point" : ins.tracker.mode === "CornerPin" ? "four point" : ins.tracker.mode.toLowerCase()}` : ""}</span>
+        <button class="small" onclick={() => { setPanel("track", true); showPanel("track"); }}>Open Track panel</button>
+      </div>
     {/if}
 
     {#if ins.audio}
@@ -353,6 +357,15 @@
 </div>
 
 <style>
+  .trackrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 0 12px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--muted);
+  }
   .panel {
     height: 100%;
     overflow: auto;

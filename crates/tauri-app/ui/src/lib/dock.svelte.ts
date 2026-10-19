@@ -1,9 +1,9 @@
-// Docking: the tabbed panels (Media, Effects, History, Controls) live in the
+// Docking: the tabbed panels (Media, Effects, History, Controls, Track) live in the
 // left or right dock, in any order, or float as windows of their own. Tabs
 // are dragged between docks, or out into a floating window, and back. The
 // arrangement is remembered between sessions.
 
-export type PanelId = "media" | "effects" | "history" | "controls";
+export type PanelId = "media" | "effects" | "history" | "controls" | "track";
 export type DockSide = "left" | "right";
 
 export const PANEL_LABEL: Record<PanelId, string> = {
@@ -11,6 +11,7 @@ export const PANEL_LABEL: Record<PanelId, string> = {
   effects: "Effects",
   history: "History",
   controls: "Controls",
+  track: "Track",
 };
 
 export interface FloatRect {
@@ -28,10 +29,10 @@ interface Layout {
   rects: Partial<Record<PanelId, FloatRect>>;
 }
 
-const ALL: PanelId[] = ["media", "effects", "history", "controls"];
+const ALL: PanelId[] = ["media", "effects", "history", "controls", "track"];
 
 function initial(): Layout {
-  return { left: ["media", "effects", "history"], right: ["controls"], float: [], active: { left: "media", right: "controls" }, rects: {} };
+  return { left: ["media", "effects", "history"], right: ["controls", "track"], float: [], active: { left: "media", right: "controls" }, rects: {} };
 }
 
 function load(): Layout {
@@ -42,7 +43,11 @@ function load(): Layout {
     const seen = new Set<PanelId>();
     const keep = (l: PanelId[]) => l.filter((p) => ALL.includes(p) && !seen.has(p) && (seen.add(p), true));
     const out: Layout = { left: keep(v.left), right: keep(v.right), float: keep(v.float), active: v.active ?? { left: null, right: null }, rects: v.rects ?? {} };
-    for (const p of ALL) if (!seen.has(p)) out.left.splice(p === "effects" ? Math.min(1, out.left.length) : out.left.length, 0, p);
+    for (const p of ALL) {
+      if (seen.has(p)) continue;
+      if (p === "track") out.right.push(p);
+      else out.left.splice(p === "effects" ? Math.min(1, out.left.length) : out.left.length, 0, p);
+    }
     return out;
   } catch {
     return initial();

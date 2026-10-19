@@ -324,9 +324,15 @@ What works now:
     compositions; one can't contain itself)
   - Empty parts of a shot are transparent, so layers underneath show through
   - Exporting while inside a shot exports that shot
-- **Motion tracking** (Controls panel, for footage clips). Pick how many points, **Add tracker**,
-  drag the numbered boxes in the Viewer onto sharp details, then **Track forward** / **Track
-  backward** from the playhead:
+- **Motion tracking** (the **Track** panel, docked next to Controls; for footage clips). It
+  works on the selected clip, and keeps working on a tracked clip after you select something
+  else (pick which tracked clip at the top when there are several). Pick a **Method** (Single
+  point, Two point, Four point, Planar or Mesh), drag the numbered boxes in the Viewer onto
+  sharp details, then **Backward** / **Forward** from the playhead. Under **Apply tracking
+  data**, choose any layer the track overlaps (or a mask, or the clip itself to stabilise),
+  tick which parts of the motion to use (**X position**, **Y position**, and **Rotation** and
+  **Scale** for two-point tracks; for corner pins, planar and mesh tracks X and Y are the
+  surface's movement as a whole, its shape still follows), and **Apply**:
   - **Position (1 point)**: movement. A title stuck to a moving car, say.
   - **Position, rotation and scale (2 points)**: put them on two details of the same object, far
     apart. The line between them gives the turn and the change of size, so a following layer

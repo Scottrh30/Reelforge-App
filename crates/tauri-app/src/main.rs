@@ -809,10 +809,11 @@ fn track_cancel() -> Res<()> {
 
 /// Apply the tracked motion of `id` to `target` (itself = stabilise) or to its mask `mask`.
 #[tauri::command]
-fn track_apply(id: u64, target: u64, mask: Option<usize>, smoothing: f32) -> Res<()> {
+fn track_apply(id: u64, target: u64, mask: Option<usize>, smoothing: f32, axes: Option<reelforge_core::track::Axes>) -> Res<()> {
+    let axes = axes.unwrap_or(reelforge_core::track::Axes::ALL);
     ed(|e| match mask {
         Some(i) => e.apply_track_to_mask(clip(id), i),
-        None => e.apply_track(clip(id), clip(target), smoothing.clamp(0.0, 120.0)),
+        None => e.apply_track_axes(clip(id), clip(target), smoothing.clamp(0.0, 120.0), axes),
     })
 }
 

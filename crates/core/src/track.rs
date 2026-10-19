@@ -843,11 +843,54 @@ pub struct ApplyOptions {
     /// moves and only take out the shake, smoothing over about this many
     /// frames. 0 locks the shot completely.
     pub smoothing: f32,
+    /// Which parts of the motion are applied. Left out, that part of the
+    /// layer stays as it was.
+    pub axes: Axes,
 }
 
 impl Default for ApplyOptions {
     fn default() -> Self {
-        Self { stabilise: false, smoothing: 0.0 }
+        Self { stabilise: false, smoothing: 0.0, axes: Axes::ALL }
+    }
+}
+
+/// The parts of a tracked motion to apply: movement across (X) and down (Y),
+/// and, for two-point tracks, rotation and scale. For corner pins, planar
+/// and mesh tracks, X and Y are the surface's movement as a whole (its shape
+/// still follows).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Axes {
+    pub x: bool,
+    pub y: bool,
+    pub rotation: bool,
+    pub scale: bool,
+}
+
+impl Axes {
+    pub const ALL: Axes = Axes { x: true, y: true, rotation: true, scale: true };
+
+    /// The shift `d` with the parts left out set to 0.
+    fn mask(&self, d: [f32; 2]) -> [f32; 2] {
+        [if self.x { d[0] } else { 0.0 }, if self.y { d[1] } else { 0.0 }]
+    }
+
+    /// `pts` moved back by the left-out part of how far their middle has
+    /// moved from `reference`'s.
+    fn hold(&self, reference: &[[f32; 2]], pts: &mut [[f32; 2]]) {
+        if self.x && self.y {
+            return;
+        }
+        let mid = |p: &[[f32; 2]]| {
+            let n = p.len().max(1) as f32;
+            p.iter().fold([0.0, 0.0], |a, q| [a[0] + q[0] / n, a[1] + q[1] / n])
+        };
+        let (a, b) = (mid(reference), mid(pts));
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let keep = self.mask(d);
+        for p in pts.iter_mut() {
+            p[0] -= d[0] - keep[0];
+            p[1] -= d[1] - keep[1];
+        }
     }
 }
 
@@ -925,16 +968,19 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
     let mut scale_keys = Vec::new();
     let mut pin_keys = Vec::new();
     let mut last_angle: Option<f32> = None;
+    let axes = opts.axes;
     for ((t, pts, _), h) in motions.iter().zip(&applied) {
         let at = target.source_time(*t);
         let base = base_at(*t);
         if use_pin {
-            let pin = if into_points {
-                Pin([pts[0], pts[1], pts[2], pts[3]])
+            // Where the pin would be without any motion (to hold left-out axes against).
+            let (still, mut pin) = if into_points {
+                (Pin([ref_pts[0], ref_pts[1], ref_pts[2], ref_pts[3]]), Pin([pts[0], pts[1], pts[2], pts[3]]))
             } else {
                 let q = base.valid_pin().unwrap_or_else(|| base.pin_of_transform(target_layer, frame));
-                q.map(|p| h.apply(p))
+                (q, q.map(|p| h.apply(p)))
             };
+            axes.hold(&still.0, &mut pin.0);
             if pin.is_valid() {
                 pin_keys.push((at, pin));
             }
@@ -943,7 +989,12 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
         let sim = Similar::of(h);
         let anchor_at = [c[0] + base.position[0], c[1] + base.position[1]];
         let moved = h.apply(anchor_at);
-        pos_keys.push((at, [moved[0] - c[0], moved[1] - c[1]]));
+        if axes.x || axes.y {
+            // A left-out axis keeps the layer's own (animated) value.
+            let own = target.transform_at(clamp_t(*t)).position;
+            let p = [moved[0] - c[0], moved[1] - c[1]];
+            pos_keys.push((at, [if axes.x { p[0] } else { own[0] }, if axes.y { p[1] } else { own[1] }]));
+        }
         if tracker.mode == TrackMode::Transform {
             // Keep the angle continuous from frame to frame.
             let mut a = base.rotation + sim.angle as f32;
@@ -951,8 +1002,12 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
                 a = prev + ((a - prev + 180.0).rem_euclid(360.0) - 180.0);
             }
             last_angle = Some(a);
-            rot_keys.push((at, a));
-            scale_keys.push((at, [base.scale[0] * sim.scale as f32, base.scale[1] * sim.scale as f32]));
+            if axes.rotation {
+                rot_keys.push((at, a));
+            }
+            if axes.scale {
+                scale_keys.push((at, [base.scale[0] * sim.scale as f32, base.scale[1] * sim.scale as f32]));
+            }
         }
     }
 
@@ -964,7 +1019,7 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
             curve.set(at, v);
         }
     }
-    if use_pin && pin_keys.is_empty() {
+    if use_pin && pin_keys.is_empty() || !use_pin && pos_keys.is_empty() && rot_keys.is_empty() && scale_keys.is_empty() {
         return None;
     }
     put(&mut anim.position, pos_keys);
@@ -977,11 +1032,12 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
 /// A mesh warp laying `target` over a mesh tracker's grid at every tracked
 /// frame it overlaps (its keys outside that range are kept). `layer` is the
 /// tracked clip's picture size and `frame` the sequence's.
-pub fn follow_mesh(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f32; 2], target: &Clip) -> Option<crate::meshwarp::MeshWarp> {
+pub fn follow_mesh(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f32; 2], target: &Clip, axes: Axes) -> Option<crate::meshwarp::MeshWarp> {
     if tracker.mode != TrackMode::Mesh {
         return None;
     }
     let to_seq = |src: Time| tracked.timeline_of_media(src).unwrap_or(tracked.timeline_start);
+    let mut reference: Option<Vec<[f32; 2]>> = None;
     let mut keys: Vec<(Time, crate::meshwarp::MeshShape)> = tracker
         .frames()
         .into_iter()
@@ -992,7 +1048,9 @@ pub fn follow_mesh(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
             }
             // From the tracked clip's pixels to the frame, through its own transform then.
             let m = tracked.transform_at(t).layer_map(layer, frame);
-            let points = pts.iter().map(|p| m.apply([p[0] - layer[0] / 2.0, p[1] - layer[1] / 2.0])).collect();
+            let mut points: Vec<[f32; 2]> = pts.iter().map(|p| m.apply([p[0] - layer[0] / 2.0, p[1] - layer[1] / 2.0])).collect();
+            let r = reference.get_or_insert_with(|| points.clone());
+            axes.hold(r, &mut points);
             let shape = crate::meshwarp::MeshShape { cols: tracker.grid[0], rows: tracker.grid[1], points };
             (shape.is_valid() && !shape.is_folded()).then(|| (target.source_time(t), shape))
         })
@@ -1106,6 +1164,18 @@ mod tests {
         assert_eq!(tr.path.iter().map(|s| s.pos[0]).collect::<Vec<_>>(), [0.0, 20.0, 30.0]);
     }
 
+    #[test]
+    fn axes_hold_surfaces_in_place() {
+        let reference = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        // Moved right 5 and down 3, and stretched.
+        let mut pts = [[5.0, 3.0], [17.0, 3.0], [17.0, 13.0], [5.0, 13.0]];
+        Axes { x: false, ..Axes::ALL }.hold(&reference, &mut pts);
+        assert_eq!(pts, [[-1.0, 3.0], [11.0, 3.0], [11.0, 13.0], [-1.0, 13.0]], "the middle stays across, the shape still changes");
+        let mut same = pts;
+        Axes::ALL.hold(&reference, &mut same);
+        assert_eq!(same, pts);
+    }
+
     fn keys<T: Copy>(c: &crate::anim::Curve<T>) -> Vec<(Time, T)> {
         c.0.iter().map(|k| (k.at, k.value)).collect()
     }
@@ -1124,7 +1194,7 @@ mod tests {
         });
         let (layer, frame) = ([640.0, 360.0], [640.0, 360.0]);
         let follow = ApplyOptions::default();
-        let stab = ApplyOptions { stabilise: true, smoothing: 0.0 };
+        let stab = ApplyOptions { stabilise: true, smoothing: 0.0, ..Default::default() };
         // A title from 0 s at position (5, 5) follows: +30, -10 a second later (3 s on the timeline).
         let mut target = Clip::new(ClipId(2), MediaId::GENERATED, secs(0.0), secs(0.0), secs(10.0), None);
         target.transform.position = [5.0, 5.0];
@@ -1139,6 +1209,17 @@ mod tests {
         big.transform.scale = [2.0, 2.0];
         let anim = follow_keys(&big, &track, layer, frame, &target, layer, follow).unwrap();
         assert_eq!(anim.position.0[1].value, [65.0, -15.0]);
+        // X only: the layer moves across but keeps its own height.
+        let x_only = ApplyOptions { axes: Axes { y: false, ..Axes::ALL }, ..Default::default() };
+        let anim = follow_keys(&tracked, &track, layer, frame, &target, layer, x_only).unwrap();
+        assert_eq!(keys(&anim.position), vec![(secs(2.0), [5.0, 5.0]), (secs(3.0), [35.0, 5.0])]);
+        // Y only, stabilising: only the up-and-down shake is taken out.
+        let y_only = ApplyOptions { axes: Axes { x: false, ..Axes::ALL }, ..stab };
+        let anim = follow_keys(&tracked, &track, layer, frame, &tracked, layer, y_only).unwrap();
+        assert_eq!(keys(&anim.position), vec![(secs(1.0), [0.0, 0.0]), (secs(2.0), [0.0, 10.0])]);
+        // Neither: nothing to apply.
+        let none = ApplyOptions { axes: Axes { x: false, y: false, ..Axes::ALL }, ..Default::default() };
+        assert!(follow_keys(&tracked, &track, layer, frame, &target, layer, none).is_none());
     }
 
     fn close2(a: [f32; 2], b: [f32; 2], tol: f32) -> bool {
@@ -1173,7 +1254,7 @@ mod tests {
         // It swung round the first point: 10 px right becomes 20 px below.
         assert!(close2(end.position, [0.0, 20.0], 1e-3), "{:?}", end.position);
         // Stabilising undoes it: the clip turns back and shrinks.
-        let st = follow_keys(&tracked, &tr, layer, frame, &tracked, layer, ApplyOptions { stabilise: true, smoothing: 0.0 }).unwrap();
+        let st = follow_keys(&tracked, &tr, layer, frame, &tracked, layer, ApplyOptions { stabilise: true, smoothing: 0.0, ..Default::default() }).unwrap();
         let t = st.eval(&tracked.transform, secs(1.0));
         assert!((t.rotation + 90.0).abs() < 1e-3 && (t.scale[0] - 0.5).abs() < 1e-4, "{t:?}");
         // The tracked point now stays where it was on the frame.
@@ -1213,7 +1294,7 @@ mod tests {
             })
             .collect();
         let tr = Tracker { mode: TrackMode::Mesh, points, grid: [2, 1] };
-        let w = follow_mesh(&tracked, &tr, layer, frame, &target).unwrap();
+        let w = follow_mesh(&tracked, &tr, layer, frame, &target, Axes::ALL).unwrap();
         // Keys at the target's source times (it starts at 1 s), shifted by the tracked clip's position.
         assert_eq!(w.keys.len(), 2);
         assert_eq!(w.keys[0].0, secs(0.0));
@@ -1251,7 +1332,7 @@ mod tests {
         let pin = quad_track(&[q0, q1]);
         let planar = Tracker { mode: TrackMode::Planar, ..pin.clone() };
         assert!(TrackMode::Planar.is_perspective() && TrackMode::Planar.points() == 4);
-        for opts in [ApplyOptions::default(), ApplyOptions { stabilise: true, smoothing: 10.0 }] {
+        for opts in [ApplyOptions::default(), ApplyOptions { stabilise: true, smoothing: 10.0, ..Default::default() }] {
             let t = if opts.stabilise { &tracked } else { &target };
             let a = follow_keys(&tracked, &pin, layer, frame, t, layer, opts).unwrap();
             let b = follow_keys(&tracked, &planar, layer, frame, t, layer, opts).unwrap();
@@ -1286,7 +1367,7 @@ mod tests {
             assert!(close2(moved.0[i], h.apply(small[i]), 1e-2));
         }
         // Stabilising takes the perspective change back out.
-        let st = follow_keys(&tracked, &tr, layer, frame, &tracked, layer, ApplyOptions { stabilise: true, smoothing: 0.0 }).unwrap();
+        let st = follow_keys(&tracked, &tr, layer, frame, &tracked, layer, ApplyOptions { stabilise: true, smoothing: 0.0, ..Default::default() }).unwrap();
         let m = st.eval(&tracked.transform, secs(1.0)).layer_map(layer, frame);
         for i in 0..4 {
             let p = m.apply([q1[i][0] - 200.0, q1[i][1] - 150.0]);
@@ -1312,7 +1393,7 @@ mod tests {
         let tr = Tracker::from(PointTrack { path, ..Default::default() });
         let clip = Clip::new(ClipId(1), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
         let (layer, frame) = ([400.0, 300.0], [400.0, 300.0]);
-        let anim = follow_keys(&clip, &tr, layer, frame, &clip, layer, ApplyOptions { stabilise: true, smoothing: 10.0 }).unwrap();
+        let anim = follow_keys(&clip, &tr, layer, frame, &clip, layer, ApplyOptions { stabilise: true, smoothing: 10.0, ..Default::default() }).unwrap();
         // Where the feature ends up on screen, frame by frame (well inside the run).
         let shown: Vec<f32> = (20..80).map(|i| tr.points[0].path[i].pos[0] - 200.0 + anim.position.0[i].value[0] + 200.0).collect();
         let steps: Vec<f32> = shown.windows(2).map(|w| w[1] - w[0]).collect();

@@ -5,7 +5,7 @@ import { SvelteMap } from "svelte/reactivity";
 import { api, type EffectKind, type Live, type State, type Ticks, type Transition } from "./api";
 
 function loadPanels(): Record<string, boolean> {
-  const all = { media: true, effects: true, history: true, viewer: true, controls: true, timeline: true, meters: true };
+  const all = { media: true, effects: true, history: true, viewer: true, controls: true, track: true, timeline: true, meters: true };
   try {
     return { ...all, ...JSON.parse(localStorage.getItem("panels") ?? "{}") };
   } catch {

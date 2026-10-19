@@ -198,6 +198,14 @@ export interface SeqInfo {
   duration: Ticks;
 }
 
+/** Which parts of a tracked motion are applied. */
+export interface TrackAxes {
+  x: boolean;
+  y: boolean;
+  rotation: boolean;
+  scale: boolean;
+}
+
 export interface Inspector {
   id: number;
   name: string;
@@ -254,6 +262,13 @@ export interface MaskView {
 }
 
 export type TrackMode = "Position" | "Transform" | "CornerPin" | "Planar" | "Mesh";
+
+export interface TrackSource {
+  id: number;
+  name: string;
+  track: string;
+  tracker: TrackerView;
+}
 
 export interface TrackerView {
   mode: TrackMode;
@@ -468,6 +483,7 @@ export interface State {
   selection: number | null;
   selected: number[];
   inspector: Inspector | null;
+  trackers: TrackSource[];
   recoveries: string[];
   prefs: Prefs;
 }
@@ -571,7 +587,7 @@ export const api = {
   trackerOp: (id: number, op: "clear" | "remove") => invoke("tracker_op", { id, op }),
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
   trackCancel: () => invoke("track_cancel"),
-  trackApply: (id: number, target: number, mask: number | null, smoothing: number) => invoke("track_apply", { id, target, mask, smoothing }),
+  trackApply: (id: number, target: number, mask: number | null, smoothing: number, axes?: TrackAxes) => invoke("track_apply", { id, target, mask, smoothing, axes }),
   exportOptions: () => invoke<ExportOptions>("export_options"),
   exportSuggest: (ext: string) => invoke<{ path: string; preset: number; has_audio: boolean }>("export_suggest", { ext }),
   exportPathDialog: (current: string, extension: string) => invoke<string | null>("export_path_dialog", { current, extension }),

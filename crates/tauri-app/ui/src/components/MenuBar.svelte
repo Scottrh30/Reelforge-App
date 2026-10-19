@@ -13,6 +13,7 @@
     ["history", "History"],
     ["viewer", "Viewer"],
     ["controls", "Controls"],
+    ["track", "Track"],
     ["timeline", "Timeline"],
     ["meters", "Meters"],
   ];
