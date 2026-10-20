@@ -179,7 +179,7 @@ impl Shared {
         let made = unsafe {
             let mut t: Option<ID3D11Texture2D> = None;
             self.device.CreateTexture2D(&desc, None, Some(&mut t)).ok().and(t).and_then(|t| {
-                let h = t.cast::<IDXGIResource1>().ok()?.CreateSharedHandle(None, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, PCWSTR::null()).ok()?;
+                let h = t.cast::<IDXGIResource1>().ok()?.CreateSharedHandle(None, (DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE).0, PCWSTR::null()).ok()?;
                 Some(Slot { texture: t, handle: h, id: NEXT_ID.fetch_add(1, Ordering::Relaxed) })
             })
         };
