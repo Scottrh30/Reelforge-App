@@ -10,7 +10,8 @@
   import Viewer from "./components/Viewer.svelte";
   import Dock from "./components/Dock.svelte";
   import FloatPanel from "./components/FloatPanel.svelte";
-  import { dock, resetDock } from "./lib/dock.svelte";
+  import { dock } from "./lib/dock.svelte";
+  import { sizes } from "./lib/workspace.svelte";
   import Timeline from "./components/Timeline.svelte";
   import Meters from "./components/Meters.svelte";
   import Splitter from "./components/Splitter.svelte";
@@ -31,28 +32,7 @@
     apply(look);
   });
 
-  const stored = (k: string, d: number) => {
-    try {
-      const v = Number(localStorage.getItem(k));
-      return v > 0 ? v : d;
-    } catch {
-      return d;
-    }
-  };
-  let leftW = $state(stored("leftW", 300));
-  let rightW = $state(stored("rightW", 320));
-  let bottomH = $state(stored("bottomH", 340));
-  let metersW = $state(stored("metersW", 64));
   let fileHover = $state(false);
-  // Tabs > Reset layout: the panel sizes as they start out.
-  $effect(() => {
-    if (!app.layoutReset) return;
-    [leftW, rightW, bottomH, metersW] = [300, 320, 340, 64];
-    resetDock();
-    try {
-      for (const k of ["leftW", "rightW", "bottomH", "metersW", "timelineHeader"]) localStorage.removeItem(k);
-    } catch {}
-  });
 
   // Each dock's panels that are switched on (Tabs menu); a dock with none is hidden.
   const leftShown = $derived(dock.left.filter((p) => app.panels[p]));
@@ -111,10 +91,10 @@
   <div class="work">
     <div class="upper" style="flex: 1 1 0">
       {#if leftShown.length}
-        <section class="pane" style="width:{leftW}px" aria-label="Left dock">
+        <section class="pane" style="width:{sizes.leftW}px" aria-label="Left dock">
           <Dock side="left" shown={leftShown} />
         </section>
-        <Splitter bind:value={leftW} key="leftW" min={200} max={700} />
+        <Splitter bind:value={sizes.leftW} key="leftW" min={200} max={700} />
       {/if}
       {#if app.panels.viewer}
         <section class="pane grow" aria-label="Viewer"><Viewer /></section>
@@ -122,23 +102,23 @@
         <div class="grow"></div>
       {/if}
       {#if rightShown.length}
-        <Splitter bind:value={rightW} key="rightW" sign={-1} min={220} max={700} />
-        <section class="pane" style="width:{rightW}px" aria-label="Right dock">
+        <Splitter bind:value={sizes.rightW} key="rightW" sign={-1} min={220} max={700} />
+        <section class="pane" style="width:{sizes.rightW}px" aria-label="Right dock">
           <Dock side="right" shown={rightShown} />
         </section>
       {/if}
     </div>
     {#if app.panels.timeline || app.panels.meters}
-      <Splitter bind:value={bottomH} dir="row" sign={-1} key="bottomH" min={160} max={1200} />
-      <div class="lower" style="height:{bottomH}px">
+      <Splitter bind:value={sizes.bottomH} dir="row" sign={-1} key="bottomH" min={160} max={1200} />
+      <div class="lower" style="height:{sizes.bottomH}px">
         {#if app.panels.timeline}
           <section class="pane grow" aria-label="Timeline"><Timeline /></section>
         {:else}
           <div class="grow"></div>
         {/if}
         {#if app.panels.meters}
-          <Splitter bind:value={metersW} key="metersW" sign={-1} min={50} max={200} />
-          <section class="pane" style="width:{metersW}px" aria-label="Meters"><Meters /></section>
+          <Splitter bind:value={sizes.metersW} key="metersW" sign={-1} min={50} max={200} />
+          <section class="pane" style="width:{sizes.metersW}px" aria-label="Meters"><Meters /></section>
         {/if}
       </div>
     {/if}

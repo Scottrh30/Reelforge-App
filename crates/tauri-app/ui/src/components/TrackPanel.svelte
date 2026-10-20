@@ -85,6 +85,18 @@
     await pump.done();
     await run(api.commit());
   }
+  // Smoothing being dragged, so the number keeps up with the pointer.
+  let smoothDraft = $state<number | null>(null);
+  function smoothTo(v: number) {
+    if (!ins) return;
+    const id = ins.id;
+    smoothDraft = v;
+    pump.push(() => api.trackerSmooth(id, v));
+  }
+  async function smoothDone() {
+    await commit();
+    smoothDraft = null;
+  }
   function apply() {
     if (!ins || !chosen) return;
     run(api.trackApply(ins.id, chosen.clip, chosen.mask, chosen.blade, smoothing, { ...axes }));
@@ -172,6 +184,14 @@
           <p class="muted">
             {t.frames} frames tracked, <span class="tc">{timecode(t.range[0])}</span> to <span class="tc">{timecode(t.range[1])}</span>
           </p>
+          <div class="grid">
+            <span class="lbl" title="Takes the jitter out of the tracked paths without tracking again. The tracked data is kept: set it back to 0 any time. Everything you apply the track to uses the smoothed paths">Smooth track</span>
+            <div class="ctl">
+              <NumberField label="Smooth track" value={smoothDraft ?? t.smooth} min={0} max={30} step={0.05} digits={1} suffix=" frames" oninput={smoothTo} oncommit={smoothDone} />
+              {#if t.smooth > 0}<button class="ghost tiny" onclick={() => { smoothTo(0); smoothDone(); }} title="No smoothing" aria-label="No smoothing">↺</button>{/if}
+            </div>
+          </div>
+          {#if t.smooth > 0}<p class="note">The solid lines in the Viewer are the smoothed paths; the faint dotted ones are as tracked. Apply the track again to use the new smoothing.</p>{/if}
         {/if}
       </div>
 
@@ -197,7 +217,7 @@
           {#if toMask}<p class="note">A mask follows the whole motion.</p>{/if}
           {#if stabilising && !perspective(t.mode)}
             <div class="grid">
-              <span class="lbl" title="0 locks the shot completely. Higher keeps slow, deliberate camera moves and only takes out the shake: 10 to 30 frames suits most handheld footage">Smoothing</span>
+              <span class="lbl" title="Smooth camera: 0 locks the shot completely. Higher keeps slow, deliberate camera moves and only takes out the shake: 10 to 30 frames suits most handheld footage">Keep camera moves</span>
               <NumberField label="Smoothing" value={smoothing} min={0} max={120} step={0.25} digits={0} suffix=" frames" oninput={(v) => (smoothing = v)} oncommit={() => {}} />
             </div>
           {/if}
@@ -270,6 +290,22 @@
     gap: 8px;
     padding-bottom: 10px;
     border-bottom: 1px solid var(--line-soft);
+  }
+  .ctl {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  .ctl :global(.num) {
+    flex: 1;
+    min-width: 0;
+  }
+  .tiny {
+    min-height: 20px;
+    padding: 0 4px;
+    color: var(--muted);
+    flex: none;
   }
   h4 {
     font-size: calc(12.5px * var(--text-scale));

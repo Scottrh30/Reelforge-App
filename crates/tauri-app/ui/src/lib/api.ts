@@ -281,6 +281,9 @@ export interface TrackerView {
   tracked: boolean;
   targets: { clip: number; mask: number | null; blade: number | null; label: string }[];
   grid: [number, number];
+  /// Smoothing in frames, and each point's smoothed path (empty when 0).
+  smooth: number;
+  smoothed: Pt[][];
 }
 
 export interface Prefs {
@@ -584,6 +587,7 @@ export const api = {
   trackerAdd: (id: number, mode: TrackMode) => invoke("tracker_add", { id, mode }),
   trackerMode: (id: number, mode: TrackMode) => invoke("tracker_mode", { id, mode }),
   trackerSizes: (id: number, size: number, search: number) => invoke("tracker_sizes", { id, size, search }),
+  trackerSmooth: (id: number, frames: number) => invoke("tracker_smooth", { id, frames }),
   trackerGrid: (id: number, cols: number, rows: number) => invoke("tracker_grid", { id, cols, rows }),
   meshRemove: (id: number) => invoke("mesh_remove", { id }),
   trackerMove: (id: number, point: number, pos: Pt) => invoke("tracker_move", { id, point, pos }),

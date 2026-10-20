@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { PANEL_LABEL, showPanel, type PanelId } from "../lib/dock.svelte";
-  import { app, run, setPanel } from "../lib/session.svelte";
-  import { actions } from "../lib/actions.svelte";
+  import { PANEL_LABEL, showPanel, dock, type PanelId } from "../lib/dock.svelte";
+  import { workspaces, allWorkspaces, find, isBuiltIn, isChanged, modified, switchTo, saveAs, remove, rename, resetLayout, sizes } from "../lib/workspace.svelte";
+  import { app, run, say, setPanel } from "../lib/session.svelte";
+  import { actions, askText, question } from "../lib/actions.svelte";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
   import { api } from "../lib/api";
   import { openPrefs } from "../lib/prefs.svelte";
@@ -86,15 +87,61 @@
       label: "Show all windows",
       run: () => panelNames.forEach(([k]) => setPanel(k, true)),
     },
+    { separator: true },
+    { label: "Workspace", submenu: workspaceMenu() },
     {
       label: "Reset layout",
-      run: () => {
-        panelNames.forEach(([k]) => setPanel(k, true));
-        view.headerW = 140;
-        app.layoutReset++;
-      },
+      run: resetLayout,
     },
   ];
+
+  // Workspaces: switch, save, rename, delete (also the switcher at the right of the bar).
+  const workspaceMenu = (): MenuItem[] => {
+    const cur = workspaces.current;
+    const changed = modified();
+    const list = allWorkspaces();
+    const items: MenuItem[] = list.map((w, i) => ({
+      label: w.name,
+      checked: w.name === cur,
+      hint: i < 9 ? `Alt+Shift+${i + 1}` : undefined,
+      run: () => switchTo(w.name),
+    }));
+    items.push(
+      { separator: true },
+      { label: `Save changes to “${cur}”`, disabled: !changed || !find(cur), run: () => (saveAs(cur), say(`Saved the “${cur}” workspace`)) },
+      { label: "Save as new workspace…", run: newWorkspace },
+    );
+    if (find(cur) && !isBuiltIn(cur)) {
+      items.push({ label: `Rename “${cur}”…`, run: () => renameWorkspace(cur) }, { label: `Delete “${cur}”`, run: () => deleteWorkspace(cur) });
+    } else if (isChanged(cur)) {
+      items.push({ label: `Restore “${cur}” as it came`, run: () => (remove(cur), say(`“${cur}” is back as it came`)) });
+    }
+    if (changed) items.push({ separator: true }, { label: `Undo layout changes (back to “${cur}”)`, run: () => switchTo(cur) });
+    return items;
+  };
+  async function newWorkspace() {
+    const name = (await askText("Save workspace", "A name for this arrangement of panels:", "", "Save"))?.trim();
+    if (!name) return;
+    if (find(name) && (await question("Replace workspace?", `There's already a workspace called “${name}”. Replace it with this layout?`, ["Replace", "Cancel"])) !== "Replace") return;
+    saveAs(name);
+    say(`Saved the “${name}” workspace`);
+  }
+  async function renameWorkspace(from: string) {
+    const to = (await askText("Rename workspace", `A new name for “${from}”:`, from, "Rename"))?.trim();
+    if (!to || to === from) return;
+    if (isBuiltIn(to)) return say(`“${to}” is a built-in workspace's name`);
+    rename(from, to);
+  }
+  async function deleteWorkspace(name: string) {
+    if ((await question("Delete workspace?", `Delete the “${name}” workspace? The current layout stays as it is.`, ["Delete", "Cancel"])) !== "Delete") return;
+    remove(name);
+    say(`Deleted the “${name}” workspace`);
+  }
+  const wsLabel = $derived.by(() => {
+    // Re-evaluate when the layout changes.
+    JSON.stringify([dock, sizes, app.panels, view.headerW, workspaces.saved]);
+    return { name: workspaces.current, changed: modified() };
+  });
 
   const timeline = (): MenuItem[] => [
     { label: "Play / pause", hint: "Space", run: () => actions.act("play") },
@@ -162,6 +209,11 @@
   <span class="title">
     {app.s?.title ?? ""}{#if app.live?.dirty}<span class="dot" title="Unsaved changes"></span>{/if}
   </span>
+  <button class="ghost ws" onclick={(e) => show(e, workspaceMenu())} title="Workspace: switch, save or reset the arrangement of panels{wsLabel.changed ? ' (changed since chosen)' : ''}">
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M2 3h12v10H2zM6 3v10M6 8h8" fill="none" stroke="currentColor" stroke-width="1.3" /></svg>
+    {wsLabel.name}{#if wsLabel.changed}<span class="changed" aria-label="changed">*</span>{/if}
+    <span class="chev" aria-hidden="true">▾</span>
+  </button>
   <button class="primary" onclick={actions.exportOpen}>Export</button>
 </nav>
 
@@ -186,6 +238,21 @@
     display: grid;
     place-items: center;
     margin-right: 8px;
+  }
+  .ws {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 6px;
+    color: var(--muted);
+    font-size: calc(12.5px * var(--text-scale));
+  }
+  .ws .changed {
+    color: var(--accent);
+    margin-left: -3px;
+  }
+  .ws .chev {
+    font-size: calc(10px * var(--text-scale));
   }
   .sep {
     width: 1px;

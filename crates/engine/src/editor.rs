@@ -1329,7 +1329,13 @@ impl Editor {
             LiveEdit::ClipAudio(id, old) => self.clip_audio(id).filter(|n| *n != old).map(|new| Box::new(SetClipAudio { seq, id, old, new }) as _),
             LiveEdit::Tracker(id, old) => {
                 let new = self.seq().find_clip(id).map(|(_, c)| c.tracker.clone()).filter(|n| *n != old);
-                new.map(|new| Box::new(SetTracker { seq, id, old, new, label: "Move tracker" }) as _)
+                // Name the step after what changed.
+                let label = match (&old, &new) {
+                    (Some(o), Some(Some(n))) if o.smooth != n.smooth && o.points.iter().zip(&n.points).all(|(a, b)| a.point == b.point && a.path == b.path) => "Smooth track",
+                    (Some(o), Some(Some(n))) if o.points.iter().zip(&n.points).all(|(a, b)| a.point == b.point && a.path == b.path) => "Tracker sizes",
+                    _ => "Move tracker",
+                };
+                new.map(|new| Box::new(SetTracker { seq, id, old, new, label }) as _)
             }
             LiveEdit::TrackAudio(track, old) => {
                 let new = self.seq().tracks.get(track).map(|t| t.audio).filter(|n| *n != old);

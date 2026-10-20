@@ -4,9 +4,11 @@ import { api } from "./api";
 import { app, run, say } from "./session.svelte";
 import { prefsDialog } from "./prefs.svelte";
 import { view } from "./timeline.svelte";
+import { allWorkspaces, switchTo } from "./workspace.svelte";
 
 /// A question in a dialog: the answer is the label of the button pressed (or null).
-export const ask = $state({ open: false, title: "", text: "", buttons: [] as string[], resolve: (_: string | null) => {} });
+/// With `field` set, the dialog also has a text box (its value is in `field`).
+export const ask = $state({ open: false, title: "", text: "", buttons: [] as string[], field: null as string | null, resolve: (_: string | null) => {} });
 
 export function question(title: string, text: string, buttons: string[]): Promise<string | null> {
   return new Promise((resolve) => {
@@ -15,9 +17,27 @@ export function question(title: string, text: string, buttons: string[]): Promis
       title,
       text,
       buttons,
+      field: null,
       resolve: (v: string | null) => {
         ask.open = false;
         resolve(v);
+      },
+    });
+  });
+}
+
+/// Ask for a line of text (`ok` confirms, Cancel or Esc gives null).
+export function askText(title: string, text: string, initial: string, ok: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    Object.assign(ask, {
+      open: true,
+      title,
+      text,
+      buttons: [ok, "Cancel"],
+      field: initial,
+      resolve: (v: string | null) => {
+        ask.open = false;
+        resolve(v === ok ? ask.field : null);
       },
     });
   });
@@ -109,6 +129,12 @@ export function onKey(e: KeyboardEvent) {
     if (k === "a") return go(() => actions.act("select_all"));
     if (k === "t") return go(actions.addTitle);
     if (k === "d") return go(() => actions.act(e.shiftKey ? "crossfade" : "dissolve"));
+    return;
+  }
+  // Alt+Shift+1…9: switch workspace.
+  if (e.altKey && e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+    const w = allWorkspaces()[Number(e.code.slice(5)) - 1];
+    if (w) return go(() => (switchTo(w.name), say(`${w.name} workspace`)));
     return;
   }
   switch (e.key) {

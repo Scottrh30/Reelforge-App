@@ -738,6 +738,16 @@ fn tracker_sizes(id: u64, size: f32, search: f32) -> Res<()> {
     })
 }
 
+/// How much the tracked paths are smoothed, in frames (live: a drag on the number).
+#[tauri::command]
+fn tracker_smooth(id: u64, frames: f32) -> Res<()> {
+    ed(|e| {
+        let Some(mut t) = e.seq().find_clip(clip(id)).and_then(|(_, c)| c.tracker.clone()) else { return };
+        t.smooth = frames.clamp(0.0, reelforge_core::track::MAX_SMOOTH);
+        e.set_tracker_live(clip(id), Some(t));
+    })
+}
+
 /// Move tracker point `point` to `pos` (layer pixels) at the playhead: on a
 /// tracked frame this corrects the track; elsewhere it's where tracking starts.
 #[tauri::command]
@@ -959,6 +969,7 @@ fn main() {
             tracker_add,
             tracker_mode,
             tracker_sizes,
+            tracker_smooth,
             tracker_grid,
             mesh_remove,
             tracker_move,

@@ -283,7 +283,10 @@
         {#if t.mode === "Planar"}
           {@const col = POINT_COLOURS[i % 4]}
           {#if t.paths[i]?.length > 1}
-            <polyline points={pts(t.paths[i])} class="path" stroke={col} />
+            <polyline points={pts(t.paths[i])} class="path" class:raw={t.smoothed.length > 0} stroke={col} />
+          {/if}
+          {#if t.smoothed[i]?.length > 1}
+            <polyline points={pts(t.smoothed[i])} class="path smooth" stroke={col} />
           {/if}
           {@const [cx, cy] = toBox(c)}
           <circle cx={cx} cy={cy} r="6" class="corner" stroke={col} onpointerdown={(e) => dragTracker(e, i)} role="presentation" />
@@ -291,7 +294,10 @@
         {:else}
           {@const col = POINT_COLOURS[i % 4]}
           {#if t.paths[i]?.length > 1}
-            <polyline points={pts(t.paths[i])} class="path" stroke={col} />
+            <polyline points={pts(t.paths[i])} class="path" class:raw={t.smoothed.length > 0} stroke={col} />
+          {/if}
+          {#if t.smoothed[i]?.length > 1}
+            <polyline points={pts(t.smoothed[i])} class="path smooth" stroke={col} />
           {/if}
           <polygon points={pts(square(c, t.size / 2 + t.search))} class="search" stroke={col} />
           <polygon
@@ -409,6 +415,14 @@
     fill: none;
     stroke-width: 1;
     opacity: 0.6;
+  }
+  .path.raw {
+    opacity: 0.25;
+    stroke-dasharray: 2 3;
+  }
+  .path.smooth {
+    opacity: 0.9;
+    stroke-width: 1.5;
   }
   .search {
     fill: none;

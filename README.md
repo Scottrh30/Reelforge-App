@@ -16,6 +16,17 @@ What works now:
   Untick one to hide it, tick it to bring it back; **Show all windows** brings back everything,
   **Reset layout** shows them all at their starting sizes. Hidden windows stay hidden the next
   time you start Reelforge
+- **Workspaces** (the switcher at the right of the menu bar, or **Tabs → Workspace**): named
+  arrangements of the interface, remembering which panels are shown, where each tab is docked
+  or floats, and the sizes of the docks, timeline, meters and track headers. Four come built
+  in: **Editing** (the starting layout), **Effects** (the effects library in front, wide
+  Controls, a bigger Viewer), **Tracking** (the Track panel in front, a big Viewer, a short
+  timeline) and **Colour** (wide Controls only, the biggest Viewer). **Alt+Shift+1…9**
+  switches to the first nine. A `*` beside the name means the layout has changed since you
+  chose it: **Save changes to “…”** keeps the changes in that workspace (a changed built-in one
+  can be put back with **Restore “…” as it came**), **Undo layout changes** goes back to it,
+  and **Save as new workspace…** keeps it under a name of your own, which can be renamed or
+  deleted later. Workspaces are kept on this computer, not in the project
 - Import video/image/audio via **File → Import**, `Ctrl+I`, or drag files from Explorer
 - FFmpeg decoding on a background thread, with frame-accurate seeking (transport and program streams too: TS, MTS, MPG and VOB are searched by timestamp, so a seek steps back until it starts from a keyframe at or before the target)
 - Viewer with transport bar and timecode
@@ -402,8 +413,13 @@ What works now:
   fine: raise **Search** and big areas are searched coarse-to-fine, starting where the last
   movement predicts. If a point is lost (blocked, out of frame) tracking stops and says which;
   go there, drag it back onto its detail (that corrects the track at that frame) and track on.
-  **Stabilise** can keep deliberate camera moves: **Smoothing** (frames) takes out only the
-  shake. Everything is written as ordinary keyframes you can edit or undo, and masks on the
+  **Smooth track** (frames) takes the jitter out of the tracked paths without tracking again:
+  the Viewer draws the smoothed paths solid and the raw ones faint and dotted, and everything you
+  apply the track to (layers, masks, blades, stabilising) uses the smoothed paths. The tracked
+  data is kept, so it can go back to 0 at any time; apply the track again after changing it.
+  It suits a shaky track of a steady move; real shake of the camera is something the layer
+  should follow, so leave it at 0 there. When **stabilising**, **Keep camera moves** (frames)
+  keeps deliberate camera moves and takes out only the shake. Everything is written as ordinary keyframes you can edit or undo, and masks on the
   clip can follow the track too
 - **Corner pin** (Transform section of the Controls panel): tick it to stretch a layer in
   perspective by its four corners. Drag the pink corner handles in the Viewer (**Shift**: straight

@@ -535,6 +535,14 @@ pub struct Tracker {
     /// A mesh's cells across and down.
     #[serde(default, skip_serializing_if = "is_no_grid")]
     pub grid: [u8; 2],
+    /// How much the tracked paths are smoothed (Gaussian, in frames) wherever
+    /// the motion is used. The tracked samples themselves are kept as they are.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub smooth: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 fn is_no_grid(g: &[u8; 2]) -> bool {
@@ -551,6 +559,8 @@ enum TrackerRepr {
         points: Vec<PointTrack>,
         #[serde(default)]
         grid: [u8; 2],
+        #[serde(default)]
+        smooth: f32,
     },
     Single(PointTrack),
 }
@@ -558,8 +568,8 @@ enum TrackerRepr {
 impl From<TrackerRepr> for Tracker {
     fn from(r: TrackerRepr) -> Self {
         let mut t = match r {
-            TrackerRepr::Multi { mode, points, grid } => Tracker { mode, points, grid },
-            TrackerRepr::Single(p) => Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0] },
+            TrackerRepr::Multi { mode, points, grid, smooth } => Tracker { mode, points, grid, smooth: smooth.clamp(0.0, MAX_SMOOTH) },
+            TrackerRepr::Single(p) => Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0], smooth: 0.0 },
         };
         if t.points.is_empty() {
             t.points.push(PointTrack::default());
@@ -576,7 +586,7 @@ impl From<TrackerRepr> for Tracker {
 
 impl From<PointTrack> for Tracker {
     fn from(p: PointTrack) -> Self {
-        Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0] }
+        Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0], smooth: 0.0 }
     }
 }
 
@@ -585,7 +595,7 @@ impl Tracker {
     /// of a `layer`-sized picture.
     pub fn new(mode: TrackMode, centre: [f32; 2], layer: [f32; 2], start: Time) -> Self {
         let first = PointTrack { point: centre, start, ..Default::default() };
-        let mut t = Tracker { mode: TrackMode::Position, points: vec![first], grid: [0, 0] };
+        let mut t = Tracker { mode: TrackMode::Position, points: vec![first], grid: [0, 0], smooth: 0.0 };
         t.set_mode(mode, layer, start);
         if mode == TrackMode::Mesh {
             // A grid filling the box around the centre.
@@ -693,8 +703,15 @@ impl Tracker {
     }
 
     /// The frames where every point has been tracked, with their positions
-    /// (media pixels), in source time order.
+    /// (media pixels), in source time order, smoothed by [`Self::smooth`].
     pub fn frames(&self) -> Vec<(Time, Vec<[f32; 2]>)> {
+        let mut f = self.raw_frames();
+        smooth_paths(&mut f, self.smooth);
+        f
+    }
+
+    /// [`Self::frames`] as tracked, without smoothing.
+    pub fn raw_frames(&self) -> Vec<(Time, Vec<[f32; 2]>)> {
         let Some(first) = self.points.first() else { return Vec::new() };
         first
             .path
@@ -840,6 +857,69 @@ impl Similar {
         let (s, c) = self.angle.to_radians().sin_cos();
         let (a, b) = (self.scale * c, self.scale * s);
         Homography([a, -b, self.shift[0], b, a, self.shift[1], 0.0, 0.0, 1.0])
+    }
+}
+
+/// The most smoothing a tracker can have, in frames.
+pub const MAX_SMOOTH: f32 = 30.0;
+
+/// Gaussian-weighted local straight-line fit (`sigma` in samples): shake is
+/// averaged out, but a steady drift is kept exactly, also at the ends of the
+/// run, where a plain average would pull the path back.
+fn smooth_trend(v: &[f64], sigma: f64) -> Vec<f64> {
+    let n = v.len() as isize;
+    if sigma <= 0.0 || n < 3 {
+        return v.to_vec();
+    }
+    let r = (3.0 * sigma).ceil() as isize;
+    (0..n)
+        .map(|i| {
+            // Weighted least squares of v ≈ a + b·(k − i) over the window; the value is a.
+            let (mut sw, mut sx, mut sxx, mut sy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            for k in (i - r).max(0)..=(i + r).min(n - 1) {
+                let x = (k - i) as f64;
+                let w = (-(x * x) / (2.0 * sigma * sigma)).exp();
+                let y = v[k as usize];
+                sw += w;
+                sx += w * x;
+                sxx += w * x * x;
+                sy += w * y;
+                sxy += w * x * y;
+            }
+            let det = sw * sxx - sx * sx;
+            if det.abs() < 1e-9 { sy / sw } else { (sy * sxx - sx * sxy) / det }
+        })
+        .collect()
+}
+
+/// Smooth every point's path through `frames` over `sigma` frames. Runs of
+/// frames with a gap between them (a stretch that wasn't tracked) are
+/// smoothed separately, so nothing is averaged across the gap.
+fn smooth_paths(frames: &mut [(Time, Vec<[f32; 2]>)], sigma: f32) {
+    if sigma <= 0.0 || frames.len() < 3 {
+        return;
+    }
+    // The usual step between frames; a step over 1.5× that starts a new run.
+    let mut steps: Vec<i64> = frames.windows(2).map(|w| (w[1].0 .0 - w[0].0 .0).abs()).filter(|d| *d > 0).collect();
+    steps.sort_unstable();
+    let step = steps.get(steps.len() / 2).copied().unwrap_or(1).max(1);
+    let mut start = 0;
+    for i in 1..=frames.len() {
+        let gap = i == frames.len() || (frames[i].0 .0 - frames[i - 1].0 .0).abs() * 2 > step * 3;
+        if !gap {
+            continue;
+        }
+        let run = &mut frames[start..i];
+        let points = run.first().map_or(0, |f| f.1.len());
+        for k in 0..points {
+            for c in 0..2 {
+                let raw: Vec<f64> = run.iter().map(|f| f.1[k][c] as f64).collect();
+                for (f, v) in run.iter_mut().zip(smooth_trend(&raw, sigma as f64)) {
+                    f.1[k][c] = v as f32;
+                }
+            }
+        }
+        start = i;
     }
 }
 
@@ -1159,6 +1239,32 @@ pub fn follow_mask(clip: &Clip, mask: &crate::mask::Mask, tracker: &Tracker) -> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn smoothing_takes_out_jitter_but_keeps_the_motion() {
+        let s = |k: i64| Time::from_secs_f64(k as f64 / 25.0);
+        let mut t = Tracker::new(TrackMode::Position, [0.0, 0.0], [400.0, 300.0], Time::ZERO);
+        // Moving 3 px a frame to the right, with ±2 px of shake; then (after a gap) standing still.
+        let mut path: Vec<TrackSample> = (0..60).map(|k| TrackSample { at: s(k), pos: [3.0 * k as f32 + if k % 2 == 0 { 2.0 } else { -2.0 }, 50.0], score: 1.0 }).collect();
+        path.extend((80..100).map(|k| TrackSample { at: s(k), pos: [500.0, 50.0], score: 1.0 }));
+        t.points[0].path = path;
+        assert_eq!(t.frames(), t.raw_frames(), "no smoothing by default");
+        t.smooth = 4.0;
+        let f = t.frames();
+        let x = |k: usize| f[k].1[0][0];
+        for k in 0..60 {
+            // ±2 px of shake: almost gone in the middle, mostly gone at the ends; the line is kept.
+            let tol = if (6..54).contains(&k) { 0.2 } else { 0.6 };
+            assert!((x(k) - 3.0 * k as f32).abs() < tol, "frame {k}: {}", x(k));
+        }
+        assert!((60..80).all(|k| (x(k) - 500.0).abs() < 1e-3), "nothing smeared across the gap");
+        // The samples themselves are untouched, and old files load as unsmoothed.
+        assert_eq!(t.points[0].path[1].pos[0], 1.0);
+        let back: Tracker = serde_json::from_str(&serde_json::to_string(&Tracker { smooth: 0.0, ..t.clone() }).unwrap()).unwrap();
+        assert_eq!(back.smooth, 0.0);
+        let back: Tracker = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back.smooth, 4.0);
+    }
+
+    #[test]
     fn blade_follows_two_points_with_rotation_and_chosen_axes() {
         let s = |x: f64| Time::from_secs_f64(x);
         let mut t = Tracker::new(TrackMode::Transform, [100.0, 100.0], [400.0, 300.0], s(0.0));
@@ -1306,7 +1412,7 @@ mod tests {
         let s = |t: f64, p: [f32; 2]| TrackSample { at: secs(t), pos: p, score: 1.0 };
         let a = PointTrack { path: vec![s(0.0, [100.0, 100.0]), s(1.0, [100.0, 100.0])], ..Default::default() };
         let b = PointTrack { path: vec![s(0.0, [120.0, 100.0]), s(1.0, [100.0, 140.0])], ..Default::default() };
-        Tracker { mode: TrackMode::Transform, points: vec![a, b], grid: [0, 0] }
+        Tracker { mode: TrackMode::Transform, points: vec![a, b], grid: [0, 0], smooth: 0.0 }
     }
 
     #[test]
@@ -1344,7 +1450,7 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        Tracker { mode: TrackMode::CornerPin, points, grid: [0, 0] }
+        Tracker { mode: TrackMode::CornerPin, points, grid: [0, 0], smooth: 0.0 }
     }
 
     /// A mesh track warps another layer over its grid (on the frame, through the
@@ -1367,7 +1473,7 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        let tr = Tracker { mode: TrackMode::Mesh, points, grid: [2, 1] };
+        let tr = Tracker { mode: TrackMode::Mesh, points, grid: [2, 1], smooth: 0.0 };
         let w = follow_mesh(&tracked, &tr, layer, frame, &target, Axes::ALL).unwrap();
         // Keys at the target's source times (it starts at 1 s), shifted by the tracked clip's position.
         assert_eq!(w.keys.len(), 2);

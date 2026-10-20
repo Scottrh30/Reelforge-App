@@ -77,9 +77,13 @@
     <div class="dialog small" role="alertdialog" aria-modal="true" aria-labelledby="ask-title">
       <h2 id="ask-title">{ask.title}</h2>
       <p>{ask.text}</p>
+      {#if ask.field !== null}
+        <!-- svelte-ignore a11y_autofocus -->
+        <input class="field-in" type="text" bind:value={ask.field} autofocus spellcheck="false" aria-label={ask.title} onkeydown={(e) => e.key === "Enter" && ask.field?.trim() && ask.resolve(ask.buttons[0])} />
+      {/if}
       <div class="buttons">
         {#each [...ask.buttons].reverse() as b, i}
-          <button class:primary={i === ask.buttons.length - 1} onclick={() => ask.resolve(b)}>{b}</button>
+          <button class:primary={i === ask.buttons.length - 1} disabled={ask.field !== null && i === ask.buttons.length - 1 && !ask.field.trim()} onclick={() => ask.resolve(b)}>{b}</button>
         {/each}
       </div>
     </div>
@@ -189,5 +193,9 @@
   }
   .rec span {
     flex: 1;
+  }
+  .field-in {
+    width: 100%;
+    margin: 4px 0 12px;
   }
 </style>
