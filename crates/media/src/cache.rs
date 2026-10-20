@@ -64,6 +64,11 @@ impl FrameCache {
 
     /// Keep `frame` (which lasts `dur`).
     pub fn insert(&self, key: &CacheKey, frame: &VideoFrame, dur: Time) {
+        // Frames left on the graphics card aren't kept: each holds one of a small
+        // pool of shared textures, which playback needs back.
+        if matches!(frame.pixels, reelforge_core::frame::Pixels::Gpu(_)) {
+            return;
+        }
         let size = frame.byte_len();
         let mut g = self.inner.lock().unwrap();
         if size > g.budget {

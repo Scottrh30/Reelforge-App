@@ -298,11 +298,13 @@ export interface Prefs {
   hw_decode: boolean;
   cache_mb: number;
   native_decoders: boolean;
+  zero_copy: boolean;
 }
 
 export interface SettingsInfo {
   hw_api: string;
   hw_status: string;
+  zero_copy_status: string;
   cache_frames: number;
   cache_mb: number;
   cache_hits: number;

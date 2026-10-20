@@ -61,8 +61,14 @@ fn device() -> Option<*mut AVBufferRef> {
     let dev = slot.get_or_insert_with(|| {
         let Some(ty) = device_type() else { return Err("not supported on this platform".into()) };
         let mut ctx: *mut AVBufferRef = std::ptr::null_mut();
-        // SAFETY: valid out-pointer; null device name/options mean "the default adapter".
-        let r = unsafe { av_hwdevice_ctx_create(&mut ctx, ty, std::ptr::null(), std::ptr::null_mut(), 0) };
+        // On the compositor's graphics card when it can read shared frames, so
+        // decoded frames can stay in video memory (zero-copy); otherwise the default.
+        #[cfg(windows)]
+        let name = reelforge_core::frame::zero_copy::renderer().and_then(crate::zerocopy::adapter_index).and_then(|i| std::ffi::CString::new(i.to_string()).ok());
+        #[cfg(not(windows))]
+        let name: Option<std::ffi::CString> = None;
+        // SAFETY: valid out-pointer; a null device name means "the default adapter".
+        let r = unsafe { av_hwdevice_ctx_create(&mut ctx, ty, name.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()), std::ptr::null_mut(), 0) };
         if r < 0 || ctx.is_null() {
             log::info!("hardware decoding unavailable ({}: error {r}); using software", api_name());
             Err(format!("no {} device", api_name()))

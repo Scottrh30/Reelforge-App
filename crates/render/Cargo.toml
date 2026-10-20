@@ -15,3 +15,8 @@ log.workspace = true
 ab_glyph.workspace = true
 ttf-parser.workspace = true
 epaint_default_fonts.workspace = true
+
+# Zero-copy video: opening the hardware decoder's shared textures in Direct3D 12
+# (the same `windows` version wgpu-hal uses).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D12"] }

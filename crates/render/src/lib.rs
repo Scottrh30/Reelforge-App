@@ -29,7 +29,9 @@ use std::collections::HashMap;
 pub use wgpu;
 
 mod yuv;
-pub use reelforge_core::frame::YuvPlanes;
+#[cfg(windows)]
+mod interop;
+pub use reelforge_core::frame::{GpuFrame, YuvPlanes};
 
 /// A layer's pixels as the compositor receives them.
 #[derive(Clone, Copy)]
@@ -38,6 +40,8 @@ pub enum PixelData<'a> {
     Rgba(&'a [u8]),
     /// Decoded 4:2:0 YUV, converted to RGB on the GPU.
     Yuv(&'a YuvPlanes),
+    /// A frame the hardware decoder left on the graphics card (zero-copy).
+    Gpu(&'a GpuFrame),
 }
 
 impl PixelData<'_> {
@@ -47,6 +51,7 @@ impl PixelData<'_> {
             && match self {
                 PixelData::Rgba(px) => px.len() as u64 == size[0] as u64 * size[1] as u64 * 4,
                 PixelData::Yuv(y) => [y.width, y.height] == size && y.planes.len() == if y.layout.interleaved() { 2 } else { 3 },
+                PixelData::Gpu(g) => [g.width, g.height] == size,
             }
     }
 }
@@ -56,6 +61,7 @@ impl<'a> From<&'a reelforge_core::frame::Pixels> for PixelData<'a> {
         match p {
             reelforge_core::frame::Pixels::Rgba(b) => PixelData::Rgba(b),
             reelforge_core::frame::Pixels::Yuv(y) => PixelData::Yuv(y),
+            reelforge_core::frame::Pixels::Gpu(g) => PixelData::Gpu(g),
         }
     }
 }
@@ -243,6 +249,11 @@ pub struct Compositor {
     pub output_generation: u64,
     /// Converts YUV layers into their RGBA layer textures.
     yuv: yuv::YuvConverter,
+    /// Reads frames shared by the hardware decoder (Windows, Direct3D 12).
+    #[cfg(windows)]
+    interop: Option<interop::Importer>,
+    /// Layouts whose shared frames have been checked against the usual copy.
+    gpu_checked: std::collections::HashSet<reelforge_core::frame::YuvLayout>,
 }
 
 fn blend_state(mode: BlendMode) -> wgpu::BlendState {
@@ -514,6 +525,15 @@ impl Compositor {
             output_alpha_pipeline,
             deep_pipelines,
             yuv: yuv::YuvConverter::new(device, LAYER_FORMAT),
+            #[cfg(windows)]
+            interop: {
+                let i = interop::Importer::new(device);
+                if let Some(i) = &i {
+                    log::info!("zero-copy video: the compositor can read shared frames (adapter {:#x})", i.adapter());
+                }
+                i
+            },
+            gpu_checked: Default::default(),
             transparent: false,
             texture_layout,
             output_layout,
@@ -652,7 +672,7 @@ impl Compositor {
                 dimension: wgpu::TextureDimension::D2,
                 format: LAYER_FORMAT,
                 // Written by upload (RGBA) or by the YUV conversion pass.
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
             let view = texture.create_view(&Default::default());
@@ -678,8 +698,83 @@ impl Compositor {
                 let view = t.texture.create_view(&Default::default());
                 self.yuv.convert(&self.device, &self.queue, l.key, planes, &view);
             }
+            PixelData::Gpu(g) => {
+                let texture = t.texture.clone();
+                self.draw_gpu_frame(l.key, g, &texture);
+            }
         }
-        t.content_id = l.content_id;
+        if let Some(t) = self.layers.get_mut(&l.key) {
+            t.content_id = l.content_id;
+        }
+    }
+
+    /// The layer texture is filled from a frame on the graphics card: read
+    /// straight from the shared texture when that works, otherwise (other
+    /// platforms, zero-copy off or broken) copied back and converted as usual.
+    fn draw_gpu_frame(&mut self, key: u64, g: &GpuFrame, texture: &wgpu::Texture) {
+        use reelforge_core::frame::zero_copy;
+        let view = texture.create_view(&Default::default());
+        if zero_copy::enabled() && zero_copy::failure().is_none() {
+            match self.convert_shared(g, &view) {
+                // This compositor can't read shared frames: just copy it back.
+                None => {}
+                Some(Ok(())) => {
+                    // The first frame of each kind: compare with the usual copy.
+                    if let Some(check) = g.check.as_ref().filter(|_| !self.gpu_checked.contains(&g.layout)) {
+                        let shared = self.read_rgba8(texture, [g.width, g.height]);
+                        self.yuv.convert(&self.device, &self.queue, key, check, &view);
+                        let copied = self.read_rgba8(texture, [g.width, g.height]);
+                        match (shared, copied) {
+                            (Some(a), Some(b)) => {
+                                let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+                                if worst <= 2 {
+                                    log::info!("zero-copy video: {:?} frames match the usual copy (largest difference {worst})", g.layout);
+                                    self.gpu_checked.insert(g.layout);
+                                    zero_copy::set_checked();
+                                } else {
+                                    // The layer already shows the copied frame.
+                                    zero_copy::fail(format!("a {:?} frame read from the graphics card didn't match the usual copy (differences up to {worst} levels)", g.layout));
+                                }
+                            }
+                            _ => zero_copy::fail("couldn't read a frame back to check it"),
+                        }
+                        return;
+                    }
+                    zero_copy::count_frame();
+                    return;
+                }
+                Some(Err(e)) => zero_copy::fail(e),
+            }
+        }
+        if let Some(y) = g.check.clone().or_else(|| g.cpu()) {
+            self.yuv.convert(&self.device, &self.queue, key, &y, &view);
+        }
+    }
+
+    /// Read `g` straight from its shared texture: `None` if this compositor
+    /// can't (not Direct3D 12), else whether it worked.
+    #[cfg(windows)]
+    fn convert_shared(&mut self, g: &GpuFrame, view: &wgpu::TextureView) -> Option<Result<(), String>> {
+        let i = self.interop.as_mut()?;
+        Some(i.convert(&self.device, &self.queue, &self.yuv, g, view))
+    }
+
+    #[cfg(not(windows))]
+    fn convert_shared(&mut self, _g: &GpuFrame, _view: &wgpu::TextureView) -> Option<Result<(), String>> {
+        None
+    }
+
+    /// The graphics adapter (LUID) whose shared frames this compositor can
+    /// read directly, if it can (Windows, Direct3D 12).
+    pub fn zero_copy_adapter(&self) -> Option<u64> {
+        #[cfg(windows)]
+        {
+            self.interop.as_ref().map(|i| i.adapter())
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
     }
 
     fn upload_mask(&mut self, key: u64, m: &MaskInput) {
@@ -1209,7 +1304,12 @@ impl Compositor {
     /// Read the last rendered frame back as tightly packed RGBA8 (sRGB). Blocks on the GPU.
     pub fn read_output(&self) -> Option<Vec<u8>> {
         let t = self.targets.as_ref()?;
-        let [w, h] = t.size;
+        self.read_rgba8(&t.output, t.size)
+    }
+
+    /// Read the top-left `size` of an RGBA8 texture back to memory. Blocks on the GPU.
+    fn read_rgba8(&self, texture: &wgpu::Texture, size: [u32; 2]) -> Option<Vec<u8>> {
+        let [w, h] = size;
         let row = 4 * w;
         let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1220,7 +1320,7 @@ impl Compositor {
         });
         let mut enc = self.device.create_command_encoder(&Default::default());
         enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo { texture: &t.output, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );

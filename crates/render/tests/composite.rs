@@ -423,6 +423,38 @@ fn energy_blade_core_glow_colour_length_and_motion_blur() {
 }
 
 #[test]
+fn frames_on_the_graphics_card_fall_back_to_the_usual_copy() {
+    use reelforge_core::frame::{zero_copy, GpuFrame, Pixels, YuvLayout, YuvMatrix, YuvPlanes};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let Some(mut c) = setup() else { return };
+    // A 16×8 NV12 picture: a luma ramp, reddish chroma.
+    let (w, h) = (16u32, 8u32);
+    let y: Vec<u8> = (0..w * h).map(|i| 16 + (i % w) as u8 * 13).collect();
+    let uv: Vec<u8> = (0..(w / 2) * (h / 2)).flat_map(|_| [100u8, 200]).collect();
+    let planes = YuvPlanes { layout: YuvLayout::Nv12, width: w, height: h, planes: vec![y, uv], matrix: YuvMatrix::Bt709, full_range: false };
+    let draw = |c: &mut reelforge_render::Compositor, px: &Pixels, id| {
+        c.render([w, h], &[LayerInput { content_id: id, pixels: PixelData::from(px), ..layer(1, &[], [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal) }]);
+        c.read_output().unwrap()
+    };
+    let usual = draw(&mut c, &Pixels::Yuv(Arc::new(planes.clone())), 1);
+    // The same frame "left on the graphics card": with no way to share it here,
+    // the compositor copies it back (once) and draws the same picture.
+    let fetched = Arc::new(AtomicUsize::new(0));
+    let (p2, f2) = (planes.clone(), fetched.clone());
+    let g = GpuFrame::new(YuvLayout::Nv12, [w, h], YuvMatrix::Bt709, false, (0, 1, [w, h]), (0, 1), 0, Arc::new(()), Arc::new(move || {
+        f2.fetch_add(1, Ordering::Relaxed);
+        Some(p2.clone())
+    }));
+    let gpu = Pixels::Gpu(Arc::new(g));
+    assert_eq!(draw(&mut c, &gpu, 2), usual);
+    assert_eq!(draw(&mut c, &gpu, 3), usual);
+    assert_eq!(fetched.load(Ordering::Relaxed), 1, "copied back once, then reused");
+    assert_eq!(gpu.to_rgba().len(), (w * h * 4) as usize, "and readable on the CPU");
+    assert!(zero_copy::failure().is_none(), "not being able to share isn't a failure");
+}
+
+#[test]
 fn wipes_dips_and_iris() {
     use reelforge_render::{DrawItem, Wipe};
     let Some(mut c) = setup() else { return };

@@ -194,27 +194,230 @@ impl YuvPlanes {
     }
 }
 
-/// A picture's pixels: RGBA, or YUV planes to be converted when drawn.
+/// A picture's pixels: RGBA, YUV planes to be converted when drawn, or a
+/// frame still on the graphics card.
 #[derive(Clone, Debug)]
 pub enum Pixels {
     /// Tightly packed RGBA8, sRGB-encoded, straight alpha.
     Rgba(Arc<[u8]>),
     Yuv(Arc<YuvPlanes>),
+    /// Decoded by the graphics card and left there ("zero-copy").
+    Gpu(Arc<GpuFrame>),
 }
 
 impl Pixels {
+    /// Memory used in main memory (a frame on the graphics card uses next to none).
     pub fn byte_len(&self) -> usize {
         match self {
             Pixels::Rgba(b) => b.len(),
             Pixels::Yuv(y) => y.byte_len(),
+            Pixels::Gpu(_) => 256,
         }
     }
 
-    /// As RGBA8 (converted on the CPU if it's YUV).
+    /// As RGBA8 (converted on the CPU if it's YUV; copied back first if it's
+    /// on the graphics card, black if that fails).
     pub fn to_rgba(&self) -> Arc<[u8]> {
         match self {
             Pixels::Rgba(b) => b.clone(),
             Pixels::Yuv(y) => Arc::from(y.to_rgba()),
+            Pixels::Gpu(g) => match g.cpu() {
+                Some(y) => Arc::from(y.to_rgba()),
+                None => Arc::from(vec![0u8; g.width as usize * g.height as usize * 4]),
+            },
+        }
+    }
+
+    /// The YUV planes in main memory, if the pixels are YUV (copied back from
+    /// the graphics card if need be).
+    pub fn yuv(&self) -> Option<Arc<YuvPlanes>> {
+        match self {
+            Pixels::Rgba(_) => None,
+            Pixels::Yuv(y) => Some(y.clone()),
+            Pixels::Gpu(g) => g.cpu(),
+        }
+    }
+}
+
+/// A decoded 4:2:0 frame left on the graphics card: a texture the video
+/// decoder copied it into, shared with the compositor so the picture never
+/// travels through main memory. The handles are the platform's (on Windows,
+/// NT handles of a shared D3D11 texture and fence), so this crate needn't know
+/// any graphics API.
+pub struct GpuFrame {
+    /// `Nv12` or `P010`.
+    pub layout: YuvLayout,
+    /// The picture's size (the texture can be bigger).
+    pub width: u32,
+    pub height: u32,
+    pub matrix: YuvMatrix,
+    pub full_range: bool,
+    /// The shared texture's handle, and a number that identifies the texture
+    /// for as long as it exists (so the compositor can keep it open).
+    pub texture: u64,
+    pub texture_id: u64,
+    /// The texture's allocated size.
+    pub alloc: [u32; 2],
+    /// A shared fence, and the value it reaches once the frame is in the texture.
+    pub fence: u64,
+    pub fence_value: u64,
+    /// The graphics adapter the texture lives on (its LUID).
+    pub adapter: u64,
+    /// Keeps the texture from being reused while this frame (or a copy of it)
+    /// is held: the compositor clones it until the GPU has finished reading.
+    pub hold: Arc<dyn std::any::Any + Send + Sync>,
+    /// Copies the frame back to main memory, for anything that needs the pixels there.
+    pub download: Arc<dyn Fn() -> Option<YuvPlanes> + Send + Sync>,
+    cpu: std::sync::OnceLock<Option<Arc<YuvPlanes>>>,
+    /// For the first frames from a decoder: the same frame copied back the
+    /// usual way, for the compositor to check its own reading against.
+    pub check: Option<Arc<YuvPlanes>>,
+}
+
+impl GpuFrame {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        layout: YuvLayout,
+        size: [u32; 2],
+        matrix: YuvMatrix,
+        full_range: bool,
+        texture: (u64, u64, [u32; 2]),
+        fence: (u64, u64),
+        adapter: u64,
+        hold: Arc<dyn std::any::Any + Send + Sync>,
+        download: Arc<dyn Fn() -> Option<YuvPlanes> + Send + Sync>,
+    ) -> Self {
+        Self {
+            layout,
+            width: size[0],
+            height: size[1],
+            matrix,
+            full_range,
+            texture: texture.0,
+            texture_id: texture.1,
+            alloc: texture.2,
+            fence: fence.0,
+            fence_value: fence.1,
+            adapter,
+            hold,
+            download,
+            cpu: std::sync::OnceLock::new(),
+            check: None,
+        }
+    }
+
+    /// The frame in main memory (copied back once, on first use).
+    pub fn cpu(&self) -> Option<Arc<YuvPlanes>> {
+        self.cpu.get_or_init(|| (self.download)().map(Arc::new)).clone()
+    }
+
+    /// The same numbers for the conversion as the CPU path uses.
+    pub fn params(&self) -> YuvParams {
+        YuvPlanes { layout: self.layout, width: self.width, height: self.height, planes: Vec::new(), matrix: self.matrix, full_range: self.full_range }.params()
+    }
+
+    pub fn chroma_size(&self) -> (u32, u32) {
+        (self.width.div_ceil(2), self.height.div_ceil(2))
+    }
+}
+
+impl std::fmt::Debug for GpuFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GpuFrame({:?} {}x{} texture #{} fence {})", self.layout, self.width, self.height, self.texture_id, self.fence_value)
+    }
+}
+
+/// Zero-copy decoding's switch and state, shared by the decoders (which make
+/// [`GpuFrame`]s) and the compositor (which reads them).
+pub mod zero_copy {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    static ENABLED: AtomicBool = AtomicBool::new(true);
+    /// The compositor's graphics adapter (LUID), when it can read shared textures.
+    static RENDERER: AtomicU64 = AtomicU64::new(0);
+    static CAN_IMPORT: AtomicBool = AtomicBool::new(false);
+    static FAILED: Mutex<Option<String>> = Mutex::new(None);
+    static FRAMES: AtomicU64 = AtomicU64::new(0);
+    static CHECKED: AtomicBool = AtomicBool::new(false);
+    static DECODER_NOTE: Mutex<Option<String>> = Mutex::new(None);
+
+    /// The setting (on by default).
+    pub fn set_enabled(on: bool) {
+        ENABLED.store(on, Ordering::Relaxed);
+    }
+    pub fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+
+    /// The compositor can read shared textures made on adapter `luid` (or not: `None`).
+    pub fn set_renderer(luid: Option<u64>) {
+        RENDERER.store(luid.unwrap_or(0), Ordering::Relaxed);
+        CAN_IMPORT.store(luid.is_some(), Ordering::Relaxed);
+    }
+    pub fn renderer() -> Option<u64> {
+        CAN_IMPORT.load(Ordering::Relaxed).then(|| RENDERER.load(Ordering::Relaxed))
+    }
+
+    /// Something went wrong (the check didn't match, a texture wouldn't open):
+    /// zero-copy is off until Reelforge restarts.
+    pub fn fail(reason: impl Into<String>) {
+        let reason = reason.into();
+        log::warn!("zero-copy decoding switched off: {reason}");
+        let mut f = FAILED.lock().unwrap();
+        if f.is_none() {
+            *f = Some(reason);
+        }
+    }
+    pub fn failure() -> Option<String> {
+        FAILED.lock().unwrap().clone()
+    }
+
+    /// Should decoders hand over frames on the graphics card?
+    pub fn usable() -> bool {
+        enabled() && renderer().is_some() && FAILED.lock().unwrap().is_none()
+    }
+
+    /// Why the decoders aren't using it, when it's their side (say, a different adapter).
+    pub fn note_decoder(reason: impl Into<String>) {
+        *DECODER_NOTE.lock().unwrap() = Some(reason.into());
+    }
+
+    /// A frame was drawn straight from the graphics card.
+    pub fn count_frame() {
+        FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn frames() -> u64 {
+        FRAMES.load(Ordering::Relaxed)
+    }
+    /// The compositor's check of its reading against the usual copy passed.
+    pub fn set_checked() {
+        CHECKED.store(true, Ordering::Relaxed);
+    }
+    pub fn checked() -> bool {
+        CHECKED.load(Ordering::Relaxed)
+    }
+
+    /// One line for the settings window.
+    pub fn status() -> String {
+        if !enabled() {
+            return "off".into();
+        }
+        if let Some(f) = failure() {
+            return format!("off: {f}");
+        }
+        if renderer().is_none() {
+            return "not available here (Windows with Direct3D 12 and hardware decoding)".into();
+        }
+        if let Some(n) = DECODER_NOTE.lock().unwrap().clone() {
+            if frames() == 0 {
+                return format!("not used: {n}");
+            }
+        }
+        match (frames(), checked()) {
+            (0, _) => "ready (used for hardware-decoded video in the viewer)".into(),
+            (n, true) => format!("working: {n} frames shown straight from the graphics card, checked against the usual copy"),
+            (n, false) => format!("working: {n} frames shown straight from the graphics card"),
         }
     }
 }

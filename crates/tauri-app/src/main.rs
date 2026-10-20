@@ -342,6 +342,7 @@ fn dismiss_recovery(index: usize) -> Res<()> {
 struct SettingsInfo {
     hw_api: &'static str,
     hw_status: String,
+    zero_copy_status: String,
     cache_frames: usize,
     cache_mb: usize,
     cache_hits: f32,
@@ -367,6 +368,7 @@ fn settings_info() -> Res<SettingsInfo> {
         SettingsInfo {
             hw_api: reelforge_media::hw::api_name(),
             hw_status: reelforge_media::hw::status(),
+            zero_copy_status: reelforge_core::frame::zero_copy::status(),
             cache_frames: frames,
             cache_mb: used >> 20,
             cache_hits: hits,

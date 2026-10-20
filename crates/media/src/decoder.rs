@@ -51,6 +51,7 @@ impl VideoFrame {
         match &self.pixels {
             Pixels::Yuv(y) => y.luma(),
             Pixels::Rgba(b) => reelforge_core::track::luma_of_rgba(b),
+            Pixels::Gpu(g) => g.cpu().map(|y| y.luma()).unwrap_or_else(|| vec![0.0; g.width as usize * g.height as usize]),
         }
     }
 }
@@ -84,6 +85,13 @@ impl DecoderHandle {
     /// `max_size` caps the output resolution (keeping aspect) so the preview
     /// doesn't pay for full 4K conversions. Use `None` for full resolution.
     pub fn spawn(path: &Path, max_size: Option<(u32, u32)>, queue: usize) -> Result<Self> {
+        Self::spawn_with(path, max_size, queue, false)
+    }
+
+    /// [`Self::spawn`]; with `gpu_frames`, hardware-decoded frames may stay on the
+    /// graphics card ([`Pixels::Gpu`], zero-copy) when the compositor can read
+    /// them there. Only for frames that go straight to the viewer.
+    pub fn spawn_with(path: &Path, max_size: Option<(u32, u32)>, queue: usize, gpu_frames: bool) -> Result<Self> {
         init();
         let (cmd_tx, cmd_rx) = bounded(16);
         let (frame_tx, frame_rx) = bounded(queue.max(1));
@@ -96,7 +104,8 @@ impl DecoderHandle {
             .name(format!("decode:{}", path.file_name().unwrap_or_default().to_string_lossy()))
             .spawn(move || {
                 let state = match DecodeState::open(&owned, max_size, eof_thread) {
-                    Ok(s) => {
+                    Ok(mut s) => {
+                        s.gpu_frames = gpu_frames;
                         let _ = ready_tx.send(Ok(s.frame_dur));
                         s
                     }
@@ -229,6 +238,11 @@ struct DecodeState {
     position: Time,
     /// Packets read ahead while finding a keyframe after a seek, to decode first.
     pending: std::collections::VecDeque<ff::Packet>,
+    /// Hand hardware frames over on the graphics card when possible (zero-copy).
+    gpu_frames: bool,
+    /// The first such frame also carries the usual copy, for the compositor to check.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    gpu_checked: bool,
 }
 
 /// Open a decoder for `params`: on the GPU if `hw`, else in software (multi-threaded).
@@ -309,6 +323,8 @@ impl DecodeState {
             hw_format,
             position: Time::ZERO,
             pending: Default::default(),
+            gpu_frames: false,
+            gpu_checked: false,
         })
     }
 
@@ -540,10 +556,33 @@ impl DecodeState {
     }
 
     fn convert(&mut self, src: &ff::frame::Video, pts: Time) -> Result<VideoFrame> {
+        // SAFETY: reading the format field of a valid frame.
+        let on_gpu = self.hw_format.is_some_and(|f| unsafe { (*src.as_ptr()).format } == f);
+        // Zero-copy: leave the frame on the graphics card for the compositor.
+        #[cfg(windows)]
+        if on_gpu && self.gpu_frames && reelforge_core::frame::zero_copy::usable() {
+            let (w, h) = (src.width(), src.height());
+            let matrix = yuv_matrix(crate::color::effective_space(src.color_space(), h));
+            let full_range = src.color_range() == ff::util::color::Range::JPEG;
+            // SAFETY: `src` is a decoded D3D11VA frame.
+            if let Some(mut g) = unsafe { crate::zerocopy::export(src.as_ptr(), [w, h], matrix, full_range) } {
+                if !self.gpu_checked {
+                    // The first one also comes the usual way, to be checked against.
+                    let mut sw = ff::frame::Video::empty();
+                    // SAFETY: as above, into an empty frame.
+                    if unsafe { crate::hw::download(src.as_ptr(), sw.as_mut_ptr()) } {
+                        if let Some(layout) = yuv_layout(sw.format()) {
+                            g.check = Some(Arc::new(YuvPlanes { layout, width: w, height: h, planes: pack_planes(&sw, layout), matrix, full_range }));
+                        }
+                    }
+                    self.gpu_checked = true;
+                }
+                return Ok(VideoFrame { pts, width: w, height: h, pixels: Pixels::Gpu(Arc::new(g)), generation: self.generation });
+            }
+        }
         // GPU frames are copied back to memory first (as NV12 or similar).
         let downloaded;
-        // SAFETY: reading the format field of a valid frame.
-        let src = if self.hw_format.is_some_and(|f| unsafe { (*src.as_ptr()).format } == f) {
+        let src = if on_gpu {
             let mut sw = ff::frame::Video::empty();
             // SAFETY: `src` is a decoded hardware frame and `sw` an empty frame.
             if !unsafe { crate::hw::download(src.as_ptr(), sw.as_mut_ptr()) } {
@@ -562,11 +601,7 @@ impl DecodeState {
         // 4:2:0 video stays YUV: the GPU converts it as it draws. Shrinking (for the
         // viewer) is a cheap YUV-to-YUV scale; no colour conversion happens here.
         if let Some(layout) = yuv_layout(fmt) {
-            let matrix = match space {
-                ff::util::color::Space::BT709 => YuvMatrix::Bt709,
-                ff::util::color::Space::BT2020NCL | ff::util::color::Space::BT2020CL => YuvMatrix::Bt2020,
-                _ => YuvMatrix::Bt601,
-            };
+            let matrix = yuv_matrix(space);
             let full_range = range == ff::util::color::Range::JPEG || fmt == ff::format::Pixel::YUVJ420P;
             let (planes, layout, w, h) = if (dw, dh) == (sw, sh) {
                 (pack_planes(src, layout), layout, sw, sh)
@@ -602,6 +637,15 @@ impl DecodeState {
             packed.extend_from_slice(&data[y * stride..y * stride + row]);
         }
         Ok(VideoFrame::from_rgba(pts, dw, dh, packed.into(), self.generation))
+    }
+}
+
+/// The YUV-to-RGB matrix for a colour space.
+fn yuv_matrix(space: ff::util::color::Space) -> YuvMatrix {
+    match space {
+        ff::util::color::Space::BT709 => YuvMatrix::Bt709,
+        ff::util::color::Space::BT2020NCL | ff::util::color::Space::BT2020CL => YuvMatrix::Bt2020,
+        _ => YuvMatrix::Bt601,
     }
 }
 

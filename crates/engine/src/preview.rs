@@ -117,6 +117,9 @@ impl Preview {
     pub fn new(gpu: Option<(wgpu::Device, wgpu::Queue)>) -> Self {
         let gpu = gpu.map(|(device, queue)| {
             let compositor = Compositor::new(&device, &queue);
+            // Hardware-decoded frames can stay on the graphics card when the
+            // compositor can read them there (Windows, Direct3D 12).
+            reelforge_core::frame::zero_copy::set_renderer(compositor.zero_copy_adapter());
             let scene = Scene::new(&device, &queue);
             Gpu { device, queue, compositor, scene, cache_render: None }
         });

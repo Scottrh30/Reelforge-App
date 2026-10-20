@@ -3262,6 +3262,7 @@ dependencies = [
 name = "reelforge-core"
 version = "0.1.0"
 dependencies = [
+ "log",
  "serde",
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
@@ -3306,6 +3307,7 @@ dependencies = [
  "reelforge-codecs",
  "reelforge-core",
  "serde",
+ "windows",
 ]
 
 [[package]]
@@ -3320,6 +3322,7 @@ dependencies = [
  "reelforge-core",
  "ttf-parser",
  "wgpu",
+ "windows",
 ]
 
 [[package]]

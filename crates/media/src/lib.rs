@@ -9,6 +9,8 @@ pub mod color;
 pub mod decoder;
 pub mod encode;
 pub mod hw;
+#[cfg(windows)]
+mod zerocopy;
 pub mod mixer;
 pub mod native;
 pub mod probe;

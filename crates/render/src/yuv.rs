@@ -5,7 +5,7 @@
 //! frame's matrix and range, into the layer texture the compositor samples.
 //! See `yuv.wgsl` and `reelforge_core::frame` (the CPU reference).
 
-use reelforge_core::frame::YuvPlanes;
+use reelforge_core::frame::{YuvLayout, YuvParams, YuvPlanes};
 use std::collections::HashMap;
 
 /// Size of the shader's `Params` uniform.
@@ -90,27 +90,43 @@ impl YuvConverter {
                 wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             );
         }
-        let p = yuv.params();
-        let mut u = [0u8; PARAMS_SIZE as usize];
-        let words: [u32; 12] = [
-            p.shift,
-            interleaved as u32,
-            p.y_off.to_bits(),
-            p.y_scale.to_bits(),
-            p.c_off.to_bits(),
-            p.c_scale.to_bits(),
-            p.kr.to_bits(),
-            p.kb.to_bits(),
-            yuv.width,
-            yuv.height,
-            cw,
-            ch,
-        ];
-        for (i, w) in words.iter().enumerate() {
-            u[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
-        }
-        queue.write_buffer(&set.params, 0, &u);
+        queue.write_buffer(&set.params, 0, &params_bytes(&yuv.params(), interleaved, [yuv.width, yuv.height], [cw, ch]));
+        self.draw(device, queue, &set.bind_group, target);
+    }
 
+    /// Convert planes that are already on the GPU (a frame shared by the video
+    /// decoder; see `interop`) into `target`. `planes` are the luma plane and
+    /// the interleaved chroma plane, as unsigned-integer textures.
+    #[allow(dead_code)]
+    pub fn bind_planes(&self, device: &wgpu::Device, y: &wgpu::TextureView, uv: &wgpu::TextureView) -> (wgpu::BindGroup, wgpu::Buffer) {
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("yuv params (shared frame)"),
+            size: PARAMS_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("yuv planes (shared frame)"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(y) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(uv) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(uv) },
+                wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
+            ],
+        });
+        (bind_group, params)
+    }
+
+    /// Run the conversion with a bind group from [`Self::bind_planes`].
+    #[allow(dead_code)]
+    pub fn convert_bound(&self, device: &wgpu::Device, queue: &wgpu::Queue, group: &(wgpu::BindGroup, wgpu::Buffer), p: &YuvParams, layout: YuvLayout, size: [u32; 2], target: &wgpu::TextureView) {
+        let csize = [size[0].div_ceil(2), size[1].div_ceil(2)];
+        queue.write_buffer(&group.1, 0, &params_bytes(p, layout.interleaved(), size, csize));
+        self.draw(device, queue, &group.0, target);
+    }
+
+    fn draw(&self, device: &wgpu::Device, queue: &wgpu::Queue, bind_group: &wgpu::BindGroup, target: &wgpu::TextureView) {
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("yuv to rgb") });
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -124,7 +140,7 @@ impl YuvConverter {
                 ..Default::default()
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &set.bind_group, &[]);
+            pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         queue.submit([enc.finish()]);
@@ -176,4 +192,27 @@ impl YuvConverter {
     pub fn retain(&mut self, keep: impl Fn(u64) -> bool) {
         self.sets.retain(|k, _| keep(*k));
     }
+}
+
+/// The shader's `Params`.
+fn params_bytes(p: &YuvParams, interleaved: bool, size: [u32; 2], csize: [u32; 2]) -> [u8; PARAMS_SIZE as usize] {
+    let mut u = [0u8; PARAMS_SIZE as usize];
+    let words: [u32; 12] = [
+        p.shift,
+        interleaved as u32,
+        p.y_off.to_bits(),
+        p.y_scale.to_bits(),
+        p.c_off.to_bits(),
+        p.c_scale.to_bits(),
+        p.kr.to_bits(),
+        p.kb.to_bits(),
+        size[0],
+        size[1],
+        csize[0],
+        csize[1],
+    ];
+    for (i, w) in words.iter().enumerate() {
+        u[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    u
 }

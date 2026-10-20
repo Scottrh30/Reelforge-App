@@ -37,7 +37,9 @@ impl FrameSource {
     /// Like [`Self::open`], but frames go through the shared memory cache, so
     /// revisiting a moment that any decoder of this file has shown is instant.
     pub fn open_cached(path: &Path, max_size: Option<(u32, u32)>) -> Result<Self> {
-        let mut s = Self::open(path, max_size)?;
+        // These feed the viewer: hardware frames may stay on the graphics card.
+        let decoder = DecoderHandle::spawn_with(path, max_size, 8, true)?;
+        let mut s = Self { decoder, generation: 0, ahead: VecDeque::new(), current: None, pending_seek: Some(Time::ZERO), cache: None, hit: None };
         s.cache = Some(CacheKey { path: path.to_owned(), max_size });
         Ok(s)
     }

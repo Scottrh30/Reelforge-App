@@ -237,6 +237,26 @@ What works now:
 - **Hardware decoding**: video is decoded on the graphics card where possible (D3D11VA on
   Windows, VAAPI on Linux, VideoToolbox on macOS), falling back to software automatically if
   the GPU can't handle a file
+- **Zero-copy** (Windows; Settings → **Keep decoded video on the graphics card**, on by
+  default): hardware-decoded video for the viewer never leaves the graphics card. Normally each
+  frame is copied from video memory to main memory and uploaded again for drawing (about
+  1.5 GB/s at 4K60). Instead the decoder copies it, within video memory, into a texture shared
+  with the compositor, and the compositor reads it from there:
+  - FFmpeg's D3D11VA device is created on the same graphics card as the compositor's
+    Direct3D 12 device (matched by adapter LUID), from which each frame is copied into a pooled
+    NV12/P010 texture with an NT handle, and a shared fence is signalled. The compositor opens
+    the texture in Direct3D 12, wraps its two planes as ordinary wgpu textures, waits on the
+    fence, and runs the usual YUV-to-RGB pass. The decoder also waits for each copy (up to a
+    quarter of a second) before handing it over, so the viewer can never stall on it
+  - The first frame of each kind (8-bit NV12, 10-bit P010) also comes the usual way, and the
+    compositor checks the two pictures are the same. If they aren't, or anything fails (a
+    texture won't open, the decoder is on a different graphics card), zero-copy switches itself
+    off until Reelforge restarts and everything carries on the usual way. Settings shows
+    whether it's working, how many frames it has shown, or why it's off
+  - Only for the viewer: tracking, thumbnails, proxies and export still get frames in memory,
+    and frames left on the graphics card aren't kept in the frame cache (they hold one of a
+    pool of shared textures, at most 640 MB). Other formats (4:2:2, 4:4:4) and other systems
+    (Linux, macOS) work as before
 - **Frame cache**: decoded frames are kept in memory (1 GB by default), shared between clips
   of the same file, so scrubbing back over footage you've already seen is instant
 - **YUV on the GPU**: most video (4:2:0, 8- or 10-bit, from software or hardware decoders) now
@@ -1104,5 +1124,5 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    presets.
 7. ~~**Performance**: proxy media, a frame cache, hardware decode, YUV frames converted on the
    GPU, render preview~~
-   (still to add: true zero-copy from the hardware decoder, which needs D3D11/Vulkan texture
-   sharing with wgpu and a real Windows GPU to build against; render cache on disk)
+   (zero-copy from the hardware decoder is in for Windows, D3D11VA to Direct3D 12, but is
+   still to be tried on real hardware; VAAPI to Vulkan on Linux; render cache on disk)
