@@ -8,7 +8,7 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
 }
 
 fn layer<'a>(key: u64, pixels: &'a [u8], px: [u32; 2], size: [f32; 2], t: Transform, blend: BlendMode) -> LayerInput<'a> {
-    LayerInput { key, content_id: 1, pixels: PixelData::Rgba(pixels), pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new(), mask: None, wipe: None, mesh: None }
+    LayerInput { key, content_id: 1, pixels: PixelData::Rgba(pixels), pixel_size: px, layer_size: size, transform: t, blend, effects: Vec::new(), mask: None, wipe: None, mesh: None , space: None}
 }
 
 fn px(img: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
@@ -104,7 +104,7 @@ fn textures_are_cached_by_content_id() {
     let red = solid(4, 4, [255, 0, 0, 255]);
     let green = solid(4, 4, [0, 255, 0, 255]);
     fn mk(pixels: &[u8], id: u64) -> LayerInput<'_> {
-        LayerInput { key: 7, content_id: id, pixels: PixelData::Rgba(pixels), pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None }
+        LayerInput { key: 7, content_id: id, pixels: PixelData::Rgba(pixels), pixel_size: [4, 4], layer_size: [4.0, 4.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None , space: None}
     }
     c.render([4, 4], &[mk(&red, 1)]);
     c.render([4, 4], &[mk(&green, 1)]); // same content id: not re-uploaded
@@ -455,6 +455,52 @@ fn frames_on_the_graphics_card_fall_back_to_the_usual_copy() {
 }
 
 #[test]
+fn layers_in_3d_perspective_and_light() {
+    use reelforge_core::space3d::{layer_space, Camera, Light, Scene3d};
+    let Some(mut c) = setup() else { return };
+    let frame = [200u32, 100u32];
+    let f = [200.0, 100.0];
+    let black = solid(4, 4, [0, 0, 0, 255]);
+    let white = solid(64, 64, [255, 255, 255, 255]);
+    let cam = Camera::default_for(f);
+    let draw = |c: &mut reelforge_render::Compositor, t: Transform, sp: &reelforge_core::space3d::LayerSpace| {
+        c.render(frame, &[layer(1, &black, [4, 4], f, Transform::default(), BlendMode::Normal), LayerInput { space: Some(sp), ..layer(2, &white, [64, 64], [64.0, 64.0], t, BlendMode::Normal) }]);
+        c.read_output().unwrap()
+    };
+    // At Z = 0: the same 64-pixel square as in 2D.
+    let t = Transform { three_d: true, ..Default::default() };
+    let unlit = Scene3d { camera: cam, lights: Vec::new() };
+    let out = draw(&mut c, t, &layer_space(&t, [64.0, 64.0], &unlit));
+    assert!(near(px(&out, 200, 100 + 30, 50), [255, 255, 255]) && near(px(&out, 200, 100 + 34, 50), [0, 0, 0]));
+    // Twice as far from the camera: half the size.
+    let far = Transform { three_d: true, depth: cam.focal(), ..Default::default() };
+    let out = draw(&mut c, far, &layer_space(&far, [64.0, 64.0], &unlit));
+    assert!(near(px(&out, 200, 100 + 14, 50), [255, 255, 255]) && near(px(&out, 200, 100 + 18, 50), [0, 0, 0]), "{:?}", px(&out, 200, 100 + 18, 50));
+    // Behind the camera: nothing drawn (and no garbage).
+    let behind = Transform { three_d: true, depth: -cam.focal() * 3.0, ..Default::default() };
+    let out = draw(&mut c, behind, &layer_space(&behind, [64.0, 64.0], &unlit));
+    assert!(near(px(&out, 200, 100, 50), [0, 0, 0]) && near(px(&out, 200, 10, 10), [0, 0, 0]));
+
+    // A red spot light aimed at the middle: the middle is red, the edge of the square dark.
+    let spot = Light { kind: 1, color: [1.0, 0.0, 0.0], position: [0.0, 0.0, -200.0], direction: [0.0, 0.0, 1.0], cone: [(8f32).to_radians().cos(), (4f32).to_radians().cos()], falloff: 0, radius: 1000.0 };
+    let lit = Scene3d { camera: cam, lights: vec![spot] };
+    let out = draw(&mut c, t, &layer_space(&t, [64.0, 64.0], &lit));
+    let mid = px(&out, 200, 100, 50);
+    assert!(mid[0] > 240 && mid[1] < 10 && mid[2] < 10, "red in the middle: {mid:?}");
+    assert!(px(&out, 200, 100 + 28, 50 + 28)[0] < 20, "dark outside the cone: {:?}", px(&out, 200, 128, 78));
+    // Plus a dim blue ambient light: the edge picks that up.
+    let ambient = Light { kind: 3, color: [0.0, 0.0, 0.2], ..spot };
+    let lit = Scene3d { camera: cam, lights: vec![spot, ambient] };
+    let out = draw(&mut c, t, &layer_space(&t, [64.0, 64.0], &lit));
+    let edge = px(&out, 200, 128, 78);
+    assert!(edge[2] > 100 && edge[0] < 20, "ambient blue: {edge:?}");
+    // Unlit layers ignore the lights.
+    let off = Transform { lit: false, ..t };
+    let out = draw(&mut c, off, &layer_space(&off, [64.0, 64.0], &lit));
+    assert!(near(px(&out, 200, 128, 78), [255, 255, 255]));
+}
+
+#[test]
 fn wipes_dips_and_iris() {
     use reelforge_render::{DrawItem, Wipe};
     let Some(mut c) = setup() else { return };
@@ -655,7 +701,7 @@ fn yuv_layers_convert_like_the_cpu_reference() {
                 effects: Vec::new(),
                 mask: None,
                 wipe: None,
-                mesh: None,
+                mesh: None, space: None
             };
             c.render([w, h], &[l]);
             let got = c.read_output().unwrap();

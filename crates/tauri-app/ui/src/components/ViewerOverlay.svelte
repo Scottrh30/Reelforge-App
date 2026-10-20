@@ -188,6 +188,33 @@
     el.addEventListener("pointerup", up);
   }
 
+  // A camera's or light's points: drag one across the camera's view.
+  function dragScenePoint(e: PointerEvent, which: string) {
+    if (e.button !== 0 || !ins || app.live?.playing) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = ins.id;
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const [sx, sy] = [e.clientX, e.clientY];
+    const pump = livePump();
+    let first = true;
+    const move = (ev: PointerEvent) => {
+      const d: Pt = [(ev.clientX - sx) / fit.k, (ev.clientY - sy) / fit.k];
+      const start = first;
+      first = false;
+      pump.push(() => api.scenePointDrag(id, which, d, start));
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      await pump.done();
+      await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
   // Freehand: each click adds a point; clicking the first one (or Enter, or a double-click) closes it.
   let hover = $state<Pt | null>(null);
   function drawClick(e: MouseEvent) {
@@ -208,6 +235,29 @@
   }
 
 </script>
+
+{#if ins && ins.scene_points.length}
+  <svg class="overlay" aria-hidden="true">
+    {#if ins.scene_points.length === 2}
+      {@const [a, b] = ins.scene_points.map((p) => [fit.x + p.at[0] * fit.k, fit.y + p.at[1] * fit.k])}
+      <line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} class="bladeaxis" />
+    {/if}
+    {#each ins.scene_points as p}
+      {@const x = fit.x + p.at[0] * fit.k}
+      {@const y = fit.y + p.at[1] * fit.k}
+      {#if p.which === "position"}
+        <circle cx={x} cy={y} r="9" class="scenept light" onpointerdown={(e) => dragScenePoint(e, p.which)} role="presentation"><title>{ins.kind === "light" ? "The light" : "The camera"}: drag to move it across the view</title></circle>
+        {#each [0, 45, 90, 135, 180, 225, 270, 315] as a}
+          <line x1={x + Math.cos((a * Math.PI) / 180) * 12} y1={y + Math.sin((a * Math.PI) / 180) * 12} x2={x + Math.cos((a * Math.PI) / 180) * 16} y2={y + Math.sin((a * Math.PI) / 180) * 16} class="ray" />
+        {/each}
+      {:else}
+        <circle cx={x} cy={y} r="7" class="scenept target" onpointerdown={(e) => dragScenePoint(e, p.which)} role="presentation"><title>Point of interest: drag to aim</title></circle>
+        <line x1={x - 11} y1={y} x2={x + 11} y2={y} class="ray" />
+        <line x1={x} y1={y - 11} x2={x} y2={y + 11} class="ray" />
+      {/if}
+    {/each}
+  </svg>
+{/if}
 
 {#if ins && map && inv}
   <svg class="overlay" class:drawing={!!drawing} aria-hidden="true">
@@ -452,6 +502,21 @@
   .draw {
     fill: none;
     stroke-width: 1.5;
+  }
+  .scenept {
+    stroke: #ffd246;
+    stroke-width: 2;
+    fill: rgba(0, 0, 0, 0.45);
+    pointer-events: all;
+    cursor: move;
+  }
+  .scenept.light {
+    fill: rgba(255, 210, 70, 0.35);
+  }
+  .ray {
+    stroke: #ffd246;
+    stroke-width: 1.5;
+    pointer-events: none;
   }
   .bladeline {
     stroke: transparent;

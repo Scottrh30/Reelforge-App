@@ -50,6 +50,8 @@ struct Gathered {
     wipe: Option<Wipe>,
     /// Stretched over a bending grid (a mesh warp).
     mesh: Option<reelforge_core::meshwarp::MeshShape>,
+    /// A 3D layer, as the camera sees it.
+    space: Option<reelforge_core::space3d::LayerSpace>,
 }
 
 /// Masks are rasterised at most this big (longer side); they're soft-edged
@@ -128,12 +130,14 @@ impl Scene {
     ) -> Result<u64> {
         let Some(s) = project.sequences.get(seq) else { return Ok(0) };
         let frame_size = [s.width.max(2), s.height.max(2)];
+        // The camera and lights, for 3D layers.
+        let scene3d = project.scene3d_at(seq, t);
         let mut items = Vec::new();
         for item in project.video_layers_at(seq, t) {
             match item {
-                VideoItem::Single(l) => items.extend(self.gather(project, &l, t, frame_size, provider, depth)?.map(Item::Single)),
+                VideoItem::Single(l) => items.extend(self.gather(project, &l, t, frame_size, &scene3d, provider, depth)?.map(Item::Single)),
                 VideoItem::Dissolve { from, to, mix, kind } => {
-                    match (self.gather(project, &from, t, frame_size, provider, depth)?, self.gather(project, &to, t, frame_size, provider, depth)?) {
+                    match (self.gather(project, &from, t, frame_size, &scene3d, provider, depth)?, self.gather(project, &to, t, frame_size, &scene3d, provider, depth)?) {
                         (Some(mut a), Some(mut b)) => {
                             if kind.is_slide() || kind.is_push() {
                                 // Moves only: the incoming clip over the outgoing one.
@@ -159,6 +163,7 @@ impl Scene {
             }
         }
 
+        sort_3d(&mut items);
         let signature = signature(frame_size, &items);
         if unchanged_from == Some(signature) && compositor.output_size().is_some() {
             return Ok(signature);
@@ -183,7 +188,7 @@ impl Scene {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn gather(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Gathered>> {
+    fn gather(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Gathered>> {
         let picture = match l.clip.nested {
             Some(inner) => self.nested_picture(project, l.clip.id, inner, l.source_time, provider, depth)?,
             None => provider.picture(project, l, frame_size)?,
@@ -192,7 +197,19 @@ impl Scene {
         let mask = self.mask_for(l.clip, l.clip.source_time(t), picture.size);
         // Keyed to the clip's own time, like its transform (a still's media time is always 0).
         let mesh = l.clip.mesh_at(t);
-        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects: l.effects.clone(), mask, wipe: None, mesh }))
+        let mut effects = l.effects.clone();
+        // A 3D layer (not mesh-warped or corner-pinned): seen through the camera,
+        // blurred by its depth of field.
+        let space = (l.transform.three_d && mesh.is_none() && l.transform.pin.is_none()).then(|| reelforge_core::space3d::layer_space(&l.transform, picture.size, scene3d));
+        if let Some(sp) = &space {
+            let blur = sp.blur(&scene3d.camera);
+            if blur > 0.25 {
+                let mut values = [0.0; reelforge_core::effects::MAX_PARAMS];
+                values[0] = blur;
+                effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None });
+            }
+        }
+        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, wipe: None, mesh, space }))
     }
 
     /// The clip's masks at source time `src` as an image (made again only when they change).
@@ -265,6 +282,7 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
     let Some(s) = project.sequences.get(seq) else { return };
     let frame_size = [s.width.max(2), s.height.max(2)];
     frame_size.hash(h);
+    let scene3d = project.scene3d_at(seq, t);
     let layer = |l: &Layer, h: &mut DefaultHasher| {
         let clip = l.clip;
         clip.id.hash(h);
@@ -306,6 +324,11 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
         }
         tr.pin.map(|p| p.0.map(|c| c.map(f32::to_bits))).hash(h);
         hash_mesh(clip.mesh_at(t).as_ref(), h);
+        if tr.three_d {
+            // Where it is and how it's lit depends on the camera and lights too.
+            hash_space(Some(&reelforge_core::space3d::layer_space(tr, layer_size, &scene3d)), h);
+            scene3d.camera.dof.map(|(f, a)| (f.to_bits(), a.to_bits())).hash(h);
+        }
         l.blend.hash(h);
         for e in &l.effects {
             e.kind.hash(h);
@@ -354,6 +377,52 @@ fn input(g: &Gathered) -> LayerInput<'_> {
         mask: g.mask.as_ref().map(|(hash, img)| MaskInput { content_id: *hash, pixels: &img.data, size: [img.width, img.height] }),
         wipe: g.wipe,
         mesh: g.mesh.clone(),
+        space: g.space.as_ref(),
+    }
+}
+
+/// 3D layers next to each other in the stack are drawn furthest first (2D
+/// layers between them keep their places, as in HitFilm).
+fn sort_3d(items: &mut [Item]) {
+    let is_3d = |i: &Item| matches!(i, Item::Single(g) if g.space.is_some());
+    let mut start = 0;
+    while start < items.len() {
+        if !is_3d(&items[start]) {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end < items.len() && is_3d(&items[end]) {
+            end += 1;
+        }
+        // Stable, so layers at the same depth keep their track order.
+        items[start..end].sort_by(|a, b| {
+            let d = |i: &Item| match i {
+                Item::Single(g) => g.space.as_ref().map_or(0.0, |s| s.depth),
+                _ => 0.0,
+            };
+            d(b).total_cmp(&d(a))
+        });
+        start = end;
+    }
+}
+
+fn hash_space(s: Option<&reelforge_core::space3d::LayerSpace>, h: &mut DefaultHasher) {
+    if let Some(s) = s {
+        for v in s.mvp.iter().flatten() {
+            v.to_bits().hash(h);
+        }
+        if let Some(l) = &s.lighting {
+            for v in l.origin.iter().chain(&l.u).chain(&l.v).chain(&l.camera) {
+                v.to_bits().hash(h);
+            }
+            for g in &l.lights {
+                for v in g.position.iter().chain(&g.direction).chain(&g.color).chain(&g.cone).chain([&g.radius]) {
+                    v.to_bits().hash(h);
+                }
+                (g.kind, g.falloff).hash(h);
+            }
+        }
     }
 }
 
@@ -377,6 +446,7 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
         }
         l.transform.pin.map(|p| p.0.map(|c| c.map(f32::to_bits))).hash(h);
         hash_mesh(l.mesh.as_ref(), h);
+        hash_space(l.space.as_ref(), h);
         l.blend.hash(h);
         l.mask.as_ref().map(|m| m.0).hash(h);
         l.wipe.map(|w| (w.iris, w.progress.to_bits(), w.axis.map(f32::to_bits))).hash(h);

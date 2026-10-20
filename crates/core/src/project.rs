@@ -123,6 +123,10 @@ pub struct Clip {
     /// set, it replaces position, scale, rotation and corner pin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<crate::meshwarp::MeshWarp>,
+    /// A camera or light for 3D layers (its settings are `effects[0]`); it
+    /// has no picture of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<crate::space3d::SceneObject>,
 }
 
 /// Everything about how a video clip looks, edited and undone as one unit.
@@ -161,12 +165,32 @@ impl Clip {
             masks: Vec::new(),
             tracker: None,
             mesh: None,
+            scene: None,
         }
     }
 
     /// A title clip on a video track.
     pub fn new_title(id: ClipId, timeline_start: Time, duration: Time, spec: TitleSpec) -> Self {
         Self { title: Some(spec), ..Self::new(id, MediaId::GENERATED, timeline_start, Time::ZERO, duration, None) }
+    }
+
+    /// A camera or light clip on a video track. A camera starts where a 2D
+    /// layer looks the same in 3D at the `frame` size (height); a light, up
+    /// and to the left of the frame, in front.
+    pub fn new_scene(id: ClipId, timeline_start: Time, duration: Time, what: crate::space3d::SceneObject, frame: [f32; 2]) -> Self {
+        let mut fx = Effect::new(match what {
+            crate::space3d::SceneObject::Camera => crate::effects::EffectKind::Camera,
+            crate::space3d::SceneObject::Light => crate::effects::EffectKind::Light,
+        });
+        if what == crate::space3d::SceneObject::Camera {
+            let d = crate::space3d::Camera::default_for(frame).distance();
+            fx.params[crate::effects::camera::Z].value = -d;
+            fx.params[crate::effects::camera::FOCUS].value = d;
+        }
+        let mut c = Self::new(id, MediaId::GENERATED, timeline_start, Time::ZERO, duration, None);
+        c.scene = Some(what);
+        c.effects.push(fx);
+        c
     }
 
     /// A composition clip playing sequence `seq` from its start.
@@ -176,6 +200,16 @@ impl Clip {
 
     /// What to call the clip in the UI: the media name, a title's first line, or a composition's name.
     pub fn display_name<'a>(&'a self, p: &'a Project) -> std::borrow::Cow<'a, str> {
+        if let Some(s) = self.scene {
+            return std::borrow::Cow::Owned(match (s, self.effects.first()) {
+                (crate::space3d::SceneObject::Light, Some(fx)) => {
+                    let k = fx.value_at(crate::effects::light::KIND, Time::ZERO) as usize;
+                    format!("{} light", crate::effects::light::KINDS.get(k).copied().unwrap_or("Point"))
+                }
+                (crate::space3d::SceneObject::Light, None) => "Light".into(),
+                (crate::space3d::SceneObject::Camera, _) => "Camera".into(),
+            });
+        }
         if let Some(t) = &self.title {
             if t.text.trim().is_empty() && self.effects.iter().any(|e| e.kind == crate::effects::EffectKind::EnergyBlade) {
                 return std::borrow::Cow::Borrowed("Energy blade");
@@ -702,9 +736,12 @@ impl Project {
             }
             if let Some(x) = dissolves.iter().find(|x| x.track == ti && !x.is_empty() && t >= x.start() && t < x.end()) {
                 let (Some((_, a)), Some((_, b))) = (s.find_clip(x.left), s.find_clip(x.right)) else { continue };
+                if a.scene.is_some() || b.scene.is_some() {
+                    continue; // cameras and lights have no picture to dissolve
+                }
                 let mix = (t - x.start()).0 as f32 / x.len().0 as f32;
                 out.push(VideoItem::Dissolve { from: layer(self, ti, a, t, frame), to: layer(self, ti, b, t, frame), mix, kind: b.transition });
-            } else if let Some(c) = tr.clip_at(t) {
+            } else if let Some(c) = tr.clip_at(t).filter(|c| c.scene.is_none()) {
                 let l = layer(self, ti, c, t, frame);
                 if l.transform.opacity > 0.0 {
                     out.push(VideoItem::Single(l));

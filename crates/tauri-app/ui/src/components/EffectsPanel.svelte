@@ -9,7 +9,8 @@
   import NumberField from "./NumberField.svelte";
   import CurvesEditor from "./CurvesEditor.svelte";
 
-  let { ins }: { ins: Inspector } = $props();
+  // `scene`: the settings of a camera or light clip (one fixed card, no adding).
+  let { ins, scene = false }: { ins: Inspector; scene?: boolean } = $props();
   const pump = livePump();
 
   // Values being dragged, so the numbers keep up with the pointer.
@@ -107,6 +108,17 @@
 </script>
 
 <div class="group">
+  {#if scene}
+    <div class="head">
+      <h4>{ins.kind === "camera" ? "Camera" : "Light"}</h4>
+      <button class="small" onclick={() => op(0, "reset")} title="Back to the starting settings (removes their keyframes)">Reset</button>
+    </div>
+    {#if ins.kind === "camera"}
+      <p class="note">The view of every 3D layer (tick 3D layer in a clip's Transform). The topmost camera on the timeline is used. Drag its point of interest in the Viewer.</p>
+    {:else}
+      <p class="note">Shades 3D layers that are lit by lights. With no lights, 3D layers show as they are. Drag its position or point of interest in the Viewer.</p>
+    {/if}
+  {:else}
   <div class="head">
     <h4>Effects</h4>
     <div class="adds">
@@ -116,6 +128,7 @@
   </div>
   {#if ins.effects.length === 0}
     <p class="note">None. Effects change the clip's picture before its transform; the top one is applied first.</p>
+  {/if}
   {/if}
   {#each ins.effects as fx, i (i + ":" + fx.label)}
     {@const key = `${ins.id}:${i}`}
@@ -128,6 +141,7 @@
           {#if fx.kind === "Plugin"}<span class="tag">plugin</span>{/if}
           {#if fx.animated}<span class="tag keyed" title="Some settings are keyframed">◆</span>{/if}
         </button>
+        {#if !scene}
         <button class="ghost icon" disabled={i === 0} onclick={() => op(i, "up")} title="Move up (applied earlier)" aria-label="Move {fx.label} up">
           <svg viewBox="0 0 12 12" width="12" height="12"><path d="M2.5 7.5 6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
         </button>
@@ -135,6 +149,7 @@
           <svg viewBox="0 0 12 12" width="12" height="12"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
         </button>
         <button class="ghost icon" onclick={(e) => more(e, i, fx)} title="More: duplicate, reset, remove" aria-label="More for {fx.label}">⋯</button>
+        {/if}
       </div>
       {#if fx.missing}
         <p class="warn">This plugin isn't installed (id “{fx.plugin}”), so the effect is skipped. Its settings are kept: install the plugin and it comes back.</p>

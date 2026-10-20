@@ -75,6 +75,8 @@ pub struct Geometry {
     pub full: [[f32; 2]; 4],
     pub pinned: bool,
     pub cropped: bool,
+    /// A 3D layer: just its outline (it's moved by dragging, turned in Controls).
+    pub three_d: bool,
 }
 
 pub fn geometry(t: &Transform, layer: &GizmoLayer, frame: [f32; 2]) -> Geometry {
@@ -94,7 +96,7 @@ pub fn geometry(t: &Transform, layer: &GizmoLayer, frame: [f32; 2]) -> Geometry 
     let stem_dir = if len > 1e-4 && len.is_finite() { [dx / len, dy / len] } else { [0.0, -1.0] };
     let anchor = t.matrix(frame).apply(t.anchor);
     let full = if pin.is_some() { corners } else { t.rect_corners(layer.rect, frame) };
-    Geometry { corners, edges, stem_base: edges[0], stem_dir, anchor, full, pinned: pin.is_some(), cropped: pin.is_none() && t.is_cropped() }
+    Geometry { corners, edges, stem_base: edges[0], stem_dir, anchor, full, pinned: pin.is_some(), cropped: pin.is_none() && t.is_cropped(), three_d: false }
 }
 
 fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -336,25 +338,73 @@ impl Editor {
     /// The visible video layers at the playhead, topmost first, each as the
     /// rectangle that counts as the layer (the whole picture for footage,
     /// just the text and its box for a title) with its transform there.
+    /// 3D layers come as the outline the camera sees (a corner pin of it),
+    /// for hit tests and drawing; they're left out while not all in front of
+    /// the camera.
     pub fn viewer_layers(&self) -> Vec<(GizmoLayer, Transform)> {
         let t: Time = self.playback.playhead;
         let frame = self.frame_px();
+        let scene = self.project.scene3d_at(self.active, t);
         self.project
             .video_layers_at(self.active, t)
             .iter()
             .rev()
             .flat_map(|item| item.layers().into_iter().rev().map(|l| (l.clip, l.transform)).collect::<Vec<_>>())
             .filter_map(|(c, tr)| {
-                if c.title.is_some() {
+                let (layer, size) = if c.title.is_some() {
                     let b = self.preview.title_bounds(c.id)?;
                     let (hw, hh) = (frame[0] / 2.0, frame[1] / 2.0);
-                    return Some((GizmoLayer { id: c.id, rect: [b[0] - hw, b[1] - hh, b[2] - hw, b[3] - hh], size: frame }, tr));
+                    (GizmoLayer { id: c.id, rect: [b[0] - hw, b[1] - hh, b[2] - hw, b[3] - hh], size: frame }, frame)
+                } else {
+                    let [w, h] = self.project.picture_size(c)?;
+                    let size = [w as f32, h as f32];
+                    (GizmoLayer { id: c.id, rect: Transform::full_rect(size), size }, size)
+                };
+                if Self::is_3d_layer(c, &tr) {
+                    let map = reelforge_core::space3d::layer_space(&tr, size, &scene).map?;
+                    let r = tr.clip_to_crop(layer.rect, layer.size);
+                    let corners = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]].map(|p| map.apply(p));
+                    let shown = Transform { pin: Some(reelforge_core::transform::Pin(corners)), crop: [0.0; 4], ..tr };
+                    // Hit-tested and drawn as that quad (a pin "of the whole picture").
+                    return Some((GizmoLayer { id: c.id, rect: Transform::full_rect(layer.size), size: layer.size }, shown));
                 }
-                let [w, h] = self.project.picture_size(c)?;
-                let size = [w as f32, h as f32];
-                Some((GizmoLayer { id: c.id, rect: Transform::full_rect(size), size }, tr))
+                Some((layer, tr))
             })
             .collect()
+    }
+
+    /// Is this clip shown as a 3D layer (placed by the camera)?
+    pub fn is_3d_layer(c: &reelforge_core::Clip, tr: &Transform) -> bool {
+        tr.three_d && c.mesh.is_none() && tr.pin.is_none()
+    }
+
+    /// How a clip's pixels (origin at its centre) land on the frame at the
+    /// playhead: through the camera for a 3D layer (`None` if it isn't all in
+    /// front of it), else by its transform.
+    pub fn layer_map_of(&self, c: &reelforge_core::Clip) -> Option<reelforge_core::transform::LayerMap> {
+        let t = self.playback.playhead;
+        let tr = c.transform_at(t);
+        let size = self.layer_size(c);
+        if Self::is_3d_layer(c, &tr) {
+            let scene = self.project.scene3d_at(self.active, t);
+            return reelforge_core::space3d::layer_space(&tr, size, &scene).layer_map();
+        }
+        Some(tr.layer_map(size, self.frame_px()))
+    }
+
+    /// A 3D layer moved by `d` frame pixels on screen: across the camera's
+    /// view, at the layer's distance (so it follows the pointer).
+    pub fn moved_3d(&self, start: &Transform, d: [f32; 2]) -> Transform {
+        let scene = self.project.scene3d_at(self.active, self.playback.playhead);
+        let cam = &scene.camera;
+        let (r, down, _) = cam.basis();
+        let z = cam.view([start.position[0], start.position[1], start.depth])[2].max(reelforge_core::space3d::NEAR);
+        let k = z / cam.focal();
+        let mut t = *start;
+        t.position[0] += (r[0] * d[0] + down[0] * d[1]) * k;
+        t.position[1] += (r[1] * d[0] + down[1] * d[1]) * k;
+        t.depth += (r[2] * d[0] + down[2] * d[1]) * k;
+        t
     }
 
     /// Is frame point `f` on layer `l` (shown with `tr`)?
@@ -369,13 +419,18 @@ impl Editor {
     /// The selected layer (if it's visible at the playhead) with its transform now.
     pub fn gizmo_layer(&self) -> Option<(GizmoLayer, Transform)> {
         let id = self.selection?;
-        let (layer, _) = self.viewer_layers().into_iter().find(|(l, _)| l.id == id)?;
+        let (layer, shown) = self.viewer_layers().into_iter().find(|(l, _)| l.id == id)?;
         let (_, c) = self.seq().find_clip(id)?;
         // A mesh-warped layer isn't placed by its transform: no handles for it.
         if c.mesh.is_some() {
             return None;
         }
-        Some((layer, c.transform_at(self.playback.playhead)))
+        let tr = c.transform_at(self.playback.playhead);
+        // A 3D layer: its outline as the camera sees it.
+        if Self::is_3d_layer(c, &tr) {
+            return Some((layer, shown));
+        }
+        Some((layer, tr))
     }
 
     /// Apply a transform worked out by the gizmo to the selected layer (live).

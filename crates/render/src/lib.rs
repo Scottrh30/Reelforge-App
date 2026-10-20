@@ -124,6 +124,9 @@ pub struct LayerInput<'a> {
     /// Stretch the layer over this grid (frame pixels) instead of placing it by
     /// its transform (only opacity and crop still apply).
     pub mesh: Option<reelforge_core::meshwarp::MeshShape>,
+    /// A 3D layer: placed by the camera instead (opacity and crop still
+    /// apply), and lit by the scene's lights if it has any.
+    pub space: Option<&'a reelforge_core::space3d::LayerSpace>,
 }
 
 /// A wipe: the layer shows where `q < progress`, with a soft edge. For a
@@ -1046,6 +1049,8 @@ impl Compositor {
                         push("fs_levels", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
                         cur = o1;
                     }
+                    // Camera and light settings are never drawn (they're filtered out earlier).
+                    EffectKind::Camera | EffectKind::Light => {}
                     EffectKind::EnergyBlade => {
                         // A seed per blade (its place in the stack) so two blades flicker apart.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
@@ -1110,17 +1115,18 @@ impl Compositor {
             /// to `clear`, premultiplied, for a dip), then composite the group into the frame.
             Group { a: Option<Draw>, b: Option<Draw>, over: usize, blend: BlendMode, clear: wgpu::Color },
         }
-        type Uniform<'m> = (Transform, [f32; 2], Option<Wipe>, Option<&'m reelforge_core::meshwarp::MeshShape>);
+        type Uniform<'m> = (Transform, [f32; 2], Option<Wipe>, Option<&'m reelforge_core::meshwarp::MeshShape>, Option<&'m reelforge_core::space3d::LayerSpace>);
         let mut uniforms: Vec<Uniform> = Vec::new();
-        fn slot<'m>(u: &mut Vec<Uniform<'m>>, t: Transform, size: [f32; 2], wipe: Option<Wipe>, mesh: Option<&'m reelforge_core::meshwarp::MeshShape>) -> usize {
-            u.push((t, size, wipe, mesh.filter(|m| m.is_valid())));
+        fn slot<'m>(u: &mut Vec<Uniform<'m>>, l: (Transform, [f32; 2], Option<Wipe>), mesh: Option<&'m reelforge_core::meshwarp::MeshShape>, space: Option<&'m reelforge_core::space3d::LayerSpace>) -> usize {
+            let mesh = mesh.filter(|m| m.is_valid());
+            u.push((l.0, l.1, l.2, mesh, space.filter(|_| mesh.is_none())));
             u.len() - 1
         }
         let mut ops = Vec::new();
         for item in items {
             match item {
                 DrawItem::Layer(l) => {
-                    let draw = Draw { slot: slot(&mut uniforms, l.transform, l.layer_size, l.wipe, l.mesh.as_ref()), key: l.key, fx: processed.get(&l.key).copied() };
+                    let draw = Draw { slot: slot(&mut uniforms, (l.transform, l.layer_size, l.wipe), l.mesh.as_ref(), l.space), key: l.key, fx: processed.get(&l.key).copied() };
                     ops.push(Op::Frame { draw, blend: l.blend })
                 }
                 DrawItem::Dissolve { from, to, mix, dip } => {
@@ -1144,9 +1150,9 @@ impl Compositor {
                             (true, true, wgpu::Color::TRANSPARENT)
                         }
                     };
-                    let a = draw_a.then(|| Draw { slot: slot(&mut uniforms, ta, from.layer_size, from.wipe, from.mesh.as_ref()), key: from.key, fx: processed.get(&from.key).copied() });
-                    let b = draw_b.then(|| Draw { slot: slot(&mut uniforms, tb, to.layer_size, to.wipe, to.mesh.as_ref()), key: to.key, fx: processed.get(&to.key).copied() });
-                    let over = slot(&mut uniforms, Transform::default(), frame, None, None);
+                    let a = draw_a.then(|| Draw { slot: slot(&mut uniforms, (ta, from.layer_size, from.wipe), from.mesh.as_ref(), from.space), key: from.key, fx: processed.get(&from.key).copied() });
+                    let b = draw_b.then(|| Draw { slot: slot(&mut uniforms, (tb, to.layer_size, to.wipe), to.mesh.as_ref(), to.space), key: to.key, fx: processed.get(&to.key).copied() });
+                    let over = slot(&mut uniforms, (Transform::default(), frame, None), None, None);
                     ops.push(Op::Group { a, b, over, blend: to.blend, clear });
                 }
             }
@@ -1158,15 +1164,19 @@ impl Compositor {
 
         // Uniforms for every draw in one buffer, addressed by dynamic offset.
         let mut data = vec![0u8; self.uniform_stride as usize * uniforms.len().max(1)];
-        for (i, (t, size, wipe, mesh)) in uniforms.iter().enumerate() {
-            // (Corner-pinned layers get a perspective matrix.)
-            let mvp = t.layer_map(*size, frame).to_clip_space(frame);
+        for (i, (t, size, wipe, mesh, space)) in uniforms.iter().enumerate() {
+            // (Corner-pinned and 3D layers get a perspective matrix.)
+            let mvp = match space {
+                Some(s) => s.mvp,
+                None => t.layer_map(*size, frame).to_clip_space(frame),
+            };
+            let lighting = space.and_then(|s| s.lighting.as_ref());
             let mut floats: Vec<f32> = mvp.iter().flatten().copied().collect();
             let mode = wipe.map_or(0.0, |w| if w.iris { 2.0 } else { 1.0 });
             floats.extend([size[0], size[1], t.opacity.clamp(0.0, 1.0), mode]);
             let w = wipe.unwrap_or(Wipe { iris: false, axis: [0.0; 3], progress: 1.0, softness: 0.1 });
             floats.extend([w.axis[0], w.axis[1], w.axis[2], w.progress.clamp(0.0, 1.0)]);
-            floats.extend([w.softness, frame[0], frame[1], 0.0]);
+            floats.extend([w.softness, frame[0], frame[1], if lighting.is_some() { 1.0 } else { 0.0 }]);
             floats.extend(t.crop_uv());
             match mesh {
                 Some(m) => {
@@ -1175,7 +1185,23 @@ impl Compositor {
                     pts.resize(41 * 4, 0.0);
                     floats.extend(pts);
                 }
-                None => floats.extend([0.0; 4]),
+                None => {
+                    floats.extend([0.0; 4]);
+                    // A lit 3D layer: its plane, the camera and the lights where the mesh would go.
+                    if let Some(l) = lighting {
+                        let n = l.lights.len().min(reelforge_core::space3d::MAX_LIGHTS);
+                        floats.extend([l.origin[0], l.origin[1], l.origin[2], n as f32]);
+                        floats.extend([l.u[0], l.u[1], l.u[2], 0.0]);
+                        floats.extend([l.v[0], l.v[1], l.v[2], 0.0]);
+                        floats.extend([l.camera[0], l.camera[1], l.camera[2], 0.0]);
+                        for g in &l.lights[..n] {
+                            floats.extend([g.position[0], g.position[1], g.position[2], g.kind as f32]);
+                            floats.extend([g.direction[0], g.direction[1], g.direction[2], g.falloff as f32]);
+                            floats.extend([g.color[0], g.color[1], g.color[2], g.radius]);
+                            floats.extend([g.cone[0], g.cone[1], 0.0, 0.0]);
+                        }
+                    }
+                }
             }
             let bytes: Vec<u8> = floats.iter().flat_map(|f| f.to_ne_bytes()).collect();
             let off = i * self.uniform_stride as usize;

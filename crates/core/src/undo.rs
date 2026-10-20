@@ -281,6 +281,7 @@ impl Command for SplitClip {
             tracker: clip.tracker.clone(),
             // Mesh keys are at source times, so both halves keep them.
             mesh: clip.mesh.clone(),
+            scene: clip.scene,
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;

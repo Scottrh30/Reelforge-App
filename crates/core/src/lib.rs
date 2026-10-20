@@ -22,6 +22,7 @@ pub mod title;
 pub mod meshtrack;
 pub mod meshwarp;
 pub mod planar;
+pub mod space3d;
 pub mod track;
 pub mod transform;
 pub mod transition;

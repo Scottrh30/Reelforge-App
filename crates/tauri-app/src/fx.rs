@@ -159,7 +159,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
 
 /// Change clip `id`'s effects with `f` (given the source time at the playhead
 /// and whether it's on the clip) as a live edit. Returns what `f` returned.
-fn edit<R>(e: &mut Editor, id: u64, f: impl FnOnce(&mut Vec<Effect>, Time, bool) -> R) -> Option<R> {
+pub(crate) fn edit<R>(e: &mut Editor, id: u64, f: impl FnOnce(&mut Vec<Effect>, Time, bool) -> R) -> Option<R> {
     let id = ClipId(id);
     let (_, c) = e.seq().find_clip(id)?;
     let (src, in_clip) = effect_time(e, c);
@@ -197,8 +197,14 @@ pub fn effect_add(id: u64, kind: EffectKind, plugin: Option<String>) -> Res<()> 
 pub fn effect_op(id: u64, index: usize, op: String) -> Res<()> {
     ed(|e| {
         e.commit_live_edit();
+        let frame = e.frame_px();
         edit(e, id, |list, _, _| {
             if index >= list.len() {
+                return;
+            }
+            // A camera's or light's settings stay put (they can be reset or switched off).
+            let fixed = matches!(list[index].kind, EffectKind::Camera | EffectKind::Light);
+            if fixed && !matches!(op.as_str(), "reset" | "toggle") {
                 return;
             }
             match op.as_str() {
@@ -220,7 +226,16 @@ pub fn effect_op(id: u64, index: usize, op: String) -> Res<()> {
                             None => Effect::new(fx.kind),
                         };
                         let data = if fx.kind == EffectKind::Lut { fx.data.take() } else { fresh.data.clone() };
+                        let light_kind = fx.value_at(reelforge_core::effects::light::KIND, Time::ZERO);
                         *fx = Effect { enabled: fx.enabled, data, ..fresh };
+                        // A camera back to where 2D layers look unchanged; a light keeps its type.
+                        if fx.kind == EffectKind::Camera {
+                            let d = reelforge_core::space3d::Camera::default_for(frame).focal();
+                            fx.params[reelforge_core::effects::camera::Z].value = -d;
+                            fx.params[reelforge_core::effects::camera::FOCUS].value = d;
+                        } else if fx.kind == EffectKind::Light {
+                            fx.params[reelforge_core::effects::light::KIND].value = light_kind;
+                        }
                     }
                 }
                 _ => {}
@@ -313,6 +328,27 @@ pub fn blade_ignite(id: u64, index: usize, retract: bool, seconds: f32) -> Res<(
             }
         }
     })
+}
+
+/// Set several parameters of effect `index` (live, like dragging a number):
+/// keyed at the playhead where a parameter is animated.
+pub(crate) fn set_params(e: &mut Editor, id: u64, index: usize, values: &[(usize, f32)]) {
+    edit(e, id, |list, src, in_clip| {
+        let Some(fx) = list.get_mut(index) else { return };
+        fx.normalize();
+        for &(param, value) in values {
+            let Some(s) = fx.spec(param) else { continue };
+            let v = value.clamp(s.min, s.max);
+            let p = &mut fx.params[param];
+            if p.keys.is_animated() {
+                if in_clip {
+                    p.keys.set(src, v);
+                }
+            } else {
+                p.value = v;
+            }
+        }
+    });
 }
 
 /// Keyframe button of a parameter: removes the key at the playhead if there

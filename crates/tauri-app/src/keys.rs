@@ -8,7 +8,7 @@ use reelforge_engine::editor::Editor;
 use serde::Serialize;
 
 /// The transform properties with a keyframe button, by name.
-const PROPS: [(Prop, &str); 7] = [
+const PROPS: [(Prop, &str); 9] = [
     (Prop::Position, "Position"),
     (Prop::Scale, "Scale"),
     (Prop::Rotation, "Rotation"),
@@ -16,6 +16,8 @@ const PROPS: [(Prop, &str); 7] = [
     (Prop::Anchor, "Anchor"),
     (Prop::Crop, "Crop"),
     (Prop::Pin, "Pin"),
+    (Prop::Depth, "Depth"),
+    (Prop::Orientation, "Orientation"),
 ];
 
 /// How many points of each animated curve are sent.

@@ -1122,6 +1122,36 @@ impl Editor {
         self.status = "Added an energy blade layer: drag its hilt and tip in the Viewer".into();
     }
 
+    /// A camera, or a light of type `light` (an index into
+    /// `effects::light::KINDS`), on a new top track from the playhead to the
+    /// end of the sequence (at least 5 seconds).
+    pub fn add_scene_object(&mut self, what: reelforge_core::space3d::SceneObject, light: usize) {
+        use reelforge_core::space3d::SceneObject;
+        self.commit_live_edit();
+        let s = self.seq();
+        let rate = s.frame_rate;
+        let start = self.playback.playhead.snap(rate);
+        let dur = (s.duration() - start).max(Time::from_secs_f64(5.0)).snap(rate);
+        let frame = [s.width as f32, s.height as f32];
+        let any_3d = s.tracks.iter().flat_map(|t| &t.clips).any(|c| c.transform.three_d);
+        let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
+        let track = add.index;
+        let id = ClipId(self.project.alloc_id());
+        let mut clip = Clip::new_scene(id, start, dur, what, frame);
+        if what == SceneObject::Light {
+            clip.effects[0].params[reelforge_core::effects::light::KIND].value = light.min(3) as f32;
+        }
+        let name = clip.display_name(&self.project).into_owned();
+        let cmds: Vec<Box<dyn Command>> = vec![Box::new(add), Box::new(AddClip { seq: self.active, track, clip })];
+        self.execute(Box::new(Batch { name: format!("Add {}", name.to_lowercase()), cmds }));
+        self.select_only(Some(id));
+        self.status = if any_3d {
+            format!("Added a {}: its settings are in the Controls panel", name.to_lowercase())
+        } else {
+            format!("Added a {}. It affects 3D layers: tick 3D layer in a clip's Transform settings", name.to_lowercase())
+        };
+    }
+
     /// A new, empty composition the size of the current sequence, opened for editing.
     pub fn new_composite(&mut self) {
         self.commit_live_edit();

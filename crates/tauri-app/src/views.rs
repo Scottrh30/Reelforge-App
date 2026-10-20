@@ -160,6 +160,8 @@ pub struct Inspector {
     pub tracker: Option<TrackerView>,
     /// Keys of the clip's mesh warp, if it has one.
     pub mesh_keys: Option<usize>,
+    /// A camera or light: its points the camera can see (frame pixels).
+    pub scene_points: Vec<crate::scene::ScenePoint>,
     /// Progress (0–1) of a tracking run on this clip.
     pub tracking: Option<f32>,
     /// A tracking run is going on for another clip.
@@ -301,7 +303,12 @@ pub struct VisualView {
 }
 
 fn clip_kind(p: &Project, kind: TrackKind, c: &Clip) -> &'static str {
-    if c.title.is_some() {
+    if let Some(s) = c.scene {
+        match s {
+            reelforge_core::space3d::SceneObject::Camera => "camera",
+            reelforge_core::space3d::SceneObject::Light => "light",
+        }
+    } else if c.title.is_some() {
         "title"
     } else if c.nested.is_some() {
         "comp"
@@ -315,6 +322,9 @@ fn clip_kind(p: &Project, kind: TrackKind, c: &Clip) -> &'static str {
 }
 
 fn clip_name(p: &Project, c: &Clip) -> String {
+    if c.scene.is_some() {
+        return c.display_name(p).into_owned();
+    }
     if let Some(t) = &c.title {
         let first = t.text.lines().next().unwrap_or("").trim();
         if first.is_empty() && c.effects.iter().any(|e| e.kind == reelforge_core::EffectKind::EnergyBlade) {
@@ -435,7 +445,7 @@ pub fn state(e: &Editor) -> State {
     let inspector = e.selection.and_then(|id| s.find_clip(id)).map(|(ti, c)| {
         let tr = &s.tracks[ti];
         let kind = clip_kind(p, tr.kind, c);
-        let visual = (tr.kind == TrackKind::Video).then(|| {
+        let visual = (tr.kind == TrackKind::Video && c.scene.is_none()).then(|| {
             let size = match p.picture_size(c) {
                 Some([w, h]) => [w as f32, h as f32],
                 None => [s.width as f32, s.height as f32],
@@ -456,7 +466,7 @@ pub fn state(e: &Editor) -> State {
         }
         let layer_px = e.layer_size(c);
         let video = tr.kind == TrackKind::Video;
-        let map = video.then(|| c.transform_at(e.playback.playhead).layer_map(layer_px, [s.width as f32, s.height as f32]));
+        let map = if video && c.scene.is_none() { e.layer_map_of(c) } else { None };
         let mt = e.mask_time(c);
         let masks = c
             .masks
@@ -473,6 +483,7 @@ pub fn state(e: &Editor) -> State {
             can_track: video && footage,
             tracker: if video { tracker_view(e, c) } else { None },
             mesh_keys: c.mesh.as_ref().map(|m| m.keys.len()),
+            scene_points: crate::scene::points(e),
             tracking: job.filter(|(id, _)| *id == c.id).map(|(_, p)| p),
             tracking_elsewhere: job.is_some_and(|(id, _)| id != c.id),
             id: c.id.0,
@@ -491,7 +502,7 @@ pub fn state(e: &Editor) -> State {
             reverse: c.reverse,
             effects: crate::fx::views(e, c),
             animated,
-            keys: video.then(|| crate::keys::view(e, c)),
+            keys: (video && c.scene.is_none()).then(|| crate::keys::view(e, c)),
             transition_in: crate::trans::transition_in(e, c, tr.kind),
             can_ramp: !p.is_still(c.media) && c.title.is_none() && !c.reverse && c.speed > 0.0,
             footage: !p.is_still(c.media) && c.title.is_none(),

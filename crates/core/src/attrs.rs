@@ -130,7 +130,9 @@ pub fn paste_attributes(p: &Project, seq: usize, cb: &Clipboard, targets: &[Clip
                 let mut v = old.clone();
                 let mut props: Vec<Prop> = Vec::new();
                 if set.transform {
-                    props.extend([Prop::Position, Prop::Scale, Prop::Rotation, Prop::Anchor, Prop::Opacity]);
+                    props.extend([Prop::Position, Prop::Scale, Prop::Rotation, Prop::Anchor, Prop::Opacity, Prop::Depth, Prop::Orientation]);
+                    v.transform.three_d = from.transform.three_d;
+                    v.transform.lit = from.transform.lit;
                 }
                 if set.crop {
                     props.push(Prop::Crop);
@@ -148,6 +150,8 @@ pub fn paste_attributes(p: &Project, seq: usize, cb: &Clipboard, targets: &[Clip
                         Prop::Anchor => v.anim.anchor = shift_curve(&from.anim.anchor, by),
                         Prop::Crop => v.anim.crop = shift_curve(&from.anim.crop, by),
                         Prop::Pin => v.anim.pin = shift_curve(&from.anim.pin, by),
+                        Prop::Depth => v.anim.depth = shift_curve(&from.anim.depth, by),
+                        Prop::Orientation => v.anim.orientation = shift_curve(&from.anim.orientation, by),
                     }
                 }
                 if set.blend {

@@ -275,6 +275,28 @@
           <NumberField label="Crop bottom" value={t.crop[3] * 100} min={0} max={100} step={0.2} digits={1} suffix="% B" oninput={(v) => setT((n) => (n.crop[3] = v / 100))} oncommit={commit} />
         </div>
         <div class="grid2">
+          <span class="lbl">3D layer</span>
+          <div class="row wrap">
+            <label class="check" title="Make the layer a flat plane in 3D space: it gets a Z position and X/Y rotation, is seen through the camera (Timeline → Add camera, or a default one) and can be lit (Timeline → Add light). At Z 0 with the default camera it looks the same as in 2D"><input type="checkbox" checked={!!t.three_d} onchange={(e) => { const on = e.currentTarget.checked; setT((n) => (n.three_d = on)); commit(); }} /> {t.three_d ? "On" : "Off"}</label>
+            {#if t.three_d && t.pin}<span class="warn">Corner pin is on, so it's drawn in 2D</span>{/if}
+          </div>
+        </div>
+        {#if t.three_d}
+          <div class="grid3">
+            <span class="lbl"><button class="key" class:here={pk("Depth")?.key_here} class:anim={pk("Depth")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Depth"))} title={keyTip("Depth")} aria-label="Keyframe Z position"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Position Z</span>
+            <NumberField label="Position Z" value={t.depth ?? 0} digits={0} oninput={(v) => setT((n) => (n.depth = v))} oncommit={commit} />
+            <span class="note small-note">+ is further away</span>
+            <span class="lbl"><button class="key" class:here={pk("Orientation")?.key_here} class:anim={pk("Orientation")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Orientation"))} title={keyTip("Orientation")} aria-label="Keyframe X and Y rotation"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>Rotation X / Y</span>
+            <NumberField label="Rotation X" value={t.orientation?.[0] ?? 0} step={0.5} digits={1} suffix="°" oninput={(v) => setT((n) => (n.orientation = [v, n.orientation?.[1] ?? 0]))} oncommit={commit} />
+            <NumberField label="Rotation Y" value={t.orientation?.[1] ?? 0} step={0.5} digits={1} suffix="°" oninput={(v) => setT((n) => (n.orientation = [n.orientation?.[0] ?? 0, v]))} oncommit={commit} />
+          </div>
+          <div class="grid2">
+            <span class="lbl">Lights</span>
+            <label class="check" title="Shaded by the scene's lights (when it has any). Untick for a layer that should glow by itself, like a screen or a sign"><input type="checkbox" checked={t.lit !== false} onchange={(e) => { const on = e.currentTarget.checked; setT((n) => (n.lit = on)); commit(); }} /> Lit by the scene's lights</label>
+          </div>
+          <p class="note">Rotation above turns it about Z. Drag it in the Viewer to move it across the camera's view.</p>
+        {/if}
+        <div class="grid2">
           <span class="lbl">{#if t.pin}<button class="key" class:here={pk("Pin")?.key_here} class:anim={pk("Pin")?.animated} disabled={!ins.keys?.on_clip} onclick={() => run(api.transformKey(ins.id, "Pin"))} title={keyTip("Pin")} aria-label="Keyframe corner pin"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 1 9 5 5 9 1 5Z" /></svg></button>{/if}Corner pin</span>
           <div class="row wrap">
             <label class="check" title="Stretch the layer in perspective so its four corners land wherever you put them (drag them in the Viewer). Position, scale, rotation and anchor don't apply while it's on"><input type="checkbox" checked={!!t.pin} onchange={(e) => run(api.transformOp(ins.id, e.currentTarget.checked ? "pin_on" : "pin_off"))} /> {t.pin ? "On" : "Off"}</label>
@@ -338,6 +360,9 @@
       </div>
     {/if}
 
+    {#if ins.kind === "camera" || ins.kind === "light"}
+      <EffectsPanel {ins} scene={true} />
+    {/if}
     {#if ins.visual}
       <EffectsPanel {ins} />
       <MasksPanel {ins} />

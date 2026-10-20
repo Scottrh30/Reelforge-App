@@ -17,6 +17,7 @@ mod fx;
 mod keys;
 mod ops;
 mod trans;
+mod scene;
 mod viewer;
 mod views;
 
@@ -945,6 +946,8 @@ fn main() {
             open_sequence,
             add_title,
             add_blade_layer,
+            scene::add_scene,
+            scene::scene_point_drag,
             select,
             select_many,
             select_all,

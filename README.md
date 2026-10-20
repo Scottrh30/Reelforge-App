@@ -441,6 +441,27 @@ What works now:
   should follow, so leave it at 0 there. When **stabilising**, **Keep camera moves** (frames)
   keeps deliberate camera moves and takes out only the shake. Everything is written as ordinary keyframes you can edit or undo, and masks on the
   clip can follow the track too
+- **3D layers, camera and lights**:
+  - **3D layer** (Transform section of the Controls panel): the layer becomes a flat plane in
+    3D space with a **Position Z** (positive is further away) and **Rotation X / Y** (Rotation
+    turns it about Z), all keyframable and in the curve editor. Positions are in pixels from the
+    frame's centre, so with the default camera a 3D layer at Z 0 looks exactly as it did in 2D.
+    3D layers next to each other on the timeline are drawn furthest first; 2D layers between them
+    keep their places. In the Viewer a 3D layer shows its outline as the camera sees it, and
+    dragging it moves it across the camera's view (Shift: straight across or down)
+  - **Timeline → Add camera**: a camera clip on a new top track. Its settings (Controls) are its
+    position, **point of interest** (what it looks at), **roll**, **field of view**, and **depth
+    of field** (focus distance and how much things out of focus blur). The topmost camera clip
+    at a moment is the one used; without one, a default camera that leaves 2D-looking layers
+    unchanged. Its point of interest can be dragged in the Viewer
+  - **Timeline → Add light**: point, spot, directional or ambient, with colour, intensity,
+    position, point of interest (spot and directional), cone angle and feather (spot), and
+    falloff (none, smooth or inverse square, over a distance). With any lights in the scene, 3D
+    layers are shaded by them (both sides, per pixel), unless **Lit by the scene's lights** is
+    unticked (for a screen or a sign that glows by itself); with none, 3D layers show as they are.
+    Up to 8 lights at once. A light's position and point of interest can be dragged in the Viewer
+  - Everything about cameras and lights keyframes like effect settings. Not yet: shadows,
+    layers that cut through each other (they're sorted by their middles), and 3D text with depth
 - **Corner pin** (Transform section of the Controls panel): tick it to stretch a layer in
   perspective by its four corners. Drag the pink corner handles in the Viewer (**Shift**: straight
   across or down; dragging the middle moves all four). It can be keyframed like any property,
@@ -1120,8 +1141,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    points: follow, stabilise with smoothing, corner pin / screen replacement), corner pin,
    masks~~, titles and track management are done. Still to come: Bézier mask curves and
    per-point feather, automatic
-   zoom to hide stabilisation edges, a 3D camera and lights, GPU particles, animated text
-   presets.
+   zoom to hide stabilisation edges, GPU particles, animated text presets (3D layers, a camera
+   and lights are in).
 7. ~~**Performance**: proxy media, a frame cache, hardware decode, YUV frames converted on the
    GPU, render preview~~
    (zero-copy from the hardware decoder is in for Windows, D3D11VA to Direct3D 12, but is

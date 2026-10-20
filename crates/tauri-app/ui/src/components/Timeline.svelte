@@ -1535,6 +1535,11 @@
   .clip.comp {
     background: var(--clip-comp);
   }
+  .clip.camera,
+  .clip.light {
+    background: color-mix(in srgb, var(--clip-title) 35%, #3a3f48);
+    border-style: dashed;
+  }
   .clip.sel {
     border-color: var(--accent);
     box-shadow: inset 0 0 0 1px var(--accent);

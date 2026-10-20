@@ -296,7 +296,10 @@
     {/if}
     {#if giz}
       <svg class="gizmo" aria-hidden="true">
-        {#if giz.pinned}
+        {#if giz.three_d}
+          <!-- A 3D layer: its outline as the camera sees it (drag to move; turn it in Controls). -->
+          <polygon points={ptsAttr(giz.corners)} class="box three" />
+        {:else if giz.pinned}
           <polygon points={ptsAttr(giz.corners)} class="pin" />
           <line class="diag" x1={toBox(giz.corners[0])[0]} y1={toBox(giz.corners[0])[1]} x2={toBox(giz.corners[2])[0]} y2={toBox(giz.corners[2])[1]} />
           <line class="diag" x1={toBox(giz.corners[1])[0]} y1={toBox(giz.corners[1])[1]} x2={toBox(giz.corners[3])[0]} y2={toBox(giz.corners[3])[1]} />
@@ -490,6 +493,9 @@
   }
   .gizmo .anchorhot {
     fill: rgba(120, 200, 255, 0.5);
+  }
+  .gizmo .box.three {
+    stroke-dasharray: 6 4;
   }
   .gizmo .pin {
     fill: none;

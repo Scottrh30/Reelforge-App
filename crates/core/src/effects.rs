@@ -45,6 +45,10 @@ pub enum EffectKind {
     /// A glowing energy blade (a light sword) drawn from a hilt point to a tip
     /// point, with a hot core, coloured glow, flicker and motion blur.
     EnergyBlade,
+    /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
+    Camera,
+    /// A light clip's settings (see [`crate::space3d`]).
+    Light,
 }
 
 /// Where an effect is listed in the effects browser.
@@ -169,6 +173,71 @@ const fn choice(name: &'static str, options: &'static [&'static str]) -> ParamSp
     ParamSpec { name, default: 0.0, min: 0.0, max: (options.len() - 1) as f32, suffix: "", speed: 1.0, ui: ParamUi::Choice(options) }
 }
 
+/// Camera parameter indices (positions in pixels: X right, Y down, Z away
+/// from the viewer, with the frame's centre at 0, 0, 0).
+pub mod camera {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const Z: usize = 2;
+    pub const TARGET_X: usize = 3;
+    pub const TARGET_Y: usize = 4;
+    pub const TARGET_Z: usize = 5;
+    pub const ROLL: usize = 6;
+    pub const FOV: usize = 7;
+    pub const DOF: usize = 8;
+    pub const FOCUS: usize = 9;
+    pub const APERTURE: usize = 10;
+}
+
+/// Light parameter indices.
+pub mod light {
+    pub const KIND: usize = 0;
+    pub const COLOR: usize = 1;
+    pub const INTENSITY: usize = 2;
+    pub const X: usize = 3;
+    pub const Y: usize = 4;
+    pub const Z: usize = 5;
+    pub const TARGET_X: usize = 6;
+    pub const TARGET_Y: usize = 7;
+    pub const TARGET_Z: usize = 8;
+    pub const CONE: usize = 9;
+    pub const FEATHER: usize = 10;
+    pub const FALLOFF: usize = 11;
+    pub const RADIUS: usize = 12;
+    /// What the light kinds are called (the Type menu).
+    pub const KINDS: [&str; 4] = ["Point", "Spot", "Directional", "Ambient"];
+}
+
+const CAMERA: [ParamSpec; 11] = [
+    spec("Position X", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Position Y", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Position Z", -1500.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Point of interest X", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Point of interest Y", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Point of interest Z", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Roll", 0.0, -3600.0, 3600.0, "°", 0.25),
+    spec("Field of view", 39.6, 1.0, 170.0, "°", 0.1),
+    ParamSpec { name: "Depth of field", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Focus distance", 1500.0, 1.0, 100000.0, " px", 1.0),
+    spec("Blur", 25.0, 0.0, 250.0, " px", 0.25),
+];
+
+const LIGHT: [ParamSpec; 13] = [
+    choice("Type", &light::KINDS),
+    color("Colour", 0xffffff),
+    spec("Intensity", 100.0, 0.0, 1000.0, " %", 0.5),
+    spec("Position X", -500.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Position Y", -400.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Position Z", -700.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Point of interest X", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Point of interest Y", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Point of interest Z", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Cone angle", 60.0, 1.0, 179.0, "°", 0.25),
+    spec("Cone feather", 50.0, 0.0, 100.0, " %", 0.5),
+    choice("Falloff", &["None", "Smooth", "Inverse square"]),
+    spec("Falloff distance", 1500.0, 1.0, 100000.0, " px", 1.0),
+];
+
 /// Energy blade parameter indices.
 pub mod blade {
     pub const HILT_X: usize = 0;
@@ -262,6 +331,8 @@ impl EffectKind {
             EffectKind::Lut => "LUT (.cube)",
             EffectKind::Plugin => "Plugin",
             EffectKind::EnergyBlade => "Energy blade",
+            EffectKind::Camera => "Camera",
+            EffectKind::Light => "Light",
         }
     }
 
@@ -270,7 +341,7 @@ impl EffectKind {
             EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey => EffectCategory::Keying,
-            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade => EffectCategory::Stylize,
+            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light => EffectCategory::Stylize,
             EffectKind::Plugin => EffectCategory::Plugins,
         }
     }
@@ -290,6 +361,8 @@ impl EffectKind {
             EffectKind::Vignette => "Darken the edges to draw the eye to the middle.",
             EffectKind::Plugin => "An installed plugin.",
             EffectKind::EnergyBlade => "A glowing light-sword blade with a hot core, flicker and motion blur. Drag its hilt and tip in the Viewer, or attach it to a track.",
+            EffectKind::Camera => "The 3D camera: where it is, what it looks at, its field of view and depth of field.",
+            EffectKind::Light => "A light for 3D layers.",
         }
     }
 
@@ -306,6 +379,8 @@ impl EffectKind {
             EffectKind::DropShadow => &DROP_SHADOW,
             EffectKind::Lut => &LUT,
             EffectKind::EnergyBlade => &BLADE,
+            EffectKind::Camera => &CAMERA,
+            EffectKind::Light => &LIGHT,
             // A plugin's parameters depend on which plugin: see `Effect::param_specs`.
             EffectKind::Plugin => &[],
         }
@@ -317,6 +392,8 @@ impl EffectKind {
     pub fn sections(self) -> &'static [(usize, &'static str)] {
         match self {
             EffectKind::EnergyBlade => &[(0, "Blade"), (5, "Colour"), (7, "Core"), (11, "Glow"), (15, "Flicker"), (18, "Motion")],
+            EffectKind::Camera => &[(0, "Position"), (3, "Point of interest"), (6, "Lens"), (8, "Depth of field")],
+            EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff")],
             _ => &[],
         }
     }
@@ -380,6 +457,8 @@ impl EffectValues {
             // Missing plugins are skipped.
             EffectKind::Plugin => self.plugin.is_none(),
             EffectKind::EnergyBlade => v[blade::OPACITY] == 0.0 || v[blade::LENGTH] == 0.0 || (v[blade::CORE_WIDTH] == 0.0 && v[blade::GLOW_INTENSITY] == 0.0),
+            // Settings of a camera or light clip, not drawn as an effect.
+            EffectKind::Camera | EffectKind::Light => true,
         }
     }
 }

@@ -37,7 +37,7 @@ fn asset(id: u64, path: &Path) -> MediaAsset {
     MediaAsset { id: MediaId(id), path: path.to_owned(), name: path.file_name().unwrap().to_string_lossy().into(), info: probe(path).unwrap() }
 }
 
-const B_TRANSFORM: Transform = Transform { position: [100.0, 0.0], scale: [1.0, 1.0], rotation: 0.0, opacity: 0.5, anchor: [0.0, 0.0], crop: [0.0; 4], pin: None };
+const B_TRANSFORM: Transform = Transform { position: [100.0, 0.0], scale: [1.0, 1.0], rotation: 0.0, opacity: 0.5, anchor: [0.0, 0.0], crop: [0.0; 4], pin: None, three_d: false, depth: 0.0, orientation: [0.0, 0.0], lit: true };
 
 /// V1: A at 0–2 s. V2: B at 1–2 s, offset and half transparent. A1: A's audio starting at 0.5 s.
 fn project(a: &Path, b: &Path) -> Project {
@@ -81,14 +81,14 @@ fn reference_frame(c: &mut Compositor, a: &Path, b: &Path, t: f64) -> Vec<u8> {
     let fa = FrameSource::open(a, None).unwrap().frame_at_blocking(Time::from_secs_f64(t), wait).unwrap();
     let mut layers = vec![LayerInput {
         key: 1, content_id: id, pixels: (&fa.pixels).into(), pixel_size: [fa.width, fa.height],
-        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None,
+        layer_size: [640.0, 360.0], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: None
     }];
     let fb;
     if t >= 1.0 {
         fb = FrameSource::open(b, None).unwrap().frame_at_blocking(Time::from_secs_f64(t - 1.0), wait).unwrap();
         layers.push(LayerInput {
             key: 2, content_id: id, pixels: (&fb.pixels).into(), pixel_size: [fb.width, fb.height],
-            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None,
+            layer_size: [320.0, 180.0], transform: B_TRANSFORM, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: None
         });
     }
     c.render([640, 360], &layers);
@@ -685,7 +685,7 @@ fn transparent_compositor_keeps_coverage() {
     let t = Transform { scale: [0.5, 0.5], opacity: 0.5, ..Default::default() };
     let layer = LayerInput {
         key: 1, content_id: 1, pixels: PixelData::Rgba(&px), pixel_size: [16, 16], layer_size: [64.0, 64.0],
-        transform: t, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None,
+        transform: t, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: None
     };
     c.render([64, 64], &[layer]);
     let out = c.read_output().unwrap();

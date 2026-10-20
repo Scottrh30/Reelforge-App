@@ -12,6 +12,16 @@ use std::cell::RefCell;
 enum Drag {
     Handle(DragState, gizmo::GizmoLayer, reelforge_core::ClipId),
     Move(MoveState),
+    /// A 3D layer moved across the camera's view: its transform at the start, and where the drag began.
+    Move3d(reelforge_core::ClipId, reelforge_core::Transform, [f32; 2]),
+}
+
+/// The selected layer is a 3D layer: its real transform at the playhead.
+fn selected_3d(e: &Editor) -> Option<(reelforge_core::ClipId, reelforge_core::Transform)> {
+    let id = e.selection?;
+    let (_, c) = e.seq().find_clip(id)?;
+    let t = c.transform_at(e.playback.playhead);
+    Editor::is_3d_layer(c, &t).then_some((id, t))
 }
 
 thread_local! {
@@ -21,7 +31,9 @@ thread_local! {
 /// The selected layer's gizmo, for drawing.
 pub fn geometry(e: &Editor) -> Option<Geometry> {
     let (layer, t) = e.gizmo_layer()?;
-    Some(gizmo::geometry(&t, &layer, e.frame_px()))
+    let mut g = gizmo::geometry(&t, &layer, e.frame_px());
+    g.three_d = selected_3d(e).is_some();
+    Some(g)
 }
 
 #[derive(Serialize)]
@@ -39,6 +51,9 @@ pub fn viewer_hover(at: [f32; 2], ctrl: bool, scale: f32) -> Res<Option<Hover>> 
         if e.playback.playing {
             return None;
         }
+        if selected_3d(e).is_some() {
+            return None; // a 3D layer has no handles: drag it, turn it in Controls
+        }
         let (layer, t) = e.gizmo_layer()?;
         let h = gizmo::handle_at(&t, &layer, e.frame_px(), scale, at, ctrl)?;
         let (dir, tip) = gizmo::hint(h, ctrl && matches!(h, Handle::Edge(_)), &t);
@@ -54,7 +69,7 @@ pub fn viewer_press(at: [f32; 2], ctrl: bool, scale: f32) -> Res<&'static str> {
         e.commit_live_edit();
         DRAG.with(|d| *d.borrow_mut() = None);
         let frame = e.frame_px();
-        if !e.playback.playing {
+        if !e.playback.playing && selected_3d(e).is_none() {
             if let Some((layer, t)) = e.gizmo_layer() {
                 if let Some(h) = gizmo::handle_at(&t, &layer, frame, scale, at, ctrl) {
                     let crop = ctrl && matches!(h, Handle::Edge(_));
@@ -75,7 +90,11 @@ pub fn viewer_press(at: [f32; 2], ctrl: bool, scale: f32) -> Res<&'static str> {
         }
         match e.gizmo_layer() {
             Some((layer, t)) if Editor::layer_shows(&layer, &t, frame, at) || keep => {
-                DRAG.with(|d| *d.borrow_mut() = Some((Drag::Move(MoveState { id: layer.id, start: t, from: at }), false)));
+                let drag = match selected_3d(e) {
+                    Some((id, real)) => Drag::Move3d(id, real, at),
+                    None => Drag::Move(MoveState { id: layer.id, start: t, from: at }),
+                };
+                DRAG.with(|d| *d.borrow_mut() = Some((drag, false)));
                 "move"
             }
             _ => "none",
@@ -106,6 +125,19 @@ pub fn viewer_drag(at: [f32; 2], shift: bool, alt: bool, scale: f32) -> Res<Feed
                 Drag::Handle(st, layer, id) => {
                     let t = gizmo::dragged(st, layer, frame, scale, at, shift);
                     out.readout = gizmo::readout(st, &t);
+                    Some((*id, t))
+                }
+                Drag::Move3d(id, start, from) => {
+                    let mut dlt = [at[0] - from[0], at[1] - from[1]];
+                    if shift {
+                        if dlt[0].abs() > dlt[1].abs() {
+                            dlt[1] = 0.0
+                        } else {
+                            dlt[0] = 0.0
+                        }
+                    }
+                    let t = e.moved_3d(start, dlt);
+                    out.readout = format!("Position {:.0}, {:.0}, {:.0}", t.position[0], t.position[1], t.depth);
                     Some((*id, t))
                 }
                 Drag::Move(m) => {

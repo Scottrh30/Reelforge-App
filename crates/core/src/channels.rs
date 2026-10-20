@@ -52,6 +52,9 @@ impl ClipVisual {
             Channel::Transform(Prop::Crop, 2),
             Channel::Transform(Prop::Crop, 3),
         ];
+        if self.transform.three_d {
+            v.splice(5..5, [Channel::Transform(Prop::Depth, 0), Channel::Transform(Prop::Orientation, 0), Channel::Transform(Prop::Orientation, 1)]);
+        }
         for (i, e) in self.effects.iter().enumerate() {
             // Colours have no curve to draw.
             v.extend((0..e.param_specs().len()).filter(|&p| e.spec(p).is_some_and(|s| s.ui != crate::effects::ParamUi::Color)).map(|p| Channel::Effect(i, p)));
@@ -68,6 +71,8 @@ impl ClipVisual {
             Channel::Transform(Prop::Anchor, c) => format!("Anchor {}", ["X", "Y"][c as usize & 1]),
             Channel::Transform(Prop::Crop, c) => format!("Crop {}", CROP_SIDES[c as usize & 3]),
             Channel::Transform(Prop::Pin, _) => "Corner pin".into(),
+            Channel::Transform(Prop::Depth, _) => "Position Z".into(),
+            Channel::Transform(Prop::Orientation, c) => format!("Rotation {}", ["X", "Y"][c as usize & 1]),
             Channel::Effect(e, p) => match self.effects.get(e) {
                 Some(fx) => format!("{}: {}", fx.label(), fx.spec(p).map_or("?", |s| s.name)),
                 None => "?".into(),
@@ -79,8 +84,8 @@ impl ClipVisual {
     pub fn channel_display(&self, ch: Channel) -> (f32, &'static str) {
         match ch {
             Channel::Transform(Prop::Scale | Prop::Opacity | Prop::Crop, _) => (100.0, " %"),
-            Channel::Transform(Prop::Rotation, _) => (1.0, "°"),
-            Channel::Transform(Prop::Position | Prop::Anchor | Prop::Pin, _) => (1.0, " px"),
+            Channel::Transform(Prop::Rotation | Prop::Orientation, _) => (1.0, "°"),
+            Channel::Transform(Prop::Position | Prop::Anchor | Prop::Pin | Prop::Depth, _) => (1.0, " px"),
             Channel::Effect(e, p) => (1.0, self.effects.get(e).and_then(|fx| fx.spec(p)).map_or("", |s| s.suffix)),
         }
     }
@@ -105,6 +110,8 @@ impl ClipVisual {
             Channel::Transform(Prop::Crop, c) => Ref::Quad(&self.anim.crop, c as usize & 3, t.crop[c as usize & 3]),
             // Corner pins are edited in the Viewer, not as curves.
             Channel::Transform(Prop::Pin, _) => return None,
+            Channel::Transform(Prop::Depth, _) => Ref::Scalar(&self.anim.depth, t.depth),
+            Channel::Transform(Prop::Orientation, c) => Ref::Pair(&self.anim.orientation, c as usize & 1, t.orientation[c as usize & 1]),
             Channel::Effect(e, p) => {
                 let param = self.effects.get(e)?.params.get(p)?;
                 Ref::Scalar(&param.keys, param.value)
@@ -121,6 +128,8 @@ impl ClipVisual {
             Channel::Transform(Prop::Anchor, c) => Mut::Pair(&mut self.anim.anchor, c as usize & 1),
             Channel::Transform(Prop::Crop, c) => Mut::Quad(&mut self.anim.crop, c as usize & 3),
             Channel::Transform(Prop::Pin, _) => return None,
+            Channel::Transform(Prop::Depth, _) => Mut::Scalar(&mut self.anim.depth),
+            Channel::Transform(Prop::Orientation, c) => Mut::Pair(&mut self.anim.orientation, c as usize & 1),
             Channel::Effect(e, p) => Mut::Scalar(&mut self.effects.get_mut(e)?.params.get_mut(p)?.keys),
         })
     }

@@ -12,6 +12,14 @@ export interface Transform {
   anchor: [number, number];
   crop: [number, number, number, number];
   pin?: unknown;
+  /// A 3D layer (placed by the camera, lit by lights). Left out when off.
+  three_d?: boolean;
+  /// Z position (3D layers), pixels; positive is further away.
+  depth?: number;
+  /// X and Y rotation (3D layers), degrees.
+  orientation?: [number, number];
+  /// Shaded by the scene's lights (left out when true).
+  lit?: boolean;
 }
 
 export type Blend = "Normal" | "Add" | "Multiply" | "Screen";
@@ -53,7 +61,7 @@ export interface MediaView {
   detail: string;
 }
 
-export type ClipKind = "video" | "audio" | "image" | "title" | "comp";
+export type ClipKind = "video" | "audio" | "image" | "title" | "comp" | "camera" | "light";
 
 export interface ClipView {
   id: number;
@@ -235,6 +243,8 @@ export interface Inspector {
   can_track: boolean;
   tracker: TrackerView | null;
   mesh_keys: number | null;
+  /// A camera or light: its position / point of interest, where the camera sees them.
+  scene_points: { which: "position" | "target"; at: Pt }[];
   tracking: number | null;
   tracking_elsewhere: boolean;
 }
@@ -327,6 +337,7 @@ export interface Gizmo {
   anchor: Pt;
   full: Pt[];
   pinned: boolean;
+  three_d: boolean;
   cropped: boolean;
 }
 
@@ -565,6 +576,10 @@ export const api = {
   openSequence: (index: number) => invoke("open_sequence", { index }),
   addTitle: () => invoke("add_title"),
   addBladeLayer: () => invoke("add_blade_layer"),
+  /// A camera, or a light (0 point, 1 spot, 2 directional, 3 ambient).
+  addScene: (camera: boolean, light: number) => invoke("add_scene", { camera, light }),
+  /// Drag a camera's or light's point by `d` frame pixels (live; `start` on the first call).
+  scenePointDrag: (id: number, which: string, d: Pt, start: boolean) => invoke("scene_point_drag", { id, which, d, start }),
   select: (id: number | null, mode: "only" | "toggle" | "none") => invoke("select", { id, mode }),
   selectMany: (ids: number[], add: boolean) => invoke("select_many", { ids, add }),
   moveClips: (lead: number, track: number, start: Ticks) => invoke("move_clips", { lead, track, start }),

@@ -152,6 +152,16 @@
     { label: "Freeze frame at playhead", hint: "Shift+F", run: () => actions.act("freeze_frame") },
     { label: "Add title", hint: "Ctrl+T", run: actions.addTitle },
     { label: "Add energy blade layer", run: () => run(api.addBladeLayer()) },
+    { label: "Add camera", run: () => run(api.addScene(true, 0)) },
+    {
+      label: "Add light",
+      submenu: [
+        { label: "Point light", run: () => run(api.addScene(false, 0)) },
+        { label: "Spot light", run: () => run(api.addScene(false, 1)) },
+        { label: "Directional light", run: () => run(api.addScene(false, 2)) },
+        { label: "Ambient light", run: () => run(api.addScene(false, 3)) },
+      ],
+    },
     { label: "Nudge selected clips earlier", hint: ",", run: () => actions.act("nudge_left") },
     { label: "Nudge selected clips later", hint: ".", run: () => actions.act("nudge_right") },
     { separator: true },

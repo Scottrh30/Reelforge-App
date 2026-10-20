@@ -29,11 +29,35 @@ pub struct Transform {
     /// and anchor are ignored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pin: Option<Pin>,
+    /// A 3D layer: a flat plane in a perspective scene, seen through the
+    /// sequence's camera and lit by its lights (see [`crate::space3d`]). Then
+    /// `depth` and `orientation` apply, and `rotation` turns it about Z.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub three_d: bool,
+    /// Position along Z, in pixels: positive is further from the camera.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub depth: f32,
+    /// Rotation about the X and Y axes, in degrees (3D layers).
+    #[serde(skip_serializing_if = "is_zero2")]
+    pub orientation: [f32; 2],
+    /// A 3D layer is shaded by the scene's lights (when there are any).
+    #[serde(skip_serializing_if = "is_true")]
+    pub lit: bool,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+fn is_zero2(v: &[f32; 2]) -> bool {
+    *v == [0.0, 0.0]
+}
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 impl Default for Transform {
     fn default() -> Self {
-        Self { position: [0.0, 0.0], scale: [1.0, 1.0], rotation: 0.0, opacity: 1.0, anchor: [0.0, 0.0], crop: [0.0; 4], pin: None }
+        Self { position: [0.0, 0.0], scale: [1.0, 1.0], rotation: 0.0, opacity: 1.0, anchor: [0.0, 0.0], crop: [0.0; 4], pin: None, three_d: false, depth: 0.0, orientation: [0.0, 0.0], lit: true }
     }
 }
 

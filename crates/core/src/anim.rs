@@ -146,10 +146,14 @@ pub enum Prop {
     Crop,
     /// Corner pin (see [`crate::transform::Pin`]).
     Pin,
+    /// Z position of a 3D layer.
+    Depth,
+    /// X and Y rotation of a 3D layer.
+    Orientation,
 }
 
 impl Prop {
-    pub const ALL: [Prop; 7] = [Prop::Position, Prop::Scale, Prop::Rotation, Prop::Opacity, Prop::Anchor, Prop::Crop, Prop::Pin];
+    pub const ALL: [Prop; 9] = [Prop::Position, Prop::Scale, Prop::Rotation, Prop::Opacity, Prop::Anchor, Prop::Crop, Prop::Pin, Prop::Depth, Prop::Orientation];
 }
 
 impl Lerp for crate::transform::Pin {
@@ -175,6 +179,8 @@ impl Transform {
             Prop::Anchor => self.anchor = from.anchor,
             Prop::Crop => self.crop = from.crop,
             Prop::Pin => self.pin = from.pin,
+            Prop::Depth => self.depth = from.depth,
+            Prop::Orientation => self.orientation = from.orientation,
         }
     }
     /// Does property `p` differ between the two?
@@ -187,6 +193,8 @@ impl Transform {
             Prop::Anchor => self.anchor != other.anchor,
             Prop::Crop => self.crop != other.crop,
             Prop::Pin => self.pin != other.pin,
+            Prop::Depth => self.depth != other.depth,
+            Prop::Orientation => self.orientation != other.orientation,
         }
     }
 }
@@ -204,6 +212,10 @@ pub struct TransformAnim {
     pub crop: Curve<[f32; 4]>,
     #[serde(skip_serializing_if = "Curve::is_empty")]
     pub pin: Curve<crate::transform::Pin>,
+    #[serde(skip_serializing_if = "Curve::is_empty")]
+    pub depth: Curve<f32>,
+    #[serde(skip_serializing_if = "Curve::is_empty")]
+    pub orientation: Curve<[f32; 2]>,
 }
 
 impl<T> Curve<T> {
@@ -231,6 +243,8 @@ impl TransformAnim {
             Prop::Anchor => self.anchor.0.len(),
             Prop::Crop => self.crop.0.len(),
             Prop::Pin => self.pin.0.len(),
+            Prop::Depth => self.depth.0.len(),
+            Prop::Orientation => self.orientation.0.len(),
         }
     }
 
@@ -249,6 +263,10 @@ impl TransformAnim {
                 Some(k) => Some(self.pin.value_at(t, k.value)),
                 None => base.pin,
             },
+            three_d: base.three_d,
+            depth: self.depth.value_at(t, base.depth),
+            orientation: self.orientation.value_at(t, base.orientation),
+            lit: base.lit,
         }
     }
 
@@ -266,6 +284,8 @@ impl TransformAnim {
                     self.pin.set(t, p)
                 }
             }
+            Prop::Depth => self.depth.set(t, v.depth),
+            Prop::Orientation => self.orientation.set(t, v.orientation),
         }
     }
 
@@ -282,6 +302,8 @@ impl TransformAnim {
             Prop::Anchor => self.anchor.remove_at(t),
             Prop::Crop => self.crop.remove_at(t),
             Prop::Pin => self.pin.remove_at(t),
+            Prop::Depth => self.depth.remove_at(t),
+            Prop::Orientation => self.orientation.remove_at(t),
         }
     }
 
@@ -294,6 +316,8 @@ impl TransformAnim {
             Prop::Anchor => self.anchor.0.clear(),
             Prop::Crop => self.crop.0.clear(),
             Prop::Pin => self.pin.0.clear(),
+            Prop::Depth => self.depth.0.clear(),
+            Prop::Orientation => self.orientation.0.clear(),
         }
     }
 
@@ -306,6 +330,8 @@ impl TransformAnim {
             Prop::Anchor => self.anchor.0.iter().map(|k| k.at).collect(),
             Prop::Crop => self.crop.0.iter().map(|k| k.at).collect(),
             Prop::Pin => self.pin.0.iter().map(|k| k.at).collect(),
+            Prop::Depth => self.depth.0.iter().map(|k| k.at).collect(),
+            Prop::Orientation => self.orientation.0.iter().map(|k| k.at).collect(),
         }
     }
 
@@ -329,6 +355,8 @@ impl TransformAnim {
             Prop::Anchor => find(&self.anchor.0, t),
             Prop::Crop => find(&self.crop.0, t),
             Prop::Pin => find(&self.pin.0, t),
+            Prop::Depth => find(&self.depth.0, t),
+            Prop::Orientation => find(&self.orientation.0, t),
         }
     }
 
@@ -349,6 +377,8 @@ impl TransformAnim {
         set(&mut self.anchor.0, t, interp);
         set(&mut self.crop.0, t, interp);
         set(&mut self.pin.0, t, interp);
+        set(&mut self.depth.0, t, interp);
+        set(&mut self.orientation.0, t, interp);
     }
 }
 
