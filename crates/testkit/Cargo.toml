@@ -1,0 +1,15 @@
+[package]
+name = "reelforge-testkit"
+description = "Test-only helpers: ffmpeg/ffprobe oracle discovery, fixture directories, golden-image comparison"
+version = "0.9.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# Used only as a dev-dependency. No other Reelforge dependencies, so any crate (including L0 codecs) can
+# use it without creating dependency cycles.
+[dependencies]
+png = "0.18"

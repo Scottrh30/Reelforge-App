@@ -101,20 +101,20 @@ fn is_config_record(data: &[u8]) -> bool {
 // ---- H.264 --------------------------------------------------------------------------
 
 pub struct H264Decoder {
-    dec: filmcraft_h264::Decoder,
+    dec: reelforge_h264::Decoder,
     extradata: Vec<u8>,
     out: Output,
 }
 
 impl H264Decoder {
     pub fn new(info: &StreamInfo) -> Self {
-        let mut d = H264Decoder { dec: filmcraft_h264::Decoder::new(), extradata: info.extradata.clone(), out: Output::default() };
+        let mut d = H264Decoder { dec: reelforge_h264::Decoder::new(), extradata: info.extradata.clone(), out: Output::default() };
         d.configure();
         d
     }
 
     fn configure(&mut self) {
-        self.dec = filmcraft_h264::Decoder::new();
+        self.dec = reelforge_h264::Decoder::new();
         if self.extradata.is_empty() {
             return;
         }
@@ -125,7 +125,7 @@ impl H264Decoder {
         }
     }
 
-    fn take(&mut self, pics: Vec<filmcraft_h264::Picture>) -> Result<()> {
+    fn take(&mut self, pics: Vec<reelforge_h264::Picture>) -> Result<()> {
         for p in pics {
             let c = p.color;
             let planes = [
@@ -162,28 +162,28 @@ impl Decoder for H264Decoder {
 
 // ---- HEVC ---------------------------------------------------------------------------
 
-fn hevc_samples(p: &filmcraft_hevc::Plane) -> Samples<'_> {
+fn hevc_samples(p: &reelforge_hevc::Plane) -> Samples<'_> {
     match p {
-        filmcraft_hevc::Plane::U8(v) => Samples::U8(v),
-        filmcraft_hevc::Plane::U16(v) => Samples::U16(v),
+        reelforge_hevc::Plane::U8(v) => Samples::U8(v),
+        reelforge_hevc::Plane::U16(v) => Samples::U16(v),
     }
 }
 
 pub struct HevcDecoder {
-    dec: filmcraft_hevc::Decoder,
+    dec: reelforge_hevc::Decoder,
     extradata: Vec<u8>,
     out: Output,
 }
 
 impl HevcDecoder {
     pub fn new(info: &StreamInfo) -> Self {
-        let mut d = HevcDecoder { dec: filmcraft_hevc::Decoder::new(), extradata: info.extradata.clone(), out: Output::default() };
+        let mut d = HevcDecoder { dec: reelforge_hevc::Decoder::new(), extradata: info.extradata.clone(), out: Output::default() };
         d.configure();
         d
     }
 
     fn configure(&mut self) {
-        self.dec = filmcraft_hevc::Decoder::new();
+        self.dec = reelforge_hevc::Decoder::new();
         if self.extradata.is_empty() {
             return;
         }
@@ -193,7 +193,7 @@ impl HevcDecoder {
         }
     }
 
-    fn take(&mut self, pics: Vec<filmcraft_hevc::Picture>) -> Result<()> {
+    fn take(&mut self, pics: Vec<reelforge_hevc::Picture>) -> Result<()> {
         for p in pics {
             let c = p.color;
             // The library outputs 4:2:0; chroma plane size tells us otherwise if that changes.
@@ -233,24 +233,24 @@ impl Decoder for HevcDecoder {
 
 // ---- VP9 ----------------------------------------------------------------------------
 
-fn vp9_samples(p: &filmcraft_vp9::Plane) -> Samples<'_> {
+fn vp9_samples(p: &reelforge_vp9::Plane) -> Samples<'_> {
     match p {
-        filmcraft_vp9::Plane::U8(v) => Samples::U8(v),
-        filmcraft_vp9::Plane::U16(v) => Samples::U16(v),
+        reelforge_vp9::Plane::U8(v) => Samples::U8(v),
+        reelforge_vp9::Plane::U16(v) => Samples::U16(v),
     }
 }
 
 pub struct Vp9Decoder {
-    dec: filmcraft_vp9::Decoder,
+    dec: reelforge_vp9::Decoder,
     out: Output,
 }
 
 impl Vp9Decoder {
     pub fn new(_info: &StreamInfo) -> Self {
-        Vp9Decoder { dec: filmcraft_vp9::Decoder::new(), out: Output::default() }
+        Vp9Decoder { dec: reelforge_vp9::Decoder::new(), out: Output::default() }
     }
 
-    fn take(&mut self, pics: Vec<filmcraft_vp9::Picture>) -> Result<()> {
+    fn take(&mut self, pics: Vec<reelforge_vp9::Picture>) -> Result<()> {
         for p in pics {
             let matrix = match p.color.color_space {
                 1 | 3 => Matrix::Bt601,
@@ -295,7 +295,7 @@ impl Decoder for Vp9Decoder {
 // ---- AV1 ----------------------------------------------------------------------------
 
 pub struct Av1Decoder {
-    dec: filmcraft_av1::Decoder,
+    dec: reelforge_av1::Decoder,
     /// The sequence header OBUs from the av1C record (MP4/MKV), fed after every reset.
     config_obus: Vec<u8>,
     out: Output,
@@ -305,13 +305,13 @@ impl Av1Decoder {
     pub fn new(info: &StreamInfo) -> Self {
         // av1C: 4 bytes of fields, then configOBUs.
         let config_obus = if info.extradata.len() > 4 && info.extradata[0] & 0x80 != 0 { info.extradata[4..].to_vec() } else { Vec::new() };
-        let mut d = Av1Decoder { dec: filmcraft_av1::Decoder::new(), config_obus, out: Output::default() };
+        let mut d = Av1Decoder { dec: reelforge_av1::Decoder::new(), config_obus, out: Output::default() };
         d.configure();
         d
     }
 
     fn configure(&mut self) {
-        self.dec = filmcraft_av1::Decoder::new();
+        self.dec = reelforge_av1::Decoder::new();
         if !self.config_obus.is_empty() {
             if let Err(e) = self.dec.decode(&self.config_obus) {
                 log::warn!("AV1 setup data rejected: {e}");
@@ -319,7 +319,7 @@ impl Av1Decoder {
         }
     }
 
-    fn take(&mut self, pics: Vec<filmcraft_av1::Picture>) -> Result<()> {
+    fn take(&mut self, pics: Vec<reelforge_av1::Picture>) -> Result<()> {
         for p in pics {
             if p.matrix_coefficients == 0 {
                 return Err(Error::Unsupported("AV1 in RGB".into()));

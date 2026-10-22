@@ -1,0 +1,21 @@
+[package]
+name = "reelforge-hevc"
+description = "Clean-room pure-Rust H.265/HEVC decoder (ITU-T H.265)"
+version = "0.9.0"
+edition = "2024"
+license.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[features]
+default = ["threads"]
+threads = ["dep:rayon"]
+
+[dependencies]
+reelforge-bitstream = { path = "../bitstream" }
+thiserror = "2"
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+reelforge-testkit = { path = "../testkit" }

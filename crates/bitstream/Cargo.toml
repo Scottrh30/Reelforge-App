@@ -1,0 +1,13 @@
+[package]
+name = "reelforge-bitstream"
+version = "0.9.0"
+edition = "2024"
+license.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"

@@ -1,0 +1,20 @@
+[package]
+name = "reelforge-vp9"
+description = "Clean-room pure-Rust VP9 decoder (VP9 Bitstream & Decoding Process Specification)"
+version = "0.9.0"
+edition = "2024"
+license.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[features]
+default = ["threads"]
+threads = ["dep:rayon"]
+
+[dependencies]
+reelforge-bitstream = { path = "../bitstream" }
+thiserror = "2"
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]

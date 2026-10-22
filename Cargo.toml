@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/codecs", "crates/media", "crates/render", "crates/export", "crates/engine", "crates/tauri-app"]
+members = ["crates/core", "crates/codecs", "crates/bitstream", "crates/h264", "crates/hevc", "crates/vp9", "crates/av1", "crates/testkit", "crates/media", "crates/render", "crates/export", "crates/engine", "crates/tauri-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -36,4 +36,21 @@ epaint_default_fonts = "0.36"
 opt-level = 1
 
 [profile.dev.package."*"]
+opt-level = 3
+
+# The video decoders are workspace members now, so "*" above no longer covers them:
+# their hot loops are far too slow unoptimized (even in tests).
+[profile.dev.package.reelforge-bitstream]
+opt-level = 3
+
+[profile.dev.package.reelforge-h264]
+opt-level = 3
+
+[profile.dev.package.reelforge-hevc]
+opt-level = 3
+
+[profile.dev.package.reelforge-vp9]
+opt-level = 3
+
+[profile.dev.package.reelforge-av1]
 opt-level = 3
