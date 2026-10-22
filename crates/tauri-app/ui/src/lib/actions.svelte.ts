@@ -87,6 +87,29 @@ export async function finishDrawing() {
   if (i != null) app.activeMask = { clip: d.clip, index: i };
 }
 
+/// Move the track highlight one row up or down the timeline (as shown: video
+/// tracks top first, then audio); with none highlighted, start at the top.
+function stepHighlight(by: number) {
+  const t = app.s?.seq.tracks ?? [];
+  const rows = [...t.filter((x) => x.kind === "video").reverse(), ...t.filter((x) => x.kind === "audio")].map((x) => x.index);
+  if (!rows.length) return;
+  const now = app.s?.seq.target_track;
+  const at = now == null ? -1 : rows.indexOf(now);
+  const next = at < 0 ? rows[0] : rows[Math.max(0, Math.min(rows.length - 1, at + by))];
+  run(api.trackOp(next, "target"));
+}
+
+/// Delete: the selected clips; with none selected, the highlighted track (after asking).
+async function deleteKey(ripple: boolean) {
+  const target = app.s?.seq.target_track;
+  if ((app.s?.selected.length ?? 0) > 0 || target == null) return actions.act(ripple ? "ripple_delete" : "delete");
+  const tr = app.s?.seq.tracks.find((x) => x.index === target);
+  if (!tr) return;
+  const n = tr.clips.length;
+  const a = await question(`Delete ${tr.name}?`, n ? `The track and its ${n} clip${n === 1 ? "" : "s"} go. Undo brings them back.` : "The track is empty.", ["Delete track", "Cancel"]);
+  if (a === "Delete track") run(api.trackOp(target, "delete"));
+}
+
 /// Keyboard shortcuts (not while typing in a field).
 export function onKey(e: KeyboardEvent) {
   const t = e.target as HTMLElement;
@@ -145,18 +168,21 @@ export function onKey(e: KeyboardEvent) {
     case "ArrowRight":
       return go(() => actions.act(e.altKey ? "nudge_right" : "next_frame"));
     case "ArrowUp":
+      if (e.altKey) return go(() => stepHighlight(-1));
       return go(() => actions.act(e.shiftKey ? "prev_marker" : "prev_edit"));
     case "ArrowDown":
+      if (e.altKey) return go(() => stepHighlight(1));
       return go(() => actions.act(e.shiftKey ? "next_marker" : "next_edit"));
     case "Home":
       return go(() => actions.act("start"));
     case "End":
       return go(() => actions.act("end"));
     case "Delete":
-      return go(() => actions.act(e.shiftKey ? "ripple_delete" : "delete"));
+      return go(() => deleteKey(e.shiftKey));
     case "Backspace":
-      return go(() => actions.act("delete"));
+      return go(() => deleteKey(false));
     case "Escape":
+      if (app.live?.render == null && app.s?.seq.target_track != null) run(api.trackOp(0, "untarget"));
       return go(() => actions.act(app.live?.render != null ? "stop_render_preview" : "deselect"));
     case "Enter":
       if (app.live?.render == null) return go(() => actions.act("render_preview"));

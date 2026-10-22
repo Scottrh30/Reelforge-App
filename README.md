@@ -192,6 +192,18 @@ What works now:
   crop, masks and blend mode) change everything below it. A point is an invisible 3D null:
   choose it as a layer's **Parent** (Controls → Layer) and the layer moves, turns and scales with
   it; points can be parented to points, and cameras and lights can follow them too
+  - **Pick-whip**: a selected clip on a video track shows a small link button at its top
+    right; drag it onto a point clip in the timeline to parent the clip to it (the point lights
+    up while you're over it; anything else is refused with a reason). **Remove parent** is on
+    the clip's right-click menu
+  - **Seeing who follows whom**: clips with a parent say so ("↳ Point"); select a clip and dashed
+    lines join it to its parent and children in the timeline, and the Viewer draws a line from
+    the selected layer to its point
+  - **No jump**: parenting (or unparenting, or changing parent) keeps the clip exactly where it
+    is at the playhead, keyframes and all: its transform and every position, rotation, scale,
+    Z and corner-pin keyframe are converted by the change in parent there, as After Effects
+    does, so its own animation plays as before and from then on it moves with the point.
+    Points, cameras and lights keep their place (and aim) the same way. One undo step
 - **Effects** (Controls panel, **Add effect…**, or the **Effects & transitions** browser, `E`):
   a stack per video clip, applied on the GPU in linear light before the clip's transform, so
   they move, scale and rotate with it:
@@ -247,7 +259,15 @@ What works now:
   double-click a track's name to rename it. Drag a track's header up or down to reorder the
   stack (its clips go with it; video tracks stay above the audio tracks), or use **Move track
   up/down** on the right-click menu. Clicking (or right-clicking) a track's name highlights
-  the track, its row included; clicking empty timeline clears it. **Duplicate track** on the
+  the track, its row included; clicking empty timeline or **Esc** clears it, and **Alt+↑/↓**
+  moves it up and down the tracks. The highlighted track is the **target**: **Paste** puts
+  the copied clips there (several tracks' worth keep their arrangement, the lowest landing on
+  it), and new layers (**New…** planes, adjustment layers, points, cameras and lights, titles,
+  energy blades) go on it if it has room at the playhead, or on a new track just above it,
+  which then becomes the highlight, so several stack up in order. With no track highlighted
+  they go on top as before. **Del** with no clips selected offers to delete the highlighted
+  track (it asks first; undo brings it back). The highlight follows its track when tracks are
+  moved, renamed or added. **Duplicate track** on the
   right-click menu puts a copy just above it, named "Video 1 copy", with all its clips,
   effects, keyframes and masks (one undo step). Clips linked or parented to others on the same
   track stay that way among the copies; a copied video clip isn't linked to the original's

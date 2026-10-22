@@ -68,6 +68,33 @@ pub struct Paste {
 /// Paste `cb` into sequence `seq` at `at`, or at the first time after it where
 /// everything fits. Allocates ids, hence `&mut`.
 pub fn paste_clips(p: &mut Project, seq: usize, cb: &Clipboard, at: Time) -> Option<Paste> {
+    paste_clips_onto(p, seq, cb, at, None)
+}
+
+/// [`paste_clips`], with the copied clips of `target`'s kind moved up or down
+/// the stack together so the lowest of them lands on track `target` (the
+/// clips keep their places relative to each other; the other kind stays put).
+pub fn paste_clips_onto(p: &mut Project, seq: usize, cb: &Clipboard, at: Time, target: Option<usize>) -> Option<Paste> {
+    let shifted;
+    let cb = match target.and_then(|t| p.sequences.get(seq)?.tracks.get(t).map(|tr| (t, tr.kind))) {
+        Some((t, kind)) => {
+            let s = &p.sequences[seq];
+            let target_rank = (0..t).filter(|&i| s.tracks[i].kind == kind).count() as isize;
+            match cb.clips.iter().filter(|c| c.kind == kind).map(|c| c.rank).min() {
+                Some(lowest) => {
+                    let by = target_rank - lowest as isize;
+                    let mut c = cb.clone();
+                    for x in c.clips.iter_mut().filter(|x| x.kind == kind) {
+                        x.rank = (x.rank as isize + by).max(0) as usize;
+                    }
+                    shifted = c;
+                    &shifted
+                }
+                None => cb,
+            }
+        }
+        None => cb,
+    };
     // Leave out what can't go here.
     let usable = |c: &Clip| match c.nested {
         Some(n) => n < p.sequences.len() && !p.contains_sequence(n, seq),

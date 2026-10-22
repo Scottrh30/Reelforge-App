@@ -1051,25 +1051,27 @@ impl Command for SetMarkers {
 
 /// Parent a clip to a point clip, or let it go: the parent and the clip's
 /// own transform before and after (changed so it stays where it shows).
+/// Change a clip's parent: the clip before and after (its transform, keyframes
+/// and place settings change too, so it stays put; see `space3d::reparent`).
 pub struct SetParent {
     pub seq: usize,
     pub id: ClipId,
-    pub old: (Option<ClipId>, crate::transform::Transform),
-    pub new: (Option<ClipId>, crate::transform::Transform),
+    pub old: Box<Clip>,
+    pub new: Box<Clip>,
 }
 
 impl Command for SetParent {
     fn name(&self) -> &str {
-        if self.new.0.is_some() { "Parent to point" } else { "Remove parent" }
+        if self.new.parent.is_some() { "Parent to point" } else { "Remove parent" }
     }
     fn apply(&mut self, p: &mut Project) {
         if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
-            (c.parent, c.transform) = self.new;
+            *c = (*self.new).clone();
         }
     }
     fn undo(&mut self, p: &mut Project) {
         if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
-            (c.parent, c.transform) = self.old;
+            *c = (*self.old).clone();
         }
     }
 }

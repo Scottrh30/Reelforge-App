@@ -62,6 +62,37 @@ pub fn points(e: &Editor) -> Vec<ScenePoint> {
         .collect()
 }
 
+/// Where `c` and the point it's parented to show at the playhead (frame
+/// pixels), for the line between them in the Viewer. 3D layers and points are
+/// seen through the camera; a 2D layer and its parent, flat on the frame.
+pub fn parent_link(e: &Editor, c: &reelforge_core::Clip) -> Option<[[f32; 2]; 2]> {
+    use reelforge_core::space3d::Null;
+    let t = e.playback.playhead;
+    if c.parent.is_none() || !c.contains(t) || matches!(c.scene, Some(SceneObject::Camera | SceneObject::Light)) {
+        return None;
+    }
+    let s = e.seq();
+    let frame = [s.width as f32, s.height as f32];
+    let parent = e.project.parent_of(e.active, c, t)?;
+    let (child, three_d) = match c.scene {
+        Some(SceneObject::Point) => {
+            let own = c.effects.first().map_or(Null::IDENTITY, |fx| Null::from_effect(fx, c.source_time(t)));
+            (own.within(&parent).position, true)
+        }
+        _ => {
+            let w = e.project.world_transform(e.active, c, t);
+            ([w.position[0], w.position[1], w.depth], w.three_d)
+        }
+    };
+    let flat = |p: [f32; 3]| [frame[0] * 0.5 + p[0], frame[1] * 0.5 + p[1]];
+    if three_d {
+        let camera = e.project.scene3d_at(e.active, t).camera;
+        Some([camera.project(child)?, camera.project(parent.position)?])
+    } else {
+        Some([flat(child), flat(parent.position)])
+    }
+}
+
 thread_local! {
     /// The drag under way: the point's starting place and the camera then.
     static DRAG: RefCell<Option<([f32; 3], Camera, Option<reelforge_core::space3d::Null>)>> = const { RefCell::new(None) };

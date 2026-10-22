@@ -240,7 +240,7 @@
       if (g?.kind !== "box") return;
       if (Math.abs(g.x1 - g.x0) < 4 && Math.abs(g.y1 - g.y0) < 4) {
         if (!add) {
-          selTrack = null;
+          highlight(null);
           await run(api.select(null, "none"));
         }
         return;
@@ -351,21 +351,85 @@
 
   // ---- Tracks ----
   let renaming = $state<number | null>(null);
-  /// The track whose name was last clicked (highlighted), by index; cleared by
-  /// clicking empty timeline or switching sequence.
-  let selTrack = $state<number | null>(null);
-  let selSeq = -1;
-  $effect(() => {
-    const a = app.s?.active ?? -1;
-    if (a !== selSeq) {
-      selSeq = a;
-      selTrack = null;
-    }
+  // The highlighted track (its name was clicked): where Paste and new layers
+  // go. The editor keeps it, and follows the track as tracks move about.
+  const litTrack = $derived(app.s?.seq.target_track ?? null);
+  const highlight = (i: number | null) => {
+    if (i !== litTrack) run(i == null ? api.trackOp(litTrack ?? 0, "untarget") : api.trackOp(i, "target"));
+  };
+  const moveTrackTo = (from: number, to: number) => run(api.moveTrack(from, to));
+
+  // ---- Parenting: the pick-whip, and the links between parents and children ----
+  /// Every clip by id, with its row.
+  const clipAt = $derived.by(() => {
+    const m = new Map<number, { ri: number; c: ClipView }>();
+    rows.forEach((tr, ri) => tr.clips.forEach((c) => m.set(c.id, { ri, c })));
+    return m;
   });
-  // A track that no longer exists (deleted, undone) isn't highlighted.
-  const litTrack = $derived(selTrack != null && rows.some((r) => r.index === selTrack) ? selTrack : null);
-  async function moveTrackTo(from: number, to: number) {
-    if (await run(api.moveTrack(from, to)) !== undefined && selTrack === from) selTrack = to;
+  /// Where a parent link meets a clip (lanes pixels, before vertical scrolling).
+  const linkEnd = (id: number): [number, number] | null => {
+    const at = clipAt.get(id);
+    if (!at) return null;
+    const l = x(at.c.start);
+    const w = (at.c.duration / T) * view.pps;
+    return [Math.min(Math.max(l, 0) + 10, l + w - 4), at.ri * TRACK_H + TRACK_H / 2];
+  };
+  /// The links to show: the selected clips' parents and children.
+  const links = $derived.by(() => {
+    const out: { from: [number, number]; to: [number, number]; key: string }[] = [];
+    const seen = new Set<string>();
+    for (const [id, { c }] of clipAt) {
+      if (c.parent == null || !(selected.has(id) || selected.has(c.parent))) continue;
+      const key = `${id}-${c.parent}`;
+      const a = linkEnd(id);
+      const b = linkEnd(c.parent);
+      if (a && b && !seen.has(key)) {
+        seen.add(key);
+        out.push({ from: a, to: b, key });
+      }
+    }
+    return out;
+  });
+  const curve = (a: [number, number], b: [number, number]) => {
+    const bend = Math.max(24, Math.min(80, Math.abs(b[1] - a[1]) * 0.5));
+    return `M${a[0]} ${a[1]} C${a[0] - bend} ${a[1]} ${b[0] - bend} ${b[1]} ${b[0]} ${b[1]}`;
+  };
+  let whip = $state<null | { id: number; from: [number, number]; to: [number, number]; over: number | null; ok: boolean }>(null);
+  /// Drag from a clip's link handle onto a point clip to parent it there.
+  function whipDown(e: PointerEvent, c: ClipView) {
+    if (e.button !== 0 || !lanesEl) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const from = linkEnd(c.id);
+    if (!from) return;
+    const at = (ev: PointerEvent): [number, number] => {
+      const r = lanesEl!.getBoundingClientRect();
+      return [ev.clientX - r.left, ev.clientY - r.top + view.vscroll];
+    };
+    whip = { id: c.id, from, to: at(e), over: null, ok: false };
+    const move = (ev: PointerEvent) => {
+      const el = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest<HTMLElement>(".clip[data-id]");
+      const over = el ? Number(el.dataset.id) : null;
+      const target = over != null && over !== c.id ? clipAt.get(over)?.c : undefined;
+      whip = { id: c.id, from, to: at(ev), over: target ? over : null, ok: target?.kind === "point" };
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      const w = whip;
+      whip = null;
+      if (!w || w.over == null) return;
+      const t = clipAt.get(w.over)?.c;
+      if (t?.kind !== "point") {
+        say("Layers follow points: make one with New… → New Point, then drag the link onto it");
+        return;
+      }
+      run(api.setParent(w.id, w.over));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   }
 
   // Rows of one kind, top to bottom as shown: [first row, row count].
@@ -390,7 +454,7 @@
   function headerDown(e: PointerEvent, tr: TrackView) {
     if (e.button !== 0 || renaming != null) return;
     if ((e.target as HTMLElement).closest("button, input")) return;
-    selTrack = tr.index;
+    highlight(tr.index);
     trackDrag = { index: tr.index, kind: tr.kind, y0: e.clientY, active: false, gap: rows.findIndex((r) => r.index === tr.index) };
     const el = e.currentTarget as HTMLElement;
     const stack = el.parentElement!;
@@ -424,7 +488,7 @@
   function trackMenu(e: MouseEvent, tr: TrackView) {
     const upTo = stepTarget(tr, -1);
     const downTo = stepTarget(tr, 1);
-    selTrack = tr.index;
+    highlight(tr.index);
     openMenu(e, [
       { heading: true, label: tr.name },
       { label: "Rename track…", run: () => (renaming = tr.index) },
@@ -437,15 +501,11 @@
       { label: "Add video track", run: () => run(api.action("add_video_track")) },
       { label: "Add audio track", run: () => run(api.action("add_audio_track")) },
       { separator: true },
-      { label: tr.kind === "video" ? "Delete video track" : "Delete audio track", run: () => (run(api.trackOp(tr.index, "delete")), (selTrack = null)) },
+      { label: tr.kind === "video" ? "Delete video track" : "Delete audio track", run: () => run(api.trackOp(tr.index, "delete")) },
     ]);
   }
-  /// Copy a track (clips and all) to just above it, and highlight the copy.
-  async function duplicateTrack(tr: TrackView) {
-    const n = rows.length;
-    await run(api.trackOp(tr.index, "duplicate"));
-    if (rows.length > n) selTrack = tr.index + 1;
-  }
+  /// Copy a track (clips and all) to just above it (the copy is highlighted).
+  const duplicateTrack = (tr: TrackView) => run(api.trackOp(tr.index, "duplicate"));
   function clipMenu(e: MouseEvent, c: ClipView) {
     if (!selected.has(c.id)) run(api.select(c.id, "only"));
     openMenu(e, [
@@ -457,6 +517,7 @@
       { label: "Ripple delete", hint: "Shift+Del", run: () => run(api.action("ripple_delete")) },
       { separator: true },
       { label: "Unlink audio and video", disabled: c.link == null, run: () => run(api.action("unlink")) },
+      ...(c.parent != null ? [{ label: `Remove parent (${clipAt.get(c.parent)?.c.name ?? "point"})`, run: () => run(api.setParent(c.id, null)) }] : []),
       { label: "Open composition", disabled: c.kind !== "comp", run: () => openCompFromClip(c) },
       { separator: true },
       ...(touchesBefore(c)
@@ -1022,6 +1083,18 @@
 
       <div class="lanes" bind:this={lanesEl} onpointerdown={lanesDown} onwheel={wheel} role="presentation">
         <div class="stack" style="transform: translateY({-view.vscroll}px)">
+          {#if links.length || whip}
+            <svg class="links" width={lanesW} height={rows.length * TRACK_H} aria-hidden="true">
+              {#each links as k (k.key)}
+                <path d={curve(k.from, k.to)} class="link" />
+                <circle cx={k.to[0]} cy={k.to[1]} r="3.5" class="linkend" />
+              {/each}
+              {#if whip}
+                <path d={curve(whip.from, whip.to)} class="link live" class:ok={whip.ok} />
+                <circle cx={whip.to[0]} cy={whip.to[1]} r="3.5" class="linkend" />
+              {/if}
+            </svg>
+          {/if}
           {#each rows as tr, ri (tr.index)}
             <div class="lane" class:sel-track={litTrack === tr.index} class:locked={tr.locked} class:dropping={dropAt?.track === tr.index}>
               {#each tr.clips as c (c.id)}
@@ -1031,6 +1104,9 @@
                   {@const ghost = gesture?.kind === "move" && gesture.ids.has(c.id)}
                   <div
                     class="clip {c.kind}"
+                    data-id={c.id}
+                    class:whip-ok={whip?.over === c.id && whip.ok}
+                    class:whip-no={whip?.over === c.id && !whip.ok}
                     class:sel={selected.has(c.id)}
                     class:fxdrop={fxTarget?.id === c.id}
                     class:moving={ghost}
@@ -1078,8 +1154,13 @@
                       </svg>
                     {/if}
                     <span class="label" style="padding-left:{Math.max(6, -l + 6)}px">
-                      {#if c.kind === "comp"}<b>Comp</b>{/if}{c.name}{#if c.speed !== 1 || c.reverse}<i> {c.reverse ? "−" : ""}{Math.round(c.speed * 100)}%</i>{/if}{#if c.effects}<i> fx {c.effects}</i>{/if}
+                      {#if c.kind === "comp"}<b>Comp</b>{/if}{c.name}{#if c.speed !== 1 || c.reverse}<i> {c.reverse ? "−" : ""}{Math.round(c.speed * 100)}%</i>{/if}{#if c.effects}<i> fx {c.effects}</i>{/if}{#if c.parent != null}<i class="par" title="Follows {clipAt.get(c.parent)?.c.name ?? 'a point'}"> ↳ {clipAt.get(c.parent)?.c.name ?? "point"}</i>{/if}
                     </span>
+                    {#if tr.kind === "video" && selected.has(c.id) && w > 34}
+                      <span class="whip" role="presentation" onpointerdown={(e) => whipDown(e, c)} title="Drag onto a point to make this follow it (its parent)">
+                        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="M6.5 9.5l3-3M7 4.5l1.3-1.3a2.6 2.6 0 0 1 3.7 3.7L10.7 8.2M9 11.5l-1.3 1.3a2.6 2.6 0 0 1-3.7-3.7L5.3 7.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+                      </span>
+                    {/if}
                   </div>
                   {#if ghost && gesture?.kind === "move"}
                     <div
@@ -1400,6 +1481,60 @@
   }
   .th {
     cursor: grab;
+  }
+  .links {
+    position: absolute;
+    left: 0;
+    top: 0;
+    pointer-events: none;
+    overflow: visible;
+    z-index: 4;
+  }
+  .link {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+    opacity: 0.9;
+  }
+  .link.live {
+    stroke: var(--muted);
+    stroke-dasharray: none;
+  }
+  .link.live.ok {
+    stroke: var(--accent);
+  }
+  .linkend {
+    fill: var(--accent);
+  }
+  .whip {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 16px;
+    height: 16px;
+    display: grid;
+    place-items: center;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.45);
+    color: #fff;
+    cursor: crosshair;
+    z-index: 2;
+  }
+  .whip:hover {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .clip.whip-ok {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .clip.whip-no {
+    outline: 2px dashed var(--red);
+    outline-offset: -2px;
+  }
+  .label .par {
+    opacity: 0.85;
   }
   .th.sel-track {
     background: var(--accent-soft);

@@ -79,6 +79,8 @@ export interface ClipView {
   fade_out: Ticks;
   effects: number;
   audio: ClipAudio | null;
+  /// The point clip it's parented to.
+  parent: number | null;
 }
 
 export interface TrackView {
@@ -104,6 +106,8 @@ export interface SeqView {
   markers: MarkerView[];
   transitions: TransitionMark[];
   tracks: TrackView[];
+  /// The highlighted track: where Paste and new layers go.
+  target_track: number | null;
 }
 
 export type Transition =
@@ -252,6 +256,8 @@ export interface Inspector {
   /// The point clip it's parented to, and the ones it can be: [id, name].
   parent: number | null;
   parents: [number, string][];
+  /// Viewer line from the clip to its parent point (frame pixels), when both show.
+  parent_link: [[number, number], [number, number]] | null;
   tracking: number | null;
   tracking_elsewhere: boolean;
 }
@@ -632,7 +638,7 @@ export const api = {
   action: (name: string) => invoke("action", { name }),
   historyGoTo: (pos: number) => invoke("history_go_to", { pos }),
   seek: (t: Ticks) => invoke("seek", { t: Math.max(0, Math.round(t)) }),
-  trackOp: (index: number, op: "mute" | "lock" | "delete" | "rename" | "duplicate", name?: string) => invoke("track_op", { index, op, name }),
+  trackOp: (index: number, op: "mute" | "lock" | "delete" | "rename" | "duplicate" | "target" | "untarget", name?: string) => invoke("track_op", { index, op, name }),
   moveTrack: (index: number, to: number) => invoke("track_op", { index, op: "move", to }),
   setTrackAudio: (index: number, audio: TrackAudio) => invoke("set_track_audio", { index, audio }),
   setTransform: (id: number, transform: Transform) => invoke("set_transform", { id, transform }),

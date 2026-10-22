@@ -83,6 +83,8 @@ pub struct SeqView {
     /// Transitions and crossfades at cuts.
     pub transitions: Vec<crate::trans::TransitionMark>,
     pub tracks: Vec<TrackView>,
+    /// The highlighted track: where Paste and new layers go.
+    pub target_track: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -115,6 +117,8 @@ pub struct ClipView {
     pub effects: usize,
     /// Audio clips: the levels, keyframes and fades (for the volume line).
     pub audio: Option<ClipAudio>,
+    /// The point clip it's parented to.
+    pub parent: Option<u64>,
 }
 
 /// The selected clip, for the Controls panel.
@@ -167,6 +171,9 @@ pub struct Inspector {
     /// The point clip it's parented to, and the ones it can be: (id, name).
     pub parent: Option<u64>,
     pub parents: Vec<(u64, String)>,
+    /// A line in the Viewer from the clip to the point it's parented to (frame
+    /// pixels), when both show at the playhead.
+    pub parent_link: Option<[[f32; 2]; 2]>,
     /// Progress (0–1) of a tracking run on this clip.
     pub tracking: Option<f32>,
     /// A tracking run is going on for another clip.
@@ -454,6 +461,7 @@ pub fn state(e: &Editor) -> State {
                     fade_out: c.audio.fade_out.0,
                     effects: c.effects.len(),
                     audio: (t.kind == TrackKind::Audio).then(|| c.audio.clone()),
+                    parent: c.parent.map(|p| p.0),
                 })
                 .collect(),
         })
@@ -471,6 +479,7 @@ pub fn state(e: &Editor) -> State {
         markers: crate::ops::markers(s),
         transitions: crate::trans::marks(p, e.active),
         tracks,
+        target_track: e.target_track(),
     };
     let inspector = e.selection.and_then(|id| s.find_clip(id)).map(|(ti, c)| {
         let tr = &s.tracks[ti];
@@ -516,6 +525,7 @@ pub fn state(e: &Editor) -> State {
             scene_points: crate::scene::points(e),
             plane: c.plane.map(|[r, g, b, _]| format!("#{r:02x}{g:02x}{b:02x}")),
             parent: c.parent.map(|p| p.0),
+            parent_link: crate::scene::parent_link(e, c),
             parents: if tr.kind == TrackKind::Video { e.parent_choices(c.id).into_iter().map(|(id, n)| (id.0, n)).collect() } else { Vec::new() },
             tracking: job.filter(|(id, _)| *id == c.id).map(|(_, p)| p),
             tracking_elsewhere: job.is_some_and(|(id, _)| id != c.id),

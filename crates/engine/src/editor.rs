@@ -167,6 +167,10 @@ pub struct Editor {
     pub meters: crate::meters::Meters,
     /// The sequence shown in the timeline and viewer (0 = the main edit).
     pub active: usize,
+    /// The highlighted track (its name was clicked): where Paste and new
+    /// layers go. Kept as its place and name, so it can be found again after
+    /// tracks move about (see [`Editor::target_track`]).
+    target: Option<(usize, String)>,
     /// The composition last opened (0 = none yet).
     pub comp_open: usize,
     /// Where the playhead was in each sequence, to come back to.
@@ -226,6 +230,7 @@ impl Editor {
             comp_open: 0,
             playheads: HashMap::new(),
             rev: 1,
+            target: None,
             mixed_rev: 0,
             saved_rev: 1,
             waveforms: HashMap::new(),
@@ -305,6 +310,7 @@ impl Editor {
         self.playback.pause();
         self.playheads.insert(self.active, self.playback.playhead);
         self.active = i;
+        self.target = None;
         let t = self.playheads.get(&i).copied().unwrap_or(Time::ZERO);
         self.playback.seek(t);
         self.select_only(None);
@@ -634,7 +640,8 @@ impl Editor {
         }
         let t = self.playback.playhead.snap(self.seq().frame_rate);
         let cb = self.clipboard.clone();
-        match reelforge_core::clipboard::paste_clips(&mut self.project, self.active, &cb, t) {
+        let target = self.target_track();
+        match reelforge_core::clipboard::paste_clips_onto(&mut self.project, self.active, &cb, t, target) {
             Some(p) => {
                 let n = p.ids.len();
                 self.execute(p.cmd);
@@ -980,6 +987,50 @@ impl Editor {
 
     // ---- Tracks ---------------------------------------------------------------
 
+    /// The highlighted track, if it still exists: where it was, or else the
+    /// track with its name (it moved), or none (it went).
+    pub fn target_track(&self) -> Option<usize> {
+        let (i, name) = self.target.as_ref()?;
+        let tracks = &self.seq().tracks;
+        if tracks.get(*i).is_some_and(|t| &t.name == name) {
+            return Some(*i);
+        }
+        tracks.iter().position(|t| &t.name == name)
+    }
+
+    /// Highlight track `index` (or none).
+    pub fn set_target_track(&mut self, index: Option<usize>) {
+        self.target = index.and_then(|i| self.seq().tracks.get(i).map(|t| (i, t.name.clone())));
+        self.touch();
+    }
+
+    /// Where a new layer from `start` for `dur` goes: on the highlighted video
+    /// track if it has room there, else on a new track just above it; with no
+    /// video track highlighted, on a new track on top. Gives the command that
+    /// adds that track, if one's needed, and the track's index.
+    fn layer_track(&self, start: Time, dur: Time) -> (Option<AddTrack>, usize) {
+        let s = self.seq();
+        match self.target_track().filter(|&t| s.tracks[t].kind == TrackKind::Video) {
+            Some(t) if !s.tracks[t].locked && !s.overlaps(t, start, dur, &[]) => (None, t),
+            Some(t) => {
+                let add = AddTrack { seq: self.active, index: t + 1, track: reelforge_core::project::Track::new(s.next_track_name(TrackKind::Video), TrackKind::Video) };
+                (Some(add), t + 1)
+            }
+            None => {
+                let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
+                let t = add.index;
+                (Some(add), t)
+            }
+        }
+    }
+
+    /// After adding a layer: the highlight moves to its track, so the next one stacks on it.
+    fn follow_new_layer(&mut self, track: usize) {
+        if self.target.is_some() {
+            self.set_target_track(Some(track));
+        }
+    }
+
     pub fn add_track(&mut self, kind: TrackKind) {
         self.commit_live_edit();
         let cmd = AddTrack::new(&self.project, self.active, kind);
@@ -1002,8 +1053,9 @@ impl Editor {
         self.commit_live_edit();
         match reelforge_core::undo::DuplicateTrack::new(&mut self.project, self.active, index) {
             Ok(cmd) => {
-                let (name, n) = (cmd.track.name.clone(), cmd.track.clips.len());
+                let (name, n, at) = (cmd.track.name.clone(), cmd.track.clips.len(), cmd.index);
                 self.execute(Box::new(cmd));
+                self.set_target_track(Some(at));
                 self.status = format!("Duplicated the track as {name} ({n} clip{})", if n == 1 { "" } else { "s" });
             }
             Err(why) => self.status = format!("Can't duplicate that track: {why}"),
@@ -1024,7 +1076,11 @@ impl Editor {
         if name.is_empty() || name == old {
             return;
         }
+        let was_target = self.target_track() == Some(index);
         self.execute(Box::new(RenameTrack { seq: self.active, index, old, new: name }));
+        if was_target {
+            self.set_target_track(Some(index));
+        }
     }
 
     pub fn toggle_mute(&mut self, track: usize) {
@@ -1096,6 +1152,12 @@ impl Editor {
         let free = (0..s.tracks.len()).rev().find(|&t| s.tracks[t].kind == TrackKind::Video && !s.tracks[t].locked && !s.overlaps(t, start, dur, &[]));
         let mut cmds: Vec<Box<dyn Command>> = Vec::new();
         let track = match free {
+            // A highlighted track decides; otherwise the top track with room.
+            _ if self.target_track().is_some_and(|t| s.tracks[t].kind == TrackKind::Video) => {
+                let (add, t) = self.layer_track(start, dur);
+                cmds.extend(add.map(|a| Box::new(a) as Box<dyn Command>));
+                t
+            }
             Some(t) => t,
             None => {
                 let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
@@ -1107,6 +1169,7 @@ impl Editor {
         let id = ClipId(self.project.alloc_id());
         cmds.push(Box::new(AddClip { seq: self.active, track, clip: Clip::new_title(id, start, dur, spec) }));
         self.execute(Box::new(Batch { name: "Add title".into(), cmds }));
+        self.follow_new_layer(track);
         self.select_only(Some(id));
         self.status = "Added a title: type its text in the Controls panel".into();
     }
@@ -1123,14 +1186,15 @@ impl Editor {
         };
         let mut spec = TitleSpec::for_frame(s.height);
         spec.text = String::new();
-        // A new track on top, so it's above the footage it's drawn over.
-        let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
-        let track = add.index;
+        // A new track on top (or above the highlighted one), so it's above the footage it's drawn over.
+        let (add, track) = self.layer_track(start, dur);
         let id = ClipId(self.project.alloc_id());
         let mut clip = Clip::new_title(id, start, dur, spec);
         clip.effects.push(Effect::new(EffectKind::EnergyBlade));
-        let cmds: Vec<Box<dyn Command>> = vec![Box::new(add), Box::new(AddClip { seq: self.active, track, clip })];
+        let mut cmds: Vec<Box<dyn Command>> = add.into_iter().map(|a| Box::new(a) as Box<dyn Command>).collect();
+        cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
         self.execute(Box::new(Batch { name: "Add energy blade layer".into(), cmds }));
+        self.follow_new_layer(track);
         self.select_only(Some(id));
         self.status = "Added an energy blade layer: drag its hilt and tip in the Viewer".into();
     }
@@ -1147,16 +1211,17 @@ impl Editor {
         let dur = (s.duration() - start).max(Time::from_secs_f64(5.0)).snap(rate);
         let frame = [s.width as f32, s.height as f32];
         let any_3d = s.tracks.iter().flat_map(|t| &t.clips).any(|c| c.transform.three_d);
-        let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
-        let track = add.index;
+        let (add, track) = self.layer_track(start, dur);
         let id = ClipId(self.project.alloc_id());
         let mut clip = Clip::new_scene(id, start, dur, what, frame);
         if what == SceneObject::Light {
             clip.effects[0].params[reelforge_core::effects::light::KIND].value = light.min(3) as f32;
         }
         let name = clip.display_name(&self.project).into_owned();
-        let cmds: Vec<Box<dyn Command>> = vec![Box::new(add), Box::new(AddClip { seq: self.active, track, clip })];
+        let mut cmds: Vec<Box<dyn Command>> = add.into_iter().map(|a| Box::new(a) as Box<dyn Command>).collect();
+        cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
         self.execute(Box::new(Batch { name: format!("Add {}", name.to_lowercase()), cmds }));
+        self.follow_new_layer(track);
         self.select_only(Some(id));
         self.status = if what == SceneObject::Point {
             "Added a point: parent layers to it in their Transform settings, then move, turn or scale it to move them together".into()
@@ -1175,11 +1240,12 @@ impl Editor {
         let rate = s.frame_rate;
         let start = self.playback.playhead.snap(rate);
         let dur = (s.duration() - start).max(Time::from_secs_f64(5.0)).snap(rate);
-        let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
-        let track = add.index;
+        let (add, track) = self.layer_track(start, dur);
         let id = ClipId(self.project.alloc_id());
-        let cmds: Vec<Box<dyn Command>> = vec![Box::new(add), Box::new(AddClip { seq: self.active, track, clip: clip(id, start, dur) })];
+        let mut cmds: Vec<Box<dyn Command>> = add.into_iter().map(|a| Box::new(a) as Box<dyn Command>).collect();
+        cmds.push(Box::new(AddClip { seq: self.active, track, clip: clip(id, start, dur) }));
         self.execute(Box::new(Batch { name: label.into(), cmds }));
+        self.follow_new_layer(track);
         self.select_only(Some(id));
         id
     }
@@ -1233,30 +1299,28 @@ impl Editor {
     /// stays where it is on screen at the playhead, unless its place is
     /// animated (then its keys are kept as they are, relative to the new parent).
     pub fn set_parent(&mut self, id: ClipId, parent: Option<ClipId>) {
-        use reelforge_core::anim::Prop;
         self.commit_live_edit();
         if parent.is_some_and(|p| !self.parent_choices(id).iter().any(|(c, _)| *c == p)) {
+            self.status = "Can't follow that: only points can be parents, and not one that already follows this".into();
             return;
         }
         let Some((_, c)) = self.seq().find_clip(id) else { return };
         if c.parent == parent {
             return;
         }
+        // Keep it where it is at the playhead: undo the old parent's place there
+        // and apply the new one's inverse, to its transform and every keyframe
+        // (its own animation stays; from now on it moves with the new parent).
+        use reelforge_core::space3d::Null;
         let t = self.playback.playhead;
         let frame = self.frame_px();
-        let animated = [Prop::Position, Prop::Rotation, Prop::Scale, Prop::Depth].into_iter().any(|p| c.anim.prop_animated(p));
         let mut moved = c.clone();
         moved.parent = parent;
-        let local = if animated || c.scene.is_some() {
-            c.transform
-        } else {
-            let world = self.project.world_transform(self.active, c, t);
-            match self.project.parent_of(self.active, &moved, t) {
-                Some(n) => n.inverse().transform(&world, frame),
-                None => world,
-            }
-        };
-        let cmd = reelforge_core::undo::SetParent { seq: self.active, id, old: (c.parent, c.transform), new: (parent, local) };
+        let old_parent = self.project.parent_of(self.active, c, t).unwrap_or(Null::IDENTITY);
+        let new_parent = self.project.parent_of(self.active, &moved, t).unwrap_or(Null::IDENTITY);
+        let fix = old_parent.within(&new_parent.inverse());
+        reelforge_core::space3d::reparent(&mut moved, &fix, frame);
+        let cmd = reelforge_core::undo::SetParent { seq: self.active, id, old: Box::new(c.clone()), new: Box::new(moved) };
         self.execute(Box::new(cmd));
     }
 
@@ -2575,6 +2639,126 @@ mod tests {
         e.undo();
         assert!(!e.seq().find_clip(id).unwrap().1.effects[0].params[blade::HILT_X].keys.is_animated(), "one undo step");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_highlighted_track_takes_new_layers_and_pastes() {
+        let mut e = editor(); // V1 V2 A1
+        let names = |e: &Editor| e.seq().tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        // Nothing highlighted: a new plane goes on a new top track.
+        e.add_plane([255, 0, 0, 255]);
+        assert_eq!(names(&e), ["Video 1", "Video 2", "Video 3", "Audio 1"]);
+        let first = e.selection.unwrap();
+        // Highlight V1 (empty): the next plane goes on V1 itself, and V1 stays highlighted.
+        e.set_target_track(Some(0));
+        e.add_plane([0, 255, 0, 255]);
+        assert_eq!(e.seq().find_clip(e.selection.unwrap()).unwrap().0, 0);
+        assert_eq!(e.target_track(), Some(0));
+        // V1 is now taken there: the next one goes on a new track just above it, which becomes the highlight.
+        e.add_adjustment_layer();
+        assert_eq!(names(&e), ["Video 1", "Video 4", "Video 2", "Video 3", "Audio 1"]);
+        assert_eq!(e.seq().find_clip(e.selection.unwrap()).unwrap().0, 1);
+        assert_eq!(e.target_track(), Some(1));
+        // A title with V4 highlighted (taken): above it again.
+        e.add_title();
+        assert_eq!(e.seq().find_clip(e.selection.unwrap()).unwrap().0, 2);
+        assert_eq!(e.seq().tracks[2].kind, TrackKind::Video);
+
+        // Paste: the copied plane (on "Video 3", the top) lands on the highlighted track.
+        e.select_only(Some(first));
+        assert_eq!(e.copy_selection(), 1);
+        e.set_target_track(Some(0));
+        let at = e.playback.playhead;
+        e.playback.seek(at + Time::from_secs_f64(60.0));
+        e.paste();
+        assert_eq!(e.seq().find_clip(e.selection.unwrap()).unwrap().0, 0, "pasted onto the highlighted track");
+
+        // The highlight follows its track by name when tracks move, and goes when it's deleted.
+        let v1 = e.seq().tracks.iter().position(|t| t.name == "Video 1").unwrap();
+        e.set_target_track(Some(v1));
+        e.move_track(v1, 3);
+        assert_eq!(e.seq().tracks[e.target_track().unwrap()].name, "Video 1");
+        e.undo();
+        assert_eq!(e.seq().tracks[e.target_track().unwrap()].name, "Video 1");
+        let a1 = e.seq().tracks.iter().position(|t| t.name == "Audio 1").unwrap();
+        e.add_track(TrackKind::Audio);
+        e.set_target_track(Some(a1));
+        e.delete_track(a1);
+        assert_eq!(e.target_track(), None);
+        // Duplicating highlights the copy.
+        e.duplicate_track(0);
+        assert_eq!(e.seq().tracks[e.target_track().unwrap()].name, format!("{} copy", e.seq().tracks[0].name));
+    }
+
+    #[test]
+    fn parenting_a_keyframed_layer_keeps_it_in_place() {
+        use reelforge_core::anim::Key;
+        use reelforge_core::effects::point as pt;
+        use reelforge_core::space3d::SceneObject;
+        let s = Time::from_secs_f64;
+        let mut e = editor();
+        e.add_plane([200, 0, 0, 255]);
+        let plane = e.selection.unwrap();
+        // The plane moves (keys at 0 s and 4 s), turns and grows.
+        {
+            let c = e.project.sequences[0].find_clip_mut(plane).unwrap().1;
+            c.anim.position.0 = vec![Key::new(s(0.0), [-200.0, 50.0], Default::default()), Key::new(s(4.0), [300.0, -80.0], Default::default())];
+            c.anim.rotation.0 = vec![Key::new(s(1.0), 10.0, Default::default()), Key::new(s(3.0), 60.0, Default::default())];
+            c.anim.scale.0 = vec![Key::new(s(0.0), [1.0, 1.0], Default::default()), Key::new(s(4.0), [1.5, 0.5], Default::default())];
+        }
+        // A point, moved, turned 90° and doubled.
+        e.add_scene_object(SceneObject::Point, 0);
+        let point = e.selection.unwrap();
+        {
+            let fx = &mut e.project.sequences[0].find_clip_mut(point).unwrap().1.effects[0];
+            fx.normalize();
+            (fx.params[pt::X].value, fx.params[pt::Y].value, fx.params[pt::ROTATION].value, fx.params[pt::SCALE].value) = (120.0, -40.0, 90.0, 200.0);
+        }
+        let world = |e: &Editor, at: f64| {
+            let c = e.seq().find_clip(plane).unwrap().1.clone();
+            e.project.world_transform(e.active, &c, s(at))
+        };
+        let close = |a: Transform, b: Transform| {
+            (a.position[0] - b.position[0]).abs() < 1e-2 && (a.position[1] - b.position[1]).abs() < 1e-2 && (a.rotation - b.rotation).abs() < 1e-3 && (a.scale[0] - b.scale[0]).abs() < 1e-4 && (a.scale[1] - b.scale[1]).abs() < 1e-4
+        };
+        let before: Vec<Transform> = [0.0, 1.0, 2.5, 4.0].iter().map(|&t| world(&e, t)).collect();
+        e.playback.seek(s(2.0));
+        e.set_parent(plane, Some(point));
+        // The point doesn't move: the plane looks the same at every moment, animation and all.
+        for (t, b) in [0.0, 1.0, 2.5, 4.0].iter().zip(&before) {
+            assert!(close(world(&e, *t), *b), "at {t} s: {:?} vs {:?}", world(&e, *t), b);
+        }
+        assert_eq!(e.seq().find_clip(plane).unwrap().1.anim.position.0.len(), 2, "the same keys, converted");
+        // Now the point moves: the plane goes with it.
+        {
+            let fx = &mut e.project.sequences[0].find_clip_mut(point).unwrap().1.effects[0];
+            fx.params[pt::X].value += 50.0;
+        }
+        assert!((world(&e, 2.5).position[0] - before[2].position[0] - 50.0).abs() < 1e-2);
+        {
+            let fx = &mut e.project.sequences[0].find_clip_mut(point).unwrap().1.effects[0];
+            fx.params[pt::X].value -= 50.0;
+        }
+        // Unparenting keeps it in place too; undo goes back step by step.
+        e.set_parent(plane, None);
+        for (t, b) in [0.0, 1.0, 2.5, 4.0].iter().zip(&before) {
+            assert!(close(world(&e, *t), *b), "unparented, at {t} s");
+        }
+        e.undo();
+        e.undo();
+        let c = e.seq().find_clip(plane).unwrap().1;
+        assert_eq!((c.parent, c.anim.position.0[1].value), (None, [300.0, -80.0]), "undo restores the keys");
+
+        // A camera parented to the point stays put too, its place and aim.
+        e.add_scene_object(SceneObject::Camera, 0);
+        let cam = e.selection.unwrap();
+        let place = |e: &Editor| e.project.scene3d_at(e.active, s(2.0)).camera;
+        let c0 = place(&e);
+        e.set_parent(cam, Some(point));
+        let c1 = place(&e);
+        for k in 0..3 {
+            assert!((c0.position[k] - c1.position[k]).abs() < 1e-2 && (c0.target[k] - c1.target[k]).abs() < 1e-2, "{c0:?} vs {c1:?}");
+        }
     }
 
     #[test]

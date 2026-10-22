@@ -323,6 +323,16 @@
 
 </script>
 
+{#if ins?.parent_link}
+  <!-- The selected layer's link to the point it follows. -->
+  {@const [a, b] = ins.parent_link.map((p) => [fit.x + p[0] * fit.k, fit.y + p[1] * fit.k])}
+  <svg class="overlay" aria-hidden="true">
+    <line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} class="plink" />
+    <circle cx={a[0]} cy={a[1]} r="3" class="plinkend" />
+    <circle cx={b[0]} cy={b[1]} r="5" class="plinkend parent" />
+  </svg>
+{/if}
+
 {#if ins && ins.scene_points.length}
   <svg class="overlay" aria-hidden="true">
     {#if ins.scene_points.length === 2}
@@ -651,6 +661,22 @@
     stroke-width: 14;
     pointer-events: stroke;
     cursor: move;
+  }
+  .plink {
+    stroke: var(--accent);
+    stroke-width: 1.25;
+    stroke-dasharray: 4 4;
+    opacity: 0.85;
+  }
+  .plinkend {
+    fill: var(--accent);
+    stroke: rgba(0, 0, 0, 0.6);
+    stroke-width: 1;
+  }
+  .plinkend.parent {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
   }
   .bladeaxis {
     stroke: rgba(255, 255, 255, 0.75);

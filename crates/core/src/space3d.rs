@@ -507,3 +507,86 @@ mod tests {
         assert!(far.blur(&sc.camera) > 20.0, "{}", far.blur(&sc.camera));
     }
 }
+
+/// Move `clip` by `fix` (another null applied on top of where it is): its
+/// transform and every keyframe of its position, rotation, scale, Z and corner
+/// pin, and for points, cameras and lights their place settings. Used when a
+/// clip's parent changes: with `fix` = (new parent)⁻¹ ∘ (old parent) at the
+/// playhead, the clip stays exactly where it is on screen there, keeps its own
+/// animation, and from then on moves with the new parent.
+///
+/// Each channel converts on its own (positions move, turn and scale; rotation
+/// gains a constant; scale multiplies), so keyframe times, easing and Bézier
+/// handles stay valid. A scene object's X/Y/Z settings are converted together
+/// at every time any of them has a key (keys are added where only some had one).
+pub fn reparent(clip: &mut crate::project::Clip, fix: &Null, frame: [f32; 2]) {
+    use crate::effects::point;
+    if *fix == Null::IDENTITY {
+        return;
+    }
+    let (hw, hh) = (frame[0] * 0.5, frame[1] * 0.5);
+    // The transform and its keyframes.
+    clip.transform = fix.transform(&clip.transform, frame);
+    let a = &mut clip.anim;
+    for k in &mut a.position.0 {
+        // Depth is converted on its own (it's scaled and offset only).
+        let p = fix.apply([k.value[0], k.value[1], 0.0]);
+        k.value = [p[0], p[1]];
+    }
+    for k in &mut a.rotation.0 {
+        k.value += fix.rotation;
+    }
+    for k in &mut a.scale.0 {
+        k.value = [k.value[0] * fix.scale, k.value[1] * fix.scale];
+    }
+    for k in &mut a.depth.0 {
+        k.value = fix.position[2] + fix.scale * k.value;
+    }
+    for k in &mut a.pin.0 {
+        for q in &mut k.value.0 {
+            let m = fix.apply([q[0] - hw, q[1] - hh, 0.0]);
+            *q = [m[0] + hw, m[1] + hh];
+        }
+    }
+    // A point, camera or light keeps its place in its settings.
+    let (Some(what), Some(fx)) = (clip.scene, clip.effects.first_mut()) else { return };
+    fx.normalize();
+    let triples: &[[usize; 3]] = match what {
+        SceneObject::Point => &[[point::X, point::Y, point::Z]],
+        SceneObject::Camera => &[[cam::X, cam::Y, cam::Z], [cam::TARGET_X, cam::TARGET_Y, cam::TARGET_Z]],
+        SceneObject::Light => &[[li::X, li::Y, li::Z], [li::TARGET_X, li::TARGET_Y, li::TARGET_Z]],
+    };
+    for idx in triples {
+        if idx.iter().any(|&i| i >= fx.params.len()) {
+            continue;
+        }
+        let raw = |fx: &Effect, i: usize, t: Time| fx.params[i].keys.value_at(t, fx.params[i].value);
+        let mut times: Vec<Time> = idx.iter().flat_map(|&i| fx.params[i].keys.0.iter().map(|k| k.at)).collect();
+        times.sort();
+        times.dedup();
+        // Work out every new value first, then write them.
+        let new_keys: Vec<(Time, V3)> = times.iter().map(|&t| (t, fix.apply([raw(fx, idx[0], t), raw(fx, idx[1], t), raw(fx, idx[2], t)]))).collect();
+        let still = fix.apply([fx.params[idx[0]].value, fx.params[idx[1]].value, fx.params[idx[2]].value]);
+        for (axis, &i) in idx.iter().enumerate() {
+            fx.params[i].value = still[axis];
+            for (t, v) in &new_keys {
+                fx.params[i].keys.set(*t, v[axis]);
+            }
+        }
+    }
+    if what == SceneObject::Point {
+        let p = &mut fx.params;
+        if point::ROTATION < p.len() {
+            p[point::ROTATION].value += fix.rotation;
+            for k in &mut p[point::ROTATION].keys.0 {
+                k.value += fix.rotation;
+            }
+        }
+        if point::SCALE < p.len() {
+            p[point::SCALE].value *= fix.scale;
+            for k in &mut p[point::SCALE].keys.0 {
+                k.value *= fix.scale;
+            }
+        }
+    }
+}
