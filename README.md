@@ -448,6 +448,12 @@ What works now:
   should follow, so leave it at 0 there. When **stabilising**, **Keep camera moves** (frames)
   keeps deliberate camera moves and takes out only the shake. Everything is written as ordinary keyframes you can edit or undo, and masks on the
   clip can follow the track too
+  - **Onto a point**: choose a **Point** (made with **New… → New Point**) under **Apply to** and
+    the point follows the track; every layer, camera and light parented to it follows too, so
+    one track can drive several layers. The point keeps where it is at the start of the track.
+    One-point tracks move it; two-point tracks also turn and scale it; four-point, planar and
+    mesh tracks give it the surface's best-fitting move, turn and scale (a point has no
+    perspective). Tick X, Y, rotation and scale to choose which parts are keyed
 - **3D layers, camera and lights**:
   - **3D layer** (Transform section of the Controls panel): the layer becomes a flat plane in
     3D space with a **Position Z** (positive is further away) and **Rotation X / Y** (Rotation

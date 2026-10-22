@@ -220,6 +220,8 @@ pub struct TargetView {
     pub mask: Option<usize>,
     /// An energy blade effect of `clip` (its index in the stack), instead of the clip.
     pub blade: Option<usize>,
+    /// A point (null) clip: it moves, turns and scales, and its children follow.
+    pub point: bool,
     pub label: String,
 }
 
@@ -252,10 +254,10 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
         TrackMode::Mesh => None,
     };
     if let Some(label) = stabilise {
-        targets.push(TargetView { clip: c.id.0, mask: None, blade: None, label: label.into() });
+        targets.push(TargetView { clip: c.id.0, mask: None, blade: None, point: false, label: label.into() });
     }
     for (i, m) in c.masks.iter().enumerate() {
-        targets.push(TargetView { clip: c.id.0, mask: Some(i), blade: None, label: format!("Mask: {}", m.name) });
+        targets.push(TargetView { clip: c.id.0, mask: Some(i), blade: None, point: false, label: format!("Mask: {}", m.name) });
     }
     // Energy blades: on this clip, or (below) on layers over it.
     let blades = |o: &Clip| -> Vec<usize> { o.effects.iter().enumerate().filter(|(_, f)| f.kind == reelforge_core::EffectKind::EnergyBlade).map(|(i, _)| i).collect() };
@@ -263,22 +265,37 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
     if trk.mode != TrackMode::Mesh {
         let list = blades(c);
         for &i in &list {
-            targets.push(TargetView { clip: c.id.0, mask: None, blade: Some(i), label: format!("{}: hilt and tip (this clip)", blade_label(&list, i)) });
+            targets.push(TargetView { clip: c.id.0, mask: None, blade: Some(i), point: false, label: format!("{}: hilt and tip (this clip)", blade_label(&list, i)) });
         }
     }
     if let Some((ta, tb)) = range {
         for tr in s.tracks.iter().filter(|t| t.kind == TrackKind::Video) {
             for o in tr.clips.iter().filter(|o| o.id != c.id && o.timeline_start.0 < tb && o.timeline_end().0 > ta) {
+                // Cameras and lights follow by being parented to a tracked point.
+                match o.scene {
+                    Some(reelforge_core::space3d::SceneObject::Point) => {
+                        let kids = s.tracks.iter().flat_map(|t| &t.clips).filter(|k| k.parent == Some(o.id)).count();
+                        let with = match kids {
+                            0 => String::new(),
+                            1 => " and its 1 child".into(),
+                            n => format!(" and its {n} children"),
+                        };
+                        targets.push(TargetView { clip: o.id.0, mask: None, blade: None, point: true, label: format!("Point{with} ({})", tr.name) });
+                        continue;
+                    }
+                    Some(_) => continue,
+                    None => {}
+                }
                 let how = match trk.mode {
                     TrackMode::Mesh => "Warp over the grid: ",
                     m if m.is_perspective() => "Pin into the surface: ",
                     _ => "",
                 };
-                targets.push(TargetView { clip: o.id.0, mask: None, blade: None, label: format!("{how}{} ({})", o.display_name(&e.project), tr.name) });
+                targets.push(TargetView { clip: o.id.0, mask: None, blade: None, point: false, label: format!("{how}{} ({})", o.display_name(&e.project), tr.name) });
                 if trk.mode != TrackMode::Mesh {
                     let list = blades(o);
                     for &i in &list {
-                        targets.push(TargetView { clip: o.id.0, mask: None, blade: Some(i), label: format!("{}: hilt and tip ({}, {})", blade_label(&list, i), o.display_name(&e.project), tr.name) });
+                        targets.push(TargetView { clip: o.id.0, mask: None, blade: Some(i), point: false, label: format!("{}: hilt and tip ({}, {})", blade_label(&list, i), o.display_name(&e.project), tr.name) });
                     }
                 }
             }

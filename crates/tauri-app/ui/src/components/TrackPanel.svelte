@@ -69,7 +69,10 @@
   const stabilising = $derived(!!ins && chosen?.clip === ins.id && chosen?.mask === null && chosen?.blade === null);
   const toBlade = $derived(chosen?.blade != null);
   const toMask = $derived(chosen?.mask != null);
-  const anyAxis = $derived(axes.x || axes.y || (t?.mode === "Transform" && (axes.rotation || axes.scale)));
+  // A point turns and scales with any track that has more than one point.
+  const toPoint = $derived(chosen?.point === true);
+  const turns = $derived(t?.mode === "Transform" || (toPoint && t?.mode !== "Position"));
+  const anyAxis = $derived(axes.x || axes.y || (turns && (axes.rotation || axes.scale)));
 
   function pick(m: TrackMode) {
     if (!ins) return;
@@ -209,7 +212,7 @@
           <div class="checks" class:dim={toMask}>
             <label title="Movement across"><input type="checkbox" bind:checked={axes.x} disabled={toMask} /> X position</label>
             <label title="Movement up and down"><input type="checkbox" bind:checked={axes.y} disabled={toMask} /> Y position</label>
-            {#if t.mode === "Transform"}
+            {#if turns}
               <label><input type="checkbox" bind:checked={axes.rotation} disabled={toMask} /> Rotation</label>
               <label><input type="checkbox" bind:checked={axes.scale} disabled={toMask} /> Scale</label>
             {/if}
@@ -224,7 +227,9 @@
           <div class="row">
             <button class="primary wide" disabled={!chosen || (!toMask && !anyAxis)} onclick={apply} title="Writes keyframes (undoable)">Apply</button>
           </div>
-          {#if toBlade}
+          {#if toPoint}
+            <p class="note">The point keeps where it is at the start of the track and moves with it from there. Every layer, camera and light parented to the point follows too (Controls → Layer → Parent).{#if t.mode !== "Position" && t.mode !== "Transform"} A point can't take perspective: it gets the surface's move, turn and scale.{/if}</p>
+          {:else if toBlade}
             <p class="note">The blade keeps where its hilt and tip are at the playhead and moves with the tracked points from there. For a prop with two markers, a two-point track also turns and stretches it.</p>
           {:else if t.mode === "Mesh" && chosen && chosen.clip !== ins.id}
             <p class="note">The layer is stretched over the grid and bends with it (Controls → Transform: remove the mesh warp to go back).</p>

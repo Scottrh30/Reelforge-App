@@ -294,7 +294,7 @@ export interface TrackerView {
   frames: number;
   range: [Ticks, Ticks] | null;
   tracked: boolean;
-  targets: { clip: number; mask: number | null; blade: number | null; label: string }[];
+  targets: { clip: number; mask: number | null; blade: number | null; point: boolean; label: string }[];
   grid: [number, number];
   /// Smoothing in frames, and each point's smoothed path (empty when 0).
   smooth: number;

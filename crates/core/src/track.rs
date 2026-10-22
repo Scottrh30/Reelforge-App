@@ -1500,6 +1500,57 @@ mod tests {
         assert_eq!(back, t2);
     }
 
+    #[test]
+    fn points_follow_tracks_and_carry_their_children() {
+        use crate::effects::point as pt;
+        use crate::space3d::{Null, SceneObject};
+        let secs = Time::from_secs_f64;
+        let tracked = Clip::new(ClipId(1), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
+        let (layer, frame) = ([200.0, 200.0], [200.0, 200.0]);
+        let mut point = Clip::new_scene(ClipId(2), secs(0.0), secs(4.0), SceneObject::Point, frame);
+        point.effects[0].params[pt::X].value = 10.0;
+        point.effects[0].params[pt::ROTATION].value = 5.0;
+        let at = |fx: &crate::effects::Effect, t: f64| Null::from_effect(fx, secs(t));
+        // Two points turning 90° clockwise and doubling about (100, 100): the point
+        // 10 px right of the first one swings to 20 px below it, turns and doubles.
+        let fx = follow_point(&tracked, &two_point_track(), layer, frame, &point, |_| None, Axes::ALL).unwrap();
+        let end = at(&fx, 1.0);
+        assert!((end.position[0]).abs() < 1e-3 && (end.position[1] - 20.0).abs() < 1e-3, "{end:?}");
+        assert!((end.rotation - 95.0).abs() < 1e-3 && (end.scale - 2.0).abs() < 1e-4, "{end:?}");
+        assert_eq!(at(&fx, 0.0), Null { position: [10.0, 0.0, 0.0], rotation: 5.0, scale: 1.0 });
+        // A layer parented to it, sitting on the first tracked point (which doesn't move), stays on it.
+        let child = at(&point.effects[0], 0.0).inverse().apply([0.0, 0.0, 0.0]);
+        let p = end.apply(child);
+        assert!(p[0].abs() < 1e-3 && p[1].abs() < 1e-3, "{p:?}");
+        // Only X: it moves across, nothing else is keyed.
+        let fx = follow_point(&tracked, &two_point_track(), layer, frame, &point, |_| None, Axes { y: false, rotation: false, scale: false, ..Axes::ALL }).unwrap();
+        assert!(fx.params[pt::Y].keys.0.is_empty() && fx.params[pt::ROTATION].keys.0.is_empty() && fx.params[pt::SCALE].keys.0.is_empty());
+        assert_eq!(fx.params[pt::X].keys.0.len(), 2);
+        // Inside a parent turned 90° and moved: the point still lands in the same place on the frame.
+        let parent = Null { position: [30.0, -5.0, 0.0], rotation: 90.0, scale: 0.5 };
+        let mut inside = point.clone();
+        let own0 = Null { position: [10.0, 0.0, 0.0], rotation: 5.0, scale: 1.0 }.within(&parent.inverse());
+        inside.effects[0].params[pt::X].value = own0.position[0];
+        inside.effects[0].params[pt::Y].value = own0.position[1];
+        inside.effects[0].params[pt::ROTATION].value = own0.rotation;
+        inside.effects[0].params[pt::SCALE].value = own0.scale * 100.0;
+        let fx = follow_point(&tracked, &two_point_track(), layer, frame, &inside, |_| Some(parent), Axes::ALL).unwrap();
+        let w = at(&fx, 1.0).within(&parent);
+        assert!((w.position[0]).abs() < 1e-2 && (w.position[1] - 20.0).abs() < 1e-2, "{w:?}");
+        assert!((w.rotation - 95.0).abs() < 1e-2 && (w.scale - 2.0).abs() < 1e-3, "{w:?}");
+        // A planar track that moves 20, 10 and doubles about its middle: the best fit has no turn.
+        let q0 = [[50.0, 50.0], [150.0, 50.0], [150.0, 150.0], [50.0, 150.0]];
+        let q1 = [[20.0, 10.0], [220.0, 10.0], [220.0, 210.0], [20.0, 210.0]];
+        let planar = Tracker { mode: TrackMode::Planar, ..quad_track(&[q0, q1]) };
+        let fx = follow_point(&tracked, &planar, layer, frame, &point, |_| None, Axes::ALL).unwrap();
+        let end = at(&fx, 1.0);
+        // (110, 100) on the frame, from the middle (100, 100): +20, +10, then 2× → (140, 110).
+        assert!((end.position[0] - 40.0).abs() < 1e-3 && (end.position[1] - 10.0).abs() < 1e-3, "{end:?}");
+        assert!((end.rotation - 5.0).abs() < 1e-3 && (end.scale - 2.0).abs() < 1e-4, "{end:?}");
+        // Not a point, or no overlap: nothing.
+        assert!(follow_point(&tracked, &planar, layer, frame, &tracked, |_| None, Axes::ALL).is_none());
+    }
+
     /// A planar track's four corners apply exactly as a four-point track's do.
     #[test]
     fn planar_tracks_apply_like_corner_pins() {
@@ -1622,4 +1673,130 @@ mod tests {
         p.move_to(s(3.0), [1.0, 2.0]);
         assert_eq!((p.point, p.start, p.path.len()), ([1.0, 2.0], s(3.0), 3));
     }
+}
+
+/// The best-fitting move, turn and uniform scale taking points `from` to
+/// `to` (least squares; at least two points that aren't all in one place).
+fn fit_similar(from: &[[f32; 2]], to: &[[f32; 2]]) -> Option<Homography> {
+    let n = from.len().min(to.len());
+    if n == 0 {
+        return None;
+    }
+    let mid = |p: &[[f32; 2]]| p[..n].iter().fold([0.0f64; 2], |a, q| [a[0] + q[0] as f64 / n as f64, a[1] + q[1] as f64 / n as f64]);
+    let (cf, ct) = (mid(from), mid(to));
+    let (mut dot, mut cross, mut len) = (0.0, 0.0, 0.0);
+    for (f, t) in from[..n].iter().zip(&to[..n]) {
+        let u = [f[0] as f64 - cf[0], f[1] as f64 - cf[1]];
+        let v = [t[0] as f64 - ct[0], t[1] as f64 - ct[1]];
+        dot += u[0] * v[0] + u[1] * v[1];
+        cross += u[0] * v[1] - u[1] * v[0];
+        len += u[0] * u[0] + u[1] * u[1];
+    }
+    if len < 1e-6 {
+        return None;
+    }
+    let (a, b) = (dot / len, cross / len);
+    Some(Homography([a, -b, ct[0] - (a * cf[0] - b * cf[1]), b, a, ct[1] - (b * cf[0] + a * cf[1]), 0.0, 0.0, 1.0]))
+}
+
+/// Make point clip `target` (its settings are `target.effects[0]`) follow the
+/// tracked motion, so every layer parented to it follows too. The point keeps
+/// where it is at the start of the tracked span and moves, turns and scales
+/// with the tracked points from there, as keyframes over the span (its keys
+/// outside it are kept). One-point tracks move it; two-point tracks also turn
+/// and scale it; corner-pin, planar and mesh tracks give it the surface's
+/// best-fitting move, turn and scale (a point can't take perspective).
+///
+/// `parent_at` is where the point's own parent puts it at a sequence time,
+/// if it has one: the point's settings are inside that.
+pub fn follow_point(
+    tracked: &Clip,
+    tracker: &Tracker,
+    layer: [f32; 2],
+    frame: [f32; 2],
+    target: &Clip,
+    parent_at: impl Fn(Time) -> Option<crate::space3d::Null>,
+    axes: Axes,
+) -> Option<crate::effects::Effect> {
+    use crate::effects::point as pt;
+    use crate::space3d::Null;
+    let fx = target.effects.first().filter(|f| f.kind == crate::effects::EffectKind::Point)?;
+    let to_seq = |src: Time| tracked.timeline_of_media(src).unwrap_or(tracked.timeline_start);
+    let frames: Vec<(Time, Vec<[f32; 2]>)> = tracker
+        .frames()
+        .into_iter()
+        .map(|(src, pts)| {
+            let t = to_seq(src);
+            let m = tracked.transform_at(t).layer_map(layer, frame);
+            (t, pts.iter().map(|p| m.apply([p[0] - layer[0] / 2.0, p[1] - layer[1] / 2.0])).collect())
+        })
+        .filter(|(t, _)| *t >= target.timeline_start && *t <= target.timeline_end())
+        .collect();
+    let (t0, ref_pts) = frames.first().map(|(t, p)| (*t, p.clone()))?;
+    let turns = tracker.mode != TrackMode::Position;
+    let clamp_t = |t: Time| t.max(target.timeline_start).min(target.timeline_end());
+    // The point as placed in the frame (inside its parent) at sequence time `t`.
+    let world = |t: Time| {
+        let own = Null::from_effect(fx, target.source_time(clamp_t(t)));
+        match parent_at(t) {
+            Some(p) => own.within(&p),
+            None => own,
+        }
+    };
+    let base = world(t0);
+    let c = [frame[0] as f64 / 2.0, frame[1] as f64 / 2.0];
+    let mut keys: Vec<(Time, Null)> = Vec::new();
+    let mut last_angle: Option<f32> = None;
+    for (t, pts) in &frames {
+        let h = match tracker.mode {
+            TrackMode::Position | TrackMode::Transform => motion_between(tracker.mode, &ref_pts, pts),
+            _ => fit_similar(&ref_pts, pts),
+        };
+        let Some(h) = h else { continue };
+        let sim = Similar::of(&h);
+        let now = world(*t);
+        // Where the point's centre goes (frame pixels, from the frame's centre).
+        let m = h.apply([(c[0] + base.position[0] as f64) as f32, (c[1] + base.position[1] as f64) as f32]);
+        let moved = [m[0] - c[0] as f32, m[1] - c[1] as f32];
+        let mut angle = base.rotation + sim.angle as f32;
+        if let Some(prev) = last_angle {
+            angle = prev + ((angle - prev + 180.0).rem_euclid(360.0) - 180.0);
+        }
+        last_angle = Some(angle);
+        // Parts left out keep the point's own (animated) value.
+        let desired = Null {
+            position: [if axes.x { moved[0] } else { now.position[0] }, if axes.y { moved[1] } else { now.position[1] }, now.position[2]],
+            rotation: if turns && axes.rotation { angle } else { now.rotation },
+            scale: if turns && axes.scale { base.scale * sim.scale as f32 } else { now.scale },
+        };
+        // Back into the parent's space.
+        let own = match parent_at(*t) {
+            Some(p) => desired.within(&p.inverse()),
+            None => desired,
+        };
+        keys.push((target.source_time(*t), own));
+    }
+    let (Some(lo), Some(hi)) = (keys.iter().map(|k| k.0).min(), keys.iter().map(|k| k.0).max()) else { return None };
+    let mut out = fx.clone();
+    out.normalize();
+    let mut write = |i: usize, get: &dyn Fn(&Null) -> f32| {
+        let p = &mut out.params[i];
+        p.keys.0.retain(|k| k.at < lo || k.at > hi);
+        for (at, n) in &keys {
+            p.keys.set(*at, get(n));
+        }
+    };
+    if axes.x {
+        write(pt::X, &|n| n.position[0]);
+    }
+    if axes.y {
+        write(pt::Y, &|n| n.position[1]);
+    }
+    if turns && axes.rotation {
+        write(pt::ROTATION, &|n| n.rotation);
+    }
+    if turns && axes.scale {
+        write(pt::SCALE, &|n| n.scale * 100.0);
+    }
+    Some(out)
 }

@@ -2025,6 +2025,35 @@ impl Editor {
         let stabilise = tracked == target;
         let opts = ApplyOptions { stabilise, smoothing: if stabilise { smoothing } else { 0.0 }, axes };
         let mode = track.mode;
+        if b.scene == Some(reelforge_core::space3d::SceneObject::Point) && !stabilise {
+            if s.is_locked(target) {
+                self.status = LOCKED.into();
+                return;
+            }
+            let parent_at = |t: Time| self.project.parent_of(self.active, b, t);
+            let Some(fx) = reelforge_core::track::follow_point(a, track, layer, frame, b, parent_at, axes) else {
+                self.status = if track.frames().is_empty() {
+                    "Nothing to apply: track the points first".into()
+                } else if !axes.x && !axes.y && (mode == TrackMode::Position || (!axes.rotation && !axes.scale)) {
+                    "Nothing to apply: tick X or Y position".into()
+                } else {
+                    "Nothing to apply: the track doesn't overlap that point".into()
+                };
+                return;
+            };
+            let old = b.visual();
+            let mut new = old.clone();
+            new.effects[0] = fx;
+            let kids = s.tracks.iter().flat_map(|t| &t.clips).filter(|c| c.parent == Some(target)).count();
+            self.execute(Box::new(SetClipVisual { seq: self.active, id: target, old, new }));
+            let what = if mode == TrackMode::Position { "point" } else { "position, rotation and scale" };
+            self.status = match kids {
+                0 => format!("The point now follows the tracked {what}: parent layers to it (Controls → Layer → Parent) to make them follow"),
+                1 => format!("The point now follows the tracked {what}, and so does the layer parented to it"),
+                n => format!("The point now follows the tracked {what}, and so do the {n} layers parented to it"),
+            };
+            return;
+        }
         if mode == TrackMode::Mesh {
             if stabilise {
                 self.status = "A mesh track can't stabilise its own clip: apply it to another layer or a mask".into();
@@ -2374,6 +2403,55 @@ mod tests {
         assert!(!c.effects[0].params[blade::HILT_Y].keys.is_animated(), "Y left alone");
         e.undo();
         assert!(!e.seq().find_clip(id).unwrap().1.effects[0].params[blade::HILT_X].keys.is_animated(), "one undo step");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tracked_point_carries_the_layers_parented_to_it() {
+        use reelforge_core::space3d::SceneObject;
+        use reelforge_core::track::TrackSample;
+        let dir = std::env::temp_dir().join(format!("rf-engine-trackpoint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(f) = clip_file(&dir, "a.mp4") else { return };
+        let mut e = editor();
+        let info = reelforge_media::probe(&f).unwrap();
+        e.project.media.push(MediaAsset { id: MediaId(1), path: f, name: "a.mp4".into(), info });
+        (e.project.sequences[0].width, e.project.sequences[0].height) = (160, 90);
+        let id = ClipId(e.project.alloc_id());
+        let mut c = Clip::new(id, MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.0), None);
+        let mut t = Tracker::new(TrackMode::Position, [80.0, 45.0], [160.0, 90.0], Time::ZERO);
+        t.points[0].path = vec![
+            TrackSample { at: Time::ZERO, pos: [80.0, 45.0], score: 1.0 },
+            TrackSample { at: Time::from_secs_f64(0.5), pos: [96.0, 45.0], score: 1.0 },
+        ];
+        c.tracker = Some(t);
+        let v = e.seq().tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+        e.project.sequences[0].tracks[v].clips.push(c);
+        e.add_scene_object(SceneObject::Point, 0);
+        let point = e.selection.unwrap();
+        // Two planes, both following the point.
+        let mut planes = Vec::new();
+        for x in [-30.0, 30.0] {
+            e.add_plane([200, 0, 0, 255]);
+            let p = e.selection.unwrap();
+            e.set_transform_live(p, Transform { position: [x, 5.0], ..Default::default() });
+            e.commit_live_edit();
+            e.set_parent(p, Some(point));
+            planes.push(p);
+        }
+        e.apply_track_axes(id, point, 0.0, Axes::ALL);
+        assert!(e.status.contains("2 layers parented"), "{}", e.status);
+        let at = |e: &Editor, p: ClipId, s: f64| {
+            let c = e.seq().find_clip(p).unwrap().1.clone();
+            e.project.world_transform(e.active, &c, Time::from_secs_f64(s)).position
+        };
+        for (p, x) in planes.iter().zip([-30.0f32, 30.0]) {
+            assert!((at(&e, *p, 0.0)[0] - x).abs() < 1e-3, "stays put at the start");
+            let end = at(&e, *p, 0.5);
+            assert!((end[0] - (x + 16.0)).abs() < 1e-3 && (end[1] - 5.0).abs() < 1e-3, "{end:?}");
+        }
+        e.undo();
+        assert!((at(&e, planes[0], 0.5)[0] + 30.0).abs() < 1e-3, "one undo step");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
