@@ -1,14 +1,13 @@
 //! Optional data parallelism (rayon behind the `threads` feature; sequential otherwise and on
 //! wasm32).
 
-#[cfg(feature = "threads")]
-use std::sync::Arc;
-
-/// A handle to the decoder's worker pool (or none: run on the calling thread).
+/// Whether to spread work over the process-wide worker pool (rayon's global
+/// one, shared by every open decoder) or run it on the calling thread. The work
+/// here is fork-join with no waiting inside, so sharing is safe.
 #[derive(Clone, Default)]
 pub(crate) struct Pool {
     #[cfg(feature = "threads")]
-    pool: Option<Arc<rayon::ThreadPool>>,
+    parallel: bool,
 }
 
 impl Pool {
@@ -17,12 +16,7 @@ impl Pool {
     pub fn new(threads: usize) -> Pool {
         #[cfg(feature = "threads")]
         {
-            let pool = if threads > 1 && cfg!(not(target_arch = "wasm32")) {
-                rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("av1-{i}")).build().ok().map(Arc::new)
-            } else {
-                None
-            };
-            Pool { pool }
+            Pool { parallel: threads > 1 && cfg!(not(target_arch = "wasm32")) }
         }
         #[cfg(not(feature = "threads"))]
         {
@@ -34,7 +28,7 @@ impl Pool {
     pub fn is_parallel(&self) -> bool {
         #[cfg(feature = "threads")]
         {
-            self.pool.is_some()
+            self.parallel
         }
         #[cfg(not(feature = "threads"))]
         {
@@ -45,11 +39,9 @@ impl Pool {
     /// `f(i, &mut items[i])` for every item, in parallel when possible; results in order.
     pub fn map_mut<T: Send, R: Send>(&self, items: &mut [T], f: impl Fn(usize, &mut T) -> R + Sync + Send) -> Vec<R> {
         #[cfg(feature = "threads")]
-        if let Some(pool) = &self.pool
-            && items.len() > 1
-        {
+        if self.parallel && items.len() > 1 {
             use rayon::prelude::*;
-            return pool.install(|| items.par_iter_mut().enumerate().map(|(i, t)| f(i, t)).collect());
+            return items.par_iter_mut().enumerate().map(|(i, t)| f(i, t)).collect();
         }
         items.iter_mut().enumerate().map(|(i, t)| f(i, t)).collect()
     }
@@ -58,11 +50,9 @@ impl Pool {
     pub fn chunks<T: Send>(&self, data: &mut [T], chunk_len: usize, f: impl Fn(usize, &mut [T]) + Sync + Send) {
         let chunk_len = chunk_len.max(1);
         #[cfg(feature = "threads")]
-        if let Some(pool) = &self.pool
-            && data.len() > chunk_len
-        {
+        if self.parallel && data.len() > chunk_len {
             use rayon::prelude::*;
-            pool.install(|| data.par_chunks_mut(chunk_len).enumerate().for_each(|(i, c)| f(i, c)));
+            data.par_chunks_mut(chunk_len).enumerate().for_each(|(i, c)| f(i, c));
             return;
         }
         for (i, c) in data.chunks_mut(chunk_len).enumerate() {

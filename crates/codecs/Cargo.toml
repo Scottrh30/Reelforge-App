@@ -13,3 +13,5 @@ reelforge-hevc = { path = "../hevc" }
 reelforge-vp9 = { path = "../vp9" }
 reelforge-av1 = { path = "../av1" }
 log = { workspace = true }
+# The process-wide worker pool, shared with the H.264/HEVC/AV1 decoders.
+rayon = "1"

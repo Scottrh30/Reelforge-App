@@ -471,30 +471,10 @@ fn decode_picture(hdr: &FrameHeader, buf: &[u8], pl: &mut Planes, field: Option<
         jobs.push((slices, out));
     }
 
-    // Decode the rows on several threads, straight into the picture.
+    // Decode the rows on the shared worker pool, straight into the picture.
+    use rayon::prelude::*;
     let ctx = Ctx { hdr, scan: if hdr.frame_type == 0 { &PROGRESSIVE_SCAN } else { &INTERLACED_SCAN } };
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
-    let chunk = jobs.len().div_ceil(threads).max(1);
-    let results: Vec<Result<()>> = std::thread::scope(|s| {
-        let handles: Vec<_> = jobs
-            .chunks_mut(chunk)
-            .map(|part| {
-                let ctx = &ctx;
-                s.spawn(move || {
-                    for (slices, out) in part.iter_mut() {
-                        for (d, a) in slices.iter() {
-                            decode_slice(ctx, d, *a, out)?;
-                        }
-                    }
-                    Ok(())
-                })
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| invalid("ProRes: slice decoder panicked"))).collect()
-    });
-    for r in results {
-        r?;
-    }
+    jobs.par_iter_mut().try_for_each(|(slices, out)| slices.iter().try_for_each(|(d, a)| decode_slice(&ctx, d, *a, out)))?;
     Ok(pic_size)
 }
 

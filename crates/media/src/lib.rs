@@ -35,6 +35,10 @@ pub fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         ffmpeg_next::init().expect("failed to initialise FFmpeg");
+        // One pool of worker threads, one per core, shared by every clip's
+        // decoder (H.264, HEVC, AV1, ProRes, DNx, MPEG-2). Fails harmlessly if
+        // something already started it.
+        let _ = rayon::ThreadPoolBuilder::new().thread_name(|i| format!("decode-{i}")).build_global();
         ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Error);
     });
 }

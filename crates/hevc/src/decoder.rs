@@ -85,10 +85,26 @@ pub struct Decoder {
     out_queue: VecDeque<Output<FrameRef>>,
     shared: Arc<Shared>,
     #[cfg(feature = "threads")]
-    pool: Option<rayon::ThreadPool>,
+    /// Jobs go to the process-wide worker pool (shared by every open decoder),
+    /// or run on the calling thread when this is `None`.
+    pool: Option<SharedPool>,
     in_flight: VecDeque<FrameRef>,
     max_in_flight: usize,
     draft: bool,
+}
+
+/// The process-wide worker pool (rayon's global one, sized to the cores), so
+/// clips playing together share the cores instead of each starting its own
+/// threads. Frame jobs only ever wait on frames sent before them, and jobs
+/// start in the order sent, so sharing can't deadlock.
+#[cfg(feature = "threads")]
+struct SharedPool;
+
+#[cfg(feature = "threads")]
+impl SharedPool {
+    fn spawn_fifo(&self, job: impl FnOnce() + Send + 'static) {
+        rayon::spawn_fifo(job);
+    }
 }
 
 impl Default for Decoder {
@@ -117,11 +133,7 @@ impl Decoder {
     /// A decoder using up to `threads` worker threads (1 = decode on the calling thread).
     pub fn with_threads(threads: usize) -> Self {
         #[cfg(feature = "threads")]
-        let pool = if threads > 1 && cfg!(not(target_arch = "wasm32")) {
-            rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("hevc-{i}")).build().ok()
-        } else {
-            None
-        };
+        let pool = (threads > 1 && cfg!(not(target_arch = "wasm32"))).then_some(SharedPool);
         Decoder {
             vpss: vec![None; 16],
             spss: vec![None; 16],

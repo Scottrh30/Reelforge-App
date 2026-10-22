@@ -13,6 +13,8 @@ crossbeam-channel.workspace = true
 anyhow.workspace = true
 log.workspace = true
 serde.workspace = true
+# Names the shared decode worker pool (see `init`).
+rayon = "1"
 
 # Zero-copy video: sharing D3D11VA frames with the compositor.
 [target.'cfg(windows)'.dependencies]

@@ -309,24 +309,9 @@ fn decode_unit(h: &Header, buf: &[u8], planes: &mut [Vec<u16>; 3], strides: [usi
             (i, out)
         })
         .collect();
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
-    let chunk = jobs.len().div_ceil(threads).max(1);
-    let results: Vec<Result<Option<bool>>> = std::thread::scope(|s| {
-        let handles: Vec<_> = jobs
-            .chunks_mut(chunk)
-            .map(|part| {
-                s.spawn(move || {
-                    let mut first = None;
-                    for (i, out) in part.iter_mut() {
-                        let a = decode_row(h, t, &data[h.row_offsets[*i] as usize..], out)?;
-                        first = first.or(a);
-                    }
-                    Ok(first)
-                })
-            })
-            .collect();
-        handles.into_iter().map(|j| j.join().unwrap_or_else(|_| invalid("DNxHD: row decoder panicked"))).collect()
-    });
+    // Rows on the shared worker pool; each row's colour flag, in order.
+    use rayon::prelude::*;
+    let results: Vec<Result<Option<bool>>> = jobs.par_iter_mut().map(|(i, out)| decode_row(h, t, &data[h.row_offsets[*i] as usize..], out)).collect();
     for r in results {
         let a = r?;
         if act.is_none() {

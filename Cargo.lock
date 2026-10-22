@@ -3344,6 +3344,7 @@ name = "reelforge-codecs"
 version = "0.1.0"
 dependencies = [
  "log",
+ "rayon",
  "reelforge-av1",
  "reelforge-h264",
  "reelforge-hevc",
@@ -3418,6 +3419,7 @@ dependencies = [
  "crossbeam-channel",
  "ffmpeg-next",
  "log",
+ "rayon",
  "reelforge-codecs",
  "reelforge-core",
  "serde",

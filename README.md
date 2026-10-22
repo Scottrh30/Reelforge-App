@@ -780,6 +780,20 @@ slower); and every slice or row decoded straight into the picture. MPEG-2 1080i 
 about 75 fps on one core. The H.264/HEVC/VP9/AV1 decoders use all
 cores; on 2 cores 1080p runs at about 75 fps (H.264, HEVC), 45 (VP9) and 28 (AV1).
 
+**Shared decode threads:** every clip's decoder draws on one pool of worker threads, one per
+core (named `decode-0`, `decode-1`…), instead of each clip starting its own. H.264 and HEVC frame
+jobs, AV1's tile and filter work, and ProRes, DNx and MPEG-2 slices all go to it, so clips
+playing together (layers, transitions, picture-in-picture) share the cores rather than
+crowding them, and ProRes/DNx/MPEG-2 no longer start fresh threads for every frame. Jobs that
+wait (an H.264 or HEVC frame waiting on rows of the frame it refers to) only ever wait on work
+sent before them, and the pool starts jobs in the order sent, so sharing can't deadlock; the
+`shared_threads` test runs 14 decoders of every codec at once on a pool of one thread to make
+sure. VP9 keeps its own small pool per clip (its row workers wait on each other while other
+work waits on them), as does AV1 for its frame threads. Files only FFmpeg decodes use FFmpeg's
+own threads. A decoder that crashes is treated as a decode error: the clip carries on with
+FFmpeg. With 14 clips open on 2 cores this cut the threads from 58 to 41; on an 8- or 16-core
+PC, where each clip used to get up to 16, far more.
+
 ## Building on Windows 10/11
 
 You need three things: Rust, LLVM (for FFmpeg bindgen), and FFmpeg *shared* dev libraries.

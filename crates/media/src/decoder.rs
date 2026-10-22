@@ -423,10 +423,17 @@ impl DecodeState {
                 return; // the common case: straight onto a keyframe
             }
             let key_at = Time::from_pts(kp - self.start_pts, self.time_base);
-            if key_at <= to || at == Time::ZERO || margin >= Time::from_secs_f64(60.0) {
+            if key_at <= to || margin >= Time::from_secs_f64(60.0) {
                 // Packets after the keyframe come straight from the file.
                 return;
             }
+            if at == Time::ZERO && (rewound || margin > Time::ZERO) {
+                // Already at the very start (or the file can't be rewound by byte).
+                return;
+            }
+            // Landed after the keyframe we need; near the start of a program or
+            // transport stream that means just past the first one: go back
+            // further, which from the start means rewinding to its first byte.
             margin = if margin == Time::ZERO { Time::from_secs_f64(1.0) } else { margin + margin };
         }
     }

@@ -1076,26 +1076,23 @@ impl Mpeg2Decoder {
             }
             decode_slice(&slicer, &cur, data, row, out).map_err(|e| format!("{kind:?} picture, structure {}, slice row {row}: {e}", ph.structure))
         };
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
-        let per = slices.len().div_ceil(threads).max(1);
+        // Slices on the shared worker pool, a few per task; results in order.
+        let threads = rayon::current_num_threads().max(1);
+        let per = slices.len().div_ceil(threads * 2).max(1);
         let results: Vec<(Vec<Decoded>, Vec<String>)> = if slices.len() < 4 || threads == 1 {
             let mut out = Vec::new();
             let errs = slices.iter().filter_map(|sl| one(sl, &mut out).err()).collect();
             vec![(out, errs)]
         } else {
-            std::thread::scope(|sc| {
-                let handles: Vec<_> = slices
-                    .chunks(per)
-                    .map(|chunk| {
-                        sc.spawn(|| {
-                            let mut out = Vec::with_capacity(chunk.len() * seq.mb_width());
-                            let errs = chunk.iter().filter_map(|sl| one(sl, &mut out).err()).collect();
-                            (out, errs)
-                        })
-                    })
-                    .collect();
-                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| (Vec::new(), vec!["slice thread panicked".into()]))).collect()
-            })
+            use rayon::prelude::*;
+            slices
+                .par_chunks(per)
+                .map(|chunk| {
+                    let mut out = Vec::with_capacity(chunk.len() * seq.mb_width());
+                    let errs = chunk.iter().filter_map(|sl| one(sl, &mut out).err()).collect();
+                    (out, errs)
+                })
+                .collect()
         };
         let (sx, sy) = seq.chroma_shift();
         let mut errors = 0;

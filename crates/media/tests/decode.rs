@@ -210,3 +210,31 @@ fn cineform_opens_with_alpha() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Program and transport streams (MPG, TS) seek by timestamp; jumping back to
+/// the very first frames after other seeks must not land on the second GOP.
+#[test]
+fn mpg_and_ts_seek_back_to_the_start() {
+    let dir = std::env::temp_dir().join(format!("rf-mpgseek-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = FrameRate::new(25, 1);
+    for name in ["g.mpg", "g.ts"] {
+        let path = dir.join(name);
+        let ok = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=2"])
+            .args(["-c:v", "mpeg2video", "-g", "12", "-bf", "2", "-b:v", "8M"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("ffmpeg CLI not found; skipping");
+            return;
+        }
+        let mut src = FrameSource::open(&path, None).unwrap();
+        for f in [40i64, 3, 47, 11, 29, 0, 35, 1, 18, 2, 0] {
+            let fr = src.frame_at_blocking(Time::from_frame(f, rate), Duration::from_secs(20)).unwrap();
+            assert_eq!(fr.pts.to_frame(rate), f, "{name}: seek to frame {f}");
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

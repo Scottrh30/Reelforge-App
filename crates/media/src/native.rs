@@ -50,7 +50,10 @@ impl NativeVideo {
     pub fn send_packet(&mut self, packet: &ff::Packet) -> Result<(), reelforge_codecs::Error> {
         let pts = packet.pts().or(packet.dts()).unwrap_or(ff::ffi::AV_NOPTS_VALUE);
         match packet.data() {
-            Some(d) if !d.is_empty() => self.dec.send(d, pts),
+            // A panic in a decoder (here or on a pool thread) is an error like any
+            // other: the caller falls back to FFmpeg instead of losing the clip.
+            Some(d) if !d.is_empty() => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.dec.send(d, pts)))
+                .unwrap_or_else(|_| Err(reelforge_codecs::Error::Invalid(format!("{} decoder panicked", self.codec.label())))),
             _ => Ok(()),
         }
     }
