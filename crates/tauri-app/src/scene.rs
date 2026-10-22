@@ -1,8 +1,8 @@
-//! Cameras and lights in the Viewer: their position and point of interest
+//! Cameras, lights and points in the Viewer: their position and point of interest
 //! shown where the camera sees them, and dragged across its view.
 
 use crate::{ed, Res};
-use reelforge_core::effects::{camera as cam, light as li};
+use reelforge_core::effects::{camera as cam, light as li, point as pt};
 use reelforge_core::space3d::{Camera, SceneObject};
 use reelforge_core::ClipId;
 use reelforge_engine::editor::Editor;
@@ -25,6 +25,7 @@ fn params(what: SceneObject, which: &str) -> [usize; 3] {
         (SceneObject::Camera, _) => [cam::TARGET_X, cam::TARGET_Y, cam::TARGET_Z],
         (SceneObject::Light, "position") => [li::X, li::Y, li::Z],
         (SceneObject::Light, _) => [li::TARGET_X, li::TARGET_Y, li::TARGET_Z],
+        (SceneObject::Point, _) => [pt::X, pt::Y, pt::Z],
     }
 }
 
@@ -38,7 +39,9 @@ pub fn points(e: &Editor) -> Vec<ScenePoint> {
     }
     let src = c.source_time(t);
     let camera = e.project.scene3d_at(e.active, t).camera;
+    let parent = e.project.parent_of(e.active, c, t);
     let which: &[&'static str] = match what {
+        SceneObject::Point => &["position"],
         SceneObject::Camera => &["target"],
         SceneObject::Light => match fx.value_at(li::KIND, src) as usize {
             0 => &["position"],
@@ -50,7 +53,10 @@ pub fn points(e: &Editor) -> Vec<ScenePoint> {
     which
         .iter()
         .filter_map(|w| {
-            let p = params(what, w).map(|i| fx.value_at(i, src));
+            let mut p = params(what, w).map(|i| fx.value_at(i, src));
+            if let Some(n) = parent {
+                p = n.apply(p);
+            }
             Some(ScenePoint { which: w, at: camera.project(p)? })
         })
         .collect()
@@ -58,7 +64,7 @@ pub fn points(e: &Editor) -> Vec<ScenePoint> {
 
 thread_local! {
     /// The drag under way: the point's starting place and the camera then.
-    static DRAG: RefCell<Option<([f32; 3], Camera)>> = const { RefCell::new(None) };
+    static DRAG: RefCell<Option<([f32; 3], Camera, Option<reelforge_core::space3d::Null>)>> = const { RefCell::new(None) };
 }
 
 /// Drag point `which` of camera/light `id` by `d` frame pixels from where it
@@ -75,13 +81,20 @@ pub fn scene_point_drag(id: u64, which: String, d: [f32; 2], start: bool) -> Res
         if start {
             let p = ix.map(|i| fx.value_at(i, src));
             let camera = e.project.scene3d_at(e.active, t).camera;
-            DRAG.with(|s| *s.borrow_mut() = Some((p, camera)));
+            let parent = e.project.parent_of(e.active, c, t);
+            DRAG.with(|s| *s.borrow_mut() = Some((p, camera, parent)));
         }
-        let Some((p, camera)) = DRAG.with(|s| *s.borrow()) else { return };
+        let Some((p, camera, parent)) = DRAG.with(|s| *s.borrow()) else { return };
         let (r, down, _) = camera.basis();
-        let z = camera.view(p)[2].max(reelforge_core::space3d::NEAR);
+        // Moved across the camera's view where it shows, then back into its parent's space.
+        let world = parent.map_or(p, |n| n.apply(p));
+        let z = camera.view(world)[2].max(reelforge_core::space3d::NEAR);
         let k = z / camera.focal();
-        let moved = [0, 1, 2].map(|a| p[a] + (r[a] * d[0] + down[a] * d[1]) * k);
+        let mut step = [0, 1, 2].map(|a| (r[a] * d[0] + down[a] * d[1]) * k);
+        if let Some(n) = parent {
+            step = n.inverse().apply_vector(step);
+        }
+        let moved = [0, 1, 2].map(|a| p[a] + step[a]);
         crate::fx::set_params(e, id, 0, &[(ix[0], moved[0]), (ix[1], moved[1]), (ix[2], moved[2])]);
     })
 }
@@ -90,4 +103,41 @@ pub fn scene_point_drag(id: u64, which: String, d: [f32; 2], start: bool) -> Res
 #[tauri::command]
 pub fn add_scene(camera: bool, light: usize) -> Res<()> {
     ed(|e| e.add_scene_object(if camera { SceneObject::Camera } else { SceneObject::Light }, light))
+}
+
+/// The "New" menu: "layer" (a plane of `color`, #rrggbb), "light" (of
+/// `light` type), "point", "camera" or "adjustment".
+#[tauri::command]
+pub fn add_new(what: String, light: usize, color: Option<String>) -> Res<()> {
+    ed(|e| match what.as_str() {
+        "layer" => e.add_plane(color.as_deref().and_then(parse_hex).unwrap_or([128, 128, 128, 255])),
+        "light" => e.add_scene_object(SceneObject::Light, light),
+        "point" => e.add_scene_object(SceneObject::Point, 0),
+        "camera" => e.add_scene_object(SceneObject::Camera, 0),
+        "adjustment" => e.add_adjustment_layer(),
+        _ => {}
+    })
+}
+
+/// #rrggbb → opaque RGBA.
+fn parse_hex(s: &str) -> Option<[u8; 4]> {
+    let h = s.strip_prefix('#').unwrap_or(s);
+    let v = u32::from_str_radix(h, 16).ok().filter(|_| h.len() == 6)?;
+    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8, 255])
+}
+
+/// Change a plane's colour (#rrggbb).
+#[tauri::command]
+pub fn set_plane_color(id: u64, color: String) -> Res<()> {
+    ed(|e| {
+        if let Some(c) = parse_hex(&color) {
+            e.set_plane_color(ClipId(id), c);
+        }
+    })
+}
+
+/// Parent a clip to a point clip (`None`: remove its parent).
+#[tauri::command]
+pub fn set_parent(id: u64, parent: Option<u64>) -> Res<()> {
+    ed(|e| e.set_parent(ClipId(id), parent.map(ClipId)))
 }

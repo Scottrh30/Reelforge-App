@@ -20,7 +20,7 @@ enum Drag {
 fn selected_3d(e: &Editor) -> Option<(reelforge_core::ClipId, reelforge_core::Transform)> {
     let id = e.selection?;
     let (_, c) = e.seq().find_clip(id)?;
-    let t = c.transform_at(e.playback.playhead);
+    let t = e.project.world_transform(e.active, c, e.playback.playhead);
     Editor::is_3d_layer(c, &t).then_some((id, t))
 }
 

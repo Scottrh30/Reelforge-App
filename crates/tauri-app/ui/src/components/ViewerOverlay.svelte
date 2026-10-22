@@ -245,7 +245,12 @@
     {#each ins.scene_points as p}
       {@const x = fit.x + p.at[0] * fit.k}
       {@const y = fit.y + p.at[1] * fit.k}
-      {#if p.which === "position"}
+      {#if p.which === "position" && ins.kind === "point"}
+        <!-- A point: crosshairs in a ring. -->
+        <circle cx={x} cy={y} r="8" class="scenept target" onpointerdown={(e) => dragScenePoint(e, p.which)} role="presentation"><title>The point: drag to move it (and the layers parented to it)</title></circle>
+        <line x1={x - 14} y1={y} x2={x + 14} y2={y} class="ray" />
+        <line x1={x} y1={y - 14} x2={x} y2={y + 14} class="ray" />
+      {:else if p.which === "position"}
         <circle cx={x} cy={y} r="9" class="scenept light" onpointerdown={(e) => dragScenePoint(e, p.which)} role="presentation"><title>{ins.kind === "light" ? "The light" : "The camera"}: drag to move it across the view</title></circle>
         {#each [0, 45, 90, 135, 180, 225, 270, 315] as a}
           <line x1={x + Math.cos((a * Math.PI) / 180) * 12} y1={y + Math.sin((a * Math.PI) / 180) * 12} x2={x + Math.cos((a * Math.PI) / 180) * 16} y2={y + Math.sin((a * Math.PI) / 180) * 16} class="ray" />

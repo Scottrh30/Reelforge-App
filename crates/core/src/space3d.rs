@@ -22,6 +22,72 @@ use serde::{Deserialize, Serialize};
 pub enum SceneObject {
     Camera,
     Light,
+    /// An invisible point (a "null") that other layers can be parented to.
+    Point,
+}
+
+/// Where a point clip puts the layers parented to it: their positions are
+/// turned by `rotation` (degrees, clockwise on screen like a layer's),
+/// scaled by `scale` and moved by `position`, all about the frame's centre,
+/// and their own rotation and scale change to match. A point at 0, 0, 0
+/// with no rotation and 100% scale leaves them where they are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Null {
+    pub position: V3,
+    pub rotation: f32,
+    pub scale: f32,
+}
+
+impl Null {
+    pub const IDENTITY: Null = Null { position: [0.0; 3], rotation: 0.0, scale: 1.0 };
+
+    /// From a point clip's settings at source time `t`.
+    pub fn from_effect(fx: &Effect, t: Time) -> Self {
+        use crate::effects::point as pt;
+        let v = |i| fx.value_at(i, t);
+        Null { position: [v(pt::X), v(pt::Y), v(pt::Z)], rotation: v(pt::ROTATION), scale: (v(pt::SCALE) / 100.0).max(1e-4) }
+    }
+
+    /// Turn and scale a vector (no move).
+    pub fn apply_vector(&self, p: V3) -> V3 {
+        let (s, c) = self.rotation.to_radians().sin_cos();
+        let k = self.scale;
+        [k * (c * p[0] - s * p[1]), k * (s * p[0] + c * p[1]), k * p[2]]
+    }
+
+    /// Where world point `p` (relative to the frame's centre) goes.
+    pub fn apply(&self, p: V3) -> V3 {
+        add(self.position, self.apply_vector(p))
+    }
+
+    /// This one inside `outer` (a point parented to another point).
+    pub fn within(&self, outer: &Null) -> Null {
+        Null { position: outer.apply(self.position), rotation: self.rotation + outer.rotation, scale: self.scale * outer.scale }
+    }
+
+    /// The null that undoes this one.
+    pub fn inverse(&self) -> Null {
+        let r = Null { position: [0.0; 3], rotation: -self.rotation, scale: 1.0 / self.scale };
+        Null { position: mul(r.apply_vector(self.position), -1.0), ..r }
+    }
+
+    /// A layer's transform as its parent places it, for a `frame`-sized frame.
+    pub fn transform(&self, t: &Transform, frame: [f32; 2]) -> Transform {
+        let mut out = *t;
+        let p = self.apply([t.position[0], t.position[1], t.depth]);
+        out.position = [p[0], p[1]];
+        out.depth = p[2];
+        out.rotation += self.rotation;
+        out.scale = [t.scale[0] * self.scale, t.scale[1] * self.scale];
+        if let Some(pin) = &mut out.pin {
+            let (hw, hh) = (frame[0] * 0.5, frame[1] * 0.5);
+            for q in &mut pin.0 {
+                let m = self.apply([q[0] - hw, q[1] - hh, 0.0]);
+                *q = [m[0] + hw, m[1] + hh];
+            }
+        }
+        out
+    }
 }
 
 type V3 = [f32; 3];
@@ -153,11 +219,17 @@ fn srgb_to_linear(c: f32) -> f32 {
 impl Light {
     /// From a light clip's settings at source time `t`.
     pub fn from_effect(fx: &Effect, t: Time) -> Self {
+        Self::from_effect_within(fx, t, None)
+    }
+
+    /// The same, moved along with the point it's parented to (if any).
+    pub fn from_effect_within(fx: &Effect, t: Time, parent: Option<&Null>) -> Self {
         let v = |i| fx.value_at(i, t);
         let rgb = unpack_rgb(v(li::COLOR)).map(srgb_to_linear);
         let k = v(li::INTENSITY) / 100.0;
-        let position = [v(li::X), v(li::Y), v(li::Z)];
-        let target = [v(li::TARGET_X), v(li::TARGET_Y), v(li::TARGET_Z)];
+        let place = |p: V3| parent.map_or(p, |n| n.apply(p));
+        let position = place([v(li::X), v(li::Y), v(li::Z)]);
+        let target = place([v(li::TARGET_X), v(li::TARGET_Y), v(li::TARGET_Z)]);
         let half = (v(li::CONE).clamp(1.0, 179.0) * 0.5).to_radians();
         let feather = (v(li::FEATHER) / 100.0).clamp(0.0, 1.0);
         Light {
@@ -230,10 +302,18 @@ impl Project {
                 continue;
             }
             let src = c.source_time(t);
+            let parent = self.parent_of(seq, c, t);
             match what {
-                SceneObject::Camera => camera = Some(Camera::from_effect(fx, src, frame)),
-                SceneObject::Light if lights.len() < MAX_LIGHTS => lights.push(Light::from_effect(fx, src)),
-                SceneObject::Light => {}
+                SceneObject::Camera => {
+                    let mut cam = Camera::from_effect(fx, src, frame);
+                    if let Some(n) = parent {
+                        cam.position = n.apply(cam.position);
+                        cam.target = n.apply(cam.target);
+                    }
+                    camera = Some(cam);
+                }
+                SceneObject::Light if lights.len() < MAX_LIGHTS => lights.push(Light::from_effect_within(fx, src, parent.as_ref())),
+                SceneObject::Light | SceneObject::Point => {}
             }
         }
         Scene3d { camera: camera.unwrap_or_else(|| Camera::default_for(frame)), lights }

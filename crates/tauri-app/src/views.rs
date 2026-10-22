@@ -160,8 +160,13 @@ pub struct Inspector {
     pub tracker: Option<TrackerView>,
     /// Keys of the clip's mesh warp, if it has one.
     pub mesh_keys: Option<usize>,
-    /// A camera or light: its points the camera can see (frame pixels).
+    /// A camera, light or point: its points the camera can see (frame pixels).
     pub scene_points: Vec<crate::scene::ScenePoint>,
+    /// A plane's colour, #rrggbb.
+    pub plane: Option<String>,
+    /// The point clip it's parented to, and the ones it can be: (id, name).
+    pub parent: Option<u64>,
+    pub parents: Vec<(u64, String)>,
     /// Progress (0–1) of a tracking run on this clip.
     pub tracking: Option<f32>,
     /// A tracking run is going on for another clip.
@@ -307,7 +312,12 @@ fn clip_kind(p: &Project, kind: TrackKind, c: &Clip) -> &'static str {
         match s {
             reelforge_core::space3d::SceneObject::Camera => "camera",
             reelforge_core::space3d::SceneObject::Light => "light",
+            reelforge_core::space3d::SceneObject::Point => "point",
         }
+    } else if c.plane.is_some() {
+        "plane"
+    } else if c.adjustment {
+        "adjustment"
     } else if c.title.is_some() {
         "title"
     } else if c.nested.is_some() {
@@ -322,7 +332,7 @@ fn clip_kind(p: &Project, kind: TrackKind, c: &Clip) -> &'static str {
 }
 
 fn clip_name(p: &Project, c: &Clip) -> String {
-    if c.scene.is_some() {
+    if c.scene.is_some() || c.plane.is_some() || c.adjustment {
         return c.display_name(p).into_owned();
     }
     if let Some(t) = &c.title {
@@ -484,6 +494,9 @@ pub fn state(e: &Editor) -> State {
             tracker: if video { tracker_view(e, c) } else { None },
             mesh_keys: c.mesh.as_ref().map(|m| m.keys.len()),
             scene_points: crate::scene::points(e),
+            plane: c.plane.map(|[r, g, b, _]| format!("#{r:02x}{g:02x}{b:02x}")),
+            parent: c.parent.map(|p| p.0),
+            parents: if tr.kind == TrackKind::Video { e.parent_choices(c.id).into_iter().map(|(id, n)| (id.0, n)).collect() } else { Vec::new() },
             tracking: job.filter(|(id, _)| *id == c.id).map(|(_, p)| p),
             tracking_elsewhere: job.is_some_and(|(id, _)| id != c.id),
             id: c.id.0,

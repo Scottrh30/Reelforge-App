@@ -170,6 +170,42 @@
       </dl>
     </div>
 
+    {#if ins.kind === "plane" || ins.kind === "adjustment" || ins.parent != null || ins.parents.length}
+      <div class="group">
+        <h4>Layer</h4>
+        <div class="grid2">
+          {#if ins.plane}
+            <span class="lbl">Colour</span>
+            <div class="row">
+              <input type="color" value={ins.plane} aria-label="Plane colour" title="The plane's colour" onchange={(e) => run(api.setPlaneColor(ins.id, e.currentTarget.value))} />
+              <span class="tc muted">{ins.plane}</span>
+            </div>
+          {/if}
+          {#if ins.parent != null || ins.parents.length}
+            <span class="lbl">Parent</span>
+            <select
+              value={ins.parent ?? ""}
+              aria-label="Parent"
+              title="Follow a point layer: this layer moves, turns and scales with it"
+              onchange={(e) => {
+                const v = e.currentTarget.value;
+                run(api.setParent(ins.id, v === "" ? null : +v));
+              }}
+            >
+              <option value="">None</option>
+              {#each ins.parents as [id, name]}<option value={id}>{name}</option>{/each}
+              {#if ins.parent != null && !ins.parents.some(([id]) => id === ins.parent)}<option value={ins.parent}>(missing point)</option>{/if}
+            </select>
+          {/if}
+        </div>
+        {#if ins.kind === "adjustment"}
+          <p class="note">Effects added to this layer change every layer below it. Its opacity, crop, masks and blend mode apply; it doesn't move.</p>
+        {:else if ins.kind === "point"}
+          <p class="note">Parent other layers to this point (in their Layer settings), then move, turn or scale the point to move them together.</p>
+        {/if}
+      </div>
+    {/if}
+
     {#if ins.kind === "video" || ins.kind === "audio" || ins.kind === "comp"}
       <div class="group">
         <h4>Speed</h4>
@@ -360,7 +396,7 @@
       </div>
     {/if}
 
-    {#if ins.kind === "camera" || ins.kind === "light"}
+    {#if ins.kind === "camera" || ins.kind === "light" || ins.kind === "point"}
       <EffectsPanel {ins} scene={true} />
     {/if}
     {#if ins.visual}

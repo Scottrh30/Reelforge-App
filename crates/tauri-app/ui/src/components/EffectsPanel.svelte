@@ -110,7 +110,7 @@
 <div class="group">
   {#if scene}
     <div class="head">
-      <h4>{ins.kind === "camera" ? "Camera" : "Light"}</h4>
+      <h4>{ins.kind === "camera" ? "Camera" : ins.kind === "point" ? "Point" : "Light"}</h4>
       <button class="small" onclick={() => op(0, "reset")} title="Back to the starting settings (removes their keyframes)">Reset</button>
     </div>
     {#if ins.kind === "camera"}

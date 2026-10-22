@@ -737,3 +737,37 @@ fn mesh_warp_places_the_layer_over_its_grid() {
         assert!(near(px(&out, 64, 62, 2), [0, 0, 255]), "blue to the right edge");
     }
 }
+
+fn adjustment(key: u64, frame: [u32; 2], t: Transform, effects: Vec<EffectValues>) -> LayerInput<'static> {
+    LayerInput { key, content_id: 1, pixels: PixelData::Below, pixel_size: frame, layer_size: [frame[0] as f32, frame[1] as f32], transform: t, blend: BlendMode::Normal, effects, mask: None, wipe: None, mesh: None, space: None }
+}
+
+#[test]
+fn adjustment_layers_change_everything_below_and_nothing_above() {
+    let Some(mut c) = setup() else { return };
+    let white = solid(1, 1, [255, 255, 255, 255]);
+    let blue = solid(1, 1, [0, 0, 255, 255]);
+    let down = || vec![fx(EffectKind::ColorCorrect, &[(0, -1.0)])];
+    // White below at −1 stop; a blue square above is left alone.
+    let top = layer(3, &blue, [1, 1], [4.0, 4.0], Transform { position: [4.0, 0.0], ..Default::default() }, BlendMode::Normal);
+    c.render([16, 16], &[full(1, &white, [16, 16]), adjustment(2, [16, 16], Transform::default(), down()), top]);
+    let out = c.read_output().unwrap();
+    let half = srgb(0.5);
+    assert!(near(px(&out, 16, 2, 2), [half, half, half]), "{:?}", px(&out, 16, 2, 2));
+    assert!(near(px(&out, 16, 12, 8), [0, 0, 255]), "{:?}", px(&out, 16, 12, 8));
+    // Half opacity mixes the adjusted frame with the original.
+    let t = Transform { opacity: 0.5, ..Default::default() };
+    c.render([16, 16], &[full(1, &white, [16, 16]), adjustment(2, [16, 16], t, down())]);
+    let q = srgb(0.75);
+    assert!(near(px(&c.read_output().unwrap(), 16, 8, 8), [q, q, q]));
+    // Cropped: only the uncropped part is adjusted.
+    let t = Transform { crop: [0.0, 0.0, 0.5, 0.0], ..Default::default() };
+    c.render([16, 16], &[full(1, &white, [16, 16]), adjustment(2, [16, 16], t, down())]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 16, 3, 8), [half, half, half]), "{:?}", px(&out, 16, 3, 8));
+    assert!(near(px(&out, 16, 12, 8), [255, 255, 255]), "{:?}", px(&out, 16, 12, 8));
+    // Two in a row stack; with no effects one does nothing.
+    c.render([16, 16], &[full(1, &white, [16, 16]), adjustment(2, [16, 16], Transform::default(), down()), adjustment(4, [16, 16], Transform::default(), down()), adjustment(5, [16, 16], Transform::default(), vec![])]);
+    let q = srgb(0.25);
+    assert!(near(px(&c.read_output().unwrap(), 16, 8, 8), [q, q, q]));
+}

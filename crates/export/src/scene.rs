@@ -12,7 +12,7 @@ use anyhow::Result;
 use reelforge_core::mask::{self, MaskImage};
 use reelforge_core::{Transition, BlendMode, ClipId, EffectValues, Layer, MediaId, Project, Time, Transform, VideoItem};
 use reelforge_media::VideoFrame;
-use reelforge_render::{wgpu, Compositor, DrawItem, LayerInput, MaskInput, Wipe};
+use reelforge_render::{wgpu, Compositor, DrawItem, LayerInput, MaskInput, PixelData, Wipe};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -52,6 +52,8 @@ struct Gathered {
     mesh: Option<reelforge_core::meshwarp::MeshShape>,
     /// A 3D layer, as the camera sees it.
     space: Option<reelforge_core::space3d::LayerSpace>,
+    /// An adjustment layer: its effects apply to the frame drawn so far.
+    adjustment: bool,
 }
 
 /// Masks are rasterised at most this big (longer side); they're soft-edged
@@ -139,7 +141,13 @@ impl Scene {
                 VideoItem::Dissolve { from, to, mix, kind } => {
                     match (self.gather(project, &from, t, frame_size, &scene3d, provider, depth)?, self.gather(project, &to, t, frame_size, &scene3d, provider, depth)?) {
                         (Some(mut a), Some(mut b)) => {
-                            if kind.is_slide() || kind.is_push() {
+                            if a.adjustment || b.adjustment {
+                                // An adjustment fades in or out: one after the other, by opacity.
+                                a.transform.opacity *= 1.0 - mix;
+                                b.transform.opacity *= mix;
+                                items.push(Item::Single(a));
+                                items.push(Item::Single(b));
+                            } else if kind.is_slide() || kind.is_push() {
                                 // Moves only: the incoming clip over the outgoing one.
                                 let (to_off, from_off) = kind.offsets(mix, [frame_size[0] as f32, frame_size[1] as f32]);
                                 for (g, o) in [(&mut a, from_off), (&mut b, to_off)] {
@@ -189,13 +197,24 @@ impl Scene {
 
     #[allow(clippy::too_many_arguments)]
     fn gather(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Gathered>> {
-        let picture = match l.clip.nested {
-            Some(inner) => self.nested_picture(project, l.clip.id, inner, l.source_time, provider, depth)?,
-            None => provider.picture(project, l, frame_size)?,
+        let full = [frame_size[0] as f32, frame_size[1] as f32];
+        let picture = match (l.clip.nested, l.clip.plane) {
+            // A plane: one pixel of its colour, stretched over the frame.
+            (_, Some(c)) if !l.clip.adjustment => Some(Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(c.to_vec()), u32::from_le_bytes(c) as u64), size: full, media: MediaId::GENERATED }),
+            // An adjustment layer has no picture: it's drawn from the frame below.
+            _ if l.clip.adjustment => Some(Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(vec![0u8; 4]), 0), size: full, media: MediaId::GENERATED }),
+            (Some(inner), _) => self.nested_picture(project, l.clip.id, inner, l.source_time, provider, depth)?,
+            (None, _) => provider.picture(project, l, frame_size)?,
         };
         let Some(picture) = picture else { return Ok(None) };
         let mask = self.mask_for(l.clip, l.clip.source_time(t), picture.size);
         // Keyed to the clip's own time, like its transform (a still's media time is always 0).
+        if l.clip.adjustment {
+            // Covers the frame: only opacity and crop of its transform apply.
+            let transform = Transform { opacity: l.transform.opacity, crop: l.transform.crop, ..Default::default() };
+            let effects = l.effects.iter().filter(|e| !e.is_identity()).cloned().collect();
+            return Ok(Some(Gathered { key: l.clip.id.0, picture, transform, blend: l.blend, effects, mask, wipe: None, mesh: None, space: None, adjustment: true }));
+        }
         let mesh = l.clip.mesh_at(t);
         let mut effects = l.effects.clone();
         // A 3D layer (not mesh-warped or corner-pinned): seen through the camera,
@@ -209,7 +228,7 @@ impl Scene {
                 effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None });
             }
         }
-        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, wipe: None, mesh, space }))
+        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, wipe: None, mesh, space, adjustment: false }))
     }
 
     /// The clip's masks at source time `src` as an image (made again only when they change).
@@ -287,6 +306,15 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
         let clip = l.clip;
         clip.id.hash(h);
         let layer_size = match (clip.nested, &clip.title) {
+            _ if clip.adjustment => {
+                4u8.hash(h);
+                [frame_size[0] as f32, frame_size[1] as f32]
+            }
+            _ if clip.plane.is_some() => {
+                5u8.hash(h);
+                clip.plane.hash(h);
+                [frame_size[0] as f32, frame_size[1] as f32]
+            }
             (Some(inner), _) => {
                 1u8.hash(h);
                 if depth < MAX_NESTING {
@@ -368,8 +396,8 @@ fn input(g: &Gathered) -> LayerInput<'_> {
     LayerInput {
         key: g.key,
         content_id: h.finish(),
-        pixels: (&g.picture.frame.pixels).into(),
-        pixel_size: [g.picture.frame.width, g.picture.frame.height],
+        pixels: if g.adjustment { PixelData::Below } else { (&g.picture.frame.pixels).into() },
+        pixel_size: if g.adjustment { [g.picture.size[0] as u32, g.picture.size[1] as u32] } else { [g.picture.frame.width, g.picture.frame.height] },
         layer_size: g.picture.size,
         transform: g.transform,
         blend: g.blend,
@@ -521,5 +549,62 @@ mod recipe_tests {
         assert_ne!(frame_recipe(&p, 0, Time::from_secs_f64(1.0), &proxy), before);
         // An empty stretch of timeline.
         assert_eq!(at(&p, 20.0), at(&p, 30.0));
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+    use reelforge_core::{Clip, Effect, EffectKind, FrameRate, Sequence, TrackKind};
+
+    struct Nothing;
+    impl FrameProvider for Nothing {
+        fn picture(&mut self, _: &Project, _: &Layer, _: [u32; 2]) -> Result<Option<Picture>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn planes_points_and_adjustment_layers_render() {
+        let Some((device, queue)) = reelforge_render::headless_device() else {
+            eprintln!("no GPU adapter; skipping");
+            return;
+        };
+        let mut p = Project::new();
+        let mut seq = Sequence::new("T", 64, 32, FrameRate::new(25, 1));
+        let secs = Time::from_secs_f64;
+        let red = Clip::new_plane(ClipId(1), Time::ZERO, secs(5.0), [255, 0, 0, 255]);
+        let mut grey = Clip::new_adjustment(ClipId(2), Time::ZERO, secs(5.0));
+        let mut fx = Effect::new(EffectKind::ColorCorrect);
+        fx.params[2].value = 0.0; // no saturation
+        grey.effects.push(fx);
+        // A small blue plane above, moved right by a point it's parented to.
+        let mut blue = Clip::new_plane(ClipId(3), Time::ZERO, secs(5.0), [0, 0, 255, 255]);
+        blue.transform.scale = [0.25, 0.25];
+        blue.parent = Some(ClipId(4));
+        let mut point = Clip::new_scene(ClipId(4), Time::ZERO, secs(5.0), reelforge_core::space3d::SceneObject::Point, [64.0, 32.0]);
+        point.effects[0].params[reelforge_core::effects::point::X].value = 20.0;
+        while seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count() < 4 {
+            seq.tracks.insert(0, reelforge_core::Track::new("V", TrackKind::Video));
+        }
+        for (i, c) in [red, grey, blue, point].into_iter().enumerate() {
+            seq.tracks[i].clips = vec![c];
+        }
+        p.sequences = vec![seq];
+        let mut scene = Scene::new(&device, &queue);
+        let mut comp = Compositor::new(&device, &queue);
+        scene.render(&p, 0, secs(1.0), &mut comp, &mut Nothing, None).unwrap();
+        let img = comp.read_output().unwrap();
+        let px = |x: usize, y: usize| &img[(y * 64 + x) * 4..][..3];
+        // Red with no saturation is grey; the blue square above it isn't touched.
+        let g = px(4, 4);
+        assert!(g[0] == g[1] && g[1] == g[2] && g[0] > 60 && g[0] < 160, "{g:?}");
+        assert_eq!(px(32 + 20, 16), [0, 0, 255], "the blue plane follows its point");
+        assert_ne!(px(32, 16), [0, 0, 255]);
+        // Recipes see the plane's colour and the adjustment layer.
+        let none = HashMap::new();
+        let before = frame_recipe(&p, 0, secs(1.0), &none);
+        p.sequences[0].tracks[0].clips[0].plane = Some([0, 255, 0, 255]);
+        assert_ne!(frame_recipe(&p, 0, secs(1.0), &none), before);
     }
 }

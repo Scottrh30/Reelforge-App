@@ -42,6 +42,10 @@ pub enum PixelData<'a> {
     Yuv(&'a YuvPlanes),
     /// A frame the hardware decoder left on the graphics card (zero-copy).
     Gpu(&'a GpuFrame),
+    /// An adjustment layer: the frame composited so far (everything below),
+    /// put through the layer's effects and drawn back over it. `pixel_size`
+    /// should be the frame size.
+    Below,
 }
 
 impl PixelData<'_> {
@@ -52,6 +56,8 @@ impl PixelData<'_> {
                 PixelData::Rgba(px) => px.len() as u64 == size[0] as u64 * size[1] as u64 * 4,
                 PixelData::Yuv(y) => [y.width, y.height] == size && y.planes.len() == if y.layout.interleaved() { 2 } else { 3 },
                 PixelData::Gpu(g) => [g.width, g.height] == size,
+                // Nothing to upload: it's read from the frame as it's drawn.
+                PixelData::Below => false,
             }
     }
 }
@@ -203,6 +209,8 @@ struct Targets {
     output: wgpu::Texture,
     output_view: wgpu::TextureView,
     output_bind: wgpu::BindGroup,
+    /// The frame so far, for adjustment layers to read.
+    accum_bind: wgpu::BindGroup,
 }
 
 pub struct Compositor {
@@ -413,7 +421,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade"]
+        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -654,7 +662,15 @@ impl Compositor {
             layout: &self.output_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) }],
         });
-        self.targets = Some(Targets { size, accum_view, group_view, group_bind, output, output_view, output_bind });
+        let accum_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("frame so far"),
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        self.targets = Some(Targets { size, accum_view, group_view, group_bind, output, output_view, output_bind, accum_bind });
         self.output_generation += 1;
     }
 
@@ -691,6 +707,7 @@ impl Compositor {
         }
         let t = self.layers.get_mut(&l.key).unwrap();
         match l.pixels {
+            PixelData::Below => {}
             PixelData::Rgba(px) => self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                 px,
@@ -911,6 +928,8 @@ impl Compositor {
         #[derive(Clone, Copy)]
         enum Src {
             Layer,
+            /// The frame composited so far (an adjustment layer).
+            Below,
             Scratch(usize),
         }
         /// The second texture a two-input pass reads.
@@ -936,7 +955,8 @@ impl Compositor {
         let mut processed: HashMap<u64, usize> = HashMap::new();
         for l in all_layers() {
             let masked = l.mask.is_some() && self.masks.contains_key(&l.key);
-            if (l.effects.is_empty() && !masked) || !self.layers.contains_key(&l.key) || processed.contains_key(&l.key) {
+            let below = matches!(l.pixels, PixelData::Below);
+            if (l.effects.is_empty() && !masked) || !(below || self.layers.contains_key(&l.key)) || processed.contains_key(&l.key) {
                 continue;
             }
             let cost = |e: &EffectValues| match e.kind {
@@ -969,7 +989,9 @@ impl Compositor {
                 u
             };
             let key = l.key;
-            fx_passes.push(FxPass { key, entry: "fs_import", src: Src::Layer, second: Second::None, dst: 0, uniform: [0.0; FX_FLOATS], plugin: None });
+            // The frame so far is premultiplied already: copied as it is.
+            let (entry, src) = if below { ("fs_copy", Src::Below) } else { ("fs_import", Src::Layer) };
+            fx_passes.push(FxPass { key, entry, src, second: Second::None, dst: 0, uniform: [0.0; FX_FLOATS], plugin: None });
             let mut cur = 0usize;
             // Plugin passes pushed for this layer: (index in fx_passes, revision, pass).
             let mut plugin_marks: Vec<(usize, u64, usize)> = Vec::new();
@@ -1050,7 +1072,7 @@ impl Compositor {
                         cur = o1;
                     }
                     // Camera and light settings are never drawn (they're filtered out earlier).
-                    EffectKind::Camera | EffectKind::Light => {}
+                    EffectKind::Camera | EffectKind::Light | EffectKind::Point => {}
                     EffectKind::EnergyBlade => {
                         // A seed per blade (its place in the stack) so two blades flicker apart.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
@@ -1111,6 +1133,9 @@ impl Compositor {
         enum Op {
             /// Draw a layer into the frame.
             Frame { draw: Draw, blend: BlendMode },
+            /// An adjustment layer: its effects run on the frame so far (drawn
+            /// at this point, not up front), and the result is drawn over it.
+            Adjust { draw: Draw, blend: BlendMode },
             /// Draw a dissolve group: sum the layers into the group target (cleared
             /// to `clear`, premultiplied, for a dip), then composite the group into the frame.
             Group { a: Option<Draw>, b: Option<Draw>, over: usize, blend: BlendMode, clear: wgpu::Color },
@@ -1125,6 +1150,12 @@ impl Compositor {
         let mut ops = Vec::new();
         for item in items {
             match item {
+                DrawItem::Layer(l) if matches!(l.pixels, PixelData::Below) => {
+                    // No effects (or too many passes): it changes nothing.
+                    let Some(fx) = processed.get(&l.key).copied() else { continue };
+                    let draw = Draw { slot: slot(&mut uniforms, (l.transform, l.layer_size, l.wipe), None, None), key: l.key, fx: Some(fx) };
+                    ops.push(Op::Adjust { draw, blend: l.blend })
+                }
                 DrawItem::Layer(l) => {
                     let draw = Draw { slot: slot(&mut uniforms, (l.transform, l.layer_size, l.wipe), l.mesh.as_ref(), l.space), key: l.key, fx: processed.get(&l.key).copied() };
                     ops.push(Op::Frame { draw, blend: l.blend })
@@ -1228,9 +1259,17 @@ impl Compositor {
             .forget_lifetime()
         };
 
-        // Effects first: each pass is its own render pass on a layer's scratch target.
-        for (i, p) in fx_passes.iter().enumerate() {
-            let (Some(fx), Some(tex)) = (self.fx_targets.get(&p.key), self.layers.get(&p.key)) else { continue };
+        // One effect pass: its own render pass on a layer's scratch target.
+        let encode_fx = |enc: &mut wgpu::CommandEncoder, i: usize, p: &FxPass| {
+            let Some(fx) = self.fx_targets.get(&p.key) else { return };
+            let source = match p.src {
+                Src::Layer => match self.layers.get(&p.key) {
+                    Some(t) => &t.bind_group,
+                    None => return,
+                },
+                Src::Below => &targets.accum_bind,
+                Src::Scratch(s) => &fx.binds[s],
+            };
             let second = match p.second {
                 Second::None => None,
                 Second::Mask => Some(self.masks.get(&p.key).map(|m| &m.bind_group)),
@@ -1238,28 +1277,32 @@ impl Compositor {
                 Second::Scratch(s) => Some(Some(&fx.binds[s])),
             };
             if matches!(second, Some(None)) {
-                continue; // its texture is missing
+                return; // its texture is missing
             }
             let pipeline = match (p.plugin, second) {
                 (Some((rev, k)), Some(Some(_))) => match self.plugin_pipelines.get(&rev) {
                     Some(Some(passes)) => &passes[k],
-                    _ => continue,
+                    _ => return,
                 },
-                (Some(_), _) => continue,
+                (Some(_), _) => return,
                 (None, Some(Some(_))) => &self.fx2_pipelines[p.entry],
                 (None, _) => &self.fx_pipelines[p.entry],
             };
-            let mut pass = pass_on(&mut enc, &fx.views[p.dst], wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            let mut pass = pass_on(enc, &fx.views[p.dst], wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
             pass.set_pipeline(pipeline);
             if let Some(Some(b)) = second {
                 pass.set_bind_group(2, b, &[]);
             }
             pass.set_bind_group(0, &self.fx_uniform_bind, &[(i as u64 * self.fx_uniform_stride) as u32]);
-            match p.src {
-                Src::Layer => pass.set_bind_group(1, &tex.bind_group, &[]),
-                Src::Scratch(s) => pass.set_bind_group(1, &fx.binds[s], &[]),
-            }
+            pass.set_bind_group(1, source, &[]);
             pass.draw(0..3, 0..1);
+        };
+        // Adjustment layers' passes wait for the frame below them to be drawn.
+        let adjust: std::collections::HashSet<u64> = ops.iter().filter_map(|o| if let Op::Adjust { draw, .. } = o { Some(draw.key) } else { None }).collect();
+        for (i, p) in fx_passes.iter().enumerate() {
+            if !adjust.contains(&p.key) {
+                encode_fx(&mut enc, i, p);
+            }
         }
 
         let offset = |slot: usize| (slot as u64 * self.uniform_stride) as u32;
@@ -1287,6 +1330,19 @@ impl Compositor {
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
                     pass.set_bind_group(1, bind, &[]);
                     pass.draw(0..verts[draw.slot], 0..1);
+                }
+                Op::Adjust { draw, blend } => {
+                    // Finish the frame so far, run the effects on it, and draw the result over it.
+                    drop(frame_pass.take());
+                    for (i, p) in fx_passes.iter().enumerate().filter(|(_, p)| p.key == draw.key) {
+                        encode_fx(&mut enc, i, p);
+                    }
+                    let Some(bind) = source(draw) else { continue };
+                    let pass = frame_pass.insert(pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Load));
+                    pass.set_pipeline(&self.group_pipelines[blend]);
+                    pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
+                    pass.set_bind_group(1, bind, &[]);
+                    pass.draw(0..6, 0..1);
                 }
                 Op::Group { a, b, over, blend, clear } => {
                     drop(frame_pass.take());

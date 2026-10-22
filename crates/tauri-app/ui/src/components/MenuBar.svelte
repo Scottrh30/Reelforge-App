@@ -152,6 +152,9 @@
     { label: "Freeze frame at playhead", hint: "Shift+F", run: () => actions.act("freeze_frame") },
     { label: "Add title", hint: "Ctrl+T", run: actions.addTitle },
     { label: "Add energy blade layer", run: () => run(api.addBladeLayer()) },
+    { label: "Add plane (new layer)", run: () => run(api.addNew("layer")) },
+    { label: "Add adjustment layer", run: () => run(api.addNew("adjustment")) },
+    { label: "Add point", run: () => run(api.addNew("point")) },
     { label: "Add camera", run: () => run(api.addScene(true, 0)) },
     {
       label: "Add light",

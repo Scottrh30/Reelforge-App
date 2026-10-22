@@ -1145,11 +1145,106 @@ impl Editor {
         let cmds: Vec<Box<dyn Command>> = vec![Box::new(add), Box::new(AddClip { seq: self.active, track, clip })];
         self.execute(Box::new(Batch { name: format!("Add {}", name.to_lowercase()), cmds }));
         self.select_only(Some(id));
-        self.status = if any_3d {
+        self.status = if what == SceneObject::Point {
+            "Added a point: parent layers to it in their Transform settings, then move, turn or scale it to move them together".into()
+        } else if any_3d {
             format!("Added a {}: its settings are in the Controls panel", name.to_lowercase())
         } else {
             format!("Added a {}. It affects 3D layers: tick 3D layer in a clip's Transform settings", name.to_lowercase())
         };
+    }
+
+    /// Where a new generated layer goes: from the playhead to the end of the
+    /// sequence (at least 5 seconds), on a new track on top.
+    fn new_top_layer(&mut self, clip: impl FnOnce(ClipId, Time, Time) -> Clip, label: &str) -> ClipId {
+        self.commit_live_edit();
+        let s = self.seq();
+        let rate = s.frame_rate;
+        let start = self.playback.playhead.snap(rate);
+        let dur = (s.duration() - start).max(Time::from_secs_f64(5.0)).snap(rate);
+        let add = AddTrack::new(&self.project, self.active, TrackKind::Video);
+        let track = add.index;
+        let id = ClipId(self.project.alloc_id());
+        let cmds: Vec<Box<dyn Command>> = vec![Box::new(add), Box::new(AddClip { seq: self.active, track, clip: clip(id, start, dur) })];
+        self.execute(Box::new(Batch { name: label.into(), cmds }));
+        self.select_only(Some(id));
+        id
+    }
+
+    /// "New layer": a plain plane of colour the size of the frame.
+    pub fn add_plane(&mut self, color: [u8; 4]) {
+        self.new_top_layer(|id, start, dur| Clip::new_plane(id, start, dur, color), "Add plane");
+        self.status = "Added a plane: set its colour in the Controls panel, and scale, mask or add effects to it".into();
+    }
+
+    /// "New adjustment layer": its effects change everything below it.
+    pub fn add_adjustment_layer(&mut self) {
+        self.new_top_layer(Clip::new_adjustment, "Add adjustment layer");
+        self.status = "Added an adjustment layer: drag effects onto it to change everything below".into();
+    }
+
+    /// Change a plane's colour.
+    pub fn set_plane_color(&mut self, id: ClipId, color: [u8; 4]) {
+        self.commit_live_edit();
+        let Some(old) = self.seq().find_clip(id).and_then(|(_, c)| c.plane) else { return };
+        if old != color {
+            self.execute(Box::new(reelforge_core::undo::SetPlane { seq: self.active, id, old, new: color }));
+        }
+    }
+
+    /// The point clips a clip can be parented to (not itself, nor a point
+    /// that already follows it): (id, name).
+    pub fn parent_choices(&self, id: ClipId) -> Vec<(ClipId, String)> {
+        use reelforge_core::space3d::SceneObject;
+        let s = self.seq();
+        let follows = |mut p: Option<ClipId>| {
+            for _ in 0..8 {
+                match p {
+                    Some(x) if x == id => return true,
+                    Some(x) => p = s.find_clip(x).and_then(|(_, c)| c.parent),
+                    None => return false,
+                }
+            }
+            false
+        };
+        s.tracks
+            .iter()
+            .rev()
+            .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
+            .filter(|(_, c)| c.scene == Some(SceneObject::Point) && c.id != id && !follows(c.parent))
+            .map(|(t, c)| (c.id, format!("Point on {}", t.name)))
+            .collect()
+    }
+
+    /// Parent clip `id` to point clip `parent` (or remove its parent). It
+    /// stays where it is on screen at the playhead, unless its place is
+    /// animated (then its keys are kept as they are, relative to the new parent).
+    pub fn set_parent(&mut self, id: ClipId, parent: Option<ClipId>) {
+        use reelforge_core::anim::Prop;
+        self.commit_live_edit();
+        if parent.is_some_and(|p| !self.parent_choices(id).iter().any(|(c, _)| *c == p)) {
+            return;
+        }
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        if c.parent == parent {
+            return;
+        }
+        let t = self.playback.playhead;
+        let frame = self.frame_px();
+        let animated = [Prop::Position, Prop::Rotation, Prop::Scale, Prop::Depth].into_iter().any(|p| c.anim.prop_animated(p));
+        let mut moved = c.clone();
+        moved.parent = parent;
+        let local = if animated || c.scene.is_some() {
+            c.transform
+        } else {
+            let world = self.project.world_transform(self.active, c, t);
+            match self.project.parent_of(self.active, &moved, t) {
+                Some(n) => n.inverse().transform(&world, frame),
+                None => world,
+            }
+        };
+        let cmd = reelforge_core::undo::SetParent { seq: self.active, id, old: (c.parent, c.transform), new: (parent, local) };
+        self.execute(Box::new(cmd));
     }
 
     /// A new, empty composition the size of the current sequence, opened for editing.
@@ -2171,6 +2266,44 @@ mod tests {
             .status()
             .is_ok_and(|s| s.success());
         ok.then_some(p)
+    }
+
+    #[test]
+    fn the_new_menu_adds_planes_points_cameras_lights_and_adjustment_layers() {
+        use reelforge_core::effects::point as pt;
+        use reelforge_core::space3d::SceneObject;
+        let mut e = editor();
+        let tracks = e.seq().tracks.len();
+        e.add_plane([10, 20, 30, 255]);
+        let plane = e.selection.unwrap();
+        e.add_adjustment_layer();
+        let adj = e.selection.unwrap();
+        e.add_scene_object(SceneObject::Point, 0);
+        let point = e.selection.unwrap();
+        e.add_scene_object(SceneObject::Camera, 0);
+        e.add_scene_object(SceneObject::Light, 1);
+        assert_eq!(e.seq().tracks.len(), tracks + 5, "each on its own new track");
+        assert!(e.seq().find_clip(adj).unwrap().1.adjustment);
+        // Parenting keeps the plane where it shows, then it follows the point.
+        e.set_transform_live(plane, Transform { position: [100.0, 0.0], ..Default::default() });
+        e.commit_live_edit();
+        let mut moved = e.seq().find_clip(point).unwrap().1.effects[0].clone();
+        moved.params[pt::X].value = 50.0;
+        moved.params[pt::ROTATION].value = 90.0;
+        let pi = e.seq().find_clip(point).unwrap().0;
+        e.project.sequences[e.active].tracks[pi].clips[0].effects[0] = moved;
+        assert_eq!(e.parent_choices(plane).len(), 1);
+        e.set_parent(plane, Some(point));
+        let c = e.seq().find_clip(plane).unwrap().1.clone();
+        let world = e.project.world_transform(e.active, &c, e.playback.playhead);
+        assert!((world.position[0] - 100.0).abs() < 1e-3 && world.position[1].abs() < 1e-3 && world.rotation.abs() < 1e-3, "{world:?}");
+        // A point can't follow a layer that follows it.
+        e.set_parent(point, Some(point));
+        assert_eq!(e.seq().find_clip(point).unwrap().1.parent, None);
+        e.undo();
+        assert_eq!(e.seq().find_clip(plane).unwrap().1.parent, None);
+        e.set_plane_color(plane, [1, 2, 3, 255]);
+        assert_eq!(e.seq().find_clip(plane).unwrap().1.plane, Some([1, 2, 3, 255]));
     }
 
     #[test]

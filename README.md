@@ -163,6 +163,13 @@ What works now:
 - **In/out points**: **I** and **O** (or the Edit menu) mark a range at the playhead (the out
   point includes the frame under the playhead); **Alt+X** clears them. The range shows in blue
   on the ruler, and **Export** then offers "In to out" as well as the whole sequence
+- **New layer menu** (the **New…** list at the top of the timeline, or the Timeline menu): adds,
+  on a new top track from the playhead, a **New Layer** (a plain plane of colour the size of the
+  frame; pick its colour under Layer in Controls), **New Light**, **New Point**, **New Camera** or
+  **New Adjustment Layer**. An adjustment layer has no picture: its effects (with its opacity,
+  crop, masks and blend mode) change everything below it. A point is an invisible 3D null:
+  choose it as a layer's **Parent** (Controls → Layer) and the layer moves, turns and scales with
+  it; points can be parented to points, and cameras and lights can follow them too
 - **Effects** (Controls panel, **Add effect…**, or the **Effects & transitions** browser, `E`):
   a stack per video clip, applied on the GPU in linear light before the clip's transform, so
   they move, scale and rotate with it:

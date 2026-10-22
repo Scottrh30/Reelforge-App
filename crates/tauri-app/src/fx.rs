@@ -181,9 +181,16 @@ pub fn effect_add(id: u64, kind: EffectKind, plugin: Option<String>) -> Res<()> 
     ed(|e| {
         e.commit_live_edit();
         let name = fx.label();
-        if e.seq().find_clip(ClipId(id)).is_none() {
-            e.status = "Select a video, picture or title clip first".into();
-            return;
+        match e.seq().find_clip(ClipId(id)) {
+            None => {
+                e.status = "Select a video, picture or title clip first".into();
+                return;
+            }
+            Some((_, c)) if c.scene.is_some() => {
+                e.status = "Cameras, lights and points have no picture to add effects to: add them to a layer, or to an adjustment layer to change everything below".into();
+                return;
+            }
+            _ => {}
         }
         edit(e, id, |list, _, _| list.push(fx));
         e.commit_live_edit();
@@ -202,8 +209,8 @@ pub fn effect_op(id: u64, index: usize, op: String) -> Res<()> {
             if index >= list.len() {
                 return;
             }
-            // A camera's or light's settings stay put (they can be reset or switched off).
-            let fixed = matches!(list[index].kind, EffectKind::Camera | EffectKind::Light);
+            // A camera's, light's or point's settings stay put (they can be reset or switched off).
+            let fixed = matches!(list[index].kind, EffectKind::Camera | EffectKind::Light | EffectKind::Point);
             if fixed && !matches!(op.as_str(), "reset" | "toggle") {
                 return;
             }

@@ -321,3 +321,9 @@ fn fs_blade(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4(under.rgb + light, max(under.a, la));
 }
+
+// The frame so far (premultiplied already), for an adjustment layer's effects.
+@fragment
+fn fs_copy(in: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(src, src_sampler, in.uv);
+}

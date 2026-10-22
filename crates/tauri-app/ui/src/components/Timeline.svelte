@@ -809,6 +809,28 @@
 
 <svelte:window onpointerup={windowUp} />
 
+{#snippet newMenu()}
+  <!-- Adds the chosen layer on a new track at the top, from the playhead. -->
+  <select
+    class="new"
+    aria-label="New layer"
+    title="Add a new layer on a new top track, from the playhead"
+    value=""
+    onchange={(e) => {
+      const v = e.currentTarget.value as "layer" | "light" | "point" | "camera" | "adjustment" | "";
+      e.currentTarget.value = "";
+      if (v) run(api.addNew(v));
+    }}
+  >
+    <option value="" disabled hidden>New…</option>
+    <option value="layer" title="A plain plane of colour the size of the frame">New Layer</option>
+    <option value="light" title="A light for 3D layers (choose point, spot, directional or ambient in Controls)">New Light</option>
+    <option value="point" title="An invisible point: layers parented to it move, turn and scale with it">New Point</option>
+    <option value="camera" title="A 3D camera that 3D layers are seen through">New Camera</option>
+    <option value="adjustment" title="Its effects change every layer below it">New Adjustment Layer</option>
+  </select>
+{/snippet}
+
 <div class="timeline" style="--hw:{view.headerW}px">
   <div class="top">
     <div class="tabs" role="tablist">
@@ -823,6 +845,9 @@
         {/each}
         <button class="chip" onclick={() => run(api.newComposite())} title="New empty composition">+</button>
       </div>
+    {/if}
+    {#if app.timelineTab !== "curves" && seq}
+      {@render newMenu()}
     {/if}
     <span class="grow"></span>
     {#if app.timelineTab !== "curves"}
@@ -1124,6 +1149,10 @@
   }
   .grow {
     flex: 1;
+  }
+  select.new {
+    padding: 3px 6px;
+    min-width: 0;
   }
   .tabs {
     display: flex;
@@ -1536,9 +1565,16 @@
     background: var(--clip-comp);
   }
   .clip.camera,
-  .clip.light {
+  .clip.light,
+  .clip.point {
     background: color-mix(in srgb, var(--clip-title) 35%, #3a3f48);
     border-style: dashed;
+  }
+  .clip.adjustment {
+    background: repeating-linear-gradient(135deg, #4a4f5a 0 6px, #42464f 6px 12px);
+  }
+  .clip.plane {
+    background: color-mix(in srgb, var(--clip-title) 55%, #555b66);
   }
   .clip.sel {
     border-color: var(--accent);

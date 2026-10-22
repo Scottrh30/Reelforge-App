@@ -61,7 +61,7 @@ export interface MediaView {
   detail: string;
 }
 
-export type ClipKind = "video" | "audio" | "image" | "title" | "comp" | "camera" | "light";
+export type ClipKind = "video" | "audio" | "image" | "title" | "comp" | "camera" | "light" | "point" | "plane" | "adjustment";
 
 export interface ClipView {
   id: number;
@@ -243,8 +243,13 @@ export interface Inspector {
   can_track: boolean;
   tracker: TrackerView | null;
   mesh_keys: number | null;
-  /// A camera or light: its position / point of interest, where the camera sees them.
+  /// A camera, light or point: its position / point of interest, where the camera sees them.
   scene_points: { which: "position" | "target"; at: Pt }[];
+  /// A plane's colour (#rrggbb).
+  plane: string | null;
+  /// The point clip it's parented to, and the ones it can be: [id, name].
+  parent: number | null;
+  parents: [number, string][];
   tracking: number | null;
   tracking_elsewhere: boolean;
 }
@@ -578,6 +583,10 @@ export const api = {
   addBladeLayer: () => invoke("add_blade_layer"),
   /// A camera, or a light (0 point, 1 spot, 2 directional, 3 ambient).
   addScene: (camera: boolean, light: number) => invoke("add_scene", { camera, light }),
+  /// The New menu: a plane ("layer", of `color`), a light, a point, a camera or an adjustment layer.
+  addNew: (what: "layer" | "light" | "point" | "camera" | "adjustment", light = 0, color: string | null = null) => invoke("add_new", { what, light, color }),
+  setPlaneColor: (id: number, color: string) => invoke("set_plane_color", { id, color }),
+  setParent: (id: number, parent: number | null) => invoke("set_parent", { id, parent }),
   /// Drag a camera's or light's point by `d` frame pixels (live; `start` on the first call).
   scenePointDrag: (id: number, which: string, d: Pt, start: boolean) => invoke("scene_point_drag", { id, which, d, start }),
   select: (id: number | null, mode: "only" | "toggle" | "none") => invoke("select", { id, mode }),

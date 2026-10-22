@@ -350,6 +350,8 @@ impl Editor {
             .iter()
             .rev()
             .flat_map(|item| item.layers().into_iter().rev().map(|l| (l.clip, l.transform)).collect::<Vec<_>>())
+            // An adjustment layer covers the frame but isn't moved about: clicks go to what's below.
+            .filter(|(c, _)| !c.adjustment)
             .filter_map(|(c, tr)| {
                 let (layer, size) = if c.title.is_some() {
                     let b = self.preview.title_bounds(c.id)?;
@@ -383,7 +385,7 @@ impl Editor {
     /// front of it), else by its transform.
     pub fn layer_map_of(&self, c: &reelforge_core::Clip) -> Option<reelforge_core::transform::LayerMap> {
         let t = self.playback.playhead;
-        let tr = c.transform_at(t);
+        let tr = self.project.world_transform(self.active, c, t);
         let size = self.layer_size(c);
         if Self::is_3d_layer(c, &tr) {
             let scene = self.project.scene3d_at(self.active, t);
@@ -425,7 +427,7 @@ impl Editor {
         if c.mesh.is_some() {
             return None;
         }
-        let tr = c.transform_at(self.playback.playhead);
+        let tr = self.project.world_transform(self.active, c, self.playback.playhead);
         // A 3D layer: its outline as the camera sees it.
         if Self::is_3d_layer(c, &tr) {
             return Some((layer, shown));
@@ -434,7 +436,14 @@ impl Editor {
     }
 
     /// Apply a transform worked out by the gizmo to the selected layer (live).
+    /// (The gizmo works where the layer shows: a parented layer's transform
+    /// is turned back into its own.)
     pub fn gizmo_apply(&mut self, id: ClipId, t: Transform) {
+        let parent = self.seq().find_clip(id).and_then(|(_, c)| self.project.parent_of(self.active, c, self.playback.playhead));
+        let t = match parent {
+            Some(n) => n.inverse().transform(&t, self.frame_px()),
+            None => t,
+        };
         self.set_transform_live(id, t);
     }
 }

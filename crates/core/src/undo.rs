@@ -282,6 +282,9 @@ impl Command for SplitClip {
             // Mesh keys are at source times, so both halves keep them.
             mesh: clip.mesh.clone(),
             scene: clip.scene,
+            plane: clip.plane,
+            adjustment: clip.adjustment,
+            parent: clip.parent,
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;
@@ -984,6 +987,55 @@ impl Command for SetMarkers {
     }
     fn undo(&mut self, p: &mut Project) {
         p.sequences[self.seq].markers = self.old.clone();
+    }
+}
+
+/// Parent a clip to a point clip, or let it go: the parent and the clip's
+/// own transform before and after (changed so it stays where it shows).
+pub struct SetParent {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: (Option<ClipId>, crate::transform::Transform),
+    pub new: (Option<ClipId>, crate::transform::Transform),
+}
+
+impl Command for SetParent {
+    fn name(&self) -> &str {
+        if self.new.0.is_some() { "Parent to point" } else { "Remove parent" }
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            (c.parent, c.transform) = self.new;
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            (c.parent, c.transform) = self.old;
+        }
+    }
+}
+
+/// Change a plane's colour.
+pub struct SetPlane {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: [u8; 4],
+    pub new: [u8; 4],
+}
+
+impl Command for SetPlane {
+    fn name(&self) -> &str {
+        "Change plane colour"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.plane = Some(self.new);
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.plane = Some(self.old);
+        }
     }
 }
 

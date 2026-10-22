@@ -49,6 +49,9 @@ pub enum EffectKind {
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
     Light,
+    /// A point clip's settings: an invisible point other layers can be
+    /// parented to (see [`crate::space3d::Null`]).
+    Point,
 }
 
 /// Where an effect is listed in the effects browser.
@@ -208,6 +211,23 @@ pub mod light {
     pub const KINDS: [&str; 4] = ["Point", "Spot", "Directional", "Ambient"];
 }
 
+/// Point parameter indices.
+pub mod point {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const Z: usize = 2;
+    pub const ROTATION: usize = 3;
+    pub const SCALE: usize = 4;
+}
+
+const POINT: [ParamSpec; 5] = [
+    spec("Position X", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Position Y", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Position Z", 0.0, -100000.0, 100000.0, " px", 1.0),
+    spec("Rotation", 0.0, -3600.0, 3600.0, "°", 0.25),
+    spec("Scale", 100.0, 0.0, 10000.0, " %", 0.5),
+];
+
 const CAMERA: [ParamSpec; 11] = [
     spec("Position X", 0.0, -100000.0, 100000.0, " px", 1.0),
     spec("Position Y", 0.0, -100000.0, 100000.0, " px", 1.0),
@@ -333,6 +353,7 @@ impl EffectKind {
             EffectKind::EnergyBlade => "Energy blade",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
+            EffectKind::Point => "Point",
         }
     }
 
@@ -341,7 +362,7 @@ impl EffectKind {
             EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey => EffectCategory::Keying,
-            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light => EffectCategory::Stylize,
+            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::Plugin => EffectCategory::Plugins,
         }
     }
@@ -363,6 +384,7 @@ impl EffectKind {
             EffectKind::EnergyBlade => "A glowing light-sword blade with a hot core, flicker and motion blur. Drag its hilt and tip in the Viewer, or attach it to a track.",
             EffectKind::Camera => "The 3D camera: where it is, what it looks at, its field of view and depth of field.",
             EffectKind::Light => "A light for 3D layers.",
+            EffectKind::Point => "An invisible point: layers parented to it move, turn and scale with it.",
         }
     }
 
@@ -381,6 +403,7 @@ impl EffectKind {
             EffectKind::EnergyBlade => &BLADE,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
+            EffectKind::Point => &POINT,
             // A plugin's parameters depend on which plugin: see `Effect::param_specs`.
             EffectKind::Plugin => &[],
         }
@@ -393,6 +416,7 @@ impl EffectKind {
         match self {
             EffectKind::EnergyBlade => &[(0, "Blade"), (5, "Colour"), (7, "Core"), (11, "Glow"), (15, "Flicker"), (18, "Motion")],
             EffectKind::Camera => &[(0, "Position"), (3, "Point of interest"), (6, "Lens"), (8, "Depth of field")],
+            EffectKind::Point => &[(0, "Position"), (3, "Rotation and scale")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff")],
             _ => &[],
         }
@@ -458,7 +482,7 @@ impl EffectValues {
             EffectKind::Plugin => self.plugin.is_none(),
             EffectKind::EnergyBlade => v[blade::OPACITY] == 0.0 || v[blade::LENGTH] == 0.0 || (v[blade::CORE_WIDTH] == 0.0 && v[blade::GLOW_INTENSITY] == 0.0),
             // Settings of a camera or light clip, not drawn as an effect.
-            EffectKind::Camera | EffectKind::Light => true,
+            EffectKind::Camera | EffectKind::Light | EffectKind::Point => true,
         }
     }
 }

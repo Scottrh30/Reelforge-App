@@ -127,6 +127,18 @@ pub struct Clip {
     /// has no picture of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<crate::space3d::SceneObject>,
+    /// A plain layer filled with this colour (sRGB, straight alpha), the size
+    /// of the frame (its media is `MediaId::GENERATED`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plane: Option<[u8; 4]>,
+    /// An adjustment layer: no picture of its own; its effects (and masks,
+    /// opacity, crop and blend mode) apply to everything below it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adjustment: bool,
+    /// The point clip (in the same sequence) this one is parented to: it
+    /// moves, turns and scales with it. See [`crate::space3d::Null`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ClipId>,
 }
 
 /// Everything about how a video clip looks, edited and undone as one unit.
@@ -166,7 +178,20 @@ impl Clip {
             tracker: None,
             mesh: None,
             scene: None,
+            plane: None,
+            adjustment: false,
+            parent: None,
         }
+    }
+
+    /// A plain colour layer the size of the frame.
+    pub fn new_plane(id: ClipId, timeline_start: Time, duration: Time, color: [u8; 4]) -> Self {
+        Self { plane: Some(color), ..Self::new(id, MediaId::GENERATED, timeline_start, Time::ZERO, duration, None) }
+    }
+
+    /// An adjustment layer (add effects to it to change everything below).
+    pub fn new_adjustment(id: ClipId, timeline_start: Time, duration: Time) -> Self {
+        Self { adjustment: true, ..Self::new(id, MediaId::GENERATED, timeline_start, Time::ZERO, duration, None) }
     }
 
     /// A title clip on a video track.
@@ -181,6 +206,7 @@ impl Clip {
         let mut fx = Effect::new(match what {
             crate::space3d::SceneObject::Camera => crate::effects::EffectKind::Camera,
             crate::space3d::SceneObject::Light => crate::effects::EffectKind::Light,
+            crate::space3d::SceneObject::Point => crate::effects::EffectKind::Point,
         });
         if what == crate::space3d::SceneObject::Camera {
             let d = crate::space3d::Camera::default_for(frame).distance();
@@ -208,7 +234,14 @@ impl Clip {
                 }
                 (crate::space3d::SceneObject::Light, None) => "Light".into(),
                 (crate::space3d::SceneObject::Camera, _) => "Camera".into(),
+                (crate::space3d::SceneObject::Point, _) => "Point".into(),
             });
+        }
+        if self.plane.is_some() {
+            return std::borrow::Cow::Borrowed("Plane");
+        }
+        if self.adjustment {
+            return std::borrow::Cow::Borrowed("Adjustment layer");
         }
         if let Some(t) = &self.title {
             if t.text.trim().is_empty() && self.effects.iter().any(|e| e.kind == crate::effects::EffectKind::EnergyBlade) {
@@ -643,6 +676,10 @@ impl Project {
     /// A video layer's native size: the media's, or the composition's frame.
     /// (Titles are drawn on a canvas the size of the frame they're in.)
     pub fn picture_size(&self, c: &Clip) -> Option<[u32; 2]> {
+        if c.plane.is_some() || c.adjustment {
+            // As big as the frame of the sequence it's in.
+            return self.sequences.iter().find(|s| s.find_clip(c.id).is_some()).map(|s| [s.width, s.height]);
+        }
         match c.nested {
             Some(s) => self.sequences.get(s).map(|s| [s.width, s.height]),
             None => self.media(c.media)?.info.video.as_ref().map(|v| [v.width, v.height]),
@@ -720,14 +757,50 @@ impl Project {
 
     /// What's visible at `t`, bottom track first: one layer per video track, or
     /// a dissolve between two clips where a transition is in progress.
+    /// Where the point clip `clip` is parented to (and its own parents, if
+    /// it's a chain of points) puts it at time `t`. `None` if it has no parent.
+    pub fn parent_of(&self, seq: usize, clip: &Clip, t: Time) -> Option<crate::space3d::Null> {
+        use crate::space3d::{Null, SceneObject};
+        let s = self.sequences.get(seq)?;
+        let mut next = clip.parent;
+        let mut out: Option<Null> = None;
+        // A chain is followed a few steps at most, never round a loop.
+        let mut seen = vec![clip.id];
+        for _ in 0..8 {
+            let Some(id) = next.filter(|id| !seen.contains(id)) else { break };
+            seen.push(id);
+            let Some((_, p)) = s.find_clip(id) else { break };
+            let Some(fx) = p.effects.first().filter(|_| p.scene == Some(SceneObject::Point)) else { break };
+            // Before or after the point's clip, it holds its first or last place.
+            let src = p.source_time(t.max(p.timeline_start).min(p.timeline_end()));
+            let n = if fx.enabled { Null::from_effect(fx, src) } else { Null::IDENTITY };
+            out = Some(match out {
+                None => n,
+                Some(inner) => inner.within(&n),
+            });
+            next = p.parent;
+        }
+        out
+    }
+
+    /// A clip's transform at `t` as seen in the frame: its own, moved by the
+    /// point it's parented to.
+    pub fn world_transform(&self, seq: usize, clip: &Clip, t: Time) -> Transform {
+        let tr = clip.transform_at(t);
+        match (self.parent_of(seq, clip, t), self.sequences.get(seq)) {
+            (Some(n), Some(s)) => n.transform(&tr, [s.width as f32, s.height as f32]),
+            _ => tr,
+        }
+    }
+
     pub fn video_layers_at(&self, seq: usize, t: Time) -> Vec<VideoItem<'_>> {
         let s = &self.sequences[seq];
         let dissolves = self.dissolves(seq);
         let frame = s.frame_rate.frame_duration();
-        fn layer<'a>(p: &Project, track: usize, c: &'a Clip, t: Time, frame: Time) -> Layer<'a> {
+        fn layer<'a>(p: &Project, seq: usize, track: usize, c: &'a Clip, t: Time, frame: Time) -> Layer<'a> {
             let source_time = if p.is_still(c.media) { Time::ZERO } else { c.media_at(t) };
             // Keys are anchored to source time (also for stills, like the transform's).
-            Layer { track, clip: c, source_time, transform: c.transform_at(t), blend: c.blend, effects: c.effects_moving(t, frame) }
+            Layer { track, clip: c, source_time, transform: p.world_transform(seq, c, t), blend: c.blend, effects: c.effects_moving(t, frame) }
         }
         let mut out = Vec::new();
         for (ti, tr) in s.tracks.iter().enumerate() {
@@ -740,9 +813,9 @@ impl Project {
                     continue; // cameras and lights have no picture to dissolve
                 }
                 let mix = (t - x.start()).0 as f32 / x.len().0 as f32;
-                out.push(VideoItem::Dissolve { from: layer(self, ti, a, t, frame), to: layer(self, ti, b, t, frame), mix, kind: b.transition });
+                out.push(VideoItem::Dissolve { from: layer(self, seq, ti, a, t, frame), to: layer(self, seq, ti, b, t, frame), mix, kind: b.transition });
             } else if let Some(c) = tr.clip_at(t).filter(|c| c.scene.is_none()) {
-                let l = layer(self, ti, c, t, frame);
+                let l = layer(self, seq, ti, c, t, frame);
                 if l.transform.opacity > 0.0 {
                     out.push(VideoItem::Single(l));
                 }
@@ -824,6 +897,51 @@ mod crossfade_tests {
         p.sequences[0].tracks[a1].clips[1].timeline_start = secs(4.5);
         assert!(p.crossfades(0).is_empty());
         assert_eq!(p.clip_before(0, ClipId(11)), None);
+    }
+
+    #[test]
+    fn layers_follow_the_point_they_are_parented_to() {
+        use crate::effects::point as pt;
+        use crate::space3d::{Null, SceneObject};
+        let mut p = Project::new();
+        let (w, h) = (p.sequences[0].width as f32, p.sequences[0].height as f32);
+        let mut null = Clip::new_scene(ClipId(1), secs(0.0), secs(5.0), SceneObject::Point, [w, h]);
+        let mut plane = Clip::new_plane(ClipId(2), secs(0.0), secs(5.0), [255, 0, 0, 255]);
+        plane.transform.position = [100.0, 0.0];
+        plane.parent = Some(ClipId(1));
+        // A point at the centre with no turn or scale changes nothing.
+        p.sequences[0].tracks[0].clips = vec![plane.clone()];
+        p.sequences[0].tracks[1].clips = vec![null.clone()];
+        assert_eq!(p.world_transform(0, &plane, secs(1.0)), plane.transform);
+        // Moved, turned 90° and doubled: the layer swings round it.
+        for (i, v) in [(pt::X, 50.0), (pt::Y, 20.0), (pt::ROTATION, 90.0), (pt::SCALE, 200.0)] {
+            null.effects[0].params[i].value = v;
+        }
+        p.sequences[0].tracks[1].clips = vec![null.clone()];
+        let t = p.world_transform(0, &plane, secs(1.0));
+        assert!((t.position[0] - 50.0).abs() < 1e-3 && (t.position[1] - 220.0).abs() < 1e-3, "{:?}", t.position);
+        assert_eq!((t.rotation, t.scale), (90.0, [2.0, 2.0]));
+        // Shown through the video layers too; the point itself isn't a layer.
+        let layers = p.video_layers_at(0, secs(1.0));
+        assert_eq!(layers.len(), 1);
+        let VideoItem::Single(l) = &layers[0] else { panic!() };
+        assert_eq!(l.transform.position, t.position);
+        // The inverse puts it back.
+        let n = p.parent_of(0, &plane, secs(1.0)).unwrap();
+        let back = n.inverse().transform(&t, [w, h]);
+        assert!((back.position[0] - 100.0).abs() < 1e-3 && back.position[1].abs() < 1e-3 && back.rotation.abs() < 1e-4);
+        // A chain of points; a loop doesn't hang.
+        let mut outer = Clip::new_scene(ClipId(3), secs(0.0), secs(5.0), SceneObject::Point, [w, h]);
+        outer.effects[0].params[pt::X].value = 10.0;
+        null.parent = Some(ClipId(3));
+        outer.parent = Some(ClipId(1));
+        p.sequences[0].tracks[1].clips = vec![null];
+        p.sequences[0].tracks.push(Track::new("V3", TrackKind::Video));
+        let last = p.sequences[0].tracks.len() - 1;
+        p.sequences[0].tracks[last].clips = vec![outer];
+        let t = p.world_transform(0, &plane, secs(1.0));
+        assert!((t.position[0] - 60.0).abs() < 1e-3, "{:?}", t.position);
+        assert_eq!(Null::IDENTITY.within(&Null::IDENTITY), Null::IDENTITY);
     }
 
     #[test]
