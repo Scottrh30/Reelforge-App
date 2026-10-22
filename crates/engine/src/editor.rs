@@ -1752,6 +1752,164 @@ impl Editor {
         self.set_visual_live(id, v);
     }
 
+    /// Set mask `index`'s Bézier handles as seen at the playhead (a keyframe
+    /// there if the shape is animated).
+    pub fn set_mask_curves_live(&mut self, id: ClipId, index: usize, curves: Vec<[f32; 4]>) {
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let t = self.mask_time(c);
+        let Some(mut v) = self.visual(id) else { return };
+        let Some(m) = v.masks.get_mut(index) else { return };
+        m.set_curves_at(t, curves);
+        self.set_visual_live(id, v);
+    }
+
+    /// Turn point `point` of mask `index` into a smooth curve, or (if it's
+    /// curved already) back into a sharp corner. One undo step.
+    pub fn toggle_mask_point_curve(&mut self, id: ClipId, index: usize, point: usize) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let t = self.mask_time(c);
+        let Some(m) = c.masks.get(index) else { return };
+        if m.shape == reelforge_core::mask::MaskShape::Ellipse {
+            self.status = "An ellipse is already round: use a rectangle or freehand mask for curves".into();
+            return;
+        }
+        let pts = m.points_at(t);
+        let mut curves = m.curves_at(t);
+        let Some(cur) = curves.get_mut(point) else { return };
+        let curved = cur.iter().any(|v| *v != 0.0);
+        *cur = if curved { [0.0; 4] } else { reelforge_core::mask::smooth_handles(&pts, point) };
+        self.set_mask_curves_live(id, index, curves);
+        self.commit_live_edit();
+        self.status = if curved { format!("Point {} is a sharp corner", point + 1) } else { format!("Point {} is a smooth curve: drag its handles to shape it", point + 1) };
+    }
+
+    // ---- Automatic ducking ----------------------------------------------------------
+
+    /// Peaks of a media item's sound (`WAVEFORM_RATE` per second), worked out
+    /// now if the background job hasn't got to it yet.
+    fn peaks_now(&mut self, id: MediaId) -> Option<Arc<Vec<f32>>> {
+        if let Some(p) = self.waveforms.get(&id) {
+            return Some(p.clone());
+        }
+        let m = self.project.media(id)?;
+        m.info.audio.as_ref()?;
+        let p = Arc::new(reelforge_media::waveform_peaks(&m.path, WAVEFORM_RATE).ok()?);
+        self.waveforms.insert(id, p.clone());
+        Some(p)
+    }
+
+    /// Lower the clips on the `music` audio tracks wherever someone speaks on
+    /// the `dialogue` tracks, as volume keyframes (one undo step). Ducking
+    /// them again replaces the earlier ducking.
+    pub fn auto_duck(&mut self, dialogue: &[usize], music: &[usize], settings: reelforge_core::duck::DuckSettings) {
+        use reelforge_core::duck::{envelope, speech_spans};
+        self.commit_live_edit();
+        let audio = |s: &Sequence, i: usize| s.tracks.get(i).is_some_and(|t| t.kind == TrackKind::Audio);
+        let dialogue: Vec<usize> = dialogue.iter().copied().filter(|&i| audio(self.seq(), i) && !music.contains(&i)).collect();
+        let music: Vec<usize> = music.iter().copied().filter(|&i| audio(self.seq(), i)).collect();
+        if dialogue.is_empty() || music.is_empty() {
+            self.status = "Choose at least one dialogue track and one music track (different ones)".into();
+            return;
+        }
+        // The dialogue's level over the whole sequence, from its waveforms and clip volumes.
+        let mut sources: Vec<(Clip, Arc<Vec<f32>>)> = Vec::new();
+        let clips: Vec<Clip> = dialogue.iter().filter(|&&i| !self.seq().tracks[i].muted).flat_map(|&i| self.seq().tracks[i].clips.clone()).collect();
+        for c in clips {
+            if let Some(p) = self.peaks_now(c.media) {
+                sources.push((c, p));
+            }
+        }
+        if sources.is_empty() {
+            self.status = "The dialogue tracks have no sound to listen to".into();
+            return;
+        }
+        let rate = WAVEFORM_RATE as f64;
+        let level = |t: Time| -> f32 {
+            let mut best = f32::NEG_INFINITY;
+            for (c, p) in &sources {
+                if !c.contains(t) {
+                    continue;
+                }
+                let m = c.media_at(t).as_secs_f64();
+                let i = (m * rate).floor();
+                if i < 0.0 {
+                    continue;
+                }
+                let Some(&peak) = p.get(i as usize) else { continue };
+                if peak <= 0.0 {
+                    continue;
+                }
+                let db = 20.0 * peak.log10() + c.audio.volume_db_at(c.source_time(t));
+                best = best.max(db);
+            }
+            best
+        };
+        let end = self.seq().duration();
+        let spans = speech_spans(level, Time::ZERO, end, Time::from_secs_f64(1.0 / rate), &settings);
+        let env = envelope(&spans, &settings);
+        let (mut cmds, mut ducked, mut locked): (Vec<Box<dyn Command>>, usize, usize) = (Vec::new(), 0, 0);
+        for &ti in &music {
+            for c in &self.seq().tracks[ti].clips {
+                if self.seq().is_locked(c.id) {
+                    locked += 1;
+                    continue;
+                }
+                let to_src = |t: Time| c.source_time(t);
+                let local: Vec<(Time, f32)> = env.iter().map(|&(t, d)| (to_src(t), d)).collect();
+                let mut a = c.audio.clone();
+                a.set_ducking(local, (c.source_in, c.source_in + c.duration));
+                if a != c.audio {
+                    if a.is_ducked() {
+                        ducked += 1;
+                    }
+                    cmds.push(Box::new(SetClipAudio { seq: self.active, id: c.id, old: c.audio.clone(), new: a }));
+                }
+            }
+        }
+        let talk: f64 = spans.iter().map(|(a, b)| (*b - *a).as_secs_f64()).sum();
+        if !cmds.is_empty() {
+            self.execute(Box::new(Batch { name: "Duck music under dialogue".into(), cmds }));
+        }
+        let lockednote = if locked > 0 { format!(" ({locked} locked clip{} left alone)", if locked == 1 { "" } else { "s" }) } else { String::new() };
+        self.status = if spans.is_empty() {
+            format!("No speech found louder than {:.0} dB: lower the threshold to duck under quieter dialogue{lockednote}", settings.threshold_db)
+        } else {
+            format!(
+                "Ducked {ducked} music clip{} by {:.0} dB under {} stretch{} of speech ({:.1} s){lockednote}. The ducking is ordinary volume keyframes: fine-tune them, or duck again to replace it",
+                if ducked == 1 { "" } else { "s" },
+                -settings.amount_db.min(0.0),
+                spans.len(),
+                if spans.len() == 1 { "" } else { "es" },
+                talk
+            )
+        };
+    }
+
+    /// Take automatic ducking off the clips on the `music` tracks (one undo
+    /// step); volume keyframes added by hand stay.
+    pub fn remove_ducking(&mut self, music: &[usize]) {
+        self.commit_live_edit();
+        let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+        for &ti in music {
+            let Some(t) = self.seq().tracks.get(ti) else { continue };
+            for c in t.clips.iter().filter(|c| c.audio.is_ducked() && !self.seq().is_locked(c.id)) {
+                let mut a = c.audio.clone();
+                a.set_ducking(Vec::new(), (c.source_in, c.source_in + c.duration));
+                cmds.push(Box::new(SetClipAudio { seq: self.active, id: c.id, old: c.audio.clone(), new: a }));
+            }
+        }
+        let n = cmds.len();
+        if n > 0 {
+            self.execute(Box::new(Batch { name: "Remove ducking".into(), cmds }));
+        }
+        self.status = match n {
+            0 => "Nothing to take off: those tracks aren't ducked".into(),
+            1 => "Took the ducking off 1 clip".into(),
+            n => format!("Took the ducking off {n} clips"),
+        };
+    }
+
     // ---- Motion tracking -----------------------------------------------------------
 
     /// Change a clip's tracker as part of a gesture (dragging it, a slider).
@@ -2452,6 +2610,60 @@ mod tests {
         }
         e.undo();
         assert!((at(&e, planes[0], 0.5)[0] + 30.0).abs() < 1e-3, "one undo step");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn music_ducks_under_speech_and_comes_back_up() {
+        let dir = std::env::temp_dir().join(format!("rf-engine-duck-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // "Speech": a tone for 2 s, 2 s of silence, then 2 s more.
+        let speech = dir.join("speech.wav");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=6", "-af", "volume=enable='between(t,2,4)':volume=0"])
+            .arg(&speech)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return;
+        }
+        let mut e = editor();
+        let info = reelforge_media::probe(&speech).unwrap();
+        e.project.media.push(MediaAsset { id: MediaId(1), path: speech, name: "speech.wav".into(), info: info.clone() });
+        e.project.media.push(MediaAsset { id: MediaId(2), path: dir.join("music.wav"), name: "music.wav".into(), info });
+        let audio: Vec<usize> = e.seq().tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio).map(|(i, _)| i).collect();
+        let (dlg, mus) = if audio.len() >= 2 {
+            (audio[0], audio[1])
+        } else {
+            e.add_track(TrackKind::Audio);
+            let a: Vec<usize> = e.seq().tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio).map(|(i, _)| i).collect();
+            (a[0], a[1])
+        };
+        let secs = Time::from_secs_f64;
+        let (d, m) = (ClipId(e.project.alloc_id()), ClipId(e.project.alloc_id()));
+        e.project.sequences[0].tracks[dlg].clips.push(Clip::new(d, MediaId(1), Time::ZERO, Time::ZERO, secs(6.0), None));
+        let mut music = Clip::new(m, MediaId(2), Time::ZERO, Time::ZERO, secs(8.0), None);
+        music.audio.volume_db = -4.0;
+        e.project.sequences[0].tracks[mus].clips.push(music);
+        let st = reelforge_core::duck::DuckSettings::default();
+        e.auto_duck(&[dlg], &[mus], st);
+        assert!(e.status.starts_with("Ducked 1 music clip by 12 dB under 2 stretches"), "{}", e.status);
+        let vol = |e: &Editor, t: f64| e.seq().find_clip(m).unwrap().1.audio.volume_db_at(secs(t));
+        assert!((vol(&e, 1.0) + 16.0).abs() < 0.01, "{}", vol(&e, 1.0));
+        assert!((vol(&e, 3.0) + 4.0).abs() < 0.01, "back up in the pause: {}", vol(&e, 3.0));
+        assert!((vol(&e, 5.0) + 16.0).abs() < 0.01);
+        assert!((vol(&e, 7.5) + 4.0).abs() < 0.01, "back up after the speech");
+        // A deeper duck replaces the first one.
+        e.auto_duck(&[dlg], &[mus], reelforge_core::duck::DuckSettings { amount_db: -20.0, ..st });
+        assert!((vol(&e, 1.0) + 24.0).abs() < 0.01);
+        e.remove_ducking(&[mus]);
+        let c = e.seq().find_clip(m).unwrap().1.clone();
+        assert!(c.audio.volume_keys.is_empty() && c.audio.volume_db == -4.0, "{:?}", c.audio);
+        e.undo();
+        assert!((vol(&e, 1.0) + 24.0).abs() < 0.01, "removing is one undo step");
+        // The same track as both: refused.
+        e.auto_duck(&[mus], &[mus], st);
+        assert!(e.status.starts_with("Choose"), "{}", e.status);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

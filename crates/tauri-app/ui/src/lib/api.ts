@@ -146,12 +146,14 @@ export interface MarkerView {
   rgb: string;
 }
 
-export type Interp = "Linear" | "Ease" | "Hold";
+export type Interp = "Linear" | "Ease" | "Hold" | "Bezier";
 
 export interface KeyView {
   at: Ticks;
   value: number;
   interp: Interp;
+  ease_in: [number, number];
+  ease_out: [number, number];
 }
 
 export interface ChannelView {
@@ -173,7 +175,7 @@ export interface KeysView {
   span: [Ticks, Ticks];
   prev_key: Ticks | null;
   next_key: Ticks | null;
-  interp_here: "Linear" | "Ease" | "Hold" | null;
+  interp_here: Interp | null;
   pin_twisted: boolean;
 }
 
@@ -260,19 +262,26 @@ export interface Mask {
   name: string;
   shape: "Rectangle" | "Ellipse" | "Freehand";
   points: Pt[];
-  keys: { at: Ticks; points: Pt[] }[];
+  keys: { at: Ticks; points: Pt[]; curves?: [number, number, number, number][] }[];
   mode: "Add" | "Subtract" | "Intersect";
   inverted: boolean;
   feather: number;
   expansion: number;
   opacity: number;
   enabled: boolean;
+  /** Bézier handles per point: [in x, in y, out x, out y] offsets (layer px). */
+  curves?: [number, number, number, number][];
+  /** Feather per point (layer px); negative or missing = the mask's feather. */
+  feathers?: number[];
 }
+
+export type Curve4 = [number, number, number, number];
 
 export interface MaskView {
   mask: Mask;
   outline: Pt[];
   handles: Pt[];
+  curves: Curve4[];
   key_here: boolean;
 }
 
@@ -609,6 +618,11 @@ export const api = {
   addFreehandMask: (id: number, points: Pt[]) => invoke<number | null>("add_freehand_mask", { id, points }),
   setMasks: (id: number, masks: Mask[], done: boolean) => invoke("set_masks", { id, masks, done }),
   setMaskPoints: (id: number, index: number, points: Pt[]) => invoke("set_mask_points", { id, index, points }),
+  autoDuck: (dialogue: number[], music: number[], amountDb: number, thresholdDb: number, fadeDown: number, fadeUp: number, hold: number) =>
+    invoke("auto_duck", { dialogue, music, amountDb, thresholdDb, fadeDown, fadeUp, hold }),
+  removeDucking: (music: number[]) => invoke("remove_ducking", { music }),
+  setMaskCurves: (id: number, index: number, curves: Curve4[]) => invoke("set_mask_curves", { id, index, curves }),
+  maskPointCurve: (id: number, index: number, point: number) => invoke("mask_point_curve", { id, index, point }),
   maskOp: (id: number, index: number, op: "animate" | "still" | "key" | "unkey") => invoke("mask_op", { id, index, op }),
   trackerAdd: (id: number, mode: TrackMode) => invoke("tracker_add", { id, mode }),
   trackerMode: (id: number, mode: TrackMode) => invoke("tracker_mode", { id, mode }),
@@ -650,6 +664,7 @@ export const api = {
   transformKey: (id: number, prop: string) => invoke("transform_key", { id, prop }),
   keyMove: (id: number, channel: string, index: number, at: Ticks, value: number, keepTime: boolean) => invoke<number | null>("key_move", { id, channel, index, at: Math.round(at), value, keepTime }),
   keyInterp: (id: number, channel: string, index: number, interp: Interp) => invoke("key_interp", { id, channel, index, interp }),
+  keyHandle: (id: number, channel: string, index: number, out: boolean, x: number, y: number) => invoke("key_handle", { id, channel, index, out, x, y }),
   keyDelete: (id: number, channel: string, index: number) => invoke("key_delete", { id, channel, index }),
   keyAdd: (id: number, channel: string, at: Ticks) => invoke<number | null>("key_add", { id, channel, at: Math.round(at) }),
   markerColors: () => invoke<[MarkerColor, string][]>("marker_colors"),
@@ -685,7 +700,7 @@ export const api = {
   viewerRelease: () => invoke("viewer_release"),
   settingsInfo: () => invoke<SettingsInfo>("settings_info"),
   transformOp: (id: number, op: "anchor_centre" | "crop_clear" | "pin_on" | "pin_off" | "pin_reset" | "fit" | "fill" | "reset") => invoke("transform_op", { id, op }),
-  transformInterp: (id: number, interp: "Linear" | "Ease" | "Hold") => invoke("transform_interp", { id, interp }),
+  transformInterp: (id: number, interp: Interp) => invoke("transform_interp", { id, interp }),
   attrOffers: () => invoke<AttrOffers | null>("attr_offers"),
   pasteAttributes: (set: AttrSet) => invoke("paste_attributes", { set }),
 };

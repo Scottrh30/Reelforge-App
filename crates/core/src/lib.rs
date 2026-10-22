@@ -6,6 +6,7 @@
 pub mod anim;
 pub mod attrs;
 pub mod audio;
+pub mod duck;
 pub mod channels;
 pub mod clipboard;
 pub mod collect;

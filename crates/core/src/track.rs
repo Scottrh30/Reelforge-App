@@ -1211,27 +1211,54 @@ pub fn follow_mask(clip: &Clip, mask: &crate::mask::Mask, tracker: &Tracker) -> 
     let frames: Vec<(Time, Vec<[f32; 2]>)> = tracker.frames().into_iter().filter_map(|(src, p)| Some((clip.clip_time_of_media(src)?, p))).collect();
     let (t0, ref_pts) = frames.first().cloned()?;
     let base = mask.points_at(t0);
+    let curves = mask.curves_at(t0);
+    let curved = mask.is_curved(t0);
+    // Each point and (for curves) both its handle ends move with the track; the
+    // handles are worked out again from where they land.
+    let mut anchors: Vec<[f32; 2]> = base.clone();
+    if curved {
+        for (p, c) in base.iter().zip(&curves) {
+            anchors.push([p[0] + c[0], p[1] + c[1]]);
+            anchors.push([p[0] + c[2], p[1] + c[3]]);
+        }
+    }
+    let n = base.len();
+    let split = |moved: Vec<[f32; 2]>| -> (Vec<[f32; 2]>, Vec<[f32; 4]>) {
+        let pts: Vec<[f32; 2]> = moved[..n].to_vec();
+        let cs = if curved {
+            (0..n)
+                .map(|i| {
+                    let (p, a, b) = (pts[i], moved[n + 2 * i], moved[n + 2 * i + 1]);
+                    [a[0] - p[0], a[1] - p[1], b[0] - p[0], b[1] - p[1]]
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (pts, cs)
+    };
     let mut m = mask.clone();
     let keys: Vec<(Time, Vec<[f32; 2]>)> = if tracker.mode == TrackMode::Mesh {
         // Each mask point keeps its place on the bending grid.
         let grid = |pts: &[[f32; 2]]| crate::meshwarp::MeshShape { cols: tracker.grid[0], rows: tracker.grid[1], points: pts.to_vec() };
         let reference = grid(&ref_pts);
-        let at: Vec<crate::meshwarp::MeshCoord> = base.iter().map(|q| reference.locate(*q)).collect::<Option<_>>()?;
+        let at: Vec<crate::meshwarp::MeshCoord> = anchors.iter().map(|q| reference.locate(*q)).collect::<Option<_>>()?;
         frames.iter().map(|(t, p)| (*t, at.iter().map(|c| grid(p).apply(*c)).collect())).collect()
     } else {
         frames
             .iter()
             .filter_map(|(at, p)| {
                 let h = motion_between(tracker.mode, &ref_pts, p)?;
-                Some((*at, base.iter().map(|q| h.apply(*q)).collect()))
+                Some((*at, anchors.iter().map(|q| h.apply(*q)).collect()))
             })
             .collect()
     };
     let (a, b) = (keys.iter().map(|k| k.0).min()?, keys.iter().map(|k| k.0).max()?);
     m.keys.retain(|k| k.at < a || k.at > b);
-    for (at, points) in keys {
+    for (at, moved) in keys {
+        let (points, curves) = split(moved);
         let i = m.keys.partition_point(|k| k.at < at);
-        m.keys.insert(i, crate::mask::ShapeKey { at, points });
+        m.keys.insert(i, crate::mask::ShapeKey { at, points, curves });
     }
     Some(m)
 }
@@ -1549,6 +1576,21 @@ mod tests {
         assert!((end.rotation - 5.0).abs() < 1e-3 && (end.scale - 2.0).abs() < 1e-4, "{end:?}");
         // Not a point, or no overlap: nothing.
         assert!(follow_point(&tracked, &planar, layer, frame, &tracked, |_| None, Axes::ALL).is_none());
+    }
+
+    #[test]
+    fn curved_masks_follow_turning_tracks_handles_and_all() {
+        let secs = Time::from_secs_f64;
+        let clip = Clip::new(ClipId(1), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
+        let pts = vec![[110.0, 100.0], [130.0, 100.0], [130.0, 120.0]];
+        let mut mask = crate::mask::Mask::freehand(pts.clone());
+        mask.curves = vec![[0.0, 0.0, 10.0, 0.0], [0.0; 4], [0.0; 4]];
+        // Turned 90° clockwise and doubled about (100, 100): (10, 0) becomes (0, 20).
+        let m = follow_mask(&clip, &mask, &two_point_track()).unwrap();
+        let c = m.curves_at(secs(1.0));
+        assert!(close2([c[0][2], c[0][3]], [0.0, 20.0], 1e-3), "{:?}", c[0]);
+        assert!(close2(m.points_at(secs(1.0))[0], [100.0, 120.0], 1e-3));
+        assert_eq!(m.curves_at(secs(0.0))[0], [0.0, 0.0, 10.0, 0.0]);
     }
 
     /// A planar track's four corners apply exactly as a four-point track's do.

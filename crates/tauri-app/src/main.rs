@@ -689,6 +689,39 @@ fn set_mask_points(id: u64, index: usize, points: Vec<[f32; 2]>) -> Res<()> {
     ed(|e| e.set_mask_points_live(clip(id), index, points))
 }
 
+/// Lower the music tracks under speech on the dialogue tracks (times in seconds). One undo step.
+#[tauri::command]
+fn auto_duck(dialogue: Vec<usize>, music: Vec<usize>, amount_db: f32, threshold_db: f32, fade_down: f64, fade_up: f64, hold: f64) -> Res<()> {
+    let secs = |s: f64| Time::from_secs_f64(s.clamp(0.0, 30.0));
+    let settings = reelforge_core::duck::DuckSettings {
+        amount_db: amount_db.clamp(-60.0, 0.0),
+        threshold_db: threshold_db.clamp(-90.0, 0.0),
+        fade_down: secs(fade_down),
+        fade_up: secs(fade_up),
+        hold: secs(hold),
+        ..Default::default()
+    };
+    ed(|e| e.auto_duck(&dialogue, &music, settings))
+}
+
+/// Take automatic ducking off the clips on these tracks. One undo step.
+#[tauri::command]
+fn remove_ducking(music: Vec<usize>) -> Res<()> {
+    ed(|e| e.remove_ducking(&music))
+}
+
+/// Set a mask's Bézier handles (dragging them in the Viewer); `commit` ends the drag.
+#[tauri::command]
+fn set_mask_curves(id: u64, index: usize, curves: Vec<[f32; 4]>) -> Res<()> {
+    ed(|e| e.set_mask_curves_live(clip(id), index, curves))
+}
+
+/// Turn a mask point into a smooth curve, or back into a corner.
+#[tauri::command]
+fn mask_point_curve(id: u64, index: usize, point: usize) -> Res<()> {
+    ed(|e| e.toggle_mask_point_curve(clip(id), index, point))
+}
+
 /// Keyframing a mask's shape at the playhead: "animate" (on), "still" (off),
 /// "key" (add a key here) or "unkey" (remove the key here). One undo step.
 #[tauri::command]
@@ -973,6 +1006,10 @@ fn main() {
             add_freehand_mask,
             set_masks,
             set_mask_points,
+            set_mask_curves,
+            auto_duck,
+            remove_ducking,
+            mask_point_curve,
             mask_op,
             tracker_add,
             tracker_mode,
@@ -1014,6 +1051,7 @@ fn main() {
             keys::transform_key,
             keys::key_move,
             keys::key_interp,
+            keys::key_handle,
             keys::key_delete,
             keys::key_add,
             ops::marker_colors,

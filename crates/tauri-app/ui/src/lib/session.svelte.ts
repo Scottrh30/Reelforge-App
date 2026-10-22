@@ -38,6 +38,8 @@ export const app = $state({
   effectsOpen: false,
   pluginsOpen: false,
   settingsOpen: false,
+  /// Timeline > Duck music under dialogue… is open.
+  duckOpen: false,
   /// Media being dragged from the Media panel (pointer position in the window).
   dragMedia: null as null | { id: number; name: string; x: number; y: number },
   /// An effect or transition being dragged from the Effects panel.
@@ -49,6 +51,8 @@ export const app = $state({
   panels: loadPanels(),
   /// The mask being edited in the Viewer (of the selected clip), by index.
   activeMask: null as null | { clip: number; index: number },
+  /// The point of the edited mask last clicked in the Viewer (for its own feather).
+  activeMaskPoint: null as null | number,
   /// Drawing a freehand mask: the clip and the points so far (layer pixels).
   drawing: null as null | { clip: number; points: [number, number][] },
   /// The Viewer's mask tool: dragging a mask moves it, or resizes it about its centre.

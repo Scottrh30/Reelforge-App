@@ -41,6 +41,12 @@
     app.drawing = { clip: ins.id, points: [] };
     say("Click in the Viewer to place the mask's points; click the first point or press Enter to close it (Esc cancels)");
   }
+  /// Give point `pt` of mask `n` its own feather (`v` px), or (`null`) use the mask's again.
+  function pointFeather(n: Mask, pt: number, count: number, v: number | null) {
+    const f = Array.from({ length: count }, (_, k) => n.feathers?.[k] ?? -1);
+    f[pt] = v == null ? -1 : Math.max(0, v);
+    n.feathers = f.some((x) => x >= 0) ? f : [];
+  }
   async function remove(i: number) {
     const all = masks();
     all.splice(i, 1);
@@ -94,6 +100,24 @@
           <NumberField label="Mask opacity" value={m.opacity * 100} min={0} max={100} step={0.5} digits={0} suffix="%" oninput={(v) => change(i, (n) => (n.opacity = v / 100), false)} oncommit={commit} />
         </div>
       </div>
+      {#if i === active && m.shape !== "Ellipse"}
+        {@const pt = app.activeMaskPoint}
+        {#if pt != null && pt < mv.handles.length}
+          {@const own = m.feathers?.[pt] ?? -1}
+          {@const curved = (mv.curves[pt] ?? []).some((v) => v !== 0)}
+          <div class="row pointrow">
+            <span class="lbl">Point {pt + 1}</span>
+            <button class="small" onclick={() => run(api.maskPointCurve(ins.id, i, pt))} title="Double-click the point in the Viewer does the same">{curved ? "Make sharp" : "Make curve"}</button>
+            <span class="lbl" title="The soft edge at this point; it blends into the next points' along the sides">Feather here</span>
+            <NumberField label="Feather at this point" value={own >= 0 ? own : m.feather} min={0} max={1000} step={0.5} digits={0} suffix=" px" oninput={(v) => change(i, (n) => pointFeather(n, pt, mv.handles.length, v), false)} oncommit={commit} />
+            {#if own >= 0}
+              <button class="small" onclick={() => change(i, (n) => pointFeather(n, pt, mv.handles.length, null), true)} title="Use the mask's feather at this point again">Reset</button>
+            {/if}
+          </div>
+        {:else}
+          <p class="note">Click a point in the Viewer to give it its own feather. Double-click a point to make it a curve, or Alt-drag one to pull out its handles.</p>
+        {/if}
+      {/if}
       <div class="row">
         <label class="check" title="Moving the shape's points then sets a keyframe at the playhead">
           <input type="checkbox" checked={m.keys.length > 0} onchange={(e) => run(api.maskOp(ins.id, i, e.currentTarget.checked ? "animate" : "still"))} />
@@ -142,6 +166,9 @@
     min-height: 22px;
     padding: 0 7px;
     font-size: calc(12px * var(--text-scale));
+  }
+  .pointrow {
+    flex-wrap: wrap;
   }
   .note {
     color: var(--faint);

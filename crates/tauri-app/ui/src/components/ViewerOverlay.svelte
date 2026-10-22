@@ -3,7 +3,7 @@
   // picture: drag a mask's points (or inside the mask being edited to move it
   // all), click out a freehand mask, and drag tracker boxes onto details.
   import { app, run, say } from "../lib/session.svelte";
-  import { api, type Pt } from "../lib/api";
+  import { api, type Pt, type Curve4 } from "../lib/api";
   import { finishDrawing } from "../lib/actions.svelte";
   import { layerToFrame, frameToLayer, inside } from "../lib/geom";
   import { livePump } from "../lib/live";
@@ -53,7 +53,13 @@
     e.stopPropagation();
     e.preventDefault();
     const id = ins.id;
+    if (app.activeMask?.clip !== id || app.activeMask.index !== index) app.activeMaskPoint = null;
     app.activeMask = { clip: id, index };
+    if (typeof point === "number") {
+      app.activeMaskPoint = point;
+      // Alt-drag a point: pull a curve out of it.
+      if (e.altKey && ins.masks[index].mask.shape !== "Ellipse") return pullCurve(e, index, point);
+    }
     const el = e.currentTarget as SVGElement;
     el.setPointerCapture(e.pointerId);
     const start = toLayer(e);
@@ -81,6 +87,87 @@
         next = orig.map((p, j) => (point === null || point === j ? ([p[0] + dx, p[1] + dy] as Pt) : p));
       }
       pump.push(() => api.setMaskPoints(id, index, next));
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      await pump.done();
+      await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
+  // ---- Curves: Bézier handles on mask points ----
+  const isCurved = (c: Curve4 | undefined) => !!c && c.some((v) => v !== 0);
+
+  /// Alt-drag from point `j`: its out-handle follows the pointer, the in-handle mirrors it.
+  function pullCurve(e: PointerEvent, index: number, j: number) {
+    if (!ins) return;
+    const id = ins.id;
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const p = ins.masks[index].handles[j];
+    const orig = ins.masks[index].curves.map((c) => [...c] as Curve4);
+    const pump = livePump();
+    say("Drag out the curve's handles (release to finish)");
+    const move = (ev: PointerEvent) => {
+      const now = toLayer(ev);
+      const d: Pt = [now[0] - p[0], now[1] - p[1]];
+      const next = orig.map((c, k) => (k === j ? ([-d[0], -d[1], d[0], d[1]] as Curve4) : c));
+      pump.push(() => api.setMaskCurves(id, index, next));
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      await pump.done();
+      await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
+  /// Drag one handle end of point `j` (`out`: the side towards the next point).
+  /// The other handle turns to stay opposite, keeping its length, so the curve
+  /// stays smooth through the point; Alt moves this one alone (a sharp bend).
+  function dragCurveHandle(e: PointerEvent, index: number, j: number, out: boolean) {
+    if (e.button !== 0 || !ins || !inv || app.live?.playing) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = ins.id;
+    app.activeMaskPoint = j;
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const p = ins.masks[index].handles[j];
+    const orig = ins.masks[index].curves.map((c) => [...c] as Curve4);
+    const c0 = orig[j];
+    const otherLen = out ? Math.hypot(c0[0], c0[1]) : Math.hypot(c0[2], c0[3]);
+    // Was it smooth (the two handles opposite) to begin with?
+    const smooth = (() => {
+      const [ax, ay, bx, by] = c0;
+      const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+      if (la < 1e-3 || lb < 1e-3) return true;
+      return (ax * bx + ay * by) / (la * lb) < -0.995;
+    })();
+    const pump = livePump();
+    const move = (ev: PointerEvent) => {
+      const now = toLayer(ev);
+      const d: Pt = [now[0] - p[0], now[1] - p[1]];
+      const len = Math.hypot(d[0], d[1]) || 1;
+      const opp: Pt = [(-d[0] / len) * otherLen, (-d[1] / len) * otherLen];
+      const c: Curve4 = [...c0];
+      const mirror = smooth && !ev.altKey;
+      if (out) {
+        c[2] = d[0];
+        c[3] = d[1];
+        if (mirror) [c[0], c[1]] = opp;
+      } else {
+        c[0] = d[0];
+        c[1] = d[1];
+        if (mirror) [c[2], c[3]] = opp;
+      }
+      const next = orig.map((x, k) => (k === j ? c : x));
+      pump.push(() => api.setMaskCurves(id, index, next));
     };
     const up = async () => {
       el.removeEventListener("pointermove", move);
@@ -280,10 +367,28 @@
         />
       {/if}
     {/each}
+    {#if active !== null && ins.masks[active] && ins.masks[active].mask.shape !== "Ellipse" && !drawing}
+      {@const am = ins.masks[active]}
+      {#each am.handles as h, j}
+        {@const c = am.curves[j]}
+        {#if isCurved(c)}
+          {@const [px, py] = toBox(h)}
+          {@const [ix, iy] = toBox([h[0] + c[0], h[1] + c[1]])}
+          {@const [ox, oy] = toBox([h[0] + c[2], h[1] + c[3]])}
+          <line x1={px} y1={py} x2={ix} y2={iy} class="curvearm" stroke={MASK} />
+          <line x1={px} y1={py} x2={ox} y2={oy} class="curvearm" stroke={MASK} />
+          <circle cx={ix} cy={iy} r="4" class="curvehandle" stroke={MASK} onpointerdown={(e) => dragCurveHandle(e, active!, j, false)} role="presentation"><title>Curve handle: drag to shape the curve (Alt: bend this side only)</title></circle>
+          <circle cx={ox} cy={oy} r="4" class="curvehandle" stroke={MASK} onpointerdown={(e) => dragCurveHandle(e, active!, j, true)} role="presentation"><title>Curve handle: drag to shape the curve (Alt: bend this side only)</title></circle>
+        {/if}
+      {/each}
+    {/if}
     {#each ins.masks as m, i}
       {#if m.mask.enabled}
         {#each m.handles as h, j}
           {@const [x, y] = toBox(h)}
+          {#if i === active && app.activeMaskPoint === j}
+            <circle cx={x} cy={y} r="8" class="pointring" stroke={MASK} />
+          {/if}
           <rect
             x={x - (i === active ? 4.5 : 3.5)}
             y={y - (i === active ? 4.5 : 3.5)}
@@ -293,8 +398,9 @@
             fill={i === active ? MASK : "rgba(0,0,0,0.65)"}
             stroke={MASK}
             onpointerdown={(e) => dragMask(e, i, j)}
+            ondblclick={(e) => (e.stopPropagation(), m.mask.shape !== "Ellipse" && run(api.maskPointCurve(ins.id, i, j)))}
             role="presentation"
-          />
+          ><title>Drag to move this point · Alt-drag to pull out a curve · double-click: curve / sharp corner</title></rect>
         {/each}
       {/if}
     {/each}
@@ -436,6 +542,23 @@
     stroke-width: 1;
     pointer-events: all;
     cursor: crosshair;
+  }
+  .curvearm {
+    stroke-width: 1;
+    opacity: 0.85;
+    pointer-events: none;
+  }
+  .curvehandle {
+    fill: rgba(0, 0, 0, 0.7);
+    stroke-width: 1.5;
+    pointer-events: all;
+    cursor: pointer;
+  }
+  .pointring {
+    fill: none;
+    stroke-width: 1.2;
+    stroke-dasharray: 3 2;
+    pointer-events: none;
   }
   .plane {
     fill: rgba(242, 169, 59, 0.08);

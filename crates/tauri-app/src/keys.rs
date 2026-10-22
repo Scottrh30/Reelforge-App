@@ -93,6 +93,10 @@ pub struct KeyView {
     pub at: i64,
     pub value: f32,
     pub interp: Interp,
+    /// Bézier handles: (fraction of the segment's time, fraction of its
+    /// change in value), the in-handle measured back from this key.
+    pub ease_in: [f32; 2],
+    pub ease_out: [f32; 2],
 }
 
 /// Where a key at clip (source) time `at` is on the timeline.
@@ -115,7 +119,13 @@ pub fn view(e: &Editor, c: &Clip) -> KeysView {
         .filter(|ch| !matches!(ch, Channel::Transform(Prop::Pin, _)))
         .map(|ch| {
             let (mul, unit) = v.channel_display(ch);
-            let keys: Vec<KeyView> = v.channel_keys(ch).into_iter().map(|(at, val, interp)| KeyView { at: timeline_of(c, at).0, value: val * mul, interp }).collect();
+            let handles = v.channel_handles(ch);
+            let keys: Vec<KeyView> = v
+                .channel_keys(ch)
+                .into_iter()
+                .zip(handles)
+                .map(|((at, val, interp), (ease_in, ease_out))| KeyView { at: timeline_of(c, at).0, value: val * mul, interp, ease_in, ease_out })
+                .collect();
             let samples = if keys.is_empty() {
                 Vec::new()
             } else {
@@ -256,6 +266,21 @@ pub fn key_move(id: u64, channel: String, index: usize, at: i64, value: f32, kee
 pub fn key_interp(id: u64, channel: String, index: usize, interp: Interp) -> Res<()> {
     let ch = parse_channel(&channel).ok_or("unknown channel")?;
     one_step(id, |v| v.channel_set_interp(ch, index, interp))
+}
+
+/// Drag key `index`'s Bézier handle (`out`: the one leaving it, else the
+/// one arriving), as (fraction of the segment's time, fraction of its change
+/// in value): live, `commit` ends it.
+#[tauri::command]
+pub fn key_handle(id: u64, channel: String, index: usize, out: bool, x: f32, y: f32) -> Res<()> {
+    let ch = parse_channel(&channel).ok_or("unknown channel")?;
+    ed(|e| {
+        let id = ClipId(id);
+        if let Some(mut v) = e.visual(id) {
+            v.channel_set_handle(ch, index, out, [x, y]);
+            e.set_visual_live(id, v);
+        }
+    })
 }
 
 #[tauri::command]

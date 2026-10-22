@@ -11,7 +11,7 @@
   import TitlePanel from "./TitlePanel.svelte";
   import { tps } from "../lib/session.svelte";
   import { livePump } from "../lib/live";
-  import type { Transition, TransitionKind } from "../lib/api";
+  import type { Transition, TransitionKind, Interp } from "../lib/api";
 
   const ins = $derived(app.s?.inspector ?? null);
   const blends: Blend[] = ["Normal", "Add", "Multiply", "Screen"];
@@ -378,10 +378,11 @@
               <button class="small" disabled={ins.keys.prev_key == null} onclick={() => run(api.seek(ins.keys!.prev_key!))} title="Previous transform keyframe" aria-label="Previous keyframe">◀</button>
               <button class="small" disabled={ins.keys.next_key == null} onclick={() => run(api.seek(ins.keys!.next_key!))} title="Next transform keyframe" aria-label="Next keyframe">▶</button>
               {#if ins.keys.interp_here}
-                <select value={ins.keys.interp_here} aria-label="Interpolation" title="How the keyframe(s) here move towards the next one" onchange={(e) => run(api.transformInterp(ins.id, e.currentTarget.value as "Linear" | "Ease" | "Hold"))}>
+                <select value={ins.keys.interp_here} aria-label="Interpolation" title="How the keyframe(s) here move towards the next one" onchange={(e) => run(api.transformInterp(ins.id, e.currentTarget.value as Interp))}>
                   <option value="Linear">Linear</option>
                   <option value="Ease">Ease in and out</option>
                   <option value="Hold">Hold</option>
+                  <option value="Bezier">Bézier (shape it in Curves)</option>
                 </select>
               {/if}
             </div>

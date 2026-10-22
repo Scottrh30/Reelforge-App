@@ -92,6 +92,9 @@
 
 <div class="group">
   <h4>Sound</h4>
+  {#if Array.isArray(shown.ducking) && shown.ducking.length}
+    <p class="note">Ducked under dialogue: the dip in the volume keyframes was added by Timeline › Duck music under dialogue… Duck again to replace it, or remove it there (your own keyframes stay).</p>
+  {/if}
   {#if (vAnim || pAnim) && !onClip}
     <p class="note">The playhead is off this clip: keyframed values show the nearest key. Move onto the clip to change them.</p>
   {/if}

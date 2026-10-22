@@ -547,7 +547,7 @@ impl Effect {
         match s.ui {
             ParamUi::Number => p.keys.value_at(t, p.value).clamp(s.min, s.max),
             ParamUi::Color => {
-                let keys: Curve<[f32; 3]> = Curve(p.keys.0.iter().map(|k| crate::anim::Key { at: k.at, value: unpack_rgb(k.value), interp: k.interp }).collect());
+                let keys: Curve<[f32; 3]> = Curve(p.keys.0.iter().map(|k| crate::anim::Key { at: k.at, value: unpack_rgb(k.value), interp: k.interp, ease_out: k.ease_out, ease_in: k.ease_in }).collect());
                 pack_rgb(keys.value_at(t, unpack_rgb(p.value)))
             }
             // A checkbox or menu changes at its keyframes (holding the last key's

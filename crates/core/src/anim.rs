@@ -19,15 +19,23 @@ pub enum Interp {
     Ease,
     /// Jump: keep this value until the next key.
     Hold,
+    /// Shaped by this key's out-handle and the next key's in-handle
+    /// (see [`Key::ease_out`]).
+    Bezier,
 }
 
+/// Where a handle sits when it hasn't been dragged: a gentle ease, close to
+/// [`Interp::Ease`].
+pub const DEFAULT_HANDLE: [f32; 2] = [1.0 / 3.0, 0.0];
+
 impl Interp {
-    pub const ALL: [Interp; 3] = [Interp::Linear, Interp::Ease, Interp::Hold];
+    pub const ALL: [Interp; 4] = [Interp::Linear, Interp::Ease, Interp::Hold, Interp::Bezier];
     pub fn label(self) -> &'static str {
         match self {
             Interp::Linear => "Linear",
             Interp::Ease => "Ease",
             Interp::Hold => "Hold",
+            Interp::Bezier => "Bézier",
         }
     }
     fn shape(self, u: f32) -> f32 {
@@ -35,8 +43,36 @@ impl Interp {
             Interp::Linear => u,
             Interp::Ease => u * u * (3.0 - 2.0 * u),
             Interp::Hold => 0.0,
+            Interp::Bezier => bezier_progress(DEFAULT_HANDLE, DEFAULT_HANDLE, u),
         }
     }
+}
+
+/// Progress (0 at the first key, 1 at the next; it may overshoot) at time
+/// fraction `u` of a Bézier segment. `out` is the first key's handle and
+/// `inn` the next key's, each as (fraction of the segment's time, fraction of
+/// its change in value) measured from its own key, so a key's handles stay put
+/// relative to it when keys move. Time fractions are kept within 0–1, so the
+/// curve never goes back in time.
+pub fn bezier_progress(out: [f32; 2], inn: [f32; 2], u: f32) -> f32 {
+    let u = u.clamp(0.0, 1.0) as f64;
+    let (x1, y1) = (out[0].clamp(0.0, 1.0) as f64, out[1] as f64);
+    let (x2, y2) = (1.0 - inn[0].clamp(0.0, 1.0) as f64, 1.0 - inn[1] as f64);
+    let bez = |a: f64, b: f64, s: f64| {
+        let r = 1.0 - s;
+        3.0 * r * r * s * a + 3.0 * r * s * s * b + s * s * s
+    };
+    // x(s) rises from 0 to 1: solve x(s) = u by bisection (exact enough, never fails).
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if bez(x1, x2, mid) < u {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bez(y1, y2, 0.5 * (lo + hi)) as f32
 }
 
 pub trait Lerp: Copy + PartialEq {
@@ -68,6 +104,35 @@ pub struct Key<T> {
     pub value: T,
     #[serde(default)]
     pub interp: Interp,
+    /// Bézier handle leaving this key (used when `interp` is
+    /// [`Interp::Bezier`]): (fraction of the time to the next key, fraction of
+    /// the change in value). `None` is [`DEFAULT_HANDLE`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease_out: Option<[f32; 2]>,
+    /// Bézier handle arriving at this key from the previous one (used when
+    /// that key is [`Interp::Bezier`]), measured back from this key the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease_in: Option<[f32; 2]>,
+}
+
+impl<T> Key<T> {
+    pub fn new(at: Time, value: T, interp: Interp) -> Self {
+        Key { at, value, interp, ease_out: None, ease_in: None }
+    }
+    pub fn out_handle(&self) -> [f32; 2] {
+        self.ease_out.unwrap_or(DEFAULT_HANDLE)
+    }
+    pub fn in_handle(&self) -> [f32; 2] {
+        self.ease_in.unwrap_or(DEFAULT_HANDLE)
+    }
+}
+
+/// How far (0–1, may overshoot) a segment from key `a` to key `b` has got at time fraction `u`.
+pub fn segment_progress<T>(a: &Key<T>, b: &Key<T>, u: f32) -> f32 {
+    match a.interp {
+        Interp::Bezier => bezier_progress(a.out_handle(), b.in_handle(), u),
+        i => i.shape(u),
+    }
 }
 
 /// Keys for one property, kept sorted by time.
@@ -104,7 +169,7 @@ impl<T: Lerp> Curve<T> {
             return b.value;
         }
         let u = (t.0 - a.at.0) as f32 / (b.at.0 - a.at.0) as f32;
-        T::lerp(a.value, b.value, a.interp.shape(u))
+        T::lerp(a.value, b.value, segment_progress(a, b, u))
     }
 
     pub fn index_at(&self, t: Time) -> Option<usize> {
@@ -119,7 +184,7 @@ impl<T: Lerp> Curve<T> {
                 let i = self.0.partition_point(|k| k.at < t);
                 // A new key inherits the interpolation of the key before it.
                 let interp = if i > 0 { self.0[i - 1].interp } else { Interp::Linear };
-                self.0.insert(i, Key { at: t, value, interp });
+                self.0.insert(i, Key::new(t, value, interp));
             }
         }
     }
@@ -221,6 +286,26 @@ pub struct TransformAnim {
 impl<T> Curve<T> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Key `index`'s (in, out) Bézier handles.
+    pub fn handles(&self) -> Vec<([f32; 2], [f32; 2])> {
+        self.0.iter().map(|k| (k.in_handle(), k.out_handle())).collect()
+    }
+
+    /// Set key `index`'s out-handle (`out`) or in-handle. The time part is
+    /// kept within 0–1; dragging a handle makes the segment it shapes Bézier.
+    pub fn set_handle(&mut self, index: usize, out: bool, h: [f32; 2]) {
+        let h = [h[0].clamp(0.0, 1.0), if h[1].is_finite() { h[1].clamp(-10.0, 10.0) } else { 0.0 }];
+        if out {
+            if let Some(k) = self.0.get_mut(index) {
+                k.ease_out = Some(h);
+                k.interp = Interp::Bezier;
+            }
+        } else if index > 0 && index < self.0.len() {
+            self.0[index].ease_in = Some(h);
+            self.0[index - 1].interp = Interp::Bezier;
+        }
     }
 }
 
@@ -452,5 +537,46 @@ mod tests {
         assert_eq!(a, back);
         let empty: TransformAnim = serde_json::from_str("{}").unwrap();
         assert!(!empty.is_animated());
+    }
+}
+
+#[cfg(test)]
+mod bezier_tests {
+    use super::*;
+
+    #[test]
+    fn bezier_handles_shape_the_timing() {
+        let s = Time::from_secs_f64;
+        let mut c: Curve<f32> = Curve::default();
+        c.set(s(0.0), 0.0);
+        c.set(s(1.0), 100.0);
+        // Handles lying along the line: straight.
+        c.set_handle(0, true, [0.0, 0.0]);
+        c.set_handle(1, false, [0.0, 0.0]);
+        assert_eq!(c.0[0].interp, Interp::Bezier);
+        for k in 0..=10 {
+            let u = k as f64 / 10.0;
+            assert!((c.value_at(s(u), 0.0) - 100.0 * u as f32).abs() < 0.01, "{u}");
+        }
+        // The default handles ease in and out like Ease, symmetrically.
+        c.0[0].ease_out = None;
+        c.0[1].ease_in = None;
+        assert!((c.value_at(s(0.5), 0.0) - 50.0).abs() < 0.01);
+        assert!(c.value_at(s(0.1), 0.0) < 10.0 && c.value_at(s(0.9), 0.0) > 90.0);
+        // A handle pulled above the next key's value overshoots, then settles.
+        c.set_handle(0, true, [0.4, 1.8]);
+        let peak = (1..20).map(|k| c.value_at(s(k as f64 / 20.0), 0.0)).fold(f32::MIN, f32::max);
+        assert!(peak > 100.0, "{peak}");
+        assert!((c.value_at(s(1.0), 0.0) - 100.0).abs() < 1e-3);
+        // Time fractions are kept within 0–1; in-handles on the first key do nothing.
+        c.set_handle(0, true, [3.0, 0.0]);
+        assert_eq!(c.0[0].ease_out, Some([1.0, 0.0]));
+        c.set_handle(0, false, [0.5, 0.5]);
+        assert_eq!(c.0[0].ease_in, None);
+        // Handles go with their keys in saved files; old files load as before.
+        let back: Curve<f32> = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        let old: Curve<f32> = serde_json::from_str(r#"[{"at":0,"value":1.0,"interp":"Ease"}]"#).unwrap();
+        assert_eq!(old.0[0], Key::new(Time(0), 1.0, Interp::Ease));
     }
 }

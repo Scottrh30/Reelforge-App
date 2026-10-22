@@ -220,6 +220,27 @@ impl ClipVisual {
         }
     }
 
+    /// Each key's (in, out) Bézier handles. They shape the timing, so for
+    /// position and scale a key's handles are shared by its X and Y.
+    pub fn channel_handles(&self, ch: Channel) -> Vec<([f32; 2], [f32; 2])> {
+        match self.get(ch) {
+            Some(Ref::Scalar(c, _)) => c.handles(),
+            Some(Ref::Pair(c, ..)) => c.handles(),
+            Some(Ref::Quad(c, ..)) => c.handles(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Set key `index`'s out-handle (`out`) or in-handle; see [`Curve::set_handle`].
+    pub fn channel_set_handle(&mut self, ch: Channel, index: usize, out: bool, h: [f32; 2]) {
+        match self.get_mut(ch) {
+            Some(Mut::Scalar(c)) => c.set_handle(index, out, h),
+            Some(Mut::Pair(c, _)) => c.set_handle(index, out, h),
+            Some(Mut::Quad(c, _)) => c.set_handle(index, out, h),
+            None => {}
+        }
+    }
+
     /// Delete key `index` (for position/scale, that removes the key for both components).
     pub fn channel_remove_key(&mut self, ch: Channel, index: usize) {
         match self.get_mut(ch) {

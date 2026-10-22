@@ -17,6 +17,7 @@
   import Splitter from "./components/Splitter.svelte";
   import ContextMenu from "./components/ContextMenu.svelte";
   import Dialogs from "./components/Dialogs.svelte";
+  import DuckDialog from "./components/DuckDialog.svelte";
   import ExportDialog from "./components/ExportDialog.svelte";
   import ExportQueue from "./components/ExportQueue.svelte";
   import EffectsBrowser from "./components/EffectsBrowser.svelte";
@@ -141,6 +142,7 @@
 <ContextMenu />
 <Dialogs />
 <ExportDialog />
+<DuckDialog />
 <ExportQueue />
 <EffectsBrowser />
 <PluginsDialog />

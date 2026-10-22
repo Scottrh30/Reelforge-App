@@ -148,6 +148,7 @@
     { label: "Split at playhead", hint: "S", run: () => actions.act("split") },
     { label: "Cross-dissolve at playhead", hint: "Ctrl+D", run: () => actions.act("dissolve") },
     { label: "Audio crossfade at playhead", hint: "Ctrl+Shift+D", run: () => actions.act("crossfade") },
+    { label: "Duck music under dialogue…", run: () => (app.duckOpen = true) },
     { label: "Transitions…", run: () => (app.effectsOpen = true) },
     { label: "Freeze frame at playhead", hint: "Shift+F", run: () => actions.act("freeze_frame") },
     { label: "Add title", hint: "Ctrl+T", run: actions.addTitle },

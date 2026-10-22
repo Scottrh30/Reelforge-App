@@ -167,10 +167,74 @@
       { label: "Linear", checked: cur === "Linear", run: () => set("Linear") },
       { label: "Ease in and out", checked: cur === "Ease", run: () => set("Ease") },
       { label: "Hold (jump to the next key)", checked: cur === "Hold", run: () => set("Hold") },
+      { label: "Bézier (drag its handles)", checked: cur === "Bezier", run: () => set("Bezier") },
       { separator: true },
       { label: "Go to this keyframe", run: () => api.seek(c.keys[i].at) },
       { label: "Delete keyframe", run: () => ((selected = null), run(api.keyDelete(id, c.id, i))) },
     ]);
+  }
+
+  // ---- Bézier handles (of the selected key) ----
+  // Stored as fractions of the segment they shape: x of its time, y of its
+  // change in value, the in-handle measured back from its key.
+  type Handle = { out: boolean; x: number; y: number; kx: number; ky: number; flat: boolean };
+  let hdrag = $state<{ ch: string; index: number; out: boolean; h: [number, number] } | null>(null);
+  const handlesOf = (c: ChannelView, i: number): Handle[] => {
+    const out: Handle[] = [];
+    const k = keyPos(c, i);
+    const fr = (out_: boolean, stored: [number, number]) => (hdrag && hdrag.ch === c.id && hdrag.index === i && hdrag.out === out_ ? hdrag.h : stored);
+    if (i > 0 && c.keys[i - 1].interp === "Bezier") {
+      const a = keyPos(c, i - 1);
+      const h = fr(false, c.keys[i].ease_in);
+      const dv = k.value - a.value;
+      out.push({ out: false, x: xOf(k.at - h[0] * (k.at - a.at)), y: yOf(k.value - h[1] * dv), kx: xOf(k.at), ky: yOf(k.value), flat: Math.abs(dv) < 1e-6 });
+    }
+    if (i < c.keys.length - 1 && c.keys[i].interp === "Bezier") {
+      const b = keyPos(c, i + 1);
+      const h = fr(true, c.keys[i].ease_out);
+      const dv = b.value - k.value;
+      out.push({ out: true, x: xOf(k.at + h[0] * (b.at - k.at)), y: yOf(k.value + h[1] * dv), kx: xOf(k.at), ky: yOf(k.value), flat: Math.abs(dv) < 1e-6 });
+    }
+    return out;
+  };
+
+  function handleDown(e: PointerEvent, c: ChannelView, i: number, h: Handle) {
+    if (e.button !== 0 || !ins) return;
+    e.stopPropagation();
+    svg!.setPointerCapture(e.pointerId);
+    const id = ins.id;
+    frozen = range;
+    const k = c.keys[i];
+    const other = c.keys[h.out ? i + 1 : i - 1];
+    const dt = h.out ? other.at - k.at : k.at - other.at;
+    const dv = h.out ? other.value - k.value : k.value - other.value;
+    const start: [number, number] = h.out ? [...k.ease_out] : [...k.ease_in];
+    const move = (ev: PointerEvent) => {
+      const p = local(ev);
+      const t = tOf(p.x);
+      const v = vOf(p.y);
+      let x = h.out ? (t - k.at) / Math.max(1, dt) : (k.at - t) / Math.max(1, dt);
+      x = Math.min(1, Math.max(0, x));
+      // A flat segment has no change in value to scale by: only its timing moves.
+      let y = Math.abs(dv) < 1e-6 ? start[1] : h.out ? (v - k.value) / dv : (k.value - v) / dv;
+      // Shift: keep the handle level with the key (pure ease, no speed-up).
+      if (ev.shiftKey) y = 0;
+      y = Math.min(10, Math.max(-10, y));
+      hdrag = { ch: c.id, index: i, out: h.out, h: [x, y] };
+      pump.push(() => api.keyHandle(id, c.id, i, h.out, x, y));
+    };
+    const up = async () => {
+      svg!.removeEventListener("pointermove", move);
+      svg!.removeEventListener("pointerup", up);
+      if (hdrag) {
+        await pump.done();
+        await run(api.commit());
+      }
+      hdrag = null;
+      frozen = null;
+    };
+    svg!.addEventListener("pointermove", move);
+    svg!.addEventListener("pointerup", up);
   }
 
   function lineDouble(e: MouseEvent, c: ChannelView) {
@@ -268,6 +332,8 @@
               >
                 {#if c.keys[i].interp === "Hold"}
                   <rect x={cx - 5} y={cy - 5} width="10" height="10" stroke={isSel ? "var(--text)" : colorOf(c.id)} fill={colorOf(c.id)} />
+                {:else if c.keys[i].interp === "Bezier"}
+                  <circle {cx} {cy} r="5.5" stroke={isSel ? "var(--text)" : colorOf(c.id)} fill={colorOf(c.id)} />
                 {:else}
                   <path d="M{cx},{cy - 6.5} L{cx + 6.5},{cy} L{cx},{cy + 6.5} L{cx - 6.5},{cy}Z" stroke={isSel ? "var(--text)" : colorOf(c.id)} fill={c.keys[i].interp === "Ease" ? "var(--well)" : colorOf(c.id)} />
                 {/if}
@@ -275,12 +341,35 @@
             {/if}
           {/each}
         {/each}
+        {#if selected}
+          {@const sc = shown.find((x) => x.id === selected!.ch)}
+          {#if sc && sc.keys[selected.index]}
+            {#each handlesOf(sc, selected.index) as h (h.out)}
+              <line x1={h.kx} y1={h.ky} x2={h.x} y2={h.y} class="arm" stroke={colorOf(sc.id)} />
+              <circle
+                cx={h.x}
+                cy={h.y}
+                r="4.5"
+                class="handle"
+                stroke={colorOf(sc.id)}
+                role="button"
+                tabindex="-1"
+                aria-label="{h.out ? 'Out' : 'In'} handle"
+                onpointerdown={(e) => handleDown(e, sc, selected!.index, h)}
+              />
+            {/each}
+          {/if}
+        {/if}
         {#if playX >= M.l && playX <= M.l + pw}
           <line x1={playX} x2={playX} y1={4} y2={H - M.b} class="playhead" />
         {/if}
         <text x={M.l + 4} y={14} class="hint">
           {#if sel}
-            {sel.c.name}: {fmt(sel.k.value, sel.c.unit)} at {timecode(sel.k.at)} · {sel.interp === "Ease" ? "Ease" : sel.interp}  — drag to move (Shift: value only), right-click for easing
+            {#if hdrag}
+              Drag the handle: further out holds the speed longer, up or down speeds up or overshoots · Shift: level (pure ease){sel.c.unit === " px" && /Position|Scale|Anchor/.test(sel.c.name) ? " · X and Y share the timing" : ""}
+            {:else}
+              {sel.c.name}: {fmt(sel.k.value, sel.c.unit)} at {timecode(sel.k.at)} · {sel.interp === "Bezier" ? "Bézier" : sel.interp}  — drag to move (Shift: value only), right-click for easing{sel.interp === "Bezier" || (selected && selected.index > 0 && sel.c.keys[selected.index - 1]?.interp === "Bezier") ? ", drag the round handles to shape it" : ""}
+            {/if}
           {:else if shown.length === 0}
             Tick channels on the left to see their curves
           {:else}
@@ -440,6 +529,22 @@
   }
   .key.sel rect,
   .key.sel path {
+    stroke-width: 2.4;
+  }
+  .arm {
+    stroke-width: 1.2;
+    opacity: 0.8;
+    pointer-events: none;
+  }
+  .handle {
+    fill: var(--well);
+    stroke-width: 1.8;
+    cursor: grab;
+  }
+  .key circle {
+    stroke-width: 1.6;
+  }
+  .key.sel circle {
     stroke-width: 2.4;
   }
   .playhead {

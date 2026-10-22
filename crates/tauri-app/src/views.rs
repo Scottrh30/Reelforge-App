@@ -180,6 +180,9 @@ pub struct MaskView {
     /// Its outline and its points as seen at the playhead, in layer pixels.
     pub outline: Vec<[f32; 2]>,
     pub handles: Vec<[f32; 2]>,
+    /// Each point's Bézier handles at the playhead: [in x, in y, out x, out y]
+    /// offsets in layer pixels (zeros for a sharp corner).
+    pub curves: Vec<[f32; 4]>,
     /// The shape is animated and has a key at the playhead.
     pub key_here: bool,
 }
@@ -498,7 +501,7 @@ pub fn state(e: &Editor) -> State {
         let masks = c
             .masks
             .iter()
-            .map(|m| MaskView { mask: m.clone(), outline: m.outline(mt), handles: m.points_at(mt), key_here: m.keys.iter().any(|k| k.at == mt) })
+            .map(|m| MaskView { mask: m.clone(), outline: m.outline(mt), handles: m.points_at(mt), curves: m.curves_at(mt), key_here: m.keys.iter().any(|k| k.at == mt) })
             .collect();
         let footage = c.title.is_none() && c.nested.is_none() && p.media(c.media).is_some_and(|m| m.info.video.is_some() && m.info.duration > Time::ZERO);
         let job = e.tracking.as_ref().map(|j| (j.clip, j.progress));

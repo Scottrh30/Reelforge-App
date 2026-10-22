@@ -19,7 +19,7 @@ pub enum MaskShape {
     Rectangle,
     /// The ellipse inside four corners.
     Ellipse,
-    /// Any number of points, joined by straight lines.
+    /// Any number of points, joined by straight lines or (with handles) curves.
     Freehand,
 }
 
@@ -60,6 +60,15 @@ impl MaskMode {
 pub struct ShapeKey {
     pub at: Time,
     pub points: Vec<[f32; 2]>,
+    /// Bézier handles of each point at this moment (see [`Mask::curves`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curves: Vec<[f32; 4]>,
+}
+
+impl ShapeKey {
+    pub fn new(at: Time, points: Vec<[f32; 2]>) -> Self {
+        Self { at, points, curves: Vec::new() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -80,6 +89,18 @@ pub struct Mask {
     /// 0–1.
     pub opacity: f32,
     pub enabled: bool,
+    /// Bézier handles of each point, used when the shape isn't animated:
+    /// `[in x, in y, out x, out y]`, offsets in layer pixels from the point.
+    /// The side from a point to the next is a curve shaped by that point's
+    /// out-handle and the next one's in-handle; a side whose two handles are
+    /// both zero (or missing) is straight. Not used by ellipses.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub curves: Vec<[f32; 4]>,
+    /// The feather at each point, in layer pixels (it blends along the sides
+    /// between them); a negative value, or a missing one, uses `feather`.
+    /// Not used by ellipses.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub feathers: Vec<f32>,
 }
 
 impl Default for Mask {
@@ -95,6 +116,8 @@ impl Default for Mask {
             expansion: 0.0,
             opacity: 1.0,
             enabled: true,
+            curves: Vec::new(),
+            feathers: Vec::new(),
         }
     }
 }
@@ -148,27 +171,156 @@ impl Mask {
         match self.keys.iter_mut().find(|k| k.at == t) {
             Some(k) => k.points = points,
             None => {
+                let curves = self.curves_at(t);
                 let i = self.keys.partition_point(|k| k.at < t);
-                self.keys.insert(i, ShapeKey { at: t, points });
+                self.keys.insert(i, ShapeKey { at: t, points, curves });
             }
         }
+    }
+
+    /// Each point's Bézier handles at source time `t` (one per point; zeros
+    /// for straight sides).
+    pub fn curves_at(&self, t: Time) -> Vec<[f32; 4]> {
+        let n = self.points_at(t).len();
+        let fit = |c: &[[f32; 4]]| (0..n).map(|i| c.get(i).copied().unwrap_or([0.0; 4])).collect::<Vec<_>>();
+        let k = &self.keys;
+        if k.is_empty() {
+            return fit(&self.curves);
+        }
+        let i = k.partition_point(|key| key.at <= t);
+        if i == 0 {
+            return fit(&k[0].curves);
+        }
+        if i == k.len() {
+            return fit(&k[i - 1].curves);
+        }
+        let (a, b) = (&k[i - 1], &k[i]);
+        let (ca, cb) = (fit(&a.curves), fit(&b.curves));
+        if a.points.len() != b.points.len() || b.at == a.at {
+            return ca;
+        }
+        let u = (t - a.at).0 as f32 / (b.at - a.at).0 as f32;
+        ca.iter().zip(&cb).map(|(p, q)| std::array::from_fn(|j| p[j] + (q[j] - p[j]) * u)).collect()
+    }
+
+    /// Change the shape's handles as seen at `t` (a key there if it's animated).
+    pub fn set_curves_at(&mut self, t: Time, curves: Vec<[f32; 4]>) {
+        if self.keys.is_empty() {
+            self.curves = curves;
+            return;
+        }
+        match self.keys.iter_mut().find(|k| k.at == t) {
+            Some(k) => k.curves = curves,
+            None => {
+                let points = self.points_at(t);
+                let i = self.keys.partition_point(|k| k.at < t);
+                self.keys.insert(i, ShapeKey { at: t, points, curves });
+            }
+        }
+    }
+
+    /// Does the shape have any curved sides at `t`?
+    pub fn is_curved(&self, t: Time) -> bool {
+        self.shape != MaskShape::Ellipse && self.curves_at(t).iter().any(|c| c.iter().any(|v| *v != 0.0))
+    }
+
+    /// The feather at point `i` (layer pixels).
+    pub fn feather_at_point(&self, i: usize) -> f32 {
+        match self.feathers.get(i) {
+            Some(&f) if f >= 0.0 => f,
+            _ => self.feather,
+        }
+    }
+
+    /// Does any point have its own feather?
+    pub fn has_point_feathers(&self) -> bool {
+        self.shape != MaskShape::Ellipse && self.feathers.iter().any(|&f| f >= 0.0)
     }
 
     /// Start or stop animating the shape. Starting keys the current shape at
     /// `t`; stopping keeps the shape as it is at `t`.
     pub fn set_animated(&mut self, animated: bool, t: Time) {
         if animated && self.keys.is_empty() {
-            self.keys.push(ShapeKey { at: t, points: self.points.clone() });
+            self.keys.push(ShapeKey { at: t, points: self.points.clone(), curves: self.curves.clone() });
         } else if !animated && !self.keys.is_empty() {
             self.points = self.points_at(t);
+            self.curves = self.curves_at(t);
             self.keys.clear();
         }
     }
 
-    /// The outline as a polygon (an ellipse becomes many short sides).
+    /// The outline as a polygon (an ellipse, and curved sides, become many short sides).
     pub fn outline(&self, t: Time) -> Vec<[f32; 2]> {
-        outline(self.shape, &self.points_at(t))
+        self.outline_feathered(t).into_iter().map(|(p, _)| p).collect()
     }
+
+    /// The outline with the feather at each of its corners.
+    pub fn outline_feathered(&self, t: Time) -> Vec<([f32; 2], f32)> {
+        let pts = self.points_at(t);
+        if self.shape == MaskShape::Ellipse {
+            return outline(self.shape, &pts).into_iter().map(|p| (p, self.feather)).collect();
+        }
+        let curves = self.curves_at(t);
+        curved_outline(&pts, &curves, |i| self.feather_at_point(i))
+    }
+}
+
+/// Points per curved side (more for longer ones), at most.
+const CURVE_STEPS: usize = 48;
+
+/// A closed shape through `pts` whose sides are cubic curves shaped by
+/// `curves` (straight where a side's handles are zero), each corner with the
+/// feather `feather(i)` blended along the sides.
+pub fn curved_outline(pts: &[[f32; 2]], curves: &[[f32; 4]], feather: impl Fn(usize) -> f32) -> Vec<([f32; 2], f32)> {
+    let n = pts.len();
+    let mut out = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (a, b) = (pts[i], pts[j]);
+        let (fa, fb) = (feather(i), feather(j));
+        let ca = curves.get(i).copied().unwrap_or([0.0; 4]);
+        let cb = curves.get(j).copied().unwrap_or([0.0; 4]);
+        let c1 = [a[0] + ca[2], a[1] + ca[3]];
+        let c2 = [b[0] + cb[0], b[1] + cb[1]];
+        out.push((a, fa));
+        let straight = ca[2] == 0.0 && ca[3] == 0.0 && cb[0] == 0.0 && cb[1] == 0.0;
+        // Enough steps to look smooth: about one per 4 px of the control polygon.
+        let len = dist(a, c1) + dist(c1, c2) + dist(c2, b);
+        let steps = if straight { if fa != fb { 8 } else { 1 } } else { ((len / 4.0).ceil() as usize).clamp(4, CURVE_STEPS) };
+        for k in 1..steps {
+            let s = k as f32 / steps as f32;
+            let p = if straight { [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s] } else { cubic(a, c1, c2, b, s) };
+            out.push((p, fa + (fb - fa) * s));
+        }
+    }
+    out
+}
+
+fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+}
+
+/// A point on the cubic Bézier `a`, `c1`, `c2`, `b` at `s` (0–1).
+pub fn cubic(a: [f32; 2], c1: [f32; 2], c2: [f32; 2], b: [f32; 2], s: f32) -> [f32; 2] {
+    let r = 1.0 - s;
+    let (w0, w1, w2, w3) = (r * r * r, 3.0 * r * r * s, 3.0 * r * s * s, s * s * s);
+    [w0 * a[0] + w1 * c1[0] + w2 * c2[0] + w3 * b[0], w0 * a[1] + w1 * c1[1] + w2 * c2[1] + w3 * b[1]]
+}
+
+/// Smooth handles for point `i` of a closed shape, pointing along the line
+/// between its neighbours (a third of the way to each), for turning a corner
+/// into a curve.
+pub fn smooth_handles(pts: &[[f32; 2]], i: usize) -> [f32; 4] {
+    let n = pts.len();
+    if n < 3 {
+        return [0.0; 4];
+    }
+    let (prev, p, next) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
+    let d = [next[0] - prev[0], next[1] - prev[1]];
+    let len = (d[0] * d[0] + d[1] * d[1]).sqrt().max(1e-6);
+    let u = [d[0] / len, d[1] / len];
+    let (lp, ln) = (dist(prev, p) / 3.0, dist(p, next) / 3.0);
+    [-u[0] * lp, -u[1] * lp, u[0] * ln, u[1] * ln]
 }
 
 /// The polygon for a shape's points.
@@ -220,6 +372,10 @@ pub fn mask_hash(masks: &[Mask], t: Time, layer: [f32; 2]) -> u64 {
             p[0].to_bits().hash(&mut h);
             p[1].to_bits().hash(&mut h);
         }
+        for c in m.curves_at(t) {
+            c.iter().for_each(|v| v.to_bits().hash(&mut h));
+        }
+        m.feathers.iter().for_each(|v| v.to_bits().hash(&mut h));
     }
     h.finish()
 }
@@ -235,11 +391,13 @@ pub fn rasterize(masks: &[Mask], t: Time, layer: [f32; 2], max_side: u32) -> Opt
     let (w, h) = (((layer[0] * k).ceil() as usize).max(1), ((layer[1] * k).ceil() as usize).max(1));
     let mut acc: Option<Vec<f32>> = None;
     for m in masks.iter().filter(|m| m.enabled) {
-        let poly: Vec<[f32; 2]> = m.outline(t).iter().map(|p| [p[0] * k, p[1] * k]).collect();
+        let line = m.outline_feathered(t);
+        let poly: Vec<[f32; 2]> = line.iter().map(|(p, _)| [p[0] * k, p[1] * k]).collect();
         if poly.len() < 3 {
             continue;
         }
-        let a = shape_alpha(&poly, w, h, m.feather * k, m.expansion * k);
+        let feathers: Vec<f32> = line.iter().map(|(_, f)| f.max(0.0) * k).collect();
+        let a = shape_alpha(&poly, &feathers, w, h, m.expansion * k);
         let acc = acc.get_or_insert_with(|| vec![if m.mode == MaskMode::Add { 0.0 } else { 1.0 }; w * h]);
         for (o, v) in acc.iter_mut().zip(a) {
             let v = if m.inverted { 1.0 - v } else { v } * m.opacity.clamp(0.0, 1.0);
@@ -255,8 +413,9 @@ pub fn rasterize(masks: &[Mask], t: Time, layer: [f32; 2], max_side: u32) -> Opt
 }
 
 /// Coverage of one closed polygon on a `w`×`h` grid (pixel centres at +0.5),
-/// with a soft edge `feather` wide, the edge moved out by `expansion`.
-fn shape_alpha(poly: &[[f32; 2]], w: usize, h: usize, feather: f32, expansion: f32) -> Vec<f32> {
+/// with a soft edge as wide as `feathers` says at each corner (blended along
+/// the sides), the edge moved out by `expansion`.
+fn shape_alpha(poly: &[[f32; 2]], feathers: &[f32], w: usize, h: usize, expansion: f32) -> Vec<f32> {
     // Inside or out: even-odd fill, one scanline per pixel row.
     let mut inside = vec![false; w * h];
     let mut xs: Vec<f32> = Vec::new();
@@ -279,11 +438,18 @@ fn shape_alpha(poly: &[[f32; 2]], w: usize, h: usize, feather: f32, expansion: f
         }
     }
     // Distance to the outline, only in a band around it (that's where alpha is in between).
-    let soft = feather.max(1.0);
+    let widest = feathers.iter().copied().fold(0.0f32, f32::max);
+    let soft = widest.max(1.0);
     let band = expansion.abs() + soft / 2.0 + 1.5;
     let mut dist = vec![f32::INFINITY; w * h];
-    for i in 0..poly.len() {
-        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+    // The feather where the nearest point of the outline is.
+    let mut soft_at = vec![widest; w * h];
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        let (fa, fb) = (feathers.get(i).copied().unwrap_or(0.0), feathers.get((i + 1) % n).copied().unwrap_or(0.0));
+        // This side's own band (a narrower feather needs less).
+        let band = expansion.abs() + fa.max(fb).max(1.0) / 2.0 + 1.5;
         let x0 = (a[0].min(b[0]) - band).floor().max(0.0) as usize;
         let x1 = ((a[0].max(b[0]) + band).ceil().max(0.0) as usize).min(w);
         let y0 = (a[1].min(b[1]) - band).floor().max(0.0) as usize;
@@ -299,6 +465,7 @@ fn shape_alpha(poly: &[[f32; 2]], w: usize, h: usize, feather: f32, expansion: f
                 let o = &mut dist[y * w + x];
                 if d < *o {
                     *o = d;
+                    soft_at[y * w + x] = fa + (fb - fa) * u;
                 }
             }
         }
@@ -306,7 +473,8 @@ fn shape_alpha(poly: &[[f32; 2]], w: usize, h: usize, feather: f32, expansion: f
     inside
         .iter()
         .zip(&dist)
-        .map(|(&ins, &d)| {
+        .zip(&soft_at)
+        .map(|((&ins, &d), &feather)| {
             // Signed distance, positive inside, after expansion.
             let sd = if d.is_finite() { if ins { d } else { -d } } else if ins { band * 2.0 } else { -band * 2.0 };
             let v = sd + expansion;
@@ -376,6 +544,57 @@ mod tests {
         assert!((area / 10_000.0 - std::f32::consts::FRAC_PI_4).abs() < 0.01, "{area}");
         // Nothing enabled: no image.
         assert!(rasterize(&[Mask { enabled: false, ..rect(0.0, 0.0, 1.0, 1.0) }], Time::ZERO, layer, 4096).is_none());
+    }
+
+    #[test]
+    fn curved_sides_and_feather_per_point() {
+        let layer = [200.0, 200.0];
+        // A diamond with smooth handles at every point bulges out towards a circle.
+        let pts = vec![[100.0, 20.0], [180.0, 100.0], [100.0, 180.0], [20.0, 100.0]];
+        let straight = Mask::freehand(pts.clone());
+        let mut round = straight.clone();
+        round.curves = (0..4).map(|i| smooth_handles(&pts, i)).collect();
+        assert!(round.is_curved(Time::ZERO) && !straight.is_curved(Time::ZERO));
+        let area = |m: &Mask| rasterize(&[m.clone()], Time::ZERO, layer, 4096).unwrap().data.iter().map(|&v| v as f32 / 255.0).sum::<f32>();
+        let (a0, a1) = (area(&straight), area(&round));
+        assert!((a0 - 12_800.0).abs() < 60.0, "{a0}");
+        // Between the diamond (12 800) and the circle through its points (≈20 100).
+        assert!(a1 > 17_000.0 && a1 < 20_200.0, "{a1}");
+        // The bulge: the middle of a side was outside the diamond, now inside.
+        let img = rasterize(&[round.clone()], Time::ZERO, layer, 4096).unwrap();
+        assert_eq!(at(&img, 150, 50), 255);
+        assert!(round.outline(Time::ZERO).len() > 16, "curves become many short sides");
+        // Feather per point: soft at the top, hard at the bottom.
+        let mut m = rect(40.0, 40.0, 160.0, 160.0);
+        m.feather = 0.0;
+        m.feathers = vec![40.0, 40.0, -1.0, -1.0];
+        assert!(m.has_point_feathers());
+        assert_eq!((m.feather_at_point(0), m.feather_at_point(3), m.feather_at_point(9)), (40.0, 0.0, 0.0));
+        let img = rasterize(&[m.clone()], Time::ZERO, layer, 4096).unwrap();
+        let top = at(&img, 100, 40) as i32; // on the top edge: about half
+        let bottom_in = at(&img, 100, 158); // just inside the hard bottom edge
+        assert!((top - 128).abs() < 25, "{top}");
+        assert_eq!((bottom_in, at(&img, 100, 161)), (255, 0));
+        assert!(at(&img, 100, 30) > 0, "the soft top reaches outside");
+        // Halfway down the left side, the feather is halfway between.
+        let mid_out = at(&img, 35, 100);
+        assert!(mid_out > 0 && mid_out < at(&img, 35, 45).max(1) + 60, "{mid_out}");
+        // Curves are keyed with the shape, and blend between keys.
+        let s = Time::from_secs_f64;
+        let mut k = round.clone();
+        k.set_animated(true, s(0.0));
+        k.set_curves_at(s(2.0), vec![[0.0; 4]; 4]);
+        assert_eq!(k.keys.len(), 2);
+        let half = k.curves_at(s(1.0));
+        assert!((half[0][2] - round.curves[0][2] / 2.0).abs() < 1e-4);
+        assert_ne!(mask_hash(&[k.clone()], s(0.0), layer), mask_hash(&[k.clone()], s(2.0), layer));
+        k.set_animated(false, s(0.0));
+        assert_eq!(k.curves, round.curves, "stopping keeps the handles at that moment");
+        // Saved and loaded, including old masks without handles.
+        let back: Mask = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
+        let old: Mask = serde_json::from_str(r#"{"points":[[0,0],[1,0],[1,1]],"keys":[{"at":0,"points":[[0,0],[1,0],[1,1]]}]}"#).unwrap();
+        assert!(old.curves.is_empty() && old.keys[0].curves.is_empty() && old.feathers.is_empty());
     }
 
     #[test]

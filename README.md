@@ -114,6 +114,13 @@ What works now:
   Controls panel has previous/next keyframe buttons, a diamond to add/remove a keyframe at the
   playhead, and Clear. Keyframes are tied to the clip's source audio, so they move, split and
   trim with it
+- **Duck music under dialogue** (**Timeline → Duck music under dialogue…**): tick the dialogue
+  and music audio tracks, and Reelforge listens to the dialogue and lowers the music wherever
+  someone speaks: by how much (default 12 dB), what counts as speech (a loudness threshold),
+  how fast it fades down and back up, and how long a pause keeps it down. It's written as
+  ordinary volume keyframes on the music clips, so you can fine-tune them. Ducking again
+  replaces the earlier ducking instead of adding to it, and **Remove ducking** takes it off
+  while keeping keyframes you added yourself. One undo step either way
 - **Audio crossfades**: **Edit → Audio crossfade at playhead** (`Ctrl+Shift+D`) adds a 1 s
   equal-power crossfade at the nearest cut between two touching audio clips (press again to
   remove); its length is editable in the Controls panel ("Crossfade in"). A crossfade plays the
@@ -360,7 +367,14 @@ What works now:
   - Several masks combine in order: **Add**, **Subtract** (cut a hole) or **Intersect**; each
     can be inverted and has a **feather** (soft edge), an **expansion** (grow/shrink) and an
     opacity
-  - **Animate shape**: once ticked, reshaping the mask at the playhead sets a keyframe there
+  - **Curves**: double-click a point (or **Make curve** in the Masks panel) to turn it into a
+    smooth curve with two handles, or **Alt-drag** a point to pull its handles out. Dragging one
+    handle turns the other to keep the curve smooth through the point; **Alt** bends just that
+    side. Double-click again for a sharp corner. Rectangles and freehand masks can be curved
+  - **Feather per point**: click a point, then set **Feather here** in the Masks panel; the
+    feather blends between points along the sides (**Reset** goes back to the mask's feather)
+  - **Animate shape**: once ticked, reshaping the mask (points and handles) at the playhead
+    sets a keyframe there
   - Masks are applied before the clip's effects and move with the layer's transform
   - With a tracker on the clip, **Apply to → Mask: …** makes the mask follow the tracked point
 - **Compositions**: a composition is a sequence of its own, with its own layers, that
@@ -510,8 +524,7 @@ What works now:
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
 Not yet: glow and drop shadow reach only as far as the clip's own frame (a shadow from a
-full-frame clip is hidden), Bézier handles in the curve editor, and animated text
-(per-letter reveals).
+full-frame clip is hidden), and animated text (per-letter reveals).
 See the roadmap at the bottom.
 
 ## Layout
@@ -617,7 +630,10 @@ the Controls panel or dragging the layer in the Viewer sets the key there. The *
 tab (beside the timelines, or Timeline → Keyframe curves) draws the selected clip's
 keyframes as graphs: tick channels on the left, drag keys in time and value (Shift:
 value only), double-click a line to add a key or a key to delete it, and right-click a
-key for Linear, Ease in and out, or Hold.
+key for Linear, Ease in and out, Hold or **Bézier**. A Bézier key (drawn round) shows its
+handles when selected: drag a handle further out to hold the speed longer, or up and down to
+speed up or overshoot (Shift keeps it level, a pure ease). Handles shape the timing, so on
+position and scale X and Y share them. Bézier is also in the Controls panel's interpolation list.
 
 Markers: **M** adds one at the playhead; drag it along the ruler (it snaps), double-click
 it to name and colour it, right-click for more. **↑ / ↓** jump between cuts and markers,
@@ -1139,7 +1155,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 3. ~~Compositor and editing: layers, transforms, opacity, blend modes, viewer gizmo, keyframes
    and a curve editor, cross-dissolves, trimming, ripple/roll/slip/slide, ripple delete, track
    locking~~
-   (still to add: more blend modes, Bézier keyframe handles)
+   (still to add: more blend modes; Bézier keyframe handles are in)
 4. ~~Export: H.264/H.265/ProRes/DNxHR/image sequences/WAV, presets including vertical video,
    fit/fill/stretch, GPU encoders, an in/out range, an export queue, 10-bit/HDR10/HLG HEVC,
    target bitrates, your own presets~~
@@ -1152,8 +1168,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    effect presets)
 6. **Compositing**: ~~compositions (nested sequences), motion tracking (1, 2 and 4
    points: follow, stabilise with smoothing, corner pin / screen replacement), corner pin,
-   masks~~, titles and track management are done. Still to come: Bézier mask curves and
-   per-point feather, automatic
+   masks with Bézier curves and per-point feather~~, titles and track management are done.
+   Still to come: automatic
    zoom to hide stabilisation edges, GPU particles, animated text presets (3D layers, a camera
    and lights are in).
 7. ~~**Performance**: proxy media, a frame cache, hardware decode, YUV frames converted on the
