@@ -40,6 +40,9 @@ opt-level = 3
 
 # The video decoders are workspace members now, so "*" above no longer covers them:
 # their hot loops are far too slow unoptimized (even in tests).
+[profile.dev.package.reelforge-codecs]
+opt-level = 3
+
 [profile.dev.package.reelforge-bitstream]
 opt-level = 3
 

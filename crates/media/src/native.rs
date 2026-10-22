@@ -561,3 +561,45 @@ mod bench {
     }
 }
 
+
+/// Decode speed, Reelforge's decoder against FFmpeg's (one thread), on the
+/// files in RF_BENCH (comma-separated). Pin to one core (taskset -c 0) for
+/// per-core figures. Run with --ignored --nocapture.
+#[cfg(test)]
+#[test]
+#[ignore]
+fn bench_native_vs_ffmpeg() {
+    use std::time::Instant;
+    crate::init();
+    for path in std::env::var("RF_BENCH").unwrap().split(',') {
+        let mut ictx = ff::format::input(path).unwrap();
+        let st = ictx.streams().best(ff::media::Type::Video).unwrap();
+        let index = st.index();
+        let params = st.parameters();
+        let packets: Vec<ff::Packet> = ictx.packets().filter(|(s, _)| s.index() == index).map(|(_, p)| p).collect();
+        let reps = 3;
+        let mut nat = open(&params).expect("native decoder");
+        let mut f = ff::frame::Video::empty();
+        let t = Instant::now();
+        for _ in 0..reps {
+            for p in &packets {
+                nat.send_packet(p).unwrap();
+                while nat.receive_frame(&mut f) {}
+            }
+        }
+        let native = t.elapsed().as_secs_f64() * 1000.0 / (reps * packets.len()) as f64;
+        let mut ctx = ff::codec::context::Context::from_parameters(params.clone()).unwrap();
+        ctx.set_threading(ff::codec::threading::Config { kind: ff::codec::threading::Type::Frame, count: 1, ..Default::default() });
+        let mut ffd = ctx.decoder().video().unwrap();
+        let t = Instant::now();
+        for _ in 0..reps {
+            for p in &packets {
+                ffd.send_packet(p).unwrap();
+                while ffd.receive_frame(&mut f).is_ok() {}
+            }
+        }
+        let ffm = t.elapsed().as_secs_f64() * 1000.0 / (reps * packets.len()) as f64;
+        let name = std::path::Path::new(path).file_name().unwrap().to_string_lossy();
+        println!("BENCH {name}: Reelforge {native:.1} ms/frame, FFmpeg (1 thread) {ffm:.1} ms/frame, ratio {:.2}", native / ffm);
+    }
+}

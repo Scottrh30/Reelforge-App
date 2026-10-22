@@ -31,7 +31,7 @@ const LEVEL_CODEBOOK: [u8; 10] = [0x04, 0x0A, 0x05, 0x06, 0x04, 0x28, 0x28, 0x28
 
 /// One adaptive codeword: Rice for small values, Exp-Golomb above `switch_bits`.
 /// `codebook` packs the Rice order (bits 5–7), Exp-Golomb order (2–4) and switch point (0–1).
-#[inline]
+#[inline(never)]
 fn codeword(r: &mut BitReader, codebook: u8) -> Result<u32> {
     let switch_bits = (codebook & 3) as u32;
     let rice_order = (codebook >> 5) as u32;
@@ -51,6 +51,76 @@ fn codeword(r: &mut BitReader, codebook: u8) -> Result<u32> {
     } else {
         r.skip(q as usize + 1);
         Ok(q)
+    }
+}
+
+/// Codewords up to this long are read with one table lookup.
+const LUT_BITS: u32 = 9;
+
+/// For one codebook, what the next [`LUT_BITS`] bits decode to: `value << 4 | length`,
+/// or 0 when the codeword is longer (then [`codeword`] works it out).
+type Lut = [u16; 1 << LUT_BITS];
+
+fn build_lut(codebook: u8) -> Box<Lut> {
+    let mut lut = Box::new([0u16; 1 << LUT_BITS]);
+    for (p, e) in lut.iter_mut().enumerate() {
+        let bytes = ((p as u32) << (32 - LUT_BITS)).to_be_bytes();
+        let mut r = BitReader::new(&bytes);
+        if let Ok(v) = codeword(&mut r, codebook) {
+            let len = r.position() as u32;
+            if len <= LUT_BITS && v < 1 << 12 {
+                *e = (v << 4 | len) as u16;
+            }
+        }
+    }
+    lut
+}
+
+/// A level codeword and the sign bit after it, in one lookup:
+/// `level << 5 | negative << 4 | length`, or 0 when they don't fit in [`LUT_BITS`].
+fn build_signed_lut(codebook: u8) -> Box<Lut> {
+    let mut lut = Box::new([0u16; 1 << LUT_BITS]);
+    for (p, e) in lut.iter_mut().enumerate() {
+        let bytes = ((p as u32) << (32 - LUT_BITS)).to_be_bytes();
+        let mut r = BitReader::new(&bytes);
+        if let Ok(v) = codeword(&mut r, codebook) {
+            let neg = r.bit() as u32;
+            let len = r.position() as u32;
+            if len <= LUT_BITS && v < 1 << 11 {
+                *e = (v << 5 | neg << 4 | len) as u16;
+            }
+        }
+    }
+    lut
+}
+
+/// The tables for every codebook the coefficients use, by adaptation state.
+struct Luts {
+    first_dc: Box<Lut>,
+    dc: [Box<Lut>; 7],
+    run: [Box<Lut>; 16],
+    level: [Box<Lut>; 10],
+}
+
+fn luts() -> &'static Luts {
+    static L: std::sync::OnceLock<Luts> = std::sync::OnceLock::new();
+    L.get_or_init(|| Luts {
+        first_dc: build_lut(FIRST_DC_CODEBOOK),
+        dc: DC_CODEBOOK.map(build_lut),
+        run: RUN_CODEBOOK.map(build_lut),
+        level: LEVEL_CODEBOOK.map(build_signed_lut),
+    })
+}
+
+/// [`codeword`] with `codebook`, through its table when the codeword is short.
+#[inline(always)]
+fn codeword_lut(r: &mut BitReader, lut: &Lut, codebook: u8) -> Result<u32> {
+    let e = lut[r.peek(LUT_BITS) as usize];
+    if e != 0 {
+        r.skip((e & 15) as usize);
+        Ok((e >> 4) as u32)
+    } else {
+        codeword(r, codebook)
     }
 }
 
@@ -114,13 +184,15 @@ fn frame_header(buf: &[u8]) -> Result<(FrameHeader, usize)> {
 
 /// DC values of `n` blocks (into coefficient 0 of each 64-entry block).
 fn decode_dc(r: &mut BitReader, out: &mut [i32], n: usize) -> Result<()> {
-    let code = codeword(r, FIRST_DC_CODEBOOK)?;
+    let t = luts();
+    let code = codeword_lut(r, &t.first_dc, FIRST_DC_CODEBOOK)?;
     let mut prev = ((code >> 1) as i32) ^ -((code & 1) as i32);
     out[0] = prev;
     let mut code = 5u32;
     let mut sign = 0i32;
     for i in 1..n {
-        code = codeword(r, DC_CODEBOOK[code.min(6) as usize])?;
+        let k = code.min(6) as usize;
+        code = codeword_lut(r, &t.dc[k], DC_CODEBOOK[k])?;
         if code != 0 {
             sign ^= -((code & 1) as i32);
         } else {
@@ -140,19 +212,30 @@ fn decode_ac(r: &mut BitReader, out: &mut [i32], n: usize, scan: &[u8; 64], tota
     let mut run = 4u32;
     let mut level = 2u32;
     let mut pos = mask;
+    let t = luts();
     loop {
         let left = total_bits as isize - r.position() as isize;
         if left <= 0 || (left < 32 && r.peek(left as u32) == 0) {
             break;
         }
-        run = codeword(r, RUN_CODEBOOK[run.min(15) as usize])?;
+        let k = run.min(15) as usize;
+        run = codeword_lut(r, &t.run[k], RUN_CODEBOOK[k])?;
         pos += run as usize + 1;
         if pos >= max {
             return invalid("ProRes: AC coefficients run past the blocks");
         }
-        level = codeword(r, LEVEL_CODEBOOK[level.min(9) as usize])? + 1;
+        let k = level.min(9) as usize;
+        // The level and its sign, together when they're short.
+        let e = t.level[k][r.peek(LUT_BITS) as usize];
+        let neg = if e != 0 {
+            r.skip((e & 15) as usize);
+            level = (e >> 5) as u32 + 1;
+            e & 16 != 0
+        } else {
+            level = codeword(r, LEVEL_CODEBOOK[k])? + 1;
+            r.bit()
+        };
         let i = pos >> log2;
-        let neg = r.bit();
         let v = if neg { -(level as i32) } else { level as i32 };
         out[((pos & mask) << 6) + scan[i] as usize] = v;
     }
@@ -177,7 +260,6 @@ struct SliceAt {
 /// A picture's planes as 16-bit samples, padded to whole macroblocks.
 struct Planes {
     w: usize,
-    h: usize,
     cw: usize,
     y: Vec<u16>,
     u: Vec<u16>,
@@ -185,13 +267,15 @@ struct Planes {
     a: Vec<u16>,
 }
 
-/// Decoded samples of one slice: its own little planes, copied into place afterwards.
-struct SliceOut {
-    at: SliceAt,
-    y: Vec<u16>,
-    u: Vec<u16>,
-    v: Vec<u16>,
-    a: Vec<u16>,
+/// Where one macroblock row's samples go: the rows of each plane it covers
+/// (`stride` apart: every other picture line for a field).
+struct RowOut<'p> {
+    y: &'p mut [u16],
+    u: &'p mut [u16],
+    v: &'p mut [u16],
+    a: &'p mut [u16],
+    stride: usize,
+    cstride: usize,
 }
 
 struct Ctx<'a> {
@@ -199,7 +283,8 @@ struct Ctx<'a> {
     scan: &'a [u8; 64],
 }
 
-fn decode_slice(ctx: &Ctx, data: &[u8], at: SliceAt) -> Result<SliceOut> {
+/// Decode one slice straight into its place in the macroblock row `out`.
+fn decode_slice(ctx: &Ctx, data: &[u8], at: SliceAt, out: &mut RowOut) -> Result<()> {
     if data.len() < 6 {
         return invalid("ProRes: slice cut short");
     }
@@ -221,7 +306,8 @@ fn decode_slice(ctx: &Ctx, data: &[u8], at: SliceAt) -> Result<SliceOut> {
 
     // Luma: four blocks per macroblock (top-left, top-right, bottom-left, bottom-right).
     let lw = mbs * 16;
-    let mut y = vec![0u16; lw * 16];
+    let x0 = at.mb_x as usize * 16;
+    let stride = out.stride;
     {
         let d = &data[hdr_size..hdr_size + y_size];
         let n = mbs * 4;
@@ -231,18 +317,18 @@ fn decode_slice(ctx: &Ctx, data: &[u8], at: SliceAt) -> Result<SliceOut> {
         decode_ac(&mut r, &mut c, n, ctx.scan, d.len() * 8)?;
         for m in 0..mbs {
             for b in 0..4 {
-                let (bx, by) = (m * 16 + (b & 1) * 8, (b >> 1) * 8);
-                put_block(&c[(m * 4 + b) * 64..], &qy, &mut y[by * lw + bx..], lw);
+                let (bx, by) = (x0 + m * 16 + (b & 1) * 8, (b >> 1) * 8);
+                put_block(&c[(m * 4 + b) * 64..], &qy, &mut out.y[by * stride + bx..], stride);
             }
         }
     }
 
     // Chroma: a column of two blocks per 8 pixels across (one column for 4:2:2, two for 4:4:4).
     let cols = if ctx.hdr.chroma_444 { 2 } else { 1 };
-    let cw = mbs * 8 * cols;
-    let mut planes = [Vec::new(), Vec::new()];
+    let cx0 = at.mb_x as usize * 8 * cols;
+    let cstride = out.cstride;
     for (k, (off, size)) in [(hdr_size + y_size, u_size), (hdr_size + y_size + u_size, v_size)].into_iter().enumerate() {
-        let mut out = vec![0u16; cw * 16];
+        let plane: &mut [u16] = if k == 0 { out.u } else { out.v };
         let d = &data[off..off + size];
         let n = mbs * 2 * cols;
         let mut c = vec![0i32; n * 64];
@@ -252,23 +338,23 @@ fn decode_slice(ctx: &Ctx, data: &[u8], at: SliceAt) -> Result<SliceOut> {
         let mut bi = 0;
         for m in 0..mbs {
             for col in 0..cols {
-                let x = (m * cols + col) * 8;
-                put_block(&c[bi * 64..], &qc, &mut out[x..], cw);
-                put_block(&c[(bi + 1) * 64..], &qc, &mut out[8 * cw + x..], cw);
+                let x = cx0 + (m * cols + col) * 8;
+                put_block(&c[bi * 64..], &qc, &mut plane[x..], cstride);
+                put_block(&c[(bi + 1) * 64..], &qc, &mut plane[8 * cstride + x..], cstride);
                 bi += 2;
             }
         }
-        planes[k] = out;
     }
-    let [u, v] = planes;
 
     // Alpha: run-length coded differences, raster order over the slice.
-    let mut a = Vec::new();
-    if ctx.hdr.alpha != 0 && a_size > 0 {
+    if ctx.hdr.alpha != 0 && a_size > 0 && !out.a.is_empty() {
         let d = &data[data.len() - a_size..];
-        a = unpack_alpha(d, lw * 16, if ctx.hdr.alpha == 2 { 16 } else { 8 });
+        let a = unpack_alpha(d, lw * 16, if ctx.hdr.alpha == 2 { 16 } else { 8 });
+        for r in 0..16 {
+            out.a[r * stride + x0..r * stride + x0 + lw].copy_from_slice(&a[r * lw..(r + 1) * lw]);
+        }
     }
-    Ok(SliceOut { at, y, u, v, a })
+    Ok(())
 }
 
 /// Alpha values (as 10-bit) from their run-length coding.
@@ -349,59 +435,65 @@ fn decode_picture(hdr: &FrameHeader, buf: &[u8], pl: &mut Planes, field: Option<
         return invalid("ProRes: not enough slices for the picture");
     }
 
-    // Slice data, after the table of slice sizes.
+    // Slice data, after the table of slice sizes, grouped by macroblock row.
     let table = &buf[hdr_size..hdr_size + slice_count * 2];
-    let mut slices = Vec::with_capacity(slice_count);
+    let mut by_row: Vec<Vec<(&[u8], SliceAt)>> = (0..mb_h).map(|_| Vec::new()).collect();
     let mut off = hdr_size + slice_count * 2;
     for i in 0..slice_count {
         let n = u16::from_be_bytes([table[i * 2], table[i * 2 + 1]]) as usize;
         if off + n > pic_size {
             return invalid("ProRes: slice runs past the picture");
         }
-        slices.push((&buf[off..off + n], at[i]));
+        if let Some(row) = by_row.get_mut(at[i].mb_y as usize) {
+            row.push((&buf[off..off + n], at[i]));
+        }
         off += n;
     }
 
-    // Decode the slices on several threads.
-    let ctx = Ctx { hdr, scan: if hdr.frame_type == 0 { &PROGRESSIVE_SCAN } else { &INTERLACED_SCAN } };
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
-    let chunk = slices.len().div_ceil(threads).max(1);
-    let results: Vec<Result<Vec<SliceOut>>> = std::thread::scope(|s| {
-        let handles: Vec<_> = slices
-            .chunks(chunk)
-            .map(|part| {
-                let ctx = &ctx;
-                s.spawn(move || part.iter().map(|(d, a)| decode_slice(ctx, d, *a)).collect::<Result<Vec<_>>>())
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| invalid("ProRes: slice decoder panicked"))).collect()
-    });
-
-    // Copy each slice into place (every other row, for a field).
+    // Each macroblock row's lines of each plane: 16 lines, or for a field 16
+    // of every other line (starting on its own), so the rows never overlap.
     let (start, step) = match field {
         Some(f) => (f as usize, 2usize),
         None => (0, 1),
     };
-    let chroma_scale = if hdr.chroma_444 { 1 } else { 2 };
-    for part in results {
-        for so in part? {
-            let lw = so.at.mbs as usize * 16;
-            let x0 = so.at.mb_x as usize * 16;
-            for r in 0..16 {
-                let row = start + (so.at.mb_y as usize * 16 + r) * step;
-                if row >= pl.h {
-                    break;
-                }
-                pl.y[row * pl.w + x0..row * pl.w + x0 + lw].copy_from_slice(&so.y[r * lw..(r + 1) * lw]);
-                if !so.a.is_empty() {
-                    pl.a[row * pl.w + x0..row * pl.w + x0 + lw].copy_from_slice(&so.a[r * lw..(r + 1) * lw]);
-                }
-                let cw = lw / chroma_scale;
-                let cx = x0 / chroma_scale;
-                pl.u[row * pl.cw + cx..row * pl.cw + cx + cw].copy_from_slice(&so.u[r * cw..(r + 1) * cw]);
-                pl.v[row * pl.cw + cx..row * pl.cw + cx + cw].copy_from_slice(&so.v[r * cw..(r + 1) * cw]);
-            }
-        }
+    let (w, cw) = (pl.w, pl.cw);
+    let span = |n: usize| 16 * step * n;
+    let mut ys = pl.y.chunks_mut(span(w));
+    let mut us = pl.u.chunks_mut(span(cw));
+    let mut vs = pl.v.chunks_mut(span(cw));
+    let has_alpha = !pl.a.is_empty();
+    let mut as_ = pl.a.chunks_mut(span(w).max(1));
+    let mut jobs = Vec::with_capacity(mb_h as usize);
+    for slices in &by_row {
+        let (Some(y), Some(u), Some(v)) = (ys.next(), us.next(), vs.next()) else { break };
+        let a = if !has_alpha { &mut [][..] } else { as_.next().map_or(&mut [][..], |a| &mut a[start * w..]) };
+        let out = RowOut { y: &mut y[start * w..], u: &mut u[start * cw..], v: &mut v[start * cw..], a, stride: w * step, cstride: cw * step };
+        jobs.push((slices, out));
+    }
+
+    // Decode the rows on several threads, straight into the picture.
+    let ctx = Ctx { hdr, scan: if hdr.frame_type == 0 { &PROGRESSIVE_SCAN } else { &INTERLACED_SCAN } };
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+    let chunk = jobs.len().div_ceil(threads).max(1);
+    let results: Vec<Result<()>> = std::thread::scope(|s| {
+        let handles: Vec<_> = jobs
+            .chunks_mut(chunk)
+            .map(|part| {
+                let ctx = &ctx;
+                s.spawn(move || {
+                    for (slices, out) in part.iter_mut() {
+                        for (d, a) in slices.iter() {
+                            decode_slice(ctx, d, *a, out)?;
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| invalid("ProRes: slice decoder panicked"))).collect()
+    });
+    for r in results {
+        r?;
     }
     Ok(pic_size)
 }
@@ -419,7 +511,7 @@ pub fn decode_frame(data: &[u8]) -> Result<Picture> {
     let w = mb_w * 16;
     let cw = if hdr.chroma_444 { w } else { w / 2 };
     let alpha = hdr.alpha != 0;
-    let mut pl = Planes { w, h: rows, cw, y: vec![0; w * rows], u: vec![512; cw * rows], v: vec![512; cw * rows], a: if alpha { vec![1023; w * rows] } else { Vec::new() } };
+    let mut pl = Planes { w, cw, y: vec![0; w * rows], u: vec![512; cw * rows], v: vec![512; cw * rows], a: if alpha { vec![1023; w * rows] } else { Vec::new() } };
 
     let mut rest = &data[hsize..];
     if hdr.frame_type == 0 {
@@ -440,14 +532,7 @@ pub fn decode_frame(data: &[u8]) -> Result<Picture> {
     };
     let (pw, ph) = (hdr.width, hdr.height);
     let mut pic = Picture::new(pw, ph, format);
-    let copy = |src: &[u16], sw: usize, dst: &mut crate::Plane, cols: usize, rows: usize| {
-        for r in 0..rows {
-            let d = &mut dst.data[r * dst.stride..r * dst.stride + cols * 2];
-            for (c, px) in src[r * sw..r * sw + cols].iter().enumerate() {
-                d[c * 2..c * 2 + 2].copy_from_slice(&px.to_le_bytes());
-            }
-        }
-    };
+    let copy = |src: &[u16], sw: usize, dst: &mut crate::Plane, cols: usize, rows: usize| dst.put_u16_rows(src, sw, cols, rows);
     let (cols_c, _) = format.plane_size(1, pw, ph);
     copy(&pl.y, pl.w, &mut pic.planes[0], pw as usize, ph as usize);
     copy(&pl.u, pl.cw, &mut pic.planes[1], cols_c as usize, ph as usize);
@@ -496,6 +581,20 @@ mod tests {
             for v in s {
                 assert!(!seen[v as usize]);
                 seen[v as usize] = true;
+            }
+        }
+    }
+
+    #[test]
+    fn tables_match_the_codeword_rules() {
+        // Every codebook, on every 16-bit pattern: the table path reads the same.
+        for cb in [FIRST_DC_CODEBOOK].iter().chain(&DC_CODEBOOK).chain(&RUN_CODEBOOK).chain(&LEVEL_CODEBOOK) {
+            let lut = build_lut(*cb);
+            for p in (0u32..1 << 16).step_by(7) {
+                let d = (p << 16 | 0x5A5A).to_be_bytes();
+                let (mut a, mut b) = (BitReader::new(&d), BitReader::new(&d));
+                assert_eq!(codeword(&mut a, *cb).ok(), codeword_lut(&mut b, &lut, *cb).ok(), "codebook {cb:#x}, bits {p:016b}");
+                assert_eq!(a.position(), b.position());
             }
         }
     }

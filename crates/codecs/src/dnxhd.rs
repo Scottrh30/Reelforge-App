@@ -10,7 +10,7 @@
 
 use crate::bits::BitReader;
 use crate::dnxhd_tables::{Cid, CIDS};
-use crate::idct::{fast_qmat, idct_fast};
+use crate::idct::{fast_qmat, idct_put_u16};
 use crate::vlc::Vlc;
 use crate::{invalid, Decoder, Error, Format, Matrix, Output, Picture, Result, StreamInfo};
 use std::sync::OnceLock;
@@ -19,6 +19,10 @@ const ZIGZAG: [u8; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22,
     15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
+
+/// The AC symbol for "end of block"; the others are `level << 2 | flags`
+/// (flag 1: more level bits follow; flag 2: a run follows).
+const AC_EOB: u16 = 0xFFFF;
 
 /// The decoding tables for one CID, built once.
 struct Tables {
@@ -35,9 +39,13 @@ fn tables(i: usize) -> &'static Tables {
         let wide = |v: &[u16]| v.iter().map(|&x| x as u32).collect::<Vec<u32>>();
         let dc_codes: Vec<u32> = c.dc_codes.iter().map(|&x| x as u32).collect();
         let run_syms: Vec<u16> = c.run.iter().map(|&x| x as u16).collect();
+        // AC symbols carry their level and flags directly (no second lookup).
+        let ac_syms: Vec<u16> = (0..c.ac_codes.len())
+            .map(|i| if i == c.eob_index as usize { AC_EOB } else { (c.ac_info[2 * i] as u16) << 2 | (c.ac_info[2 * i + 1] & 3) as u16 })
+            .collect();
         Tables {
             dc: Vlc::new(&dc_codes, c.dc_bits, None),
-            ac: Vlc::new(&wide(c.ac_codes), c.ac_bits, None),
+            ac: Vlc::new(&wide(c.ac_codes), c.ac_bits, Some(&ac_syms)),
             run: Vlc::new(&wide(c.run_codes), c.run_bits, Some(&run_syms)),
         }
     })
@@ -159,21 +167,23 @@ fn header(buf: &[u8]) -> Result<Header> {
     Ok(Header { cid, width, height, bit_depth, is_444, act, interlaced, field, mbaff, mb_width, mb_height, matrix, data_offset, row_offsets, rule })
 }
 
-/// One decoded macroblock row: planes of 16-bit samples (`16 × mb_width × 16` luma).
-struct Row {
-    y: Vec<u16>,
-    u: Vec<u16>,
-    v: Vec<u16>,
-    /// The macroblocks' colour flag (4:4:4: YCbCr when set), from the first one.
-    act: Option<bool>,
+/// Where one macroblock row's samples go: its lines of each plane, `stride`
+/// samples apart (every other picture line for a field).
+struct RowOut<'p> {
+    y: &'p mut [u16],
+    u: &'p mut [u16],
+    v: &'p mut [u16],
+    stride: usize,
+    cstride: usize,
 }
 
-fn decode_row(h: &Header, t: &Tables, data: &[u8]) -> Result<Row> {
+/// Decode one macroblock row into `row`; gives the macroblocks' colour flag
+/// (4:4:4: YCbCr when set), from the first one.
+fn decode_row(h: &Header, t: &Tables, data: &[u8], row: &mut RowOut) -> Result<Option<bool>> {
     let c = &CIDS[h.cid];
     let mut r = BitReader::new(data);
-    let w = h.mb_width as usize * 16;
-    let cw = if h.is_444 { w } else { w / 2 };
-    let mut row = Row { y: vec![0; w * 16], u: vec![0; cw * 16], v: vec![0; cw * 16], act: None };
+    let (w, cw) = (row.stride, row.cstride);
+    let mut act_flag = None;
     let mut last_dc = [1i32 << (h.bit_depth + 2); 3];
     let rule = h.rule;
     let max = ((1u32 << h.bit_depth) - 1) as f32;
@@ -182,23 +192,29 @@ fn decode_row(h: &Header, t: &Tables, data: &[u8]) -> Result<Row> {
     let mut blocks = vec![[0i32; 64]; nblocks];
     let mut luma_scale = [0i32; 64];
     let mut chroma_scale = [0i32; 64];
+    // What gets added before the shift: half a step, plus the bias where it applies.
+    let mut luma_add = [0i32; 64];
+    let mut chroma_add = [0i32; 64];
+    let bias_at = |w: u8| if rule.bias < 32 || w as i32 != rule.bias { rule.bias } else { 0 };
     let mut last_q = -1i32;
     for mb in 0..h.mb_width as usize {
         let interlaced_mb = if h.mbaff { r.bit() } else { false };
         let qscale = if h.mbaff { r.read(10) } else { r.read(11) } as i32;
         let act = r.bit();
-        row.act.get_or_insert(act);
+        act_flag.get_or_insert(act);
         if qscale != last_q {
             for i in 0..64 {
                 luma_scale[i] = qscale * c.luma_weight[i] as i32;
                 chroma_scale[i] = qscale * c.chroma_weight[i] as i32;
+                luma_add[i] = (luma_scale[i] >> 1) + bias_at(c.luma_weight[i]);
+                chroma_add[i] = (chroma_scale[i] >> 1) + bias_at(c.chroma_weight[i]);
             }
             last_q = qscale;
         }
         for (n, block) in blocks.iter_mut().enumerate() {
             *block = [0; 64];
             let component = if h.is_444 { (n >> 1) % 3 } else if n & 2 != 0 { 1 + (n & 1) } else { 0 };
-            let (scale, weight) = if component == 0 { (&luma_scale, c.luma_weight) } else { (&chroma_scale, c.chroma_weight) };
+            let (scale, add) = if component == 0 { (&luma_scale, &luma_add) } else { (&chroma_scale, &chroma_add) };
             // DC: a size code, then that many bits (JPEG-style sign).
             let len = t.dc.read(&mut r).ok_or_else(|| Error::Invalid("DNxHD: bad DC code".into()))? as u32;
             if len > 0 {
@@ -210,30 +226,25 @@ fn decode_row(h: &Header, t: &Tables, data: &[u8]) -> Result<Row> {
             // AC: level/run codes until the end-of-block code.
             let mut i = 0usize;
             loop {
-                let idx = t.ac.read(&mut r).ok_or_else(|| Error::Invalid("DNxHD: bad AC code".into()))?;
-                if idx == c.eob_index {
+                let Some(sym) = t.ac.read(&mut r) else { return invalid("DNxHD: bad AC code") };
+                if sym == AC_EOB {
                     break;
                 }
-                let mut level = c.ac_info[2 * idx as usize] as i32;
-                let flags = c.ac_info[2 * idx as usize + 1];
+                let mut level = (sym >> 2) as i32;
                 let neg = r.bit();
-                if flags & 1 != 0 {
+                if sym & 1 != 0 {
                     level += (r.read(rule.index_bits) as i32) << 7;
                 }
-                if flags & 2 != 0 {
-                    i += t.run.read(&mut r).ok_or_else(|| Error::Invalid("DNxHD: bad run code".into()))? as usize;
+                if sym & 2 != 0 {
+                    let Some(run) = t.run.read(&mut r) else { return invalid("DNxHD: bad run code") };
+                    i += run as usize;
                 }
                 i += 1;
                 if i > 63 {
                     return invalid("DNxHD: coefficients run past the block");
                 }
-                level *= scale[i];
-                level += scale[i] >> 1;
-                if rule.bias < 32 || weight[i] as i32 != rule.bias {
-                    level += rule.bias;
-                }
-                level >>= rule.shift;
-                block[ZIGZAG[i] as usize] = if neg { -level } else { level };
+                let v = (level * scale[i] + add[i]) >> rule.shift;
+                block[ZIGZAG[i] as usize] = if neg { -v } else { v };
             }
             if r.overrun {
                 return invalid("DNxHD: row data cut short");
@@ -242,16 +253,9 @@ fn decode_row(h: &Header, t: &Tables, data: &[u8]) -> Result<Row> {
         // Place the blocks. Luma 16×16 from four blocks; an interlaced
         // macroblock (MBAFF) takes its two field halves on alternate lines.
         let put = |dst: &mut [u16], stride: usize, x: usize, top: usize, b: &[i32; 64]| {
-            let mut o = [[0f32; 8]; 8];
-            idct_fast(b, &q, &mut o);
-            for (yy, src) in o.iter().enumerate() {
-                let line = if interlaced_mb { top + yy * 2 } else { top + yy };
-                let d = &mut dst[line * stride + x..line * stride + x + 8];
-                for xx in 0..8 {
-                    // SAFETY: clamped to a finite range inside u16 just before.
-                    d[xx] = unsafe { (src[xx] + 0.5).clamp(0.5, max + 0.5).to_int_unchecked::<i32>() } as u16;
-                }
-            }
+            // An interlaced macroblock's blocks go on every other line.
+            let step = if interlaced_mb { stride * 2 } else { stride };
+            idct_put_u16(b, &q, 0.0, 0.0, max, &mut dst[top * stride + x..], step);
         };
         let x = mb * 16;
         let (t0, t1) = if interlaced_mb { (0, 1) } else { (0, 8) };
@@ -280,7 +284,7 @@ fn decode_row(h: &Header, t: &Tables, data: &[u8]) -> Result<Row> {
             put(&mut row.v, cw, x + 8, t1, &blocks[11]);
         }
     }
-    Ok(row)
+    Ok(act_flag)
 }
 
 /// Decode one coding unit (a frame or a field) into `planes`.
@@ -288,33 +292,45 @@ fn decode_unit(h: &Header, buf: &[u8], planes: &mut [Vec<u16>; 3], strides: [usi
     let t = tables(h.cid);
     let data = &buf[h.data_offset..];
     let n = h.mb_height as usize;
+    // Each macroblock row's lines: 16, or for a field 16 of every other line.
+    let (start, step) = if h.interlaced { (h.field as usize, 2) } else { (0, 1) };
+    if (n * 16 * step) > rows_out {
+        return invalid("DNxHD: more macroblock rows than the picture has");
+    }
+    let [yp, up, vp] = planes;
+    let (ys, us, vs) = (yp.chunks_mut(16 * step * strides[0]), up.chunks_mut(16 * step * strides[1]), vp.chunks_mut(16 * step * strides[2]));
+    let mut jobs: Vec<(usize, RowOut)> = ys
+        .zip(us)
+        .zip(vs)
+        .take(n)
+        .enumerate()
+        .map(|(i, ((y, u), v))| {
+            let out = RowOut { y: &mut y[start * strides[0]..], u: &mut u[start * strides[1]..], v: &mut v[start * strides[2]..], stride: strides[0] * step, cstride: strides[1] * step };
+            (i, out)
+        })
+        .collect();
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
-    let chunk = n.div_ceil(threads).max(1);
-    let idx: Vec<usize> = (0..n).collect();
-    let results: Vec<Result<Vec<(usize, Row)>>> = std::thread::scope(|s| {
-        let handles: Vec<_> = idx
-            .chunks(chunk)
-            .map(|part| s.spawn(move || part.iter().map(|&i| decode_row(h, t, &data[h.row_offsets[i] as usize..]).map(|r| (i, r))).collect::<Result<Vec<_>>>()))
+    let chunk = jobs.len().div_ceil(threads).max(1);
+    let results: Vec<Result<Option<bool>>> = std::thread::scope(|s| {
+        let handles: Vec<_> = jobs
+            .chunks_mut(chunk)
+            .map(|part| {
+                s.spawn(move || {
+                    let mut first = None;
+                    for (i, out) in part.iter_mut() {
+                        let a = decode_row(h, t, &data[h.row_offsets[*i] as usize..], out)?;
+                        first = first.or(a);
+                    }
+                    Ok(first)
+                })
+            })
             .collect();
         handles.into_iter().map(|j| j.join().unwrap_or_else(|_| invalid("DNxHD: row decoder panicked"))).collect()
     });
-    let (start, step) = if h.interlaced { (h.field as usize, 2) } else { (0, 1) };
-    for part in results {
-        for (i, row) in part? {
-            if act.is_none() {
-                *act = row.act;
-            }
-            for (p, src) in [&row.y, &row.u, &row.v].into_iter().enumerate() {
-                let sw = src.len() / 16;
-                for l in 0..16 {
-                    let line = start + (i * 16 + l) * step;
-                    if line >= rows_out {
-                        break;
-                    }
-                    let n = sw.min(strides[p]);
-                    planes[p][line * strides[p]..line * strides[p] + n].copy_from_slice(&src[l * sw..l * sw + n]);
-                }
-            }
+    for r in results {
+        let a = r?;
+        if act.is_none() {
+            *act = a;
         }
     }
     Ok(())
@@ -325,7 +341,8 @@ pub fn decode_frame(data: &[u8]) -> Result<Picture> {
     let (w, ht) = (first.width, first.height);
     let mbw = first.mb_width as usize * 16;
     let cw = if first.is_444 { mbw } else { mbw / 2 };
-    let rows = (ht as usize).div_ceil(16) * 16 + 16;
+    // Room for every macroblock row (a field's rows take every other line).
+    let rows = ((ht as usize).div_ceil(16) * 16).max(first.mb_height as usize * if first.interlaced { 32 } else { 16 }) + 16;
     let strides = [mbw, cw, cw];
     let mut planes = [vec![0u16; mbw * rows], vec![0u16; cw * rows], vec![0u16; cw * rows]];
     let mut act = None;
@@ -356,17 +373,10 @@ pub fn decode_frame(data: &[u8]) -> Result<Picture> {
     for (p, src) in planes.iter().enumerate() {
         let (pw, ph) = format.plane_size(p, w, ht);
         let dst = &mut pic.planes[p];
-        for y in 0..ph as usize {
-            let s = &src[y * strides[p]..y * strides[p] + pw as usize];
-            if format.bytes_per_sample() == 1 {
-                for (x, v) in s.iter().enumerate() {
-                    dst.data[y * dst.stride + x] = *v as u8;
-                }
-            } else {
-                for (x, v) in s.iter().enumerate() {
-                    dst.data[y * dst.stride + x * 2..y * dst.stride + x * 2 + 2].copy_from_slice(&v.to_le_bytes());
-                }
-            }
+        if format.bytes_per_sample() == 1 {
+            dst.put_u16_rows_as_u8(src, strides[p], pw as usize, ph as usize);
+        } else {
+            dst.put_u16_rows(src, strides[p], pw as usize, ph as usize);
         }
     }
     pic.matrix = first.matrix;

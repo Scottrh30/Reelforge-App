@@ -144,6 +144,37 @@ pub struct Plane {
     pub stride: usize,
 }
 
+impl Plane {
+    /// Copy `rows` rows of `cols` 16-bit samples from `src` (`src_stride`
+    /// samples apart) in as little-endian, a row at a time.
+    pub fn put_u16_rows(&mut self, src: &[u16], src_stride: usize, cols: usize, rows: usize) {
+        for r in 0..rows {
+            let s = &src[r * src_stride..r * src_stride + cols];
+            let d = &mut self.data[r * self.stride..r * self.stride + cols * 2];
+            if cfg!(target_endian = "little") {
+                // SAFETY: u16 has no padding or invalid bit patterns, and in
+                // memory it's already little-endian here.
+                d.copy_from_slice(unsafe { std::slice::from_raw_parts(s.as_ptr() as *const u8, cols * 2) });
+            } else {
+                for (c, px) in s.iter().enumerate() {
+                    d[c * 2..c * 2 + 2].copy_from_slice(&px.to_le_bytes());
+                }
+            }
+        }
+    }
+
+    /// The same into 8-bit samples (values already within 0–255).
+    pub fn put_u16_rows_as_u8(&mut self, src: &[u16], src_stride: usize, cols: usize, rows: usize) {
+        for r in 0..rows {
+            let s = &src[r * src_stride..r * src_stride + cols];
+            let d = &mut self.data[r * self.stride..r * self.stride + cols];
+            for (o, v) in d.iter_mut().zip(s) {
+                *o = *v as u8;
+            }
+        }
+    }
+}
+
 /// A decoded picture.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picture {

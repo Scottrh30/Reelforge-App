@@ -767,8 +767,17 @@ at most a rounding step of the IDCT; H.264, HEVC, VP9 and AV1 come out identical
 across 14 encoder configurations). FFmpeg's MPEG-2 encoder never makes field pictures,
 16×8 or dual-prime motion, so the tests also generate random streams that use them
 (`crates/codecs/src/mpeg2/testgen.rs`), and FFmpeg and Reelforge must decode them alike.
-Speed: ProRes 422 HQ 1080p decodes at about 27 fps per core (FFmpeg's hand-written SIMD
-manages about 120), so a typical 8-core PC plays it in real time with room to spare; DNxHR HQ is similar (about 23 fps per core). MPEG-2 1080i at 25 Mbit/s: about 75 fps on one core. The H.264/HEVC/VP9/AV1 decoders use all
+Speed, on one core of a 2.8 GHz Xeon, for 1080p with film-like grain (`taskset -c 0`, the
+`bench_native_vs_ffmpeg` test in `crates/media/src/native.rs`): ProRes 422 HQ about 33 fps,
+the same as FFmpeg's decoder; ProRes 422 about 48 fps (FFmpeg 46); ProRes 4444 with alpha about
+11 fps, 15% faster than FFmpeg; DNxHR HQ/HQX and DNxHD 220 about 36 fps (FFmpeg 42). Slices or
+macroblock rows go to every core, so a typical PC plays 4K ProRes and DNxHR in real time. What
+makes them quick: a bit reader that keeps the next 64 bits in a register; one table lookup per
+ProRes codeword (with the level's sign folded in) and two-level DNx code tables small enough to
+stay in the CPU cache; an AVX2 inverse DCT (8×8 block in eight 256-bit registers), chosen at run
+time, with a portable version for older CPUs (`REELFORGE_NO_AVX2=1` forces it: about 20–30%
+slower); and every slice or row decoded straight into the picture. MPEG-2 1080i at 25 Mbit/s:
+about 75 fps on one core. The H.264/HEVC/VP9/AV1 decoders use all
 cores; on 2 cores 1080p runs at about 75 fps (H.264, HEVC), 45 (VP9) and 28 (AV1).
 
 ## Building on Windows 10/11
