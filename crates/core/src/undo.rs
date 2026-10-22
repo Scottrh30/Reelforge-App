@@ -831,6 +831,65 @@ impl Command for AddTrack {
     }
 }
 
+/// A copy of a track, with all its clips, placed just above it.
+pub struct DuplicateTrack {
+    pub seq: usize,
+    /// Where the copy goes (just above the original).
+    pub index: usize,
+    pub track: Track,
+}
+
+impl DuplicateTrack {
+    /// Copy track `index`: its clips get new ids (allocated from `p` now, so
+    /// redo gives the same ones). Clips linked or parented to others on the same
+    /// track stay that way among the copies; links to clips on other tracks are
+    /// dropped (a copied video clip has no audio of its own), and parents on
+    /// other tracks are kept, so the copies follow them too.
+    pub fn new(p: &mut Project, seq: usize, index: usize) -> Result<Self, &'static str> {
+        let Some(src) = p.sequences.get(seq).and_then(|s| s.tracks.get(index)).cloned() else { return Err("no such track") };
+        let s = &p.sequences[seq];
+        // "Video 1 copy", "Video 1 copy 2"…
+        let base = format!("{} copy", src.name);
+        let name = std::iter::once(base.clone())
+            .chain((2..).map(|n| format!("{base} {n}")))
+            .find(|n| !s.tracks.iter().any(|t| &t.name == n))
+            .unwrap();
+        // Link groups with more than one clip on this track.
+        let mut counts = std::collections::HashMap::<u64, usize>::new();
+        for c in &src.clips {
+            if let Some(l) = c.link {
+                *counts.entry(l).or_default() += 1;
+            }
+        }
+        let ids: std::collections::HashMap<ClipId, ClipId> = src.clips.iter().map(|c| (c.id, ClipId(p.alloc_id()))).collect();
+        let mut links = std::collections::HashMap::<u64, u64>::new();
+        let mut track = src.clone();
+        track.name = name;
+        for c in &mut track.clips {
+            c.id = ids[&c.id];
+            c.link = c.link.filter(|l| counts[l] > 1).map(|l| *links.entry(l).or_insert_with(|| p.alloc_id()));
+            c.parent = c.parent.map(|par| ids.get(&par).copied().unwrap_or(par));
+        }
+        Ok(Self { seq, index: index + 1, track })
+    }
+}
+
+impl Command for DuplicateTrack {
+    fn name(&self) -> &str {
+        "Duplicate track"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        let tracks = &mut p.sequences[self.seq].tracks;
+        tracks.insert(self.index.min(tracks.len()), self.track.clone());
+    }
+    fn undo(&mut self, p: &mut Project) {
+        let tracks = &mut p.sequences[self.seq].tracks;
+        if self.index < tracks.len() {
+            tracks.remove(self.index);
+        }
+    }
+}
+
 /// Delete a track and everything on it.
 pub struct RemoveTrack {
     pub seq: usize,
@@ -1627,6 +1686,59 @@ mod track_tests {
         u.undo(&mut p);
         u.undo(&mut p);
         assert_eq!(p.sequences[0].tracks.len(), 3);
+    }
+
+    #[test]
+    fn duplicating_a_track_copies_its_clips_above_it() {
+        let mut p = Project::new(); // V1, V2, A1
+        for _ in 0..100 {
+            p.alloc_id();
+        }
+        let mut u = UndoStack::default();
+        let q = &mut p.sequences[0];
+        // V1: a clip linked to audio on A1, and two clips linked to each other, one parented to the other.
+        let mut v = Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(1.0), Some(5));
+        v.transform.opacity = 0.5;
+        let mut b = Clip::new(ClipId(2), MediaId(1), s(2.0), s(0.0), s(1.0), Some(6));
+        let mut c = Clip::new(ClipId(3), MediaId(1), s(4.0), s(0.0), s(1.0), Some(6));
+        c.parent = Some(ClipId(2));
+        b.parent = Some(ClipId(9)); // a point on another track
+        q.tracks[0].clips = vec![v, b, c];
+        q.tracks[0].locked = true;
+        q.tracks[2].clips.push(Clip::new(ClipId(4), MediaId(1), s(0.0), s(0.0), s(1.0), Some(5)));
+        let names = |p: &Project| p.sequences[0].tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+
+        let d = DuplicateTrack::new(&mut p, 0, 0).unwrap();
+        u.execute(&mut p, Box::new(d));
+        assert_eq!(names(&p), ["Video 1", "Video 1 copy", "Video 2", "Audio 1"], "just above the original");
+        let (orig, copy) = (&p.sequences[0].tracks[0], &p.sequences[0].tracks[1]);
+        assert!(copy.locked && copy.clips.len() == 3);
+        for (o, c) in orig.clips.iter().zip(&copy.clips) {
+            assert_ne!(o.id, c.id, "new ids");
+            assert_eq!((o.timeline_start, o.transform), (c.timeline_start, c.transform));
+        }
+        let cid = |i: usize| copy.clips[i].id;
+        assert_eq!(copy.clips[0].link, None, "no link to the original's audio");
+        assert!(copy.clips[1].link.is_some() && copy.clips[1].link == copy.clips[2].link && copy.clips[1].link != Some(6), "its own pair");
+        assert_eq!(copy.clips[2].parent, Some(cid(1)), "parented to the copy");
+        assert_eq!(copy.clips[1].parent, Some(ClipId(9)), "a parent elsewhere is kept");
+        assert_eq!(p.sequences[0].link_group(ClipId(1)).len(), 2, "the original pair is untouched");
+
+        // Again: a second copy gets its own name.
+        let d = DuplicateTrack::new(&mut p, 0, 0).unwrap();
+        u.execute(&mut p, Box::new(d));
+        assert_eq!(names(&p)[..3], ["Video 1", "Video 1 copy 2", "Video 1 copy"]);
+        let first_copy = p.sequences[0].tracks[2].clips[0].id;
+        u.undo(&mut p);
+        u.undo(&mut p);
+        assert_eq!(names(&p), ["Video 1", "Video 2", "Audio 1"]);
+        u.redo(&mut p);
+        assert_eq!(p.sequences[0].tracks[1].clips[0].id, first_copy, "redo gives the same ids");
+        // Audio tracks too.
+        let d = DuplicateTrack::new(&mut p, 0, 3).unwrap();
+        u.execute(&mut p, Box::new(d));
+        assert_eq!(names(&p)[3..], ["Audio 1", "Audio 1 copy"]);
+        assert!(DuplicateTrack::new(&mut p, 0, 9).is_err());
     }
 
     #[test]

@@ -246,8 +246,13 @@ What works now:
   header to rename, add or delete a track (deleting takes its clips with it, and can be undone);
   double-click a track's name to rename it. Drag a track's header up or down to reorder the
   stack (its clips go with it; video tracks stay above the audio tracks), or use **Move track
-  up/down** on the right-click menu. When the tracks don't fit, the mouse wheel scrolls
-  through them (Shift+wheel moves along the timeline)
+  up/down** on the right-click menu. Clicking (or right-clicking) a track's name highlights
+  the track, its row included; clicking empty timeline clears it. **Duplicate track** on the
+  right-click menu puts a copy just above it, named "Video 1 copy", with all its clips,
+  effects, keyframes and masks (one undo step). Clips linked or parented to others on the same
+  track stay that way among the copies; a copied video clip isn't linked to the original's
+  audio, and parents on other tracks are kept. When the tracks don't fit, the mouse wheel
+  scrolls through them (Shift+wheel moves along the timeline)
 - **Text titles** (**Edit → Add title at playhead**, `Ctrl+T`, or **New title** in the Media
   panel): a 5 s title on the top free video track (a new track is made if none has room).
   In the Controls panel: multi-line text, any installed font (with a search box), size, colour,

@@ -997,6 +997,19 @@ impl Editor {
         }
     }
 
+    /// Copy track `index`, clips and all, to just above it.
+    pub fn duplicate_track(&mut self, index: usize) {
+        self.commit_live_edit();
+        match reelforge_core::undo::DuplicateTrack::new(&mut self.project, self.active, index) {
+            Ok(cmd) => {
+                let (name, n) = (cmd.track.name.clone(), cmd.track.clips.len());
+                self.execute(Box::new(cmd));
+                self.status = format!("Duplicated the track as {name} ({n} clip{})", if n == 1 { "" } else { "s" });
+            }
+            Err(why) => self.status = format!("Can't duplicate that track: {why}"),
+        }
+    }
+
     /// Move a track to `to` in the stack (among tracks of its own kind).
     pub fn move_track(&mut self, from: usize, to: usize) {
         self.commit_live_edit();

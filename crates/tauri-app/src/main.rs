@@ -587,6 +587,7 @@ fn track_op(index: usize, op: String, name: Option<String>, to: Option<usize>) -
         "mute" => e.toggle_mute(index),
         "lock" => e.toggle_lock(index),
         "delete" => e.delete_track(index),
+        "duplicate" => e.duplicate_track(index),
         "rename" => e.rename_track(index, name.unwrap_or_default()),
         _ => {}
     })

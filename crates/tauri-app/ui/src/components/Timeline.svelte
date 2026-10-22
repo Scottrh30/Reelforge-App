@@ -239,7 +239,10 @@
       gesture = null;
       if (g?.kind !== "box") return;
       if (Math.abs(g.x1 - g.x0) < 4 && Math.abs(g.y1 - g.y0) < 4) {
-        if (!add) await run(api.select(null, "none"));
+        if (!add) {
+          selTrack = null;
+          await run(api.select(null, "none"));
+        }
         return;
       }
       const [t0, t1] = [tAt(Math.min(g.x0, g.x1)), tAt(Math.max(g.x0, g.x1))];
@@ -348,6 +351,22 @@
 
   // ---- Tracks ----
   let renaming = $state<number | null>(null);
+  /// The track whose name was last clicked (highlighted), by index; cleared by
+  /// clicking empty timeline or switching sequence.
+  let selTrack = $state<number | null>(null);
+  let selSeq = -1;
+  $effect(() => {
+    const a = app.s?.active ?? -1;
+    if (a !== selSeq) {
+      selSeq = a;
+      selTrack = null;
+    }
+  });
+  // A track that no longer exists (deleted, undone) isn't highlighted.
+  const litTrack = $derived(selTrack != null && rows.some((r) => r.index === selTrack) ? selTrack : null);
+  async function moveTrackTo(from: number, to: number) {
+    if (await run(api.moveTrack(from, to)) !== undefined && selTrack === from) selTrack = to;
+  }
 
   // Rows of one kind, top to bottom as shown: [first row, row count].
   function kindRange(kind: string): [number, number] {
@@ -371,6 +390,7 @@
   function headerDown(e: PointerEvent, tr: TrackView) {
     if (e.button !== 0 || renaming != null) return;
     if ((e.target as HTMLElement).closest("button, input")) return;
+    selTrack = tr.index;
     trackDrag = { index: tr.index, kind: tr.kind, y0: e.clientY, active: false, gap: rows.findIndex((r) => r.index === tr.index) };
     const el = e.currentTarget as HTMLElement;
     const stack = el.parentElement!;
@@ -394,7 +414,7 @@
       // Dropping below its own row shifts everything after it up by one.
       const vis = (d.gap > from ? d.gap - 1 : d.gap) - first;
       const to = indexAt(d.kind, vis);
-      if (to !== d.index) run(api.moveTrack(d.index, to));
+      if (to !== d.index) moveTrackTo(d.index, to);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -404,19 +424,27 @@
   function trackMenu(e: MouseEvent, tr: TrackView) {
     const upTo = stepTarget(tr, -1);
     const downTo = stepTarget(tr, 1);
+    selTrack = tr.index;
     openMenu(e, [
       { heading: true, label: tr.name },
       { label: "Rename track…", run: () => (renaming = tr.index) },
-      { label: "Move track up", disabled: upTo == null, run: () => upTo != null && run(api.moveTrack(tr.index, upTo)) },
-      { label: "Move track down", disabled: downTo == null, run: () => downTo != null && run(api.moveTrack(tr.index, downTo)) },
+      { label: "Duplicate track", run: () => duplicateTrack(tr) },
+      { label: "Move track up", disabled: upTo == null, run: () => upTo != null && moveTrackTo(tr.index, upTo) },
+      { label: "Move track down", disabled: downTo == null, run: () => downTo != null && moveTrackTo(tr.index, downTo) },
       { label: tr.muted ? (tr.kind === "video" ? "Show track" : "Unmute track") : tr.kind === "video" ? "Hide track" : "Mute track", run: () => run(api.trackOp(tr.index, "mute")) },
       { label: tr.locked ? "Unlock track" : "Lock track", run: () => run(api.trackOp(tr.index, "lock")) },
       { separator: true },
       { label: "Add video track", run: () => run(api.action("add_video_track")) },
       { label: "Add audio track", run: () => run(api.action("add_audio_track")) },
       { separator: true },
-      { label: tr.kind === "video" ? "Delete video track" : "Delete audio track", run: () => run(api.trackOp(tr.index, "delete")) },
+      { label: tr.kind === "video" ? "Delete video track" : "Delete audio track", run: () => (run(api.trackOp(tr.index, "delete")), (selTrack = null)) },
     ]);
+  }
+  /// Copy a track (clips and all) to just above it, and highlight the copy.
+  async function duplicateTrack(tr: TrackView) {
+    const n = rows.length;
+    await run(api.trackOp(tr.index, "duplicate"));
+    if (rows.length > n) selTrack = tr.index + 1;
   }
   function clipMenu(e: MouseEvent, c: ClipView) {
     if (!selected.has(c.id)) run(api.select(c.id, "only"));
@@ -937,6 +965,7 @@
             {@const lv = app.live?.tracks[tr.index]}
             <div
               class="th"
+              class:sel-track={litTrack === tr.index}
               class:muted-track={tr.muted}
               class:dragging-track={trackDrag?.active && trackDrag.index === tr.index}
               oncontextmenu={(e) => trackMenu(e, tr)}
@@ -994,7 +1023,7 @@
       <div class="lanes" bind:this={lanesEl} onpointerdown={lanesDown} onwheel={wheel} role="presentation">
         <div class="stack" style="transform: translateY({-view.vscroll}px)">
           {#each rows as tr, ri (tr.index)}
-            <div class="lane" class:locked={tr.locked} class:dropping={dropAt?.track === tr.index}>
+            <div class="lane" class:sel-track={litTrack === tr.index} class:locked={tr.locked} class:dropping={dropAt?.track === tr.index}>
               {#each tr.clips as c (c.id)}
                 {@const l = x(c.start)}
                 {@const w = (c.duration / T) * view.pps}
@@ -1371,6 +1400,16 @@
   }
   .th {
     cursor: grab;
+  }
+  .th.sel-track {
+    background: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .th.sel-track .tname {
+    color: var(--text);
+  }
+  .lane.sel-track {
+    background: color-mix(in srgb, var(--accent) 5%, transparent);
   }
   .th.dragging-track {
     opacity: 0.45;
