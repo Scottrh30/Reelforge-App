@@ -39,6 +39,8 @@ pub enum Preset {
     Square,
     MasterProRes,
     MasterDnxhr,
+    MasterCineform,
+    GraphicsAlpha,
     Draft,
     PngSequence,
     JpegSequence,
@@ -59,6 +61,9 @@ pub struct Spec {
     /// Target bitrate (kbit/s) instead of the quality setting.
     #[serde(default)]
     pub bitrate_kbps: Option<u32>,
+    /// A transparent background, for codecs with an alpha channel.
+    #[serde(default)]
+    pub alpha: bool,
 }
 
 /// Export settings you saved under a name (kept with the app's settings).
@@ -70,7 +75,7 @@ pub struct UserPreset {
 }
 
 impl Preset {
-    pub const ALL: [Preset; 12] = [
+    pub const ALL: [Preset; 14] = [
         Preset::YouTube1080,
         Preset::YouTube4k,
         Preset::YouTubeHdr,
@@ -79,6 +84,8 @@ impl Preset {
         Preset::Square,
         Preset::MasterProRes,
         Preset::MasterDnxhr,
+        Preset::MasterCineform,
+        Preset::GraphicsAlpha,
         Preset::Draft,
         Preset::PngSequence,
         Preset::JpegSequence,
@@ -95,6 +102,8 @@ impl Preset {
             Preset::Square => "Square (1:1)",
             Preset::MasterProRes => "Master: ProRes 422 HQ",
             Preset::MasterDnxhr => "Master: DNxHR HQ",
+            Preset::MasterCineform => "Master: CineForm 422",
+            Preset::GraphicsAlpha => "Graphics with transparency: ProRes 4444",
             Preset::Draft => "Quick draft (half size, GPU)",
             Preset::PngSequence => "PNG image sequence",
             Preset::JpegSequence => "JPEG image sequence",
@@ -113,6 +122,8 @@ impl Preset {
             Preset::Square => "1080×1080. Wide footage is cropped to fill the frame.",
             Preset::MasterProRes => "Near-lossless 10-bit master at the sequence size, with uncompressed audio. Big files.",
             Preset::MasterDnxhr => "Avid's master codec at the sequence size, with uncompressed audio. Big files.",
+            Preset::MasterCineform => "GoPro CineForm, 10-bit, at the sequence size: quick to decode, with uncompressed audio.",
+            Preset::GraphicsAlpha => "Titles and graphics over a see-through background, to lay over footage in another editor.",
             Preset::Draft => "Fast, small H.264 for checking a cut. Uses the graphics card's encoder if there is one.",
             Preset::PngSequence => "One lossless PNG per frame, for VFX and colour work. No audio.",
             Preset::JpegSequence => "One JPEG per frame, for thumbnails and contact sheets. No audio.",
@@ -122,7 +133,7 @@ impl Preset {
     }
 
     pub fn spec(self) -> Option<Spec> {
-        let s = |video, size, quality, fit, hardware| Some(Spec { video, size, quality, fit, hardware, color: ColorOut::Sdr8, bitrate_kbps: None });
+        let s = |video, size, quality, fit, hardware| Some(Spec { video, size, quality, fit, hardware, color: ColorOut::Sdr8, bitrate_kbps: None, alpha: false });
         use VideoCodec as V;
         match self {
             Preset::YouTube1080 => s(Some(V::H264), Size::Fixed(1920, 1080), Quality::High, Fit::Letterbox, false),
@@ -133,6 +144,8 @@ impl Preset {
             Preset::Square => s(Some(V::H264), Size::Fixed(1080, 1080), Quality::High, Fit::Crop, false),
             Preset::MasterProRes => s(Some(V::ProRes422Hq), Size::Scaled(1), Quality::High, Fit::Letterbox, false),
             Preset::MasterDnxhr => s(Some(V::DnxhrHq), Size::Scaled(1), Quality::High, Fit::Letterbox, false),
+            Preset::MasterCineform => s(Some(V::Cineform), Size::Scaled(1), Quality::High, Fit::Letterbox, false),
+            Preset::GraphicsAlpha => Some(Spec { alpha: true, ..s(Some(V::ProRes4444), Size::Scaled(1), Quality::High, Fit::Letterbox, false)? }),
             Preset::Draft => s(Some(V::H264), Size::Scaled(2), Quality::Low, Fit::Letterbox, true),
             Preset::PngSequence => s(Some(V::PngSequence), Size::Scaled(1), Quality::High, Fit::Letterbox, false),
             Preset::JpegSequence => s(Some(V::JpegSequence), Size::Scaled(1), Quality::High, Fit::Letterbox, false),
@@ -185,7 +198,7 @@ mod tests {
         assert_eq!(back, saved);
         // Presets saved before colour/bitrate existed still load.
         let old: Spec = serde_json::from_str(r#"{"video":"H264","size":{"Scaled":1},"quality":"High","fit":"Letterbox","hardware":false}"#).unwrap();
-        assert_eq!((old.color, old.bitrate_kbps), (ColorOut::Sdr8, None));
+        assert_eq!((old.color, old.bitrate_kbps, old.alpha), (ColorOut::Sdr8, None, false));
     }
 
     #[test]

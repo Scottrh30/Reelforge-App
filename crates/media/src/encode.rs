@@ -1,5 +1,6 @@
 //! Writing media files: RGBA frames + stereo f32 audio in; out come
-//! H.264 or H.265 (MP4/MKV/MOV), ProRes and DNxHR masters (MOV), PNG/JPEG/TIFF
+//! H.264 or H.265 (MP4/MKV/MOV), ProRes, DNxHR/DNxHD (MOV or MXF) and CineForm
+//! masters (MOV) — with alpha where the codec has it — PNG/JPEG/TIFF
 //! image sequences, or audio alone (WAV).
 //!
 //! For H.264/H.265 the encoder is chosen from a fallback list, because which
@@ -60,23 +61,88 @@ pub enum VideoCodec {
     #[default]
     H264,
     H265,
+    ProRes422Proxy,
+    ProRes422Lt,
     ProRes422,
     ProRes422Hq,
+    /// 4:4:4, with alpha when exporting a transparent background.
+    ProRes4444,
+    ProRes4444Xq,
+    DnxhrLb,
     DnxhrSq,
     DnxhrHq,
+    /// 10-bit 4:2:2.
+    DnxhrHqx,
+    /// 10-bit 4:4:4.
+    Dnxhr444,
+    /// The fixed-size HD flavour: 1920×1080, 1440×1080, 1280×720 or 960×720, 8-bit.
+    Dnxhd,
+    /// DNxHD "x": 10-bit, 1920×1080 or 1280×720.
+    Dnxhd10,
+    /// 10-bit 4:2:2 YUV.
+    Cineform,
+    /// 12-bit RGB, with alpha when exporting a transparent background.
+    Cineform4444,
     PngSequence,
     JpegSequence,
     TiffSequence,
 }
 
+/// The sizes DNxHD comes in (progressive) and the bitrates (Mbit/s) each allows,
+/// for 8-bit and 10-bit. DNxHR has no such limits.
+const DNXHD_RATES: [(u32, u32, &[u32], &[u32]); 4] = [
+    (1920, 1080, &[36, 45, 75, 90, 115, 120, 145, 175, 185, 220, 240, 290, 365, 440], &[175, 185, 365, 440]),
+    (1440, 1080, &[63, 84, 100, 110], &[]),
+    (1280, 720, &[60, 75, 90, 110, 120, 145, 180, 220], &[90, 180, 220]),
+    (960, 720, &[42, 60, 75, 115], &[]),
+];
+
+/// The DNxHD bitrate (Mbit/s) for a size, frame rate, quality and bit depth, or
+/// why there isn't one. Quality sets the bits per pixel (High is DNxHD 220 at
+/// 1080p 29.97, Medium 145, Low 45), and the nearest allowed bitrate is used,
+/// which gives the usual pairings (175 at 23.976, 185 at 25, 220 at 29.97…).
+pub fn dnxhd_bitrate(w: u32, h: u32, fps: f64, quality: Quality, ten_bit: bool) -> std::result::Result<u32, String> {
+    let Some(&(_, _, eight, ten)) = DNXHD_RATES.iter().find(|r| r.0 == w && r.1 == h) else {
+        return Err(if ten_bit {
+            format!("DNxHD 10-bit only comes in 1920×1080 and 1280×720, not {w}×{h}. Use DNxHR HQX for other sizes.")
+        } else {
+            format!("DNxHD only comes in 1920×1080, 1440×1080, 1280×720 and 960×720, not {w}×{h}. Use DNxHR for other sizes.")
+        });
+    };
+    let rates = if ten_bit { ten } else { eight };
+    if rates.is_empty() {
+        return Err(format!("DNxHD 10-bit only comes in 1920×1080 and 1280×720, not {w}×{h}. Use DNxHR HQX for other sizes."));
+    }
+    let bpp = match quality {
+        Quality::High => 220.0,
+        Quality::Medium => 145.0,
+        Quality::Low => 45.0,
+    } / (1920.0 * 1080.0 * 29.97);
+    // Avid's 720p rates are about an eighth more per pixel (220 at 59.94, 90 at 23.976).
+    let per_pixel = if h == 720 { 1.125 } else { 1.0 };
+    let want = bpp * per_pixel * w as f64 * h as f64 * fps.max(1.0);
+    Ok(*rates.iter().min_by(|a, b| ((**a as f64 / want).ln().abs()).total_cmp(&(**b as f64 / want).ln().abs())).unwrap())
+}
+
 impl VideoCodec {
-    pub const ALL: [VideoCodec; 9] = [
+    pub const ALL: [VideoCodec; 20] = [
         VideoCodec::H264,
         VideoCodec::H265,
+        VideoCodec::ProRes422Proxy,
+        VideoCodec::ProRes422Lt,
         VideoCodec::ProRes422,
         VideoCodec::ProRes422Hq,
+        VideoCodec::ProRes4444,
+        VideoCodec::ProRes4444Xq,
+        VideoCodec::DnxhrLb,
         VideoCodec::DnxhrSq,
         VideoCodec::DnxhrHq,
+        VideoCodec::DnxhrHqx,
+        VideoCodec::Dnxhr444,
+        VideoCodec::Dnxhd,
+        VideoCodec::Dnxhd10,
+        VideoCodec::Cineform,
+        VideoCodec::Cineform4444,
         VideoCodec::PngSequence,
         VideoCodec::JpegSequence,
         VideoCodec::TiffSequence,
@@ -86,24 +152,112 @@ impl VideoCodec {
         match self {
             VideoCodec::H264 => "H.264 (MP4)",
             VideoCodec::H265 => "H.265 / HEVC (MP4)",
-            VideoCodec::ProRes422 => "ProRes 422 (MOV)",
-            VideoCodec::ProRes422Hq => "ProRes 422 HQ (MOV)",
-            VideoCodec::DnxhrSq => "DNxHR SQ (MOV)",
-            VideoCodec::DnxhrHq => "DNxHR HQ (MOV)",
+            VideoCodec::ProRes422Proxy => "ProRes 422 Proxy",
+            VideoCodec::ProRes422Lt => "ProRes 422 LT",
+            VideoCodec::ProRes422 => "ProRes 422",
+            VideoCodec::ProRes422Hq => "ProRes 422 HQ",
+            VideoCodec::ProRes4444 => "ProRes 4444",
+            VideoCodec::ProRes4444Xq => "ProRes 4444 XQ",
+            VideoCodec::DnxhrLb => "DNxHR LB",
+            VideoCodec::DnxhrSq => "DNxHR SQ",
+            VideoCodec::DnxhrHq => "DNxHR HQ",
+            VideoCodec::DnxhrHqx => "DNxHR HQX (10-bit)",
+            VideoCodec::Dnxhr444 => "DNxHR 444 (10-bit)",
+            VideoCodec::Dnxhd => "DNxHD (HD sizes)",
+            VideoCodec::Dnxhd10 => "DNxHD 10-bit (1080p, 720p)",
+            VideoCodec::Cineform => "CineForm 422 (10-bit)",
+            VideoCodec::Cineform4444 => "CineForm 4444 (12-bit RGB)",
             VideoCodec::PngSequence => "PNG image sequence",
             VideoCodec::JpegSequence => "JPEG image sequence",
             VideoCodec::TiffSequence => "TIFF image sequence",
         }
     }
 
+    /// The heading it's listed under.
+    pub fn group(self) -> &'static str {
+        if self.is_prores() {
+            "Apple ProRes"
+        } else if self.is_dnx() {
+            "Avid DNxHR / DNxHD"
+        } else if self.is_cineform() {
+            "GoPro CineForm"
+        } else if self.is_sequence() {
+            "Image sequences"
+        } else {
+            "Delivery"
+        }
+    }
+
+    /// A line on what it's for.
+    pub fn hint(self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "Plays everywhere: the web, phones, TVs.",
+            VideoCodec::H265 => "About half the size of H.264 at the same quality; 10-bit and HDR.",
+            VideoCodec::ProRes422Proxy => "Light ProRes for offline editing (about 45 Mbit/s at 1080p30).",
+            VideoCodec::ProRes422Lt => "Smaller ProRes for editing and dailies (about 100 Mbit/s at 1080p30).",
+            VideoCodec::ProRes422 => "Standard ProRes for editing and finishing (about 145 Mbit/s at 1080p30).",
+            VideoCodec::ProRes422Hq => "High-quality ProRes master (about 220 Mbit/s at 1080p30).",
+            VideoCodec::ProRes4444 => "Full-colour ProRes for graphics and VFX; keeps transparency if you ask for it.",
+            VideoCodec::ProRes4444Xq => "The highest-quality ProRes, for grading and VFX; keeps transparency if you ask for it.",
+            VideoCodec::DnxhrLb => "Light DNxHR for offline editing, at any size.",
+            VideoCodec::DnxhrSq => "Standard DNxHR for editing, at any size.",
+            VideoCodec::DnxhrHq => "High-quality 8-bit DNxHR master, at any size.",
+            VideoCodec::DnxhrHqx => "10-bit DNxHR master for grading, at any size.",
+            VideoCodec::Dnxhr444 => "10-bit 4:4:4 DNxHR for VFX and finishing, at any size.",
+            VideoCodec::Dnxhd => "Classic DNxHD for Avid: 1920×1080, 1440×1080, 1280×720 or 960×720. Quality picks the bitrate (High is 175/185/220 by frame rate).",
+            VideoCodec::Dnxhd10 => "10-bit DNxHD (175x/185x/220x) for Avid: 1920×1080 or 1280×720.",
+            VideoCodec::Cineform => "GoPro CineForm: light to decode, 10-bit, for editing and masters.",
+            VideoCodec::Cineform4444 => "12-bit RGB CineForm for graphics and VFX; keeps transparency if you ask for it.",
+            VideoCodec::PngSequence => "One lossless PNG per frame; keeps transparency if you ask for it.",
+            VideoCodec::JpegSequence => "One JPEG per frame.",
+            VideoCodec::TiffSequence => "One TIFF per frame; keeps transparency if you ask for it.",
+        }
+    }
+
+    pub fn is_prores(self) -> bool {
+        matches!(
+            self,
+            VideoCodec::ProRes422Proxy | VideoCodec::ProRes422Lt | VideoCodec::ProRes422 | VideoCodec::ProRes422Hq | VideoCodec::ProRes4444 | VideoCodec::ProRes4444Xq
+        )
+    }
+
+    pub fn is_dnx(self) -> bool {
+        matches!(
+            self,
+            VideoCodec::DnxhrLb | VideoCodec::DnxhrSq | VideoCodec::DnxhrHq | VideoCodec::DnxhrHqx | VideoCodec::Dnxhr444 | VideoCodec::Dnxhd | VideoCodec::Dnxhd10
+        )
+    }
+
+    pub fn is_cineform(self) -> bool {
+        matches!(self, VideoCodec::Cineform | VideoCodec::Cineform4444)
+    }
+
+    /// The fixed-size DNxHD flavours (see [`dnxhd_bitrate`]).
+    pub fn is_dnxhd(self) -> bool {
+        matches!(self, VideoCodec::Dnxhd | VideoCodec::Dnxhd10)
+    }
+
+    /// An editing/mastering codec (every frame on its own, uncompressed audio).
+    pub fn is_intermediate(self) -> bool {
+        self.is_prores() || self.is_dnx() || self.is_cineform()
+    }
+
     /// The usual file extension.
     pub fn extension(self) -> &'static str {
+        self.extensions()[0]
+    }
+
+    /// The file types it can be written in, the usual one first: the
+    /// extension picks the container.
+    pub fn extensions(self) -> &'static [&'static str] {
         match self {
-            VideoCodec::H264 | VideoCodec::H265 => "mp4",
-            VideoCodec::ProRes422 | VideoCodec::ProRes422Hq | VideoCodec::DnxhrSq | VideoCodec::DnxhrHq => "mov",
-            VideoCodec::PngSequence => "png",
-            VideoCodec::JpegSequence => "jpg",
-            VideoCodec::TiffSequence => "tif",
+            VideoCodec::H264 | VideoCodec::H265 => &["mp4"],
+            // MXF (OP1a) is what Avid Media Composer expects.
+            v if v.is_dnx() => &["mov", "mxf"],
+            v if v.is_intermediate() => &["mov"],
+            VideoCodec::PngSequence => &["png"],
+            VideoCodec::JpegSequence => &["jpg"],
+            _ => &["tif"],
         }
     }
 
@@ -114,7 +268,7 @@ impl VideoCodec {
 
     /// Has a quality setting (the others are fixed-quality by design).
     pub fn uses_quality(self) -> bool {
-        matches!(self, VideoCodec::H264 | VideoCodec::H265 | VideoCodec::JpegSequence)
+        matches!(self, VideoCodec::H264 | VideoCodec::H265 | VideoCodec::JpegSequence) || self.is_dnxhd() || self.is_cineform()
     }
 
     /// Can use a GPU encoder.
@@ -122,9 +276,14 @@ impl VideoCodec {
         matches!(self, VideoCodec::H264 | VideoCodec::H265)
     }
 
+    /// Can keep a transparent background (an alpha channel).
+    pub fn supports_alpha(self) -> bool {
+        matches!(self, VideoCodec::ProRes4444 | VideoCodec::ProRes4444Xq | VideoCodec::Cineform4444 | VideoCodec::PngSequence | VideoCodec::TiffSequence)
+    }
+
     /// Intermediate/master codecs that keep audio uncompressed.
     fn wants_pcm_audio(self) -> bool {
-        matches!(self, VideoCodec::ProRes422 | VideoCodec::ProRes422Hq | VideoCodec::DnxhrSq | VideoCodec::DnxhrHq)
+        self.is_intermediate()
     }
 
     /// Software and hardware encoders for this codec, in the order to try them.
@@ -132,11 +291,12 @@ impl VideoCodec {
         let (sw, hw): (&[&str], &[&str]) = match self {
             VideoCodec::H264 => (&["libx264", "libopenh264"], &["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_videotoolbox"]),
             VideoCodec::H265 => (&["libx265"], &["hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf", "hevc_videotoolbox"]),
-            VideoCodec::ProRes422 | VideoCodec::ProRes422Hq => (&["prores_ks", "prores_aw", "prores"], &[]),
-            VideoCodec::DnxhrSq | VideoCodec::DnxhrHq => (&["dnxhd"], &[]),
+            v if v.is_prores() => (&["prores_ks", "prores_aw"], &[]),
+            v if v.is_dnx() => (&["dnxhd"], &[]),
+            v if v.is_cineform() => (&["cfhd"], &[]),
             VideoCodec::PngSequence => (&["png"], &[]),
             VideoCodec::JpegSequence => (&["mjpeg"], &[]),
-            VideoCodec::TiffSequence => (&["tiff"], &[]),
+            _ => (&["tiff"], &[]),
         };
         let mut v: Vec<&str> = if hardware_first { hw.iter().chain(sw).copied().collect() } else { sw.iter().chain(hw).copied().collect() };
         if self == VideoCodec::H264 {
@@ -145,16 +305,25 @@ impl VideoCodec {
         v
     }
 
-    /// The pixel format to encode in.
-    fn pixel(self) -> Option<ff::format::Pixel> {
+    /// The pixel format to encode in (`alpha`: keep the transparency, where it can).
+    fn pixel(self, alpha: bool) -> Option<ff::format::Pixel> {
         use ff::format::Pixel as P;
-        match self {
-            VideoCodec::ProRes422 | VideoCodec::ProRes422Hq => Some(P::YUV422P10LE),
-            VideoCodec::DnxhrSq | VideoCodec::DnxhrHq => Some(P::YUV422P),
-            VideoCodec::PngSequence | VideoCodec::TiffSequence => Some(P::RGB24),
-            VideoCodec::JpegSequence => Some(P::YUVJ420P),
-            VideoCodec::H264 | VideoCodec::H265 => None, // 4:2:0, or what a GPU encoder wants
-        }
+        let alpha = alpha && self.supports_alpha();
+        Some(match self {
+            VideoCodec::ProRes4444 | VideoCodec::ProRes4444Xq if alpha => P::YUVA444P10LE,
+            VideoCodec::ProRes4444 | VideoCodec::ProRes4444Xq => P::YUV444P10LE,
+            v if v.is_prores() => P::YUV422P10LE,
+            VideoCodec::DnxhrHqx | VideoCodec::Dnxhd10 => P::YUV422P10LE,
+            VideoCodec::Dnxhr444 => P::YUV444P10LE,
+            v if v.is_dnx() => P::YUV422P,
+            VideoCodec::Cineform => P::YUV422P10LE,
+            VideoCodec::Cineform4444 if alpha => P::GBRAP12LE,
+            VideoCodec::Cineform4444 => P::GBRP12LE,
+            VideoCodec::PngSequence | VideoCodec::TiffSequence if alpha => P::RGBA,
+            VideoCodec::PngSequence | VideoCodec::TiffSequence => P::RGB24,
+            VideoCodec::JpegSequence => P::YUVJ420P,
+            _ => return None, // H.264/H.265: 4:2:0, or what a GPU encoder wants
+        })
     }
 }
 
@@ -170,8 +339,8 @@ impl VideoCodec {
     }
 
     /// Always encoded with more than 8 bits (fed from the 16-bit render).
-    fn always_deep(self) -> bool {
-        matches!(self, VideoCodec::ProRes422 | VideoCodec::ProRes422Hq)
+    pub fn always_deep(self) -> bool {
+        self.is_prores() || self.is_cineform() || matches!(self, VideoCodec::DnxhrHqx | VideoCodec::Dnxhr444 | VideoCodec::Dnxhd10)
     }
 
     /// Takes a target bitrate (the others are fixed-quality by design).
@@ -253,6 +422,9 @@ pub struct WriterSettings {
     /// A target average bitrate in kbit/s, instead of the quality setting
     /// (H.264/H.265 only). Peaks may go to 1.5× it.
     pub bitrate_kbps: Option<u32>,
+    /// Keep the frames' alpha (a transparent background), for codecs that can
+    /// ([`VideoCodec::supports_alpha`]); otherwise ignored.
+    pub alpha: bool,
 }
 
 /// How a picture goes into a frame of a different shape.
@@ -321,6 +493,7 @@ impl Default for WriterSettings {
             fit: Fit::Letterbox,
             color: ColorOut::Sdr8,
             bitrate_kbps: None,
+            alpha: false,
         }
     }
 }
@@ -334,6 +507,11 @@ impl WriterSettings {
             Some(v) if self.color == ColorOut::Sdr10 && !v.supports_10bit() => ColorOut::Sdr8,
             _ => self.color,
         }
+    }
+
+    /// The alpha channel is written.
+    pub fn keeps_alpha(&self) -> bool {
+        self.alpha && self.video.is_some_and(|v| v.supports_alpha())
     }
 
     /// Frames should come in as 16-bit RGBA ([`MovieWriter::write_video_deep`]).
@@ -357,6 +535,8 @@ struct VideoOut {
     /// Input frames are RGBA64 (16 bits per channel).
     deep: bool,
     color: ColorOut,
+    /// The alpha channel is written (letterbox bars are then transparent).
+    alpha: bool,
 }
 
 struct AudioOut {
@@ -419,10 +599,14 @@ impl MovieWriter {
                     let mut st = octx.add_stream(codec)?;
                     st.set_parameters(&encoder);
                     st.set_time_base(encoder.time_base());
+                    // MXF needs the frame rate on the stream itself.
+                    let fps = ff::Rational::new(s.frame_rate.0.num as i32, s.frame_rate.0.den as i32);
+                    st.set_rate(fps);
+                    st.set_avg_frame_rate(fps);
                     st.index()
                 };
                 let pix = encoder.format();
-                let yuv = !matches!(pix, ff::format::Pixel::RGB24 | ff::format::Pixel::RGBA);
+                let yuv = !is_rgb(pix);
                 let range = if pix == ff::format::Pixel::YUVJ420P { Range::JPEG } else { Range::MPEG };
                 let [iw, ih] = s.input_size.unwrap_or([s.width, s.height]);
                 let pad = canvas(s.fit, iw, ih, w, h);
@@ -435,7 +619,7 @@ impl MovieWriter {
                     crate::color::configure(&mut scaler, if color.is_hdr() { Space::BT2020NCL } else { Space::BT709 }, range, false);
                 }
                 let time_base = encoder.time_base();
-                Some(VideoOut { encoder, stream, time_base, scaler, in_size: (iw, ih), pad, frame: ff::frame::Video::new(pix, w, h), next_pts: 0, range, yuv, deep, color })
+                Some(VideoOut { encoder, stream, time_base, scaler, in_size: (iw, ih), pad, frame: ff::frame::Video::new(pix, w, h), next_pts: 0, range, yuv, deep, color, alpha: s.keeps_alpha() })
             }
             None => None,
         };
@@ -471,7 +655,13 @@ impl MovieWriter {
             let wide: Vec<u16> = rgba.iter().map(|&b| b as u16 * 257).collect();
             return self.write_video_deep(&wide);
         }
-        self.put_frame(rgba, 4, ff::format::Pixel::RGBA, &[0, 0, 0, 255])
+        let black: &[u8] = if self.keeps_alpha() { &[0, 0, 0, 0] } else { &[0, 0, 0, 255] };
+        self.put_frame(rgba, 4, ff::format::Pixel::RGBA, black)
+    }
+
+    /// The alpha channel is being written.
+    pub fn keeps_alpha(&self) -> bool {
+        self.video.as_ref().is_some_and(|v| v.alpha)
     }
 
     /// Append one frame of tightly packed 16-bit RGBA, already in the output's
@@ -479,13 +669,15 @@ impl MovieWriter {
     pub fn write_video_deep(&mut self, rgba: &[u16]) -> Result<()> {
         if !self.wants_deep() {
             let narrow: Vec<u8> = rgba.iter().map(|&v| ((v as u32 + 128) / 257) as u8).collect();
-            return self.put_frame(&narrow, 4, ff::format::Pixel::RGBA, &[0, 0, 0, 255]);
+            let black: &[u8] = if self.keeps_alpha() { &[0, 0, 0, 0] } else { &[0, 0, 0, 255] };
+            return self.put_frame(&narrow, 4, ff::format::Pixel::RGBA, black);
         }
         // SAFETY: u16 has no padding or invalid bit patterns; viewed as bytes, little-endian
         // on every platform we build for (RGBA64LE).
         let bytes = unsafe { std::slice::from_raw_parts(rgba.as_ptr() as *const u8, rgba.len() * 2) };
         // Black in each curve is zero; opaque alpha is all ones.
-        self.put_frame(bytes, 8, ff::format::Pixel::RGBA64LE, &[0, 0, 0, 0, 0, 0, 255, 255])
+        let black: &[u8] = if self.keeps_alpha() { &[0; 8] } else { &[0, 0, 0, 0, 0, 0, 255, 255] };
+        self.put_frame(bytes, 8, ff::format::Pixel::RGBA64LE, black)
     }
 
     /// Place a packed frame (`bpp` bytes per pixel) on the canvas, scale/convert, encode.
@@ -500,7 +692,7 @@ impl MovieWriter {
         let stride = src.stride(0);
         let data = src.data_mut(0);
         if c.x > 0 || c.y > 0 {
-            // Black bars, opaque.
+            // Black bars (opaque, or clear when keeping alpha).
             for y in 0..c.h as usize {
                 for px in data[y * stride..y * stride + c.w as usize * bpp].chunks_exact_mut(bpp) {
                     px.copy_from_slice(black);
@@ -680,6 +872,12 @@ impl Drop for MovieWriter {
 }
 
 /// Colour tags for the stream and frames.
+/// An RGB (not YUV) pixel format: no colour matrix.
+fn is_rgb(p: ff::format::Pixel) -> bool {
+    use ff::format::Pixel as P;
+    matches!(p, P::RGB24 | P::RGBA | P::GBRP12LE | P::GBRAP12LE | P::GBRP10LE)
+}
+
 fn color_tags(c: ColorOut) -> (Space, Primaries, TransferCharacteristic) {
     match c {
         ColorOut::Sdr8 | ColorOut::Sdr10 => (Space::BT709, Primaries::BT709, TransferCharacteristic::BT709),
@@ -698,7 +896,7 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
         let Ok(vcodec) = codec.video() else { continue };
         let formats: Vec<ff::format::Pixel> = vcodec.formats().map(|f| f.collect()).unwrap_or_default();
         use ff::format::Pixel as P;
-        let pix = match kind.pixel() {
+        let pix = match kind.pixel(s.alpha) {
             Some(p) => p,
             // 10-bit: planar for software encoders, P010 for GPU ones.
             None if color.ten_bit() => match [P::YUV420P10LE, P::P010LE].into_iter().find(|p| formats.is_empty() || formats.contains(p)) {
@@ -734,9 +932,17 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
             // seek cleanly in editors (including this one) and play everywhere.
             flags |= ff::codec::Flags::CLOSED_GOP;
         }
-        if !matches!(pix, ff::format::Pixel::RGB24) {
+        if kind.is_intermediate() {
+            // Every frame stands alone: let the encoder use every core, by frames
+            // (CineForm) or slices (ProRes, DNx), whichever it has (FFmpeg's default type).
+            // SAFETY: setting a plain field before the encoder is opened.
+            unsafe {
+                (*enc.as_mut_ptr()).thread_count = 0;
+            }
+        }
+        if !matches!(pix, ff::format::Pixel::RGB24 | ff::format::Pixel::RGBA) {
             let (space, primaries, trc) = color_tags(color);
-            enc.set_colorspace(space);
+            enc.set_colorspace(if is_rgb(pix) { Space::RGB } else { space });
             enc.set_color_range(if pix == ff::format::Pixel::YUVJ420P { Range::JPEG } else { Range::MPEG });
             enc.set_color_primaries(primaries);
             enc.set_color_transfer_characteristic(trc);
@@ -783,13 +989,42 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
                 opts.set("x265-params", &params);
                 opts.set("tag", "hvc1");
             }
-            (VideoCodec::ProRes422 | VideoCodec::ProRes422Hq, _) => {
-                // prores_ks profiles: 2 = 422, 3 = 422 HQ.
-                opts.set("profile", if kind == VideoCodec::ProRes422Hq { "3" } else { "2" });
+            (v, _) if v.is_prores() => {
+                // prores_ks/prores_aw profiles: 0 Proxy, 1 LT, 2 422, 3 HQ, 4 4444, 5 4444 XQ.
+                let profile = match v {
+                    VideoCodec::ProRes422Proxy => "0",
+                    VideoCodec::ProRes422Lt => "1",
+                    VideoCodec::ProRes422 => "2",
+                    VideoCodec::ProRes422Hq => "3",
+                    VideoCodec::ProRes4444 => "4",
+                    _ => "5",
+                };
+                opts.set("profile", profile);
                 opts.set("vendor", "apl0");
             }
-            (VideoCodec::DnxhrSq | VideoCodec::DnxhrHq, _) => {
-                opts.set("profile", if kind == VideoCodec::DnxhrHq { "dnxhr_hq" } else { "dnxhr_sq" });
+            (v, _) if v.is_dnxhd() => {
+                let mbps = dnxhd_bitrate(w, h, s.frame_rate.fps(), s.quality, v == VideoCodec::Dnxhd10).map_err(|e| anyhow!(e))?;
+                opts.set("profile", "dnxhd");
+                enc.set_bit_rate(mbps as usize * 1_000_000);
+            }
+            (v, _) if v.is_dnx() => {
+                let profile = match v {
+                    VideoCodec::DnxhrLb => "dnxhr_lb",
+                    VideoCodec::DnxhrSq => "dnxhr_sq",
+                    VideoCodec::DnxhrHq => "dnxhr_hq",
+                    VideoCodec::DnxhrHqx => "dnxhr_hqx",
+                    _ => "dnxhr_444",
+                };
+                opts.set("profile", profile);
+            }
+            (v, _) if v.is_cineform() => {
+                // 0 (film3+, the best) … 12 (low).
+                let q = match s.quality {
+                    Quality::High => "film3+",
+                    Quality::Medium => "film1",
+                    Quality::Low => "high",
+                };
+                opts.set("quality", q);
             }
             (VideoCodec::JpegSequence, _) => {
                 // qscale 2 (best) … 31 (worst), in FFmpeg's lambda units.
@@ -876,6 +1111,28 @@ fn open_audio_encoder(octx: &mut ff::format::context::Output, rate: u32, global_
 #[cfg(test)]
 mod fit_tests {
     use super::*;
+
+    #[test]
+    fn dnxhd_picks_avids_usual_bitrates() {
+        let r = |w, h, fps, q, ten| dnxhd_bitrate(w, h, fps, q, ten);
+        // DNxHD 175/185/220 (and the "x" 10-bit ones) by frame rate at 1080p.
+        assert_eq!(r(1920, 1080, 23.976, Quality::High, false), Ok(175));
+        assert_eq!(r(1920, 1080, 25.0, Quality::High, false), Ok(185));
+        assert_eq!(r(1920, 1080, 29.97, Quality::High, false), Ok(220));
+        assert_eq!(r(1920, 1080, 50.0, Quality::High, false), Ok(365));
+        assert_eq!(r(1920, 1080, 59.94, Quality::High, false), Ok(440));
+        assert_eq!(r(1920, 1080, 25.0, Quality::High, true), Ok(185));
+        assert_eq!(r(1920, 1080, 23.976, Quality::Medium, false), Ok(115));
+        assert_eq!(r(1920, 1080, 29.97, Quality::Medium, false), Ok(145));
+        assert_eq!(r(1920, 1080, 29.97, Quality::Low, false), Ok(45));
+        assert_eq!(r(1280, 720, 59.94, Quality::High, true), Ok(220));
+        assert_eq!(r(1280, 720, 23.976, Quality::High, false), Ok(90));
+        assert_eq!(r(1280, 720, 29.97, Quality::High, false), Ok(110));
+        assert_eq!(r(1280, 720, 59.94, Quality::Medium, false), Ok(145));
+        assert!(r(1440, 1080, 25.0, Quality::High, false).is_ok());
+        assert!(r(1920, 800, 25.0, Quality::High, false).unwrap_err().contains("DNxHR"));
+        assert!(r(1440, 1080, 25.0, Quality::High, true).unwrap_err().contains("HQX"));
+    }
 
     #[test]
     fn canvases_for_each_fit() {

@@ -75,9 +75,9 @@ What works now:
   resolution and uses the same compositor and mixer as playback, so the file matches what you
   saw and heard
   - **Presets**: YouTube 1080p, YouTube 4K (H.265), YouTube 4K HDR (H.265, HLG),
-    Shorts/Reels/TikTok 9:16 (1080×1920), Instagram portrait 4:5, Square 1:1, ProRes 422 HQ and
-    DNxHR HQ masters, a quick half-size draft on the GPU, PNG/JPEG image sequences and
-    audio-only WAV. Changing any setting turns the preset into "Custom"
+    Shorts/Reels/TikTok 9:16 (1080×1920), Instagram portrait 4:5, Square 1:1, ProRes 422 HQ,
+    DNxHR HQ and CineForm 422 masters, graphics with transparency (ProRes 4444), a quick
+    half-size draft on the GPU, PNG/JPEG image sequences and audio-only WAV. Changing any setting turns the preset into "Custom"
   - **Your own presets**: **Save as preset…** keeps the current settings under a name (marked
     ★ in the list, with **Delete preset** next to it). They're kept with Reelforge's settings,
     so they're there next time
@@ -86,13 +86,28 @@ What works now:
     becomes 203 nits (PQ) or 75% signal (HLG), the ITU-R BT.2408 reference, and anything the
     edit pushes brighter than white (glow, exposure) keeps its extra brightness instead of
     clipping. HDR10 files carry mastering metadata. 10-bit and HDR exports render at 16 bits per
-    channel; ProRes now gets real 10-bit input too. Other codecs stay 8-bit SDR
+    channel; ProRes, CineForm, DNxHR HQX/444 and 10-bit DNxHD get the 16-bit render too (they're
+    always 10-bit or more). Other codecs stay 8-bit SDR
   - **Rate** (H.264/H.265): a **Quality** setting (constant quality), or a target **Bitrate**
     in Mbit/s with the estimated file size beside it (peaks may reach 1.5× the target). Picking
     Bitrate suggests a sensible starting value for the size
-  - **Formats**: H.264 or H.265 with AAC (MP4); ProRes 422 / 422 HQ and DNxHR SQ / HQ with
-    24-bit PCM audio (MOV); PNG, JPEG or TIFF sequences (`name_00001.png`, …); WAV. The file
-    extension follows the format
+  - **Formats**, listed under headings: H.264 or H.265 with AAC (MP4); the editing and master
+    codecs below, all with 24-bit PCM audio and every core encoding; PNG, JPEG or TIFF sequences
+    (`name_00001.png`, …); WAV. The file extension follows the format
+    - **Apple ProRes** (MOV): 422 Proxy, 422 LT, 422, 422 HQ, 4444 and 4444 XQ
+    - **Avid DNxHR** (any size): LB, SQ, HQ, HQX (10-bit) and 444 (10-bit 4:4:4); and classic
+      **DNxHD** (8-bit at 1920×1080, 1440×1080, 1280×720 or 960×720; 10-bit at 1920×1080 or
+      1280×720). DNxHD's bitrate follows the frame rate as Avid's does: High gives 175 at
+      23.976, 185 at 25, 220 at 29.97, 365 at 50 and 440 at 59.94 (1080p); Medium 115/120/145;
+      Low 36/45. The dialog says when the size doesn't suit DNxHD and offers the sizes that do.
+      DNx files can be **MOV or MXF** (OP1a, which Avid Media Composer links to and imports):
+      pick it under **File type**
+    - **GoPro CineForm** (MOV): 422 (10-bit YUV) or 4444 (12-bit RGB). Quality sets CineForm's
+      level: High is Film Scan 3+, Medium Film Scan 1, Low High
+  - **Transparent background** (ProRes 4444, ProRes 4444 XQ, CineForm 4444, PNG and TIFF):
+    where no layer covers the frame the file is see-through instead of black, with soft edges,
+    masks and opacity kept, for laying titles and graphics over footage in another program.
+    Letterbox bars are see-through too
   - **Any size**: the sequence size, half, quarter, common sizes, or custom. When the shape
     differs from the sequence, choose **Fit** (black bars), **Fill** (crop the edges; the
     default for vertical and square presets) or **Stretch**
@@ -241,7 +256,7 @@ What works now:
   placement. Titles are ordinary layers, so the transform, keyframes, effects, dissolves and
   blend modes all work on them; click the text in the Viewer to select and drag it. Titles are
   purple on the timeline and can be any length
-- **Proxies**: heavy footage (above 1080p, or 720p and up in HEVC/AV1/VP9/ProRes/DNxHD) gets a
+- **Proxies**: heavy footage (above 1080p, or 720p and up in HEVC/AV1/VP9/ProRes/DNxHD/CineForm) gets a
   small editing copy automatically, made in the background, with a progress bar in the Media
   panel; **Make proxy** does it for any clip. Proxies are 960×540 with every frame a keyframe,
   so jumping around is instant (8 s of 4K: ~1.5 s per random seek on the original, 3 ms on the
@@ -731,6 +746,7 @@ decoders take those codecs when it's off or the card can't.
 | HEVC (H.265) | done, via a pure-Rust decoder library: Main and Main 10 (4:2:0, 8/10-bit), tiles, WPP; 4:2:2/4:4:4 go to FFmpeg |
 | VP9 | done, via a pure-Rust decoder library: profiles 0–3 (8/10/12-bit, 4:2:0 to 4:4:4) |
 | AV1 | done, via a pure-Rust decoder library: Main profile, 8/10-bit 4:2:0 and monochrome, film grain |
+| GoPro CineForm | opens through FFmpeg (422 YUV and 4444 RGB, with alpha); no Reelforge decoder yet |
 
 The H.264, HEVC, VP9 and AV1 decoders live in this repository (`crates/h264`, `crates/hevc`,
 `crates/vp9`, `crates/av1`, with `crates/bitstream` for reading bits and `crates/testkit` for
@@ -813,7 +829,8 @@ want to distribute a closed-source app.
 don't include it, so Reelforge falls back, in order, to NVIDIA (`h264_nvenc`), Intel
 (`h264_qsv`), AMD (`h264_amf`) or Windows Media Foundation (`h264_mf`) hardware encoders, and
 finally MPEG-4 Part 2. The export queue says which encoder was used. H.265 needs `libx265`
-(also `gpl`) or a GPU encoder; ProRes, DNxHR and image sequences work with every build.
+(also `gpl`) or a GPU encoder; ProRes, DNxHR/DNxHD, CineForm and image sequences work with
+every build.
 
 ### Cross-compiling the Windows build from Linux
 

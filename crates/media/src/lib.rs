@@ -21,7 +21,7 @@ pub mod tracker;
 pub use audio::{waveform_peaks, AudioReader};
 pub use cache::{CacheKey, FrameCache};
 pub use decoder::{DecoderHandle, VideoFrame};
-pub use encode::{is_hardware_encoder, sequence_file, ColorOut, Fit, MovieWriter, Quality, VideoCodec, WriterSettings};
+pub use encode::{dnxhd_bitrate, is_hardware_encoder, sequence_file, ColorOut, Fit, MovieWriter, Quality, VideoCodec, WriterSettings};
 pub use mixer::{MixClip, Mixer, TrackPeaks, MAX_TRACK_METERS};
 pub use probe::probe;
 pub use reelforge_codecs as codecs;

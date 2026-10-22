@@ -173,3 +173,40 @@ fn proxies_are_small_all_keyframe_and_line_up_with_the_original() {
     let diff: f64 = a.rgba().iter().zip(b.rgba().iter()).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as f64).sum::<f64>() / a.rgba().len() as f64;
     assert!(diff < 4.0, "proxy frame differs from the original: {diff}");
 }
+
+/// GoPro CineForm, 4:2:2 10-bit and 4:4:4:4 RGBA (with alpha), made with the ffmpeg CLI.
+#[test]
+fn cineform_opens_with_alpha() {
+    let dir = std::env::temp_dir().join(format!("rf-cfhd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let make = |name: &str, args: &[&str]| -> Option<PathBuf> {
+        let p = dir.join(name);
+        let ok = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24:duration=0.5"])
+            .args(args)
+            .arg(&p)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(p)
+    };
+    let Some(yuv) = make("cf422.mov", &["-c:v", "cfhd", "-pix_fmt", "yuv422p10le"]) else { eprintln!("ffmpeg CLI not found; skipping"); return };
+    let alpha = make("cf4444.mov", &["-vf", "format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,160),255,0)',format=rgba", "-c:v", "cfhd", "-pix_fmt", "gbrap12le"]).unwrap();
+    let rate = FrameRate::new(24, 1);
+    let wait = Duration::from_secs(5);
+    for (path, has_alpha) in [(yuv, false), (alpha, true)] {
+        let info = probe(&path).unwrap();
+        let v = info.video.expect("video stream");
+        assert_eq!((v.codec.as_str(), v.width, v.height), ("cfhd", 320, 180));
+        let mut src = FrameSource::open(&path, None).unwrap();
+        for f in [0, 7, 3, 11] {
+            let frame = src.frame_at_blocking(Time::from_frame(f, rate), wait).expect("frame");
+            assert_eq!(frame.pts.to_frame(rate), f);
+            let px = frame.rgba();
+            let a = |x: usize| px[(90 * 320 + x) * 4 + 3];
+            // CineForm is lossy, alpha included: within a couple of levels.
+            let (left, right) = (a(40), a(280));
+            assert!(left >= 253 && if has_alpha { right <= 2 } else { right >= 253 }, "{}: alpha {left}, {right}", path.display());
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

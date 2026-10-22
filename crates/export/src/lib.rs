@@ -50,6 +50,9 @@ pub struct ExportSettings {
     pub color: ColorOut,
     /// Target bitrate in kbit/s instead of the quality setting (H.264/H.265).
     pub bitrate_kbps: Option<u32>,
+    /// Keep the transparency: where no layer covers the frame it's see-through
+    /// rather than black (ProRes 4444, CineForm 4444, PNG and TIFF only).
+    pub alpha: bool,
 }
 
 impl ExportSettings {
@@ -352,6 +355,7 @@ pub fn export_sequence(
         fit: settings.fit,
         color: settings.color,
         bitrate_kbps: settings.bitrate_kbps,
+        alpha: settings.alpha,
     })?;
     // 10-bit, HDR and ProRes get the 16-bit render in the output's curve.
     let deep = writer.wants_deep().then(|| match writer.color() {
@@ -362,6 +366,8 @@ pub fn export_sequence(
     let video_codec = writer.video_codec.clone();
 
     let mut compositor = Compositor::new(device, queue);
+    // A transparent background: the frame starts clear and keeps its coverage.
+    compositor.transparent = writer.keeps_alpha();
     let mut scene = Scene::new(device, queue);
     let mut frames = ExactFrames { sources: HashMap::new(), titles: HashMap::new(), tick: 0 };
     // Decoders not needed for this many frames are closed.

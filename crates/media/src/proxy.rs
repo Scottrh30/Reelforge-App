@@ -64,7 +64,7 @@ pub fn worth_a_proxy(info: &MediaInfo) -> bool {
         return false; // still image
     }
     let px = v.width as u64 * v.height as u64;
-    let heavy_codec = matches!(v.codec.as_str(), "hevc" | "av1" | "vp9" | "prores" | "dnxhd");
+    let heavy_codec = matches!(v.codec.as_str(), "hevc" | "av1" | "vp9" | "prores" | "dnxhd" | "cfhd");
     px > 1920 * 1080 || (heavy_codec && px >= 1280 * 720)
 }
 

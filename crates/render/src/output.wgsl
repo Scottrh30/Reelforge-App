@@ -78,6 +78,17 @@ fn fs_deep_srgb(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4(srgb_from_linear(clamp(c.rgb, vec3(0.0), vec3(1.0))), 1.0);
 }
 
+// The same with the coverage kept, as straight alpha (transparent exports).
+@fragment
+fn fs_deep_srgb_alpha(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = textureLoad(accum, vec2<i32>(p.xy), 0);
+    let a = clamp(c.a, 0.0, 1.0);
+    if (a <= 0.0) {
+        return vec4(0.0);
+    }
+    return vec4(srgb_from_linear(clamp(c.rgb / a, vec3(0.0), vec3(1.0))), a);
+}
+
 @fragment
 fn fs_deep_pq(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let c = textureLoad(accum, vec2<i32>(p.xy), 0);

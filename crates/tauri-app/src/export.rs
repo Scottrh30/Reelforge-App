@@ -33,7 +33,16 @@ pub struct Options {
 pub struct CodecView {
     pub id: VideoCodec,
     pub label: &'static str,
+    /// The heading it's listed under ("Apple ProRes", …).
+    pub group: &'static str,
+    pub hint: &'static str,
+    /// The usual extension, then any others it can be written in (the extension picks the container).
     pub extension: &'static str,
+    pub extensions: &'static [&'static str],
+    /// Can keep a transparent background.
+    pub alpha: bool,
+    /// Always more than 8 bits per channel.
+    pub deep: bool,
     /// An image sequence (no audio).
     pub sequence: bool,
     pub quality: bool,
@@ -68,7 +77,12 @@ pub fn export_options() -> Options {
             .map(|v| CodecView {
                 id: v,
                 label: v.label(),
+                group: v.group(),
+                hint: v.hint(),
                 extension: v.extension(),
+                extensions: v.extensions(),
+                alpha: v.supports_alpha(),
+                deep: v.always_deep(),
                 sequence: v.is_sequence(),
                 quality: v.uses_quality(),
                 bitrate: v.uses_bitrate(),
@@ -240,7 +254,10 @@ pub fn export_add(spec: Spec, path: String, include_audio: bool, marked_only: bo
     if path.as_os_str().is_empty() {
         return Err("Choose where to save the export".into());
     }
-    if path.extension().is_none() {
+    // The extension picks the container: keep it if the format can go in it.
+    let allowed = spec.video.map_or(&["wav"][..], |v| v.extensions());
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+    if !ext.is_some_and(|e| allowed.contains(&e.as_str())) {
         path.set_extension(extension(spec.video));
     }
     let (project, settings) = ed(|e| -> Res<(Project, ExportSettings)> {
@@ -273,7 +290,12 @@ pub fn export_add(spec: Spec, path: String, include_audio: bool, marked_only: bo
             sequence: e.active,
             color: if spec.video.is_some_and(|v| v.supports_10bit() || v.supports_hdr()) { spec.color } else { ColorOut::Sdr8 },
             bitrate_kbps: spec.bitrate_kbps.filter(|_| spec.video.is_some_and(|v| v.uses_bitrate())),
+            alpha: spec.alpha && spec.video.is_some_and(|v| v.supports_alpha()),
         };
+        if let Some(v) = spec.video.filter(|v| v.is_dnxhd()) {
+            let fps = s.frame_rate.fps();
+            reelforge_media::dnxhd_bitrate(w & !1, h & !1, fps, spec.quality, v == VideoCodec::Dnxhd10)?;
+        }
         Ok((e.project.clone(), settings))
     })??;
     let seq_name = project.sequences.get(settings.sequence).map(|s| s.name.clone()).unwrap_or_default();
@@ -321,6 +343,12 @@ fn detail(s: &ExportSettings) -> String {
             }
             if s.hardware {
                 w += " · GPU encoder";
+            }
+            if s.alpha {
+                w += " · transparent";
+            }
+            if s.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("mxf")) {
+                w += " · MXF";
             }
             w
         }
@@ -522,6 +550,7 @@ mod tests {
             sequence: 0,
             color: ColorOut::Sdr8,
             bitrate_kbps: Some(8000),
+            alpha: false,
         };
         assert_eq!(detail(&s), "H.264 (MP4) · 1920×1080 · 8.0 Mbit/s");
         assert_eq!(detail(&ExportSettings { video: None, ..s }), "WAV audio");

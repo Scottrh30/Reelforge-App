@@ -24,10 +24,32 @@
   const saved = $derived<UserPreset[]>(app.s?.prefs.export_presets ?? []);
   const codec = $derived(opts && spec?.video ? opts.codecs.find((c) => c.id === spec!.video) ?? null : null);
   const ext = $derived(codec?.extension ?? "wav");
+  /// The file types this format can be written in (the extension picks the container).
+  const exts = $derived(codec?.extensions ?? ["wav"]);
+  /// The current file's extension.
+  const pathExt = $derived.by(() => {
+    const v = path.trim();
+    const dot = v.lastIndexOf(".");
+    const sep = Math.max(v.lastIndexOf("/"), v.lastIndexOf("\\"));
+    return dot > sep ? v.slice(dot + 1).toLowerCase() : "";
+  });
+  /// The codecs under their headings, in order.
+  const groups = $derived.by(() => {
+    const out: [string, NonNullable<typeof opts>["codecs"]][] = [];
+    for (const c of opts?.codecs ?? []) {
+      const g = out.find(([n]) => n === c.group);
+      if (g) g[1].push(c);
+      else out.push([c.group, [c]]);
+    }
+    return out;
+  });
+  // DNxHD only comes in a few sizes.
+  const DNXHD_SIZES: [number, number][] = [[1920, 1080], [1440, 1080], [1280, 720], [960, 720]];
+  const DNXHD10_SIZES: [number, number][] = [[1920, 1080], [1280, 720]];
   const busy = $derived((app.live?.export.jobs ?? []).some((j) => j.state === "waiting" || j.state === "running"));
 
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  const norm = (s: Spec): Spec => ({ video: s.video, size: s.size, quality: s.quality, fit: s.fit, hardware: s.hardware, color: s.color, bitrate_kbps: s.bitrate_kbps ?? null });
+  const norm = (s: Spec): Spec => ({ video: s.video, size: s.size, quality: s.quality, fit: s.fit, hardware: s.hardware, color: s.color, bitrate_kbps: s.bitrate_kbps ?? null, alpha: !!s.alpha });
   const builtIn = $derived(opts && spec ? opts.presets.find((p) => p.spec && same(norm(p.spec), norm(spec!))) ?? null : null);
   // What the preset box shows.
   const presetValue = $derived(userPreset && saved.some((u) => u.name === userPreset && same(norm(u.spec), norm(spec!))) ? `u:${userPreset}` : builtIn ? `b:${builtIn.index}` : "custom");
@@ -59,14 +81,16 @@
     path = s.path;
   }
 
-  /// Make the file name's extension match the format.
-  function fixExtension() {
+  /// Make the file name's extension match the format (any type it can go in), or set it to `want`.
+  function fixExtension(want?: string) {
     const v = path.trim();
     if (!v) return;
     const dot = v.lastIndexOf(".");
     const sep = Math.max(v.lastIndexOf("/"), v.lastIndexOf("\\"));
     const base = dot > sep ? v.slice(0, dot) : v;
-    if (!v.toLowerCase().endsWith("." + ext)) path = `${base}.${ext}`;
+    const now = dot > sep ? v.slice(dot + 1).toLowerCase() : "";
+    const to = want ?? (exts.includes(now) ? now : ext);
+    if (now !== to) path = `${base}.${to}`;
   }
 
   function pickPreset(v: string) {
@@ -93,6 +117,7 @@
     if (c && !c.bitrate) spec.bitrate_kbps = null;
     if (c && !c.hardware) spec.hardware = false;
     if (c && !c.ten_bit && !c.hdr) spec.color = "Sdr8";
+    if (c && !c.alpha) spec.alpha = false;
     fixExtension();
   }
 
@@ -229,21 +254,40 @@
 
         <span class="lbl">File</span>
         <div class="row">
-          <input type="text" bind:value={path} aria-label="Export file" onblur={fixExtension} />
+          <input type="text" bind:value={path} aria-label="Export file" onblur={() => fixExtension()} />
           <button onclick={browse}>Browse…</button>
         </div>
 
         <span class="lbl">Format</span>
         <div class="col">
           <select value={spec.video ?? "wav"} aria-label="Format" onchange={(e) => setCodec(e.currentTarget.value)}>
-            {#each opts.codecs as c}<option value={c.id}>{c.label}</option>{/each}
-            <option value="wav">Audio only (WAV)</option>
+            {#each groups as [name, list]}
+              <optgroup label={name}>
+                {#each list as c}<option value={c.id}>{c.label}</option>{/each}
+              </optgroup>
+            {/each}
+            <optgroup label="Audio">
+              <option value="wav">Audio only (WAV)</option>
+            </optgroup>
           </select>
+          {#if codec}<p class="hint">{codec.hint}</p>{/if}
           {#if codec?.sequence}
             {@const stem = (path.split(/[\\/]/).pop() ?? "frame").replace(/\.[^.]*$/, "")}
             <p class="hint">Writes {stem}_00001.{ext}, {stem}_00002.{ext}, … (no sound)</p>
           {/if}
         </div>
+
+        {#if codec && exts.length > 1}
+          <span class="lbl">File type</span>
+          <div class="col">
+            <div class="row">
+              {#each exts as x}
+                <label class="radio"><input type="radio" name="container" checked={pathExt === x} onchange={() => fixExtension(x)} /> {x.toUpperCase()}</label>
+              {/each}
+            </div>
+            {#if pathExt === "mxf"}<p class="hint">MXF (OP1a) is what Avid Media Composer links to and imports.</p>{/if}
+          </div>
+        {/if}
 
         {#if codec}
           <span class="lbl">Size</span>
@@ -263,6 +307,21 @@
               <input class="dim" type="number" min="16" max="8192" step="2" value={out[1]} aria-label="Height" onchange={(e) => setCustom(1, +e.currentTarget.value)} />
             {/if}
           </div>
+
+          {#if spec.video === "Dnxhd" || spec.video === "Dnxhd10"}
+            {@const sizes = spec.video === "Dnxhd" ? DNXHD_SIZES : DNXHD10_SIZES}
+            {#if !sizes.some(([w, h]) => w === out[0] && h === out[1])}
+              <span></span>
+              <div class="col">
+                <p class="hint warn">
+                  {spec.video === "Dnxhd" ? "DNxHD" : "DNxHD 10-bit"} only comes in {sizes.map(([w, h]) => `${w}×${h}`).join(", ")}. Pick one of those, or use DNxHR, which takes any size.
+                </p>
+                <div class="row">
+                  {#each sizes as [w, h]}<button onclick={() => (spec!.size = { Fixed: [w, h] })}>{w}×{h}</button>{/each}
+                </div>
+              </div>
+            {/if}
+          {/if}
 
           {#if shapeDiffers}
             <span class="lbl">Shape</span>
@@ -309,7 +368,18 @@
               <p class="hint">{opts.colors.find((c) => c.id === spec!.color)?.hint}</p>
             </div>
           {:else}
-            <span class="muted" title="10-bit and HDR need H.265">{spec.video === "ProRes422" || spec.video === "ProRes422Hq" ? "SDR, 10-bit (ProRes is always 10-bit)" : "SDR, 8-bit"}</span>
+            <span class="muted" title="HDR needs H.265">{spec.video === "Cineform4444" ? "SDR, 12-bit RGB" : codec.deep ? "SDR, 10-bit" : "SDR, 8-bit"}</span>
+          {/if}
+
+          {#if codec.alpha}
+            <span class="lbl">Background</span>
+            <div class="col">
+              <label class="check">
+                <input type="checkbox" checked={!!spec.alpha} onchange={(e) => (spec!.alpha = e.currentTarget.checked)} />
+                Transparent (keep the alpha channel)
+              </label>
+              <p class="hint">{spec.alpha ? "Where no layer covers the frame it's see-through, for putting over other footage." : "Where no layer covers the frame it's black."}</p>
+            </div>
           {/if}
 
           <span class="lbl">Encoder</span>
@@ -421,6 +491,9 @@
     margin: 0;
     color: var(--muted);
     font-size: calc(12px * var(--text-scale));
+  }
+  .hint.warn {
+    color: var(--accent);
   }
   .radio,
   .check {

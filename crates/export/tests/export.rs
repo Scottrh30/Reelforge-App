@@ -70,6 +70,7 @@ fn settings(path: PathBuf) -> ExportSettings {
         sequence: 0,
         color: ColorOut::Sdr8,
         bitrate_kbps: None,
+        alpha: false,
     }
 }
 
@@ -575,6 +576,93 @@ fn exports_every_video_format() {
         let ext = codec.extension();
         assert_eq!(files, (1..=5).map(|i| format!("shot_{i:05}.{ext}")).collect::<Vec<_>>());
         let c = first_frame_centre(&dir.join(format!("shot_00001.{ext}"))); assert!(red(c), "{codec:?} {c:?}");
+    }
+}
+
+/// What ffprobe says about a file's video: (codec, profile, pixel format).
+fn ffprobe_video(path: &Path) -> Option<(String, String, String)> {
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,profile,pix_fmt", "-of", "default=nw=1"])
+        .arg(path)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or("").to_string();
+    Some((get("codec_name"), get("profile"), get("pix_fmt")))
+}
+
+#[test]
+fn exports_every_master_profile() {
+    let Some((p, _)) = red_with_tone() else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let red = |c: [i32; 3]| c[0] > 215 && c[1] < 30 && c[2] < 30;
+    use VideoCodec as V;
+    // (format, file type, size, codec, profile, pixel format)
+    let cases: &[(V, &str, (u32, u32), &str, &str, &str)] = &[
+        (V::ProRes422Proxy, "mov", (640, 360), "prores", "Proxy", "yuv422p10le"),
+        (V::ProRes422Lt, "mov", (640, 360), "prores", "LT", "yuv422p10le"),
+        (V::ProRes422, "mov", (640, 360), "prores", "Standard", "yuv422p10le"),
+        (V::ProRes4444, "mov", (640, 360), "prores", "4444", "yuv444p12le"), // FFmpeg decodes 4444 as 12-bit
+        (V::ProRes4444Xq, "mov", (640, 360), "prores", "XQ", "yuv444p12le"),
+        (V::DnxhrLb, "mov", (640, 360), "dnxhd", "DNXHR LB", "yuv422p"),
+        (V::DnxhrSq, "mov", (640, 360), "dnxhd", "DNXHR SQ", "yuv422p"),
+        (V::DnxhrHqx, "mov", (640, 360), "dnxhd", "DNXHR HQX", "yuv422p10le"),
+        (V::Dnxhr444, "mov", (640, 360), "dnxhd", "DNXHR 444", "yuv444p10le"),
+        (V::DnxhrHq, "mxf", (640, 360), "dnxhd", "DNXHR HQ", "yuv422p"),
+        (V::Dnxhd, "mov", (1280, 720), "dnxhd", "DNXHD", "yuv422p"),
+        (V::Dnxhd10, "mxf", (1920, 1080), "dnxhd", "DNXHD", "yuv422p10le"),
+        (V::Cineform, "mov", (640, 360), "cfhd", "", "yuv422p10le"),
+        (V::Cineform4444, "mov", (640, 360), "cfhd", "", "gbrp12le"),
+    ];
+    for &(codec, ext, (w, h), want_codec, want_profile, want_pix) in cases {
+        let out = std::env::temp_dir().join(format!("rf_master_{codec:?}.{ext}"));
+        let mut st = settings(out.clone());
+        (st.end, st.video, st.width, st.height) = (Time::from_secs_f64(0.2), Some(codec), w, h);
+        let r = export_sequence(&p, &st, &device, &queue, |_| true).unwrap_or_else(|e| panic!("{codec:?} {ext}: {e:#}"));
+        assert_eq!(r.frames, 5);
+        let info = probe(&out).unwrap();
+        assert_eq!(info.audio.as_ref().map(|a| a.codec.as_str()), Some("pcm_s24le"), "{codec:?}");
+        if let Some((c, prof, pix)) = ffprobe_video(&out) {
+            assert_eq!((c.as_str(), pix.as_str()), (want_codec, want_pix), "{codec:?} via {}", r.video_codec);
+            assert!(prof.contains(want_profile), "{codec:?}: profile {prof}");
+        }
+        assert!(red(first_frame_centre(&out)), "{codec:?}: {:?}", first_frame_centre(&out));
+    }
+    // DNxHD only comes in its own sizes, and says so.
+    let mut st = settings(std::env::temp_dir().join("rf_master_bad.mov"));
+    (st.end, st.video) = (Time::from_secs_f64(0.2), Some(V::Dnxhd));
+    let e = export_sequence(&p, &st, &device, &queue, |_| true).unwrap_err();
+    assert!(format!("{e:#}").contains("Use DNxHR"), "{e:#}");
+}
+
+/// A half-size red layer on nothing: exported with a transparent background,
+/// the corners are see-through and the middle solid.
+#[test]
+fn exports_a_transparent_background() {
+    let Some((mut p, _)) = red_with_tone() else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let seq = &mut p.sequences[0];
+    seq.tracks[2].clips.clear();
+    seq.tracks[0].clips[0].transform.scale = [0.5, 0.5];
+    use VideoCodec as V;
+    for (codec, ext, alpha) in [(V::ProRes4444, "mov", true), (V::ProRes4444Xq, "mov", true), (V::Cineform4444, "mov", true), (V::PngSequence, "png", true), (V::TiffSequence, "tif", true), (V::ProRes4444, "mov", false)] {
+        let dir = std::env::temp_dir().join(format!("rf_alpha_{codec:?}_{alpha}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut st = settings(dir.join(format!("a.{ext}")));
+        (st.end, st.video, st.alpha, st.include_audio) = (Time::from_secs_f64(0.2), Some(codec), alpha, false);
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap_or_else(|e| panic!("{codec:?}: {e:#}"));
+        let file = if codec.is_sequence() { dir.join(format!("a_00001.{ext}")) } else { st.path.clone() };
+        let mut dec = FrameSource::open(&file, None).unwrap();
+        let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+        let px = |x: u32, y: u32| -> [u8; 4] { f.rgba()[((y * f.width + x) * 4) as usize..][..4].try_into().unwrap() };
+        let (corner, middle) = (px(10, 10), px(320, 180));
+        assert!(middle[0] > 215 && middle[1] < 30 && middle[3] >= 253, "{codec:?}: middle {middle:?}");
+        if alpha {
+            assert!(corner[3] <= 2, "{codec:?}: corner should be see-through: {corner:?}");
+        } else {
+            assert!(corner[3] >= 253 && corner[0] < 20, "{codec:?}: corner should be opaque black: {corner:?}");
+        }
     }
 }
 

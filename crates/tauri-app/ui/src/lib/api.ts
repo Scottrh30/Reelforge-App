@@ -446,7 +446,12 @@ export interface PluginsView {
 
 // ---- Export ----
 
-export type VideoCodec = "H264" | "H265" | "ProRes422" | "ProRes422Hq" | "DnxhrSq" | "DnxhrHq" | "PngSequence" | "JpegSequence" | "TiffSequence";
+export type VideoCodec =
+  | "H264" | "H265"
+  | "ProRes422Proxy" | "ProRes422Lt" | "ProRes422" | "ProRes422Hq" | "ProRes4444" | "ProRes4444Xq"
+  | "DnxhrLb" | "DnxhrSq" | "DnxhrHq" | "DnxhrHqx" | "Dnxhr444" | "Dnxhd" | "Dnxhd10"
+  | "Cineform" | "Cineform4444"
+  | "PngSequence" | "JpegSequence" | "TiffSequence";
 export type Quality = "High" | "Medium" | "Low";
 export type Fit = "Letterbox" | "Crop" | "Stretch";
 export type ColorOut = "Sdr8" | "Sdr10" | "HdrPq" | "HdrHlg";
@@ -460,6 +465,8 @@ export interface Spec {
   hardware: boolean;
   color: ColorOut;
   bitrate_kbps: number | null;
+  /// A transparent background (codecs with alpha only).
+  alpha?: boolean;
 }
 
 export interface UserPreset {
@@ -469,7 +476,26 @@ export interface UserPreset {
 }
 
 export interface ExportOptions {
-  codecs: { id: VideoCodec; label: string; extension: string; sequence: boolean; quality: boolean; bitrate: boolean; ten_bit: boolean; hdr: boolean; hardware: boolean }[];
+  codecs: {
+    id: VideoCodec;
+    label: string;
+    /// The heading it's listed under ("Apple ProRes", …).
+    group: string;
+    hint: string;
+    extension: string;
+    /// File types it can be written in, the usual one first (the extension picks the container).
+    extensions: string[];
+    sequence: boolean;
+    quality: boolean;
+    bitrate: boolean;
+    ten_bit: boolean;
+    hdr: boolean;
+    hardware: boolean;
+    /// Can keep a transparent background.
+    alpha: boolean;
+    /// Always more than 8 bits per channel.
+    deep: boolean;
+  }[];
   qualities: [Quality, string][];
   fits: [Fit, string][];
   colors: { id: ColorOut; label: string; hint: string }[];

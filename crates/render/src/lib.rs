@@ -232,7 +232,7 @@ pub struct Compositor {
     output_pipeline: wgpu::RenderPipeline,
     output_alpha_pipeline: wgpu::RenderPipeline,
     /// 16-bit export outputs: sRGB, PQ, HLG.
-    deep_pipelines: [wgpu::RenderPipeline; 3],
+    deep_pipelines: [wgpu::RenderPipeline; 4],
     /// Render over transparency and keep the alpha in the output (for composite
     /// shots, which are layered again), instead of over opaque black.
     pub transparent: bool,
@@ -493,7 +493,7 @@ impl Compositor {
         };
         let output_pipeline = output_pipeline_with("fs_output", OUTPUT_FORMAT);
         let output_alpha_pipeline = output_pipeline_with("fs_output_alpha", OUTPUT_FORMAT);
-        let deep_pipelines = ["fs_deep_srgb", "fs_deep_pq", "fs_deep_hlg"].map(|e| output_pipeline_with(e, DEEP_FORMAT));
+        let deep_pipelines = ["fs_deep_srgb", "fs_deep_pq", "fs_deep_hlg", "fs_deep_srgb_alpha"].map(|e| output_pipeline_with(e, DEEP_FORMAT));
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("layer uniforms"),
@@ -1463,6 +1463,8 @@ impl Compositor {
                 ..Default::default()
             });
             let i = match curve {
+                // A transparent compositor keeps its coverage (SDR only).
+                DeepCurve::Srgb if self.transparent => 3,
                 DeepCurve::Srgb => 0,
                 DeepCurve::Pq => 1,
                 DeepCurve::Hlg => 2,
