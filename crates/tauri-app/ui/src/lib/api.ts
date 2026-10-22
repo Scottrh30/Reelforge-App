@@ -662,6 +662,10 @@ export const api = {
   trackCancel: () => invoke("track_cancel"),
   trackApply: (id: number, target: number, mask: number | null, blade: number | null, smoothing: number, axes?: TrackAxes) => invoke("track_apply", { id, target, mask, blade, smoothing, axes }),
   exportOptions: () => invoke<ExportOptions>("export_options"),
+  diagnostics: () => invoke<string>("diagnostics"),
+  notices: () => invoke<string>("notices"),
+  openLogFolder: () => invoke("open_log_folder"),
+  checkDecoders: () => invoke<DecoderCheck[]>("check_decoders"),
   exportSuggest: (ext: string) => invoke<{ path: string; preset: number; has_audio: boolean }>("export_suggest", { ext }),
   exportPathDialog: (current: string, extension: string) => invoke<string | null>("export_path_dialog", { current, extension }),
   exportPresetSave: (name: string, spec: Spec, includeAudio: boolean) => invoke("export_preset_save", { name, spec, includeAudio }),
@@ -730,3 +734,13 @@ export const api = {
   attrOffers: () => invoke<AttrOffers | null>("attr_offers"),
   pasteAttributes: (set: AttrSet) => invoke("paste_attributes", { set }),
 };
+
+/// One format's result from Help → Check decoders.
+export interface DecoderCheck {
+  format: string;
+  status: "ok" | "mismatch" | "error" | "skipped";
+  psnr: number | null;
+  psnr_portable: number | null;
+  frames: number;
+  detail: string;
+}

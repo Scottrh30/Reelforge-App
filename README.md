@@ -757,7 +757,19 @@ The H.264, HEVC, VP9 and AV1 decoders live in this repository (`crates/h264`, `c
 `crates/vp9`, `crates/av1`, with `crates/bitstream` for reading bits and `crates/testkit` for
 their tests), so building needs nothing beyond this repo. They're adapted from FilmCraft
 (MIT OR Apache-2.0): see `THIRD-PARTY-NOTICES.txt`, which has to ship with the program and
-any copy of the source. Each has its own tests: `cargo test -p reelforge-h264` (and `-hevc`,
+any copy of the source.
+
+**Licence notices:** `THIRD-PARTY-NOTICES.txt` lists every library built into the Windows app
+(about 250 Rust crates, plus Svelte, the Tauri API and the IBM Plex Sans font in the interface)
+with its licence, and gives each one's own licence texts and copyright lines; where a library
+names a licence but ships no copy, the standard text (from the SPDX licence list, in
+`licenses/standard/`) is added with its authors as the copyright holders. It's generated, so
+rerun it when dependencies change, before building a release:
+`python3 tools/notices.py` (the FilmCraft section comes from `THIRD-PARTY-NOTICES.head.txt`).
+The file goes in the download beside the exe and is built into the program, under
+**Help → Third-party notices**. Compile-time-only crates (macros, build tools) aren't in the
+program and aren't listed; FFmpeg is fetched separately by `Get FFmpeg.bat` and has its own
+GPL licence in `licenses/`. Each has its own tests: `cargo test -p reelforge-h264` (and `-hevc`,
 `-vp9`, `-av1`).
 
 Every decoder is tested against FFmpeg's output (`cargo test -p reelforge-media native`):
@@ -793,6 +805,28 @@ work waits on them), as does AV1 for its frame threads. Files only FFmpeg decode
 own threads. A decoder that crashes is treated as a decode error: the clip carries on with
 FFmpeg. With 14 clips open on 2 cores this cut the threads from 58 to 41; on an 8- or 16-core
 PC, where each clip used to get up to 16, far more.
+
+## When something goes wrong
+
+**Help → About & diagnostics** has three tabs:
+- **Diagnostics**: a report to paste into a message, with **Copy to clipboard** (also straight
+  from **Help → Copy diagnostics**). It gives the Reelforge version, Windows version, processor
+  (and whether it has AVX2), graphics card and driver, whether hardware decoding and zero-copy
+  are working, the FFmpeg version, the decode thread count, a summary of the settings, the kinds
+  of video in the project (codec and size only: no file names) and the last 200 log lines.
+- **Check decoders**: makes a short sample in each format Reelforge decodes itself (H.264,
+  HEVC 8 and 10-bit, VP9, AV1, MPEG-2, ProRes 422 HQ and 4444 with alpha, DNxHR HQ and HQX,
+  Motion JPEG), decodes it with Reelforge's decoder and with FFmpeg's, and compares every
+  frame; on processors with AVX2, the AVX2 and portable code are both checked. Each format
+  shows **Matches**, **Differs** (a worst frame below 50 dB from FFmpeg's) or **Skipped** (the
+  installed FFmpeg can't encode that format). About 10–30 seconds; the results go into the
+  diagnostics report.
+- **Third-party notices**, with a search box.
+
+The **log** goes to `%LOCALAPPDATA%\Reelforge\logs\reelforge.log` (the previous session's is
+kept as `reelforge.previous.log`; **Help → Open log folder**). It holds what the console shows:
+which decoder each file got, fallbacks to FFmpeg, GPU and audio problems, and any crash with
+where it happened. Each log stops growing at 8 MB. `RUST_LOG=debug` gives more detail.
 
 ## Building on Windows 10/11
 

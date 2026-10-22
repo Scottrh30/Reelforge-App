@@ -129,19 +129,27 @@ pub fn to_frame(p: &Picture) -> ff::frame::Video {
 /// native decoder and compare them as RGBA. Returns (frames compared, worst PSNR in dB).
 #[cfg(test)]
 pub(crate) fn compare_with_ffmpeg(path: &std::path::Path) -> (usize, f64) {
+    compare(path).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// Decode every frame of `path`'s video with both FFmpeg and Reelforge's own
+/// decoder and compare them as RGBA: (frames compared, worst PSNR in dB).
+pub(crate) fn compare(path: &std::path::Path) -> Result<(usize, f64), String> {
     use ff::software::scaling::{context::Context as Scaler, flag::Flags};
     crate::init();
-    let mut ictx = ff::format::input(path).unwrap();
-    let st = ictx.streams().best(ff::media::Type::Video).unwrap();
+    let mut ictx = ff::format::input(path).map_err(|e| format!("can't read the sample: {e}"))?;
+    let st = ictx.streams().best(ff::media::Type::Video).ok_or("the sample has no video")?;
     let index = st.index();
     let params = st.parameters();
-    let mut ffd = ff::codec::context::Context::from_parameters(params.clone()).unwrap().decoder().video().unwrap();
-    let mut nat = open(&params).expect("a native decoder for this codec");
+    let mut ffd = ff::codec::context::Context::from_parameters(params.clone()).and_then(|c| c.decoder().video()).map_err(|e| format!("FFmpeg's decoder didn't open: {e}"))?;
+    let mut nat = open(&params).ok_or("Reelforge has no decoder for this")?;
     let rgba = |f: &ff::frame::Video| -> Vec<u8> {
-        let mut s = Scaler::get(f.format(), f.width(), f.height(), ff::format::Pixel::RGBA, f.width(), f.height(), Flags::BILINEAR | Flags::ACCURATE_RND | Flags::FULL_CHR_H_INT).unwrap();
+        let Ok(mut s) = Scaler::get(f.format(), f.width(), f.height(), ff::format::Pixel::RGBA, f.width(), f.height(), Flags::BILINEAR | Flags::ACCURATE_RND | Flags::FULL_CHR_H_INT) else { return Vec::new() };
         crate::color::configure(&mut s, crate::color::effective_space(f.color_space(), f.height()), f.color_range(), true);
         let mut o = ff::frame::Video::empty();
-        s.run(f, &mut o).unwrap();
+        if s.run(f, &mut o).is_err() {
+            return Vec::new();
+        }
         let (w, h) = (f.width() as usize, f.height() as usize);
         (0..h).flat_map(|y| o.data(0)[y * o.stride(0)..y * o.stride(0) + w * 4].to_vec()).collect()
     };
@@ -154,20 +162,20 @@ pub(crate) fn compare_with_ffmpeg(path: &std::path::Path) -> (usize, f64) {
         }
     }
     for p in &packets {
-        ffd.send_packet(p).unwrap();
+        ffd.send_packet(p).map_err(|e| format!("FFmpeg's decoder: {e}"))?;
         let mut f = ff::frame::Video::empty();
         while ffd.receive_frame(&mut f).is_ok() {
             a.push(rgba(&f));
             ya.push(f.clone());
         }
-        nat.send_packet(p).unwrap_or_else(|e| panic!("native decoder: {e}"));
+        nat.send_packet(p).map_err(|e| format!("Reelforge's decoder: {e}"))?;
         let mut g = ff::frame::Video::empty();
         while nat.receive_frame(&mut g) {
             b.push(rgba(&g));
             yb.push(g.clone());
         }
     }
-    ffd.send_eof().unwrap();
+    ffd.send_eof().map_err(|e| format!("FFmpeg's decoder: {e}"))?;
     let mut f = ff::frame::Video::empty();
     while ffd.receive_frame(&mut f).is_ok() {
         a.push(rgba(&f));
@@ -202,10 +210,14 @@ pub(crate) fn compare_with_ffmpeg(path: &std::path::Path) -> (usize, f64) {
             }
         }
     }
-    assert_eq!(a.len(), b.len(), "frame counts differ");
+    if a.len() != b.len() {
+        return Err(format!("frame counts differ: FFmpeg {}, Reelforge {}", a.len(), b.len()));
+    }
     let mut worst = f64::INFINITY;
     for (x, y) in a.iter().zip(&b) {
-        assert_eq!(x.len(), y.len(), "frame sizes differ");
+        if x.len() != y.len() || x.is_empty() {
+            return Err("frame sizes differ".into());
+        }
         let mse = x.iter().zip(y).map(|(p, q)| { let d = *p as f64 - *q as f64; d * d }).sum::<f64>() / x.len() as f64;
         let psnr = if mse == 0.0 { 99.0 } else { 10.0 * (255.0f64 * 255.0 / mse).log10() };
         if std::env::var_os("RF_VERBOSE").is_some() {
@@ -231,7 +243,7 @@ pub(crate) fn compare_with_ffmpeg(path: &std::path::Path) -> (usize, f64) {
         }
         worst = worst.min(psnr);
     }
-    (a.len(), worst)
+    Ok((a.len(), worst))
 }
 
 #[cfg(test)]

@@ -1,0 +1,16 @@
+Video decoders adapted from FilmCraft
+-------------------------------------
+
+The H.264, HEVC, VP9 and AV1 decoders and their support code (the source
+folders crates/bitstream, crates/h264, crates/hevc, crates/vp9, crates/av1 and
+crates/testkit) are adapted from FilmCraft:
+
+    Copyright (c) 2026 ArtCraft Team and the FilmCraft contributors.
+    Licensed under the MIT License or the Apache License, Version 2.0, at
+    your option.
+
+The full licence texts are under "Licence texts" below (and in
+licenses/FilmCraft-LICENSE-MIT.txt and licenses/FilmCraft-LICENSE-APACHE.txt).
+Reelforge renamed these crates and changed them; it is not affiliated with or
+endorsed by the ArtCraft Team, and does not use the FilmCraft or ArtCraft names
+or logos.

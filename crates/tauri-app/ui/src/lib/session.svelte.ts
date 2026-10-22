@@ -38,6 +38,8 @@ export const app = $state({
   effectsOpen: false,
   pluginsOpen: false,
   settingsOpen: false,
+  /// Help → About & diagnostics, on one of its tabs (null: closed).
+  aboutTab: null as null | "diagnostics" | "check" | "notices",
   /// Timeline > Duck music under dialogue… is open.
   duckOpen: false,
   /// Media being dragged from the Media panel (pointer position in the window).

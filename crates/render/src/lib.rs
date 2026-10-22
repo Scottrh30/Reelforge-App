@@ -1537,5 +1537,14 @@ mod half_tests {
 pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    let i = adapter.get_info();
+    let _ = ADAPTER.set(format!("{} ({:?}, {:?}; driver {} {})", i.name, i.backend, i.device_type, i.driver, i.driver_info).replace(" ; driver  )", ")"));
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+}
+
+static ADAPTER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The graphics card the compositor got (name, API, kind, driver), once one was opened.
+pub fn adapter_info() -> Option<&'static str> {
+    ADAPTER.get().map(String::as_str)
 }

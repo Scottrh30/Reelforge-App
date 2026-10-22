@@ -14,6 +14,7 @@ mod zerocopy;
 pub mod mixer;
 pub mod native;
 pub mod probe;
+pub mod selfcheck;
 pub mod proxy;
 pub mod source;
 pub mod tracker;
@@ -41,6 +42,24 @@ pub fn init() {
         let _ = rayon::ThreadPoolBuilder::new().thread_name(|i| format!("decode-{i}")).build_global();
         ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Error);
     });
+}
+
+/// FFmpeg's version and licence, as the loaded libraries report them.
+pub fn ffmpeg_version() -> String {
+    init();
+    // SAFETY: both return static NUL-terminated strings.
+    unsafe {
+        let v = std::ffi::CStr::from_ptr(ffmpeg_next::ffi::av_version_info()).to_string_lossy().into_owned();
+        let l = std::ffi::CStr::from_ptr(ffmpeg_next::ffi::avcodec_license()).to_string_lossy().into_owned();
+        let c = ffmpeg_next::ffi::avcodec_version();
+        format!("{v} (libavcodec {}.{}.{}, {l})", c >> 16, (c >> 8) & 0xFF, c & 0xFF)
+    }
+}
+
+/// How many worker threads the shared decode pool has.
+pub fn decode_threads() -> usize {
+    init();
+    rayon::current_num_threads()
 }
 
 pub(crate) fn to_rational(r: ffmpeg_next::Rational) -> reelforge_core::Rational {

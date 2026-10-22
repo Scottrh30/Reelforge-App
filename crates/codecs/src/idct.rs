@@ -184,13 +184,41 @@ pub fn idct_fast(coeffs: &[i32], q: &[f32; 64], out: &mut [V8; 8]) {
     transpose(out);
 }
 
+#[cfg(target_arch = "x86_64")]
+static HAS_AVX2: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Is the AVX2 inverse DCT being used (the CPU has it, and it's allowed)?
+pub fn avx2_in_use() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        avx2()
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// Allow or forbid the AVX2 inverse DCT (for checking it against the portable
+/// one). Forbidding always works; allowing only takes effect on a CPU with it.
+pub fn set_avx2_allowed(allowed: bool) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::sync::atomic::Ordering;
+        let yes = allowed && std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma");
+        HAS_AVX2.store(if yes { 2 } else { 1 }, Ordering::Relaxed);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = allowed;
+}
+
 /// Is AVX2 (with FMA) there? Checked once; the 8-lane maths above then runs
 /// as single 256-bit instructions instead of pairs of 128-bit ones.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn avx2() -> bool {
-    use std::sync::atomic::{AtomicU8, Ordering};
-    static HAS: AtomicU8 = AtomicU8::new(0);
+    use std::sync::atomic::Ordering;
+    static HAS: &std::sync::atomic::AtomicU8 = &HAS_AVX2;
     match HAS.load(Ordering::Relaxed) {
         1 => false,
         2 => true,

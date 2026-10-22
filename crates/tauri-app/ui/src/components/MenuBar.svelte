@@ -193,8 +193,25 @@
     { label: "Make composition from selection", hint: "Ctrl+G", run: () => actions.act("make_composite") },
   ];
 
+  async function copyDiagnostics() {
+    const text = await run(api.diagnostics());
+    if (text == null) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      say("Diagnostics copied: paste them into your message");
+    } catch {
+      app.aboutTab = "diagnostics";
+    }
+  }
+
   const help = (): MenuItem[] => [
-    { heading: true, label: "Reelforge" },
+    { label: "About & diagnostics…", run: () => (app.aboutTab = "diagnostics") },
+    { label: "Copy diagnostics", run: () => copyDiagnostics() },
+    { label: "Check decoders…", run: () => (app.aboutTab = "check") },
+    { label: "Open log folder", run: () => run(api.openLogFolder()) },
+    { label: "Third-party notices…", run: () => (app.aboutTab = "notices") },
+    { separator: true },
+    { heading: true, label: "Keys" },
     { label: "Space plays, S splits, I and O mark in and out", disabled: true },
     { label: "V B N Y U pick the select, ripple, roll, slip and slide tools", disabled: true },
     { label: "E opens the effects browser", disabled: true },

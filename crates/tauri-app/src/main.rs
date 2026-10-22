@@ -12,6 +12,7 @@
 
 #[cfg(all(windows, target_env = "gnu"))]
 mod webview2_shim;
+mod diag;
 mod export;
 mod fx;
 mod keys;
@@ -910,8 +911,55 @@ fn webview2_ready() -> bool {
     true
 }
 
+// ---- About & diagnostics -------------------------------------------------------
+
+/// Help → About & diagnostics → Diagnostics: the report to copy and paste.
+#[tauri::command]
+fn diagnostics() -> Res<String> {
+    let mut extra: Vec<(&str, String)> = Vec::new();
+    #[cfg(all(windows, target_env = "gnu"))]
+    extra.push(("WebView2", webview2_shim::runtime_version().unwrap_or_else(|| "not found".into())));
+    extra.push(("Decoder check", reelforge_media::selfcheck::last_summary().unwrap_or_else(|| "not run this session".into())));
+    ed(|e| {
+        let p = &e.prefs;
+        extra.push((
+            "Settings",
+            format!(
+                "hardware decoding {}, Reelforge's decoders {}, zero-copy {}, proxies {} (automatic {}), frame cache {} MB, render cache {} MB, autosave every {} min, {} saved export presets",
+                p.hw_decode, p.native_decoders, p.zero_copy, p.use_proxies, p.auto_proxies, p.cache_mb, p.render_cache_mb, p.autosave_minutes, p.export_presets.len()
+            ),
+        ));
+        diag::report(e, &extra)
+    })
+}
+
+/// The third-party licence notices, as shipped (built into the program).
+#[tauri::command]
+fn notices() -> &'static str {
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../THIRD-PARTY-NOTICES.txt"))
+}
+
+/// Open the folder with the log files.
+#[tauri::command]
+fn open_log_folder() -> Res<()> {
+    let dir = diag::log_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer").arg(&dir).spawn();
+    #[cfg(not(windows))]
+    let r = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Help → Check decoders: compare every Reelforge decoder with FFmpeg's on
+/// samples made here (takes 10–30 seconds; runs off the main thread).
+#[tauri::command]
+async fn check_decoders() -> Result<Vec<reelforge_media::selfcheck::DecoderCheck>, String> {
+    tauri::async_runtime::spawn_blocking(|| reelforge_media::selfcheck::check_decoders(|_, _, _| {})).await.map_err(|e| e.to_string())
+}
+
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    diag::init_logging();
     if !webview2_ready() {
         return;
     }
@@ -958,6 +1006,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             tick,
             get_state,
+            diagnostics,
+            notices,
+            open_log_folder,
+            check_decoders,
             frame,
             waveform,
             waveform_rate,
