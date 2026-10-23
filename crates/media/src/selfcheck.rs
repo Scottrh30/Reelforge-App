@@ -55,6 +55,8 @@ fn samples() -> Vec<Sample> {
         Sample { alpha: true, ..s("ProRes 4444 with alpha", &["prores_ks"], P::YUVA444P10LE, "mov", &[("profile", "4")], 0) },
         s("DNxHR HQ", &["dnxhd"], P::YUV422P, "mov", &[("profile", "dnxhr_hq")], 0),
         s("DNxHR HQX (10-bit)", &["dnxhd"], P::YUV422P10LE, "mov", &[("profile", "dnxhr_hqx")], 0),
+        s("GoPro CineForm (YUV 4:2:2)", &["cfhd"], P::YUV422P10LE, "mov", &[], 0),
+        Sample { alpha: true, ..s("GoPro CineForm (RGBA)", &["cfhd"], P::GBRAP12LE, "mov", &[], 0) },
         s("Motion JPEG", &["mjpeg"], P::YUVJ422P, "avi", &[("q:v", "3")], 0),
     ]
 }

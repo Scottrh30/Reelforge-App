@@ -13,10 +13,13 @@
 //! | MPEG-2 | [`mpeg2`] | Main and 4:2:2 profiles: I/P/B, frame and field pictures, all motion types; Reelforge's own |
 //! | H.264, HEVC, VP9, AV1 | `external` | pure-Rust decoder libraries: H.264 progressive 8-bit 4:2:0 (Baseline/Main/High), HEVC Main/Main 10, VP9 profiles 0–3, AV1 Main |
 //! | Apple ProRes | [`prores`] | 422 Proxy/LT/Standard/HQ, 4444/XQ with alpha, progressive and interlaced; Reelforge's own |
+//! | GoPro CineForm | [`cineform`] | YUV 4:2:2 10-bit, RGB and RGBA 12-bit, intra and two-frame groups, progressive and interlaced; Reelforge's own (Bayer RAW goes to FFmpeg) |
 //!
 //! Every decoder is checked against FFmpeg's output in the media crate's tests.
 
 pub mod bits;
+pub mod cineform;
+mod cineform_tables;
 pub mod dnxhd;
 mod external;
 pub use external::{Av1Decoder, H264Decoder, HevcDecoder, Vp9Decoder};
@@ -42,10 +45,11 @@ pub enum Codec {
     Hevc,
     Vp9,
     Av1,
+    Cineform,
 }
 
 impl Codec {
-    pub const ALL: [Codec; 8] = [Codec::Mjpeg, Codec::ProRes, Codec::Dnxhd, Codec::Mpeg2, Codec::H264, Codec::Hevc, Codec::Vp9, Codec::Av1];
+    pub const ALL: [Codec; 9] = [Codec::Mjpeg, Codec::ProRes, Codec::Dnxhd, Codec::Cineform, Codec::Mpeg2, Codec::H264, Codec::Hevc, Codec::Vp9, Codec::Av1];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -57,6 +61,7 @@ impl Codec {
             Codec::Hevc => "HEVC (H.265)",
             Codec::Vp9 => "VP9",
             Codec::Av1 => "AV1",
+            Codec::Cineform => "GoPro CineForm",
         }
     }
 
@@ -92,6 +97,8 @@ pub enum Format {
     /// Planar RGB, stored green, blue, red (DNxHR 444).
     Gbrp10,
     Gbrp12,
+    /// Planar RGB with alpha: green, blue, red, alpha (CineForm RGBA).
+    Gbrap12,
 }
 
 impl Format {
@@ -104,7 +111,7 @@ impl Format {
     pub fn planes(self) -> usize {
         match self {
             Format::Gray8 => 1,
-            Format::Yuva444P10 | Format::Yuva444P12 => 4,
+            Format::Yuva444P10 | Format::Yuva444P12 | Format::Gbrap12 => 4,
             _ => 3,
         }
     }
@@ -138,7 +145,7 @@ pub enum Matrix {
 }
 
 /// One plane: `stride` bytes per row.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Plane {
     pub data: Vec<u8>,
     pub stride: usize,
@@ -294,6 +301,7 @@ pub fn open(codec: Codec, info: &StreamInfo) -> Option<Box<dyn Decoder>> {
         Codec::Hevc => Some(Box::new(HevcDecoder::new(info))),
         Codec::Vp9 => Some(Box::new(Vp9Decoder::new(info))),
         Codec::Av1 => Some(Box::new(Av1Decoder::new(info))),
+        Codec::Cineform => Some(Box::new(cineform::CineformDecoder::new(info))),
     }
 }
 

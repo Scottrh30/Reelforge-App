@@ -181,6 +181,12 @@ def write(path, rust, ui):
         w("-" * 78)
         w(f.read_text(encoding="utf-8").strip())
         w("")
+    for f in sorted((ROOT / "licenses").glob("CineForm-SDK-*.txt")):
+        w("-" * 78)
+        w(f"GoPro CineForm SDK ({f.name}): the CineForm decoder's code tables")
+        w("-" * 78)
+        w(f.read_text(encoding="utf-8").strip())
+        w("")
     # Group identical texts.
     groups = {}
     order = []

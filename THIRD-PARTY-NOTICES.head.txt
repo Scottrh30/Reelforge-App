@@ -14,3 +14,21 @@ licenses/FilmCraft-LICENSE-MIT.txt and licenses/FilmCraft-LICENSE-APACHE.txt).
 Reelforge renamed these crates and changed them; it is not affiliated with or
 endorsed by the ArtCraft Team, and does not use the FilmCraft or ArtCraft names
 or logos.
+
+
+GoPro CineForm decoder
+----------------------
+
+Reelforge's CineForm decoder (crates/codecs/src/cineform.rs) is written from
+GoPro's open-source CineForm SDK, and its code tables
+(crates/codecs/src/cineform_tables.rs) are taken from the SDK's table9.inc and
+table17.inc:
+
+    Copyright 2017 GoPro, Inc.
+    Licensed under the MIT License or the Apache License, Version 2.0, at
+    your option.
+
+The full licence texts are under "Licence texts" below (and in
+licenses/CineForm-SDK-LICENSE-MIT.txt and licenses/CineForm-SDK-LICENSE-APACHE.txt).
+GoPro and CineForm are trademarks of GoPro, Inc.; Reelforge is not affiliated
+with or endorsed by GoPro.

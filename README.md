@@ -771,7 +771,7 @@ decoders take those codecs when it's off or the card can't.
 | HEVC (H.265) | done, via a pure-Rust decoder library: Main and Main 10 (4:2:0, 8/10-bit), tiles, WPP; 4:2:2/4:4:4 go to FFmpeg |
 | VP9 | done, via a pure-Rust decoder library: profiles 0–3 (8/10/12-bit, 4:2:0 to 4:4:4) |
 | AV1 | done, via a pure-Rust decoder library: Main profile, 8/10-bit 4:2:0 and monochrome, film grain |
-| GoPro CineForm | opens through FFmpeg (422 YUV and 4444 RGB, with alpha); no Reelforge decoder yet |
+| GoPro CineForm | done, Reelforge's own: 4:2:2 10-bit YUV, 12-bit RGB and RGBA, intra frames and two-frame groups (which FFmpeg can't decode), progressive and interlaced, peak tables; channels on all cores. Written from GoPro's CineForm SDK (MIT OR Apache-2.0; code tables in `crates/codecs/src/cineform_tables.rs`). CineForm RAW (Bayer) goes to FFmpeg |
 
 The H.264, HEVC, VP9 and AV1 decoders live in this repository (`crates/h264`, `crates/hevc`,
 `crates/vp9`, `crates/av1`, with `crates/bitstream` for reading bits and `crates/testkit` for
@@ -796,7 +796,10 @@ Every decoder is tested against FFmpeg's output (`cargo test -p reelforge-media 
 each frame of generated test clips is converted to RGBA both ways and must match closely
 (ProRes: 65–73 dB PSNR in every profile; DNxHD/DNxHR: 64–81 dB; MPEG-2: 62–70 dB; i.e. off by
 at most a rounding step of the IDCT; H.264, HEVC, VP9 and AV1 come out identical to FFmpeg's,
-across 14 encoder configurations). FFmpeg's MPEG-2 encoder never makes field pictures,
+across 14 encoder configurations). FFmpeg's CineForm encoder only makes intra frames and FFmpeg can't decode GoPro's two-frame
+groups, so small clips from GoPro's own encoder (`crates/media/tests/data/cineform`, made with
+`tools/cineform`) check that each group decodes to the same pictures as intra frames of the
+same source. FFmpeg's MPEG-2 encoder never makes field pictures,
 16×8 or dual-prime motion, so the tests also generate random streams that use them
 (`crates/codecs/src/mpeg2/testgen.rs`), and FFmpeg and Reelforge must decode them alike.
 Speed, on one core of a 2.8 GHz Xeon, for 1080p with film-like grain (`taskset -c 0`, the
@@ -809,7 +812,8 @@ ProRes codeword (with the level's sign folded in) and two-level DNx code tables 
 stay in the CPU cache; an AVX2 inverse DCT (8×8 block in eight 256-bit registers), chosen at run
 time, with a portable version for older CPUs (`REELFORGE_NO_AVX2=1` forces it: about 20–30%
 slower); and every slice or row decoded straight into the picture. MPEG-2 1080i at 25 Mbit/s:
-about 75 fps on one core. The H.264/HEVC/VP9/AV1 decoders use all
+about 75 fps on one core. CineForm 1080p 4:2:2 about 53 fps on one core (FFmpeg about 80: its
+wavelet filters are hand-written SIMD), and each channel runs on its own core. The H.264/HEVC/VP9/AV1 decoders use all
 cores; on 2 cores 1080p runs at about 75 fps (H.264, HEVC), 45 (VP9) and 28 (AV1).
 
 **Shared decode threads:** every clip's decoder draws on one pool of worker threads, one per
@@ -836,7 +840,7 @@ PC, where each clip used to get up to 16, far more.
   of video in the project (codec and size only: no file names) and the last 200 log lines.
 - **Check decoders**: makes a short sample in each format Reelforge decodes itself (H.264,
   HEVC 8 and 10-bit, VP9, AV1, MPEG-2, ProRes 422 HQ and 4444 with alpha, DNxHR HQ and HQX,
-  Motion JPEG), decodes it with Reelforge's decoder and with FFmpeg's, and compares every
+  CineForm YUV and RGBA, Motion JPEG), decodes it with Reelforge's decoder and with FFmpeg's, and compares every
   frame; on processors with AVX2, the AVX2 and portable code are both checked. Each format
   shows **Matches**, **Differs** (a worst frame below 50 dB from FFmpeg's) or **Skipped** (the
   installed FFmpeg can't encode that format). About 10–30 seconds; the results go into the

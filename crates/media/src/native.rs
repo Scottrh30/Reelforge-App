@@ -18,6 +18,7 @@ pub fn codec_of(id: ff::codec::Id) -> Option<Codec> {
         Id::HEVC => Codec::Hevc,
         Id::VP9 => Codec::Vp9,
         Id::AV1 => Codec::Av1,
+        Id::CFHD => Codec::Cineform,
         _ => return None,
     })
 }
@@ -95,6 +96,7 @@ fn pixel(f: Format) -> ff::format::Pixel {
         Format::Yuva444P12 => P::YUVA444P12LE,
         Format::Gbrp10 => P::GBRP10LE,
         Format::Gbrp12 => P::GBRP12LE,
+        Format::Gbrap12 => P::GBRAP12LE,
     }
 }
 
@@ -331,6 +333,84 @@ mod tests {
             ran += 1;
         }
         assert!(ran >= 7 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
+    #[test]
+    fn cineform_matches_ffmpeg() {
+        let cases: Vec<(&str, &str, Vec<&str>)> = vec![
+            ("cf422.mov", "320x180", vec!["-c:v", "cfhd", "-pix_fmt", "yuv422p10le"]),
+            ("cf422low.mov", "320x180", vec!["-c:v", "cfhd", "-pix_fmt", "yuv422p10le", "-quality", "low"]),
+            ("cfrgb.mov", "320x180", vec!["-c:v", "cfhd", "-pix_fmt", "gbrp12le"]),
+            ("cfrgba.mov", "320x180", vec!["-c:v", "cfhd", "-pix_fmt", "gbrap12le"]),
+            ("cf720.mov", "1280x720", vec!["-c:v", "cfhd", "-pix_fmt", "yuv422p10le", "-quality", "medium"]),
+            ("cfodd.mov", "304x172", vec!["-c:v", "cfhd", "-pix_fmt", "yuv422p10le"]),
+        ];
+        let mut ran = 0;
+        for (name, size, args) in cases {
+            let Some(p) = clip_at(name, size, 25, &args) else {
+                eprintln!("{name}: ffmpeg couldn't make it, skipped");
+                continue;
+            };
+            check(&p, 60.0);
+            ran += 1;
+        }
+        assert!(ran >= 4 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
+    /// Every picture the native decoder makes of `path`'s video.
+    fn native_pictures(path: &Path) -> Vec<reelforge_codecs::Picture> {
+        crate::init();
+        let mut ictx = ff::format::input(&path).unwrap();
+        let st = ictx.streams().best(ff::media::Type::Video).unwrap();
+        let (index, params) = (st.index(), st.parameters());
+        let mut nat = open(&params).unwrap();
+        let mut out = Vec::new();
+        for (s, p) in ictx.packets() {
+            if s.index() == index {
+                nat.dec.send(p.data().unwrap_or(&[]), 0).unwrap();
+                out.extend(std::iter::from_fn(|| nat.dec.receive()));
+            }
+        }
+        nat.dec.finish();
+        out.extend(std::iter::from_fn(|| nat.dec.receive()));
+        out
+    }
+
+    /// PSNR of one plane of two 10-bit pictures.
+    fn plane_psnr(a: &reelforge_codecs::Picture, b: &reelforge_codecs::Picture, p: usize) -> f64 {
+        let (w, h) = a.format.plane_size(p, a.width, a.height);
+        let mut se = 0.0;
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let d = a.sample(p, x, y) as f64 - b.sample(p, x, y) as f64;
+                se += d * d;
+            }
+        }
+        let mse = se / (w * h) as f64;
+        if mse == 0.0 { 99.0 } else { 10.0 * (1023.0f64 * 1023.0 / mse).log10() }
+    }
+
+    /// Clips from GoPro's own encoder (tools/cineform): its two-frame groups,
+    /// which FFmpeg can't decode, must give the same pictures as intra frames
+    /// of the same source (and those must match FFmpeg exactly).
+    #[test]
+    fn cineform_groups_match_intra_frames() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/cineform");
+        for (group, intra) in [("cf-group.avi", "cf-intra.avi"), ("cf-group-interlaced.avi", "cf-intra-interlaced.avi")] {
+            let (n, psnr) = compare_with_ffmpeg(&dir.join(intra));
+            assert!(n == 2 && psnr >= 99.0, "{intra}: {n} frames, {psnr:.1} dB against FFmpeg");
+            let g = native_pictures(&dir.join(group));
+            let i = native_pictures(&dir.join(intra));
+            assert_eq!((g.len(), i.len()), (2, 2), "{group}");
+            for (k, (a, b)) in g.iter().zip(&i).enumerate() {
+                assert_eq!(a.interlaced, b.interlaced);
+                for p in 0..3 {
+                    let q = plane_psnr(a, b, p);
+                    eprintln!("{group} frame {k} plane {p}: {q:.1} dB");
+                    assert!(q > 50.0, "{group} frame {k} plane {p}: {q:.1} dB");
+                }
+            }
+        }
     }
 
     #[test]
