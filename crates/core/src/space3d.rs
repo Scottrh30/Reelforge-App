@@ -405,6 +405,80 @@ pub fn layer_space(t: &Transform, layer: [f32; 2], scene: &Scene3d) -> LayerSpac
     LayerSpace { mvp, map, depth, scale, lighting }
 }
 
+/// A solid object (3D text) as the camera sees it. Its own coordinates are
+/// pixels from its centre, X right, Y down and Z back (away from the
+/// viewer), placed in the world by a layer transform: the same position,
+/// anchor, rotations and scale as a 3D layer, with Z scaled by the average
+/// of the X and Y scale.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SolidSpace {
+    /// Object → clip space, columns first.
+    pub mvp: [[f32; 4]; 4],
+    /// Object → world: the origin and the three axes.
+    pub origin: V3,
+    pub axes: [V3; 3],
+    /// Object normals → world normals (normalise after): the inverse
+    /// transpose of `axes`, up to a positive factor.
+    pub normals: [V3; 3],
+    pub camera: V3,
+    /// For a scene without lights: the direction towards a light above and
+    /// to the left of the camera, scaled so a face turned to the camera gets
+    /// exactly 1 (see [`SolidSpace::studio_shade`]).
+    pub studio: V3,
+    /// The scene's lights, if the layer is lit and there are any.
+    pub lights: Vec<Light>,
+}
+
+/// How much of the studio light a face gets when its colour is unlit.
+pub const STUDIO_AMBIENT: f32 = 0.35;
+
+impl SolidSpace {
+    /// The studio light's brightness on a face with unit world normal `n`
+    /// (the CPU reference for the shader in `solid.wgsl`).
+    pub fn studio_shade(&self, n: V3) -> f32 {
+        (STUDIO_AMBIENT + (1.0 - STUDIO_AMBIENT) * dot(n, self.studio).max(0.0)).min(1.0)
+    }
+
+    /// Object point → world.
+    pub fn world(&self, p: V3) -> V3 {
+        add(add(add(self.origin, mul(self.axes[0], p[0])), mul(self.axes[1], p[1])), mul(self.axes[2], p[2]))
+    }
+}
+
+/// Where a solid placed by transform `t` sits for `scene`'s camera, lit by
+/// its lights if `t.lit` (else by the studio light).
+pub fn solid_space(t: &Transform, scene: &Scene3d) -> SolidSpace {
+    let cam = &scene.camera;
+    let rot = |v: V3| {
+        let v = rotate(v, [1.0, 0.0, 0.0], t.orientation[0].to_radians());
+        let v = rotate(v, [0.0, 1.0, 0.0], -t.orientation[1].to_radians());
+        rotate(v, [0.0, 0.0, 1.0], t.rotation.to_radians())
+    };
+    let sz = (t.scale[0].abs() + t.scale[1].abs()) * 0.5;
+    let axes = [rot([t.scale[0], 0.0, 0.0]), rot([0.0, t.scale[1], 0.0]), rot([0.0, 0.0, sz])];
+    let pos = [t.position[0], t.position[1], t.depth];
+    let origin = sub(sub(pos, mul(axes[0], t.anchor[0])), mul(axes[1], t.anchor[1]));
+    let (r, d, f) = cam.basis();
+    let focal = cam.focal();
+    let [w, h] = cam.frame;
+    let (kx, ky) = (2.0 * focal / w, 2.0 * focal / h);
+    let a = FAR / (FAR - NEAR);
+    let col = |v: V3, point: bool| {
+        let (vr, vd, vf) = (dot(v, r), dot(v, d), dot(v, f));
+        let shift = if point { a * NEAR } else { 0.0 };
+        [kx * vr, -ky * vd, a * vf - shift, vf]
+    };
+    let mvp = [col(axes[0], false), col(axes[1], false), col(axes[2], false), col(sub(origin, cam.position), true)];
+    let det = dot(axes[0], cross(axes[1], axes[2]));
+    let k = if det < 0.0 { -1.0 } else { 1.0 };
+    let normals = [mul(cross(axes[1], axes[2]), k), mul(cross(axes[2], axes[0]), k), mul(cross(axes[0], axes[1]), k)];
+    // Up (−down), left (−right) and towards the camera (−forward).
+    let towards = norm(add(add(mul(r, -0.45), mul(d, -0.6)), mul(f, -1.0))).unwrap_or([0.0, 0.0, -1.0]);
+    let studio = mul(towards, 1.0 / dot(towards, mul(f, -1.0)).max(0.1));
+    let lights = if t.lit { scene.lights.clone() } else { Vec::new() };
+    SolidSpace { mvp, origin, axes, normals, camera: cam.position, studio, lights }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,6 +568,30 @@ mod tests {
         let d = mk(2, 2);
         assert!((d.reach([5000.0, 0.0, 0.0], up)[0] - 1.0).abs() < 1e-4);
         assert_eq!(mk(3, 2).reach([1.0, 2.0, 3.0], [1.0, 0.0, 0.0]), [1.0; 3]);
+    }
+
+    #[test]
+    fn a_solid_front_face_sits_where_the_flat_layer_would() {
+        let t = Transform { position: [100.0, -50.0], scale: [0.5, 0.5], rotation: 30.0, anchor: [20.0, 10.0], three_d: true, orientation: [10.0, -25.0], depth: 300.0, ..Default::default() };
+        let flat = layer_space(&t, [640.0, 360.0], &scene());
+        let solid = solid_space(&t, &scene());
+        for p in [[0.0, 0.0], [300.0, -170.0], [-320.0, 180.0]] {
+            let a = screen(&flat.mvp, p);
+            let b = screen(&solid.mvp, p);
+            assert!((a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01, "{a:?} {b:?}");
+        }
+        // Z goes back, away from the camera, scaled with the layer.
+        let z = |p: V3| scene().camera.view(solid.world(p))[2];
+        assert!((z([0.0, 0.0, 100.0]) - z([0.0, 0.0, 0.0]) - 50.0).abs() < 25.0 && z([0.0, 0.0, 100.0]) > z([0.0, 0.0, 0.0]));
+        // Normals: the front face (−Z) turns with the layer and faces the camera.
+        let n = solid.normals;
+        let front = [-n[2][0], -n[2][1], -n[2][2]];
+        let to_cam = sub(scene().camera.position, solid.world([0.0; 3]));
+        assert!(dot(front, to_cam) > 0.0);
+        // The studio light: full on a face turned to the camera, darker below.
+        assert!((solid.studio_shade([0.0, 0.0, -1.0]) - 1.0).abs() < 1e-4);
+        assert!(solid.studio_shade([0.0, 1.0, 0.0]) < solid.studio_shade([0.0, -1.0, 0.0]));
+        assert!((solid.studio_shade([0.0, 0.0, 1.0]) - STUDIO_AMBIENT).abs() < 1e-4);
     }
 
     #[test]

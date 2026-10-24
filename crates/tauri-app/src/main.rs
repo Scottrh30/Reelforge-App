@@ -437,6 +437,11 @@ fn add_title() -> Res<()> {
     ed(|e| e.add_title())
 }
 
+#[tauri::command]
+fn add_3d_text() -> Res<()> {
+    ed(|e| e.add_3d_text())
+}
+
 /// An energy blade on its own transparent layer, over the selected clip.
 #[tauri::command]
 fn add_blade_layer() -> Res<()> {
@@ -1033,6 +1038,7 @@ fn main() {
             add_composite,
             open_sequence,
             add_title,
+            add_3d_text,
             add_blade_layer,
             scene::add_scene,
             scene::add_new,

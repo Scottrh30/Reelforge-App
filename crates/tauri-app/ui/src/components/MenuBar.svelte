@@ -152,6 +152,7 @@
     { label: "Transitions…", run: () => (app.effectsOpen = true) },
     { label: "Freeze frame at playhead", hint: "Shift+F", run: () => actions.act("freeze_frame") },
     { label: "Add title", hint: "Ctrl+T", run: actions.addTitle },
+    { label: "Add 3D text", run: actions.add3dText },
     { label: "Add energy blade layer", run: () => run(api.addBladeLayer()) },
     { label: "Add plane (new layer)", run: () => run(api.addNew("layer")) },
     { label: "Add adjustment layer", run: () => run(api.addNew("adjustment")) },

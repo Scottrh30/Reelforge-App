@@ -965,3 +965,51 @@ fn a_target_bitrate_replaces_the_quality_setting() {
     assert!(low > 300.0 && low < 750.0, "500 kbit/s target came out at {low:.0}");
     assert!(high > 1800.0 && high < 4500.0, "3000 kbit/s target came out at {high:.0}");
 }
+
+/// 3D text: a solid in the camera's view, its sides in their own colour,
+/// shaded by the studio light without lights and by the scene's lights with them.
+#[test]
+fn exports_3d_text_lit_by_the_scene() {
+    use reelforge_core::space3d::SceneObject;
+    use reelforge_core::TitleSpec;
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let make = |light: Option<f32>| {
+        let mut p = Project::new();
+        let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+        let spec = TitleSpec { text: "H".into(), size: 220.0, color: [230, 30, 30, 255], shadow: false, extrude: 120.0, side_color: Some([30, 60, 230, 255]), ..TitleSpec::default() };
+        let mut t = Clip::new_title(ClipId(2), s(0.0), s(1.0), spec);
+        t.transform.three_d = true;
+        t.transform.orientation = [0.0, 40.0];
+        seq.tracks[0].clips = vec![t];
+        if let Some(k) = light {
+            // An ambient light at `k`% lights everything evenly.
+            let mut l = Clip::new_scene(ClipId(3), s(0.0), s(1.0), SceneObject::Light, [640.0, 360.0]);
+            l.effects[0].params[reelforge_core::effects::light::KIND].value = 3.0;
+            l.effects[0].params[reelforge_core::effects::light::INTENSITY].value = k;
+            seq.tracks[1].clips = vec![l];
+        }
+        p.sequences = vec![seq];
+        p
+    };
+    let frame = |p: &Project, name: &str| {
+        let out = std::env::temp_dir().join(name);
+        let mut st = settings(out.clone());
+        st.include_audio = false;
+        st.end = s(0.2);
+        st.video = Some(VideoCodec::ProRes422Hq);
+        export_sequence(p, &st, &device, &queue, |_| true).unwrap();
+        let mut dec = FrameSource::open(&out, None).unwrap();
+        dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap().rgba().to_vec()
+    };
+    let count = |img: &[u8], f: &dyn Fn(i32, i32, i32) -> bool| img.chunks_exact(4).filter(|p| f(p[0] as i32, p[1] as i32, p[2] as i32)).count();
+    let studio = frame(&make(None), "rf_3dtext.mov");
+    let faces = count(&studio, &|r, _, b| r > 150 && b < 90);
+    let sides = count(&studio, &|r, _, b| b > 120 && r < 90);
+    assert!(faces > 3000 && sides > 3000, "faces {faces}, sides {sides}");
+    // Half an ambient light: everything at half its colour (in linear light).
+    let dim = frame(&make(Some(50.0)), "rf_3dtext_lit.mov");
+    let dim_faces = count(&dim, &|r, _, b| r > 140 && r < 200 && b < 70);
+    assert!(dim_faces > faces / 2, "{dim_faces} of {faces}");
+    assert_eq!(count(&dim, &|r, _, _| r > 215), 0, "nothing at full brightness");
+}

@@ -258,16 +258,22 @@ fn box_blur(p: &mut Plane, r: usize, horizontal: bool) {
 }
 
 /// Lay out and rasterise `spec` on a transparent `frame`-sized canvas.
-pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
-    let (w, h) = (frame[0].max(1), frame[1].max(1));
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
-    let (font, missing_font) = load_font(&spec.font);
+/// Where a title's glyphs go on its frame-sized canvas.
+pub(crate) struct Layout {
+    /// Every glyph, scaled and placed (position = its origin on the baseline).
+    pub glyphs: Vec<ab_glyph::Glyph>,
+    /// The text block: `[x0, y0, x1, y1]` (ascent of the first line to descent of the last).
+    pub text_box: [f32; 4],
+}
+
+/// Lay out `spec`'s text with `font`: lines centred as a block in the frame,
+/// each aligned within it, with kerning, letter and line spacing.
+pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layout {
     let scale = PxScale::from(spec.size.max(1.0));
     let sf = font.as_scaled(scale);
     let (ascent, descent) = (sf.ascent(), sf.descent());
     let line_h = (ascent - descent + sf.line_gap()) * spec.line_spacing.max(0.1);
-
-    // ---- Layout: glyphs per line at baseline 0, and each line's width ----
+    // Glyphs per line at baseline 0, and each line's width.
     let lines: Vec<(Vec<ab_glyph::Glyph>, f32)> = spec
         .text
         .split('\n')
@@ -288,15 +294,40 @@ pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
             (glyphs, width)
         })
         .collect();
-    let has_text = lines.iter().any(|(g, _)| g.iter().any(|g| font.outline_glyph(g.clone()).is_some()));
+    let (w, h) = (frame[0].max(1) as f32, frame[1].max(1) as f32);
+    let block_w = lines.iter().map(|(_, lw)| *lw).fold(0.0, f32::max);
+    let block_h = (lines.len().saturating_sub(1)) as f32 * line_h + (ascent - descent);
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let top = cy - block_h / 2.0;
+    let text_box = [cx - block_w / 2.0, top, cx + block_w / 2.0, top + block_h];
+    let mut glyphs = Vec::new();
+    for (i, (line, lw)) in lines.into_iter().enumerate() {
+        let baseline = top + ascent + i as f32 * line_h;
+        let x0 = match spec.align {
+            TextAlign::Left => text_box[0],
+            TextAlign::Center => cx - lw / 2.0,
+            TextAlign::Right => text_box[2] - lw,
+        };
+        for mut g in line {
+            g.position = point(g.position.x + x0, baseline);
+            glyphs.push(g);
+        }
+    }
+    Layout { glyphs, text_box }
+}
+
+pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
+    let (w, h) = (frame[0].max(1), frame[1].max(1));
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    let (font, missing_font) = load_font(&spec.font);
+
+    // ---- Layout ----
+    let lay = layout(spec, &font, [w, h]);
+    let text_box = lay.text_box;
+    let has_text = lay.glyphs.iter().any(|g| font.outline_glyph(g.clone()).is_some());
     if !has_text && !spec.background {
         return RenderedTitle { width: w, height: h, rgba: rgba.into(), bounds: None, missing_font };
     }
-    let block_w = lines.iter().map(|(_, lw)| *lw).fold(0.0, f32::max);
-    let block_h = (lines.len().saturating_sub(1)) as f32 * line_h + (ascent - descent);
-    let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
-    let top = cy - block_h / 2.0;
-    let text_box = [cx - block_w / 2.0, top, cx + block_w / 2.0, top + block_h];
 
     // Work only in the region the title can touch.
     let outline = spec.outline.max(0.0);
@@ -321,17 +352,9 @@ pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
     // ---- Fill coverage ----
     let mut fill = Plane::new(rx0, ry0, rw, rh);
     let mut ink: Option<[f32; 4]> = None; // tight bounds of the glyph pixels
-    for (i, (glyphs, lw)) in lines.iter().enumerate() {
-        let baseline = top + ascent + i as f32 * line_h;
-        let x0 = match spec.align {
-            TextAlign::Left => text_box[0],
-            TextAlign::Center => cx - lw / 2.0,
-            TextAlign::Right => text_box[2] - lw,
-        };
-        for g in glyphs {
-            let mut g = g.clone();
-            g.position = point(g.position.x + x0, baseline);
-            let Some(og) = font.outline_glyph(g) else { continue };
+    for g in &lay.glyphs {
+        {
+            let Some(og) = font.outline_glyph(g.clone()) else { continue };
             let b = og.px_bounds();
             ink = Some(match ink {
                 None => [b.min.x, b.min.y, b.max.x, b.max.y],

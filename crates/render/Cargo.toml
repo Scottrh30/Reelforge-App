@@ -15,6 +15,7 @@ log.workspace = true
 ab_glyph.workspace = true
 ttf-parser.workspace = true
 epaint_default_fonts.workspace = true
+lyon_tessellation = "1.0.23"
 
 # Zero-copy video: opening the hardware decoder's shared textures in Direct3D 12
 # (the same `windows` version wgpu-hal uses).

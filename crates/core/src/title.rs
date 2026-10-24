@@ -105,6 +105,18 @@ pub struct TitleSpec {
     /// Space between the text and the edge of the box, in pixels.
     #[serde(default)]
     pub background_padding: f32,
+    /// 3D text: how far the letters are extruded back, in pixels (0 = flat
+    /// text). Extruded text is a solid object seen through the sequence's
+    /// camera and lit by its lights (outline, shadow and box are left out).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub extrude: f32,
+    /// The colour of 3D text's sides (`None`: the text colour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_color: Option<[u8; 4]>,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl Default for TitleSpec {
@@ -127,6 +139,8 @@ impl Default for TitleSpec {
             background: false,
             background_color: half_black(),
             background_padding: 24.0,
+            extrude: 0.0,
+            side_color: None,
         }
     }
 }
@@ -142,6 +156,11 @@ impl TitleSpec {
             background_padding: (24.0 * k).round(),
             ..Self::default()
         }
+    }
+
+    /// Extruded into solid 3D letters.
+    pub fn is_3d(&self) -> bool {
+        self.extrude > 0.0
     }
 
     /// First line of the text, for labels.
@@ -166,11 +185,12 @@ impl TitleSpec {
             self.shadow_angle,
             self.shadow_softness,
             self.background_padding,
+            self.extrude,
         ] {
             f.to_bits().hash(&mut h);
         }
         (self.color, self.outline_color, self.shadow_color, self.background_color).hash(&mut h);
-        (self.align, self.shadow, self.background).hash(&mut h);
+        (self.align, self.shadow, self.background, self.side_color).hash(&mut h);
         h.finish()
     }
 }
@@ -199,6 +219,11 @@ mod tests {
         b.outline = 2.0;
         assert_ne!(a.content_hash([1920, 1080]), b.content_hash([1920, 1080]));
         assert_ne!(a.content_hash([1920, 1080]), a.content_hash([1280, 720]));
+        let deep = TitleSpec { extrude: 40.0, ..a.clone() };
+        assert!(deep.is_3d() && !a.is_3d());
+        assert_ne!(a.content_hash([1920, 1080]), deep.content_hash([1920, 1080]));
+        let sides = TitleSpec { side_color: Some([255, 0, 0, 255]), ..deep.clone() };
+        assert_ne!(sides.content_hash([1920, 1080]), deep.content_hash([1920, 1080]));
         assert_eq!(TitleSpec { text: "\n  Hello world \nmore".into(), ..a }.label(), "Hello world");
     }
 }

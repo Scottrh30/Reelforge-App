@@ -54,6 +54,10 @@ struct Gathered {
     space: Option<reelforge_core::space3d::LayerSpace>,
     /// An adjustment layer: its effects apply to the frame drawn so far.
     adjustment: bool,
+    /// 3D text: a solid drawn into a frame-sized picture.
+    solid: Option<reelforge_render::SolidInput>,
+    /// Where a solid sits in front of the camera (drawing order among 3D layers).
+    sort_depth: Option<f32>,
 }
 
 /// Masks are rasterised at most this big (longer side); they're soft-edged
@@ -198,6 +202,14 @@ impl Scene {
     #[allow(clippy::too_many_arguments)]
     fn gather(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Gathered>> {
         let full = [frame_size[0] as f32, frame_size[1] as f32];
+        if let Some(spec) = l.clip.title.as_ref().filter(|s| s.is_3d() && l.clip.nested.is_none() && !l.clip.adjustment) {
+            if l.transform.pin.is_none() && l.clip.mesh_at(t).is_none() {
+                // The flat title is still laid out (cached): the viewer uses
+                // its bounds to select and outline the text's front face.
+                let _ = provider.picture(project, l, frame_size)?;
+                return Ok(Some(solid_layer(l, spec, frame_size, scene3d)));
+            }
+        }
         let picture = match (l.clip.nested, l.clip.plane) {
             // A plane: one pixel of its colour, stretched over the frame.
             (_, Some(c)) if !l.clip.adjustment => Some(Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(c.to_vec()), u32::from_le_bytes(c) as u64), size: full, media: MediaId::GENERATED }),
@@ -213,7 +225,7 @@ impl Scene {
             // Covers the frame: only opacity and crop of its transform apply.
             let transform = Transform { opacity: l.transform.opacity, crop: l.transform.crop, ..Default::default() };
             let effects = l.effects.iter().filter(|e| !e.is_identity()).cloned().collect();
-            return Ok(Some(Gathered { key: l.clip.id.0, picture, transform, blend: l.blend, effects, mask, wipe: None, mesh: None, space: None, adjustment: true }));
+            return Ok(Some(Gathered { key: l.clip.id.0, picture, transform, blend: l.blend, effects, mask, wipe: None, mesh: None, space: None, adjustment: true, solid: None, sort_depth: None }));
         }
         let mesh = l.clip.mesh_at(t);
         let mut effects = l.effects.clone();
@@ -228,7 +240,7 @@ impl Scene {
                 effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None });
             }
         }
-        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, wipe: None, mesh, space, adjustment: false }))
+        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, wipe: None, mesh, space, adjustment: false, solid: None, sort_depth: None }))
     }
 
     /// The clip's masks at source time `src` as an image (made again only when they change).
@@ -282,6 +294,46 @@ impl Scene {
         let picture = n.frame.clone().map(|frame| Picture { frame, size: [size[0] as f32, size[1] as f32], media: MediaId::NESTED });
         self.nested.insert(clip, n);
         Ok(picture)
+    }
+}
+
+/// 3D text: the letters as a solid, seen through the camera and lit, drawn
+/// into a frame-sized picture that's then layered like any other (opacity,
+/// blend mode and effects apply; depth of field blurs it by its distance).
+fn solid_layer(l: &Layer, spec: &reelforge_core::TitleSpec, frame_size: [u32; 2], scene3d: &reelforge_core::space3d::Scene3d) -> Gathered {
+    let full = [frame_size[0] as f32, frame_size[1] as f32];
+    // Always in 3D: at Z 0 with no turn it sits where the flat title would.
+    let tr = Transform { three_d: true, ..l.transform };
+    let space = reelforge_core::space3d::solid_space(&tr, scene3d);
+    let solid = reelforge_render::SolidInput {
+        mesh: reelforge_render::text3d::text_mesh(spec, frame_size),
+        space,
+        face: spec.color,
+        side: spec.side_color.unwrap_or(spec.color),
+    };
+    let flat = reelforge_core::space3d::layer_space(&tr, full, scene3d);
+    let mut effects = l.effects.clone();
+    let blur = flat.blur(&scene3d.camera);
+    if blur > 0.25 {
+        let mut values = [0.0; reelforge_core::effects::MAX_PARAMS];
+        // The picture is frame pixels, the blur was worked out in layer pixels.
+        values[0] = blur * flat.scale;
+        effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None });
+    }
+    let picture = Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(vec![0u8; 4]), 0), size: full, media: MediaId::GENERATED };
+    Gathered {
+        key: l.clip.id.0,
+        picture,
+        transform: Transform { opacity: l.transform.opacity, ..Default::default() },
+        blend: l.blend,
+        effects,
+        mask: None,
+        wipe: None,
+        mesh: None,
+        space: None,
+        adjustment: false,
+        solid: Some(solid),
+        sort_depth: Some(flat.depth),
     }
 }
 
@@ -352,7 +404,13 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
         }
         tr.pin.map(|p| p.0.map(|c| c.map(f32::to_bits))).hash(h);
         hash_mesh(clip.mesh_at(t).as_ref(), h);
-        if tr.three_d {
+        if clip.title.as_ref().is_some_and(|s| s.is_3d()) {
+            // 3D text: where the camera sees it and how it's lit.
+            let sp = reelforge_core::space3d::solid_space(&Transform { three_d: true, ..*tr }, &scene3d);
+            hash_solid(&sp, h);
+            scene3d.camera.dof.map(|(f, a)| (f.to_bits(), a.to_bits())).hash(h);
+            tr.depth.to_bits().hash(h);
+        } else if tr.three_d {
             // Where it is and how it's lit depends on the camera and lights too.
             hash_space(Some(&reelforge_core::space3d::layer_space(tr, layer_size, &scene3d)), h);
             scene3d.camera.dof.map(|(f, a)| (f.to_bits(), a.to_bits())).hash(h);
@@ -393,6 +451,22 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
 fn input(g: &Gathered) -> LayerInput<'_> {
     let mut h = DefaultHasher::new();
     (g.picture.media, g.picture.frame.pts, g.picture.frame.generation).hash(&mut h);
+    if let Some(s) = &g.solid {
+        return LayerInput {
+            key: g.key,
+            content_id: s.content_id(),
+            pixels: PixelData::Solid(s),
+            pixel_size: [g.picture.size[0] as u32, g.picture.size[1] as u32],
+            layer_size: g.picture.size,
+            transform: g.transform,
+            blend: g.blend,
+            effects: g.effects.clone(),
+            mask: None,
+            wipe: g.wipe,
+            mesh: None,
+            space: None,
+        };
+    }
     LayerInput {
         key: g.key,
         content_id: h.finish(),
@@ -412,7 +486,7 @@ fn input(g: &Gathered) -> LayerInput<'_> {
 /// 3D layers next to each other in the stack are drawn furthest first (2D
 /// layers between them keep their places, as in HitFilm).
 fn sort_3d(items: &mut [Item]) {
-    let is_3d = |i: &Item| matches!(i, Item::Single(g) if g.space.is_some());
+    let is_3d = |i: &Item| matches!(i, Item::Single(g) if g.space.is_some() || g.sort_depth.is_some());
     let mut start = 0;
     while start < items.len() {
         if !is_3d(&items[start]) {
@@ -426,7 +500,7 @@ fn sort_3d(items: &mut [Item]) {
         // Stable, so layers at the same depth keep their track order.
         items[start..end].sort_by(|a, b| {
             let d = |i: &Item| match i {
-                Item::Single(g) => g.space.as_ref().map_or(0.0, |s| s.depth),
+                Item::Single(g) => g.space.as_ref().map(|s| s.depth).or(g.sort_depth).unwrap_or(0.0),
                 _ => 0.0,
             };
             d(b).total_cmp(&d(a))
@@ -454,6 +528,18 @@ fn hash_space(s: Option<&reelforge_core::space3d::LayerSpace>, h: &mut DefaultHa
     }
 }
 
+fn hash_solid(s: &reelforge_core::space3d::SolidSpace, h: &mut DefaultHasher) {
+    for v in s.mvp.iter().flatten().chain(&s.camera).chain(&s.studio) {
+        v.to_bits().hash(h);
+    }
+    for g in &s.lights {
+        for v in g.position.iter().chain(&g.direction).chain(&g.color).chain(&g.cone).chain([&g.radius]) {
+            v.to_bits().hash(h);
+        }
+        (g.kind, g.falloff).hash(h);
+    }
+}
+
 fn hash_mesh(m: Option<&reelforge_core::meshwarp::MeshShape>, h: &mut DefaultHasher) {
     if let Some(m) = m {
         (m.cols, m.rows).hash(h);
@@ -475,6 +561,7 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
         l.transform.pin.map(|p| p.0.map(|c| c.map(f32::to_bits))).hash(h);
         hash_mesh(l.mesh.as_ref(), h);
         hash_space(l.space.as_ref(), h);
+        l.solid.as_ref().map(|s| s.content_id()).hash(h);
         l.blend.hash(h);
         l.mask.as_ref().map(|m| m.0).hash(h);
         l.wipe.map(|w| (w.iris, w.progress.to_bits(), w.axis.map(f32::to_bits))).hash(h);

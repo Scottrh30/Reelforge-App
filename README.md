@@ -281,6 +281,15 @@ What works now:
   placement. Titles are ordinary layers, so the transform, keyframes, effects, dissolves and
   blend modes all work on them; click the text in the Viewer to select and drag it. Titles are
   purple on the timeline and can be any length
+- **3D text** (**Timeline → Add 3D text**, or set **3D depth** on any title): the letters are
+  extruded into solid 3D objects, as deep as **3D depth** (pixels), seen through the camera and
+  lit by the scene's lights, or by a soft light from above left when there are none. **Sides**
+  gives the sides their own colour (otherwise they're the text colour; Add 3D text makes them a
+  shade darker). It's always a 3D layer: move it in Z and turn it about X and Y in the Transform
+  section (**Turn it in 3D…** in the title settings shows those), animate it with keyframes, put
+  a camera move around it, and it keeps its depth of field, opacity, blend mode and effects. At
+  Z 0, not turned, its front face is exactly where the flat title's letters would be. Outline,
+  shadow and box aren't drawn on 3D text (a Drop shadow effect still works), nor are masks
 - **Proxies**: heavy footage (above 1080p, or 720p and up in HEVC/AV1/VP9/ProRes/DNxHD/CineForm) gets a
   small editing copy automatically, made in the background, with a progress bar in the Media
   panel; **Make proxy** does it for any clip. Proxies are 960×540 with every frame a keyframe,
@@ -528,7 +537,7 @@ What works now:
     unticked (for a screen or a sign that glows by itself); with none, 3D layers show as they are.
     Up to 8 lights at once. A light's position and point of interest can be dragged in the Viewer
   - Everything about cameras and lights keyframes like effect settings. Not yet: shadows,
-    layers that cut through each other (they're sorted by their middles), and 3D text with depth
+    layers that cut through each other (they're sorted by their middles)
 - **Corner pin** (Transform section of the Controls panel): tick it to stretch a layer in
   perspective by its four corners. Drag the pink corner handles in the Viewer (**Shift**: straight
   across or down; dragging the middle moves all four). It can be keyframed like any property,
@@ -1102,6 +1111,16 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   cache the image by a hash of the spec, so it's only redrawn when the title changes, and from
   there it's just another layer to the GPU compositor. Installed fonts are found once, in the
   background, by reading each font file's name table.
+- **3D text** (`render/src/text3d.rs`, `render/src/solid.rs` and `solid.wgsl`): the same layout,
+  but each glyph's outline is flattened into polygons (curves cut to within 0.1 px). The front
+  and back faces are those polygons triangulated with the font's non-zero rule (`lyon`), so holes
+  and overlapping contours come out right; the sides are a wall of quads along every contour,
+  facing out (checked with a winding test), with shared normals where the outline curves (under
+  40°) and separate ones at corners. The mesh is cached by the title's hash. Each frame it's
+  drawn with a depth buffer and 4× multisampling into the layer's frame-sized texture, placed by
+  `space3d::solid_space` (the 3D layer maths with a Z axis, scaled by the layer's average scale)
+  and shaded per pixel by the same lights as 3D layers, so the picture is then layered like any
+  other; it's redrawn only when the mesh, placement, camera or lights change.
 - **Tracks** are added and removed with `AddTrack` / `RemoveTrack` commands (the removed track
   and its clips are kept for undo). Deleting a track is refused if it would orphan linked clips
   on another track, or leave the sequence without a video or audio track.

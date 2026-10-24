@@ -42,6 +42,8 @@ pub enum PixelData<'a> {
     Yuv(&'a YuvPlanes),
     /// A frame the hardware decoder left on the graphics card (zero-copy).
     Gpu(&'a GpuFrame),
+    /// A solid object (3D text), drawn on the GPU into a frame-sized picture.
+    Solid(&'a solid::SolidInput),
     /// An adjustment layer: the frame composited so far (everything below),
     /// put through the layer's effects and drawn back over it. `pixel_size`
     /// should be the frame size.
@@ -56,6 +58,7 @@ impl PixelData<'_> {
                 PixelData::Rgba(px) => px.len() as u64 == size[0] as u64 * size[1] as u64 * 4,
                 PixelData::Yuv(y) => [y.width, y.height] == size && y.planes.len() == if y.layout.interleaved() { 2 } else { 3 },
                 PixelData::Gpu(g) => [g.width, g.height] == size,
+                PixelData::Solid(_) => true,
                 // Nothing to upload: it's read from the frame as it's drawn.
                 PixelData::Below => false,
             }
@@ -73,7 +76,10 @@ impl<'a> From<&'a reelforge_core::frame::Pixels> for PixelData<'a> {
 }
 
 pub mod plugin;
+pub mod solid;
 pub mod text;
+pub mod text3d;
+pub use solid::SolidInput;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -260,6 +266,8 @@ pub struct Compositor {
     pub output_generation: u64,
     /// Converts YUV layers into their RGBA layer textures.
     yuv: yuv::YuvConverter,
+    /// Draws solid objects (3D text) into their layer textures.
+    solid: solid::SolidRenderer,
     /// Reads frames shared by the hardware decoder (Windows, Direct3D 12).
     #[cfg(windows)]
     interop: Option<interop::Importer>,
@@ -536,6 +544,7 @@ impl Compositor {
             output_alpha_pipeline,
             deep_pipelines,
             yuv: yuv::YuvConverter::new(device, LAYER_FORMAT),
+            solid: solid::SolidRenderer::new(device, LAYER_FORMAT),
             #[cfg(windows)]
             interop: {
                 let i = interop::Importer::new(device);
@@ -721,6 +730,10 @@ impl Compositor {
             PixelData::Gpu(g) => {
                 let texture = t.texture.clone();
                 self.draw_gpu_frame(l.key, g, &texture);
+            }
+            PixelData::Solid(s) => {
+                let view = t.texture.create_view(&Default::default());
+                self.solid.draw(&self.device, &self.queue, l.key, s, &view, l.pixel_size);
             }
         }
         if let Some(t) = self.layers.get_mut(&l.key) {
@@ -1378,6 +1391,7 @@ impl Compositor {
     pub fn retain_layers(&mut self, keep: impl Fn(u64) -> bool) {
         self.layers.retain(|k, _| keep(*k));
         self.yuv.retain(&keep);
+        self.solid.retain(&keep);
         self.fx_targets.retain(|k, _| keep(*k));
         self.masks.retain(|k, _| keep(*k));
         self.tables.retain(|k, _| keep(k.0));

@@ -62,6 +62,15 @@
 
   const hex = (c: Rgba) => "#" + c.slice(0, 3).map((v) => v.toString(16).padStart(2, "0")).join("");
   const rgba = (h: string, a: number): Rgba => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16), a];
+  // Extruded into solid 3D letters.
+  const solid = $derived((t.extrude ?? 0) > 0);
+  async function make3d() {
+    const tr = ins.visual?.transform;
+    if (!tr) return;
+    await api.setTransform(ins.id, { ...tr, three_d: true });
+    await run(api.commit());
+  }
+
   const aligns = [
     ["Left", "Left", "M2 3h10M2 6h7M2 9h10M2 12h6"],
     ["Center", "Centre", "M2 3h12M4 6h8M2 9h12M5 12h6"],
@@ -111,14 +120,30 @@
     <span class="lbl">Letter spacing</span>
     <NumberField label="Letter spacing" value={t.letter_spacing ?? 0} min={-50} max={200} step={0.1} digits={1} suffix=" px" oninput={(v) => set((s) => (s.letter_spacing = v))} oncommit={commit} />
 
-    <span class="lbl">Outline</span>
-    <div class="row">
+    <span class="lbl" title="Extrude the letters into solid 3D text, seen through the camera and lit by the lights">3D depth</span>
+    <NumberField label="3D depth: how far the letters are extruded back (0 = flat text)" value={t.extrude ?? 0} min={0} max={5000} step={1} digits={0} suffix=" px" oninput={(v) => set((s) => (s.extrude = v))} oncommit={commit} />
+    {#if solid}
+      <span class="lbl sub"><label class="check" title="Give the sides their own colour (otherwise the text colour)"><input type="checkbox" checked={!!t.side_color} onchange={(e) => { const on = e.currentTarget.checked; once((s) => (s.side_color = on ? [...s.color] : null)); }} /> Sides</label></span>
+      <div class="row" class:off={!t.side_color}>
+        <input type="color" value={hex((t.side_color ?? t.color) as Rgba)} disabled={!t.side_color} aria-label="Side colour" title={t.side_color ? "Side colour" : "The sides are the text colour: tick Sides to choose another"} oninput={(e) => set((s) => (s.side_color = rgba(e.currentTarget.value, (s.side_color ?? s.color)[3])))} onchange={commit} />
+      </div>
+      <span></span>
+      <p class="note">
+        Lit by the lights in the sequence (Timeline → Add light), or a soft light from above left when there are none. Outline, shadow and box aren't drawn on 3D text.
+        {#if !ins.visual?.transform.three_d}
+          <button class="small" onclick={make3d} title="Show the 3D layer settings (Z position, X and Y rotation) in the Transform section">Turn it in 3D…</button>
+        {/if}
+      </p>
+    {/if}
+
+    <span class="lbl" class:off={solid}>Outline</span>
+    <div class="row" class:off={solid}>
       <NumberField label="Outline width" value={t.outline ?? 0} min={0} max={100} step={0.1} digits={1} suffix=" px" oninput={(v) => set((s) => (s.outline = v))} oncommit={commit} />
       <input type="color" value={hex(t.outline_color ?? [0, 0, 0, 255])} aria-label="Outline colour" title="Outline colour" oninput={(e) => set((s) => (s.outline_color = rgba(e.currentTarget.value, (s.outline_color ?? [0, 0, 0, 255])[3])))} onchange={commit} />
     </div>
 
-    <span class="lbl"><label class="check"><input type="checkbox" checked={!!t.shadow} onchange={(e) => once((s) => (s.shadow = e.currentTarget.checked))} /> Shadow</label></span>
-    <div class="row" class:off={!t.shadow}>
+    <span class="lbl" class:off={solid}><label class="check"><input type="checkbox" checked={!!t.shadow} onchange={(e) => once((s) => (s.shadow = e.currentTarget.checked))} /> Shadow</label></span>
+    <div class="row" class:off={!t.shadow || solid}>
       <input type="color" value={hex(t.shadow_color ?? [0, 0, 0, 128])} disabled={!t.shadow} aria-label="Shadow colour" title="Shadow colour" oninput={(e) => set((s) => (s.shadow_color = rgba(e.currentTarget.value, (s.shadow_color ?? [0, 0, 0, 128])[3])))} onchange={commit} />
       <NumberField label="Shadow opacity" value={Math.round(((t.shadow_color ?? [0, 0, 0, 128])[3] / 255) * 100)} min={0} max={100} step={1} digits={0} suffix="%" oninput={(v) => set((s) => (s.shadow_color = [...(s.shadow_color ?? [0, 0, 0, 128]).slice(0, 3), Math.round((v / 100) * 255)] as Rgba))} oncommit={commit} />
     </div>
@@ -131,8 +156,8 @@
       <NumberField label="Shadow softness" value={t.shadow_softness ?? 0} min={0} max={200} step={0.2} digits={0} suffix=" px" oninput={(v) => set((s) => (s.shadow_softness = v))} oncommit={commit} />
     {/if}
 
-    <span class="lbl"><label class="check" title="A filled rectangle behind the text"><input type="checkbox" checked={!!t.background} onchange={(e) => once((s) => (s.background = e.currentTarget.checked))} /> Box</label></span>
-    <div class="row" class:off={!t.background}>
+    <span class="lbl" class:off={solid}><label class="check" title="A filled rectangle behind the text"><input type="checkbox" checked={!!t.background} onchange={(e) => once((s) => (s.background = e.currentTarget.checked))} /> Box</label></span>
+    <div class="row" class:off={!t.background || solid}>
       <input type="color" value={hex(t.background_color ?? [0, 0, 0, 128])} disabled={!t.background} aria-label="Box colour" title="Box colour" oninput={(e) => set((s) => (s.background_color = rgba(e.currentTarget.value, (s.background_color ?? [0, 0, 0, 128])[3])))} onchange={commit} />
       <NumberField label="Box opacity" value={Math.round(((t.background_color ?? [0, 0, 0, 128])[3] / 255) * 100)} min={0} max={100} step={1} digits={0} suffix="%" oninput={(v) => set((s) => (s.background_color = [...(s.background_color ?? [0, 0, 0, 128]).slice(0, 3), Math.round((v / 100) * 255)] as Rgba))} oncommit={commit} />
     </div>
@@ -196,6 +221,17 @@
   .off {
     opacity: 0.5;
   }
+  .note {
+    margin: 0;
+    color: var(--muted);
+    font-size: calc(11.5px * var(--text-scale));
+    line-height: 1.4;
+  }
+  .note button {
+    margin-top: 4px;
+    display: block;
+  }
+
   .check {
     display: flex;
     gap: 5px;

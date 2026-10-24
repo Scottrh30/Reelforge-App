@@ -1140,6 +1140,16 @@ impl Editor {
 
     /// Add a 5 s title at the playhead on the top video track with room, and select it.
     pub fn add_title(&mut self) {
+        self.add_title_kind(false);
+    }
+
+    /// 3D text: a title extruded into solid letters, a 3D layer turned a
+    /// little so the depth shows.
+    pub fn add_3d_text(&mut self) {
+        self.add_title_kind(true);
+    }
+
+    fn add_title_kind(&mut self, solid: bool) {
         self.commit_live_edit();
         let s = self.seq();
         let rate = s.frame_rate;
@@ -1167,11 +1177,24 @@ impl Editor {
             }
         };
         let id = ClipId(self.project.alloc_id());
-        cmds.push(Box::new(AddClip { seq: self.active, track, clip: Clip::new_title(id, start, dur, spec) }));
-        self.execute(Box::new(Batch { name: "Add title".into(), cmds }));
+        if solid {
+            spec.text = "3D Text".into();
+            spec.size = (spec.size * 2.0).round();
+            spec.extrude = (spec.size * 0.4).round();
+            spec.shadow = false;
+            // Sides a shade darker than the letters, so the faces read clearly.
+            spec.side_color = Some([spec.color[0] / 2, spec.color[1] / 2, spec.color[2] / 2, spec.color[3]]);
+        }
+        let mut clip = Clip::new_title(id, start, dur, spec);
+        if solid {
+            clip.transform.three_d = true;
+            clip.transform.orientation = [-15.0, 25.0];
+        }
+        cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
+        self.execute(Box::new(Batch { name: if solid { "Add 3D text" } else { "Add title" }.into(), cmds }));
         self.follow_new_layer(track);
         self.select_only(Some(id));
-        self.status = "Added a title: type its text in the Controls panel".into();
+        self.status = if solid { "Added 3D text: type its text and set its depth in the Controls panel" } else { "Added a title: type its text in the Controls panel" }.into();
     }
 
     /// An energy blade on its own transparent layer above everything: as long
@@ -2639,6 +2662,20 @@ mod tests {
         e.undo();
         assert!(!e.seq().find_clip(id).unwrap().1.effects[0].params[blade::HILT_X].keys.is_animated(), "one undo step");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn adding_3d_text_makes_a_turned_extruded_3d_title() {
+        let mut e = editor();
+        e.add_3d_text();
+        let id = e.selection.unwrap();
+        let (_, c) = e.seq().find_clip(id).unwrap();
+        let spec = c.title.as_ref().unwrap();
+        assert!(spec.is_3d() && spec.extrude > 10.0 && !spec.shadow);
+        assert!(c.transform.three_d && c.transform.orientation != [0.0, 0.0]);
+        // One undo step takes it away again.
+        e.undo();
+        assert!(e.seq().find_clip(id).is_none());
     }
 
     #[test]

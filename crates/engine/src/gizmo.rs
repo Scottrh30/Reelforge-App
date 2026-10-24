@@ -377,7 +377,8 @@ impl Editor {
 
     /// Is this clip shown as a 3D layer (placed by the camera)?
     pub fn is_3d_layer(c: &reelforge_core::Clip, tr: &Transform) -> bool {
-        tr.three_d && c.mesh.is_none() && tr.pin.is_none()
+        // 3D text is always in 3D.
+        (tr.three_d || c.title.as_ref().is_some_and(|s| s.is_3d())) && c.mesh.is_none() && tr.pin.is_none()
     }
 
     /// How a clip's pixels (origin at its centre) land on the frame at the

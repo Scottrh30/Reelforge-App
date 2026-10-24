@@ -621,6 +621,7 @@ export const api = {
   addComposite: (index: number) => invoke("add_composite", { index }),
   openSequence: (index: number) => invoke("open_sequence", { index }),
   addTitle: () => invoke("add_title"),
+  add3dText: () => invoke("add_3d_text"),
   addBladeLayer: () => invoke("add_blade_layer"),
   /// A camera, or a light (0 point, 1 spot, 2 directional, 3 ambient).
   addScene: (camera: boolean, light: number) => invoke("add_scene", { camera, light }),
