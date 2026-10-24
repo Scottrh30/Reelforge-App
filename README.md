@@ -296,7 +296,15 @@ What works now:
   so jumping around is instant (8 s of 4K: ~1.5 s per random seek on the original, 3 ms on the
   proxy). The **Proxies on/off** button in the viewer switches between proxies and originals;
   export always uses the originals. Proxies are kept per file in your cache folder, so other
-  projects using the same footage reuse them
+  projects using the same footage reuse them. **Settings → Make proxies as** picks the format:
+  - **H.264** (the default): the smallest files, decoded on the graphics card
+  - **ProRes 422 Proxy**: 10-bit 4:2:2 colour, so grading looks closer to the original; about
+    three times the size
+  - **DNxHR LB**: 8-bit 4:2:2, the lightest for the processor
+  On one core, without the graphics card, a 960×540 frame of grainy footage decodes in about
+  1.8 ms as DNxHR LB, 2.6 ms as ProRes Proxy and 3.9 ms as H.264. ProRes and DNxHR proxies also
+  open in other editing programs as standard offline media. Proxies already made in another
+  format are still used; Settings offers to make them again in the new one
 - **Hardware decoding**: video is decoded on the graphics card where possible (D3D11VA on
   Windows, VAAPI on Linux, VideoToolbox on macOS), falling back to software automatically if
   the GPU can't handle a file
@@ -1097,8 +1105,9 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   `get_format`) and copies frames back with `av_hwframe_transfer_data`; any failure reopens
   the decoder in software and carries on from the same frame. `cache.rs` is a byte-budgeted
   LRU of decoded frames keyed by (file, decode size, pts) that every preview decoder fills and
-  reads. `proxy.rs` writes all-intra H.264 at ≤960×540, sampling the source once per nominal
-  frame so proxies line up with variable-frame-rate originals.
+  reads. `proxy.rs` writes all-intra H.264 (`.mp4`), ProRes 422 Proxy (`-prores.mov`) or
+  DNxHR LB (`-dnxhr.mov`) at ≤960×540, sampling the source once per nominal frame so proxies
+  line up with variable-frame-rate originals; any format's file is picked up.
 - **Safety** (`engine/src/safety.rs`): every save goes through `write_atomic` (write, fsync,
   rename). Each running app holds an OS file lock on its session file; at start-up, a session
   file nobody holds a lock on means that run crashed, and its autosave is offered back.

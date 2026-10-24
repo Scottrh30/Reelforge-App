@@ -155,23 +155,37 @@ fn proxies_are_small_all_keyframe_and_line_up_with_the_original() {
     }
     let info = probe(&path).unwrap();
     assert!(proxy::worth_a_proxy(&info));
-    let _ = std::fs::remove_file(proxy::proxy_path(&path));
-    let mut last = 0.0;
-    let out = proxy::make_proxy(&path, &info, &AtomicBool::new(false), |p| last = p).unwrap();
-    assert_eq!(last, 1.0);
-    assert_eq!(proxy::existing_proxy(&path), Some(out.clone()));
-    let pi = probe(&out).unwrap();
-    let v = pi.video.unwrap();
-    assert_eq!((v.width, v.height), (960, 540));
-    assert!((pi.duration.as_secs_f64() - 3.0).abs() < 0.1);
-    // Frame 40 of the proxy is frame 40 of the original (testsrc2 draws the frame number).
     let rate = FrameRate::new(25, 1);
     let t = Time::from_frame(40, rate);
-    let a = FrameSource::open(&path, Some((960, 540))).unwrap().frame_at_blocking(t, Duration::from_secs(5)).unwrap();
-    let b = FrameSource::open(&out, None).unwrap().frame_at_blocking(t, Duration::from_secs(5)).unwrap();
-    assert_eq!(b.pts.to_frame(rate), 40);
-    let diff: f64 = a.rgba().iter().zip(b.rgba().iter()).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as f64).sum::<f64>() / a.rgba().len() as f64;
-    assert!(diff < 4.0, "proxy frame differs from the original: {diff}");
+    let original = FrameSource::open(&path, Some((960, 540))).unwrap().frame_at_blocking(t, Duration::from_secs(5)).unwrap();
+    for (fmt, codec) in [(proxy::ProxyFormat::ProResProxy, "prores"), (proxy::ProxyFormat::DnxhrLb, "dnxhd"), (proxy::ProxyFormat::H264, "h264")] {
+        let _ = std::fs::remove_file(proxy::proxy_path_as(&path, fmt));
+        let mut last = 0.0;
+        let out = proxy::make_proxy_as(&path, &info, fmt, &AtomicBool::new(false), |p| last = p).unwrap();
+        assert_eq!(last, 1.0);
+        assert_eq!(proxy::format_of(&out), Some(fmt));
+        let pi = probe(&out).unwrap();
+        let v = pi.video.unwrap();
+        assert_eq!((v.width, v.height, v.codec.as_str()), (960, 540, codec), "{fmt:?}");
+        assert!((pi.duration.as_secs_f64() - 3.0).abs() < 0.1, "{fmt:?}");
+        // Frame 40 of the proxy is frame 40 of the original (testsrc2 draws the frame number).
+        let mut src = FrameSource::open(&out, None).unwrap();
+        let b = src.frame_at_blocking(t, Duration::from_secs(5)).unwrap();
+        assert_eq!(b.pts.to_frame(rate), 40, "{fmt:?}");
+        let diff: f64 = original.rgba().iter().zip(b.rgba().iter()).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as f64).sum::<f64>() / original.rgba().len() as f64;
+        assert!(diff < 4.0, "{fmt:?} proxy frame differs from the original: {diff}");
+        // Jumping about is quick: every frame is a keyframe.
+        let start = std::time::Instant::now();
+        for f in [70i64, 5, 55, 20, 63, 33] {
+            let got = src.frame_at_blocking(Time::from_frame(f, rate), Duration::from_secs(5)).unwrap();
+            assert_eq!(got.pts.to_frame(rate), f, "{fmt:?}");
+        }
+        eprintln!("{fmt:?}: {} bytes, {:.1} ms per random jump", std::fs::metadata(&out).unwrap().len(), start.elapsed().as_secs_f64() * 1000.0 / 6.0);
+    }
+    // Any format's proxy is found; the one in the current format first.
+    assert_eq!(proxy::existing_proxy(&path), Some(proxy::proxy_path_as(&path, proxy::format())));
+    let _ = std::fs::remove_file(proxy::proxy_path_as(&path, proxy::format()));
+    assert!(proxy::existing_proxy(&path).is_some_and(|p| proxy::format_of(&p) != Some(proxy::format())));
 }
 
 /// GoPro CineForm, 4:2:2 10-bit and 4:4:4:4 RGBA (with alpha), made with the ffmpeg CLI.
@@ -238,3 +252,4 @@ fn mpg_and_ts_seek_back_to_the_start() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+

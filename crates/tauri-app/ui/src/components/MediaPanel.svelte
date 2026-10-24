@@ -135,7 +135,7 @@
             {#if m.missing}
               <button class="flag bad" onclick={(e) => (e.stopPropagation(), run(api.relinkMedia(m.id)))} onpointerdown={(e) => e.stopPropagation()} title="Can't be found at {m.path}. Click to find it">Missing · Relink</button>
             {:else if m.proxy}
-              <span class="flag" class:bad={m.proxy === "failed"} class:ready={m.proxy === "ready"} title={m.proxy_error ?? (m.proxy === "ready" ? "A small copy for smooth editing; export uses the original" : "")}>{proxyLabel(m)}</span>
+              <span class="flag" class:bad={m.proxy === "failed"} class:ready={m.proxy === "ready"} title={m.proxy_error ?? (m.proxy === "ready" ? `A small ${m.proxy_format ?? ""} copy for smooth editing; export uses the original` : "")}>{proxyLabel(m)}</span>
             {/if}
           </div>
           <div class="name" title={m.path}>{m.name}</div>

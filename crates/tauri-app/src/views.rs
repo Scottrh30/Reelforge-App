@@ -63,6 +63,8 @@ pub struct MediaView {
     pub proxy: String,
     /// Why the proxy failed.
     pub proxy_error: Option<String>,
+    /// What the ready proxy is made as ("ProRes 422 Proxy"…).
+    pub proxy_format: Option<&'static str>,
     /// Footage that can have a proxy.
     pub proxyable: bool,
     pub detail: String,
@@ -393,6 +395,10 @@ pub fn state(e: &Editor) -> State {
                 Some(ProxyState::Failed(err)) => Some(err.clone()),
                 _ => None,
             };
+            let proxy_format = match e.proxies.state(&m.path) {
+                Some(ProxyState::Ready(p)) => reelforge_media::proxy::format_of(p).map(|f| f.label()),
+                _ => None,
+            };
             let proxy = match e.proxies.state(&m.path) {
                 None => String::new(),
                 Some(ProxyState::Queued) => "queued".into(),
@@ -426,6 +432,7 @@ pub fn state(e: &Editor) -> State {
                 missing: !m.path.exists(),
                 proxy,
                 proxy_error,
+                proxy_format,
                 proxyable: kind == "video",
                 detail: detail.join(" · "),
             }

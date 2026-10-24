@@ -42,6 +42,8 @@ pub struct Prefs {
     pub use_proxies: bool,
     /// Make proxies for big footage by themselves.
     pub auto_proxies: bool,
+    /// What new proxies are made as.
+    pub proxy_format: reelforge_media::proxy::ProxyFormat,
     /// Autosave every this many minutes (0 = never).
     pub autosave_minutes: u32,
     /// Size limit of the render cache.
@@ -69,6 +71,7 @@ impl Default for Prefs {
         Self {
             use_proxies: true,
             auto_proxies: true,
+            proxy_format: Default::default(),
             autosave_minutes: 2,
             render_cache_mb: 2048,
             export_presets: Vec::new(),
@@ -97,6 +100,21 @@ impl Editor {
         reelforge_media::codecs::set_enabled(self.prefs.native_decoders);
         reelforge_core::frame::zero_copy::set_enabled(self.prefs.zero_copy);
         reelforge_media::FrameCache::global().set_budget_mb(self.prefs.cache_mb.clamp(128, 65536));
+        reelforge_media::proxy::set_format(self.prefs.proxy_format);
+    }
+
+    /// Make every proxy again in the current format (those already in it stay).
+    /// Returns how many are being remade.
+    pub fn remake_proxies(&mut self) -> usize {
+        // Let go of the old proxy files first (Windows can't delete open files).
+        self.preview.reset();
+        let n = self.proxies.remake_all(&self.project);
+        self.status = match n {
+            0 => format!("Every proxy is already {}", reelforge_media::proxy::format().label()),
+            1 => format!("Making 1 proxy again as {}", reelforge_media::proxy::format().label()),
+            n => format!("Making {n} proxies again as {}", reelforge_media::proxy::format().label()),
+        };
+        n
     }
 }
 

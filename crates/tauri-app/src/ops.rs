@@ -111,6 +111,18 @@ pub fn proxies_delete_all() -> Res<()> {
     })
 }
 
+/// Make new proxies as `format` (saved in the settings), and remake the
+/// project's existing ones in it. Returns how many are being remade.
+#[tauri::command]
+pub fn proxies_remake(format: reelforge_media::proxy::ProxyFormat) -> Res<usize> {
+    ed(|e| {
+        e.prefs.proxy_format = format;
+        e.apply_prefs();
+        crate::save_settings(e);
+        e.remake_proxies()
+    })
+}
+
 /// Show proxies in the viewer (or the original files).
 #[tauri::command]
 pub fn proxies_use(on: bool) -> Res<()> {

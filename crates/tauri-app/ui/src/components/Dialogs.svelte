@@ -14,6 +14,19 @@
     }
   });
 
+  // Proxy formats, as the Media panel names them.
+  const formatLabels: Record<string, string> = { ProResProxy: "ProRes 422 Proxy", DnxhrLb: "DNxHR LB", H264: "H.264 (all keyframes)" };
+  const formatLabel = (f: string) => formatLabels[f] ?? f;
+  // Ready proxies in another format than the one chosen.
+  const remakeFrom = $derived(
+    prefs ? (app.s?.media ?? []).filter((m) => m.proxy === "ready" && m.proxy_format && m.proxy_format !== formatLabel(prefs!.proxy_format)).map((m) => m.proxy_format!) : [],
+  );
+  async function remake() {
+    if (!prefs) return;
+    await run(api.proxiesRemake(prefs.proxy_format));
+    info = await api.settingsInfo();
+  }
+
   function key(e: KeyboardEvent) {
     if (e.key !== "Escape") return;
     if (ask.open) ask.resolve(null);
@@ -51,6 +64,20 @@
       <h3>Proxies</h3>
       <label class="check" title="Small all-keyframe copies of heavy footage. Export always uses the original files."><input type="checkbox" bind:checked={prefs.use_proxies} /> Play proxies in the viewer when they're ready</label>
       <label class="check" title="Above 1080p, and 720p or more in HEVC, AV1, VP9, ProRes, DNxHD or CineForm. You can make one for any clip from the Media panel."><input type="checkbox" bind:checked={prefs.auto_proxies} /> Make proxies for heavy footage by themselves</label>
+      <label class="field" title="All three have every frame a keyframe, for instant jumps. H.264 is the smallest and decodes on the graphics card. ProRes 422 Proxy (10-bit) and DNxHR LB are 4:2:2 colour, about three times the size, lighter for the processor, and open in other editing programs as standard offline media.">
+        <span>Make proxies as</span>
+        <select bind:value={prefs.proxy_format}>
+          <option value="H264">H.264 (smallest files)</option>
+          <option value="ProResProxy">ProRes 422 Proxy (10-bit 4:2:2)</option>
+          <option value="DnxhrLb">DNxHR LB (4:2:2, lightest to decode)</option>
+        </select>
+      </label>
+      {#if remakeFrom.length}
+        <p class="info">
+          {remakeFrom.length} {remakeFrom.length === 1 ? "proxy is" : "proxies are"} in another format ({[...new Set(remakeFrom)].join(", ")}). They're still used.
+          <button class="link" onclick={remake}>Make {remakeFrom.length === 1 ? "it" : "them"} again as {formatLabel(prefs.proxy_format)}</button>
+        </p>
+      {/if}
       {#if info}<p class="info">{info.proxies} prox{info.proxies === 1 ? "y" : "ies"}, {info.proxy_bytes >= 1e9 ? `${(info.proxy_bytes / 1e9).toFixed(1)} GB` : `${Math.round(info.proxy_bytes / 1e6)} MB`}</p>{/if}
       <div class="row">
         <button onclick={async () => run(api.openFolder(await api.proxyFolder()))}>Open the proxy folder</button>
@@ -199,5 +226,14 @@
   .field-in {
     width: 100%;
     margin: 4px 0 12px;
+  }
+  button.link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
   }
 </style>

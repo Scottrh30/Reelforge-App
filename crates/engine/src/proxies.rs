@@ -169,6 +169,24 @@ impl Proxies {
         h.finish()
     }
 
+    /// Make the project's proxies that are in another format again in the
+    /// current one (deleting the old files). Returns how many were queued.
+    pub fn remake_all(&mut self, project: &Project) -> usize {
+        let now = proxy::format();
+        let mut n = 0;
+        for m in &project.media {
+            let Some(old) = proxy::existing_proxy(&m.path) else { continue };
+            if proxy::format_of(&old) == Some(now) || m.info.video.is_none() {
+                continue;
+            }
+            let _ = std::fs::remove_file(&old);
+            self.states.remove(&m.path);
+            self.request(&m.path, &m.info);
+            n += 1;
+        }
+        n
+    }
+
     /// Delete every proxy file (in use ones may stay until they're closed).
     pub fn delete_all(&mut self) {
         let dir = proxy::cache_dir().join("proxies");
@@ -187,5 +205,44 @@ impl Proxies {
 impl Drop for Proxies {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reelforge_core::{FrameRate, MediaAsset, MediaId, Rational, Time, VideoStreamInfo};
+
+    #[test]
+    fn remaking_replaces_proxies_in_another_format() {
+        let dir = std::env::temp_dir().join(format!("rf-remake-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("clip.mov");
+        std::fs::write(&src, b"not really video").unwrap();
+        // An H.264 proxy made earlier.
+        let old = proxy::proxy_path_as(&src, proxy::ProxyFormat::H264);
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, b"old proxy").unwrap();
+        let mut p = Project::new();
+        let info = MediaInfo {
+            duration: Time::from_secs_f64(1.0),
+            video: Some(VideoStreamInfo { width: 3840, height: 2160, frame_rate: FrameRate::new(25, 1), codec: "h264".into(), time_base: Rational::new(1, 25) }),
+            audio: None,
+            container: String::new(),
+        };
+        p.media.push(MediaAsset { id: MediaId(1), path: src.clone(), name: "clip.mov".into(), info });
+        let mut px = Proxies::new();
+        px.refresh(&p, false);
+        assert!(matches!(px.state(&src), Some(ProxyState::Ready(f)) if *f == old), "the old proxy is used");
+        // Still H.264: nothing to do.
+        assert_eq!(px.remake_all(&p), 0);
+        assert!(old.exists());
+        proxy::set_format(proxy::ProxyFormat::DnxhrLb);
+        let n = px.remake_all(&p);
+        proxy::set_format(proxy::ProxyFormat::H264);
+        assert_eq!(n, 1);
+        assert!(!old.exists(), "the old one is deleted");
+        assert!(!matches!(px.state(&src), Some(ProxyState::Ready(_))), "and a new one is on its way");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

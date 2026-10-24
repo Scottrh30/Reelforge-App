@@ -24,6 +24,8 @@ export interface Transform {
 
 export type Blend = "Normal" | "Add" | "Multiply" | "Screen";
 
+export type ProxyFormat = "ProResProxy" | "DnxhrLb" | "H264";
+
 export interface TitleSpec {
   text: string;
   size: number;
@@ -57,6 +59,8 @@ export interface MediaView {
   missing: boolean;
   proxy: string;
   proxy_error: string | null;
+  /** What a ready proxy is made as ("ProRes 422 Proxy"…). */
+  proxy_format: string | null;
   proxyable: boolean;
   detail: string;
 }
@@ -319,6 +323,7 @@ export interface TrackerView {
 export interface Prefs {
   use_proxies: boolean;
   auto_proxies: boolean;
+  proxy_format: ProxyFormat;
   autosave_minutes: number;
   render_cache_mb: number;
   export_presets: UserPreset[];
@@ -711,6 +716,7 @@ export const api = {
   proxyMake: (media: number) => invoke("proxy_make", { media }),
   proxyDelete: (media: number) => invoke("proxy_delete", { media }),
   proxiesDeleteAll: () => invoke("proxies_delete_all"),
+  proxiesRemake: (format: ProxyFormat) => invoke<number>("proxies_remake", { format }),
   proxiesUse: (on: boolean) => invoke("proxies_use", { on }),
   proxyFolder: () => invoke<string>("proxy_folder"),
   relinkMedia: (media: number) => invoke("relink_media", { media }),

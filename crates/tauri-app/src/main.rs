@@ -1132,6 +1132,7 @@ fn main() {
             ops::proxy_make,
             ops::proxy_delete,
             ops::proxies_delete_all,
+            ops::proxies_remake,
             ops::proxies_use,
             ops::proxy_folder,
             ops::relink_media,

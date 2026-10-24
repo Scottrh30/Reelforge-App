@@ -9,8 +9,15 @@
 //! Proxies live in the user's cache folder, named after the source file and
 //! a hash of its path, size and modification time, so they're found again for
 //! any project that uses the same file and are rebuilt if the file changes.
+//!
+//! Three formats ([`ProxyFormat`]): all-keyframe H.264 (the default) is the
+//! smallest on disk and decodes on the graphics card; ProRes 422 Proxy and
+//! DNxHR LB are 10-bit (ProRes) or 8-bit 4:2:2, three times the size, lighter
+//! for the processor than Reelforge's own H.264 decoder, and open in other
+//! editing programs as standard offline media. A proxy already made in
+//! another format is still used.
 
-use crate::encode::{MovieWriter, Quality, WriterSettings};
+use crate::encode::{MovieWriter, Quality, VideoCodec, WriterSettings};
 use crate::source::FrameSource;
 use anyhow::{anyhow, bail, Context as _, Result};
 use reelforge_core::{MediaInfo, Time};
@@ -20,6 +27,58 @@ use std::time::Duration;
 
 /// Proxies fit inside this size.
 pub const PROXY_MAX: (u32, u32) = (960, 540);
+
+/// What proxies are made as.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ProxyFormat {
+    /// H.264 with every frame a keyframe (.mp4): the smallest.
+    #[default]
+    H264,
+    /// Apple ProRes 422 Proxy (.mov): 10-bit 4:2:2, light to decode.
+    ProResProxy,
+    /// Avid DNxHR LB (.mov): 8-bit 4:2:2, the lightest to decode.
+    DnxhrLb,
+}
+
+impl ProxyFormat {
+    pub const ALL: [ProxyFormat; 3] = [ProxyFormat::H264, ProxyFormat::ProResProxy, ProxyFormat::DnxhrLb];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ProxyFormat::ProResProxy => "ProRes 422 Proxy",
+            ProxyFormat::DnxhrLb => "DNxHR LB",
+            ProxyFormat::H264 => "H.264 (all keyframes)",
+        }
+    }
+
+    /// The end of the file name, which tells the formats apart.
+    fn suffix(self) -> &'static str {
+        match self {
+            ProxyFormat::ProResProxy => "-prores.mov",
+            ProxyFormat::DnxhrLb => "-dnxhr.mov",
+            ProxyFormat::H264 => ".mp4",
+        }
+    }
+
+    fn codec(self) -> VideoCodec {
+        match self {
+            ProxyFormat::ProResProxy => VideoCodec::ProRes422Proxy,
+            ProxyFormat::DnxhrLb => VideoCodec::DnxhrLb,
+            ProxyFormat::H264 => VideoCodec::H264,
+        }
+    }
+}
+
+static FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The format new proxies are made in (Settings).
+pub fn set_format(f: ProxyFormat) {
+    FORMAT.store(ProxyFormat::ALL.iter().position(|x| *x == f).unwrap_or(0) as u8, Ordering::Relaxed);
+}
+
+pub fn format() -> ProxyFormat {
+    ProxyFormat::ALL[(FORMAT.load(Ordering::Relaxed) as usize).min(ProxyFormat::ALL.len() - 1)]
+}
 
 /// Where proxies (and other caches) are kept.
 pub fn cache_dir() -> PathBuf {
@@ -34,8 +93,13 @@ pub fn cache_dir() -> PathBuf {
     base.unwrap_or_else(|| std::env::temp_dir().join("reelforge"))
 }
 
-/// The proxy file for `src` (whether or not it exists yet).
+/// The proxy file for `src` in the current format (whether or not it exists yet).
 pub fn proxy_path(src: &Path) -> PathBuf {
+    proxy_path_as(src, format())
+}
+
+/// The proxy file for `src` in format `f`.
+pub fn proxy_path_as(src: &Path, f: ProxyFormat) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     std::path::absolute(src).unwrap_or_else(|_| src.to_owned()).hash(&mut h);
@@ -47,13 +111,20 @@ pub fn proxy_path(src: &Path) -> PathBuf {
     }
     let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let stem: String = stem.chars().filter(|c| c.is_alphanumeric() || "-_ ".contains(*c)).take(40).collect();
-    cache_dir().join("proxies").join(format!("{stem}-{:016x}.mp4", h.finish()))
+    cache_dir().join("proxies").join(format!("{stem}-{:016x}{}", h.finish(), f.suffix()))
 }
 
-/// The proxy for `src`, if one has been made.
+/// Which format a proxy file is in (from its name).
+pub fn format_of(path: &Path) -> Option<ProxyFormat> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    // The H.264 suffix (".mp4") is the most general: check it last.
+    ProxyFormat::ALL.into_iter().rev().find(|f| name.ends_with(f.suffix()) && f.suffix() != ".mp4").or_else(|| name.ends_with(".mp4").then_some(ProxyFormat::H264))
+}
+
+/// The proxy for `src`, if one has been made: in the current format, else in any other.
 pub fn existing_proxy(src: &Path) -> Option<PathBuf> {
-    let p = proxy_path(src);
-    p.is_file().then_some(p)
+    let now = format();
+    std::iter::once(now).chain(ProxyFormat::ALL.into_iter().filter(|f| *f != now)).map(|f| proxy_path_as(src, f)).find(|p| p.is_file())
 }
 
 /// Is this footage heavy enough that a proxy is worth making automatically?
@@ -70,8 +141,13 @@ pub fn worth_a_proxy(info: &MediaInfo) -> bool {
 
 /// Make the proxy for `src`. Calls `progress` with 0–1 as it goes; set
 /// `cancel` to stop (the partial file is removed). Returns the proxy's path.
-pub fn make_proxy(src: &Path, info: &MediaInfo, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<PathBuf> {
-    let dst = proxy_path(src);
+pub fn make_proxy(src: &Path, info: &MediaInfo, cancel: &AtomicBool, progress: impl FnMut(f32)) -> Result<PathBuf> {
+    make_proxy_as(src, info, format(), cancel, progress)
+}
+
+/// The same, in format `fmt`.
+pub fn make_proxy_as(src: &Path, info: &MediaInfo, fmt: ProxyFormat, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<PathBuf> {
+    let dst = proxy_path_as(src, fmt);
     if dst.is_file() {
         return Ok(dst);
     }
@@ -79,7 +155,9 @@ pub fn make_proxy(src: &Path, info: &MediaInfo, cancel: &AtomicBool, mut progres
     let rate = v.frame_rate;
     let frames = info.duration.to_frame(rate).max(1);
     std::fs::create_dir_all(dst.parent().unwrap()).context("creating the proxy folder")?;
-    let tmp = dst.with_extension("partial.mp4");
+    // Same extension, so the writer picks the same container.
+    let ext = dst.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
+    let tmp = dst.with_extension(format!("partial.{ext}"));
 
     let mut source = FrameSource::open(src, Some(PROXY_MAX))?;
     let first = source.frame_at_blocking(Time::ZERO, Duration::from_secs(30)).ok_or_else(|| anyhow!("no frames"))?;
@@ -91,6 +169,7 @@ pub fn make_proxy(src: &Path, info: &MediaInfo, cancel: &AtomicBool, mut progres
         quality: Quality::Medium,
         audio_rate: None,
         proxy: true,
+        video: Some(fmt.codec()),
         ..Default::default()
     })?;
     let blank = vec![0u8; (first.width * first.height * 4) as usize];
@@ -135,6 +214,22 @@ mod tests {
         assert!(!worth_a_proxy(&info(1920, 1080, "h264", 10.0)));
         assert!(worth_a_proxy(&info(1920, 1080, "hevc", 10.0)));
         assert!(!worth_a_proxy(&info(3840, 2160, "png", 0.0)), "stills never");
+    }
+
+    #[test]
+    fn each_format_has_its_own_file_and_any_one_is_used() {
+        let dir = std::env::temp_dir().join(format!("rf-proxyfmt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("clip.mov");
+        std::fs::write(&src, b"x").unwrap();
+        let names: Vec<PathBuf> = ProxyFormat::ALL.iter().map(|f| proxy_path_as(&src, *f)).collect();
+        assert!(names[0] != names[1] && names[1] != names[2] && names[0] != names[2]);
+        for (f, n) in ProxyFormat::ALL.iter().zip(&names) {
+            assert_eq!(format_of(n), Some(*f), "{}", n.display());
+        }
+        assert_eq!(names[0].extension().unwrap(), "mp4", "H.264 proxies keep their old names");
+        assert_eq!(format(), ProxyFormat::H264, "the default");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
