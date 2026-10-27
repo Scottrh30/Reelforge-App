@@ -108,6 +108,8 @@
           <div class="row pointrow">
             <span class="lbl">Point {pt + 1}</span>
             <button class="small" onclick={() => run(api.maskPointCurve(ins.id, i, pt))} title="Double-click the point in the Viewer does the same">{curved ? "Make sharp" : "Make curve"}</button>
+            <button class="small" onclick={async () => { const at = await run(api.maskPointAdd(ins.id, i, pt, false)); if (typeof at === "number") app.activeMaskPoint = at; }} title="Add a point halfway to the next one (right-click a point in the Viewer for more)">Add point</button>
+            <button class="small" disabled={mv.handles.length <= 3} onclick={async () => { if (await run(api.maskPointDelete(ins.id, i, pt))) app.activeMaskPoint = Math.min(pt, mv.handles.length - 2); }} title={mv.handles.length <= 3 ? "A mask keeps at least three points" : "Delete this point"}>Delete</button>
             <span class="lbl" title="The soft edge at this point; it blends into the next points' along the sides">Feather here</span>
             <NumberField label="Feather at this point" value={own >= 0 ? own : m.feather} min={0} max={1000} step={0.5} digits={0} suffix=" px" oninput={(v) => change(i, (n) => pointFeather(n, pt, mv.handles.length, v), false)} oncommit={commit} />
             {#if own >= 0}
@@ -115,7 +117,7 @@
             {/if}
           </div>
         {:else}
-          <p class="note">Click a point in the Viewer to give it its own feather. Double-click a point to make it a curve, or Alt-drag one to pull out its handles.</p>
+          <p class="note">Click a point in the Viewer to give it its own feather. Double-click a point to make it a curve, or Alt-drag one to pull out its handles. Right-click a point to add points beside it or delete it.</p>
         {/if}
       {/if}
       <div class="row">

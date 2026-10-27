@@ -725,6 +725,18 @@ fn set_mask_curves(id: u64, index: usize, curves: Vec<[f32; 4]>) -> Res<()> {
     ed(|e| e.set_mask_curves_live(clip(id), index, curves))
 }
 
+/// Add a point to a mask halfway along the side after (or before) `point`: the new point's index.
+#[tauri::command]
+fn mask_point_add(id: u64, index: usize, point: usize, before: bool) -> Res<Option<usize>> {
+    ed(|e| e.add_mask_point(clip(id), index, point, before))
+}
+
+/// Delete a mask point (a mask keeps at least three).
+#[tauri::command]
+fn mask_point_delete(id: u64, index: usize, point: usize) -> Res<bool> {
+    ed(|e| e.delete_mask_point(clip(id), index, point))
+}
+
 /// Turn a mask point into a smooth curve, or back into a corner.
 #[tauri::command]
 fn mask_point_curve(id: u64, index: usize, point: usize) -> Res<()> {
@@ -1072,6 +1084,8 @@ fn main() {
             auto_duck,
             remove_ducking,
             mask_point_curve,
+            mask_point_add,
+            mask_point_delete,
             mask_op,
             tracker_add,
             tracker_mode,

@@ -435,6 +435,13 @@ What works now:
     smooth curve with two handles, or **Alt-drag** a point to pull its handles out. Dragging one
     handle turns the other to keep the curve smooth through the point; **Alt** bends just that
     side. Double-click again for a sharp corner. Rectangles and freehand masks can be curved
+  - **Adding and deleting points**: right-click a point in the Viewer for **Add a point after
+    this one** / **before this one** (halfway along that side, on the curve if it's curved, so
+    the shape doesn't change), **Delete point** (a mask keeps at least three) and curve / sharp
+    corner; the Masks panel has **Add point** and **Delete** for the selected point too. Each is
+    one undo step, and an animated mask gets the point in every keyframe so it still blends
+    between them. Adding a point to a rectangle makes it a freehand mask; ellipses have no
+    points to add
   - **Feather per point**: click a point, then set **Feather here** in the Masks panel; the
     feather blends between points along the sides (**Reset** goes back to the mask's feather)
   - **Animate shape**: once ticked, reshaping the mask (points and handles) at the playhead

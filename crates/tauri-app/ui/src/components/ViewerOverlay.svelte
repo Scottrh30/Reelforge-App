@@ -7,6 +7,7 @@
   import { finishDrawing } from "../lib/actions.svelte";
   import { layerToFrame, frameToLayer, inside } from "../lib/geom";
   import { livePump } from "../lib/live";
+  import { openMenu } from "../lib/menu.svelte";
 
   let { fit, box }: { fit: { k: number; x: number; y: number }; box: HTMLElement | undefined } = $props();
 
@@ -48,6 +49,32 @@
 
   /// Drag mask `index`: one point (`point`), all of them (`null`), or resize
   /// it about its centre (`"resize"`; Shift changes only its width or height).
+  /// Right-click on a mask point: add points beside it, delete it, curve it.
+  function pointMenu(e: MouseEvent, index: number, point: number) {
+    if (!ins) return;
+    const id = ins.id;
+    const m = ins.masks[index];
+    app.activeMask = { clip: id, index };
+    app.activeMaskPoint = point;
+    const ellipse = m.mask.shape === "Ellipse";
+    const n = m.handles.length;
+    const add = async (before: boolean) => {
+      const at = await run(api.maskPointAdd(id, index, point, before));
+      if (typeof at === "number") app.activeMaskPoint = at;
+    };
+    const curved = isCurved(m.curves[point]);
+    openMenu(e, [
+      { heading: true, label: `${m.mask.name} · point ${point + 1}` },
+      { label: ellipse ? "Add a point (not on an ellipse)" : "Add a point after this one", disabled: ellipse, run: () => add(false) },
+      { label: "Add a point before this one", disabled: ellipse, run: () => add(true) },
+      { label: n <= 3 ? "Delete point (a mask keeps three)" : "Delete point", disabled: ellipse || n <= 3, run: async () => {
+        if (await run(api.maskPointDelete(id, index, point))) app.activeMaskPoint = Math.min(point, n - 2);
+      } },
+      { separator: true },
+      { label: curved ? "Make a sharp corner" : "Make a smooth curve", hint: "Double-click", disabled: ellipse, run: () => run(api.maskPointCurve(id, index, point)) },
+    ]);
+  }
+
   function dragMask(e: PointerEvent, index: number, point: number | null | "resize") {
     if (e.button !== 0 || !ins || !inv || app.live?.playing) return;
     e.stopPropagation();
@@ -409,8 +436,9 @@
             stroke={MASK}
             onpointerdown={(e) => dragMask(e, i, j)}
             ondblclick={(e) => (e.stopPropagation(), m.mask.shape !== "Ellipse" && run(api.maskPointCurve(ins.id, i, j)))}
+            oncontextmenu={(e) => pointMenu(e, i, j)}
             role="presentation"
-          ><title>Drag to move this point · Alt-drag to pull out a curve · double-click: curve / sharp corner</title></rect>
+          ><title>Drag to move this point · Alt-drag to pull out a curve · double-click: curve / sharp corner · right-click: add or delete points</title></rect>
         {/each}
       {/if}
     {/each}

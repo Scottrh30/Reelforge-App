@@ -1926,6 +1926,47 @@ impl Editor {
         self.status = if curved { format!("Point {} is a sharp corner", point + 1) } else { format!("Point {} is a smooth curve: drag its handles to shape it", point + 1) };
     }
 
+    /// Add a point to mask `index` halfway along the side after point `point`
+    /// (or before it), keeping the shape. One undo step. Returns the new
+    /// point's index.
+    pub fn add_mask_point(&mut self, id: ClipId, index: usize, point: usize, before: bool) -> Option<usize> {
+        self.commit_live_edit();
+        let mut v = self.visual(id)?;
+        let m = v.masks.get_mut(index)?;
+        let n = m.points.len().max(m.keys.first().map_or(0, |k| k.points.len()));
+        if n == 0 {
+            return None;
+        }
+        let side = if before { (point + n - 1) % n } else { point };
+        let was_rect = m.shape == reelforge_core::mask::MaskShape::Rectangle;
+        let Some(new) = m.insert_point_after(side) else {
+            self.status = "An ellipse has no points to add: use a freehand mask for that".into();
+            return None;
+        };
+        if was_rect && m.name.starts_with("Rectangle") {
+            m.name = m.name.replacen("Rectangle", "Freehand", 1);
+        }
+        self.set_visual_live(id, v);
+        self.commit_live_edit();
+        self.status = format!("Added point {}: drag it to shape the mask{}", new + 1, if was_rect { " (it's a freehand mask now)" } else { "" });
+        Some(new)
+    }
+
+    /// Take point `point` out of mask `index` (a mask keeps at least three). One undo step.
+    pub fn delete_mask_point(&mut self, id: ClipId, index: usize, point: usize) -> bool {
+        self.commit_live_edit();
+        let Some(mut v) = self.visual(id) else { return false };
+        let Some(m) = v.masks.get_mut(index) else { return false };
+        if !m.remove_point(point) {
+            self.status = "A mask needs at least three points".into();
+            return false;
+        }
+        self.set_visual_live(id, v);
+        self.commit_live_edit();
+        self.status = format!("Deleted point {}", point + 1);
+        true
+    }
+
     // ---- Automatic ducking ----------------------------------------------------------
 
     /// Peaks of a media item's sound (`WAVEFORM_RATE` per second), worked out
@@ -3183,6 +3224,34 @@ mod tests {
         assert_eq!(f.seq().tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 1);
         assert!(!f.is_dirty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mask_points_can_be_added_and_deleted_one_step_each() {
+        let mut e = editor();
+        e.add_title();
+        let id = e.selection.unwrap();
+        let size = { let c = e.seq().find_clip(id).unwrap().1.clone(); e.layer_size(&c) };
+        let i = e.add_mask(id, Mask::centred(reelforge_core::mask::MaskShape::Rectangle, size)).unwrap();
+        let pts = |e: &Editor| e.seq().find_clip(id).unwrap().1.masks[i].points.clone();
+        let orig = pts(&e);
+        let steps = e.undo.position();
+        // After point 0: between points 0 and 1; before point 0: between the last and the first.
+        assert_eq!(e.add_mask_point(id, i, 0, false), Some(1));
+        let p = pts(&e);
+        assert_eq!(p.len(), 5);
+        assert_eq!(p[1], [(orig[0][0] + orig[1][0]) / 2.0, (orig[0][1] + orig[1][1]) / 2.0]);
+        assert_eq!(e.seq().find_clip(id).unwrap().1.masks[i].shape, reelforge_core::mask::MaskShape::Freehand);
+        assert!(e.seq().find_clip(id).unwrap().1.masks[i].name.starts_with("Freehand"));
+        assert_eq!(e.add_mask_point(id, i, 0, true), Some(5));
+        assert_eq!(pts(&e)[5], [(orig[3][0] + orig[0][0]) / 2.0, (orig[3][1] + orig[0][1]) / 2.0]);
+        assert_eq!(e.undo.position(), steps + 2);
+        assert!(e.delete_mask_point(id, i, 5));
+        assert_eq!(pts(&e).len(), 5);
+        e.undo();
+        e.undo();
+        e.undo();
+        assert_eq!(pts(&e), orig);
     }
 
     #[test]

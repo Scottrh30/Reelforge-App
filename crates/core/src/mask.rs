@@ -219,6 +219,60 @@ impl Mask {
         }
     }
 
+    /// Add a point halfway along the side from point `i` to the next one
+    /// (on the curve, if the side is curved, which keeps its shape), in the
+    /// shape and in every shape keyframe so they stay alike. A rectangle
+    /// becomes a freehand shape. Returns the new point's index, or `None`
+    /// for an ellipse or a bad index.
+    pub fn insert_point_after(&mut self, i: usize) -> Option<usize> {
+        let n = self.points.len().max(self.keys.first().map_or(0, |k| k.points.len()));
+        if self.shape == MaskShape::Ellipse || i >= n || n < 2 {
+            return None;
+        }
+        split_side(&mut self.points, &mut self.curves, i);
+        for k in &mut self.keys {
+            split_side(&mut k.points, &mut k.curves, i);
+        }
+        if self.feathers.iter().any(|&f| f >= 0.0) {
+            // Halfway between its neighbours' feathers (a missing one is the mask's).
+            let own = |j: usize| self.feathers.get(j % n).copied().filter(|f| *f >= 0.0);
+            let mid = match (own(i), own(i + 1)) {
+                (None, None) => -1.0,
+                (a, b) => (a.unwrap_or(self.feather) + b.unwrap_or(self.feather)) / 2.0,
+            };
+            self.feathers.resize(n, -1.0);
+            self.feathers.insert(i + 1, mid);
+        }
+        self.shape = MaskShape::Freehand;
+        Some(i + 1)
+    }
+
+    /// Take point `i` out of the shape and every keyframe. A shape keeps at
+    /// least three points (returns false then, and for an ellipse).
+    pub fn remove_point(&mut self, i: usize) -> bool {
+        let n = self.points.len().max(self.keys.first().map_or(0, |k| k.points.len()));
+        if self.shape == MaskShape::Ellipse || i >= n || n <= 3 {
+            return false;
+        }
+        let drop = |pts: &mut Vec<[f32; 2]>, curves: &mut Vec<[f32; 4]>| {
+            if i < pts.len() {
+                pts.remove(i);
+            }
+            if i < curves.len() {
+                curves.remove(i);
+            }
+        };
+        drop(&mut self.points, &mut self.curves);
+        for k in &mut self.keys {
+            drop(&mut k.points, &mut k.curves);
+        }
+        if i < self.feathers.len() {
+            self.feathers.remove(i);
+        }
+        self.shape = MaskShape::Freehand;
+        true
+    }
+
     /// Does the shape have any curved sides at `t`?
     pub fn is_curved(&self, t: Time) -> bool {
         self.shape != MaskShape::Ellipse && self.curves_at(t).iter().any(|c| c.iter().any(|v| *v != 0.0))
@@ -488,9 +542,97 @@ fn shape_alpha(poly: &[[f32; 2]], feathers: &[f32], w: usize, h: usize, expansio
         .collect()
 }
 
+/// Split the side from point `i` to the next of a closed shape in two at its
+/// middle: a straight side at its midpoint, a curved one on the curve (de
+/// Casteljau), with the handles either side shortened so the shape is unchanged.
+fn split_side(points: &mut Vec<[f32; 2]>, curves: &mut Vec<[f32; 4]>, i: usize) {
+    let n = points.len();
+    if i >= n || n < 2 {
+        return;
+    }
+    curves.resize(n, [0.0; 4]);
+    let j = (i + 1) % n;
+    let (p0, p3) = (points[i], points[j]);
+    let out = [curves[i][2], curves[i][3]];
+    let inn = [curves[j][0], curves[j][1]];
+    let mid = |a: [f32; 2], b: [f32; 2]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+    let sub = |a: [f32; 2], b: [f32; 2]| [a[0] - b[0], a[1] - b[1]];
+    if out == [0.0, 0.0] && inn == [0.0, 0.0] {
+        points.insert(i + 1, mid(p0, p3));
+        curves.insert(i + 1, [0.0; 4]);
+        return;
+    }
+    let p1 = [p0[0] + out[0], p0[1] + out[1]];
+    let p2 = [p3[0] + inn[0], p3[1] + inn[1]];
+    let (p01, p12, p23) = (mid(p0, p1), mid(p1, p2), mid(p2, p3));
+    let (p012, p123) = (mid(p01, p12), mid(p12, p23));
+    let m = mid(p012, p123);
+    let o = sub(p01, p0);
+    curves[i][2] = o[0];
+    curves[i][3] = o[1];
+    let ni = sub(p23, p3);
+    curves[j][0] = ni[0];
+    curves[j][1] = ni[1];
+    let (mi, mo) = (sub(p012, m), sub(p123, m));
+    points.insert(i + 1, m);
+    curves.insert(i + 1, [mi[0], mi[1], mo[0], mo[1]]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Area inside a polygon (shoelace).
+    fn area(p: &[[f32; 2]]) -> f32 {
+        (0..p.len()).map(|i| { let (a, b) = (p[i], p[(i + 1) % p.len()]); a[0] * b[1] - b[0] * a[1] }).sum::<f32>().abs() / 2.0
+    }
+
+    #[test]
+    fn adding_a_point_keeps_the_shape_and_its_keyframes_alike() {
+        let square = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
+        let mut m = Mask { shape: MaskShape::Rectangle, points: square.clone(), ..Default::default() };
+        // Straight side: the midpoint; the rectangle becomes freehand.
+        assert_eq!(m.insert_point_after(1), Some(2));
+        assert_eq!(m.points[2], [100.0, 50.0]);
+        assert_eq!(m.shape, MaskShape::Freehand);
+        assert_eq!(m.curves_at(Time::ZERO).len(), 5);
+        // The last side wraps round to the first point.
+        assert_eq!(m.insert_point_after(4), Some(5));
+        assert_eq!(m.points[5], [0.0, 50.0]);
+        // A curved side: the new point is on the curve and the outline is unchanged.
+        let mut c = Mask { shape: MaskShape::Freehand, points: square.clone(), curves: vec![[0.0; 4], [0.0, 0.0, 40.0, 30.0], [20.0, -30.0, 0.0, 0.0], [0.0; 4]], ..Default::default() };
+        let before = area(&c.outline(Time::ZERO));
+        c.insert_point_after(1);
+        assert_eq!(c.points.len(), 5);
+        let after = area(&c.outline(Time::ZERO));
+        assert!((before - after).abs() < before * 0.01, "{before} {after}");
+        assert!(c.points[2][0] > 100.0, "out on the bulge: {:?}", c.points[2]);
+        // Animated: every key gets the point, so the shape still blends between them.
+        let mut a = Mask { shape: MaskShape::Freehand, points: square.clone(), ..Default::default() };
+        a.keys = vec![ShapeKey::new(Time::ZERO, square.clone()), ShapeKey::new(Time::from_secs_f64(1.0), square.iter().map(|p| [p[0] * 2.0, p[1]]).collect())];
+        a.insert_point_after(0);
+        assert!(a.keys.iter().all(|k| k.points.len() == 5));
+        assert_eq!(a.points_at(Time::from_secs_f64(0.5))[1], [75.0, 0.0]);
+        // Per-point feathers: the new point's is halfway between its neighbours'.
+        let mut f = Mask { shape: MaskShape::Freehand, points: square.clone(), feather: 10.0, feathers: vec![-1.0, 30.0, -1.0, -1.0], ..Default::default() };
+        f.insert_point_after(0);
+        assert_eq!(f.feathers, vec![-1.0, 20.0, 30.0, -1.0, -1.0]);
+        // Ellipses have no points to add.
+        assert_eq!(Mask { shape: MaskShape::Ellipse, points: square.clone(), ..Default::default() }.insert_point_after(0), None);
+    }
+
+    #[test]
+    fn removing_points_leaves_at_least_three() {
+        let mut m = Mask { shape: MaskShape::Freehand, points: vec![[0.0, 0.0], [50.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]], curves: vec![[0.0; 4], [1.0, 2.0, 3.0, 4.0], [0.0; 4], [0.0; 4], [0.0; 4]], ..Default::default() };
+        m.keys = vec![ShapeKey::new(Time::ZERO, m.points.clone())];
+        assert!(m.remove_point(1));
+        assert_eq!(m.points, vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]]);
+        assert_eq!(m.curves.len(), 4);
+        assert_eq!(m.keys[0].points.len(), 4);
+        assert!(m.remove_point(0));
+        assert!(!m.remove_point(0), "three points stay");
+        assert_eq!(m.points.len(), 3);
+    }
 
     fn at(img: &MaskImage, x: u32, y: u32) -> u8 {
         img.data[(y * img.width + x) as usize]
