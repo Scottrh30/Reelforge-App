@@ -13,7 +13,7 @@
 //! | MPEG-2 | [`mpeg2`] | Main and 4:2:2 profiles: I/P/B, frame and field pictures, all motion types; Reelforge's own |
 //! | H.264, HEVC, VP9, AV1 | `external` | pure-Rust decoder libraries: H.264 progressive 8-bit 4:2:0 (Baseline/Main/High), HEVC Main/Main 10, VP9 profiles 0–3, AV1 Main |
 //! | Apple ProRes | [`prores`] | 422 Proxy/LT/Standard/HQ, 4444/XQ with alpha, progressive and interlaced; Reelforge's own |
-//! | GoPro CineForm | [`cineform`] | YUV 4:2:2 10-bit, RGB and RGBA 12-bit, intra and two-frame groups, progressive and interlaced; Reelforge's own (Bayer RAW goes to FFmpeg) |
+//! | GoPro CineForm | [`cineform`] | YUV 4:2:2 10-bit, RGB and RGBA 12-bit, RAW (Bayer mosaic), intra and two-frame groups, progressive and interlaced; Reelforge's own |
 //!
 //! Every decoder is checked against FFmpeg's output in the media crate's tests.
 
@@ -99,6 +99,9 @@ pub enum Format {
     Gbrp12,
     /// Planar RGB with alpha: green, blue, red, alpha (CineForm RGBA).
     Gbrap12,
+    /// A raw camera sensor picture: one plane, a red-green / green-blue
+    /// mosaic of 16-bit samples (CineForm RAW), for demosaicing later.
+    BayerRggb16,
 }
 
 impl Format {
@@ -110,7 +113,7 @@ impl Format {
     }
     pub fn planes(self) -> usize {
         match self {
-            Format::Gray8 => 1,
+            Format::Gray8 | Format::BayerRggb16 => 1,
             Format::Yuva444P10 | Format::Yuva444P12 | Format::Gbrap12 => 4,
             _ => 3,
         }

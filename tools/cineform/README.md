@@ -15,7 +15,11 @@ g++ -O1 -o cfenc cfenc.cpp -I$SDK/Common -I$SDK/EncoderSDK -I$SDK/Codec $BUILD/l
 ./cfenc 256 144 3 yuv 2 2 1 cf-group-interlaced.cfs && python3 mkavi.py cf-group-interlaced.cfs 256 144 cf-group-interlaced.avi
 ./cfenc 256 144 2 yuv 1 2 0 cf-intra.cfs && python3 mkavi.py cf-intra.cfs 256 144 cf-intra.avi
 ./cfenc 256 144 2 yuv 1 2 1 cf-intra-interlaced.cfs && python3 mkavi.py cf-intra-interlaced.cfs 256 144 cf-intra-interlaced.avi
+./cfenc 256 144 3 bayer 1 2 0 cf-bayer.cfs && python3 mkavi.py cf-bayer.cfs 256 144 cf-bayer.avi
 ```
+
+`cf-bayer.avi` is CineForm RAW (a 256×144 sensor mosaic, from BYR4 input), which
+FFmpeg's encoder can't make but its decoder reads, so the test compares the two.
 
 The SDK's encoder writes a sequence header as its first sample in group mode
 (no picture), then each group, then the group's second frame.

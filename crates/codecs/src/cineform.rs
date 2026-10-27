@@ -17,7 +17,8 @@
 //!
 //! Handled: YUV 4:2:2 10-bit, RGB 4:4:4 12-bit and RGBA 4:4:4:4 12-bit, intra
 //! and two-frame groups, progressive and interlaced, peak tables, difference
-//! coding and the lossless second pass. Bayer (raw) samples are left to FFmpeg.
+//! coding and the lossless second pass, and CineForm RAW (Bayer) as a 16-bit
+//! sensor mosaic.
 
 use std::sync::OnceLock;
 
@@ -93,7 +94,8 @@ impl Kind {
         match self {
             Kind::Yuv422 => Format::Yuv422P10,
             Kind::Rgb => Format::Gbrp12,
-            _ => Format::Gbrap12,
+            Kind::Rgba => Format::Gbrap12,
+            Kind::Bayer => Format::BayerRggb16,
         }
     }
 }
@@ -236,9 +238,6 @@ impl Header {
                 _ => Kind::Yuv422,
             },
         };
-        if k == Kind::Bayer {
-            return Err(Error::Unsupported("CineForm RAW (Bayer)".into()));
-        }
         Ok(k)
     }
 }
@@ -487,6 +486,12 @@ impl CineformDecoder {
         } else {
             [0, 2, if hd.bpc == 12 { 2 } else { 0 }, 0, 0, 0, 0, 0]
         });
+        if kind == Kind::Bayer {
+            if group {
+                return Err(Error::Unsupported("CineForm RAW in two-frame groups".into()));
+            }
+            return Ok(vec![self.bayer(&hd, &prescale)?]);
+        }
         let fmt = kind.format();
         let (w, h) = (hd.width as u32, hd.height as u32);
         let mut pics = vec![Picture::new(w, h, fmt)];
@@ -560,6 +565,56 @@ impl CineformDecoder {
     }
 }
 
+impl CineformDecoder {
+    /// CineForm RAW: four channels at half size, each one sample of every
+    /// 2×2 block of the sensor's red-green / green-blue mosaic: a green
+    /// average, red and blue as differences from it, and the difference
+    /// between the two greens. They're decoded, put back together into the
+    /// mosaic's red, green, green and blue, and scaled to 16 bits.
+    fn bayer(&mut self, hd: &Header, prescale: &[u32; 8]) -> Result<Picture> {
+        let (qw, qh) = (hd.width, hd.height);
+        if self.planes.len() != 4 || qw == 0 || qh == 0 {
+            return invalid("CineForm RAW: four channels needed");
+        }
+        let bpc = hd.bpc;
+        self.pools.resize_with(4, Pool::default);
+        let channels: Vec<Result<Vec<u16>>> = {
+            use rayon::prelude::*;
+            self.planes
+                .par_iter()
+                .zip(self.pools.par_iter_mut())
+                .map(|(bands, pool)| {
+                    let mut out = vec![0u16; qw * qh];
+                    // Raw footage is always progressive.
+                    reconstruct(pool, bands, &mut [out.as_mut_slice()], prescale, qw, qh, bpc, true, false)?;
+                    Ok(out)
+                })
+                .collect()
+        };
+        let ch: Vec<Vec<u16>> = channels.into_iter().collect::<Result<_>>()?;
+        let shown = if hd.display_height > 0 && hd.display_height < qh { hd.display_height } else { qh };
+        let (w, h) = (qw * 2, shown * 2);
+        let mut mosaic = vec![0u16; w * h];
+        let mid = 1i32 << (bpc - 1);
+        let up = 16 - bpc;
+        for y in 0..shown {
+            let (top, bottom) = mosaic[2 * y * w..(2 * y + 2) * w].split_at_mut(w);
+            for x in 0..qw {
+                let i = y * qw + x;
+                let (g, rg, bg, gd) = (ch[0][i] as i32, ch[1][i] as i32, ch[2][i] as i32, ch[3][i] as i32 - mid);
+                let out = |v: i32| (v << up).clamp(0, 65535) as u16;
+                top[2 * x] = out((rg - mid) * 2 + g);
+                top[2 * x + 1] = out(g + gd);
+                bottom[2 * x] = out(g - gd);
+                bottom[2 * x + 1] = out((bg - mid) * 2 + g);
+            }
+        }
+        let mut pic = Picture::new(w as u32, h as u32, Format::BayerRggb16);
+        pic.planes[0].put_u16_rows(&mosaic, w, w, h);
+        Ok(pic)
+    }
+}
+
 /// Keep the top `h` rows.
 fn crop_height(p: &mut Picture, h: u32) {
     p.height = h;
@@ -572,16 +627,48 @@ fn crop_height(p: &mut Picture, h: u32) {
 /// Decode a highpass band's runs into `b` (already sized); the bytes used,
 /// padded to 4.
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn decode_band(t: &Tables, data: &[u8], b: &mut Band, codebook: u16, quant: i32, lossless: bool, second: bool, peak: &mut Peak, pkt: &[u8]) -> Result<usize> {
     let book = &t.books[(codebook != 0) as usize];
     let expected = b.data.len();
+    // Every symbol's coefficient, dequantised once for the band (the codebook
+    // and quantiser don't change inside it): (run, value as stored).
+    let dequant = |level: i16| -> i32 {
+        if lossless {
+            return level as i32;
+        }
+        let m = level.unsigned_abs() as usize;
+        let mag = match codebook {
+            0 => t.lut0[m.min(63)],
+            1 => t.lut1[m.min(255)],
+            _ => m as i32,
+        };
+        mag.wrapping_mul(quant) * if level < 0 { -1 } else { 1 }
+    };
+    let mut vals = [(0u16, 0i32); 600];
+    let syms = &book.syms[..book.syms.len().min(vals.len())];
+    for (v, &(run, level)) in vals.iter_mut().zip(syms) {
+        *v = (run, dequant(level));
+    }
     let mut r = BitReader::new(data);
     let mut count = 0usize;
+    let out = &mut b.data[..];
     loop {
         let Some(sym) = book.vlc.read(&mut r) else {
             return invalid("CineForm: bad code in a band");
         };
-        let (run, level) = book.syms[sym as usize];
+        let Some(&(run, coeff)) = vals.get(sym as usize) else {
+            return invalid("CineForm: bad code in a band");
+        };
+        if run == 1 && !second {
+            // The usual case: one coefficient.
+            let Some(v) = out.get_mut(count) else {
+                return invalid("CineForm: band runs past its end");
+            };
+            *v = coeff as i16;
+            count += 1;
+            continue;
+        }
         if run == 0 {
             break;
         }
@@ -589,26 +676,18 @@ fn decode_band(t: &Tables, data: &[u8], b: &mut Band, codebook: u16, quant: i32,
         if count + run > expected || r.overrun {
             return invalid("CineForm: band runs past its end");
         }
-        let coeff = if lossless {
-            level as i32
-        } else {
-            let m = level.unsigned_abs() as usize;
-            let mag = match codebook {
-                0 => t.lut0[m.min(63)],
-                1 => t.lut1[m.min(255)],
-                _ => m as i32,
-            };
-            mag.wrapping_mul(quant) * if level < 0 { -1 } else { 1 }
-        };
-        let out = &mut b.data[count..count + run];
+        let o = &mut out[count..count + run];
         if second {
-            for v in out {
+            for v in o {
                 *v = ((*v as i32 | coeff.wrapping_mul(256)).wrapping_mul(quant)) as i16;
             }
         } else {
-            out.fill(coeff as i16);
+            o.fill(coeff as i16);
         }
         count += run;
+    }
+    if r.overrun {
+        return invalid("CineForm: band runs past the sample");
     }
     if !second {
         b.data[count..].fill(0);
@@ -630,6 +709,85 @@ fn decode_band(t: &Tables, data: &[u8], b: &mut Band, codebook: u16, quant: i32,
         return invalid("CineForm: band runs past the sample");
     }
     Ok(bytes)
+}
+
+/// The wavelet filters' middle parts with AVX2, 16 values at a time, in
+/// 32-bit lanes so every sum is exactly the scalar code's (results wrap to
+/// 16 bits the same way). Edges and leftovers stay with the scalar code.
+#[cfg(target_arch = "x86_64")]
+mod simd {
+    use std::arch::x86_64::*;
+
+    /// 16 values of `p − r` style middle-of-the-filter maths: from four rows of
+    /// 16 (`a` before, `b` here, `c` after, `s` the highpass) to the even and
+    /// odd outputs, as 16-bit lanes.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn middle16(a: __m256i, b: __m256i, c: __m256i, s: __m256i) -> (__m256i, __m256i) {
+        let four = _mm256_set1_epi32(4);
+        // 16 × i16 → two halves of 8 × i32.
+        let wide = |v: __m256i| (_mm256_cvtepi16_epi32(_mm256_castsi256_si128(v)), _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(v)));
+        let half = |a: __m256i, b: __m256i, c: __m256i, s: __m256i| {
+            // tmp = (a − c + 4) >> 3 fits in 16 bits, so it needs no wrapping.
+            let t_even = _mm256_srai_epi32::<3>(_mm256_add_epi32(_mm256_sub_epi32(a, c), four));
+            let t_odd = _mm256_srai_epi32::<3>(_mm256_add_epi32(_mm256_sub_epi32(c, a), four));
+            let even = _mm256_srai_epi32::<1>(_mm256_add_epi32(_mm256_add_epi32(t_even, b), s));
+            let odd = _mm256_srai_epi32::<1>(_mm256_sub_epi32(_mm256_add_epi32(t_odd, b), s));
+            (even, odd)
+        };
+        let ((a0, a1), (b0, b1), (c0, c1), (s0, s1)) = (wide(a), wide(b), wide(c), wide(s));
+        let (e0, o0) = half(a0, b0, c0, s0);
+        let (e1, o1) = half(a1, b1, c1, s1);
+        // Back to 16 bits, wrapping like `as i16`: sign-extend the low 16 bits,
+        // then pack (no saturation needed) and undo the pack's lane order.
+        let wrap = |v: __m256i| _mm256_srai_epi32::<16>(_mm256_slli_epi32::<16>(v));
+        let pack = |lo: __m256i, hi: __m256i| _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packs_epi32(wrap(lo), wrap(hi)));
+        (pack(e0, e1), pack(o0, o1))
+    }
+
+    /// The middle rows of the column filter: `w` columns, from rows `l0`
+    /// (above), `l1`, `l2` (below) and highpass `h`. Returns how many
+    /// columns it did (a multiple of 16).
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn column_middle(l0: &[i16], l1: &[i16], l2: &[i16], h: &[i16], even: &mut [i16], odd: &mut [i16]) -> usize {
+        let w = l0.len().min(l1.len()).min(l2.len()).min(h.len()).min(even.len()).min(odd.len());
+        let mut x = 0;
+        while x + 16 <= w {
+            // SAFETY: x + 16 <= every slice's length.
+            unsafe {
+                let ld = |s: &[i16]| _mm256_loadu_si256(s.as_ptr().add(x) as *const __m256i);
+                let (e, o) = middle16(ld(l0), ld(l1), ld(l2), ld(h));
+                _mm256_storeu_si256(even.as_mut_ptr().add(x) as *mut __m256i, e);
+                _mm256_storeu_si256(odd.as_mut_ptr().add(x) as *mut __m256i, o);
+            }
+            x += 16;
+        }
+        x
+    }
+
+    /// The middle of the row filter: outputs `2i`, `2i + 1` for `i` from 1,
+    /// interleaved into `out`. Returns the first `i` it didn't do.
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn row_middle(l: &[i16], h: &[i16], out: &mut [i16]) -> usize {
+        let n = l.len();
+        let mut i = 1;
+        // Needs l[i + 16] (the value after the block), so stop 16 short of n − 1.
+        while i + 17 <= n - 1 && h.len() >= i + 16 && out.len() >= 2 * i + 32 {
+            // SAFETY: i − 1 + 18 <= n, and the checks above.
+            unsafe {
+                let ld = |s: &[i16], at: usize| _mm256_loadu_si256(s.as_ptr().add(at) as *const __m256i);
+                let (e, o) = middle16(ld(l, i - 1), ld(l, i), ld(l, i + 1), ld(h, i));
+                // Interleave even and odd: e0 o0 e1 o1 …
+                let lo = _mm256_unpacklo_epi16(e, o);
+                let hi = _mm256_unpackhi_epi16(e, o);
+                let p = out.as_mut_ptr().add(2 * i);
+                _mm256_storeu_si256(p as *mut __m256i, _mm256_permute2x128_si256::<0x20>(lo, hi));
+                _mm256_storeu_si256(p.add(16) as *mut __m256i, _mm256_permute2x128_si256::<0x31>(lo, hi));
+            }
+            i += 16;
+        }
+        i
+    }
 }
 
 /// Spare coefficient buffers, reused from frame to frame.
@@ -667,7 +825,15 @@ fn filter_row(l: &[i16], h: &[i16], out: &mut [i16]) {
     let (a, b, c, s) = (l[0] as i32, l[1] as i32, l[2] as i32, h[0] as i32);
     out[0] = ((tmp(11 * a - 4 * b + c + 4) + s) >> 1) as i16;
     out[1] = ((tmp(5 * a + 4 * b - c + 4) - s) >> 1) as i16;
-    for ((o, w), s) in out[2..2 * n - 2].chunks_exact_mut(2).zip(l.windows(3)).zip(&h[1..n - 1]) {
+    // The middle: AVX2 for 16 values at a time where the CPU has it.
+    let mut i = 1;
+    #[cfg(target_arch = "x86_64")]
+    if crate::idct::avx2_in_use() {
+        // SAFETY: the CPU has AVX2 (checked), and the function keeps within
+        // the slices it's given.
+        i = unsafe { simd::row_middle(l, h, out) };
+    }
+    for ((o, w), s) in out[2 * i..2 * n - 2].chunks_exact_mut(2).zip(l[i - 1..].windows(3)).zip(&h[i..n - 1]) {
         let (a, b, c, s) = (w[0] as i32, w[1] as i32, w[2] as i32, *s as i32);
         o[0] = ((tmp(a - c + 4) + b + s) >> 1) as i16;
         o[1] = ((tmp(c - a + 4) + b - s) >> 1) as i16;
@@ -710,7 +876,13 @@ fn vertical(pool: &mut Pool, lo: &View, hi: &View, w: usize, h: usize) -> Result
             }
         } else {
             let (l0, l1, l2) = (l(i - 1), l(i), l(i + 1));
-            for x in 0..w {
+            let mut start = 0;
+            #[cfg(target_arch = "x86_64")]
+            if crate::idct::avx2_in_use() {
+                // SAFETY: the CPU has AVX2 (checked); all slices hold `w` values.
+                start = unsafe { simd::column_middle(l0, l1, l2, hh, even, odd) };
+            }
+            for x in start..w {
                 let (p, q, r, s) = (l0[x] as i32, l1[x] as i32, l2[x] as i32, hh[x] as i32);
                 even[x] = ((tmp(p - r + 4) + q + s) >> 1) as i16;
                 odd[x] = ((tmp(r - p + 4) + q - s) >> 1) as i16;
@@ -866,6 +1038,60 @@ mod tests {
         assert_eq!(t.books[0].syms.len(), 1 + 63 * 2 + 7 + 1);
         assert_eq!(t.lut0[63], 240);
         assert_eq!(t.lut1[255] as i64, 255 + 768 * 255i64 * 255 * 255 / (1 << 24));
+    }
+
+    /// The scalar filters, for checking the AVX2 ones against.
+    fn filter_row_scalar(l: &[i16], h: &[i16]) -> Vec<i16> {
+        let n = l.len();
+        let mut out = vec![0i16; 2 * n];
+        let (a, b, c, s) = (l[0] as i32, l[1] as i32, l[2] as i32, h[0] as i32);
+        out[0] = ((tmp(11 * a - 4 * b + c + 4) + s) >> 1) as i16;
+        out[1] = ((tmp(5 * a + 4 * b - c + 4) - s) >> 1) as i16;
+        for i in 1..n - 1 {
+            let (a, b, c, s) = (l[i - 1] as i32, l[i] as i32, l[i + 1] as i32, h[i] as i32);
+            out[2 * i] = ((tmp(a - c + 4) + b + s) >> 1) as i16;
+            out[2 * i + 1] = ((tmp(c - a + 4) + b - s) >> 1) as i16;
+        }
+        let (a, b, c, s) = (l[n - 3] as i32, l[n - 2] as i32, l[n - 1] as i32, h[n - 1] as i32);
+        out[2 * n - 2] = ((tmp(5 * c + 4 * b - a + 4) + s) >> 1) as i16;
+        out[2 * n - 1] = ((tmp(11 * c - 4 * b + a + 4) - s) >> 1) as i16;
+        out
+    }
+
+    #[test]
+    fn avx2_filters_match_the_scalar_ones_exactly() {
+        // Random values over the whole 16-bit range (so the sums wrap), at
+        // lengths around the 16-wide blocks.
+        let mut seed = 0x1234_5678u32;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as i16
+        };
+        for n in [3usize, 4, 16, 17, 18, 19, 33, 40, 100, 257] {
+            let l: Vec<i16> = (0..n).map(|_| rnd()).collect();
+            let h: Vec<i16> = (0..n).map(|_| rnd()).collect();
+            let mut out = vec![0i16; 2 * n];
+            filter_row(&l, &h, &mut out);
+            assert_eq!(out, filter_row_scalar(&l, &h), "row filter, n = {n}");
+            // Columns: three rows and a highpass row, `n` wide.
+            let rows: Vec<Vec<i16>> = (0..4).map(|_| (0..n).map(|_| rnd()).collect()).collect();
+            let lo: Vec<i16> = rows[..3].concat();
+            let lo = View { w: n, h: 3, stride: n, d: &lo };
+            let hi_rows: Vec<i16> = [rows[3].clone(), rows[3].clone(), rows[3].clone()].concat();
+            let hi = View { w: n, h: 3, stride: n, d: &hi_rows };
+            if n >= 3 {
+                let g = vertical(&mut Pool::default(), &lo, &hi, n, 3).unwrap();
+                // Row pair 1 is the middle case.
+                for x in 0..n {
+                    let (p, q, r, s) = (rows[0][x] as i32, rows[1][x] as i32, rows[2][x] as i32, rows[3][x] as i32);
+                    assert_eq!(g.d[2 * n + x], ((tmp(p - r + 4) + q + s) >> 1) as i16, "column {x}, n = {n}");
+                    assert_eq!(g.d[3 * n + x], ((tmp(r - p + 4) + q - s) >> 1) as i16, "column {x}, n = {n}");
+                }
+            }
+        }
+        eprintln!("AVX2 in use: {}", crate::idct::avx2_in_use());
     }
 
     #[test]

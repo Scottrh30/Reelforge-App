@@ -802,7 +802,7 @@ decoders take those codecs when it's off or the card can't.
 | HEVC (H.265) | done, via a pure-Rust decoder library: Main and Main 10 (4:2:0, 8/10-bit), tiles, WPP; 4:2:2/4:4:4 go to FFmpeg |
 | VP9 | done, via a pure-Rust decoder library: profiles 0–3 (8/10/12-bit, 4:2:0 to 4:4:4) |
 | AV1 | done, via a pure-Rust decoder library: Main profile, 8/10-bit 4:2:0 and monochrome, film grain |
-| GoPro CineForm | done, Reelforge's own: 4:2:2 10-bit YUV, 12-bit RGB and RGBA, intra frames and two-frame groups (which FFmpeg can't decode), progressive and interlaced, peak tables; channels on all cores. Written from GoPro's CineForm SDK (MIT OR Apache-2.0; code tables in `crates/codecs/src/cineform_tables.rs`). CineForm RAW (Bayer) goes to FFmpeg |
+| GoPro CineForm | done, Reelforge's own: 4:2:2 10-bit YUV, 12-bit RGB and RGBA, CineForm RAW (Bayer: the sensor mosaic, demosaiced like FFmpeg's), intra frames and two-frame groups (which FFmpeg can't decode), progressive and interlaced, peak tables; channels on all cores, AVX2 wavelet filters. Written from GoPro's CineForm SDK (MIT OR Apache-2.0; code tables in `crates/codecs/src/cineform_tables.rs`) |
 
 The H.264, HEVC, VP9 and AV1 decoders live in this repository (`crates/h264`, `crates/hevc`,
 `crates/vp9`, `crates/av1`, with `crates/bitstream` for reading bits and `crates/testkit` for
@@ -843,8 +843,9 @@ ProRes codeword (with the level's sign folded in) and two-level DNx code tables 
 stay in the CPU cache; an AVX2 inverse DCT (8×8 block in eight 256-bit registers), chosen at run
 time, with a portable version for older CPUs (`REELFORGE_NO_AVX2=1` forces it: about 20–30%
 slower); and every slice or row decoded straight into the picture. MPEG-2 1080i at 25 Mbit/s:
-about 75 fps on one core. CineForm 1080p 4:2:2 about 53 fps on one core (FFmpeg about 80: its
-wavelet filters are hand-written SIMD), and each channel runs on its own core. The H.264/HEVC/VP9/AV1 decoders use all
+about 75 fps on one core. CineForm 1080p 4:2:2 on one core: grainy camera footage about 22 fps,
+20% faster than FFmpeg; clean graphics about 78 fps (FFmpeg 90). The wavelet filters use
+AVX2 where the processor has it, and each channel runs on its own core. The H.264/HEVC/VP9/AV1 decoders use all
 cores; on 2 cores 1080p runs at about 75 fps (H.264, HEVC), 45 (VP9) and 28 (AV1).
 
 **Shared decode threads:** every clip's decoder draws on one pool of worker threads, one per

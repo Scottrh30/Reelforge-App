@@ -97,6 +97,7 @@ fn pixel(f: Format) -> ff::format::Pixel {
         Format::Gbrp10 => P::GBRP10LE,
         Format::Gbrp12 => P::GBRP12LE,
         Format::Gbrap12 => P::GBRAP12LE,
+        Format::BayerRggb16 => P::BAYER_RGGB16LE,
     }
 }
 
@@ -411,6 +412,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// CineForm RAW from GoPro's own encoder (FFmpeg's can't make it).
+    #[test]
+    fn cineform_raw_matches_ffmpeg() {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/cineform/cf-bayer.avi");
+        let (n, psnr) = compare_with_ffmpeg(&p);
+        assert!(n == 3 && psnr >= 99.0, "{n} frames, {psnr:.1} dB");
+        let pics = native_pictures(&p);
+        assert_eq!((pics[0].format, pics[0].width, pics[0].height), (reelforge_codecs::Format::BayerRggb16, 256, 144));
     }
 
     #[test]

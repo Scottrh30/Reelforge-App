@@ -16,6 +16,7 @@ int main(int argc, char **argv) {
   if (e) { fprintf(stderr, "open %d\n", e); return 1; }
   CFHD_PixelFormat pf; CFHD_EncodedFormat ef; int bpp;
   if (!strcmp(fmt, "yuv")) { pf = CFHD_PIXEL_FORMAT_YUY2; ef = CFHD_ENCODED_FORMAT_YUV_422; bpp = 2; }
+  else if (!strcmp(fmt, "bayer")) { pf = CFHD_PIXEL_FORMAT_BYR4; ef = CFHD_ENCODED_FORMAT_BAYER; bpp = 8; }
   else if (!strcmp(fmt, "rgb")) { pf = CFHD_PIXEL_FORMAT_RG48; ef = CFHD_ENCODED_FORMAT_RGB_444; bpp = 6; }
   else { pf = CFHD_PIXEL_FORMAT_RG64; ef = CFHD_ENCODED_FORMAT_RGBA_4444; bpp = 8; }
   CFHD_EncodingFlags flags = CFHD_ENCODING_FLAGS_NONE;
@@ -24,19 +25,28 @@ int main(int argc, char **argv) {
   if (il) flags = (CFHD_EncodingFlags)(flags | CFHD_ENCODING_FLAGS_YUV_INTERLACED);
   e = CFHD_PrepareToEncode(enc, w, h, pf, ef, flags, quality);
   if (e) { fprintf(stderr, "prepare %d\n", e); return 1; }
-  int pitch = w * bpp;
+  bool bayer = !strcmp(fmt, "bayer");
+  // Bayer input is rows of 2x2 blocks, packed tightly (the SDK ignores the pitch).
+  int pitch = bayer ? (w / 2) * 8 : w * bpp;
   std::vector<uint8_t> buf(pitch * h);
   FILE *o = fopen(argv[8], "wb");
   for (int f = 0; f < n; f++) {
-    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-      double fx = (double)x / w, fy = (double)y / h;
+    for (int y = 0; y < (bayer ? h / 2 : h); y++) for (int x = 0; x < (bayer ? w / 2 : w); x++) {
+      double fx = (double)x / (bayer ? w / 2 : w), fy = (double)y / (bayer ? h / 2 : h);
       int inbox = (x > 40 + f * 7 && x < 140 + f * 7 && y > 30 + f * 3 && y < 110 + f * 3);
       double r = 0.5 + 0.45 * sin(fx * 6.0 + f * 0.3), g = fy, b = 0.5 + 0.4 * cos((fx + fy) * 9.0 - f * 0.2);
       if (inbox) { r = 0.95; g = 0.1; b = 0.2; }
       if (((x / 8) + (y / 8)) % 2 == 0 && x > w * 3 / 4 && y > h * 2 / 3) { r = g = b = 0.9; }
       double a = 0.5 + 0.5 * sin(fx * 4.0 + fy * 3.0 + f * 0.1);
-      uint8_t *p = &buf[y * pitch + x * bpp];
-      if (bpp == 2) {
+      uint8_t *p = &buf[y * pitch + x * (bayer ? 0 : bpp)];
+      if (!strcmp(fmt, "bayer")) {
+        // A 2x2 block of the RGGB mosaic per "pixel": two mosaic rows per row,
+        // the top row's R G then the bottom row's G B, 16 bits each.
+        uint16_t *top = (uint16_t *)&buf[y * pitch] + 2 * x;
+        uint16_t *bot = top + pitch / 4;
+        top[0] = (uint16_t)(r * 65535); top[1] = (uint16_t)(g * 65535);
+        bot[0] = (uint16_t)(g * 65535 * 0.98 + 600); bot[1] = (uint16_t)(b * 65535);
+      } else if (bpp == 2) {
         double Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
         double cb = (b - Y) / 1.8556, cr = (r - Y) / 1.5748;
         p[0] = (uint8_t)(16 + 219 * Y);
