@@ -12,6 +12,8 @@ export interface MenuItem {
   heading?: boolean;
   /// Items of a submenu that opens beside this one.
   submenu?: MenuItem[];
+  /// A colour chip shown before the label (a CSS colour).
+  swatch?: string;
 }
 
 export const menu = $state({ open: false, x: 0, y: 0, items: [] as MenuItem[] });

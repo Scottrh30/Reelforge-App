@@ -1303,6 +1303,30 @@ impl Editor {
         self.status = "Added an adjustment layer: drag effects onto it to change everything below".into();
     }
 
+    /// Give the selected clips (and what's linked to them) a colour on the
+    /// timeline, or their kind's colour again with `None`.
+    pub fn set_clip_label(&mut self, color: Option<[u8; 3]>) {
+        self.commit_live_edit();
+        let s = self.seq();
+        let changes: Vec<_> = self
+            .selected_with_links()
+            .into_iter()
+            .filter_map(|id| s.find_clip(id).map(|(_, c)| (id, c.label, color)))
+            .filter(|(_, old, new)| old != new)
+            .collect();
+        if changes.is_empty() {
+            return;
+        }
+        let n = changes.len();
+        self.execute(Box::new(reelforge_core::undo::SetLabel { seq: self.active, changes }));
+        self.status = match (color, n) {
+            (None, 1) => "The clip has its usual colour again".into(),
+            (None, n) => format!("{n} clips have their usual colour again"),
+            (Some(_), 1) => "Coloured the clip".into(),
+            (Some(_), n) => format!("Coloured {n} clips"),
+        };
+    }
+
     /// Change a plane's colour.
     pub fn set_plane_color(&mut self, id: ClipId, color: [u8; 4]) {
         self.commit_live_edit();
@@ -2680,6 +2704,28 @@ mod tests {
         e.undo();
         assert!(!e.seq().find_clip(id).unwrap().1.effects[0].params[blade::HILT_X].keys.is_animated(), "one undo step");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clip_colours_apply_to_the_selection_and_undo() {
+        let mut e = editor();
+        e.add_plane([255, 0, 0, 255]);
+        let a = e.selection.unwrap();
+        e.add_title();
+        let b = e.selection.unwrap();
+        e.select_many(vec![a, b]);
+        e.set_clip_label(Some([40, 200, 90]));
+        let label = |e: &Editor, id| e.seq().find_clip(id).unwrap().1.label;
+        assert_eq!((label(&e, a), label(&e, b)), (Some([40, 200, 90]), Some([40, 200, 90])));
+        // Saved with the project.
+        let json = serde_json::to_string(&e.project).unwrap();
+        assert!(json.contains("\"label\":[40,200,90]"));
+        e.undo();
+        assert_eq!((label(&e, a), label(&e, b)), (None, None));
+        e.redo();
+        e.select_only(Some(b));
+        e.set_clip_label(None);
+        assert_eq!((label(&e, a), label(&e, b)), (Some([40, 200, 90]), None));
     }
 
     #[test]

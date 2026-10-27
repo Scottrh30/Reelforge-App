@@ -285,6 +285,7 @@ impl Command for SplitClip {
             plane: clip.plane,
             adjustment: clip.adjustment,
             parent: clip.parent,
+            label: clip.label,
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;
@@ -1072,6 +1073,32 @@ impl Command for SetParent {
     fn undo(&mut self, p: &mut Project) {
         if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
             *c = (*self.old).clone();
+        }
+    }
+}
+
+/// Change the timeline colour of some clips: (clip, before, after).
+pub struct SetLabel {
+    pub seq: usize,
+    pub changes: Vec<(ClipId, Option<[u8; 3]>, Option<[u8; 3]>)>,
+}
+
+impl Command for SetLabel {
+    fn name(&self) -> &str {
+        "Change clip colour"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        for (id, _, new) in &self.changes {
+            if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(*id) {
+                c.label = *new;
+            }
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        for (id, old, _) in &self.changes {
+            if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(*id) {
+                c.label = *old;
+            }
         }
     }
 }

@@ -78,6 +78,7 @@
           }}
         >
           <span class="check">{it.checked ? "✓" : ""}</span>
+          {#if it.swatch}<span class="swatch" style="background:{it.swatch}"></span>{/if}
           <span class="label">{it.label}</span>
           {#if it.hint}<span class="hint">{it.hint}</span>{/if}
         </button>
@@ -108,6 +109,7 @@
             }}
           >
             <span class="check">{it.checked ? "✓" : ""}</span>
+            {#if it.swatch}<span class="swatch" style="background:{it.swatch}"></span>{/if}
             <span class="label">{it.label}</span>
             {#if it.hint}<span class="hint">{it.hint}</span>{/if}
           </button>
@@ -163,6 +165,14 @@
   }
   .label {
     flex: 1;
+  }
+  .swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    margin-right: 8px;
+    flex: none;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
   }
   .hint {
     color: var(--muted);

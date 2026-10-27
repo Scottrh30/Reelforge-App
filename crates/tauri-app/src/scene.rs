@@ -167,6 +167,17 @@ pub fn set_plane_color(id: u64, color: String) -> Res<()> {
     })
 }
 
+/// Colour the selected clips on the timeline (#rrggbb), or `None` for their usual colour.
+#[tauri::command]
+pub fn set_clip_label(color: Option<String>) -> Res<()> {
+    ed(|e| {
+        let c = color.as_deref().and_then(parse_hex).map(|[r, g, b, _]| [r, g, b]);
+        if color.is_none() || c.is_some() {
+            e.set_clip_label(c);
+        }
+    })
+}
+
 /// Parent a clip to a point clip (`None`: remove its parent).
 #[tauri::command]
 pub fn set_parent(id: u64, parent: Option<u64>) -> Res<()> {

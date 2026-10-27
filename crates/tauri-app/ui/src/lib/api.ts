@@ -85,6 +85,8 @@ export interface ClipView {
   audio: ClipAudio | null;
   /// The point clip it's parented to.
   parent: number | null;
+  /// Its own colour on the timeline (#rrggbb), if one was chosen.
+  label: string | null;
 }
 
 export interface TrackView {
@@ -633,6 +635,7 @@ export const api = {
   /// The New menu: a plane ("layer", of `color`), a light, a point, a camera or an adjustment layer.
   addNew: (what: "layer" | "light" | "point" | "camera" | "adjustment", light = 0, color: string | null = null) => invoke("add_new", { what, light, color }),
   setPlaneColor: (id: number, color: string) => invoke("set_plane_color", { id, color }),
+  setClipLabel: (color: string | null) => invoke("set_clip_label", { color }),
   setParent: (id: number, parent: number | null) => invoke("set_parent", { id, parent }),
   /// Drag a camera's or light's point by `d` frame pixels (live; `start` on the first call).
   scenePointDrag: (id: number, which: string, d: Pt, start: boolean) => invoke("scene_point_drag", { id, which, d, start }),

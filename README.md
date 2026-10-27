@@ -273,6 +273,13 @@ What works now:
   track stay that way among the copies; a copied video clip isn't linked to the original's
   audio, and parents on other tracks are kept. When the tracks don't fit, the mouse wheel
   scrolls through them (Shift+wheel moves along the timeline)
+- **Clip colours**: right-click a clip → **Clip colour** to pick red, orange, yellow, green,
+  teal, blue, violet, pink, grey or any other colour (**Other colour…**), or **Usual colour**
+  to go back to its kind's colour. It applies to every selected clip and what's linked to them,
+  is one undo step, is saved with the project, and carries over when clips are split, copied
+  or duplicated. It's only a label: the picture doesn't change. A coloured clip with picture
+  thumbnails keeps a strip of its colour along the top. Planes also have **Plane colour…**
+  there, which changes the colour they fill the frame with
 - **Text titles** (**Edit → Add title at playhead**, `Ctrl+T`, or **New title** in the Media
   panel): a 5 s title on the top free video track (a new track is made if none has room).
   In the Controls panel: multi-line text, any installed font (with a search box), size, colour,

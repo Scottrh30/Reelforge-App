@@ -121,6 +121,8 @@ pub struct ClipView {
     pub audio: Option<ClipAudio>,
     /// The point clip it's parented to.
     pub parent: Option<u64>,
+    /// Its own colour on the timeline (#rrggbb), if one was chosen.
+    pub label: Option<String>,
 }
 
 /// The selected clip, for the Controls panel.
@@ -469,6 +471,7 @@ pub fn state(e: &Editor) -> State {
                     effects: c.effects.len(),
                     audio: (t.kind == TrackKind::Audio).then(|| c.audio.clone()),
                     parent: c.parent.map(|p| p.0),
+                    label: c.label.map(|[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}")),
                 })
                 .collect(),
         })

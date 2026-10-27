@@ -1043,6 +1043,7 @@ fn main() {
             scene::add_scene,
             scene::add_new,
             scene::set_plane_color,
+            scene::set_clip_label,
             scene::set_parent,
             scene::scene_point_drag,
             select,

@@ -139,6 +139,10 @@ pub struct Clip {
     /// moves, turns and scales with it. See [`crate::space3d::Null`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<ClipId>,
+    /// The clip's colour on the timeline (sRGB), instead of its kind's
+    /// colour. Only a label: the picture doesn't change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<[u8; 3]>,
 }
 
 /// Everything about how a video clip looks, edited and undone as one unit.
@@ -181,6 +185,7 @@ impl Clip {
             plane: None,
             adjustment: false,
             parent: None,
+            label: None,
         }
     }
 

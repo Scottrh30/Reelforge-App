@@ -506,6 +506,47 @@
   }
   /// Copy a track (clips and all) to just above it (the copy is highlighted).
   const duplicateTrack = (tr: TrackView) => run(api.trackOp(tr.index, "duplicate"));
+  // Clip colours on the timeline (sRGB), picked to read well under white text.
+  const labelColors: [string, string][] = [
+    ["Red", "#b8443e"],
+    ["Orange", "#c2702a"],
+    ["Yellow", "#a8902a"],
+    ["Green", "#4a8f45"],
+    ["Teal", "#2b8f88"],
+    ["Blue", "#3d6cba"],
+    ["Violet", "#7657b8"],
+    ["Pink", "#b04d88"],
+    ["Grey", "#666b74"],
+  ];
+  /// Ask for any colour with the system colour picker.
+  function pickColor(start: string, done: (hex: string) => void) {
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = start;
+    input.style.cssText = "position:fixed;left:-100px;top:0;opacity:0";
+    document.body.appendChild(input);
+    input.addEventListener("change", () => (done(input.value), input.remove()), { once: true });
+    input.addEventListener("blur", () => setTimeout(() => input.remove(), 1000), { once: true });
+    input.click();
+  }
+  function colorMenu(c: ClipView) {
+    const now = c.label?.toLowerCase() ?? null;
+    return {
+      label: "Clip colour",
+      submenu: [
+        { label: "Usual colour", checked: now == null, run: () => run(api.setClipLabel(null)) },
+        { separator: true },
+        ...labelColors.map(([name, hex]) => ({ label: name, swatch: hex, checked: now === hex, run: () => run(api.setClipLabel(hex)) })),
+        { separator: true },
+        {
+          label: "Other colour…",
+          swatch: now && !labelColors.some(([, h]) => h === now) ? now : undefined,
+          checked: !!now && !labelColors.some(([, h]) => h === now),
+          run: () => pickColor(now ?? "#3d6cba", (hex) => run(api.setClipLabel(hex))),
+        },
+      ],
+    };
+  }
   function clipMenu(e: MouseEvent, c: ClipView) {
     if (!selected.has(c.id)) run(api.select(c.id, "only"));
     openMenu(e, [
@@ -519,6 +560,17 @@
       { label: "Unlink audio and video", disabled: c.link == null, run: () => run(api.action("unlink")) },
       ...(c.parent != null ? [{ label: `Remove parent (${clipAt.get(c.parent)?.c.name ?? "point"})`, run: () => run(api.setParent(c.id, null)) }] : []),
       { label: "Open composition", disabled: c.kind !== "comp", run: () => openCompFromClip(c) },
+      { separator: true },
+      colorMenu(c),
+      ...(c.kind === "plane"
+        ? [
+            {
+              label: "Plane colour…",
+              swatch: app.s?.inspector?.id === c.id ? (app.s.inspector.plane ?? undefined) : undefined,
+              run: () => pickColor((app.s?.inspector?.id === c.id && app.s.inspector.plane) || "#808080", (hex) => run(api.setPlaneColor(c.id, hex))),
+            },
+          ]
+        : []),
       { separator: true },
       ...(touchesBefore(c)
         ? [
@@ -1111,7 +1163,8 @@
                     class:fxdrop={fxTarget?.id === c.id}
                     class:moving={ghost}
                     class:dim={tr.muted}
-                    style="left:{l}px; width:{Math.max(2, w)}px"
+                    style="left:{l}px; width:{Math.max(2, w)}px{c.label ? `; --tag:${c.label}` : ''}"
+                    class:tagged={!!c.label}
                     role="button"
                     tabindex="-1"
                     aria-label={c.name}
@@ -1119,6 +1172,7 @@
                     oncontextmenu={(e) => clipMenu(e, c)}
                     ondblclick={() => c.kind === "comp" && openCompFromClip(c)}
                   >
+                    {#if c.label}<span class="tagbar"></span>{/if}
                     {#if (c.kind === "video" || c.kind === "image") && w > 70 && app.s?.prefs.timeline_thumbnails !== false && mediaById.get(c.media) && !mediaById.get(c.media)!.missing}
                       <div class="thumb"><Thumb path={mediaById.get(c.media)!.path} at={c.source_in} /></div>
                     {/if}
@@ -1749,6 +1803,20 @@
   }
   .clip.plane {
     background: color-mix(in srgb, var(--clip-title) 55%, #555b66);
+  }
+  /* A chosen colour: the whole clip, and a strip along the top that shows over thumbnails. */
+  .clip.tagged {
+    background: var(--tag);
+  }
+  .clip.tagged > .tagbar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 4px;
+    background: var(--tag);
+    z-index: 1;
+    pointer-events: none;
   }
   .clip.sel {
     border-color: var(--accent);
