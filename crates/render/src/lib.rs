@@ -75,6 +75,7 @@ impl<'a> From<&'a reelforge_core::frame::Pixels> for PixelData<'a> {
     }
 }
 
+mod particles;
 pub mod plugin;
 pub mod solid;
 pub mod text;
@@ -268,6 +269,7 @@ pub struct Compositor {
     yuv: yuv::YuvConverter,
     /// Draws solid objects (3D text) into their layer textures.
     solid: solid::SolidRenderer,
+    particles: particles::ParticleRenderer,
     /// Reads frames shared by the hardware decoder (Windows, Direct3D 12).
     #[cfg(windows)]
     interop: Option<interop::Importer>,
@@ -387,7 +389,7 @@ impl Compositor {
             label: Some("effect uniforms"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, // (vertex: particles)
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: true,
@@ -545,6 +547,7 @@ impl Compositor {
             deep_pipelines,
             yuv: yuv::YuvConverter::new(device, LAYER_FORMAT),
             solid: solid::SolidRenderer::new(device, LAYER_FORMAT),
+            particles: particles::ParticleRenderer::new(device, &fx_pl, ACCUM_FORMAT),
             #[cfg(windows)]
             interop: {
                 let i = interop::Importer::new(device);
@@ -962,10 +965,14 @@ impl Compositor {
             uniform: [f32; FX_FLOATS],
             /// A plugin pass: the plugin's revision and which pass.
             plugin: Option<(u64, usize)>,
+            /// Particles to draw over the result (an index into `particle_sets`).
+            particles: Option<usize>,
         }
         let mut fx_passes: Vec<FxPass> = Vec::new();
         // Which scratch target holds each processed layer's result.
         let mut processed: HashMap<u64, usize> = HashMap::new();
+        // Every emitter's particles this frame, and its look.
+        let mut particle_sets: Vec<(&reelforge_core::particles::Particles, f32)> = Vec::new();
         for l in all_layers() {
             let masked = l.mask.is_some() && self.masks.contains_key(&l.key);
             let below = matches!(l.pixels, PixelData::Below);
@@ -1004,12 +1011,13 @@ impl Compositor {
             let key = l.key;
             // The frame so far is premultiplied already: copied as it is.
             let (entry, src) = if below { ("fs_copy", Src::Below) } else { ("fs_import", Src::Layer) };
-            fx_passes.push(FxPass { key, entry, src, second: Second::None, dst: 0, uniform: [0.0; FX_FLOATS], plugin: None });
+            fx_passes.push(FxPass { key, entry, src, second: Second::None, dst: 0, uniform: [0.0; FX_FLOATS], plugin: None, particles: None });
             let mut cur = 0usize;
             // Plugin passes pushed for this layer: (index in fx_passes, revision, pass).
             let mut plugin_marks: Vec<(usize, u64, usize)> = Vec::new();
+            let mut particle_marks: Vec<(usize, usize)> = Vec::new();
             let mut push = |entry, src: usize, second, dst: usize, u| -> usize {
-                fx_passes.push(FxPass { key, entry, src: Src::Scratch(src), second, dst, uniform: u, plugin: None });
+                fx_passes.push(FxPass { key, entry, src: Src::Scratch(src), second, dst, uniform: u, plugin: None, particles: None });
                 fx_passes.len() - 1
             };
             // The two targets that aren't `cur`.
@@ -1097,6 +1105,19 @@ impl Compositor {
                         push("fs_blade", cur, Second::None, o1, u);
                         cur = o1;
                     }
+                    EffectKind::Particles => {
+                        let Some(ps) = &e.particles else { continue };
+                        // The layer as it is, then the particles drawn over it.
+                        let mut u = uniform(&e.values, [0.0; 2]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        u[28..32].copy_from_slice(&e.values[16..20]);
+                        let at = push("fs_copy", cur, Second::None, o1, u);
+                        particle_marks.push((at, particle_sets.len()));
+                        particle_sets.push((ps, e.values[reelforge_core::particles::LOOK]));
+                        cur = o1;
+                    }
                     EffectKind::Plugin => {
                         let Some(def) = &e.plugin else { continue };
                         if !self.ensure_plugin(def) {
@@ -1124,8 +1145,12 @@ impl Compositor {
             for (at, rev, k) in plugin_marks {
                 fx_passes[at].plugin = Some((rev, k));
             }
+            for (at, set) in particle_marks {
+                fx_passes[at].particles = Some(set);
+            }
             processed.insert(l.key, cur);
         }
+        let particle_batches = if particle_sets.is_empty() { Vec::new() } else { self.particles.upload(&self.device, &self.queue, &particle_sets) };
         if !fx_passes.is_empty() {
             let mut data = vec![0u8; self.fx_uniform_stride as usize * fx_passes.len()];
             for (i, p) in fx_passes.iter().enumerate() {
@@ -1309,6 +1334,9 @@ impl Compositor {
             pass.set_bind_group(0, &self.fx_uniform_bind, &[(i as u64 * self.fx_uniform_stride) as u32]);
             pass.set_bind_group(1, source, &[]);
             pass.draw(0..3, 0..1);
+            if let Some(b) = p.particles.and_then(|i| particle_batches.get(i)) {
+                self.particles.draw(&mut pass, b);
+            }
         };
         // Adjustment layers' passes wait for the frame below them to be drawn.
         let adjust: std::collections::HashSet<u64> = ops.iter().filter_map(|o| if let Op::Adjust { draw, .. } = o { Some(draw.key) } else { None }).collect();

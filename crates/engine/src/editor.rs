@@ -1218,6 +1218,17 @@ impl Editor {
     /// An energy blade on its own transparent layer above everything: as long
     /// as the selected video clip (or 5 seconds from the playhead).
     pub fn add_blade_layer(&mut self) {
+        self.add_effect_layer(EffectKind::EnergyBlade, "Add energy blade layer", "Added an energy blade layer: drag its hilt and tip in the Viewer");
+    }
+
+    /// A particle emitter on its own transparent layer above everything (as
+    /// long as the selected video clip, or 5 seconds from the playhead).
+    pub fn add_particles_layer(&mut self) {
+        self.add_effect_layer(EffectKind::Particles, "Add particles layer", "Added a particles layer: drag the emitter in the Viewer, and shape it in the Controls panel");
+    }
+
+    /// An empty frame-sized layer drawn by effect `kind` (a blade or particles).
+    fn add_effect_layer(&mut self, kind: EffectKind, name: &str, status: &str) {
         self.commit_live_edit();
         let s = self.seq();
         let rate = s.frame_rate;
@@ -1231,13 +1242,13 @@ impl Editor {
         let (add, track) = self.layer_track(start, dur);
         let id = ClipId(self.project.alloc_id());
         let mut clip = Clip::new_title(id, start, dur, spec);
-        clip.effects.push(Effect::new(EffectKind::EnergyBlade));
+        clip.effects.push(Effect::new(kind));
         let mut cmds: Vec<Box<dyn Command>> = add.into_iter().map(|a| Box::new(a) as Box<dyn Command>).collect();
         cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
-        self.execute(Box::new(Batch { name: "Add energy blade layer".into(), cmds }));
+        self.execute(Box::new(Batch { name: name.into(), cmds }));
         self.follow_new_layer(track);
         self.select_only(Some(id));
-        self.status = "Added an energy blade layer: drag its hilt and tip in the Viewer".into();
+        self.status = status.into();
     }
 
     /// A camera, or a light of type `light` (an index into

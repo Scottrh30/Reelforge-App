@@ -45,6 +45,9 @@ pub enum EffectKind {
     /// A glowing energy blade (a light sword) drawn from a hilt point to a tip
     /// point, with a hot core, coloured glow, flicker and motion blur.
     EnergyBlade,
+    /// A particle emitter: sparks, dust, snow, embers, magic, worked out and
+    /// drawn on the GPU (see [`crate::particles`]).
+    Particles,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -316,6 +319,29 @@ const BLADE: [ParamSpec; 20] = [
     choice("Blend", &["Add (light)", "Screen"]),
 ];
 
+const PARTICLES: [ParamSpec; 20] = [
+    spec("Emitter X", 50.0, -100.0, 200.0, " %", 0.1),
+    spec("Emitter Y", 70.0, -100.0, 200.0, " %", 0.1),
+    choice("Shape", &crate::particles::SHAPES),
+    spec("Emitter size", 120.0, 0.0, 8000.0, " px", 1.0),
+    spec("Birth rate", 80.0, 0.0, 5000.0, " /s", 0.5),
+    spec("Lifetime", 2.0, 0.05, 20.0, " s", 0.01),
+    spec("Randomness", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Speed", 300.0, 0.0, 5000.0, " px/s", 1.0),
+    spec("Direction", 90.0, -360.0, 360.0, "°", 0.5),
+    spec("Spread", 40.0, 0.0, 360.0, "°", 0.5),
+    spec("Gravity", 250.0, -5000.0, 5000.0, " px/s²", 1.0),
+    spec("Wind", 0.0, -5000.0, 5000.0, " px/s²", 1.0),
+    spec("Turbulence", 0.0, 0.0, 1000.0, " px", 0.5),
+    spec("Size at birth", 10.0, 0.0, 500.0, " px", 0.1),
+    spec("Size at death", 2.0, 0.0, 500.0, " px", 0.1),
+    color("Colour at birth", 0xffd27a),
+    color("Colour at death", 0xff4a12),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    choice("Look", &crate::particles::LOOKS),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+
 const VIGNETTE: [ParamSpec; 3] = [
     spec("Amount", 50.0, 0.0, 100.0, " %", 0.5),
     spec("Size", 70.0, 0.0, 150.0, " %", 0.5),
@@ -323,7 +349,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 11] = [
+    pub const ALL: [EffectKind; 12] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -335,6 +361,7 @@ impl EffectKind {
         EffectKind::DropShadow,
         EffectKind::Vignette,
         EffectKind::EnergyBlade,
+        EffectKind::Particles,
     ];
 
     pub fn label(self) -> &'static str {
@@ -351,6 +378,7 @@ impl EffectKind {
             EffectKind::Lut => "LUT (.cube)",
             EffectKind::Plugin => "Plugin",
             EffectKind::EnergyBlade => "Energy blade",
+            EffectKind::Particles => "Particles",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -362,7 +390,7 @@ impl EffectKind {
             EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey => EffectCategory::Keying,
-            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
+            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::Plugin => EffectCategory::Plugins,
         }
     }
@@ -382,6 +410,7 @@ impl EffectKind {
             EffectKind::Vignette => "Darken the edges to draw the eye to the middle.",
             EffectKind::Plugin => "An installed plugin.",
             EffectKind::EnergyBlade => "A glowing light-sword blade with a hot core, flicker and motion blur. Drag its hilt and tip in the Viewer, or attach it to a track.",
+            EffectKind::Particles => "An emitter of sparks, embers, dust, snow or magic, drawn on the GPU. Drag the emitter in the Viewer; every setting can be keyframed.",
             EffectKind::Camera => "The 3D camera: where it is, what it looks at, its field of view and depth of field.",
             EffectKind::Light => "A light for 3D layers.",
             EffectKind::Point => "An invisible point: layers parented to it move, turn and scale with it.",
@@ -401,6 +430,7 @@ impl EffectKind {
             EffectKind::DropShadow => &DROP_SHADOW,
             EffectKind::Lut => &LUT,
             EffectKind::EnergyBlade => &BLADE,
+            EffectKind::Particles => &PARTICLES,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -415,6 +445,7 @@ impl EffectKind {
     pub fn sections(self) -> &'static [(usize, &'static str)] {
         match self {
             EffectKind::EnergyBlade => &[(0, "Blade"), (5, "Colour"), (7, "Core"), (11, "Glow"), (15, "Flicker"), (18, "Motion")],
+            EffectKind::Particles => &[(0, "Emitter"), (4, "Birth"), (7, "Motion"), (13, "Look")],
             EffectKind::Camera => &[(0, "Position"), (3, "Point of interest"), (6, "Lens"), (8, "Depth of field")],
             EffectKind::Point => &[(0, "Position"), (3, "Rotation and scale")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff")],
@@ -462,6 +493,8 @@ pub struct EffectValues {
     /// For an energy blade with motion blur: where its hilt and tip were one
     /// frame earlier (hilt x, y, tip x, y, in % of the layer).
     pub prev: Option<[f32; 4]>,
+    /// For a particle emitter: the particles alive now.
+    pub particles: Option<Arc<crate::particles::Particles>>,
 }
 
 impl EffectValues {
@@ -480,6 +513,7 @@ impl EffectValues {
             EffectKind::DropShadow => v[3] == 0.0,
             // Missing plugins are skipped.
             EffectKind::Plugin => self.plugin.is_none(),
+            EffectKind::Particles => v[crate::particles::OPACITY] == 0.0 || self.particles.as_ref().is_none_or(|p| p.list.is_empty()),
             EffectKind::EnergyBlade => v[blade::OPACITY] == 0.0 || v[blade::LENGTH] == 0.0 || (v[blade::CORE_WIDTH] == 0.0 && v[blade::GLOW_INTENSITY] == 0.0),
             // Settings of a camera or light clip, not drawn as an effect.
             EffectKind::Camera | EffectKind::Light | EffectKind::Point => true,
@@ -580,7 +614,8 @@ impl Effect {
             *v = self.value_at(i, t);
         }
         let plugin = if self.kind == EffectKind::Plugin { self.plugin_def() } else { None };
-        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev }
+        let particles = (self.kind == EffectKind::Particles).then(|| Arc::new(crate::particles::simulate(self, t)));
+        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev, particles }
     }
 
     /// The lookup table this effect needs, if any (a curve, or a loaded .cube file).
@@ -634,6 +669,8 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => assert!(v.is_identity(), "{kind:?}"),
+                // Nothing has been born yet at the start, but soon is.
+                EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 _ => assert!(!v.is_identity(), "{kind:?} should do something by default"),
             }
         }

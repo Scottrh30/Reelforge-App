@@ -382,7 +382,7 @@ export interface ViewerFeedback {
 
 // ---- Effects ----
 
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "EnergyBlade";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "EnergyBlade" | "Particles";
 
 export interface Curves {
   master: Pt[];
@@ -630,6 +630,7 @@ export const api = {
   addTitle: () => invoke("add_title"),
   add3dText: () => invoke("add_3d_text"),
   addBladeLayer: () => invoke("add_blade_layer"),
+  addParticlesLayer: () => invoke("add_particles_layer"),
   /// A camera, or a light (0 point, 1 spot, 2 directional, 3 ambient).
   addScene: (camera: boolean, light: number) => invoke("add_scene", { camera, light }),
   /// The New menu: a plane ("layer", of `color`), a light, a point, a camera or an adjustment layer.
@@ -697,6 +698,7 @@ export const api = {
   effectParam: (id: number, index: number, param: number, value: number) => invoke("effect_param", { id, index, param, value }),
   effectKey: (id: number, index: number, param: number) => invoke("effect_key", { id, index, param }),
   bladePreset: (id: number, index: number, preset: number) => invoke("blade_preset", { id, index, preset }),
+  particlesPreset: (id: number, index: number, preset: number) => invoke("particles_preset", { id, index, preset }),
   bladeIgnite: (id: number, index: number, retract: boolean, seconds: number) => invoke("blade_ignite", { id, index, retract, seconds }),
   effectCurves: (id: number, index: number, curves: Curves) => invoke("effect_curves", { id, index, curves }),
   effectLut: (id: number, index: number) => invoke("effect_lut", { id, index }),

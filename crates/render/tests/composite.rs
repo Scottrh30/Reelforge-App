@@ -608,7 +608,7 @@ fn plugin(id: &str, manifest_extra: &str, params: &str, source: &str) -> std::sy
 fn plugin_fx(def: &std::sync::Arc<reelforge_core::plugin::PluginDef>, values: &[f32], time: f32) -> EffectValues {
     let mut v = [0.0; reelforge_core::effects::MAX_PARAMS];
     v[..values.len()].copy_from_slice(values);
-    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None }
+    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None, particles: None }
 }
 
 #[test]
@@ -770,4 +770,59 @@ fn adjustment_layers_change_everything_below_and_nothing_above() {
     c.render([16, 16], &[full(1, &white, [16, 16]), adjustment(2, [16, 16], Transform::default(), down()), adjustment(4, [16, 16], Transform::default(), down()), adjustment(5, [16, 16], Transform::default(), vec![])]);
     let q = srgb(0.25);
     assert!(near(px(&c.read_output().unwrap(), 16, 8, 8), [q, q, q]));
+}
+
+#[test]
+fn particles_fly_fall_and_add_light() {
+    use reelforge_core::particles as p;
+    let Some(mut c) = setup() else { return };
+    let black = solid(200, 100, [0, 0, 0, 255]);
+    let draw = |c: &mut reelforge_render::Compositor, set: &[(usize, f32)], at: f64| {
+        let mut e = Effect::new(EffectKind::Particles);
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        let v = e.eval(reelforge_core::Time::from_secs_f64(at));
+        c.render([200, 100], &[with_fx(layer(1, &black, [200, 100], [200.0, 100.0], Transform::default(), BlendMode::Normal), vec![v])]);
+        c.read_output().unwrap()
+    };
+    let bright = |img: &[u8], x0: u32, x1: u32, y0: u32, y1: u32| -> u32 { (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).map(|(x, y)| px(img, 200, x, y)[..3].iter().map(|&v| v as u32).sum::<u32>()).sum() };
+    // Thrown straight right from the left middle, no gravity: light right of the emitter, none left of it.
+    let right = [(p::EMIT_X, 10.0), (p::EMIT_Y, 50.0), (p::DIRECTION, 0.0), (p::SPREAD, 0.0), (p::SPEED, 100.0), (p::GRAVITY, 0.0), (p::RATE, 200.0), (p::LIFETIME, 1.5), (p::RANDOMNESS, 0.0), (p::SIZE_START, 6.0), (p::SIZE_END, 6.0)];
+    let img = draw(&mut c, &right, 2.0);
+    assert!(bright(&img, 30, 160, 44, 56) > 30_000, "{}", bright(&img, 30, 160, 44, 56));
+    assert_eq!(bright(&img, 0, 15, 0, 100), 0, "nothing behind the emitter");
+    assert!(bright(&img, 30, 160, 0, 30) < 500, "nothing far above the line");
+    // Particles 1.5 s old at 100 px/s die before x = 20 + 150 = 170.
+    assert!(bright(&img, 180, 200, 0, 100) < 200);
+    // The colour goes from birth (yellow) to death (orange-red): near the emitter more green.
+    let near_g = px(&img, 200, 40, 50);
+    let far_g = px(&img, 200, 150, 50);
+    assert!(near_g[0] > 100 && near_g[1] > far_g[1], "{near_g:?} {far_g:?}");
+
+    // Gravity bends them down: below the line on the right.
+    let mut fall = right.to_vec();
+    fall.push((p::GRAVITY, 40.0));
+    let img = draw(&mut c, &fall, 2.0);
+    assert!(bright(&img, 120, 175, 65, 100) > bright(&img, 120, 175, 40, 60) * 3, "falls");
+
+    // Opacity 0 draws nothing; before anything is born, nothing either.
+    let mut none = right.to_vec();
+    none.push((p::OPACITY, 0.0));
+    assert_eq!(bright(&draw(&mut c, &none, 2.0), 0, 200, 0, 100), 0);
+    assert_eq!(bright(&draw(&mut c, &right, 0.0), 0, 200, 0, 100), 0);
+
+    // Every look draws something; sparks streak along the motion (wider than tall).
+    for look in 0..p::LOOKS.len() {
+        let mut v = right.to_vec();
+        v.extend([(p::LOOK, look as f32), (p::RATE, 3.0), (p::SPEED, 400.0)]);
+        let img = draw(&mut c, &v, 0.3);
+        assert!(bright(&img, 0, 200, 0, 100) > 300, "look {look}");
+        if look == p::LOOK_SPARKS as usize {
+            let lit: Vec<(u32, u32)> = (0..100).flat_map(|y| (0..200).map(move |x| (x, y))).filter(|&(x, y)| px(&img, 200, x, y)[0] > 40).collect();
+            let w = lit.iter().map(|p| p.0).max().unwrap() - lit.iter().map(|p| p.0).min().unwrap();
+            let h = lit.iter().map(|p| p.1).max().unwrap() - lit.iter().map(|p| p.1).min().unwrap();
+            assert!(w > h * 2, "streaks {w}×{h}");
+        }
+    }
 }

@@ -91,6 +91,8 @@
   }
 
   // Energy blade tools.
+  /// The same order as core particles::PRESETS.
+  const PARTICLE_PRESETS = ["Sparks", "Embers", "Fire", "Smoke", "Magic", "Snow", "Dust", "Confetti"];
   const BLADE_COLOURS: [string, string][] = [
     ["Blue", "#1f6bff"],
     ["Green", "#22e04a"],
@@ -199,6 +201,16 @@
               <NumberField label="Ignition time" value={igniteSecs} min={0.02} max={10} step={0.01} digits={2} suffix=" s" oninput={(v) => (igniteSecs = v)} oncommit={() => {}} />
             </div>
             <p class="note">Drag the hilt (H) and tip in the Viewer, or drag the blade to move it. To make it follow a prop, track the prop in the Track panel and apply the track to this blade.</p>
+          </div>
+        {/if}
+        {#if fx.kind === "Particles"}
+          <div class="blade">
+            <div class="row presetrow" role="group" aria-label="Particle presets">
+              {#each PARTICLE_PRESETS as name, k}
+                <button class="small" title="Make these {name.toLowerCase()} (keeps the emitter's position)" onclick={() => run(api.particlesPreset(ins.id, i, k))}>{name}</button>
+              {/each}
+            </div>
+            <p class="note">Drag the emitter (✦) in the Viewer, and its arrow to aim it. Every setting can be keyframed: keyframe Birth rate up and down for a burst, or move the emitter to leave a trail. Particles start at the clip's start, so trim its start to begin with them already in the air.</p>
           </div>
         {/if}
         {#if fx.kind === "Curves" && fx.curves}
@@ -409,6 +421,10 @@
     gap: 6px;
     padding-top: 6px;
     border-top: 1px solid var(--line-soft);
+  }
+  .presetrow {
+    flex-wrap: wrap;
+    gap: 4px;
   }
   .presets {
     display: flex;

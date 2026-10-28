@@ -302,6 +302,34 @@ pub fn blade_preset(id: u64, index: usize, preset: usize) -> Res<()> {
     })
 }
 
+/// Set particle emitter `index` to ready-made preset `preset` (see
+/// [`reelforge_core::particles::PRESETS`]; its position and seed are kept):
+/// one undo step. Animated settings get a key at the playhead.
+#[tauri::command]
+pub fn particles_preset(id: u64, index: usize, preset: usize) -> Res<()> {
+    use reelforge_core::particles;
+    let Some(&(name, values)) = particles::PRESETS.get(preset) else { return Err("no such preset".into()) };
+    ed(|e| {
+        e.commit_live_edit();
+        edit(e, id, |list, src, in_clip| {
+            let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::Particles) else { return };
+            fx.normalize();
+            for (k, v) in values.into_iter().enumerate() {
+                let p = &mut fx.params[particles::SHAPE + k];
+                if p.keys.is_animated() {
+                    if in_clip {
+                        p.keys.set(src, v);
+                    }
+                } else {
+                    p.value = v;
+                }
+            }
+        });
+        e.commit_live_edit();
+        e.status = format!("{name} particles");
+    })
+}
+
 /// Keyframe the blade's Length so it switches on (0 → 100 %) or off
 /// (`retract`, 100 → 0 %) over `seconds` from the playhead: one undo step.
 #[tauri::command]

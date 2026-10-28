@@ -237,7 +237,7 @@ impl Scene {
             if blur > 0.25 {
                 let mut values = [0.0; reelforge_core::effects::MAX_PARAMS];
                 values[0] = blur;
-                effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None });
+                effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None, particles: None });
             }
         }
         Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, wipe: None, mesh, space, adjustment: false, solid: None, sort_depth: None }))
@@ -318,7 +318,7 @@ fn solid_layer(l: &Layer, spec: &reelforge_core::TitleSpec, frame_size: [u32; 2]
         let mut values = [0.0; reelforge_core::effects::MAX_PARAMS];
         // The picture is frame pixels, the blur was worked out in layer pixels.
         values[0] = blur * flat.scale;
-        effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None });
+        effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None, particles: None });
     }
     let picture = Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(vec![0u8; 4]), 0), size: full, media: MediaId::GENERATED };
     Gathered {
@@ -422,6 +422,11 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
                 v.to_bits().hash(h);
             }
             e.table.as_ref().map(|t| t.id).hash(h);
+            e.particles.as_ref().map(|p| p.id).hash(h);
+            // A blade flickers with time.
+            if e.kind == reelforge_core::EffectKind::EnergyBlade {
+                e.time.to_bits().hash(h);
+            }
             if let Some(p) = &e.plugin {
                 p.revision.hash(h);
                 e.time.to_bits().hash(h);
@@ -571,6 +576,10 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
                 v.to_bits().hash(h);
             }
             e.table.as_ref().map(|t| t.id).hash(h);
+            e.particles.as_ref().map(|p| p.id).hash(h);
+            if e.kind == reelforge_core::EffectKind::EnergyBlade {
+                e.time.to_bits().hash(h);
+            }
             // A reloaded plugin (new revision) or one that animates with time changes the picture.
             if let Some(p) = &e.plugin {
                 p.revision.hash(h);

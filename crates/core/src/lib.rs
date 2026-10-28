@@ -15,6 +15,7 @@ pub mod effects;
 pub mod frame;
 pub mod lut;
 pub mod mask;
+pub mod particles;
 pub mod plugin;
 pub mod project;
 pub mod speed;

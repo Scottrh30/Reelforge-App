@@ -249,8 +249,10 @@ impl Clip {
             return std::borrow::Cow::Borrowed("Adjustment layer");
         }
         if let Some(t) = &self.title {
-            if t.text.trim().is_empty() && self.effects.iter().any(|e| e.kind == crate::effects::EffectKind::EnergyBlade) {
-                return std::borrow::Cow::Borrowed("Energy blade");
+            if t.text.trim().is_empty() {
+                if let Some(name) = self.effect_layer_name() {
+                    return std::borrow::Cow::Borrowed(name);
+                }
             }
             return std::borrow::Cow::Owned(t.label());
         }
@@ -258,6 +260,16 @@ impl Clip {
             return std::borrow::Cow::Borrowed(p.sequences.get(s).map(|s| s.name.as_str()).unwrap_or("<missing composition>"));
         }
         std::borrow::Cow::Borrowed(p.media(self.media).map(|m| m.name.as_str()).unwrap_or("<missing media>"))
+    }
+
+    /// For an empty title drawn by an energy blade or particles, what it is.
+    pub fn effect_layer_name(&self) -> Option<&'static str> {
+        use crate::effects::EffectKind;
+        self.effects.iter().find_map(|e| match e.kind {
+            EffectKind::EnergyBlade => Some("Energy blade"),
+            EffectKind::Particles => Some("Particles"),
+            _ => None,
+        })
     }
 
     pub fn visual(&self) -> ClipVisual {

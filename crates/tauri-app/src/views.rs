@@ -368,8 +368,8 @@ fn clip_name(p: &Project, c: &Clip) -> String {
     }
     if let Some(t) = &c.title {
         let first = t.text.lines().next().unwrap_or("").trim();
-        if first.is_empty() && c.effects.iter().any(|e| e.kind == reelforge_core::EffectKind::EnergyBlade) {
-            return "Energy blade".into();
+        if let Some(name) = c.effect_layer_name().filter(|_| first.is_empty()) {
+            return name.into();
         }
         return if first.is_empty() { "Title".into() } else { first.to_string() };
     }

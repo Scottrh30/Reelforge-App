@@ -247,6 +247,25 @@ What works now:
       planar for perspective), put the blade where it belongs at the playhead, then choose
       *Energy blade: hilt and tip* under **Apply to**. Blades on the tracked clip and on layers
       over it are listed, and the X/Y/rotation/scale boxes choose which parts of the motion it takes
+  - **Particles** (Light & stylize): sparks, embers, fire, smoke, magic, snow, dust or confetti,
+    worked out and drawn on the graphics card (tens of thousands at once)
+    - **Timeline → Add particles layer** puts an emitter on its own transparent layer, like a
+      blade layer. Drag the emitter (✦) in the Viewer, and the tip of its arrow to aim it (Shift
+      snaps to 15°)
+    - The preset buttons (Sparks, Embers, Fire, Smoke, Magic, Snow, Dust, Confetti) set
+      everything but the emitter's position and seed
+    - **Emitter**: position, **Shape** (point, a line across the direction of travel, a disc, a
+      ring that throws outwards, or the whole layer) and size. **Birth**: rate per second,
+      lifetime and **Randomness** (varies life, speed and size). **Motion**: speed, direction,
+      spread, gravity, wind and turbulence. **Look**: size and colour at birth and at death,
+      opacity, and *Glow* or *Sparks* (light added, sparks streak along their motion) or
+      *Soft*/*Solid dots* (which cover what's under them)
+    - Every setting can be keyframed. Emitter settings are read at each particle's birth, so a
+      moving emitter leaves a trail, and keyframing **Birth rate** up and back down makes a burst;
+      gravity, wind, turbulence and the look apply to every particle alive
+    - Nothing is simulated frame by frame: every frame is worked out on its own from the clip's
+      start, so scrubbing, playing backwards and exporting all show exactly the same particles.
+      They start with the clip, so trim its start to begin with particles already in the air
   - The **browser** (`E`, or **Edit → Effects & transitions…**) lists every effect by category
     (Colour, Blur & sharpen, Keying, Light & stylize) and every transition, with a search box
     and a one-line description of each; **Add** puts an effect on the selected clip
@@ -1312,9 +1331,9 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    effect presets)
 6. **Compositing**: ~~compositions (nested sequences), motion tracking (1, 2 and 4
    points: follow, stabilise with smoothing, corner pin / screen replacement), corner pin,
-   masks with Bézier curves and per-point feather~~, titles and track management are done.
+   masks with Bézier curves and per-point feather, GPU particles~~, titles and track management are done.
    Still to come: automatic
-   zoom to hide stabilisation edges, GPU particles, animated text presets (3D layers, a camera
+   zoom to hide stabilisation edges, animated text presets (3D layers, a camera
    and lights are in).
 7. ~~**Performance**: proxy media, a frame cache, hardware decode, YUV frames converted on the
    GPU, render preview~~

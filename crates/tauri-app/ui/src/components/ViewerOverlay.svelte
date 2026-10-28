@@ -302,6 +302,52 @@
     el.addEventListener("pointerup", up);
   }
 
+  // Particle emitters of the selected clip: where they are, their shape and
+  // which way they throw (in layer units; settings in core particles.rs).
+  type Emitter = { index: number; at: Pt; dir: number; shape: number; extent: number };
+  const emitters = $derived.by((): Emitter[] => {
+    if (!ins) return [];
+    return ins.effects.flatMap((fx, index) => {
+      if (fx.kind !== "Particles" || !fx.enabled || fx.params.length < 10) return [];
+      const v = (k: number) => fx.params[k].value;
+      return [{ index, at: [(v(0) / 100) * size[0], (v(1) / 100) * size[1]] as Pt, dir: v(8), shape: Math.round(v(2)), extent: v(3) }];
+    });
+  });
+  /// Screen pixels the direction arrow is long.
+  const ARROW = 46;
+  /// Drag an emitter (`"move"`) or the tip of its direction arrow (`"aim"`).
+  function dragEmitter(e: PointerEvent, m: Emitter, part: "move" | "aim") {
+    if (e.button !== 0 || !ins || !inv || app.live?.playing || busyTracking) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = ins.id;
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const start = toLayer(e);
+    const pump = livePump();
+    const move = (ev: PointerEvent) => {
+      const now = toLayer(ev);
+      if (part === "move") {
+        const x = ((m.at[0] + now[0] - start[0]) / size[0]) * 100;
+        const y = ((m.at[1] + now[1] - start[1]) / size[1]) * 100;
+        pump.push(() => Promise.all([api.effectParam(id, m.index, 0, x), api.effectParam(id, m.index, 1, y)]));
+      } else {
+        // Anticlockwise from the right, y down the screen; Shift snaps to 15°.
+        let deg = (Math.atan2(-(now[1] - m.at[1]), now[0] - m.at[0]) * 180) / Math.PI;
+        if (ev.shiftKey) deg = Math.round(deg / 15) * 15;
+        pump.push(() => api.effectParam(id, m.index, 8, deg));
+      }
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      await pump.done();
+      await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
   // A camera's or light's points: drag one across the camera's view.
   function dragScenePoint(e: PointerEvent, which: string) {
     if (e.button !== 0 || !ins || app.live?.playing) return;
@@ -453,6 +499,29 @@
         <circle cx={tx} cy={ty} r="6" class="bladeend" stroke={b.colour} onpointerdown={(e) => dragBlade(e, b, "tip")} role="presentation"><title>Blade tip: drag to aim (Shift keeps the length)</title></circle>
         <circle cx={hx} cy={hy} r="8" class="bladeend hilt" stroke={b.colour} onpointerdown={(e) => dragBlade(e, b, "hilt")} role="presentation"><title>Blade hilt: drag to move this end</title></circle>
         <text x={hx} y={hy + 4} text-anchor="middle" class="bladetag">H</text>
+      {/each}
+    {/if}
+
+    <!-- Particle emitters: the emitter's shape, a handle to move it and an arrow to aim it. -->
+    {#if !drawing}
+      {#each emitters as m}
+        {@const [cx, cy] = toBox(m.at)}
+        {@const rad = (m.dir * Math.PI) / 180}
+        {@const [ax, ay] = [cx + Math.cos(rad) * ARROW, cy - Math.sin(rad) * ARROW]}
+        {@const edge = toBox([m.at[0] + m.extent / 2, m.at[1]])[0] - cx}
+        {#if m.shape === 1}
+          <line x1={cx - Math.sin(rad) * edge} y1={cy - Math.cos(rad) * edge} x2={cx + Math.sin(rad) * edge} y2={cy + Math.cos(rad) * edge} class="bladeaxis" />
+        {:else if m.shape === 2 || m.shape === 3}
+          <circle {cx} {cy} r={Math.abs(edge)} class="bladeaxis emitshape" />
+        {/if}
+        {#if m.shape !== 3 && m.shape !== 4}
+          <line x1={cx} y1={cy} x2={ax} y2={ay} class="bladeaxis" />
+          <circle cx={ax} cy={ay} r="5" class="bladeend" stroke="var(--accent)" onpointerdown={(e) => dragEmitter(e, m, "aim")} role="presentation"><title>Direction: drag to aim the particles (Shift snaps to 15°)</title></circle>
+        {/if}
+        {#if m.shape !== 4}
+          <circle {cx} {cy} r="8" class="bladeend" stroke="var(--accent)" onpointerdown={(e) => dragEmitter(e, m, "move")} role="presentation"><title>Particle emitter: drag to move it</title></circle>
+          <text x={cx} y={cy + 4} text-anchor="middle" class="bladetag">✦</text>
+        {/if}
       {/each}
     {/if}
 
@@ -717,6 +786,9 @@
     stroke-width: 2;
     pointer-events: all;
     cursor: crosshair;
+  }
+  .emitshape {
+    fill: none;
   }
   .bladetag {
     fill: white;

@@ -448,6 +448,12 @@ fn add_blade_layer() -> Res<()> {
     ed(|e| e.add_blade_layer())
 }
 
+/// A particle emitter on its own transparent layer, over the selected clip.
+#[tauri::command]
+fn add_particles_layer() -> Res<()> {
+    ed(|e| e.add_particles_layer())
+}
+
 // ---- Selection and edits --------------------------------------------------------
 
 /// `mode`: "only" (plain click), "toggle" (Ctrl+click) or "none" (click empty space).
@@ -1052,6 +1058,7 @@ fn main() {
             add_title,
             add_3d_text,
             add_blade_layer,
+            add_particles_layer,
             scene::add_scene,
             scene::add_new,
             scene::set_plane_color,
@@ -1113,6 +1120,7 @@ fn main() {
             fx::effect_param,
             fx::effect_key,
             fx::blade_preset,
+            fx::particles_preset,
             fx::blade_ignite,
             fx::effect_curves,
             fx::effect_lut,

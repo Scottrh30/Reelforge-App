@@ -1013,3 +1013,41 @@ fn exports_3d_text_lit_by_the_scene() {
     assert!(dim_faces > faces / 2, "{dim_faces} of {faces}");
     assert_eq!(count(&dim, &|r, _, _| r > 215), 0, "nothing at full brightness");
 }
+
+#[test]
+fn exports_particles_that_build_up_over_time() {
+    use reelforge_core::particles as pt;
+    use reelforge_core::{Effect, EffectKind, TitleSpec};
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    let mut seq = Sequence::new("P", 320, 180, FrameRate::new(25, 1));
+    let mut spec = TitleSpec::for_frame(180);
+    spec.text = String::new();
+    let mut c = Clip::new_title(ClipId(2), s(0.0), s(2.0), spec);
+    let mut fx = Effect::new(EffectKind::Particles);
+    // The "Sparks" preset, thrown up from the bottom middle.
+    for (k, v) in pt::PRESETS[0].1.into_iter().enumerate() {
+        fx.params[pt::SHAPE + k].value = v;
+    }
+    fx.params[pt::EMIT_Y].value = 90.0;
+    fx.params[pt::SPEED].value = 250.0;
+    fx.params[pt::GRAVITY].value = 300.0;
+    c.effects.push(fx);
+    seq.tracks[0].clips = vec![c];
+    p.sequences = vec![seq];
+    let out = std::env::temp_dir().join("rf_particles.mov");
+    let mut st = settings(out.clone());
+    st.include_audio = false;
+    st.end = s(1.2);
+    st.video = Some(VideoCodec::ProRes422Hq);
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let mut lit = |t: f64| {
+        let f = dec.frame_at_blocking(s(t), Duration::from_secs(5)).unwrap();
+        f.rgba().chunks_exact(4).filter(|p| p[0] > 120).count()
+    };
+    let (first, early, later) = (lit(0.0), lit(0.2), lit(1.0));
+    assert_eq!(first, 0, "nothing born at the start");
+    assert!(early > 20 && later > early, "{early} then {later}");
+}
