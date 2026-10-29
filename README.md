@@ -52,9 +52,17 @@ What works now:
 - **GPU compositor**: every visible video track is blended into the frame on the GPU
   (wgpu), in linear light with float precision
 - **Per-clip transform** in the Controls panel: position, scale (with a lock for uniform
-  scaling), rotation, opacity, **anchor point**, **crop**, and **blend modes** (Normal, Add,
-  Multiply, Screen), plus Reset / Fit / Fill buttons. Clips sit at their native pixel size by
-  default, like HitFilm
+  scaling), rotation, opacity, **anchor point**, **crop**, and **blend modes**, plus Reset /
+  Fit / Fill buttons. Clips sit at their native pixel size by default, like HitFilm
+  - **Blend modes**, grouped in the menu (hover one for what it does): Normal; Darken, Multiply,
+    Colour burn; Lighten, Screen, Colour dodge, Add; Overlay, Soft light, Hard light;
+    Difference, Exclusion; Hue, Saturation, Colour, Luminosity. They work on every kind of layer
+    (footage, titles, 3D text, particles, compositions, adjustment layers, layers with effects)
+    and keyframed opacity fades the result in and out
+  - Add, Multiply and Screen blend in linear light on the GPU's blender, as before. The others
+    follow the standard (W3C/Photoshop) formulas on sRGB-encoded values, so Overlay and Soft
+    light look the way they do in Photoshop and HitFilm. Values brighter than white (a strong
+    glow) are clipped to white for those modes
   - **Anchor point**: the pivot for scale and rotation (pixels from the layer's centre).
     Changing it keeps the picture where it is; **Centre** puts it back in the middle
   - **Crop**: cut away the left, top, right and bottom edges (% of the layer). The crop moves,
@@ -1132,7 +1140,12 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   original, or a lookup table. Curves become a 256×1 table; a .cube LUT of size N becomes N
   slices of N×N laid side by side, sampled with the blue axis interpolated by hand. Tables are
   uploaded once and cached by content hash. The result is drawn with the pre-multiplied pipeline, including
-  inside dissolve groups. The blur radius is converted from frame pixels to texels, so a proxy-
+  inside dissolve groups. Blend modes other than Normal/Add/Multiply/Screen read the frame under
+  the layer: the frame pass ends, the frame so far is copied to a backdrop texture, and the layer
+  is drawn by `fs_blend` (`render/src/composite.wgsl`, one pipeline per mode via an override
+  constant), which mixes `(1 − αb)·Cs + αb·B(Cb, Cs)` and draws that over the frame with the
+  layer's alpha. `BlendMode::blend_rgb` in core is the reference the GPU test checks against.
+  The blur radius is converted from frame pixels to texels, so a proxy-
   sized preview and a full-size export blur by the same visible amount.
 - **Proxies, hardware decoding and the frame cache** live in the media crate. `hw.rs` sets a
   shared hardware device on each decoder context before it opens (`hw_device_ctx` +
@@ -1318,7 +1331,9 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 3. ~~Compositor and editing: layers, transforms, opacity, blend modes, viewer gizmo, keyframes
    and a curve editor, cross-dissolves, trimming, ripple/roll/slip/slide, ripple delete, track
    locking~~
-   (still to add: more blend modes; Bézier keyframe handles are in)
+   (blend modes: Normal, Add, Multiply, Screen, Overlay, Soft/Hard light, Colour dodge/burn,
+   Darken, Lighten, Difference, Exclusion, Hue, Saturation, Colour, Luminosity; Bézier keyframe
+   handles are in)
 4. ~~Export: H.264/H.265/ProRes/DNxHR/image sequences/WAV, presets including vertical video,
    fit/fill/stretch, GPU encoders, an in/out range, an export queue, 10-bit/HDR10/HLG HEVC,
    target bitrates, your own presets~~

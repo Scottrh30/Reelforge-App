@@ -14,7 +14,37 @@
   import type { Transition, TransitionKind, Interp } from "../lib/api";
 
   const ins = $derived(app.s?.inspector ?? null);
-  const blends: Blend[] = ["Normal", "Add", "Multiply", "Screen"];
+  /// Blend modes in menu groups: [heading, [mode, label, tooltip]].
+  const blendGroups: [string, [Blend, string, string][]][] = [
+    ["", [["Normal", "Normal", "Covers what's under it"]]],
+    ["Darken", [
+      ["Darken", "Darken", "Keeps the darker of the layer and what's under it, per channel"],
+      ["Multiply", "Multiply", "Darkens: white disappears, black stays black"],
+      ["ColorBurn", "Colour burn", "Darkens and adds contrast, deepening colours"],
+    ]],
+    ["Lighten", [
+      ["Lighten", "Lighten", "Keeps the lighter of the layer and what's under it, per channel"],
+      ["Screen", "Screen", "Lightens: black disappears, white stays white"],
+      ["ColorDodge", "Colour dodge", "Brightens strongly, blowing out highlights"],
+      ["Add", "Add", "Adds light (fire, flares, glows)"],
+    ]],
+    ["Contrast", [
+      ["Overlay", "Overlay", "Contrast from the layer: darker under dark areas, lighter under light ones; mid grey disappears"],
+      ["SoftLight", "Soft light", "A gentle overlay, like a soft spotlight"],
+      ["HardLight", "Hard light", "A strong overlay, led by the layer"],
+    ]],
+    ["Compare", [
+      ["Difference", "Difference", "The difference between the two: black disappears, white inverts"],
+      ["Exclusion", "Exclusion", "Like difference, with less contrast"],
+    ]],
+    ["Colour", [
+      ["Hue", "Hue", "The layer's hue, with the saturation and brightness of what's under it"],
+      ["Saturation", "Saturation", "The layer's saturation only"],
+      ["Color", "Colour", "The layer's hue and saturation, with the brightness of what's under it (tinting)"],
+      ["Luminosity", "Luminosity", "The layer's brightness, with the colour of what's under it"],
+    ]],
+  ];
+  const blendTip = (b: Blend) => blendGroups.flatMap(([, g]) => g).find(([m]) => m === b)?.[2] ?? "";
   const speeds = [0.25, 0.5, 1, 2, 4];
   let linkScale = $state(true);
 
@@ -367,8 +397,16 @@
             <span class="tc val">{Math.round(t.opacity * 100)}%</span>
           </div>
           <span class="lbl">Blend</span>
-          <select value={ins.visual.blend} aria-label="Blend mode" onchange={(e) => run(api.setBlend(ins.id, e.currentTarget.value as Blend))}>
-            {#each blends as b}<option value={b}>{b}</option>{/each}
+          <select value={ins.visual.blend} aria-label="Blend mode" title={blendTip(ins.visual.blend)} onchange={(e) => run(api.setBlend(ins.id, e.currentTarget.value as Blend))}>
+            {#each blendGroups as [heading, modes]}
+              {#if heading}
+                <optgroup label={heading}>
+                  {#each modes as [m, label, tip]}<option value={m} title={tip}>{label}</option>{/each}
+                </optgroup>
+              {:else}
+                {#each modes as [m, label, tip]}<option value={m} title={tip}>{label}</option>{/each}
+              {/if}
+            {/each}
           </select>
         </div>
         {#if ins.keys && (ins.keys.prev_key != null || ins.keys.next_key != null)}

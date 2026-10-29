@@ -241,18 +241,145 @@ pub enum BlendMode {
     Add,
     Multiply,
     Screen,
+    Overlay,
+    SoftLight,
+    HardLight,
+    ColorDodge,
+    ColorBurn,
+    Darken,
+    Lighten,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
 
 impl BlendMode {
-    pub const ALL: [BlendMode; 4] = [BlendMode::Normal, BlendMode::Add, BlendMode::Multiply, BlendMode::Screen];
+    pub const ALL: [BlendMode; 17] = [
+        BlendMode::Normal,
+        BlendMode::Add,
+        BlendMode::Multiply,
+        BlendMode::Screen,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::HardLight,
+        BlendMode::ColorDodge,
+        BlendMode::ColorBurn,
+        BlendMode::Darken,
+        BlendMode::Lighten,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             BlendMode::Normal => "Normal",
             BlendMode::Add => "Add",
             BlendMode::Multiply => "Multiply",
             BlendMode::Screen => "Screen",
+            BlendMode::Overlay => "Overlay",
+            BlendMode::SoftLight => "Soft light",
+            BlendMode::HardLight => "Hard light",
+            BlendMode::ColorDodge => "Colour dodge",
+            BlendMode::ColorBurn => "Colour burn",
+            BlendMode::Darken => "Darken",
+            BlendMode::Lighten => "Lighten",
+            BlendMode::Difference => "Difference",
+            BlendMode::Exclusion => "Exclusion",
+            BlendMode::Hue => "Hue",
+            BlendMode::Saturation => "Saturation",
+            BlendMode::Color => "Colour",
+            BlendMode::Luminosity => "Luminosity",
         }
     }
+
+    /// True for the modes that need the pixels under the layer (everything
+    /// but Normal, Add, Multiply and Screen, which the GPU's blender does).
+    /// These blend sRGB-encoded values, as Photoshop and HitFilm do, so they
+    /// look the way you'd expect from those.
+    pub fn reads_backdrop(self) -> bool {
+        !matches!(self, BlendMode::Normal | BlendMode::Add | BlendMode::Multiply | BlendMode::Screen)
+    }
+
+    /// The colour of fully opaque `top` blended onto `under`, both sRGB-encoded
+    /// 0–1: a reference for the GPU shader. (Opacity then mixes the result
+    /// with `under` in linear light, as for Normal.)
+    pub fn blend_rgb(self, under: [f32; 3], top: [f32; 3]) -> [f32; 3] {
+        blend_fn(self, under, top)
+    }
+}
+
+/// The W3C compositing spec's blend functions (`cb` under, `cs` on top).
+fn blend_fn(mode: BlendMode, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
+    let sep = |f: fn(f32, f32) -> f32| [f(cb[0], cs[0]), f(cb[1], cs[1]), f(cb[2], cs[2])];
+    fn hard(b: f32, s: f32) -> f32 {
+        if s <= 0.5 { b * 2.0 * s } else { let s2 = 2.0 * s - 1.0; b + s2 - b * s2 }
+    }
+    match mode {
+        BlendMode::Normal => cs,
+        BlendMode::Add => sep(|b, s| (b + s).min(1.0)),
+        BlendMode::Multiply => sep(|b, s| b * s),
+        BlendMode::Screen => sep(|b, s| b + s - b * s),
+        BlendMode::Overlay => sep(|b, s| hard(s, b)),
+        BlendMode::HardLight => sep(hard),
+        BlendMode::SoftLight => sep(|b, s| {
+            if s <= 0.5 {
+                b - (1.0 - 2.0 * s) * b * (1.0 - b)
+            } else {
+                let d = if b <= 0.25 { ((16.0 * b - 12.0) * b + 4.0) * b } else { b.sqrt() };
+                b + (2.0 * s - 1.0) * (d - b)
+            }
+        }),
+        BlendMode::ColorDodge => sep(|b, s| if b <= 0.0 { 0.0 } else if s >= 1.0 { 1.0 } else { (b / (1.0 - s)).min(1.0) }),
+        BlendMode::ColorBurn => sep(|b, s| if b >= 1.0 { 1.0 } else if s <= 0.0 { 0.0 } else { 1.0 - ((1.0 - b) / s).min(1.0) }),
+        BlendMode::Darken => sep(f32::min),
+        BlendMode::Lighten => sep(f32::max),
+        BlendMode::Difference => sep(|b, s| (b - s).abs()),
+        BlendMode::Exclusion => sep(|b, s| b + s - 2.0 * b * s),
+        BlendMode::Hue => set_lum(set_sat(cs, sat(cb)), lum(cb)),
+        BlendMode::Saturation => set_lum(set_sat(cb, sat(cs)), lum(cb)),
+        BlendMode::Color => set_lum(cs, lum(cb)),
+        BlendMode::Luminosity => set_lum(cb, lum(cs)),
+    }
+}
+
+fn lum(c: [f32; 3]) -> f32 {
+    0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+}
+
+fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
+    let d = l - lum(c);
+    let c = c.map(|v| v + d);
+    let l = lum(c);
+    let (n, x) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
+    c.map(|v| {
+        let mut v = v;
+        if n < 0.0 {
+            v = l + (v - l) * l / (l - n);
+        }
+        if x > 1.0 {
+            v = l + (v - l) * (1.0 - l) / (x - l);
+        }
+        v
+    })
+}
+
+fn sat(c: [f32; 3]) -> f32 {
+    c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
+}
+
+fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
+    let (n, x) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
+    if x <= n {
+        return [0.0; 3];
+    }
+    c.map(|v| (v - n) * s / (x - n))
 }
 
 /// `p' = [a c; b d] · p + [tx; ty]`
@@ -425,6 +552,43 @@ impl Transform {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn blend_modes_follow_the_usual_formulas() {
+        use BlendMode as M;
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-4);
+        let under = [0.2, 0.5, 0.8];
+        let grey = [0.5; 3];
+        // Mid grey on top changes nothing with overlay and soft light; under hard light it is the backdrop that is neutral.
+        for m in [M::Overlay, M::SoftLight] {
+            assert!(near(m.blend_rgb(under, grey), under), "{m:?}");
+        }
+        assert!(near(M::HardLight.blend_rgb(grey, under), under));
+        // Overlay: darks darker, lights lighter (a contrast boost from the layer).
+        let o = M::Overlay.blend_rgb([0.25, 0.75, 0.5], [0.75; 3]);
+        assert!(near(o, [0.375, 0.875, 0.75]), "{o:?}");
+        assert!(near(M::Difference.blend_rgb(under, under), [0.0; 3]));
+        assert!(near(M::Exclusion.blend_rgb(under, [1.0; 3]), [0.8, 0.5, 0.2]));
+        assert!(near(M::Darken.blend_rgb(under, grey), [0.2, 0.5, 0.5]));
+        assert!(near(M::Lighten.blend_rgb(under, grey), [0.5, 0.5, 0.8]));
+        assert!(near(M::ColorDodge.blend_rgb([0.25; 3], [0.5; 3]), [0.5; 3]));
+        assert!(near(M::ColorBurn.blend_rgb([0.75; 3], [0.5; 3]), [0.5; 3]));
+        // Luminosity of a grey keeps the backdrop's hue but takes the grey's brightness.
+        let red = [0.8, 0.2, 0.2];
+        let l = M::Luminosity.blend_rgb(red, [0.3; 3]);
+        assert!((lum(l) - 0.3).abs() < 1e-4 && l[0] > l[1] && (l[1] - l[2]).abs() < 1e-4, "{l:?}");
+        // Colour: the layer's hue and saturation at the backdrop's brightness.
+        let c = M::Color.blend_rgb([0.4; 3], red);
+        assert!((lum(c) - 0.4).abs() < 1e-4 && c[0] > c[1], "{c:?}");
+        // Saturation from a grey layer: the backdrop goes grey.
+        let g = M::Saturation.blend_rgb(red, grey);
+        assert!((g[0] - g[1]).abs() < 1e-4 && (g[1] - g[2]).abs() < 1e-4);
+        // Hue from a blue layer onto red keeps the red's saturation and brightness.
+        let h = M::Hue.blend_rgb(red, [0.1, 0.1, 0.9]);
+        assert!(h[2] > h[0] && (lum(h) - lum(red)).abs() < 1e-4 && (sat(h) - sat(red)).abs() < 1e-3, "{h:?}");
+        assert!(M::ALL.iter().filter(|m| m.reads_backdrop()).count() == 13);
+    }
+
     use super::*;
 
     fn close(a: [f32; 2], b: [f32; 2]) -> bool {

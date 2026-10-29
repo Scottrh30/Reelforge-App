@@ -22,7 +22,24 @@ export interface Transform {
   lit?: boolean;
 }
 
-export type Blend = "Normal" | "Add" | "Multiply" | "Screen";
+export type Blend =
+  | "Normal"
+  | "Add"
+  | "Multiply"
+  | "Screen"
+  | "Overlay"
+  | "SoftLight"
+  | "HardLight"
+  | "ColorDodge"
+  | "ColorBurn"
+  | "Darken"
+  | "Lighten"
+  | "Difference"
+  | "Exclusion"
+  | "Hue"
+  | "Saturation"
+  | "Color"
+  | "Luminosity";
 
 export type ProxyFormat = "ProResProxy" | "DnxhrLb" | "H264";
 

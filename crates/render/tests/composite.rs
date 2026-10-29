@@ -826,3 +826,42 @@ fn particles_fly_fall_and_add_light() {
         }
     }
 }
+
+#[test]
+fn every_blend_mode_matches_the_reference_formula() {
+    let Some(mut c) = setup() else { return };
+    let enc = |v: f32| if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    let dec = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let tops: [[u8; 3]; 3] = [[200, 60, 120], [30, 200, 90], [128, 128, 128]];
+    let unders: [[u8; 3]; 2] = [[51, 128, 204], [230, 180, 20]];
+    for under in unders {
+        let bg = solid(1, 1, [under[0], under[1], under[2], 255]);
+        let mut back = full(1, &bg, [16, 16]);
+        back.content_id = under[0] as u64 + 100;
+        for top in tops {
+            for (alpha, through_fx) in [(255u8, false), (128, false), (255, true)] {
+                let fg = solid(1, 1, [top[0], top[1], top[2], alpha]);
+                // (Add, Multiply and Screen use the GPU's blender in linear light, as before.)
+                for mode in BlendMode::ALL.into_iter().filter(|m| m.reads_backdrop() || *m == BlendMode::Normal) {
+                    let mut l = layer(2, &fg, [1, 1], [16.0, 16.0], Transform::default(), mode);
+                    // A new picture each time (the compositor keeps textures by content id).
+                    l.content_id = u64::from_le_bytes([top[0], top[1], top[2], alpha, under[0], 7, 7, 7]);
+                    if through_fx {
+                        // An effect that changes nothing visible, so the layer is drawn premultiplied.
+                        l = with_fx(l, vec![fx(EffectKind::ColorCorrect, &[(0, 0.0001)])]);
+                    }
+                    c.render([16, 16], &[back.clone(), l]);
+                    let got = px(&c.read_output().unwrap(), 16, 8, 8);
+                    let f = |v: [u8; 3]| v.map(|x| x as f32 / 255.0);
+                    let b = mode.blend_rgb(f(under), f(top));
+                    let a = alpha as f32 / 255.0;
+                    // Opacity mixes in linear light.
+                    let want: [u8; 3] = [0, 1, 2].map(|i| (enc(a * dec(b[i].clamp(0.0, 1.0)) + (1.0 - a) * dec(f(under)[i])) * 255.0).round() as u8);
+                    // Dodge and burn divide by the top colour, magnifying 8-bit rounding.
+                    let tol = if matches!(mode, BlendMode::ColorDodge | BlendMode::ColorBurn) { 6 } else { 3 };
+                    assert!((0..3).all(|i| (got[i] as i32 - want[i] as i32).abs() <= tol), "{mode:?} {under:?} under {top:?} α{alpha} fx {through_fx}: got {got:?}, want {want:?}");
+                }
+            }
+        }
+    }
+}

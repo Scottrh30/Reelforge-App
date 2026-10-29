@@ -20,7 +20,7 @@
     { key: "transform", label: "Position, scale, rotation, anchor and opacity", tip: "With their keyframes, at the same distance from the clip's start", ok: (o) => o.visual },
     { key: "crop", label: "Crop", tip: "The crop amounts (and keyframes)", ok: (o) => o.visual },
     { key: "corner_pin", label: "Corner pin", tip: "Where the four corners go (and keyframes)", ok: (o) => o.corner_pin },
-    { key: "blend", label: "Blend mode", tip: "Normal, Add, Multiply or Screen", ok: (o) => o.visual },
+    { key: "blend", label: "Blend mode", tip: "Normal, Multiply, Screen, Overlay and the other modes", ok: (o) => o.visual },
     { key: "effects", label: "Effects", tip: "The whole effect stack, with keyframes: the same colour grade on every shot, say", ok: (o) => o.effects > 0 },
     { key: "masks", label: "Masks", tip: "Replaces their masks; shapes are scaled to each clip's picture size", ok: (o) => o.masks > 0 },
     { key: "audio", label: "Audio levels: volume, pan and fades", tip: "Onto audio clips (including those linked to the selected video clips), with volume keyframes", ok: (o) => o.audio },

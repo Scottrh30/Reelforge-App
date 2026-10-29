@@ -218,6 +218,10 @@ struct Targets {
     output_bind: wgpu::BindGroup,
     /// The frame so far, for adjustment layers to read.
     accum_bind: wgpu::BindGroup,
+    accum: wgpu::Texture,
+    /// A copy of the frame so far, for a layer whose blend mode reads it.
+    backdrop: wgpu::Texture,
+    backdrop_bind: wgpu::BindGroup,
 }
 
 pub struct Compositor {
@@ -288,6 +292,9 @@ fn blend_state(mode: BlendMode) -> wgpu::BlendState {
         BlendMode::Multiply => comp(F::Dst, F::OneMinusSrcAlpha),
         // src + dst·(1 − src)
         BlendMode::Screen => comp(F::One, F::OneMinusSrc),
+        // The rest are worked out in the shader against a copy of the frame
+        // (see `fs_blend`), and the result is drawn over it.
+        _ => comp(F::One, F::OneMinusSrcAlpha),
     };
     wgpu::BlendState { color, alpha: comp(F::One, F::OneMinusSrcAlpha) }
 }
@@ -353,10 +360,17 @@ impl Compositor {
             bind_group_layouts: &[Some(&uniform_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let make = |label: &str, entry: &str, blend: wgpu::BlendState| {
+        // Blend modes that read the frame under the layer get it as a third texture.
+        let blend_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("layer (blend mode)"),
+            bind_group_layouts: &[Some(&uniform_layout), Some(&texture_layout), Some(&output_layout)],
+            immediate_size: 0,
+        });
+        let make_with = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>| {
+            let constants = mode.map(|m| [("MODE", m as f64)]);
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&layer_pl),
+                layout: Some(if mode.is_some() { &blend_pl } else { &layer_pl }),
                 vertex: wgpu::VertexState {
                     module: &layer_shader,
                     entry_point: Some("vs_layer"),
@@ -366,7 +380,7 @@ impl Compositor {
                 fragment: Some(wgpu::FragmentState {
                     module: &layer_shader,
                     entry_point: Some(entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions { constants: constants.as_ref().map_or(&[][..], |c| &c[..]), ..Default::default() },
                     targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 primitive: wgpu::PrimitiveState::default(), // no culling: flips/negative scale are fine
@@ -376,8 +390,16 @@ impl Compositor {
                 cache: None,
             })
         };
-        let layer_pipelines = BlendMode::ALL.into_iter().map(|m| (m, make(m.label(), "fs_layer", blend_state(m)))).collect();
-        let group_pipelines = BlendMode::ALL.into_iter().map(|m| (m, make(m.label(), "fs_layer_premul", blend_state(m)))).collect();
+        let make = |label: &str, entry: &str, blend: wgpu::BlendState| make_with(label, entry, blend, None);
+        let per_mode = |plain: &str, blend_entry: &str| -> HashMap<BlendMode, wgpu::RenderPipeline> {
+            BlendMode::ALL
+                .into_iter()
+                .enumerate()
+                .map(|(i, m)| (m, if m.reads_backdrop() { make_with(m.label(), blend_entry, blend_state(m), Some(i)) } else { make(m.label(), plain, blend_state(m)) }))
+                .collect()
+        };
+        let layer_pipelines = per_mode("fs_layer", "fs_blend");
+        let group_pipelines = per_mode("fs_layer_premul", "fs_blend_premul");
         let sum = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
         let sum_pipeline = make("dissolve sum", "fs_layer", wgpu::BlendState { color: sum, alpha: sum });
         let sum_premul_pipeline = make("dissolve sum (premultiplied)", "fs_layer_premul", wgpu::BlendState { color: sum, alpha: sum });
@@ -655,7 +677,13 @@ impl Compositor {
             })
         };
         use wgpu::TextureUsages as U;
-        let accum = tex("accum", ACCUM_FORMAT, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING);
+        let accum = tex("accum", ACCUM_FORMAT, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC);
+        let backdrop = tex("backdrop", ACCUM_FORMAT, U::TEXTURE_BINDING | U::COPY_DST);
+        let backdrop_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("backdrop"),
+            layout: &self.output_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&backdrop.create_view(&Default::default())) }],
+        });
         let group = tex("dissolve group", ACCUM_FORMAT, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING);
         let group_view = group.create_view(&Default::default());
         let group_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -682,7 +710,7 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        self.targets = Some(Targets { size, accum_view, group_view, group_bind, output, output_view, output_bind, accum_bind });
+        self.targets = Some(Targets { size, accum_view, group_view, group_bind, output, output_view, output_bind, accum_bind, accum, backdrop, backdrop_bind });
         self.output_generation += 1;
     }
 
@@ -1361,11 +1389,28 @@ impl Compositor {
         // its own pass on the scratch target in between.
         let background = if self.transparent { wgpu::Color::TRANSPARENT } else { wgpu::Color::BLACK };
         let mut frame_pass = Some(pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Clear(background)));
+        // For a blend mode that reads the frame under the layer: copy the frame so far
+        // (the pass drawing it has to end first). Returns whether to bind the copy.
+        let copy_backdrop = |enc: &mut wgpu::CommandEncoder, blend: BlendMode| -> bool {
+            if !blend.reads_backdrop() {
+                return false;
+            }
+            let extent = wgpu::Extent3d { width: targets.size[0].max(1), height: targets.size[1].max(1), depth_or_array_layers: 1 };
+            enc.copy_texture_to_texture(targets.accum.as_image_copy(), targets.backdrop.as_image_copy(), extent);
+            true
+        };
         for op in &ops {
             match op {
                 Op::Frame { draw, blend } => {
                     let Some(bind) = source(draw) else { continue };
+                    if blend.reads_backdrop() {
+                        drop(frame_pass.take());
+                    }
+                    let read = copy_backdrop(&mut enc, *blend);
                     let pass = frame_pass.get_or_insert_with(|| pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Load));
+                    if read {
+                        pass.set_bind_group(2, &targets.backdrop_bind, &[]);
+                    }
                     // Processed layers are already premultiplied: draw them like a group.
                     pass.set_pipeline(if draw.fx.is_some() { &self.group_pipelines[blend] } else { &self.layer_pipelines[blend] });
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
@@ -1379,7 +1424,11 @@ impl Compositor {
                         encode_fx(&mut enc, i, p);
                     }
                     let Some(bind) = source(draw) else { continue };
+                    let read = copy_backdrop(&mut enc, *blend);
                     let pass = frame_pass.insert(pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Load));
+                    if read {
+                        pass.set_bind_group(2, &targets.backdrop_bind, &[]);
+                    }
                     pass.set_pipeline(&self.group_pipelines[blend]);
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
                     pass.set_bind_group(1, bind, &[]);
@@ -1397,7 +1446,11 @@ impl Compositor {
                             gp.draw(0..verts[d.slot], 0..1);
                         }
                     }
+                    let read = copy_backdrop(&mut enc, *blend);
                     let pass = frame_pass.insert(pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Load));
+                    if read {
+                        pass.set_bind_group(2, &targets.backdrop_bind, &[]);
+                    }
                     pass.set_pipeline(&self.group_pipelines[blend]);
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(*over)]);
                     pass.set_bind_group(1, &targets.group_bind, &[]);

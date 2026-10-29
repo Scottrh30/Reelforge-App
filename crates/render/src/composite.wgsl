@@ -160,6 +160,10 @@ fn lighting(local: vec2<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_layer(in: VsOut) -> @location(0) vec4<f32> {
+    return layer_color(in);
+}
+
+fn layer_color(in: VsOut) -> vec4<f32> {
     let c = textureSample(layer_tex, layer_sampler, in.uv);
     let a = c.a * layer.opacity * wipe_factor(in.pos.xy);
     var rgb = c.rgb;
@@ -173,10 +177,149 @@ fn fs_layer(in: VsOut) -> @location(0) vec4<f32> {
 // float target): no extra premultiply, just the group's overall opacity.
 @fragment
 fn fs_layer_premul(in: VsOut) -> @location(0) vec4<f32> {
+    return layer_color_premul(in);
+}
+
+fn layer_color_premul(in: VsOut) -> vec4<f32> {
     var c = textureSample(layer_tex, layer_sampler, in.uv);
     // A lit 3D layer with effects is drawn from its (premultiplied) effect result.
     if (layer.wipe2.w > 0.5) {
         c = vec4(c.rgb * lighting(in.local), c.a);
     }
     return c * layer.opacity * wipe_factor(in.pos.xy);
+}
+
+// ---- Blend modes that read the frame under the layer ------------------------
+// The frame so far is copied to `backdrop` first; these entry points draw the
+// layer with "normal" GPU blending, having already mixed in the blend result,
+// following the W3C compositing spec:
+//   colour = (1 − αb)·Cs + αb·B(Cb, Cs), then drawn over the frame with αs.
+// B works on sRGB-encoded values (as Photoshop and HitFilm do); the reference
+// is BlendMode::blend_rgb in the core crate.
+
+@group(2) @binding(0) var backdrop: texture_2d<f32>;
+// Which BlendMode (its index in BlendMode::ALL), set per pipeline.
+override MODE: u32 = 4u;
+
+fn enc(c: vec3<f32>) -> vec3<f32> {
+    let v = clamp(c, vec3(0.0), vec3(1.0));
+    return select(1.055 * pow(v, vec3(1.0 / 2.4)) - 0.055, v * 12.92, v <= vec3(0.0031308));
+}
+
+fn dec(c: vec3<f32>) -> vec3<f32> {
+    let v = clamp(c, vec3(0.0), vec3(1.0));
+    return select(pow((v + 0.055) / 1.055, vec3(2.4)), v / 12.92, v <= vec3(0.04045));
+}
+
+fn hard1(b: f32, s: f32) -> f32 {
+    if (s <= 0.5) {
+        return b * 2.0 * s;
+    }
+    let s2 = 2.0 * s - 1.0;
+    return b + s2 - b * s2;
+}
+
+fn soft1(b: f32, s: f32) -> f32 {
+    if (s <= 0.5) {
+        return b - (1.0 - 2.0 * s) * b * (1.0 - b);
+    }
+    var d = sqrt(b);
+    if (b <= 0.25) {
+        d = ((16.0 * b - 12.0) * b + 4.0) * b;
+    }
+    return b + (2.0 * s - 1.0) * (d - b);
+}
+
+fn dodge1(b: f32, s: f32) -> f32 {
+    if (b <= 0.0) {
+        return 0.0;
+    }
+    if (s >= 1.0) {
+        return 1.0;
+    }
+    return min(b / (1.0 - s), 1.0);
+}
+
+fn burn1(b: f32, s: f32) -> f32 {
+    if (b >= 1.0) {
+        return 1.0;
+    }
+    if (s <= 0.0) {
+        return 0.0;
+    }
+    return 1.0 - min((1.0 - b) / s, 1.0);
+}
+
+fn lum(c: vec3<f32>) -> f32 {
+    return dot(c, vec3(0.3, 0.59, 0.11));
+}
+
+fn set_lum(c0: vec3<f32>, l0: f32) -> vec3<f32> {
+    var c = c0 + (l0 - lum(c0));
+    let l = lum(c);
+    let n = min(min(c.r, c.g), c.b);
+    let x = max(max(c.r, c.g), c.b);
+    if (n < 0.0) {
+        c = l + (c - l) * l / (l - n);
+    }
+    if (x > 1.0) {
+        c = l + (c - l) * (1.0 - l) / (x - l);
+    }
+    return c;
+}
+
+fn sat(c: vec3<f32>) -> f32 {
+    return max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
+}
+
+fn set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
+    let n = min(min(c.r, c.g), c.b);
+    let x = max(max(c.r, c.g), c.b);
+    if (x <= n) {
+        return vec3(0.0);
+    }
+    return (c - n) * s / (x - n);
+}
+
+fn blend_fn(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    switch MODE {
+        case 4u: { return vec3(hard1(s.r, b.r), hard1(s.g, b.g), hard1(s.b, b.b)); }
+        case 5u: { return vec3(soft1(b.r, s.r), soft1(b.g, s.g), soft1(b.b, s.b)); }
+        case 6u: { return vec3(hard1(b.r, s.r), hard1(b.g, s.g), hard1(b.b, s.b)); }
+        case 7u: { return vec3(dodge1(b.r, s.r), dodge1(b.g, s.g), dodge1(b.b, s.b)); }
+        case 8u: { return vec3(burn1(b.r, s.r), burn1(b.g, s.g), burn1(b.b, s.b)); }
+        case 9u: { return min(b, s); }
+        case 10u: { return max(b, s); }
+        case 11u: { return abs(b - s); }
+        case 12u: { return b + s - 2.0 * b * s; }
+        case 13u: { return set_lum(set_sat(s, sat(b)), lum(b)); }
+        case 14u: { return set_lum(set_sat(b, sat(s)), lum(b)); }
+        case 15u: { return set_lum(s, lum(b)); }
+        case 16u: { return set_lum(b, lum(s)); }
+        default: { return s; }
+    }
+}
+
+// `src`: the layer's premultiplied colour here (before blending).
+fn blend_with_backdrop(src: vec4<f32>, pos: vec2<f32>) -> vec4<f32> {
+    let a = src.a;
+    if (a <= 1e-6) {
+        return vec4(0.0);
+    }
+    let under = textureLoad(backdrop, vec2<i32>(pos), 0);
+    let ab = clamp(under.a, 0.0, 1.0);
+    let cs = enc(src.rgb / a);
+    let cb = enc(select(vec3(0.0), under.rgb / under.a, under.a > 1e-6));
+    let mixed = dec(mix(cs, blend_fn(cb, cs), ab));
+    return vec4(mixed * a, a);
+}
+
+@fragment
+fn fs_blend(in: VsOut) -> @location(0) vec4<f32> {
+    return blend_with_backdrop(layer_color(in), in.pos.xy);
+}
+
+@fragment
+fn fs_blend_premul(in: VsOut) -> @location(0) vec4<f32> {
+    return blend_with_backdrop(layer_color_premul(in), in.pos.xy);
 }
