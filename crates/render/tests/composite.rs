@@ -905,3 +905,83 @@ fn float_layers_keep_linear_light_highlights_and_premultiplied_glow() {
     let img = draw(&mut c, &black, &clipped, vec![fx(EffectKind::Blur, &[(0, 2.0)])]);
     assert!(px(&img, 16, 10, 8)[0] < ring[0] - 60, "{:?}", px(&img, 16, 10, 8));
 }
+
+#[test]
+fn stylise_effects_do_what_they_say() {
+    use reelforge_core::effects::{aberration as ab, flare as fl, glitch as gl, grain as gr, leaks as lk, shake as sh};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let black = solid(w, h, [0, 0, 0, 255]);
+    let grey = solid(w, h, [128, 128, 128, 255]);
+    // A picture with detail everywhere (for the effects that move things).
+    let pattern: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| [(x * 255 / w) as u8, (y * 255 / h) as u8, (((x / 8) + (y / 8)) % 2 * 200) as u8, 255])).collect();
+    let mut key = 100u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)], t: f64| {
+        let mut v = fx(kind, set);
+        v.time = t as f32;
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ px.len() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let lum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).filter(|(x, y)| x.abs_diff(**y) > 6).count();
+
+    // Lens flare: brightest at the light, ghosts across the middle, a long streak when anamorphic.
+    let img = draw(&mut c, &black, EffectKind::LensFlare, &[(fl::X, 25.0), (fl::Y, 30.0)], 0.0);
+    assert!(lum(px(&img, w, 40, 27)) > 600, "the light: {:?}", px(&img, w, 40, 27));
+    assert!(lum(px(&img, w, 40, 27)) > lum(px(&img, w, 120, 63)), "falls off");
+    // The biggest ghost: on the far side of the middle, 0.55 of the way back.
+    let (gx, gy) = (80.0 + (80.0 - 40.0) * 0.55, 45.0 + (45.0 - 27.0) * 0.55);
+    let ghost = lum(px(&img, w, gx as u32, gy as u32));
+    let off_axis = lum(px(&img, w, gx as u32, (90.0 - gy) as u32));
+    assert!(ghost > off_axis + 10, "ghosts lie on the line through the middle: {ghost} vs {off_axis}");
+    let ana = draw(&mut c, &black, EffectKind::LensFlare, &[(fl::X, 25.0), (fl::Y, 30.0), (fl::STYLE, 1.0), (fl::STREAK, 150.0)], 0.0);
+    let along = px(&ana, w, 150, 27);
+    assert!(along[2] > 20 && along[2] > along[0], "a blue streak along the row: {along:?}");
+    // (Below, but between the starburst rays.)
+    assert!(lum(px(&ana, w, 60, 85)) < lum(along) / 2, "not up and down: {:?} vs {along:?}", px(&ana, w, 60, 85));
+
+    // Camera shake: moves with time, and differently at different times.
+    let a = draw(&mut c, &pattern, EffectKind::CameraShake, &[(sh::AMOUNT, 10.0)], 0.3);
+    let b = draw(&mut c, &pattern, EffectKind::CameraShake, &[(sh::AMOUNT, 10.0)], 0.8);
+    assert!(diff(&a, &b) > 2000, "shakes over time");
+    assert_eq!(a, draw(&mut c, &pattern, EffectKind::CameraShake, &[(sh::AMOUNT, 10.0)], 0.3), "the same moment looks the same");
+    // Zoomed out with transparent edges: the corners show nothing (black background).
+    let z = draw(&mut c, &pattern, EffectKind::CameraShake, &[(sh::AMOUNT, 0.0), (sh::ROTATION, 0.0), (sh::ZOOM, 100.0), (sh::EDGES, 2.0)], 0.3);
+    assert!(diff(&z, &draw(&mut c, &pattern, EffectKind::Blur, &[(0, 0.0)], 0.0)) < 50, "no shake, no zoom: unchanged");
+    let big = draw(&mut c, &pattern, EffectKind::CameraShake, &[(sh::AMOUNT, 0.0), (sh::ROTATION, 0.0), (sh::ZOOM, 200.0)], 0.3);
+    assert!(lum(px(&big, w, 2, 2)) > 60, "zoomed in, the corner shows the middle: {:?}", px(&big, w, 2, 2));
+
+    // Chromatic aberration: a white square gets colour fringes, its middle stays white.
+    let square: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if (50..110).contains(&x) && (25..65).contains(&y) { [255u8; 4] } else { [0, 0, 0, 255] })).collect();
+    let img = draw(&mut c, &square, EffectKind::ChromaticAberration, &[(ab::AMOUNT, 6.0), (ab::FALLOFF, 0.0)], 0.0);
+    assert!(lum(px(&img, w, 80, 45)) > 750, "middle: {:?}", px(&img, w, 80, 45));
+    let fringe = (40..120).map(|x| px(&img, w, x, 45)).filter(|p| p[0].abs_diff(p[2]) > 100).count();
+    assert!(fringe >= 4, "fringes: {fringe}");
+
+    // Film grain: noise on flat grey that changes every frame, not within one.
+    let g0 = draw(&mut c, &grey, EffectKind::FilmGrain, &[(gr::AMOUNT, 60.0)], 0.0);
+    let spread = g0.chunks_exact(4).map(|p| p[1] as i32).max().unwrap() - g0.chunks_exact(4).map(|p| p[1] as i32).min().unwrap();
+    assert!(spread > 15, "grainy: {spread}");
+    assert_eq!(g0, draw(&mut c, &grey, EffectKind::FilmGrain, &[(gr::AMOUNT, 60.0)], 0.01), "the same film frame");
+    assert!(diff(&g0, &draw(&mut c, &grey, EffectKind::FilmGrain, &[(gr::AMOUNT, 60.0)], 1.0 / 24.0 + 0.001)) > 2000, "the next frame");
+    let mono = draw(&mut c, &grey, EffectKind::FilmGrain, &[(gr::AMOUNT, 60.0), (gr::COLOR, 0.0)], 0.0);
+    assert!(mono.chunks_exact(4).all(|p| p[0].abs_diff(p[1]) <= 1 && p[1].abs_diff(p[2]) <= 1), "mono grain stays grey");
+
+    // Glitch: changes the picture, the same at the same moment, different a tick later.
+    let gl0 = draw(&mut c, &pattern, EffectKind::Glitch, &[(gl::AMOUNT, 100.0)], 0.05);
+    let plain = draw(&mut c, &pattern, EffectKind::Blur, &[(0, 0.0)], 0.0);
+    assert!(diff(&gl0, &plain) > 1000);
+    assert_eq!(gl0, draw(&mut c, &pattern, EffectKind::Glitch, &[(gl::AMOUNT, 100.0)], 0.06));
+    assert!(diff(&gl0, &draw(&mut c, &pattern, EffectKind::Glitch, &[(gl::AMOUNT, 100.0)], 0.25)) > 500);
+
+    // Light leaks from the left: warm light on the left, little on the right.
+    let lk0 = draw(&mut c, &black, EffectKind::LightLeaks, &[(lk::FROM, 0.0), (lk::SIZE, 60.0)], 0.0);
+    let left: u32 = (0..h).map(|y| lum(px(&lk0, w, 4, y))).sum();
+    let right: u32 = (0..h).map(|y| lum(px(&lk0, w, w - 5, y))).sum();
+    assert!(left > right * 3 && left > 3000, "left {left}, right {right}");
+    let warm = (0..h).map(|y| px(&lk0, w, 4, y)).max_by_key(|p| lum(*p)).unwrap();
+    assert!(warm[0] > warm[2] + 40, "warm: {warm:?}");
+}

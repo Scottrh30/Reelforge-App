@@ -327,3 +327,264 @@ fn fs_blade(in: VsOut) -> @location(0) vec4<f32> {
 fn fs_copy(in: VsOut) -> @location(0) vec4<f32> {
     return textureSample(src, src_sampler, in.uv);
 }
+
+// ---- Stylise effects ----------------------------------------------------------
+// Each reads the layer (premultiplied, linear) and its parameters (core
+// crate effects.rs: flare, shake, aberration, grain, glitch, leaks). Time
+// (seconds of the clip's source) is extra.y, the layer's size in frame pixels
+// extra.zw, and texel_dir.z a number of the effect's own (its place in the
+// stack), so two of the same kind on one layer don't move together.
+
+// Randomness from integers (the same on every GPU, unlike sin()-based hashes).
+fn pcg(v: u32) -> u32 {
+    let s = v * 747796405u + 2891336453u;
+    let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+fn rnd3(a: u32, b: u32, c: u32) -> f32 {
+    return f32(pcg(a ^ pcg(b ^ pcg(c))) >> 8u) / 16777216.0;
+}
+fn ibits(x: f32) -> u32 {
+    return bitcast<u32>(i32(floor(x)));
+}
+// Smooth noise in time, -1..1.
+fn wander(seed: u32, t: f32) -> f32 {
+    let i = floor(t);
+    let f = t - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(rnd3(seed, ibits(i), 17u), rnd3(seed, ibits(i + 1.0), 17u), u) * 2.0 - 1.0;
+}
+fn seed_of(param: f32) -> u32 {
+    return u32(max(param, 0.0)) * 7919u + u32(fx.texel_dir.z) * 104729u;
+}
+fn max3(v: vec3<f32>) -> f32 {
+    return max(max(v.r, v.g), v.b);
+}
+
+// Lens flare: p0 = (light x %, light y %, brightness %, size %),
+// p1 = (colour, lens style, streak %, ghosts %), p2.x = halo %.
+@fragment
+fn fs_flare(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, in.uv);
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let light = fx.p0.xy / 100.0 * size;
+    // Sizes are designed for a 1080-line frame.
+    let k = fx.p0.w / 100.0 * size.y / 1080.0;
+    let bright = fx.p0.z / 100.0;
+    let tint = rgb_of(fx.p1.x);
+    let style = u32(round(fx.p1.y));
+    let d = length(p - light) / k;
+    // The bright core and its glow.
+    var l = tint * (exp(-d / 14.0) * 1.8 + exp(-d / 60.0) * 0.45 + exp(-d / 260.0) * 0.08);
+    if (style != 2u) {
+        // A faint starburst (fainter still through an anamorphic lens).
+        let a = atan2(p.y - light.y, p.x - light.x);
+        let rays = pow(abs(cos(a * 6.0)), 80.0) * 0.7 + pow(abs(cos(a * 6.0 + 0.9)), 120.0) * 0.3;
+        l += tint * rays * exp(-d / 110.0) * select(0.14, 0.05, style == 1u);
+        // Halo: a thin ring, each colour at a slightly different radius.
+        let halo = fx.p2.x / 100.0;
+        let r = vec3(196.0, 200.0, 204.0);
+        l += vec3(exp(-pow((d - r.x) / 10.0, 2.0)), exp(-pow((d - r.y) / 10.0, 2.0)), exp(-pow((d - r.z) / 10.0, 2.0))) * 0.18 * halo;
+        // The streak: long and blue for an anamorphic lens.
+        let streak = fx.p1.z / 100.0;
+        let dx = abs(p.x - light.x) / k;
+        // Its thickness in pixels: at least about one, however small the layer.
+        let dy = abs(p.y - light.y);
+        if (style == 1u) {
+            l += vec3(0.35, 0.6, 1.0) * exp(-dy / max(1.6 * k, 0.8)) * (exp(-dx / 900.0) * 0.9 + exp(-dx / 120.0)) * streak;
+        } else {
+            l += tint * exp(-dy / max(1.2 * k, 0.7)) * exp(-dx / 260.0) * 0.8 * streak;
+        }
+        // Ghosts: reflections along the line from the light through the middle.
+        let ghosts = fx.p1.w / 100.0;
+        let centre = size * 0.5;
+        let ks = array<f32, 6>(-0.55, -0.25, 0.3, 0.55, 0.8, 1.35);
+        let rs = array<f32, 6>(70.0, 30.0, 18.0, 46.0, 24.0, 110.0);
+        let hs = array<vec3<f32>, 6>(vec3(0.3, 1.0, 0.5), vec3(1.0, 0.6, 0.2), vec3(0.6, 0.6, 1.0), vec3(1.0, 0.3, 0.6), vec3(0.4, 0.9, 1.0), vec3(0.8, 0.5, 1.0));
+        for (var g = 0; g < 6; g = g + 1) {
+            let gp = centre + (light - centre) * ks[g];
+            let gd = length(p - gp) / k;
+            let disc = smoothstep(rs[g], rs[g] * 0.6, gd) * (0.6 + 0.4 * smoothstep(rs[g] * 0.5, rs[g], gd));
+            l += hs[g] * mix(tint, vec3(1.0), 0.5) * disc * 0.16 * ghosts;
+        }
+    }
+    l *= bright;
+    return vec4(c.rgb + l, max(c.a, clamp(max3(l), 0.0, 1.0)));
+}
+
+// Camera shake: p0 = (amount px, rotation °, speed Hz, roughness %),
+// p1 = (zoom %, edges, seed).
+@fragment
+fn fs_shake(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let seed = seed_of(fx.p1.z);
+    let t = fx.extra.y * fx.p0.z;
+    let rough = fx.p0.w / 100.0;
+    // Two octaves: a slow wander and a quicker jitter.
+    let n = vec3(
+        wander(seed, t) + rough * 0.5 * wander(seed + 11u, t * 2.7),
+        wander(seed + 1u, t * 1.1) + rough * 0.5 * wander(seed + 12u, t * 2.9),
+        wander(seed + 2u, t * 0.9) + rough * 0.5 * wander(seed + 13u, t * 2.3),
+    ) / (1.0 + rough * 0.5);
+    let off = n.xy * fx.p0.x;
+    let a = n.z * radians(fx.p0.y);
+    let zoom = max(fx.p1.x / 100.0, 0.01);
+    // Where this pixel comes from in the unshaken picture.
+    let p = in.uv * size - size * 0.5 - off;
+    let q = vec2(p.x * cos(a) + p.y * sin(a), -p.x * sin(a) + p.y * cos(a)) / zoom + size * 0.5;
+    var uv = q / size;
+    let edges = u32(round(fx.p1.y));
+    if (edges == 2u && (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0)) {
+        return vec4(0.0);
+    }
+    if (edges == 0u) {
+        uv = 1.0 - abs((abs(uv) % vec2(2.0)) - 1.0);
+    } else {
+        uv = clamp(uv, vec2(0.0), vec2(1.0));
+    }
+    return textureSampleLevel(src, src_sampler, uv, 0.0);
+}
+
+// Chromatic aberration: p0 = (amount px, direction, angle °, falloff %).
+@fragment
+fn fs_aberration(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    var off: vec2<f32>;
+    if (u32(round(fx.p0.y)) == 0u) {
+        // From the centre, growing towards the edges.
+        let d = (in.uv - 0.5) * size;
+        let r = length(d) / (0.5 * length(size));
+        let w = mix(1.0, r * r, fx.p0.w / 100.0) * r;
+        off = select(vec2(0.0), d / max(length(d), 1e-4), length(d) > 1e-4) * fx.p0.x * w;
+    } else {
+        let a = radians(fx.p0.z);
+        off = vec2(cos(a), -sin(a)) * fx.p0.x;
+    }
+    let o = off / size;
+    let r = textureSampleLevel(src, src_sampler, in.uv + o, 0.0);
+    let g = textureSampleLevel(src, src_sampler, in.uv, 0.0);
+    let b = textureSampleLevel(src, src_sampler, in.uv - o, 0.0);
+    return vec4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+}
+
+// Value noise in 2D (bilinear between random corners), 0..1.
+fn vnoise(seed: u32, p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = rnd3(seed, ibits(i.x), ibits(i.y));
+    let b = rnd3(seed, ibits(i.x + 1.0), ibits(i.y));
+    let c = rnd3(seed, ibits(i.x), ibits(i.y + 1.0));
+    let d = rnd3(seed, ibits(i.x + 1.0), ibits(i.y + 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Film grain: p0 = (amount %, size px, colour %, in highlights %), p1 = (frame rate, seed).
+@fragment
+fn fs_grain(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, in.uv);
+    if (c.a <= 1e-5) {
+        return c;
+    }
+    let size = fx.extra.zw;
+    let frame = select(0.0, floor(fx.extra.y * fx.p1.x + 1e-3), fx.p1.x > 0.0);
+    let seed = seed_of(fx.p1.y) + ibits(frame) * 2654435761u;
+    let g = in.uv * size / max(fx.p0.y, 0.25);
+    // Two layers of noise, a little like grain clumps; -1..1.
+    let mono = (vnoise(seed, g) + vnoise(seed + 5u, g * 2.1 + 3.7) * 0.6 - 0.8) / 0.8;
+    let col = vec3(
+        (vnoise(seed + 31u, g) + vnoise(seed + 36u, g * 2.1 + 3.7) * 0.6 - 0.8) / 0.8,
+        (vnoise(seed + 41u, g) + vnoise(seed + 46u, g * 2.1 + 3.7) * 0.6 - 0.8) / 0.8,
+        (vnoise(seed + 51u, g) + vnoise(seed + 56u, g * 2.1 + 3.7) * 0.6 - 0.8) / 0.8,
+    );
+    let n = mix(vec3(mono), col, fx.p0.z / 100.0);
+    // On display values: strongest in the midtones, less in deep shadows and
+    // (unless asked for) in the highlights.
+    let d = to_display(c.rgb / c.a);
+    let l = dot(d, LUMA);
+    let w = (0.45 + 0.55 * smoothstep(0.0, 0.25, l)) * mix(1.0 - smoothstep(0.55, 1.0, l), 1.0, fx.p0.w / 100.0);
+    let out = to_linear(max(d + n * fx.p0.x / 100.0 * 0.14 * w, vec3(0.0)));
+    return vec4(out * c.a, c.a);
+}
+
+// Glitch: p0 = (amount %, block px, shift px, colour split px), p1 = (scan lines %, speed Hz, seed).
+@fragment
+fn fs_glitch(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let amount = fx.p0.x / 100.0;
+    let block = max(fx.p0.y, 1.0);
+    let seed = seed_of(fx.p1.z);
+    let tick = select(0.0, floor(fx.extra.y * fx.p1.y), fx.p1.y > 0.0);
+    let st = ibits(tick);
+    let p = in.uv * size;
+    // Horizontal slices that jump sideways.
+    let band = floor(p.y / block);
+    var shift = 0.0;
+    var hit = 0.0;
+    if (rnd3(seed, st, ibits(band)) < amount * 0.45) {
+        shift = (rnd3(seed + 1u, st, ibits(band)) - 0.5) * 2.0 * fx.p0.z;
+        hit = 1.0;
+    }
+    // Wider blocks that move on their own.
+    let cell = floor(p / vec2(block * 3.0, block));
+    if (rnd3(seed + 2u, st, ibits(cell.x) * 7919u + ibits(cell.y)) < amount * 0.2) {
+        shift += (rnd3(seed + 3u, st, ibits(cell.x) + ibits(cell.y) * 31u) - 0.5) * 2.0 * fx.p0.z;
+        hit = 1.0;
+    }
+    // Now and then the whole picture splits a little.
+    let whole = select(0.0, 0.35, rnd3(seed + 4u, st, 1u) < amount * 0.3);
+    let split = fx.p0.w * (hit + whole) / size.x;
+    var uv = vec2(fract((p.x - shift) / size.x), in.uv.y);
+    let r = textureSampleLevel(src, src_sampler, vec2(fract(uv.x + split), uv.y), 0.0);
+    let g = textureSampleLevel(src, src_sampler, uv, 0.0);
+    let b = textureSampleLevel(src, src_sampler, vec2(fract(uv.x - split), uv.y), 0.0);
+    var c = vec4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+    // Scan lines, stronger where it's glitching.
+    let scan = fx.p1.x / 100.0 * (0.25 + 0.75 * hit);
+    let line = step(0.5, fract(p.y / 3.0));
+    c = vec4(c.rgb * (1.0 - scan * 0.5 * line), c.a);
+    return c;
+}
+
+// Light leaks: p0 = (colour 1, colour 2, intensity %, size %), p1 = (drift Hz, from, seed).
+@fragment
+fn fs_leaks(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, in.uv);
+    let aspect = fx.extra.x;
+    let seed = seed_of(fx.p1.z);
+    let t = fx.extra.y * fx.p1.x;
+    let edge = u32(round(fx.p1.y));
+    let ca = rgb_of(fx.p0.x);
+    let cb = rgb_of(fx.p0.y);
+    var light = vec3(0.0);
+    for (var k = 0u; k < 3u; k = k + 1u) {
+        let s = seed + k * 101u;
+        let along = 0.5 + 0.5 * wander(s, t + f32(k) * 3.1);
+        let wob = 0.06 * wander(s + 7u, t * 1.3);
+        var pos: vec2<f32>;
+        switch edge {
+            case 0u: { pos = vec2(-0.08 + wob, along); }
+            case 1u: { pos = vec2(1.08 + wob, along); }
+            case 2u: { pos = vec2(along, -0.08 + wob); }
+            case 3u: { pos = vec2(along, 1.08 + wob); }
+            case 4u: {
+                let corner = vec2(f32((k + u32(rnd3(seed, 9u, 9u) * 4.0)) % 2u), f32(((k + 1u) / 2u) % 2u));
+                pos = corner + (vec2(0.5) - corner) * 0.08 + vec2(wob, -wob);
+            }
+            default: { pos = vec2(0.5 + 0.5 * wander(s + 3u, t * 0.7), 0.5 + 0.5 * wander(s + 4u, t * 0.8)); }
+        }
+        let r = fx.p0.w / 100.0 * 0.55 * (0.7 + 0.6 * rnd3(s, 5u, 5u));
+        let d = length((in.uv - pos) * vec2(aspect, 1.0)) / max(r, 1e-3);
+        let pulse = 0.65 + 0.35 * wander(s + 9u, t * 1.7);
+        let tone = mix(ca, cb, clamp(rnd3(s, 6u, 6u) * 0.6 + d * 0.4, 0.0, 1.0));
+        light += tone * exp(-d * d) * pulse;
+    }
+    light *= fx.p0.z / 100.0;
+    // Screened on, on display values (bright parts stay within white).
+    let l = clamp(to_display(light), vec3(0.0), vec3(1.0));
+    let base = to_display(select(vec3(0.0), c.rgb / c.a, c.a > 1e-5));
+    let a2 = max(c.a, max3(l));
+    let screened = 1.0 - (1.0 - base * c.a / max(a2, 1e-5)) * (1.0 - l);
+    return vec4(to_linear(screened) * a2, a2);
+}

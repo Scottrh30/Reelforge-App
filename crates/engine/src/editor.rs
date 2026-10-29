@@ -1119,6 +1119,42 @@ impl Editor {
         }
     }
 
+    /// Set a track's row height in the timeline. Like hiding a track, it's
+    /// saved with the project but isn't an edit to undo.
+    pub fn set_track_height(&mut self, track: usize, height: u16) {
+        let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
+        let h = height.clamp(Track::MIN_HEIGHT, Track::MAX_HEIGHT);
+        if tr.height != h || tr.collapsed {
+            (tr.height, tr.collapsed) = (h, false);
+            self.touch();
+        }
+    }
+
+    /// Collapse a track to a thin row, or expand it again.
+    pub fn toggle_collapse(&mut self, track: usize) {
+        let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
+        tr.collapsed = !tr.collapsed;
+        self.status = format!("{} {}", tr.name, if tr.collapsed { "collapsed" } else { "expanded" });
+        self.touch();
+    }
+
+    /// Collapse or expand every track of `kind` (all tracks if `None`); `reset`
+    /// also puts their heights back to the default.
+    pub fn set_all_tracks(&mut self, kind: Option<TrackKind>, collapsed: bool, reset: bool) {
+        for tr in self.project.sequences[self.active].tracks.iter_mut().filter(|t| kind.is_none_or(|k| t.kind == k)) {
+            tr.collapsed = collapsed;
+            if reset {
+                tr.height = Track::DEFAULT_HEIGHT;
+            }
+        }
+        self.status = match (collapsed, reset) {
+            (true, _) => "Tracks collapsed".into(),
+            (false, true) => "Track heights reset".into(),
+            (false, false) => "Tracks expanded".into(),
+        };
+        self.touch();
+    }
+
     pub fn toggle_mute(&mut self, track: usize) {
         let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
         tr.muted = !tr.muted;
@@ -2677,6 +2713,36 @@ mod tests {
             .status()
             .is_ok_and(|s| s.success());
         ok.then_some(p)
+    }
+
+    #[test]
+    fn track_heights_and_collapsing_are_kept_with_the_project() {
+        let mut e = editor();
+        e.set_track_height(0, 120);
+        e.set_track_height(1, 5);
+        e.toggle_collapse(2);
+        let t = &e.seq().tracks;
+        assert_eq!((t[0].height, t[1].height, t[2].collapsed), (120, Track::MIN_HEIGHT, true));
+        // Saved and opened again.
+        let json = serde_json::to_string(&e.project).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!((back.sequences[0].tracks[0].height, back.sequences[0].tracks[2].collapsed), (120, true));
+        // A project from before tracks had heights: the default.
+        let old = json.replace("\"height\":120,", "").replace(",\"collapsed\":true", "").replace(",\"collapsed\":false", "");
+        assert!(!old.contains("collapsed"));
+        let back: Project = serde_json::from_str(&old).unwrap();
+        assert_eq!((back.sequences[0].tracks[0].height, back.sequences[0].tracks[2].collapsed), (Track::DEFAULT_HEIGHT, false));
+        // Setting a height expands a collapsed track; all of a kind at once.
+        e.set_track_height(2, 80);
+        assert!(!e.seq().tracks[2].collapsed);
+        let video = e.seq().tracks[0].kind;
+        e.set_all_tracks(Some(video), true, false);
+        assert!(e.seq().tracks.iter().all(|t| t.collapsed == (t.kind == video)));
+        e.set_all_tracks(None, false, true);
+        assert!(e.seq().tracks.iter().all(|t| !t.collapsed && t.height == Track::DEFAULT_HEIGHT));
+        // Not edits: nothing to undo.
+        e.undo();
+        assert_eq!(e.status, "Nothing to undo");
     }
 
     #[test]

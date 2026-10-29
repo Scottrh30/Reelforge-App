@@ -603,6 +603,14 @@ fn track_op(index: usize, op: String, name: Option<String>, to: Option<usize>) -
         "target" => e.set_target_track(Some(index)),
         "untarget" => e.set_target_track(None),
         "rename" => e.rename_track(index, name.unwrap_or_default()),
+        "collapse" => e.toggle_collapse(index),
+        "height" => e.set_track_height(index, to.unwrap_or(52).min(u16::MAX as usize) as u16),
+        // Of the track's kind ("…_all") or every track ("…_every").
+        "collapse_all" | "expand_all" | "reset_heights" => {
+            let kind = e.seq().tracks.get(index).map(|t| t.kind);
+            e.set_all_tracks(kind, op == "collapse_all", op == "reset_heights")
+        }
+        "collapse_every" | "expand_every" => e.set_all_tracks(None, op == "collapse_every", false),
         _ => {}
     })
 }

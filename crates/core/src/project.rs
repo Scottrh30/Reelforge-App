@@ -401,11 +401,25 @@ pub struct Track {
     /// A locked track's clips can't be edited, and ripple edits leave them where they are.
     #[serde(default)]
     pub locked: bool,
+    /// Its row's height in the timeline (interface pixels).
+    #[serde(default = "Track::default_height")]
+    pub height: u16,
+    /// Shown as a thin row (name only, clips as a strip).
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 impl Track {
+    pub const DEFAULT_HEIGHT: u16 = 52;
+    pub const MIN_HEIGHT: u16 = 32;
+    pub const MAX_HEIGHT: u16 = 240;
+
+    fn default_height() -> u16 {
+        Self::DEFAULT_HEIGHT
+    }
+
     pub fn new(name: impl Into<String>, kind: TrackKind) -> Self {
-        Self { name: name.into(), kind, clips: Vec::new(), muted: false, audio: TrackAudio::default(), locked: false }
+        Self { name: name.into(), kind, clips: Vec::new(), muted: false, audio: TrackAudio::default(), locked: false, height: Self::DEFAULT_HEIGHT, collapsed: false }
     }
     pub fn clip_at(&self, t: Time) -> Option<&Clip> {
         self.clips.iter().find(|c| c.contains(t))

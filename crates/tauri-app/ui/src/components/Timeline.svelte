@@ -5,7 +5,7 @@
   import { api, type ClipAudio, type ClipView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu } from "../lib/menu.svelte";
-  import { view, geo, perSequence, TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack } from "../lib/timeline.svelte";
+  import { view, geo, perSequence, TRACK_H, MIN_TRACK_H, MAX_TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack, rowH, rowAtY } from "../lib/timeline.svelte";
   import Thumb from "./Thumb.svelte";
   import CurvesPanel from "./CurvesPanel.svelte";
 
@@ -19,6 +19,16 @@
     const t = seq?.tracks ?? [];
     return [...t.filter((x) => x.kind === "video").reverse(), ...t.filter((x) => x.kind === "audio")];
   });
+  // A row being resized: its height while the drag lasts.
+  let sizing = $state<{ index: number; h: number } | null>(null);
+  const hOf = (tr: TrackView) => (sizing?.index === tr.index ? sizing.h : rowH(tr));
+  // Each row's top, and the bottom of the last row.
+  const tops = $derived.by(() => {
+    const out = [0];
+    for (const tr of rows) out.push(out[out.length - 1] + hOf(tr));
+    return out;
+  });
+  const totalH = $derived(tops[tops.length - 1]);
   const selected = $derived(new Set(s?.selected ?? []));
   const T = $derived(tps());
   const mediaById = $derived(new Map((s?.media ?? []).map((m) => [m.id, m])));
@@ -42,6 +52,7 @@
   });
   $effect(() => {
     geo.rows = rows;
+    geo.tops = tops;
   });
 
   // Remember zoom/scroll per sequence; fit a sequence seen for the first time.
@@ -70,7 +81,7 @@
 
   const x = (t: number) => (t / T - view.scroll) * view.pps;
   const tAt = (px: number) => Math.max(0, (view.scroll + px / view.pps) * T);
-  const maxV = $derived(Math.max(0, rows.length * TRACK_H + 40 - lanesH));
+  const maxV = $derived(Math.max(0, totalH + 40 - lanesH));
   $effect(() => {
     if (view.vscroll > maxV) view.vscroll = maxV;
   });
@@ -196,7 +207,7 @@
         }
         if (c.start + dt < 0) dt = -c.start;
         const { py } = local(ev);
-        const row = Math.max(0, Math.min(rows.length - 1, Math.floor(py / TRACK_H)));
+        const row = Math.max(0, Math.min(rows.length - 1, rowAtY(tops, py)));
         const drow = rows[row].kind === tr.kind ? row - rowIndex : 0;
         gesture = { kind: "move", lead: c, leadKind: tr.kind, dt, drow, ids: new Set(s?.selected ?? [c.id]) };
       }
@@ -246,7 +257,7 @@
         return;
       }
       const [t0, t1] = [tAt(Math.min(g.x0, g.x1)), tAt(Math.max(g.x0, g.x1))];
-      const [r0, r1] = [Math.floor(Math.min(g.y0, g.y1) / TRACK_H), Math.floor(Math.max(g.y0, g.y1) / TRACK_H)];
+      const [r0, r1] = [rowAtY(tops, Math.min(g.y0, g.y1)), rowAtY(tops, Math.max(g.y0, g.y1))];
       const ids: number[] = [];
       rows.forEach((tr, i) => {
         if (i < r0 || i > r1) return;
@@ -372,7 +383,7 @@
     if (!at) return null;
     const l = x(at.c.start);
     const w = (at.c.duration / T) * view.pps;
-    return [Math.min(Math.max(l, 0) + 10, l + w - 4), at.ri * TRACK_H + TRACK_H / 2];
+    return [Math.min(Math.max(l, 0) + 10, l + w - 4), tops[at.ri] + (tops[at.ri + 1] - tops[at.ri]) / 2];
   };
   /// The links to show: the selected clips' parents and children.
   const links = $derived.by(() => {
@@ -464,7 +475,10 @@
       trackDrag.active = true;
       const y = ev.clientY - stack.getBoundingClientRect().top;
       const [first, n] = kindRange(trackDrag.kind);
-      trackDrag.gap = Math.max(first, Math.min(first + n, Math.round(y / TRACK_H)));
+      // The row boundary nearest the pointer.
+      let gap = first;
+      for (let b = first; b <= first + n; b++) if (Math.abs(tops[b] - y) < Math.abs(tops[gap] - y)) gap = b;
+      trackDrag.gap = gap;
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -485,6 +499,30 @@
     window.addEventListener("pointercancel", up);
   }
 
+  /// Drag a track header's bottom edge to change the row's height.
+  function sizeDown(e: PointerEvent, tr: TrackView) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const y0 = e.clientY;
+    const h0 = rowH(tr);
+    sizing = { index: tr.index, h: h0 };
+    const move = (ev: PointerEvent) => {
+      if (sizing) sizing.h = Math.round(Math.max(MIN_TRACK_H, Math.min(MAX_TRACK_H, h0 + ev.clientY - y0)));
+    };
+    const up = async () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      const h = sizing?.h ?? h0;
+      if (h !== h0 || tr.collapsed) await run(api.trackOp(tr.index, "height", undefined, h));
+      sizing = null;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
   function trackMenu(e: MouseEvent, tr: TrackView) {
     const upTo = stepTarget(tr, -1);
     const downTo = stepTarget(tr, 1);
@@ -497,6 +535,11 @@
       { label: "Move track down", disabled: downTo == null, run: () => downTo != null && moveTrackTo(tr.index, downTo) },
       { label: tr.muted ? (tr.kind === "video" ? "Show track" : "Unmute track") : tr.kind === "video" ? "Hide track" : "Mute track", run: () => run(api.trackOp(tr.index, "mute")) },
       { label: tr.locked ? "Unlock track" : "Lock track", run: () => run(api.trackOp(tr.index, "lock")) },
+      { separator: true },
+      { label: tr.collapsed ? "Expand track" : "Collapse track", run: () => run(api.trackOp(tr.index, "collapse")) },
+      { label: tr.kind === "video" ? "Collapse all video tracks" : "Collapse all audio tracks", run: () => run(api.trackOp(tr.index, "collapse_all")) },
+      { label: tr.kind === "video" ? "Expand all video tracks" : "Expand all audio tracks", run: () => run(api.trackOp(tr.index, "expand_all")) },
+      { label: "Reset track heights", run: () => run(api.trackOp(tr.index, "reset_heights")) },
       { separator: true },
       { label: "Add video track", run: () => run(api.action("add_video_track")) },
       { label: "Add audio track", run: () => run(api.action("add_audio_track")) },
@@ -640,22 +683,23 @@
 
   // ---- Transitions ----
   // ---- Volume line, keys and fades on audio clips ----
-  // The band the line moves in, inside the clip (40 px high): below the name.
+  // The band the line moves in, inside the clip: below the name, down to near
+  // the bottom of the row (`h` is the row's height).
   const VOL_TOP = 15,
-    VOL_BOTTOM = 36,
     FADE_H = 8;
-  const dbY = (db: number) => VOL_BOTTOM - ((Math.max(MIN_DB, Math.min(MAX_DB, db)) - MIN_DB) / (MAX_DB - MIN_DB)) * (VOL_BOTTOM - VOL_TOP);
-  const yDb = (y: number) => Math.max(MIN_DB, Math.min(MAX_DB, MIN_DB + ((VOL_BOTTOM - y) / (VOL_BOTTOM - VOL_TOP)) * (MAX_DB - MIN_DB)));
+  const volBottom = (h: number) => Math.max(VOL_TOP + 12, h - 16);
+  const dbY = (db: number, h: number) => volBottom(h) - ((Math.max(MIN_DB, Math.min(MAX_DB, db)) - MIN_DB) / (MAX_DB - MIN_DB)) * (volBottom(h) - VOL_TOP);
+  const yDb = (y: number, h: number) => Math.max(MIN_DB, Math.min(MAX_DB, MIN_DB + ((volBottom(h) - y) / (volBottom(h) - VOL_TOP)) * (MAX_DB - MIN_DB)));
   // x inside the clip of source time `at`.
   const srcX = (c: ClipView, at: number) => ((at - c.source_in) / T) * view.pps;
-  function volPoints(c: ClipView, w: number): string {
+  function volPoints(c: ClipView, w: number, h: number): string {
     const a = c.audio!;
-    const pts = [`0,${dbY(volumeAt(a, c.source_in))}`];
+    const pts = [`0,${dbY(volumeAt(a, c.source_in), h)}`];
     for (const k of volKeys(a)) {
       const px = srcX(c, k.at);
-      if (px > 0 && px < w) pts.push(`${px},${dbY(k.db)}`);
+      if (px > 0 && px < w) pts.push(`${px},${dbY(k.db, h)}`);
     }
-    pts.push(`${w},${dbY(volumeAt(a, c.source_in + c.duration))}`);
+    pts.push(`${w},${dbY(volumeAt(a, c.source_in + c.duration), h)}`);
     return pts.join(" ");
   }
   function fadePath(c: ClipView, out: boolean): string {
@@ -720,12 +764,12 @@
         const lo = index > 0 ? keys[index - 1].at + frameT : c.source_in;
         const hi = index + 1 < keys.length ? keys[index + 1].at - frameT : c.source_in + c.duration;
         const at = Math.max(lo, Math.min(Math.max(lo, hi), c.source_in + (atX(ev.clientX) - c.start)));
-        const db = tidyDb(yDb(y));
+        const db = tidyDb(yDb(y, hOf(tr)));
         keys[index] = { at: Math.round(at), db };
         n.volume_keys = keys;
         say(`Volume key: ${db > 0 ? "+" : ""}${db.toFixed(1)} dB at ${timecode(c.start + (at - c.source_in))}`);
       } else {
-        const delta = yDb(y) - yDb(y0);
+        const delta = yDb(y, hOf(tr)) - yDb(y0, hOf(tr));
         if (volKeys(n).length) {
           n.volume_keys = volKeys(n).map((k) => ({ at: k.at, db: tidyDb(Math.max(MIN_DB, Math.min(MAX_DB, k.db + delta))) }));
           say(`Volume keys ${delta >= 0 ? "+" : ""}${delta.toFixed(1)} dB`);
@@ -1081,12 +1125,18 @@
               class:sel-track={litTrack === tr.index}
               class:muted-track={tr.muted}
               class:dragging-track={trackDrag?.active && trackDrag.index === tr.index}
+              class:collapsed={tr.collapsed}
+              style="height:{hOf(tr)}px"
               oncontextmenu={(e) => trackMenu(e, tr)}
               onpointerdown={(e) => headerDown(e, tr)}
               role="group"
               aria-label={tr.name}
-              title="Drag to move the track up or down"
+              title="Drag to move the track up or down, drag its bottom edge to resize it"
             >
+              <div class="trow">
+              <button class="fold" onclick={() => run(api.trackOp(tr.index, "collapse"))} title={tr.collapsed ? "Expand track" : "Collapse track"} aria-label={tr.collapsed ? "Expand track" : "Collapse track"} aria-expanded={!tr.collapsed}>
+                <svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d={tr.collapsed ? "M3 1.5 7 5 3 8.5" : "M1.5 3 5 7 8.5 3"} fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </button>
               {#if renaming === tr.index}
                 <!-- svelte-ignore a11y_autofocus -->
                 <input
@@ -1103,6 +1153,8 @@
               {:else}
                 <span class="tname" role="presentation" ondblclick={() => (renaming = tr.index)} title="Double-click to rename, right-click for more">{tr.name}</span>
               {/if}
+              </div>
+              {#if !tr.collapsed}
               <div class="tbtns">
                 <button class="tb" class:lit={tr.kind === "video" ? !tr.muted : tr.muted} onclick={() => run(api.trackOp(tr.index, "mute"))} title={tr.kind === "video" ? "Show / hide track" : "Mute track"} aria-label={tr.kind === "video" ? "Show track" : "Mute track"} aria-pressed={tr.kind === "video" ? !tr.muted : tr.muted}>
                   {#if tr.kind === "video"}
@@ -1120,10 +1172,12 @@
                   </div>
                 {/if}
               </div>
+              {/if}
+              <span class="trsize" role="separator" aria-orientation="horizontal" aria-label="Resize {tr.name}" onpointerdown={(e) => sizeDown(e, tr)} ondblclick={() => run(api.trackOp(tr.index, "height", undefined, TRACK_H))} title="Drag to change the track's height, double-click to reset"></span>
             </div>
           {/each}
           {#if trackDrag?.active}
-            <div class="track-drop" style="top:{trackDrag.gap * TRACK_H - 1}px"></div>
+            <div class="track-drop" style="top:{tops[trackDrag.gap] - 1}px"></div>
           {/if}
           <div class="addrow">
             <button onclick={() => run(api.action("add_video_track"))} title="Add a video track">+ Video</button>
@@ -1136,7 +1190,7 @@
       <div class="lanes" bind:this={lanesEl} onpointerdown={lanesDown} onwheel={wheel} role="presentation">
         <div class="stack" style="transform: translateY({-view.vscroll}px)">
           {#if links.length || whip}
-            <svg class="links" width={lanesW} height={rows.length * TRACK_H} aria-hidden="true">
+            <svg class="links" width={lanesW} height={totalH} aria-hidden="true">
               {#each links as k (k.key)}
                 <path d={curve(k.from, k.to)} class="link" />
                 <circle cx={k.to[0]} cy={k.to[1]} r="3.5" class="linkend" />
@@ -1148,7 +1202,7 @@
             </svg>
           {/if}
           {#each rows as tr, ri (tr.index)}
-            <div class="lane" class:sel-track={litTrack === tr.index} class:locked={tr.locked} class:dropping={dropAt?.track === tr.index}>
+            <div class="lane" class:sel-track={litTrack === tr.index} class:locked={tr.locked} class:dropping={dropAt?.track === tr.index} class:collapsed={tr.collapsed} style="height:{hOf(tr)}px">
               {#each tr.clips as c (c.id)}
                 {@const l = x(c.start)}
                 {@const w = (c.duration / T) * view.pps}
@@ -1173,32 +1227,32 @@
                     ondblclick={() => c.kind === "comp" && openCompFromClip(c)}
                   >
                     {#if c.label}<span class="tagbar"></span>{/if}
-                    {#if (c.kind === "video" || c.kind === "image") && w > 70 && app.s?.prefs.timeline_thumbnails !== false && mediaById.get(c.media) && !mediaById.get(c.media)!.missing}
+                    {#if (c.kind === "video" || c.kind === "image") && w > 70 && !tr.collapsed && app.s?.prefs.timeline_thumbnails !== false && mediaById.get(c.media) && !mediaById.get(c.media)!.missing}
                       <div class="thumb"><Thumb path={mediaById.get(c.media)!.path} at={c.source_in} /></div>
                     {/if}
-                    {#if c.kind === "audio" && w > 4}
+                    {#if c.kind === "audio" && w > 4 && !tr.collapsed}
                       {@const vis0 = Math.max(0, -l)}
                       {@const vis1 = Math.min(w, lanesW - l)}
                       {#if vis1 > vis0}
                         <canvas
                           class="wave"
                           style="left:{vis0}px; width:{vis1 - vis0}px"
-                          use:wave={{ media: c.media, from: c.source_in / T + (vis0 / view.pps) * c.speed, secs: (vis1 - vis0) / view.pps, w: vis1 - vis0, h: TRACK_H - 14, speed: c.speed, rev: app.waveforms.size, audio: c.audio, srcIn: c.source_in, dur: c.duration, offset: vis0 / view.pps, trackDb: tr.audio.volume_db }}
+                          use:wave={{ media: c.media, from: c.source_in / T + (vis0 / view.pps) * c.speed, secs: (vis1 - vis0) / view.pps, w: vis1 - vis0, h: hOf(tr) - 14, speed: c.speed, rev: app.waveforms.size, audio: c.audio, srcIn: c.source_in, dur: c.duration, offset: vis0 / view.pps, trackDb: tr.audio.volume_db }}
                         ></canvas>
                       {/if}
                     {/if}
-                    {#if c.kind === "audio" && c.audio && w > 6}
+                    {#if c.kind === "audio" && c.audio && w > 6 && !tr.collapsed}
                       {@const [fi, fo] = clampedFades(c.audio, c.duration)}
                       {@const vw = Math.max(2, w)}
-                      <svg class="vol" width={vw} height="40" aria-hidden="true">
+                      <svg class="vol" width={vw} height={hOf(tr) - 12} aria-hidden="true">
                         <path class="fadeshade" d={fadePath(c, false)} />
                         <path class="fadeshade" d={fadePath(c, true)} />
-                        <polyline role="presentation" class="volhit" points={volPoints(c, vw)} onpointerdown={(e) => volDown(e, c, tr, "line")}><title>Volume {dbText(volumeAt(c.audio, c.source_in))}: drag up or down; Ctrl+click to add a keyframe</title></polyline>
-                        <polyline class="volline" points={volPoints(c, vw)} />
+                        <polyline role="presentation" class="volhit" points={volPoints(c, vw, hOf(tr))} onpointerdown={(e) => volDown(e, c, tr, "line")}><title>Volume {dbText(volumeAt(c.audio, c.source_in))}: drag up or down; Ctrl+click to add a keyframe</title></polyline>
+                        <polyline class="volline" points={volPoints(c, vw, hOf(tr))} />
                         {#each volKeys(c.audio) as k, i}
                           {@const kx = srcX(c, k.at)}
                           {#if kx >= -5 && kx <= vw + 5}
-                            <path role="presentation" class="volkey" d="M{kx} {dbY(k.db) - 4.5}l4.5 4.5-4.5 4.5-4.5-4.5Z" onpointerdown={(e) => volDown(e, c, tr, "key", i)}><title>{dbText(k.db)} — drag to move, Alt+click or double-click to remove</title></path>
+                            <path role="presentation" class="volkey" d="M{kx} {dbY(k.db, hOf(tr)) - 4.5}l4.5 4.5-4.5 4.5-4.5-4.5Z" onpointerdown={(e) => volDown(e, c, tr, "key", i)}><title>{dbText(k.db)} — drag to move, Alt+click or double-click to remove</title></path>
                           {/if}
                         {/each}
                         {#if w > 24}
@@ -1219,7 +1273,7 @@
                   {#if ghost && gesture?.kind === "move"}
                     <div
                       class="clip {c.kind} ghost"
-                      style="left:{x(c.start + gesture.dt)}px; width:{Math.max(2, w)}px; transform: translateY({tr.kind === gesture.leadKind ? gesture.drow * TRACK_H : 0}px)"
+                      style="left:{x(c.start + gesture.dt)}px; width:{Math.max(2, w)}px; transform: translateY({tr.kind === gesture.leadKind ? (tops[ri + gesture.drow] ?? tops[ri]) - tops[ri] : 0}px)"
                     >
                       <span class="label">{c.name}</span>
                     </div>
@@ -1515,8 +1569,9 @@
     background: var(--panel);
   }
   .th {
+    position: relative;
     height: 52px;
-    padding: 5px 10px 0;
+    padding: 5px 10px 0 4px;
     border-bottom: 1px solid var(--line-soft);
     display: flex;
     flex-direction: column;
@@ -1526,6 +1581,54 @@
     height: 20px;
     min-height: 20px;
     padding: 0 4px;
+  }
+  .trow {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+  }
+  .fold {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    min-height: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    display: grid;
+    place-items: center;
+  }
+  .fold:hover {
+    color: var(--text);
+  }
+  .th.collapsed {
+    padding-top: 2px;
+  }
+  .th.collapsed .tname {
+    font-size: calc(11.5px * var(--text-scale));
+  }
+  .trsize {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -3px;
+    height: 6px;
+    cursor: ns-resize;
+    z-index: 2;
+  }
+  .trsize:hover {
+    background: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  .lane.collapsed .clip {
+    top: 3px;
+    bottom: 3px;
+  }
+  .lane.collapsed .label {
+    padding-top: 0;
+    font-size: calc(10.5px * var(--text-scale));
+    line-height: 14px;
   }
   .tname {
     font-weight: 500;

@@ -423,8 +423,8 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
             }
             e.table.as_ref().map(|t| t.id).hash(h);
             e.particles.as_ref().map(|p| p.id).hash(h);
-            // A blade flickers with time.
-            if e.kind == reelforge_core::EffectKind::EnergyBlade {
+            // Flicker, shake, grain… change with time.
+            if e.kind.animates_with_time() {
                 e.time.to_bits().hash(h);
             }
             if let Some(p) = &e.plugin {
@@ -577,7 +577,7 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
             }
             e.table.as_ref().map(|t| t.id).hash(h);
             e.particles.as_ref().map(|p| p.id).hash(h);
-            if e.kind == reelforge_core::EffectKind::EnergyBlade {
+            if e.kind.animates_with_time() {
                 e.time.to_bits().hash(h);
             }
             // A reloaded plugin (new revision) or one that animates with time changes the picture.
@@ -605,7 +605,7 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
 #[cfg(test)]
 mod recipe_tests {
     use super::*;
-    use reelforge_core::{Clip, FrameRate, MediaAsset, MediaInfo, Sequence, VideoStreamInfo};
+    use reelforge_core::{Clip, Effect, EffectKind, FrameRate, MediaAsset, MediaInfo, Sequence, VideoStreamInfo};
 
     fn project() -> Project {
         let mut p = Project::new();
@@ -645,6 +645,24 @@ mod recipe_tests {
         assert_ne!(frame_recipe(&p, 0, Time::from_secs_f64(1.0), &proxy), before);
         // An empty stretch of timeline.
         assert_eq!(at(&p, 20.0), at(&p, 30.0));
+    }
+
+    #[test]
+    fn effects_that_move_by_themselves_make_every_moment_a_new_picture() {
+        let none = HashMap::new();
+        let mut p = Project::new();
+        let mut seq = Sequence::new("S", 64, 32, FrameRate::new(25, 1));
+        seq.tracks[0].clips = vec![Clip::new_plane(ClipId(1), Time::ZERO, Time::from_secs_f64(5.0), [90, 90, 90, 255])];
+        p.sequences = vec![seq];
+        let at = |p: &Project, s: f64| frame_recipe(p, 0, Time::from_secs_f64(s), &none);
+        assert_eq!(at(&p, 1.0), at(&p, 2.0), "a plain plane is the same picture throughout");
+        for kind in [EffectKind::FilmGrain, EffectKind::CameraShake, EffectKind::Glitch, EffectKind::LightLeaks] {
+            p.sequences[0].tracks[0].clips[0].effects = vec![Effect::new(kind)];
+            assert_ne!(at(&p, 1.0), at(&p, 1.04), "{kind:?}");
+        }
+        // A lens flare stays put unless it's keyframed.
+        p.sequences[0].tracks[0].clips[0].effects = vec![Effect::new(EffectKind::LensFlare)];
+        assert_eq!(at(&p, 1.0), at(&p, 2.0));
     }
 }
 

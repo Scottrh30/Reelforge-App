@@ -48,6 +48,18 @@ pub enum EffectKind {
     /// A particle emitter: sparks, dust, snow, embers, magic, worked out and
     /// drawn on the GPU (see [`crate::particles`]).
     Particles,
+    /// A lens flare from a bright light: glow, streak, halo and ghosts.
+    LensFlare,
+    /// Handheld-style shake: the picture wanders, turns and zooms a little.
+    CameraShake,
+    /// Colour fringes: red and blue pulled apart towards the edges or one way.
+    ChromaticAberration,
+    /// Film grain, moving from frame to frame.
+    FilmGrain,
+    /// Digital glitches: sliced, shifted blocks, colour splits and scan lines.
+    Glitch,
+    /// Soft drifting blooms of coloured light, like film light leaks.
+    LightLeaks,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -64,7 +76,7 @@ pub enum EffectCategory {
     BlurSharpen,
     Keying,
     Stylize,
-    /// (Plugins only, so far.)
+    /// Camera shake, chromatic aberration, glitch, and plugins that say so.
     Distort,
     /// Plugins that didn't name a category.
     Plugins,
@@ -342,6 +354,113 @@ const PARTICLES: [ParamSpec; 20] = [
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
 
+/// Parameter indices of the stylise effects.
+pub mod flare {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const BRIGHTNESS: usize = 2;
+    pub const SIZE: usize = 3;
+    pub const COLOR: usize = 4;
+    pub const STYLE: usize = 5;
+    pub const STREAK: usize = 6;
+    pub const GHOSTS: usize = 7;
+    pub const HALO: usize = 8;
+}
+pub mod shake {
+    pub const AMOUNT: usize = 0;
+    pub const ROTATION: usize = 1;
+    pub const SPEED: usize = 2;
+    pub const ROUGHNESS: usize = 3;
+    pub const ZOOM: usize = 4;
+    pub const EDGES: usize = 5;
+    pub const SEED: usize = 6;
+}
+pub mod aberration {
+    pub const AMOUNT: usize = 0;
+    pub const MODE: usize = 1;
+    pub const ANGLE: usize = 2;
+    pub const FALLOFF: usize = 3;
+}
+pub mod grain {
+    pub const AMOUNT: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const COLOR: usize = 2;
+    pub const HIGHLIGHTS: usize = 3;
+    pub const SPEED: usize = 4;
+    pub const SEED: usize = 5;
+}
+pub mod glitch {
+    pub const AMOUNT: usize = 0;
+    pub const BLOCK: usize = 1;
+    pub const SHIFT: usize = 2;
+    pub const SPLIT: usize = 3;
+    pub const SCANLINES: usize = 4;
+    pub const SPEED: usize = 5;
+    pub const SEED: usize = 6;
+}
+pub mod leaks {
+    pub const COLOR_A: usize = 0;
+    pub const COLOR_B: usize = 1;
+    pub const INTENSITY: usize = 2;
+    pub const SIZE: usize = 3;
+    pub const SPEED: usize = 4;
+    pub const FROM: usize = 5;
+    pub const SEED: usize = 6;
+}
+
+const LENS_FLARE: [ParamSpec; 9] = [
+    spec("Light X", 30.0, -100.0, 200.0, " %", 0.1),
+    spec("Light Y", 30.0, -100.0, 200.0, " %", 0.1),
+    spec("Brightness", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Size", 100.0, 10.0, 400.0, " %", 0.5),
+    color("Colour", 0xffc890),
+    choice("Lens", &["Warm (spherical)", "Anamorphic (blue streak)", "Glow only"]),
+    spec("Streak", 50.0, 0.0, 200.0, " %", 0.5),
+    spec("Ghosts", 60.0, 0.0, 200.0, " %", 0.5),
+    spec("Halo", 40.0, 0.0, 200.0, " %", 0.5),
+];
+const CAMERA_SHAKE: [ParamSpec; 7] = [
+    spec("Amount", 12.0, 0.0, 500.0, " px", 0.25),
+    spec("Rotation", 0.8, 0.0, 45.0, "°", 0.05),
+    spec("Speed", 3.0, 0.05, 30.0, " Hz", 0.05),
+    spec("Roughness", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Zoom", 104.0, 100.0, 200.0, " %", 0.1),
+    choice("Edges", &["Mirror", "Repeat the edge", "Transparent"]),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const CHROMATIC: [ParamSpec; 4] = [
+    spec("Amount", 6.0, -100.0, 100.0, " px", 0.1),
+    choice("Direction", &["From the centre (lens)", "One way"]),
+    spec("Angle", 0.0, -360.0, 360.0, "°", 0.5),
+    spec("Falloff", 60.0, 0.0, 100.0, " %", 0.5),
+];
+const FILM_GRAIN: [ParamSpec; 6] = [
+    spec("Amount", 25.0, 0.0, 200.0, " %", 0.5),
+    spec("Size", 1.2, 0.5, 8.0, " px", 0.01),
+    spec("Colour", 20.0, 0.0, 100.0, " %", 0.5),
+    spec("In highlights", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Frame rate", 24.0, 0.0, 120.0, " fps", 0.1),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const GLITCH: [ParamSpec; 7] = [
+    spec("Amount", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Block size", 40.0, 2.0, 1000.0, " px", 0.5),
+    spec("Shift", 60.0, 0.0, 2000.0, " px", 0.5),
+    spec("Colour split", 8.0, 0.0, 200.0, " px", 0.1),
+    spec("Scan lines", 25.0, 0.0, 100.0, " %", 0.5),
+    spec("Speed", 10.0, 0.0, 60.0, " Hz", 0.1),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const LIGHT_LEAKS: [ParamSpec; 7] = [
+    color("Colour 1", 0xff7a2a),
+    color("Colour 2", 0xff2f6a),
+    spec("Intensity", 70.0, 0.0, 300.0, " %", 0.5),
+    spec("Size", 60.0, 5.0, 200.0, " %", 0.5),
+    spec("Drift", 0.25, 0.0, 5.0, " Hz", 0.01),
+    choice("From", &["Left", "Right", "Top", "Bottom", "Corners", "Anywhere"]),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+
 const VIGNETTE: [ParamSpec; 3] = [
     spec("Amount", 50.0, 0.0, 100.0, " %", 0.5),
     spec("Size", 70.0, 0.0, 150.0, " %", 0.5),
@@ -349,7 +468,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 12] = [
+    pub const ALL: [EffectKind; 18] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -362,6 +481,12 @@ impl EffectKind {
         EffectKind::Vignette,
         EffectKind::EnergyBlade,
         EffectKind::Particles,
+        EffectKind::LensFlare,
+        EffectKind::LightLeaks,
+        EffectKind::FilmGrain,
+        EffectKind::Glitch,
+        EffectKind::ChromaticAberration,
+        EffectKind::CameraShake,
     ];
 
     pub fn label(self) -> &'static str {
@@ -379,6 +504,12 @@ impl EffectKind {
             EffectKind::Plugin => "Plugin",
             EffectKind::EnergyBlade => "Energy blade",
             EffectKind::Particles => "Particles",
+            EffectKind::LensFlare => "Lens flare",
+            EffectKind::CameraShake => "Camera shake",
+            EffectKind::ChromaticAberration => "Chromatic aberration",
+            EffectKind::FilmGrain => "Film grain",
+            EffectKind::Glitch => "Glitch",
+            EffectKind::LightLeaks => "Light leaks",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -391,6 +522,8 @@ impl EffectKind {
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
+            EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain => EffectCategory::Stylize,
+            EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
         }
     }
@@ -411,6 +544,12 @@ impl EffectKind {
             EffectKind::Plugin => "An installed plugin.",
             EffectKind::EnergyBlade => "A glowing light-sword blade with a hot core, flicker and motion blur. Drag its hilt and tip in the Viewer, or attach it to a track.",
             EffectKind::Particles => "An emitter of sparks, embers, dust, snow or magic, drawn on the GPU. Drag the emitter in the Viewer; every setting can be keyframed.",
+            EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
+            EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
+            EffectKind::ChromaticAberration => "Colour fringes: red and blue pulled apart towards the edges, like a cheap lens, or one way for a glitchy look.",
+            EffectKind::FilmGrain => "Film grain that changes every frame: fine or coarse, mono or colour, kept out of the highlights.",
+            EffectKind::Glitch => "Digital glitches: slices and blocks jump sideways, colours split and scan lines flicker.",
+            EffectKind::LightLeaks => "Soft blooms of warm coloured light drifting in from the edges, like light leaking into a film camera.",
             EffectKind::Camera => "The 3D camera: where it is, what it looks at, its field of view and depth of field.",
             EffectKind::Light => "A light for 3D layers.",
             EffectKind::Point => "An invisible point: layers parented to it move, turn and scale with it.",
@@ -431,6 +570,12 @@ impl EffectKind {
             EffectKind::Lut => &LUT,
             EffectKind::EnergyBlade => &BLADE,
             EffectKind::Particles => &PARTICLES,
+            EffectKind::LensFlare => &LENS_FLARE,
+            EffectKind::CameraShake => &CAMERA_SHAKE,
+            EffectKind::ChromaticAberration => &CHROMATIC,
+            EffectKind::FilmGrain => &FILM_GRAIN,
+            EffectKind::Glitch => &GLITCH,
+            EffectKind::LightLeaks => &LIGHT_LEAKS,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -441,6 +586,12 @@ impl EffectKind {
 }
 
 impl EffectKind {
+    /// Does the picture change with time even when the settings don't
+    /// (flicker, shake, grain…)? Then every frame has to be drawn.
+    pub fn animates_with_time(self) -> bool {
+        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks)
+    }
+
     /// Headings to show above some parameters, as (first parameter, heading).
     pub fn sections(self) -> &'static [(usize, &'static str)] {
         match self {
@@ -513,6 +664,12 @@ impl EffectValues {
             EffectKind::DropShadow => v[3] == 0.0,
             // Missing plugins are skipped.
             EffectKind::Plugin => self.plugin.is_none(),
+            EffectKind::LensFlare => v[flare::BRIGHTNESS] == 0.0,
+            EffectKind::CameraShake => v[shake::AMOUNT] == 0.0 && v[shake::ROTATION] == 0.0 && v[shake::ZOOM] == 100.0,
+            EffectKind::ChromaticAberration => v[aberration::AMOUNT] == 0.0,
+            EffectKind::FilmGrain => v[grain::AMOUNT] == 0.0,
+            EffectKind::Glitch => v[glitch::AMOUNT] == 0.0,
+            EffectKind::LightLeaks => v[leaks::INTENSITY] == 0.0,
             EffectKind::Particles => v[crate::particles::OPACITY] == 0.0 || self.particles.as_ref().is_none_or(|p| p.list.is_empty()),
             EffectKind::EnergyBlade => v[blade::OPACITY] == 0.0 || v[blade::LENGTH] == 0.0 || (v[blade::CORE_WIDTH] == 0.0 && v[blade::GLOW_INTENSITY] == 0.0),
             // Settings of a camera or light clip, not drawn as an effect.

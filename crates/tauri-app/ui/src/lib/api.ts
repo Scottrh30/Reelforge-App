@@ -114,6 +114,9 @@ export interface TrackView {
   locked: boolean;
   audio: TrackAudio;
   clips: ClipView[];
+  /// Row height in the timeline, and whether it's collapsed to a thin row.
+  height: number;
+  collapsed: boolean;
 }
 
 export interface SeqView {
@@ -399,7 +402,7 @@ export interface ViewerFeedback {
 
 // ---- Effects ----
 
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "EnergyBlade" | "Particles";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks";
 
 export interface Curves {
   master: Pt[];
@@ -665,7 +668,12 @@ export const api = {
   action: (name: string) => invoke("action", { name }),
   historyGoTo: (pos: number) => invoke("history_go_to", { pos }),
   seek: (t: Ticks) => invoke("seek", { t: Math.max(0, Math.round(t)) }),
-  trackOp: (index: number, op: "mute" | "lock" | "delete" | "rename" | "duplicate" | "target" | "untarget", name?: string) => invoke("track_op", { index, op, name }),
+  trackOp: (
+    index: number,
+    op: "mute" | "lock" | "delete" | "rename" | "duplicate" | "target" | "untarget" | "collapse" | "height" | "collapse_all" | "expand_all" | "reset_heights" | "collapse_every" | "expand_every",
+    name?: string,
+    to?: number,
+  ) => invoke("track_op", { index, op, name, to }),
   moveTrack: (index: number, to: number) => invoke("track_op", { index, op: "move", to }),
   setTrackAudio: (index: number, audio: TrackAudio) => invoke("set_track_audio", { index, audio }),
   setTransform: (id: number, transform: Transform) => invoke("set_transform", { id, transform }),

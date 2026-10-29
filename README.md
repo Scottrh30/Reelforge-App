@@ -268,6 +268,29 @@ What works now:
       planar for perspective), put the blade where it belongs at the playhead, then choose
       *Energy blade: hilt and tip* under **Apply to**. Blades on the tracked clip and on layers
       over it are listed, and the X/Y/rotation/scale boxes choose which parts of the motion it takes
+  - **Lens flare** (Light & stylize): glow, faint starburst, halo ring and ghost reflections
+    along the line from the light through the middle of the frame, like a real lens.
+    **Lens**: *Warm (spherical)*, *Anamorphic* (a long blue horizontal streak) or *Glow only*;
+    **Streak**, **Ghosts** and **Halo** set each part. Drag the light (☀) in the Viewer, or
+    keyframe its position to follow a light in the shot. Light is added (it shows on a
+    transparent layer too)
+  - **Light leaks** (Light & stylize): soft blooms of coloured light drifting in from the
+    left, right, top, bottom, corners or anywhere, between two colours, screened onto the
+    picture. **Drift** sets how fast they wander and pulse; **Seed** gives another pattern
+  - **Film grain** (Light & stylize): grain that changes every frame (**Frame rate**, 0 =
+    still), from fine to coarse (**Size**), mono to colour, strongest in the midtones and
+    kept out of the highlights unless **In highlights** is raised
+  - **Glitch** (Distort): slices and blocks jump sideways, colours split and scan lines
+    flicker. **Amount** is how much of the picture glitches, **Speed** how often the pattern
+    changes; keyframe Amount for bursts
+  - **Chromatic aberration** (Distort): red and blue pulled apart **from the centre** (stronger
+    towards the edges, as a lens does; **Falloff** keeps the middle clean) or **one way** at an
+    angle. Negative amounts swap the fringes
+  - **Camera shake** (Distort): the picture wanders, turns and zooms a little, smoothly and
+    differently every moment: **Amount** (px), **Rotation**, **Speed**, **Roughness** (adds a
+    quicker jitter), and **Zoom** to hide the edges (or **Edges**: mirror, repeat or
+    transparent). Keyframe Amount for an impact. Shake, grain, glitches and leaks change
+    with time on their own, so every frame is drawn (and render-cached) separately
   - **Particles** (Light & stylize): sparks, embers, fire, smoke, magic, snow, dust or confetti,
     worked out and drawn on the graphics card (tens of thousands at once)
     - **Timeline → Add particles layer** puts an emitter on its own transparent layer, like a
@@ -298,7 +321,13 @@ What works now:
   header to rename, add or delete a track (deleting takes its clips with it, and can be undone);
   double-click a track's name to rename it. Drag a track's header up or down to reorder the
   stack (its clips go with it; video tracks stay above the audio tracks), or use **Move track
-  up/down** on the right-click menu. Clicking (or right-clicking) a track's name highlights
+  up/down** on the right-click menu. **Track heights**: drag the bottom edge of a track's
+  header to make its row taller or shorter (32–240 px; double-click the edge to reset). Taller
+  audio rows give a bigger waveform and volume line to work on. **Collapse** a track to a thin
+  strip with the arrow before its name (clips still show, as slim bars); the right-click menu
+  collapses or expands all video or all audio tracks at once, and **Reset track heights**.
+  Heights and collapsed tracks are saved with the project (they aren't edits, so there's
+  nothing to undo). Clicking (or right-clicking) a track's name highlights
   the track, its row included; clicking empty timeline or **Esc** clears it, and **Alt+↑/↓**
   moves it up and down the tracks. The highlighted track is the **target**: **Paste** puts
   the copied clips there (several tracks' worth keep their arrangement, the lowest landing on
@@ -1356,8 +1385,9 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 5. ~~**Effects**: the effect stack, keyframable parameters, colour correction, levels, curves,
    LUTs, blur, sharpen, chroma key, glow, drop shadow, vignette, an effects browser;
    dissolve, dip, wipe, iris, slide and push transitions~~
-   (still to add: letting glow/shadow spill outside the layer, more stylize effects, saved
-   effect presets)
+   (stylise effects: lens flare, light leaks, film grain, glitch, chromatic aberration,
+   camera shake, energy blade, particles; still to add: letting glow/shadow spill outside the
+   layer, saved effect presets)
 6. **Compositing**: ~~compositions (nested sequences), motion tracking (1, 2 and 4
    points: follow, stabilise with smoothing, corner pin / screen replacement), corner pin,
    masks with Bézier curves and per-point feather, GPU particles~~, titles and track management are done.

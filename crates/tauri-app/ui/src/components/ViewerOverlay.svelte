@@ -313,6 +313,15 @@
       return [{ index, at: [(v(0) / 100) * size[0], (v(1) / 100) * size[1]] as Pt, dir: v(8), shape: Math.round(v(2)), extent: v(3) }];
     });
   });
+  // Lens flares of the selected clip: where their light is.
+  const flares = $derived.by((): Emitter[] => {
+    if (!ins) return [];
+    return ins.effects.flatMap((fx, index) => {
+      if (fx.kind !== "LensFlare" || !fx.enabled || fx.params.length < 2) return [];
+      const v = (k: number) => fx.params[k].value;
+      return [{ index, at: [(v(0) / 100) * size[0], (v(1) / 100) * size[1]] as Pt, dir: 0, shape: 0, extent: 0 }];
+    });
+  });
   /// Screen pixels the direction arrow is long.
   const ARROW = 46;
   /// Drag an emitter (`"move"`) or the tip of its direction arrow (`"aim"`).
@@ -522,6 +531,15 @@
           <circle {cx} {cy} r="8" class="bladeend" stroke="var(--accent)" onpointerdown={(e) => dragEmitter(e, m, "move")} role="presentation"><title>Particle emitter: drag to move it</title></circle>
           <text x={cx} y={cy + 4} text-anchor="middle" class="bladetag">✦</text>
         {/if}
+      {/each}
+    {/if}
+
+    <!-- Lens flares: drag the light. -->
+    {#if !drawing}
+      {#each flares as m}
+        {@const [cx, cy] = toBox(m.at)}
+        <circle {cx} {cy} r="9" class="bladeend" stroke="#ffd27a" onpointerdown={(e) => dragEmitter(e, m, "move")} role="presentation"><title>Lens flare: drag the light</title></circle>
+        <text x={cx} y={cy + 4} text-anchor="middle" class="bladetag">☀</text>
       {/each}
     {/if}
 

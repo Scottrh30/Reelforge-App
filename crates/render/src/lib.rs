@@ -463,7 +463,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy"]
+        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1167,6 +1167,23 @@ impl Compositor {
                         let at = push("fs_copy", cur, Second::None, o1, u);
                         particle_marks.push((at, particle_sets.len()));
                         particle_sets.push((ps, e.values[reelforge_core::particles::LOOK]));
+                        cur = o1;
+                    }
+                    EffectKind::LensFlare | EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks => {
+                        // A number of its own (its place in the stack), the time and the layer's size.
+                        let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        let entry = match e.kind {
+                            EffectKind::LensFlare => "fs_flare",
+                            EffectKind::CameraShake => "fs_shake",
+                            EffectKind::ChromaticAberration => "fs_aberration",
+                            EffectKind::FilmGrain => "fs_grain",
+                            EffectKind::Glitch => "fs_glitch",
+                            _ => "fs_leaks",
+                        };
+                        push(entry, cur, Second::None, o1, u);
                         cur = o1;
                     }
                     EffectKind::Plugin => {

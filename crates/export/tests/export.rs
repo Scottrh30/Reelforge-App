@@ -1137,3 +1137,29 @@ fn intermediate_codec_exports_keep_every_frame_in_order() {
     }
     std::fs::remove_file(&src).ok();
 }
+
+/// Grain changes every frame even when nothing is keyframed.
+#[test]
+fn film_grain_changes_every_exported_frame() {
+    use reelforge_core::{Effect, EffectKind};
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    let mut sq = Sequence::new("G", 160, 90, FrameRate::new(24, 1));
+    let mut plane = Clip::new_plane(ClipId(2), s(0.0), s(1.0), [120, 120, 120, 255]);
+    let mut grain = Effect::new(EffectKind::FilmGrain);
+    grain.params[reelforge_core::effects::grain::AMOUNT].value = 100.0;
+    plane.effects.push(grain);
+    sq.tracks[0].clips = vec![plane];
+    p.sequences = vec![sq];
+    let out = std::env::temp_dir().join(format!("rf_grain_{}.mov", std::process::id()));
+    let mut st = settings(out.clone());
+    (st.width, st.height, st.include_audio, st.end, st.video) = (160, 90, false, s(0.2), Some(VideoCodec::ProRes422Hq));
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    let mut src = FrameSource::open(&out, None).unwrap();
+    let f = |src: &mut FrameSource, k: f64| src.frame_at_blocking(s(k / 24.0), Duration::from_secs(5)).unwrap().rgba().to_vec();
+    let (a, b, c) = (f(&mut src, 0.0), f(&mut src, 1.0), f(&mut src, 2.0));
+    let differ = |x: &[u8], y: &[u8]| x.iter().zip(y).filter(|(p, q)| p.abs_diff(**q) > 4).count();
+    assert!(differ(&a, &b) > 1000 && differ(&b, &c) > 1000, "{} {}", differ(&a, &b), differ(&b, &c));
+    std::fs::remove_file(&out).ok();
+}

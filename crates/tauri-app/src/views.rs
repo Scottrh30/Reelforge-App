@@ -98,6 +98,9 @@ pub struct TrackView {
     pub locked: bool,
     pub audio: TrackAudio,
     pub clips: Vec<ClipView>,
+    /// Row height in the timeline, and whether it's collapsed to a thin row.
+    pub height: u16,
+    pub collapsed: bool,
 }
 
 #[derive(Serialize)]
@@ -451,6 +454,8 @@ pub fn state(e: &Editor) -> State {
             muted: t.muted,
             locked: t.locked,
             audio: t.audio,
+            height: t.height,
+            collapsed: t.collapsed,
             clips: t
                 .clips
                 .iter()

@@ -3,7 +3,29 @@
 
 import type { ClipView, TrackView } from "./api";
 
+/// A track row's default height; rows can be resized (MIN_TRACK_H–MAX_TRACK_H) or collapsed.
 export const TRACK_H = 52;
+export const MIN_TRACK_H = 32;
+export const MAX_TRACK_H = 240;
+export const COLLAPSED_H = 22;
+
+/// How tall a track's row is on screen.
+export function rowH(tr: { height?: number; collapsed?: boolean }): number {
+  return tr.collapsed ? COLLAPSED_H : tr.height || TRACK_H;
+}
+
+/// The row at `y` (pixels from the top of the first row), given each row's top and the end.
+export function rowAtY(tops: number[], y: number): number {
+  if (tops.length < 2) return 0;
+  let lo = 0,
+    hi = tops.length - 2;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (tops[mid] <= y) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
 export const RULER_H = 28;
 export const MIN_PPS = 2;
 export const MAX_PPS = 2000;
@@ -38,13 +60,17 @@ export const perSequence = new Map<number, { pps: number; scroll: number; vscrol
 export const geo = {
   lanes: null as DOMRect | null,
   rows: [] as TrackView[],
+  /// Each row's top (pixels from the first row's top), and the bottom of the last.
+  tops: [0] as number[],
 };
 
 /// Which track (index) and time (seconds) are at screen point `x`, `y`, if over the tracks.
 export function hitTrack(x: number, y: number): { track: number | null; secs: number } | null {
   const r = geo.lanes;
   if (!r || x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
-  const row = Math.floor((y - r.top + view.vscroll) / TRACK_H);
+  const yy = y - r.top + view.vscroll;
+  if (yy >= geo.tops[geo.tops.length - 1]) return { track: null, secs: Math.max(0, view.scroll + (x - r.left) / view.pps) };
+  const row = rowAtY(geo.tops, yy);
   const secs = Math.max(0, view.scroll + (x - r.left) / view.pps);
   return { track: geo.rows[row]?.index ?? null, secs };
 }
