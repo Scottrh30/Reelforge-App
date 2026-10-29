@@ -711,6 +711,14 @@ impl MovieWriter {
             let from = y as usize * in_row;
             data[at..at + (x1 - x0) * bpp].copy_from_slice(&pixels[from + x0 * bpp..from + x1 * bpp]);
         }
+        // Frame-threaded encoders (ProRes, DNxHR…) keep a reference to the last
+        // frame and encode it later: writing the next picture into that same
+        // buffer would change it under them (frames came out repeated and
+        // skipped). A new buffer if the encoder still holds this one.
+        // SAFETY: `v.frame` is a valid, allocated video frame.
+        if unsafe { ff::ffi::av_frame_make_writable(v.frame.as_mut_ptr()) } < 0 {
+            bail!("out of memory for a video frame");
+        }
         v.scaler.run(&src, &mut v.frame)?;
         v.frame.set_pts(Some(v.next_pts));
         if v.yuv {

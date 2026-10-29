@@ -1051,3 +1051,89 @@ fn exports_particles_that_build_up_over_time() {
     assert_eq!(first, 0, "nothing born at the start");
     assert!(early > 20 && later > early, "{early} then {later}");
 }
+
+#[test]
+fn exports_an_exr_sequence_like_its_frames() {
+    use reelforge_core::imageseq;
+    let Some((device, queue)) = headless_device() else { return };
+    let dir = std::env::temp_dir().join(format!("rf_export_exr_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=0.4", "-vf", "format=gbrpf32le", "-c:v", "exr", "-compression", "rle", "-format", "half", "-start_number", "0"])
+        .arg(dir.join("bg_%03d.exr"))
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        return;
+    }
+    let s = Time::from_secs_f64;
+    let seq = imageseq::detect(&dir.join("bg_000.exr"), reelforge_core::Rational::new(25, 1)).unwrap();
+    let path = seq.media_path();
+    let info = reelforge_media::probe(&path).unwrap();
+    let mut p = Project::new();
+    p.media = vec![reelforge_core::MediaAsset { id: reelforge_core::MediaId(1), path: path.clone(), name: seq.name(), info }];
+    let mut sq = Sequence::new("E", 320, 180, FrameRate::new(25, 1));
+    sq.tracks[0].clips = vec![Clip::new(ClipId(2), reelforge_core::MediaId(1), s(0.0), s(0.0), s(0.4), None)];
+    p.sequences = vec![sq];
+    let out = std::env::temp_dir().join("rf_exrseq.mov");
+    let mut st = settings(out.clone());
+    st.include_audio = false;
+    st.end = s(0.4);
+    (st.width, st.height) = (320, 180);
+    st.video = Some(VideoCodec::ProRes422Hq);
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    let mut exported = FrameSource::open(&out, None).unwrap();
+    let mut frames = FrameSource::open(&path, None).unwrap();
+    for t in [0.0, 0.2] {
+        let a = exported.frame_at_blocking(s(t), Duration::from_secs(5)).unwrap().rgba();
+        let b = frames.frame_at_blocking(s(t), Duration::from_secs(5)).unwrap().rgba();
+        let diff: f64 = a.chunks_exact(4).zip(b.chunks_exact(4)).map(|(x, y)| (0..3).map(|i| (x[i] as f64 - y[i] as f64).abs()).sum::<f64>()).sum::<f64>() / (320.0 * 180.0 * 3.0);
+        // (ProRes is 4:2:2: some colour is lost on the test pattern's sharp coloured edges.)
+        assert!(diff < 5.0, "at {t}s the export differs from the frame by {diff:.2} levels on average");
+        let next = frames.frame_at_blocking(s(t + 0.04), Duration::from_secs(5)).unwrap().rgba();
+        let off: f64 = a.chunks_exact(4).zip(next.chunks_exact(4)).map(|(x, y)| (0..3).map(|i| (x[i] as f64 - y[i] as f64).abs()).sum::<f64>()).sum::<f64>() / (320.0 * 180.0 * 3.0);
+        assert!(diff < off, "at {t}s the export looks more like the next frame ({diff:.2} vs {off:.2})");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Frame-threaded encoders (ProRes, DNxHR, CineForm) once got pictures that
+/// had been overwritten by the next one: exports repeated and skipped frames.
+/// Every exported frame must be its own source frame.
+#[test]
+fn intermediate_codec_exports_keep_every_frame_in_order() {
+    let Some((device, queue)) = headless_device() else { return };
+    let src = std::env::temp_dir().join(format!("rf_order_{}.mp4", std::process::id()));
+    let ok = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=0.4", "-pix_fmt", "yuv420p"])
+        .arg(&src)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        return;
+    }
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media = vec![MediaAsset { id: MediaId(1), path: src.clone(), name: "src".into(), info: probe(&src).unwrap() }];
+    let mut sq = Sequence::new("O", 320, 180, FrameRate::new(25, 1));
+    sq.tracks[0].clips = vec![Clip::new(ClipId(2), MediaId(1), s(0.0), s(0.0), s(0.4), None)];
+    p.sequences = vec![sq];
+    let mut source = FrameSource::open(&src, None).unwrap();
+    let originals: Vec<Vec<u8>> = (0..10).map(|k| source.frame_at_blocking(s(k as f64 * 0.04), Duration::from_secs(5)).unwrap().rgba().to_vec()).collect();
+    let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| (*x as f64 - *y as f64).abs()).sum::<f64>() / a.len() as f64;
+    for codec in [VideoCodec::ProRes422Hq, VideoCodec::ProRes4444, VideoCodec::DnxhrHq, VideoCodec::Cineform] {
+        let out = std::env::temp_dir().join(format!("rf_order_{}_{codec:?}.mov", std::process::id()));
+        let mut st = settings(out.clone());
+        (st.width, st.height, st.include_audio, st.end, st.video) = (320, 180, false, s(0.4), Some(codec));
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        let mut exported = FrameSource::open(&out, None).unwrap();
+        for k in 0..10usize {
+            let got = exported.frame_at_blocking(s(k as f64 * 0.04), Duration::from_secs(5)).unwrap().rgba();
+            let best = (0..10).min_by(|&a, &b| diff(&got, &originals[a]).total_cmp(&diff(&got, &originals[b]))).unwrap();
+            assert_eq!(best, k, "{codec:?}: exported frame {k} looks like source frame {best}");
+        }
+        std::fs::remove_file(&out).ok();
+    }
+    std::fs::remove_file(&src).ok();
+}

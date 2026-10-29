@@ -431,7 +431,7 @@ pub fn state(e: &Editor) -> State {
                 height: v.map_or(0, |v| v.height),
                 fps: v.map_or(0.0, |v| v.frame_rate.fps()),
                 has_audio: m.info.audio.is_some(),
-                missing: !m.path.exists(),
+                missing: !reelforge_core::imageseq::media_exists(&m.path),
                 proxy,
                 proxy_error,
                 proxy_format,

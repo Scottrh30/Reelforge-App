@@ -6,6 +6,7 @@
 /// The next bits are kept left-aligned in a 64-bit register, refilled four
 /// bytes at a time, so looking ahead is a shift rather than a memory load:
 /// after every move at least 32 bits are in the register (zeros past the end).
+#[derive(Clone)]
 pub struct BitReader<'a> {
     data: &'a [u8],
     /// The next bits, left-aligned (bit 63 is the next one).

@@ -596,7 +596,7 @@ impl Command for RelinkMedia {
 
 /// Media whose file isn't where the project says (moved, renamed, or on a drive that isn't connected).
 pub fn missing_media(p: &Project) -> Vec<MediaId> {
-    p.media.iter().filter(|m| !m.path.exists()).map(|m| m.id).collect()
+    p.media.iter().filter(|m| !crate::imageseq::media_exists(&m.path)).map(|m| m.id).collect()
 }
 
 // ---- Compositions ----------------------------------------------------------

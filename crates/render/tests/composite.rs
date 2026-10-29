@@ -865,3 +865,43 @@ fn every_blend_mode_matches_the_reference_formula() {
         }
     }
 }
+
+#[test]
+fn float_layers_keep_linear_light_highlights_and_premultiplied_glow() {
+    use reelforge_core::frame::{f32_to_f16, FloatPixels};
+    let Some(mut c) = setup() else { return };
+    let float = |w: u32, h: u32, f: &dyn Fn(u32, u32) -> [f32; 4]| FloatPixels {
+        width: w,
+        height: h,
+        rgba: (0..h).flat_map(|y| (0..w).flat_map(move |x| f(x, y))).map(f32_to_f16).collect(),
+    };
+    let draw = |c: &mut reelforge_render::Compositor, under: &[u8], f: &FloatPixels, effects: Vec<EffectValues>| {
+        let mut back = full(1, under, [16, 16]);
+        back.content_id = 1000 + under[0] as u64;
+        let l = LayerInput { key: 2, content_id: f.rgba.iter().map(|&v| v as u64).sum::<u64>() + effects.len() as u64, pixels: PixelData::Float(f), pixel_size: [f.width, f.height], layer_size: [16.0, 16.0], transform: Transform::default(), blend: BlendMode::Normal, effects, mask: None, wipe: None, mesh: None, space: None };
+        c.render([16, 16], &[back, l]);
+        c.read_output().unwrap()
+    };
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    let grey = solid(1, 1, [128, 128, 128, 255]);
+    // Linear 0.2 is sRGB 124 (no 8-bit gamma step in between).
+    let img = draw(&mut c, &black, &float(16, 16, &|_, _| [0.2, 0.2, 0.2, 1.0]), vec![]);
+    assert!(near(px(&img, 16, 8, 8), [124, 124, 124]), "{:?}", px(&img, 16, 8, 8));
+    // Premultiplied: half-covered 0.2 (stored as 0.1, alpha 0.5) over black is 0.1.
+    let img = draw(&mut c, &black, &float(16, 16, &|_, _| [0.1, 0.1, 0.1, 0.5]), vec![]);
+    assert!(near(px(&img, 16, 8, 8), [89, 89, 89]), "{:?}", px(&img, 16, 8, 8));
+    // Light with no alpha (a fire element) adds to what's under it.
+    let img = draw(&mut c, &grey, &float(16, 16, &|_, _| [0.3, 0.0, 0.0, 0.0]), vec![]);
+    let p = px(&img, 16, 8, 8);
+    assert!(p[0] > 180 && (p[1] as i32 - 128).abs() <= 2, "{p:?}");
+    // A highlight far above 1 keeps its energy through a blur: a single
+    // 200.0 pixel spread over a 5×5 area is still brighter than white.
+    let spot = float(16, 16, &|x, y| if (x, y) == (8, 8) { [200.0, 200.0, 200.0, 1.0] } else { [0.0, 0.0, 0.0, 1.0] });
+    let img = draw(&mut c, &black, &spot, vec![fx(EffectKind::Blur, &[(0, 2.0)])]);
+    let ring = px(&img, 16, 10, 8);
+    assert!(ring[0] > 240, "the blurred highlight stays bright: {ring:?}");
+    // The same spot clipped to 1 first (as an 8-bit picture would be) fades away.
+    let clipped = float(16, 16, &|x, y| if (x, y) == (8, 8) { [1.0, 1.0, 1.0, 1.0] } else { [0.0, 0.0, 0.0, 1.0] });
+    let img = draw(&mut c, &black, &clipped, vec![fx(EffectKind::Blur, &[(0, 2.0)])]);
+    assert!(px(&img, 16, 10, 8)[0] < ring[0] - 60, "{:?}", px(&img, 16, 10, 8));
+}

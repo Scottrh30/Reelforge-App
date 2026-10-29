@@ -1,6 +1,6 @@
 [package]
 name = "reelforge-codecs"
-description = "Reelforge's own video decoders, in Rust (MJPEG, ProRes, DNxHD/DNxHR, MPEG-2, H.264, HEVC, VP9, AV1). No FFmpeg in here: the media crate feeds them compressed packets."
+description = "Reelforge's own video decoders, in Rust (MJPEG, ProRes, DNxHD/DNxHR, MPEG-2, H.264, HEVC, VP9, AV1, CineForm, OpenEXR). No FFmpeg in here: the media crate feeds them compressed packets."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 zune-jpeg = "0.5"
 zune-core = "0.5"
+# zlib (OpenEXR ZIP, ZIPS and PXR24).
+miniz_oxide = "0.9"
 reelforge-h264 = { path = "../h264" }
 reelforge-hevc = { path = "../hevc" }
 reelforge-vp9 = { path = "../vp9" }

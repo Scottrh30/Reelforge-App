@@ -194,13 +194,115 @@ impl YuvPlanes {
     }
 }
 
-/// A picture's pixels: RGBA, YUV planes to be converted when drawn, or a
-/// frame still on the graphics card.
+/// A floating-point picture (OpenEXR): RGBA as half floats (IEEE binary16),
+/// scene-linear light and premultiplied alpha, as the files store them, so
+/// values above 1 (highlights) and light with no alpha (fire, glows) survive
+/// into the compositor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FloatPixels {
+    pub width: u32,
+    pub height: u32,
+    /// R, G, B, A per pixel, tightly packed.
+    pub rgba: Vec<u16>,
+}
+
+impl FloatPixels {
+    pub fn byte_len(&self) -> usize {
+        self.rgba.len() * 2
+    }
+
+    /// As 8-bit sRGB with straight alpha (for thumbnails and the tracker):
+    /// highlights above 1 are clipped.
+    pub fn to_rgba8(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.rgba.len());
+        for p in self.rgba.chunks_exact(4) {
+            let a = f16_to_f32(p[3]).clamp(0.0, 1.0);
+            let un = |v: u16| {
+                let v = f16_to_f32(v);
+                if a > 1e-6 { v / a } else { v }
+            };
+            for c in 0..3 {
+                out.push((linear_to_srgb(un(p[c])) * 255.0).round() as u8);
+            }
+            out.push((a * 255.0).round() as u8);
+        }
+        out
+    }
+}
+
+/// Linear light 0–1 to the sRGB curve (clamped).
+pub fn linear_to_srgb(v: f32) -> f32 {
+    let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+    if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// A half float's value.
+pub fn f16_to_f32(h: u16) -> f32 {
+    let sign = ((h as u32) & 0x8000) << 16;
+    let exp = ((h >> 10) & 0x1f) as u32;
+    let man = (h & 0x3ff) as u32;
+    let bits = match exp {
+        0 if man == 0 => sign,
+        0 => {
+            let (mut e, mut m) = (113u32, man);
+            while m & 0x400 == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            sign | (e << 23) | ((m & 0x3ff) << 13)
+        }
+        31 => sign | 0x7f80_0000 | (man << 13),
+        _ => sign | ((exp + 112) << 23) | (man << 13),
+    };
+    f32::from_bits(bits)
+}
+
+/// The nearest half float (ties to even). For drawing, NaN becomes 0 and
+/// anything beyond the half range the largest finite half.
+pub fn f32_to_f16(v: f32) -> u16 {
+    let x = v.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let exp = ((x >> 23) & 0xff) as i32;
+    let man = x & 0x7f_ffff;
+    if exp == 255 {
+        return if man != 0 { 0 } else { sign | 0x7bff };
+    }
+    let e = exp - 127 + 15;
+    if e >= 31 {
+        return sign | 0x7bff;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        let m = man | 0x80_0000;
+        let shift = (14 - e) as u32;
+        let (mut r, rem, half) = (m >> shift, m & ((1 << shift) - 1), 1u32 << (shift - 1));
+        if rem > half || (rem == half && r & 1 == 1) {
+            r += 1;
+        }
+        return sign | r as u16;
+    }
+    let mut h = ((e as u32) << 10) | (man >> 13);
+    let rem = man & 0x1fff;
+    if rem > 0x1000 || (rem == 0x1000 && h & 1 == 1) {
+        h += 1;
+    }
+    if h >= 0x7c00 {
+        h = 0x7bff;
+    }
+    sign | h as u16
+}
+
+/// A picture's pixels: RGBA, YUV planes to be converted when drawn, a
+/// floating-point picture, or a frame still on the graphics card.
 #[derive(Clone, Debug)]
 pub enum Pixels {
     /// Tightly packed RGBA8, sRGB-encoded, straight alpha.
     Rgba(Arc<[u8]>),
     Yuv(Arc<YuvPlanes>),
+    /// Half-float RGBA, scene-linear, premultiplied (OpenEXR).
+    Float(Arc<FloatPixels>),
     /// Decoded by the graphics card and left there ("zero-copy").
     Gpu(Arc<GpuFrame>),
 }
@@ -211,6 +313,7 @@ impl Pixels {
         match self {
             Pixels::Rgba(b) => b.len(),
             Pixels::Yuv(y) => y.byte_len(),
+            Pixels::Float(f) => f.byte_len(),
             Pixels::Gpu(_) => 256,
         }
     }
@@ -221,6 +324,7 @@ impl Pixels {
         match self {
             Pixels::Rgba(b) => b.clone(),
             Pixels::Yuv(y) => Arc::from(y.to_rgba()),
+            Pixels::Float(f) => Arc::from(f.to_rgba8()),
             Pixels::Gpu(g) => match g.cpu() {
                 Some(y) => Arc::from(y.to_rgba()),
                 None => Arc::from(vec![0u8; g.width as usize * g.height as usize * 4]),
@@ -232,7 +336,7 @@ impl Pixels {
     /// the graphics card if need be).
     pub fn yuv(&self) -> Option<Arc<YuvPlanes>> {
         match self {
-            Pixels::Rgba(_) => None,
+            Pixels::Rgba(_) | Pixels::Float(_) => None,
             Pixels::Yuv(y) => Some(y.clone()),
             Pixels::Gpu(g) => g.cpu(),
         }
@@ -424,6 +528,26 @@ pub mod zero_copy {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn half_floats_round_trip_and_round_to_nearest() {
+        for h in (0u16..=0xffff).step_by(7) {
+            let v = f16_to_f32(h);
+            if v.is_finite() {
+                assert_eq!(f32_to_f16(v), h, "{h:#06x} = {v}");
+            }
+        }
+        assert_eq!(f32_to_f16(1.0), 0x3c00);
+        assert_eq!(f32_to_f16(1.0 + 1.0 / 2048.0), 0x3c00, "a tie rounds to even");
+        assert_eq!(f32_to_f16(1.0 + 3.0 / 2048.0), 0x3c02);
+        assert_eq!(f32_to_f16(1e9), 0x7bff);
+        assert_eq!(f32_to_f16(f32::NAN), 0);
+        assert_eq!(f32_to_f16(3e-8), 0x0001);
+        let f = FloatPixels { width: 2, height: 1, rgba: [0.5f32, 0.5, 0.5, 0.5, 4.0, 0.0, 0.0, 1.0].map(f32_to_f16).to_vec() };
+        // Premultiplied 0.5 at alpha 0.5 is linear 1 (white); 4.0 clips.
+        assert_eq!(f.to_rgba8(), vec![255, 255, 255, 128, 255, 0, 0, 255]);
+    }
+
     use super::*;
 
     /// A flat 4×2 picture with the given 8-bit Y, U, V.

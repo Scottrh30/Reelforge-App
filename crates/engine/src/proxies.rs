@@ -76,7 +76,7 @@ impl Proxies {
     /// footage if `auto`. Cheap to call often.
     pub fn refresh(&mut self, project: &Project, auto: bool) {
         for m in &project.media {
-            if m.info.video.is_none() || self.states.contains_key(&m.path) || !m.path.exists() {
+            if m.info.video.is_none() || self.states.contains_key(&m.path) || !reelforge_core::imageseq::media_exists(&m.path) {
                 continue;
             }
             if let Some(p) = proxy::existing_proxy(&m.path) {

@@ -32,6 +32,20 @@ pub use tracker::{track_point, track_points, TrackEnd};
 use std::sync::Once;
 
 /// Initialise FFmpeg once per process. Safe to call repeatedly.
+/// Open media for reading: a file, or an image sequence path (see
+/// `reelforge_core::imageseq`), read with FFmpeg's image-sequence reader from
+/// its first frame at its rate.
+pub fn open_input(path: &std::path::Path) -> Result<ffmpeg_next::format::context::Input, ffmpeg_next::Error> {
+    if reelforge_core::imageseq::is_sequence(path) {
+        let Some(seq) = reelforge_core::imageseq::parse(path) else { return Err(ffmpeg_next::Error::Other { errno: 2 }) };
+        let mut opts = ffmpeg_next::Dictionary::new();
+        opts.set("start_number", &seq.first.to_string());
+        opts.set("framerate", &format!("{}/{}", seq.rate.num, seq.rate.den));
+        return ffmpeg_next::format::input_with_dictionary(&seq.pattern(), opts);
+    }
+    ffmpeg_next::format::input(&path)
+}
+
 pub fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {

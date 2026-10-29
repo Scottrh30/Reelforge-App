@@ -44,6 +44,9 @@ pub enum PixelData<'a> {
     Gpu(&'a GpuFrame),
     /// A solid object (3D text), drawn on the GPU into a frame-sized picture.
     Solid(&'a solid::SolidInput),
+    /// Half-float RGBA, scene-linear and premultiplied (OpenEXR): kept as
+    /// floats, so values above 1 and light without alpha survive.
+    Float(&'a reelforge_core::frame::FloatPixels),
     /// An adjustment layer: the frame composited so far (everything below),
     /// put through the layer's effects and drawn back over it. `pixel_size`
     /// should be the frame size.
@@ -58,6 +61,7 @@ impl PixelData<'_> {
                 PixelData::Rgba(px) => px.len() as u64 == size[0] as u64 * size[1] as u64 * 4,
                 PixelData::Yuv(y) => [y.width, y.height] == size && y.planes.len() == if y.layout.interleaved() { 2 } else { 3 },
                 PixelData::Gpu(g) => [g.width, g.height] == size,
+                PixelData::Float(f) => [f.width, f.height] == size && f.rgba.len() as u64 == size[0] as u64 * size[1] as u64 * 4,
                 PixelData::Solid(_) => true,
                 // Nothing to upload: it's read from the frame as it's drawn.
                 PixelData::Below => false,
@@ -71,6 +75,7 @@ impl<'a> From<&'a reelforge_core::frame::Pixels> for PixelData<'a> {
             reelforge_core::frame::Pixels::Rgba(b) => PixelData::Rgba(b),
             reelforge_core::frame::Pixels::Yuv(y) => PixelData::Yuv(y),
             reelforge_core::frame::Pixels::Gpu(g) => PixelData::Gpu(g),
+            reelforge_core::frame::Pixels::Float(f) => PixelData::Float(f),
         }
     }
 }
@@ -84,6 +89,8 @@ pub use solid::SolidInput;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+/// For floating-point pictures (EXR).
+const FLOAT_LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Gamma-encoded 8-bit, which is what the viewer shows.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The 16-bit export output (read back and converted to 16-bit integers).
@@ -196,6 +203,9 @@ struct LayerTex {
     bind_group: wgpu::BindGroup,
     size: [u32; 2],
     content_id: u64,
+    /// A float texture of premultiplied linear light (an EXR), rather than
+    /// sRGB with straight alpha.
+    float: bool,
 }
 
 /// Two scratch targets the size of a layer's pixels, for its effect chain.
@@ -721,7 +731,8 @@ impl Compositor {
                 return; // unchanged since last frame
             }
         }
-        let needs_new = self.layers.get(&l.key).is_none_or(|t| t.size != l.pixel_size);
+        let float = matches!(l.pixels, PixelData::Float(_));
+        let needs_new = self.layers.get(&l.key).is_none_or(|t| t.size != l.pixel_size || t.float != float);
         if needs_new {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("layer"),
@@ -729,7 +740,7 @@ impl Compositor {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: LAYER_FORMAT,
+                format: if float { FLOAT_LAYER_FORMAT } else { LAYER_FORMAT },
                 // Written by upload (RGBA) or by the YUV conversion pass.
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
@@ -743,7 +754,7 @@ impl Compositor {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 ],
             });
-            self.layers.insert(l.key, LayerTex { texture, bind_group, size: l.pixel_size, content_id: u64::MAX });
+            self.layers.insert(l.key, LayerTex { texture, bind_group, size: l.pixel_size, content_id: u64::MAX, float });
         }
         let t = self.layers.get_mut(&l.key).unwrap();
         match l.pixels {
@@ -754,6 +765,16 @@ impl Compositor {
                 wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
                 wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             ),
+            PixelData::Float(f) => {
+                // SAFETY: u16s are plain bytes; little-endian, as the GPU wants (and every target is).
+                let bytes = unsafe { std::slice::from_raw_parts(f.rgba.as_ptr() as *const u8, f.rgba.len() * 2) };
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    bytes,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(8 * w), rows_per_image: Some(h) },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                )
+            }
             PixelData::Yuv(planes) => {
                 let view = t.texture.create_view(&Default::default());
                 self.yuv.convert(&self.device, &self.queue, l.key, planes, &view);
@@ -866,7 +887,7 @@ impl Compositor {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 ],
             });
-            self.masks.insert(key, LayerTex { texture, bind_group, size: m.size, content_id: u64::MAX });
+            self.masks.insert(key, LayerTex { texture, bind_group, size: m.size, content_id: u64::MAX, float: false });
         }
         let t = self.masks.get_mut(&key).unwrap();
         self.queue.write_texture(
@@ -907,7 +928,7 @@ impl Compositor {
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * t.width), rows_per_image: Some(t.height) },
             wgpu::Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 },
         );
-        self.tables.insert(key, LayerTex { texture, bind_group, size: [t.width, t.height], content_id: t.id });
+        self.tables.insert(key, LayerTex { texture, bind_group, size: [t.width, t.height], content_id: t.id, float: false });
     }
 
     fn ensure_fx_targets(&mut self, key: u64, size: [u32; 2]) {
@@ -1038,7 +1059,9 @@ impl Compositor {
             };
             let key = l.key;
             // The frame so far is premultiplied already: copied as it is.
-            let (entry, src) = if below { ("fs_copy", Src::Below) } else { ("fs_import", Src::Layer) };
+            // A float layer is premultiplied already, so it's copied rather than imported.
+            let float = self.layers.get(&l.key).is_some_and(|t| t.float);
+            let (entry, src) = if below { ("fs_copy", Src::Below) } else if float { ("fs_copy", Src::Layer) } else { ("fs_import", Src::Layer) };
             fx_passes.push(FxPass { key, entry, src, second: Second::None, dst: 0, uniform: [0.0; FX_FLOATS], plugin: None, particles: None });
             let mut cur = 0usize;
             // Plugin passes pushed for this layer: (index in fx_passes, revision, pass).
@@ -1385,6 +1408,8 @@ impl Compositor {
             }
         };
 
+        // Float layers hold premultiplied light: drawn like processed layers.
+        let premul = |d: &Draw| d.fx.is_none() && self.layers.get(&d.key).is_some_and(|t| t.float);
         // The frame is drawn in runs of plain layers; each dissolve group needs
         // its own pass on the scratch target in between.
         let background = if self.transparent { wgpu::Color::TRANSPARENT } else { wgpu::Color::BLACK };
@@ -1412,7 +1437,7 @@ impl Compositor {
                         pass.set_bind_group(2, &targets.backdrop_bind, &[]);
                     }
                     // Processed layers are already premultiplied: draw them like a group.
-                    pass.set_pipeline(if draw.fx.is_some() { &self.group_pipelines[blend] } else { &self.layer_pipelines[blend] });
+                    pass.set_pipeline(if draw.fx.is_some() || premul(draw) { &self.group_pipelines[blend] } else { &self.layer_pipelines[blend] });
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
                     pass.set_bind_group(1, bind, &[]);
                     pass.draw(0..verts[draw.slot], 0..1);
@@ -1440,7 +1465,7 @@ impl Compositor {
                         let mut gp = pass_on(&mut enc, &targets.group_view, wgpu::LoadOp::Clear(*clear));
                         for d in [a, b].into_iter().flatten() {
                             let Some(bind) = source(d) else { continue };
-                            gp.set_pipeline(if d.fx.is_some() { &self.sum_premul_pipeline } else { &self.sum_pipeline });
+                            gp.set_pipeline(if d.fx.is_some() || premul(d) { &self.sum_premul_pipeline } else { &self.sum_pipeline });
                             gp.set_bind_group(0, &self.uniform_bind, &[offset(d.slot)]);
                             gp.set_bind_group(1, bind, &[]);
                             gp.draw(0..verts[d.slot], 0..1);

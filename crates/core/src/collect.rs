@@ -186,6 +186,29 @@ pub fn plan_collect(p: &Project, dest: &Path, name: &str, opts: CollectOptions) 
             *path = dest.join(to);
             return;
         }
+        // An image sequence: every frame, into a folder of its own.
+        if kind == FileKind::Media && crate::imageseq::is_sequence(path) {
+            let Some(seq) = crate::imageseq::parse(path) else {
+                if !missing.contains(path) {
+                    missing.push(path.clone());
+                }
+                return;
+            };
+            let folder = PathBuf::from(kind.folder()).join(seq.name().replace(['[', ']'], ""));
+            for n in seq.first..=seq.last {
+                let from = seq.frame(n);
+                let size = std::fs::metadata(&from).map(|m| m.len()).unwrap_or(0);
+                let name = from.file_name().map(PathBuf::from).unwrap_or_default();
+                items.push(CollectItem { kind, from, to: folder.join(name), size });
+            }
+            taken.insert(folder.to_string_lossy().to_lowercase());
+            let moved = crate::imageseq::ImageSequence { dir: dest.join(&folder), ..seq };
+            *path = moved.media_path();
+            if let Ok(rel) = path.strip_prefix(dest) {
+                placed.insert(key, rel.to_path_buf());
+            }
+            return;
+        }
         let Some(meta) = std::fs::metadata(&*path).ok().filter(|m| m.is_file()) else {
             if !missing.contains(path) {
                 missing.push(path.clone());
@@ -289,6 +312,28 @@ mod tests {
         assert_eq!(lean.items.len(), 3);
         assert!(lean.project.media.iter().all(|m| m.id != MediaId(3)));
         assert_eq!(lean.project.file_paths().iter().find(|(k, _)| *k == FileKind::Font).unwrap().1, src.join("fonts/Bold.ttf"));
+    }
+
+    #[test]
+    fn image_sequences_are_collected_frame_by_frame() {
+        let src = tmp("src_seq");
+        let dest = tmp("dest_seq");
+        for n in 1001..=1003 {
+            write(&src.join(format!("renders/comp.{n}.exr")), 100);
+        }
+        let seq = crate::imageseq::detect(&src.join("renders/comp.1001.exr"), crate::time::Rational::new(24, 1)).unwrap();
+        let mut p = Project::new();
+        p.media = vec![asset(1, &seq.media_path())];
+        let plan = plan_collect(&p, &dest, "p", CollectOptions::default());
+        let tos: Vec<String> = plan.items.iter().map(|i| i.to.to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(tos, ["Media/comp.1001-1003.exr/comp.1001.exr", "Media/comp.1001-1003.exr/comp.1002.exr", "Media/comp.1001-1003.exr/comp.1003.exr"]);
+        assert_eq!(plan.total_bytes, 300);
+        assert!(plan.missing.is_empty());
+        let moved = &plan.project.media[0].path;
+        assert_eq!(*moved, dest.join("Media/comp.1001-1003.exr/comp.%04d.exr#24@1001"));
+        // Saved relative to the folder and opened from it again.
+        let saved = plan.project.paths_relative_to(&dest);
+        assert_eq!(saved.media[0].path, Path::new("Media/comp.1001-1003.exr/comp.%04d.exr#24@1001"));
     }
 
     #[test]

@@ -28,6 +28,19 @@ What works now:
   and **Save as new workspace…** keeps it under a name of your own, which can be renamed or
   deleted later. Workspaces are kept on this computer, not in the project
 - Import video/image/audio via **File → Import**, `Ctrl+I`, or drag files from Explorer
+- **Image sequences** (VFX renders and comps: OpenEXR, DPX, PNG, TIFF, TGA, JPEG…): import any
+  one numbered frame (`comp_v2.1001.exr`) and the whole sequence comes in as one clip,
+  `comp_v2.[1001-1100].exr`, at the sequence's frame rate; picking several of its frames still
+  gives one clip. Padded (`0042`) and plain (`42`) numbers both work, and a sequence runs until
+  the first missing frame. Sequences relink by any of their frames when moved, and **Collect
+  project** copies every frame into a folder of their own. (A numbered still with no numbered
+  neighbours imports as a still.)
+- **OpenEXR in float**: EXR frames stay floating point all the way into the compositor (as
+  half floats on the graphics card): highlights above 1.0 keep their energy through blurs, glows
+  and grading instead of clipping, and light stored with no alpha (fire, sparks and glows
+  rendered "additive") adds onto what's under it, because EXR's premultiplied alpha is kept as
+  it is. Layers named `beauty.R/G/B/A` and multi-part files are read too (the first layer with
+  R, G and B, or Y for black-and-white)
 - FFmpeg decoding on a background thread, with frame-accurate seeking (transport and program streams too: TS, MTS, MPG and VOB are searched by timestamp, so a seek steps back until it starts from a keyframe at or before the target)
 - Viewer with transport bar and timecode
 - Multi-track timeline: drag media from the bin onto a track, move clips between tracks,
@@ -829,6 +842,7 @@ decoders take those codecs when it's off or the card can't.
 | HEVC (H.265) | done, via a pure-Rust decoder library: Main and Main 10 (4:2:0, 8/10-bit), tiles, WPP; 4:2:2/4:4:4 go to FFmpeg |
 | VP9 | done, via a pure-Rust decoder library: profiles 0–3 (8/10/12-bit, 4:2:0 to 4:4:4) |
 | AV1 | done, via a pure-Rust decoder library: Main profile, 8/10-bit 4:2:0 and monochrome, film grain |
+| OpenEXR | done, Reelforge's own: scanline and tiled, single and multi-part, compression none, RLE, ZIPS, ZIP, PIZ, PXR24, B44 and B44A; half, float and uint channels; RGB(A) or Y, of the unnamed layer or the first named one (`beauty.R`…); the data window placed in the display window. Output is floating point (see above). Chunks decode on all cores, with SSE2 for ZIP's predictor. DWAA, DWAB and HTJ2K files go to FFmpeg's decoder. Checked bit for bit against the OpenEXR reference library (`tools/exr/make_fixtures.py` makes the test files and the library's own reading of them, in `crates/codecs/tests/data/exr`). On 2 cores, a 1080p half-float RGBA frame takes about 7 ms uncompressed, 40 ms ZIP, 50 ms PIZ and 15–25 ms B44A, against FFmpeg's 14, 79, (fails on that PIZ file) and 33 ms |
 | GoPro CineForm | done, Reelforge's own: 4:2:2 10-bit YUV, 12-bit RGB and RGBA, CineForm RAW (Bayer: the sensor mosaic, demosaiced like FFmpeg's), intra frames and two-frame groups (which FFmpeg can't decode), progressive and interlaced, peak tables; channels on all cores, AVX2 wavelet filters. Written from GoPro's CineForm SDK (MIT OR Apache-2.0; code tables in `crates/codecs/src/cineform_tables.rs`) |
 
 The H.264, HEVC, VP9 and AV1 decoders live in this repository (`crates/h264`, `crates/hevc`,

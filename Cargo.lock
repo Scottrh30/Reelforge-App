@@ -3300,6 +3300,7 @@ name = "reelforge-codecs"
 version = "0.1.0"
 dependencies = [
  "log",
+ "miniz_oxide 0.9.1",
  "rayon",
  "reelforge-av1",
  "reelforge-h264",

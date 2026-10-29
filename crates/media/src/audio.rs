@@ -38,7 +38,7 @@ pub struct AudioReader {
 impl AudioReader {
     pub fn open(path: &Path, out_rate: u32) -> Result<Self> {
         init();
-        let ictx = ff::format::input(path).with_context(|| format!("cannot open {}", path.display()))?;
+        let ictx = crate::open_input(path).with_context(|| format!("cannot open {}", path.display()))?;
         let st = ictx.streams().best(ff::media::Type::Audio).ok_or_else(|| anyhow!("no audio stream"))?;
         let stream_index = st.index();
         let time_base = to_rational(st.time_base());

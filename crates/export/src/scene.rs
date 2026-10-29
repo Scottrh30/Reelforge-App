@@ -391,7 +391,7 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
                             _ => {} // a still: the same picture throughout
                         }
                         // Missing media shows a stand-in picture.
-                        path.exists().hash(h);
+                        reelforge_core::imageseq::media_exists(path).hash(h);
                         m.info.video.as_ref().map_or([0.0; 2], |v| [v.width as f32, v.height as f32])
                     }
                     None => [0.0; 2],

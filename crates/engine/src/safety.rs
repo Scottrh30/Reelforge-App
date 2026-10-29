@@ -214,9 +214,13 @@ fn prune_autosaves(keep: usize) {
 /// Look for files named like each missing one in `dir` (and its subfolders,
 /// a few levels deep). Returns `(missing path, found path)` pairs.
 pub fn find_by_name(dir: &Path, missing: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+    // (An image sequence is looked for by its first frame.)
     let wanted: Vec<(String, &PathBuf)> = missing
         .iter()
-        .filter_map(|p| Some((p.file_name()?.to_string_lossy().to_lowercase(), p)))
+        .filter_map(|p| match reelforge_core::imageseq::first_frame_name(p) {
+            Some(f) => Some((f.to_lowercase(), p)),
+            None => Some((p.file_name()?.to_string_lossy().to_lowercase(), p)),
+        })
         .collect();
     let mut found = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), 0)];

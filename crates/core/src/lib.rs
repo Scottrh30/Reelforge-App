@@ -13,6 +13,7 @@ pub mod collect;
 pub mod edit;
 pub mod effects;
 pub mod frame;
+pub mod imageseq;
 pub mod lut;
 pub mod mask;
 pub mod particles;

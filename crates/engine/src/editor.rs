@@ -32,7 +32,7 @@ pub const WAVEFORM_RATE: u32 = 100;
 pub const LOCKED: &str = "That clip is on a locked track (or linked to one). Unlock the track to edit it";
 
 /// File types offered when importing.
-pub const MEDIA_EXTENSIONS: [&str; 17] = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "mxf", "mts", "png", "jpg", "jpeg", "gif", "wav", "mp3", "aac", "flac", "ogg"];
+pub const MEDIA_EXTENSIONS: [&str; 23] = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "mxf", "mts", "png", "jpg", "jpeg", "gif", "exr", "dpx", "tif", "tiff", "tga", "bmp", "wav", "mp3", "aac", "flac", "ogg"];
 
 /// Choices that change how the editor behaves (kept with the app's settings).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -398,14 +398,32 @@ impl Editor {
         let mut ok = 0;
         // Store full paths, so the project works wherever it's opened from.
         let paths: Vec<PathBuf> = paths.iter().map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone())).collect();
+        // A numbered still with numbered neighbours (`shot.1001.exr`…) brings in
+        // the whole image sequence, once however many of its frames were picked,
+        // at the sequence's frame rate.
+        let rate = self.seq().frame_rate.0;
+        let mut items: Vec<(PathBuf, String)> = Vec::new();
+        let mut sequences = 0;
         for path in &paths {
+            let item = match reelforge_core::imageseq::detect(path, rate) {
+                Some(seq) => {
+                    sequences += 1;
+                    (seq.media_path(), seq.name())
+                }
+                None => (path.clone(), path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+            };
+            if !items.iter().any(|(p, _)| *p == item.0) {
+                items.push(item);
+            }
+        }
+        for (path, name) in &items {
+            let (path, name) = (path, name.clone());
             if self.project.media.iter().any(|m| m.path == *path) {
                 continue;
             }
             match reelforge_media::probe(path) {
                 Ok(info) => {
                     let id = MediaId(self.project.alloc_id());
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let asset = MediaAsset { id, path: path.clone(), name, info };
                     self.compute_waveform(&asset);
                     self.execute(Box::new(ImportMedia(asset)));
@@ -415,7 +433,7 @@ impl Editor {
             }
         }
         if ok > 0 {
-            self.status = format!("Imported {ok} file(s)");
+            self.status = if sequences > 0 { format!("Imported {ok} item(s), including image sequences at {:.3} fps", self.seq().frame_rate.fps()).replace(".000 fps", " fps") } else { format!("Imported {ok} file(s)") };
         }
     }
 
@@ -1824,12 +1842,24 @@ impl Editor {
         let mut problems = Vec::new();
         for (old_path, new_path) in pairs {
             let Some(old) = self.project.media.iter().find(|m| m.path == old_path).cloned() else { continue };
+            // An image sequence is relinked by any of its frames, at the rate it had.
+            let mut seq_name = None;
+            let new_path = match reelforge_core::imageseq::rate_of(&old_path).filter(|_| reelforge_core::imageseq::is_sequence(&old_path)) {
+                Some(rate) => match reelforge_core::imageseq::detect(&new_path, rate) {
+                    Some(seq) => {
+                        seq_name = Some(seq.name());
+                        seq.media_path()
+                    }
+                    None => new_path,
+                },
+                None => new_path,
+            };
             match reelforge_media::probe(&new_path) {
                 Ok(info) => {
                     if old.info.video.is_some() != info.video.is_some() || old.info.audio.is_some() != info.audio.is_some() {
                         problems.push(format!("{} has different streams from the original", new_path.display()));
                     }
-                    let name = new_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let name = seq_name.unwrap_or_else(|| new_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
                     let new = MediaAsset { id: old.id, path: new_path, name, info };
                     cmds.push(Box::new(reelforge_core::undo::RelinkMedia { id: old.id, old, new }));
                 }
@@ -2647,6 +2677,43 @@ mod tests {
             .status()
             .is_ok_and(|s| s.success());
         ok.then_some(p)
+    }
+
+    #[test]
+    fn importing_a_frame_of_an_exr_sequence_brings_in_the_whole_sequence() {
+        let dir = std::env::temp_dir().join(format!("rf_import_seq_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24:duration=0.5", "-vf", "format=gbrapf32le", "-c:v", "exr", "-compression", "zip16", "-start_number", "1001"])
+            .arg(dir.join("plate_v3.%04d.exr"))
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return;
+        }
+        let mut e = editor();
+        e.project.sequences[0].frame_rate = reelforge_core::FrameRate::new(24, 1);
+        // Two frames of the same sequence picked: one item.
+        e.import(&[dir.join("plate_v3.1004.exr"), dir.join("plate_v3.1001.exr")]);
+        assert_eq!(e.project.media.len(), 1, "{}", e.status);
+        let m = e.project.media[0].clone();
+        assert_eq!(m.name, "plate_v3.[1001-1012].exr");
+        assert!(reelforge_core::imageseq::is_sequence(&m.path));
+        assert!((m.info.duration.as_secs_f64() - 0.5).abs() < 0.01, "{:?}", m.info.duration);
+        assert!(reelforge_core::undo::missing_media(&e.project).is_empty());
+        e.add_to_timeline(m.id, None, None);
+        let clip = &e.seq().tracks[0].clips[0];
+        assert_eq!(clip.duration.to_frame(reelforge_core::FrameRate::new(24, 1)), 12);
+        // Moved away: missing, then found again by name in the new folder.
+        let moved = dir.with_file_name(format!("rf_import_seq_moved_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&moved);
+        std::fs::rename(&dir, &moved).unwrap();
+        assert_eq!(reelforge_core::undo::missing_media(&e.project), vec![m.id]);
+        e.find_missing_in(&moved);
+        assert!(reelforge_core::undo::missing_media(&e.project).is_empty(), "{}", e.status);
+        assert!(e.project.media[0].path.starts_with(&moved));
+        std::fs::remove_dir_all(&moved).ok();
     }
 
     #[test]

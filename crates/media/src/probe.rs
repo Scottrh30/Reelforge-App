@@ -7,7 +7,7 @@ use std::path::Path;
 /// Open a file just long enough to read its streams and duration.
 pub fn probe(path: &Path) -> Result<MediaInfo> {
     init();
-    let ictx = ff::format::input(path).with_context(|| format!("cannot open {}", path.display()))?;
+    let ictx = crate::open_input(path).with_context(|| format!("cannot open {}", path.display()))?;
 
     let video = match ictx.streams().best(ff::media::Type::Video) {
         Some(st) => {

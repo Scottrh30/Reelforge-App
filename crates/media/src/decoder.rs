@@ -12,7 +12,7 @@ use anyhow::{anyhow, Context as _, Result};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
 use ffmpeg_next as ff;
 use ff::software::scaling::{context::Context as Scaler, flag::Flags};
-use reelforge_core::frame::{Pixels, YuvLayout, YuvMatrix, YuvPlanes};
+use reelforge_core::frame::{FloatPixels, Pixels, YuvLayout, YuvMatrix, YuvPlanes};
 use reelforge_core::{Rational, Time};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,6 +51,7 @@ impl VideoFrame {
         match &self.pixels {
             Pixels::Yuv(y) => y.luma(),
             Pixels::Rgba(b) => reelforge_core::track::luma_of_rgba(b),
+            Pixels::Float(f) => reelforge_core::track::luma_of_rgba(&f.to_rgba8()),
             Pixels::Gpu(g) => g.cpu().map(|y| y.luma()).unwrap_or_else(|| vec![0.0; g.width as usize * g.height as usize]),
         }
     }
@@ -277,7 +278,7 @@ enum Flow {
 
 impl DecodeState {
     fn open(path: &Path, max_size: Option<(u32, u32)>, eof: Arc<AtomicU64>) -> Result<Self> {
-        let ictx = ff::format::input(path).with_context(|| format!("cannot open {}", path.display()))?;
+        let ictx = crate::open_input(path).with_context(|| format!("cannot open {}", path.display()))?;
         let st = ictx.streams().best(ff::media::Type::Video).ok_or_else(|| anyhow!("no video stream"))?;
         let stream_index = st.index();
         let time_base = to_rational(st.time_base());
@@ -605,6 +606,11 @@ impl DecodeState {
         let space = crate::color::effective_space(src.color_space(), sh);
         let range = src.color_range();
 
+        // Floating point (OpenEXR) stays floating point, for the compositor's linear float pipeline.
+        if let Some(f) = float_frame(src, dw, dh) {
+            return Ok(VideoFrame { pts, width: f.width, height: f.height, pixels: Pixels::Float(Arc::new(f)), generation: self.generation });
+        }
+
         // 4:2:0 video stays YUV: the GPU converts it as it draws. Shrinking (for the
         // viewer) is a cheap YUV-to-YUV scale; no colour conversion happens here.
         if let Some(layout) = yuv_layout(fmt) {
@@ -645,6 +651,85 @@ impl DecodeState {
         }
         Ok(VideoFrame::from_rgba(pts, dw, dh, packed.into(), self.generation))
     }
+}
+
+/// A planar float frame (FFmpeg's `gbrp`/`gbrap`/`gray` in 32- or 16-bit
+/// float, as EXR decodes to) as half-float RGBA, resized to `dw`×`dh` if need
+/// be (bilinear). `None` for any other format.
+pub(crate) fn float_frame(src: &ff::frame::Video, dw: u32, dh: u32) -> Option<FloatPixels> {
+    use ff::format::Pixel as P;
+    use reelforge_core::frame::f32_to_f16;
+    // Planes holding R, G, B, A (FFmpeg's order is G, B, R, A).
+    let (rgb, alpha, half): ([usize; 3], Option<usize>, bool) = match src.format() {
+        P::GBRPF32LE => ([2, 0, 1], None, false),
+        P::GBRAPF32LE => ([2, 0, 1], Some(3), false),
+        P::GRAYF32LE => ([0, 0, 0], None, false),
+        P::GBRPF16LE => ([2, 0, 1], None, true),
+        P::GBRAPF16LE => ([2, 0, 1], Some(3), true),
+        P::GRAYF16LE => ([0, 0, 0], None, true),
+        _ => return None,
+    };
+    let (sw, sh) = (src.width() as usize, src.height() as usize);
+    let plane = |i: usize| -> (&[u8], usize) { (src.data(i), src.stride(i)) };
+    let at = |(d, stride): (&[u8], usize), x: usize, y: usize| -> f32 {
+        if half {
+            let i = y * stride + x * 2;
+            reelforge_core::frame::f16_to_f32(u16::from_le_bytes([d[i], d[i + 1]]))
+        } else {
+            let i = y * stride + x * 4;
+            f32::from_le_bytes([d[i], d[i + 1], d[i + 2], d[i + 3]])
+        }
+    };
+    let planes: Vec<(&[u8], usize)> = rgb.iter().chain(&alpha).map(|&i| plane(i)).collect();
+    let (dw, dh) = (dw as usize, dh as usize);
+    let mut out = Vec::with_capacity(dw * dh * 4);
+    if (dw, dh) == (sw, sh) && half {
+        // Half floats already: just interleave the planes (the bits are kept).
+        let one = f32_to_f16(1.0);
+        fn row<'a>(p: (&'a [u8], usize), y: usize, w: usize) -> &'a [u8] {
+            &p.0[y * p.1..y * p.1 + w * 2]
+        }
+        for y in 0..sh {
+            let (r, g, b) = (row(planes[0], y, sw), row(planes[1], y, sw), row(planes[2], y, sw));
+            let a = alpha.map(|_| row(planes[3], y, sw));
+            for x in 0..sw {
+                let px = |c: &[u8]| u16::from_le_bytes([c[x * 2], c[x * 2 + 1]]);
+                out.extend([px(r), px(g), px(b), a.map_or(one, px)]);
+            }
+        }
+    } else if (dw, dh) == (sw, sh) {
+        for y in 0..sh {
+            for x in 0..sw {
+                for p in &planes[..3] {
+                    out.push(f32_to_f16(at(*p, x, y)));
+                }
+                out.push(f32_to_f16(alpha.map_or(1.0, |_| at(planes[3], x, y))));
+            }
+        }
+    } else {
+        // Smaller for the viewer: bilinear, which is fine for premultiplied values.
+        let (kx, ky) = (sw as f32 / dw as f32, sh as f32 / dh as f32);
+        for y in 0..dh {
+            let fy = ((y as f32 + 0.5) * ky - 0.5).clamp(0.0, (sh - 1) as f32);
+            let (y0, ty) = (fy as usize, fy.fract());
+            let y1 = (y0 + 1).min(sh - 1);
+            for x in 0..dw {
+                let fx = ((x as f32 + 0.5) * kx - 0.5).clamp(0.0, (sw - 1) as f32);
+                let (x0, tx) = (fx as usize, fx.fract());
+                let x1 = (x0 + 1).min(sw - 1);
+                let sample = |p| {
+                    let top = at(p, x0, y0) * (1.0 - tx) + at(p, x1, y0) * tx;
+                    let bottom = at(p, x0, y1) * (1.0 - tx) + at(p, x1, y1) * tx;
+                    top * (1.0 - ty) + bottom * ty
+                };
+                for p in &planes[..3] {
+                    out.push(f32_to_f16(sample(*p)));
+                }
+                out.push(f32_to_f16(alpha.map_or(1.0, |_| sample(planes[3]))));
+            }
+        }
+    }
+    Some(FloatPixels { width: dw as u32, height: dh as u32, rgba: out })
 }
 
 /// The YUV-to-RGB matrix for a colour space.

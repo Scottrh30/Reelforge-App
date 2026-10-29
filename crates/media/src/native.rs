@@ -19,6 +19,7 @@ pub fn codec_of(id: ff::codec::Id) -> Option<Codec> {
         Id::VP9 => Codec::Vp9,
         Id::AV1 => Codec::Av1,
         Id::CFHD => Codec::Cineform,
+        Id::EXR => Codec::Exr,
         _ => return None,
     })
 }
@@ -98,6 +99,10 @@ fn pixel(f: Format) -> ff::format::Pixel {
         Format::Gbrp12 => P::GBRP12LE,
         Format::Gbrap12 => P::GBRAP12LE,
         Format::BayerRggb16 => P::BAYER_RGGB16LE,
+        Format::Gbrpf32 => P::GBRPF32LE,
+        Format::Gbrapf32 => P::GBRAPF32LE,
+        Format::Gbrpf16 => P::GBRPF16LE,
+        Format::Gbrapf16 => P::GBRAPF16LE,
     }
 }
 
@@ -361,7 +366,7 @@ mod tests {
     /// Every picture the native decoder makes of `path`'s video.
     fn native_pictures(path: &Path) -> Vec<reelforge_codecs::Picture> {
         crate::init();
-        let mut ictx = ff::format::input(&path).unwrap();
+        let mut ictx = crate::open_input(path).unwrap();
         let st = ictx.streams().best(ff::media::Type::Video).unwrap();
         let (index, params) = (st.index(), st.parameters());
         let mut nat = open(&params).unwrap();
@@ -375,6 +380,78 @@ mod tests {
         nat.dec.finish();
         out.extend(std::iter::from_fn(|| nat.dec.receive()));
         out
+    }
+
+    #[test]
+    fn exr_sequences_match_ffmpeg_and_play_as_clips() {
+        use reelforge_core::imageseq;
+        let dir = std::env::temp_dir().join(format!("rf-exrseq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut ran = 0;
+        for (sub, args) in [("zip", &["-compression", "zip16", "-format", "half"][..]), ("rle", &["-compression", "rle", "-format", "float"][..]), ("none", &["-compression", "none", "-format", "half"][..])] {
+            let d = dir.join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            let ok = std::process::Command::new("ffmpeg")
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24:duration=0.25", "-vf", "format=gbrapf32le", "-c:v", "exr"])
+                .args(args)
+                .args(["-start_number", "1001"])
+                .arg(d.join("plate.%04d.exr"))
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                eprintln!("{sub}: ffmpeg couldn't write EXRs, skipped");
+                continue;
+            }
+            let seq = imageseq::detect(&d.join("plate.1003.exr"), reelforge_core::Rational::new(24, 1)).unwrap();
+            assert_eq!((seq.first, seq.last), (1001, 1006));
+            let path = seq.media_path();
+            // Reelforge's decoder against FFmpeg's, sample for sample.
+            let ours = native_pictures(&path);
+            assert_eq!(ours.len(), 6, "{sub}");
+            let mut ictx = crate::open_input(&path).unwrap();
+            let st = ictx.streams().best(ff::media::Type::Video).unwrap();
+            let index = st.index();
+            let mut dec = ff::codec::context::Context::from_parameters(st.parameters()).unwrap().decoder().video().unwrap();
+            let mut theirs = Vec::new();
+            for (s, p) in ictx.packets() {
+                if s.index() == index {
+                    dec.send_packet(&p).unwrap();
+                    let mut f = ff::frame::Video::empty();
+                    while dec.receive_frame(&mut f).is_ok() {
+                        theirs.push(f.clone());
+                    }
+                }
+            }
+            assert_eq!(theirs.len(), 6);
+            for (a, b) in ours.iter().zip(&theirs) {
+                // Half-float files stay half floats in both decoders; float ones are 32-bit.
+                let half = b.format() == ff::format::Pixel::GBRAPF16LE;
+                assert!(half || b.format() == ff::format::Pixel::GBRAPF32LE, "{:?}", b.format());
+                assert_eq!(a.format, if half { reelforge_codecs::Format::Gbrapf16 } else { reelforge_codecs::Format::Gbrapf32 }, "{sub}");
+                let n = if half { 2 } else { 4 };
+                for p in 0..4 {
+                    for y in 0..90usize {
+                        let ra = &a.planes[p].data[y * a.planes[p].stride..y * a.planes[p].stride + 160 * n];
+                        let rb = &b.data(p)[y * b.stride(p)..y * b.stride(p) + 160 * n];
+                        assert!(ra == rb, "{sub}: plane {p} row {y} differs");
+                    }
+                }
+            }
+            // As a clip: 6 frames at 24 fps, float pictures with alpha.
+            let info = crate::probe(&path).unwrap();
+            let v = info.video.unwrap();
+            assert_eq!((v.width, v.height, v.frame_rate.0), (160, 90, reelforge_core::Rational::new(24, 1)));
+            assert!((info.duration.as_secs_f64() - 0.25).abs() < 0.01, "{:?}", info.duration);
+            let mut src = crate::FrameSource::open(&path, None).unwrap();
+            let f = src.frame_at_blocking(reelforge_core::Time::from_secs_f64(0.1), std::time::Duration::from_secs(5)).unwrap();
+            let reelforge_core::frame::Pixels::Float(fp) = &f.pixels else { panic!("not float: {:?}", f.pixels) };
+            assert_eq!((fp.width, fp.height), (160, 90));
+            assert!(fp.rgba.chunks_exact(4).all(|p| p[3] == reelforge_core::frame::f32_to_f16(1.0)));
+            ran += 1;
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(ran >= 2 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
     }
 
     /// PSNR of one plane of two 10-bit pictures.
