@@ -2,13 +2,17 @@
   // Edit > Plugins…: effect plugins (GPU shaders anyone can write). Install
   // from a folder or a .zip, make a new one from the template, remove, reload.
   import { app, run, say } from "../lib/session.svelte";
-  import { api, type PluginsView } from "../lib/api";
+  import { api, type OfxView, type PluginsView } from "../lib/api";
 
   let view = $state<PluginsView | null>(null);
+  let ofx = $state<OfxView | null>(null);
+  let tab = $state<"shaders" | "ofx">("shaders");
   let confirm = $state<string | null>(null);
 
   async function load() {
-    view = await api.pluginsList();
+    [view, ofx] = await Promise.all([api.pluginsList(), api.ofxList()]);
+    // A scan running in the background: look again shortly.
+    if (ofx.scanning) setTimeout(() => app.pluginsOpen && load(), 700);
   }
   $effect(() => {
     if (app.pluginsOpen) {
@@ -29,6 +33,7 @@
       app.pluginsOpen = false;
     }
   }
+  const ofxEffects = $derived(ofx?.bundles.reduce((n, b) => n + b.effects.length, 0) ?? 0);
   const ok = $derived(view?.entries.filter((e) => e.ok).length ?? 0);
   const bad = $derived((view?.entries.length ?? 0) - ok);
 </script>
@@ -40,10 +45,14 @@
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="pl-title">
       <header>
         <h2 id="pl-title">Plugins</h2>
-        <span class="muted">{ok} loaded{#if bad}, <span class="bad">{bad} with problems</span>{/if}</span>
+        <div class="tabs" role="tablist">
+          <button role="tab" class:on={tab === "shaders"} aria-selected={tab === "shaders"} onclick={() => (tab = "shaders")}>Shader plugins <span class="muted">{ok}</span>{#if bad}<span class="bad"> ⚠</span>{/if}</button>
+          <button role="tab" class:on={tab === "ofx"} aria-selected={tab === "ofx"} onclick={() => (tab = "ofx")}>OpenFX <span class="muted">{ofxEffects}</span></button>
+        </div>
         <span class="grow"></span>
         <button class="ghost close" onclick={() => (app.pluginsOpen = false)} aria-label="Close">✕</button>
       </header>
+      {#if tab === "shaders"}
       <p class="lead">Effect plugins are GPU shaders you can write yourself. They show up in the effects browser with the built-in effects. See PLUGINS.md next to Reelforge for how to write one.</p>
       <div class="tools">
         <button onclick={() => act(api.pluginsInstall(false))} title="A folder with a plugin.toml in it">Install from folder…</button>
@@ -90,6 +99,52 @@
           <p class="muted">No plugins yet. Put plugin folders in {view.folder}, or use Install or New plugin above.</p>
         {/each}
       </div>
+      {:else if ofx}
+      <p class="lead">OpenFX plugins (.ofx bundles, as used by Resolve, Nuke and Vegas) run on the picture before the other effects, on the processor. Their settings can be keyframed like any other.</p>
+      <div class="tools">
+        <button onclick={() => act(api.ofxAddFolder())} title="Search another folder for .ofx.bundle plugins">Add folder…</button>
+        <button onclick={() => run(api.ofxOpenFolder())} title={ofx.own_folder}>Open OpenFX folder</button>
+        <button onclick={() => act(api.ofxRescan())} disabled={ofx.scanning}>{ofx.scanning ? "Scanning…" : "Scan again"}</button>
+      </div>
+      <label class="check">
+        <input type="checkbox" checked={ofx.enabled} onchange={(e) => act(api.ofxEnable(e.currentTarget.checked))} />
+        Load OpenFX plugins <span class="muted">(they're programs: only install ones you trust)</span>
+      </label>
+      <div class="list">
+        <p class="muted small-text">Searched:</p>
+        {#each ofx.folders as f (f.path)}
+          <div class="top folder">
+            <span class="path" class:gone={!f.exists}>{f.path}</span>
+            <span class="muted small-text">{f.place}{f.exists ? "" : " · not there"}</span>
+            <span class="grow"></span>
+            {#if f.removable}<button class="small" onclick={() => act(api.ofxRemoveFolder(f.path))}>Remove</button>{/if}
+          </div>
+        {/each}
+        {#each ofx.bundles as b (b.path)}
+          <div class="item" class:broken={b.blocked || (b.effects.length === 0 && b.errors.length > 0)}>
+            <div class="top">
+              <span class="name">{b.name}</span>
+              {#if b.blocked}
+                <span class="state bad">⚠ skipped: it crashed Reelforge last time</span>
+                <span class="grow"></span>
+                <button class="small" onclick={() => act(api.ofxUnblock(b.path))} title="Load it again (if it crashes again, it's skipped again)">Try again</button>
+              {:else if b.effects.length}
+                <span class="state good">✓ {b.effects.length} effect{b.effects.length === 1 ? "" : "s"}</span>
+              {:else}
+                <span class="state bad">⚠ not loaded</span>
+              {/if}
+            </div>
+            {#if b.effects.length}
+              <p class="small-text">{b.effects.map((e) => e.name).join(", ")}</p>
+            {/if}
+            {#each b.errors as err}<pre>{err}</pre>{/each}
+            <p class="muted small-text path">{b.path}</p>
+          </div>
+        {:else}
+          <p class="muted">{ofx.scanning ? "Looking for plugins…" : ofx.enabled ? `No OpenFX plugins found. Install some, or put .ofx.bundle folders in ${ofx.own_folder}.` : "OpenFX plugins are switched off."}</p>
+        {/each}
+      </div>
+      {/if}
       <footer>
         <span class="grow"></span>
         <button class="primary" onclick={() => (app.pluginsOpen = false)}>Done</button>
@@ -131,6 +186,27 @@
   }
   .close {
     align-self: center;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    align-self: center;
+  }
+  .tabs button {
+    min-height: 24px;
+    padding: 0 10px;
+    border-radius: 12px;
+    background: transparent;
+  }
+  .tabs button.on {
+    background: var(--well);
+    border-color: var(--accent, var(--line));
+  }
+  .folder {
+    padding: 0 2px;
+  }
+  .gone {
+    text-decoration: line-through;
   }
   .lead {
     margin: 0;

@@ -89,17 +89,20 @@ pub struct Scene {
     /// Counts top-level renders, to let go of compositions not seen for a while.
     tick: u64,
     generation: u64,
+    /// Runs clips' OpenFX effects.
+    ofx: crate::ofxhost::OfxRunner,
 }
 
 impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0 }
+        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default() }
     }
 
     /// Forget composition renders (e.g. a different project was opened).
     pub fn reset(&mut self) {
         self.nested.clear();
         self.masks.clear();
+        self.ofx.clear();
     }
 
     /// Render sequence `seq` at time `t` into `compositor`. Returns a
@@ -120,6 +123,7 @@ impl Scene {
         // Compositions off screen for a few seconds give their GPU memory back.
         self.nested.retain(|_, n| tick - n.last_used < 150);
         self.masks.retain(|_, m| tick - m.2 < 150);
+        self.ofx.trim(600);
         Ok(sig)
     }
 
@@ -136,14 +140,15 @@ impl Scene {
     ) -> Result<u64> {
         let Some(s) = project.sequences.get(seq) else { return Ok(0) };
         let frame_size = [s.width.max(2), s.height.max(2)];
+        let fps = s.frame_rate.fps();
         // The camera and lights, for 3D layers.
         let scene3d = project.scene3d_at(seq, t);
         let mut items = Vec::new();
         for item in project.video_layers_at(seq, t) {
             match item {
-                VideoItem::Single(l) => items.extend(self.gather(project, &l, t, frame_size, &scene3d, provider, depth)?.map(Item::Single)),
+                VideoItem::Single(l) => items.extend(self.gather(project, &l, t, frame_size, fps, &scene3d, provider, depth)?.map(Item::Single)),
                 VideoItem::Dissolve { from, to, mix, kind } => {
-                    match (self.gather(project, &from, t, frame_size, &scene3d, provider, depth)?, self.gather(project, &to, t, frame_size, &scene3d, provider, depth)?) {
+                    match (self.gather(project, &from, t, frame_size, fps, &scene3d, provider, depth)?, self.gather(project, &to, t, frame_size, fps, &scene3d, provider, depth)?) {
                         (Some(mut a), Some(mut b)) => {
                             if a.adjustment || b.adjustment {
                                 // An adjustment fades in or out: one after the other, by opacity.
@@ -200,7 +205,7 @@ impl Scene {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn gather(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Gathered>> {
+    fn gather(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], fps: f64, scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Gathered>> {
         let full = [frame_size[0] as f32, frame_size[1] as f32];
         if let Some(spec) = l.clip.title.as_ref().filter(|s| s.is_3d() && l.clip.nested.is_none() && !l.clip.adjustment) {
             if l.transform.pin.is_none() && l.clip.mesh_at(t).is_none() {
@@ -218,7 +223,24 @@ impl Scene {
             (Some(inner), _) => self.nested_picture(project, l.clip.id, inner, l.source_time, provider, depth)?,
             (None, _) => provider.picture(project, l, frame_size)?,
         };
-        let Some(picture) = picture else { return Ok(None) };
+        let Some(mut picture) = picture else { return Ok(None) };
+        // OpenFX effects run on the picture first, on the CPU (not on an
+        // adjustment layer, which has no picture of its own).
+        if !l.clip.adjustment {
+            let steps = reelforge_core::ofx::steps(&l.clip.effects, l.clip.source_time(t));
+            if !steps.is_empty() {
+                let mut mh = DefaultHasher::new();
+                picture.media.hash(&mut mh);
+                // A plane is one pixel stretched: plugins get it at full size.
+                if picture.frame.width * picture.frame.height == 1 {
+                    let [w, h] = picture.size.map(|v| (v.round() as u32).clamp(1, 8192));
+                    let one = picture.frame.rgba();
+                    let rgba: Vec<u8> = one.iter().copied().cycle().take(w as usize * h as usize * 4).collect();
+                    picture.frame = VideoFrame::from_rgba(picture.frame.pts, w, h, Arc::from(rgba), picture.frame.generation);
+                }
+                picture.frame = self.ofx.apply(l.clip.id, &steps, &picture.frame, mh.finish(), fps);
+            }
+        }
         let mask = self.mask_for(l.clip, l.clip.source_time(t), picture.size);
         // Keyed to the clip's own time, like its transform (a still's media time is always 0).
         if l.clip.adjustment {
@@ -430,6 +452,11 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
             if let Some(p) = &e.plugin {
                 p.revision.hash(h);
                 e.time.to_bits().hash(h);
+            }
+        }
+        if !clip.adjustment {
+            for st in reelforge_core::ofx::steps(&clip.effects, clip.source_time(t)) {
+                st.hash_into(h);
             }
         }
         if mask::any_active(&clip.masks) {

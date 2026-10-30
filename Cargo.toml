@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/codecs", "crates/bitstream", "crates/h264", "crates/hevc", "crates/vp9", "crates/av1", "crates/testkit", "crates/media", "crates/render", "crates/export", "crates/engine", "crates/tauri-app"]
+members = ["crates/core", "crates/codecs", "crates/bitstream", "crates/h264", "crates/hevc", "crates/vp9", "crates/av1", "crates/testkit", "crates/ofx", "crates/media", "crates/render", "crates/export", "crates/engine", "crates/tauri-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,7 @@ reelforge-media = { path = "crates/media" }
 reelforge-render = { path = "crates/render" }
 reelforge-export = { path = "crates/export" }
 reelforge-engine = { path = "crates/engine" }
+reelforge-ofx = { path = "crates/ofx" }
 
 anyhow = "1"
 log = "0.4"

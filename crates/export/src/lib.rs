@@ -17,6 +17,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+pub mod ofxhost;
 pub mod scene;
 pub use scene::{frame_recipe, FrameProvider, Picture, Scene};
 

@@ -15,6 +15,7 @@ mod webview2_shim;
 mod diag;
 mod export;
 mod fx;
+mod openfx;
 mod keys;
 mod ops;
 mod trans;
@@ -1020,6 +1021,7 @@ fn main() {
                 let _ = SETTINGS_PATH.set(path);
             }
             fx::startup(&mut e);
+            openfx::startup();
             e.start_session();
             e.status = "Import media with File > Import, or drop files onto the window.".into();
             // `reelforge project.rfproj` opens it; media files are imported and laid out.
@@ -1139,6 +1141,13 @@ fn main() {
             fx::plugins_remove,
             fx::plugins_reload,
             fx::plugins_live,
+            openfx::ofx_list,
+            openfx::ofx_rescan,
+            openfx::ofx_enable,
+            openfx::ofx_add_folder,
+            openfx::ofx_remove_folder,
+            openfx::ofx_unblock,
+            openfx::ofx_open_folder,
             fx::open_folder,
             keys::transform_key,
             keys::key_move,

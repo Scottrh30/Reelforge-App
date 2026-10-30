@@ -211,3 +211,45 @@ semi-transparent edges get dark fringes. Set `premultiplied = true` in plugin.to
 | `another plugin with the same id` | Two folders have the same `id`. Change one. |
 | `plugin.toml: unknown field …` / `missing field …` | A typo in plugin.toml: compare with the example at the top. |
 | The effect does nothing | Is it enabled (the tick box in the Controls panel)? Are the parameters at values that change something? Is the clip selected at a time inside it? |
+
+## OpenFX plugins
+
+Reelforge also runs **OpenFX** plugins: compiled image effects sold or shared as
+`.ofx.bundle` folders for Resolve, Nuke, Vegas, HitFilm and others. You don't write these
+here; you install them as their makers say, and Reelforge finds them.
+
+**Where it looks** (Edit → Plugins… → OpenFX lists them):
+
+- the standard place: `C:\Program Files\Common Files\OFX\Plugins` on Windows,
+  `/Library/OFX/Plugins` on macOS, `/usr/OFX/Plugins` on Linux;
+- every folder in the `OFX_PLUGIN_PATH` environment variable;
+- Reelforge's own OpenFX folder (**Open OpenFX folder**): drop bundles in and **Scan again**;
+- folders you add with **Add folder…** (and folders below them, three deep).
+
+**In the effects browser** each plugin is listed under **OpenFX** by its own name, with its
+group (e.g. "Sapphire Blurs") as the author line. On a clip:
+
+- numbers, checkboxes, menus and colours become effect settings you can keyframe;
+- positions and sizes a plugin gives as a fraction of the frame show as **%** of the frame;
+- a colour with alpha gets a second setting, its opacity;
+- text settings, buttons, custom data and hidden settings keep the plugin's defaults.
+
+**How they run.** OpenFX effects run first, on the processor, on the clip's own picture (a
+plane at full frame size), in the order they're stacked; then the built-in and shader
+effects run on the graphics card. The plugin sees RGBA in 32-bit float (or the depth it
+asks for), premultiplied, sRGB-encoded; values above 1 from HDR or EXR footage are kept. Each
+effect on each clip has its own plugin instance, so plugins that keep state between frames
+work. Plugins get the time, the frame rate and the whole frame. Adjustment layers skip
+OpenFX effects.
+
+**Not offered yet**: on-screen controls (overlays), OpenGL/CUDA/Metal rendering, reading
+other frames (temporal effects like most noise reducers need this), and the Generator,
+Transition and Retimer contexts. A plugin that needs one of these may refuse to load or
+render nothing; the window shows its message.
+
+**Safety.** An OpenFX plugin is a program running inside Reelforge. If one crashes Reelforge
+while loading, Reelforge notices at the next start and skips that bundle (marked "skipped:
+it crashed Reelforge last time", with **Try again**). The tick box **Load OpenFX plugins**
+turns them all off. A project using a plugin that isn't installed still opens: the effect is
+skipped and keeps its settings.
+

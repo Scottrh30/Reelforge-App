@@ -42,6 +42,9 @@ pub enum EffectKind {
     Lut,
     /// An installed plugin (which one is in `Effect::plugin`; see [`crate::plugin`]).
     Plugin,
+    /// An installed OpenFX plugin (which one is in `Effect::plugin`; see
+    /// [`crate::ofx`]). Run on the CPU before the other effects.
+    OpenFx,
     /// A glowing energy blade (a light sword) drawn from a hilt point to a tip
     /// point, with a hot core, coloured glow, flicker and motion blur.
     EnergyBlade,
@@ -80,10 +83,12 @@ pub enum EffectCategory {
     Distort,
     /// Plugins that didn't name a category.
     Plugins,
+    /// OpenFX plugins (Sapphire, Neat Video, BorisFX, the OpenFX Misc set…).
+    OpenFx,
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 6] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Distort, EffectCategory::Plugins];
+    pub const ALL: [EffectCategory; 7] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Distort, EffectCategory::Plugins, EffectCategory::OpenFx];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
@@ -92,6 +97,7 @@ impl EffectCategory {
             EffectCategory::Stylize => "Light & stylize",
             EffectCategory::Distort => "Distort",
             EffectCategory::Plugins => "Other plugins",
+            EffectCategory::OpenFx => "OpenFX",
         }
     }
 }
@@ -502,6 +508,7 @@ impl EffectKind {
             EffectKind::DropShadow => "Drop shadow",
             EffectKind::Lut => "LUT (.cube)",
             EffectKind::Plugin => "Plugin",
+            EffectKind::OpenFx => "OpenFX plugin",
             EffectKind::EnergyBlade => "Energy blade",
             EffectKind::Particles => "Particles",
             EffectKind::LensFlare => "Lens flare",
@@ -525,6 +532,7 @@ impl EffectKind {
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain => EffectCategory::Stylize,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
+            EffectKind::OpenFx => EffectCategory::OpenFx,
         }
     }
 
@@ -542,6 +550,7 @@ impl EffectKind {
             EffectKind::DropShadow => "A soft shadow behind a title, logo or keyed subject.",
             EffectKind::Vignette => "Darken the edges to draw the eye to the middle.",
             EffectKind::Plugin => "An installed plugin.",
+            EffectKind::OpenFx => "An installed OpenFX plugin.",
             EffectKind::EnergyBlade => "A glowing light-sword blade with a hot core, flicker and motion blur. Drag its hilt and tip in the Viewer, or attach it to a track.",
             EffectKind::Particles => "An emitter of sparks, embers, dust, snow or magic, drawn on the GPU. Drag the emitter in the Viewer; every setting can be keyframed.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
@@ -580,7 +589,7 @@ impl EffectKind {
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
             // A plugin's parameters depend on which plugin: see `Effect::param_specs`.
-            EffectKind::Plugin => &[],
+            EffectKind::Plugin | EffectKind::OpenFx => &[],
         }
     }
 }
@@ -589,7 +598,7 @@ impl EffectKind {
     /// Does the picture change with time even when the settings don't
     /// (flicker, shake, grain…)? Then every frame has to be drawn.
     pub fn animates_with_time(self) -> bool {
-        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks)
+        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::OpenFx)
     }
 
     /// Headings to show above some parameters, as (first parameter, heading).
@@ -664,6 +673,8 @@ impl EffectValues {
             EffectKind::DropShadow => v[3] == 0.0,
             // Missing plugins are skipped.
             EffectKind::Plugin => self.plugin.is_none(),
+            // Run on the CPU before the GPU effects (see `crate::ofx`).
+            EffectKind::OpenFx => true,
             EffectKind::LensFlare => v[flare::BRIGHTNESS] == 0.0,
             EffectKind::CameraShake => v[shake::AMOUNT] == 0.0 && v[shake::ROTATION] == 0.0 && v[shake::ZOOM] == 100.0,
             EffectKind::ChromaticAberration => v[aberration::AMOUNT] == 0.0,
@@ -698,21 +709,54 @@ impl Effect {
         }
     }
 
+    /// An effect running an installed OpenFX plugin, with its default settings.
+    pub fn new_ofx(def: &crate::ofx::OfxDef) -> Self {
+        Self {
+            kind: EffectKind::OpenFx,
+            enabled: true,
+            params: def.params.iter().map(|s| Param { value: s.default, keys: Curve::default() }).collect(),
+            data: None,
+            plugin: Some(crate::plugin::PluginRef { id: def.id.clone(), name: def.name.clone() }),
+        }
+    }
+
     /// The installed plugin this effect runs (`None` for built-in effects, or
     /// a plugin that isn't installed).
     pub fn plugin_def(&self) -> Option<Arc<crate::plugin::PluginDef>> {
+        if self.kind != EffectKind::Plugin {
+            return None;
+        }
         self.plugin.as_ref().and_then(|p| crate::plugin::find(&p.id))
     }
 
-    /// For a plugin effect: is its plugin installed?
+    /// The installed OpenFX plugin this effect runs.
+    pub fn ofx_def(&self) -> Option<Arc<crate::ofx::OfxDef>> {
+        if self.kind != EffectKind::OpenFx {
+            return None;
+        }
+        self.plugin.as_ref().and_then(|p| crate::ofx::find(&p.id))
+    }
+
+    /// For a plugin effect (either kind): is its plugin installed? True for
+    /// built-in effects.
     pub fn plugin_installed(&self) -> bool {
-        self.plugin_def().is_some()
+        match self.kind {
+            EffectKind::Plugin => self.plugin_def().is_some(),
+            EffectKind::OpenFx => self.ofx_def().is_some(),
+            _ => true,
+        }
+    }
+
+    /// A plugin effect whose plugin isn't installed.
+    pub fn plugin_missing(&self) -> bool {
+        !self.plugin_installed()
     }
 
     /// What to call it: the effect's name, or the plugin's.
     pub fn label(&self) -> String {
         match (self.kind, &self.plugin) {
             (EffectKind::Plugin, Some(p)) => self.plugin_def().map_or_else(|| p.name.clone(), |d| d.name.clone()),
+            (EffectKind::OpenFx, Some(p)) => self.ofx_def().map_or_else(|| p.name.clone(), |d| d.name.clone()),
             _ => self.kind.label().to_string(),
         }
     }
@@ -721,6 +765,7 @@ impl Effect {
     pub fn param_specs(&self) -> &'static [ParamSpec] {
         match self.kind {
             EffectKind::Plugin => self.plugin_def().map_or(&[], |d| d.params),
+            EffectKind::OpenFx => self.ofx_def().map_or(&[], |d| d.params),
             k => k.params(),
         }
     }
@@ -791,7 +836,7 @@ impl Effect {
     /// Make sure there's a `Param` for every parameter the kind defines.
     pub fn normalize(&mut self) {
         // A plugin that isn't installed: keep what's there for when it is.
-        if self.kind == EffectKind::Plugin && !self.plugin_installed() {
+        if self.plugin_missing() {
             return;
         }
         let specs = self.param_specs();

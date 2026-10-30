@@ -3345,6 +3345,7 @@ dependencies = [
  "log",
  "reelforge-core",
  "reelforge-media",
+ "reelforge-ofx",
  "reelforge-render",
 ]
 
@@ -3384,6 +3385,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "reelforge-ofx"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libloading 0.8.9",
+ "log",
+]
+
+[[package]]
 name = "reelforge-render"
 version = "0.1.0"
 dependencies = [
@@ -3410,6 +3420,7 @@ dependencies = [
  "reelforge-engine",
  "reelforge-export",
  "reelforge-media",
+ "reelforge-ofx",
  "reelforge-render",
  "rfd",
  "serde",

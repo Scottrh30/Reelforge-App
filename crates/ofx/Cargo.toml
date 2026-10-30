@@ -1,0 +1,13 @@
+[package]
+name = "reelforge-ofx"
+description = "An OpenFX image effect plugin host: loads .ofx plugins and renders frames with them on the CPU."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libloading = "0.8"
+log = { workspace = true }
+
+[build-dependencies]
+cc = "1"

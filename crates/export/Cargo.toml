@@ -9,6 +9,7 @@ license.workspace = true
 reelforge-core.workspace = true
 reelforge-media.workspace = true
 reelforge-render.workspace = true
+reelforge-ofx.workspace = true
 anyhow.workspace = true
 log.workspace = true
 

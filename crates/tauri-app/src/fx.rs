@@ -26,7 +26,7 @@ fn plugins<R>(f: impl FnOnce(&mut PluginManager) -> R) -> R {
     PLUGINS.with(|p| f(&mut p.borrow_mut()))
 }
 
-fn changed() {
+pub(crate) fn changed() {
     PLUGINS_REV.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -146,7 +146,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 kind: fx.kind,
                 enabled: fx.enabled,
                 plugin: fx.plugin.as_ref().map(|p| p.id.clone()),
-                missing: fx.kind == EffectKind::Plugin && !fx.plugin_installed(),
+                missing: fx.plugin_missing(),
                 animated: fx.is_animated(),
                 params,
                 curves,
@@ -174,8 +174,9 @@ pub(crate) fn edit<R>(e: &mut Editor, id: u64, f: impl FnOnce(&mut Vec<Effect>, 
 #[tauri::command]
 pub fn effect_add(id: u64, kind: EffectKind, plugin: Option<String>) -> Res<()> {
     let fx = match plugin {
+        Some(pid) if kind == EffectKind::OpenFx => Effect::new_ofx(&*reelforge_core::ofx::find(&pid).ok_or_else(|| format!("The OpenFX plugin \"{pid}\" isn't installed"))?),
         Some(pid) => Effect::new_plugin(&*reelforge_core::plugin::find(&pid).ok_or_else(|| format!("The plugin \"{pid}\" isn't installed"))?),
-        None if kind == EffectKind::Plugin => return Err("no plugin given".into()),
+        None if matches!(kind, EffectKind::Plugin | EffectKind::OpenFx) => return Err("no plugin given".into()),
         None => Effect::new(kind),
     };
     ed(|e| {
@@ -227,10 +228,11 @@ pub fn effect_op(id: u64, index: usize, op: String) -> Res<()> {
                 }
                 "reset" => {
                     let fx = &mut list[index];
-                    if fx.kind != EffectKind::Plugin || fx.plugin_installed() {
-                        let fresh = match fx.plugin_def() {
-                            Some(d) => Effect::new_plugin(&d),
-                            None => Effect::new(fx.kind),
+                    if fx.plugin_installed() {
+                        let fresh = match (fx.plugin_def(), fx.ofx_def()) {
+                            (Some(d), _) => Effect::new_plugin(&d),
+                            (_, Some(d)) => Effect::new_ofx(&d),
+                            _ => Effect::new(fx.kind),
                         };
                         let data = if fx.kind == EffectKind::Lut { fx.data.take() } else { fresh.data.clone() };
                         let light_kind = fx.value_at(reelforge_core::effects::light::KIND, Time::ZERO);
@@ -486,6 +488,8 @@ pub struct CatalogItem {
 #[tauri::command]
 pub fn effect_catalog() -> Vec<CatalogGroup> {
     let installed = reelforge_core::plugin::installed();
+    let mut ofx = reelforge_core::ofx::installed();
+    ofx.sort_by(|a, b| (a.group.to_lowercase(), a.name.to_lowercase()).cmp(&(b.group.to_lowercase(), b.name.to_lowercase())));
     EffectCategory::ALL
         .into_iter()
         .map(|cat| {
@@ -502,6 +506,16 @@ pub fn effect_catalog() -> Vec<CatalogGroup> {
                 author: p.author.clone(),
                 version: p.version.clone(),
             }));
+            if cat == EffectCategory::OpenFx {
+                items.extend(ofx.iter().map(|d| CatalogItem {
+                    kind: EffectKind::OpenFx,
+                    plugin: Some(d.id.clone()),
+                    label: d.name.clone(),
+                    description: if d.description.is_empty() { format!("An OpenFX plugin ({})", d.group) } else { d.description.clone() },
+                    author: d.group.clone(),
+                    version: d.version.clone(),
+                }));
+            }
             CatalogGroup { label: cat.label(), items }
         })
         .filter(|g| !g.items.is_empty())

@@ -16,6 +16,7 @@ pub mod frame;
 pub mod imageseq;
 pub mod lut;
 pub mod mask;
+pub mod ofx;
 pub mod particles;
 pub mod plugin;
 pub mod project;

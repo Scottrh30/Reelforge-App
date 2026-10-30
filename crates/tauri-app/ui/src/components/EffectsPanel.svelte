@@ -141,6 +141,7 @@
           <span class="chev" class:shut={folded[key]} aria-hidden="true">▾</span>
           <span class="name">{fx.label}</span>
           {#if fx.kind === "Plugin"}<span class="tag">plugin</span>{/if}
+          {#if fx.kind === "OpenFx"}<span class="tag" title="An OpenFX plugin: runs on the picture before the other effects">OpenFX</span>{/if}
           {#if fx.animated}<span class="tag keyed" title="Some settings are keyframed">◆</span>{/if}
         </button>
         {#if !scene}

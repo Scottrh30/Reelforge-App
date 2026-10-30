@@ -402,7 +402,7 @@ export interface ViewerFeedback {
 
 // ---- Effects ----
 
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks";
 
 export interface Curves {
   master: Pt[];
@@ -475,6 +475,14 @@ export interface PluginsView {
   entries: PluginView[];
   live_reload: boolean;
   folder: string;
+}
+
+export interface OfxView {
+  enabled: boolean;
+  scanning: boolean;
+  folders: { path: string; place: string; exists: boolean; removable: boolean }[];
+  bundles: { path: string; name: string; effects: { name: string; group: string; version: string; params: number }[]; errors: string[]; blocked: boolean }[];
+  own_folder: string;
 }
 
 // ---- Export ----
@@ -735,6 +743,13 @@ export const api = {
   pluginsReload: () => invoke<string>("plugins_reload"),
   pluginsLive: (on: boolean) => invoke("plugins_live", { on }),
   openFolder: (path: string) => invoke("open_folder", { path }),
+  ofxList: () => invoke<OfxView>("ofx_list"),
+  ofxRescan: () => invoke<string>("ofx_rescan"),
+  ofxEnable: (on: boolean) => invoke<string>("ofx_enable", { on }),
+  ofxAddFolder: () => invoke<string | null>("ofx_add_folder"),
+  ofxRemoveFolder: (path: string) => invoke<string>("ofx_remove_folder", { path }),
+  ofxUnblock: (path: string) => invoke<string>("ofx_unblock", { path }),
+  ofxOpenFolder: () => invoke("ofx_open_folder"),
   transformKey: (id: number, prop: string) => invoke("transform_key", { id, prop }),
   keyMove: (id: number, channel: string, index: number, at: Ticks, value: number, keepTime: boolean) => invoke<number | null>("key_move", { id, channel, index, at: Math.round(at), value, keepTime }),
   keyInterp: (id: number, channel: string, index: number, interp: Interp) => invoke("key_interp", { id, channel, index, interp }),

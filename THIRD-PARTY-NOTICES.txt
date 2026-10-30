@@ -54,6 +54,14 @@ Apache-2.0, Copyright (c) The Rust Project Developers. The Windows build links
 the MinGW-w64 runtime (winpthreads: MIT/BSD-style; libgcc under the GCC Runtime
 Library Exception), whose notices allow this without further requirements.
 
+OpenFX
+------
+
+Reelforge's OpenFX host follows the OpenFX standard's API headers (BSD-3-Clause,
+Copyright OpenFX and contributors to the OpenFX project, now the Academy Software
+Foundation; https://github.com/AcademySoftwareFoundation/openfx). Its data
+layouts and names come from them; no OpenFX code is built in.
+
 Source code: every library below can be had from its repository (listed
 beside it) or from crates.io / npmjs.com at the version given. That includes
 the MPL-2.0 ones (cssparser, selectors, dtoa-short, option-ext), used unchanged.

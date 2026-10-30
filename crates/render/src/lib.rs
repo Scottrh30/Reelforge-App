@@ -1144,7 +1144,7 @@ impl Compositor {
                         cur = o1;
                     }
                     // Camera and light settings are never drawn (they're filtered out earlier).
-                    EffectKind::Camera | EffectKind::Light | EffectKind::Point => {}
+                    EffectKind::Camera | EffectKind::Light | EffectKind::Point | EffectKind::OpenFx => {}
                     EffectKind::EnergyBlade => {
                         // A seed per blade (its place in the stack) so two blades flicker apart.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);

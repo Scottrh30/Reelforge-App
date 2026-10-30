@@ -468,6 +468,18 @@ What works now:
   still opens; that effect is skipped and keeps its settings. Five examples ship in
   `plugins/` (RGB Split, Film Grain, Mosaic, Bloom, Wave Warp). **See [PLUGINS.md](PLUGINS.md)
   for how to write one**
+- **OpenFX plugins**: Reelforge hosts OpenFX image effects (`.ofx.bundle`, the plugin format of
+  Resolve, Nuke, Vegas and HitFilm). It looks in the standard folder (`C:\Program Files\Common
+  Files\OFX\Plugins` on Windows), the `OFX_PLUGIN_PATH` folders, its own OpenFX folder and any
+  you add in **Edit → Plugins… → OpenFX**; what it finds shows in the effects browser under
+  **OpenFX**, by the plugin's own name. Their settings become ordinary effect settings
+  (numbers, checkboxes, menus, colours; positions as % of the frame) with keyframes, undo and
+  paste attributes. They run on the picture first, on the processor, in 32-bit float
+  (premultiplied, sRGB-encoded, values above 1 kept), before the built-in effects; the Viewer
+  and export both use them. Plugins load in the background at startup; one that crashes
+  Reelforge while loading is skipped the next time (with **Try again** in the window). Not
+  offered yet: on-screen controls, GPU rendering, reading other frames, generators and
+  transitions. Details in [PLUGINS.md](PLUGINS.md#openfx-plugins)
 - **Collect project** (**File → Collect project…**): copies the project and every file it uses
   (video, audio, images, LUT files and the fonts titles use) into one folder, in `Media`,
   `LUTs` and `Fonts` subfolders next to the project file, with a progress bar and Stop. Files
@@ -680,6 +692,8 @@ crates/
   export/  Scene building shared by viewer and export (incl. compositions), the audio mix
            list, and offline render: exact frames -> compositor -> MovieWriter, with
            progress/cancel. Runs headless (tests use it without a window).
+  ofx/     The OpenFX host: loads .ofx bundles, describes their parameters and renders
+           frames with them (the suites in Rust, the C-variadic calls in a small C shim).
   engine/  Everything an interface needs that isn't drawing: the editor model (Editor:
            project, undo, selection, live edits, import, save/open), playback and the cpal
            audio engine, the viewer picture (Preview), render cache, proxies, autosave and
