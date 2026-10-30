@@ -13,26 +13,50 @@
 
 use std::sync::Arc;
 
-/// How the planes are laid out. All are 4:2:0.
+/// How finely colour (U and V) is sampled against brightness (Y).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Chroma {
+    /// Half width, half height (most video).
+    C420,
+    /// Half width, full height (ProRes 422, DNxHR, XAVC Intra).
+    C422,
+    /// Full resolution (ProRes 4444, DNxHR 444).
+    C444,
+}
+
+impl Chroma {
+    /// log2 of the (horizontal, vertical) subsampling.
+    pub fn shift(self) -> (u32, u32) {
+        match self {
+            Chroma::C420 => (1, 1),
+            Chroma::C422 => (1, 0),
+            Chroma::C444 => (0, 0),
+        }
+    }
+}
+
+/// How the planes are laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum YuvLayout {
-    /// 8-bit Y, U, V planes (`yuv420p`; software decoders).
-    I420,
-    /// 8-bit Y plane and interleaved UV (`nv12`; hardware decoders).
+    /// 8-bit Y plane and interleaved 4:2:0 UV (`nv12`; hardware decoders).
     Nv12,
-    /// 10-bit Y, U, V planes, little-endian 16-bit words, value in the low bits (`yuv420p10le`).
-    I420P10,
-    /// 10-bit Y and interleaved UV, value in the high bits of each word (`p010le`; hardware decoders).
+    /// 10-bit Y and interleaved 4:2:0 UV, value in the high bits of each word (`p010le`; hardware decoders).
     P010,
+    /// Separate Y, U, V planes (and A, with `alpha`), of `bits` 8–16: one
+    /// byte per sample at 8 bits, else little-endian 16-bit words with the
+    /// value in the low bits (`yuv422p10le`, `yuva444p12le`…).
+    Planar { bits: u8, chroma: Chroma, alpha: bool },
 }
 
 impl YuvLayout {
+    /// 8-bit 4:2:0 planes (`yuv420p`; software decoders).
+    pub const I420: YuvLayout = YuvLayout::Planar { bits: 8, chroma: Chroma::C420, alpha: false };
+    /// 10-bit 4:2:0 planes (`yuv420p10le`).
+    pub const I420P10: YuvLayout = YuvLayout::Planar { bits: 10, chroma: Chroma::C420, alpha: false };
+
     /// Bytes per sample.
     pub fn sample_bytes(self) -> usize {
-        match self {
-            YuvLayout::I420 | YuvLayout::Nv12 => 1,
-            YuvLayout::I420P10 | YuvLayout::P010 => 2,
-        }
+        if self.bits() > 8 { 2 } else { 1 }
     }
     /// U and V share one interleaved plane.
     pub fn interleaved(self) -> bool {
@@ -41,13 +65,37 @@ impl YuvLayout {
     /// Significant bits per sample.
     pub fn bits(self) -> u32 {
         match self {
-            YuvLayout::I420 | YuvLayout::Nv12 => 8,
-            YuvLayout::I420P10 | YuvLayout::P010 => 10,
+            YuvLayout::Nv12 => 8,
+            YuvLayout::P010 => 10,
+            YuvLayout::Planar { bits, .. } => bits as u32,
         }
     }
     /// How far the value is shifted up inside its word.
     pub fn shift(self) -> u32 {
         if self == YuvLayout::P010 { 6 } else { 0 }
+    }
+    pub fn chroma(self) -> Chroma {
+        match self {
+            YuvLayout::Planar { chroma, .. } => chroma,
+            _ => Chroma::C420,
+        }
+    }
+    /// There's an alpha plane (the last one).
+    pub fn alpha(self) -> bool {
+        matches!(self, YuvLayout::Planar { alpha: true, .. })
+    }
+    /// More than 8 bits: worth keeping in floating point all the way.
+    pub fn deep(self) -> bool {
+        self.bits() > 8
+    }
+    /// How many planes.
+    pub fn planes(self) -> usize {
+        if self.interleaved() { 2 } else { 3 + self.alpha() as usize }
+    }
+    /// Chroma plane size in samples, for a `width`×`height` picture.
+    pub fn chroma_size(self, width: u32, height: u32) -> (u32, u32) {
+        let (sx, sy) = self.chroma().shift();
+        (width.div_ceil(1 << sx), height.div_ceil(1 << sy))
     }
 }
 
@@ -107,7 +155,7 @@ pub struct YuvParams {
 impl YuvPlanes {
     /// Chroma plane size in samples.
     pub fn chroma_size(&self) -> (u32, u32) {
-        (self.width.div_ceil(2), self.height.div_ceil(2))
+        self.layout.chroma_size(self.width, self.height)
     }
 
     /// Memory used.
@@ -144,12 +192,20 @@ impl YuvPlanes {
         if self.layout.interleaved() { self.sample(1, i * 2 + which) } else { self.sample(1 + which, i) }
     }
 
-    /// Chroma at luma pixel (x, y), interpolated: 4:2:0 chroma sits level with
-    /// even columns and halfway between rows (MPEG-2 siting).
+    /// Chroma at luma pixel (x, y), interpolated: subsampled chroma sits level
+    /// with even columns, and for 4:2:0 halfway between rows (MPEG-2 siting).
     fn chroma_at(&self, which: usize, x: u32, y: u32) -> f32 {
         let (cw, ch) = self.chroma_size();
-        let fx = (x as f32 / 2.0).min((cw - 1) as f32);
-        let fy = ((y as f32 - 0.5) / 2.0).clamp(0.0, (ch - 1) as f32);
+        let fx = match self.layout.chroma().shift().0 {
+            0 => x as f32,
+            _ => x as f32 / 2.0,
+        }
+        .min((cw - 1) as f32);
+        let fy = match self.layout.chroma().shift().1 {
+            0 => y as f32,
+            _ => (y as f32 - 0.5) / 2.0,
+        }
+        .clamp(0.0, (ch - 1) as f32);
         let (x0, y0) = (fx.floor() as u32, fy.floor() as u32);
         let (x1, y1) = ((x0 + 1).min(cw - 1), (y0 + 1).min(ch - 1));
         let (ax, ay) = (fx - x0 as f32, fy - y0 as f32);
@@ -173,17 +229,45 @@ impl YuvPlanes {
         [r, g, b].map(|c| c.clamp(0.0, 1.0))
     }
 
-    /// The picture as tightly packed RGBA8 (opaque).
+    /// Alpha 0–1 at pixel (x, y) (1 without an alpha plane).
+    pub fn alpha_at(&self, x: u32, y: u32) -> f32 {
+        if !self.layout.alpha() {
+            return 1.0;
+        }
+        let max = ((1u32 << self.layout.bits()) - 1) as f32;
+        (self.sample(3, (y * self.width + x) as usize) / max).clamp(0.0, 1.0)
+    }
+
+    /// The picture as tightly packed RGBA8 (straight alpha).
     pub fn to_rgba(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity((self.width * self.height * 4) as usize);
         let p = self.params();
         for y in 0..self.height {
             for x in 0..self.width {
                 let [r, g, b] = self.rgb_with(&p, x, y);
-                out.extend_from_slice(&[(r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8, 255]);
+                let a = self.alpha_at(x, y);
+                out.extend_from_slice(&[(r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8, (a * 255.0).round() as u8]);
             }
         }
         out
+    }
+
+    /// The picture as half floats: linear light, premultiplied (for deep
+    /// video that has to be worked on in memory, at its precision).
+    pub fn to_float(&self) -> FloatPixels {
+        let p = self.params();
+        let mut rgba = Vec::with_capacity((self.width * self.height * 4) as usize);
+        let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let a = self.alpha_at(x, y);
+                for c in self.rgb_with(&p, x, y) {
+                    rgba.push(f32_to_f16(lin(c) * a));
+                }
+                rgba.push(f32_to_f16(a));
+            }
+        }
+        FloatPixels { width: self.width, height: self.height, rgba }
     }
 
     /// Brightness 0–255 per pixel (for the motion tracker), straight from Y.
@@ -421,7 +505,7 @@ impl GpuFrame {
     }
 
     pub fn chroma_size(&self) -> (u32, u32) {
-        (self.width.div_ceil(2), self.height.div_ceil(2))
+        self.layout.chroma_size(self.width, self.height)
     }
 }
 
@@ -557,13 +641,17 @@ mod tests {
             let word = (v as u32) << layout.shift();
             (0..n).flat_map(|_| if layout.sample_bytes() == 1 { vec![word as u8] } else { (word as u16).to_le_bytes().to_vec() }).collect()
         };
-        let c = (w / 2 * h / 2) as usize;
-        let planes = if layout.interleaved() {
+        let (cw, ch) = layout.chroma_size(w, h);
+        let c = (cw * ch) as usize;
+        let mut planes = if layout.interleaved() {
             let uv: Vec<u8> = (0..c).flat_map(|_| [put(u, 1), put(v, 1)].concat()).collect();
             vec![put(y, (w * h) as usize), uv]
         } else {
             vec![put(y, (w * h) as usize), put(u, c), put(v, c)]
         };
+        if layout.alpha() {
+            planes.push(put(((1u32 << layout.bits()) - 1) as u16, (w * h) as usize));
+        }
         YuvPlanes { layout, width: w, height: h, planes, matrix, full_range }
     }
 
@@ -595,6 +683,55 @@ mod tests {
         assert_eq!(&p.to_rgba()[..3], &[0, 0, 0], "10-bit TV black");
         assert_eq!(p.luma()[0], 0.0);
         assert_eq!(p.byte_len(), 4 * 2 * 2 + 2 * 2 * 2);
+    }
+
+    #[test]
+    fn deeper_and_finer_layouts_match_eight_bit() {
+        let eight = flat(YuvLayout::I420, 81, 90, 240, YuvMatrix::Bt709, false).to_rgba();
+        for bits in [10u8, 12, 16] {
+            for chroma in [Chroma::C420, Chroma::C422, Chroma::C444] {
+                for alpha in [false, true] {
+                    let layout = YuvLayout::Planar { bits, chroma, alpha };
+                    let k = 1u16 << (bits - 8);
+                    let p = flat(layout, 81 * k, 90 * k, 240 * k, YuvMatrix::Bt709, false);
+                    assert_eq!(p.planes.len(), layout.planes());
+                    let deep = p.to_rgba();
+                    for (a, b) in eight.iter().zip(&deep) {
+                        assert!((*a as i32 - *b as i32).abs() <= 1, "{layout:?}: {eight:?} vs {deep:?}");
+                    }
+                }
+            }
+        }
+        // 4:2:2 chroma is full height, 4:4:4 full size.
+        assert_eq!(YuvLayout::Planar { bits: 10, chroma: Chroma::C422, alpha: false }.chroma_size(1920, 1080), (960, 1080));
+        assert_eq!(YuvLayout::Planar { bits: 12, chroma: Chroma::C444, alpha: true }.chroma_size(1921, 1080), (1921, 1080));
+        // Alpha comes through.
+        let mut p = flat(YuvLayout::Planar { bits: 12, chroma: Chroma::C444, alpha: true }, 2048, 2048, 2048, YuvMatrix::Bt709, true);
+        p.planes[3][0..2].copy_from_slice(&2048u16.to_le_bytes());
+        assert_eq!(p.to_rgba()[3], 128);
+    }
+
+    #[test]
+    fn deep_video_converts_to_float_without_eight_bit_steps() {
+        let layout = YuvLayout::Planar { bits: 10, chroma: Chroma::C444, alpha: false };
+        let mut p = flat(layout, 64, 512, 512, YuvMatrix::Bt709, false);
+        // Y 500, 501, 502, 503: four neighbours an 8-bit copy would merge.
+        p.planes[0] = (500u16..504).chain(500..504).flat_map(|v| v.to_le_bytes()).collect();
+        let f = p.to_float();
+        let g: Vec<f32> = (0..4).map(|x| f16_to_f32(f.rgba[x * 4 + 1])).collect();
+        assert!(g.windows(2).all(|w| w[1] > w[0]), "{g:?}");
+        // (500 − 64) / 876 = 0.4977 encoded → 0.2119 linear.
+        assert!((g[0] - 0.2119).abs() < 0.001, "{}", g[0]);
+        assert_eq!(f16_to_f32(f.rgba[3]), 1.0);
+    }
+
+    #[test]
+    fn four_four_four_chroma_is_per_pixel() {
+        // Every column its own colour: no blending between neighbours.
+        let mut p = flat(YuvLayout::Planar { bits: 8, chroma: Chroma::C444, alpha: false }, 128, 128, 128, YuvMatrix::Bt709, true);
+        p.planes[2] = vec![0, 255, 0, 255, 0, 255, 0, 255];
+        let row: Vec<u8> = (0..4).map(|x| p.to_rgba()[x * 4]).collect();
+        assert!(row[0] < 30 && row[1] > 225 && row[2] < 30 && row[3] > 225, "{row:?}");
     }
 
     #[test]

@@ -41,6 +41,18 @@ What works now:
   rendered "additive") adds onto what's under it, because EXR's premultiplied alpha is kept as
   it is. Layers named `beauty.R/G/B/A` and multi-part files are read too (the first layer with
   R, G and B, or Y for black-and-white)
+- **10-, 12- and 16-bit footage at full precision**: deeper-than-8-bit video is no longer cut to
+  8 bits on the way into the compositor. YUV video of 10 bits and up (ProRes, DNxHR HQX/444,
+  CineForm 422, 10-bit HEVC/VP9/AV1, XAVC Intra, 12-bit 4:4:4; 4:2:0, 4:2:2 and 4:4:4, with
+  or without alpha) is kept at its bit depth to the graphics card and converted there into half
+  floats; deep RGB (16-bit PNG and TIFF, 10/12-bit DPX, CineForm 4444, DNxHR 444 RGB) becomes
+  half floats as it's decoded. So grading, keying and gradients keep every level the camera
+  recorded, and a 10-bit export of 10-bit footage has 10-bit precision (a ramp tested end to
+  end keeps 820 of its 877 levels; through the old 8-bit route, 256). Super-whites (10-bit
+  codes above 940, which cameras record in highlights) stay as values above white, for grading
+  to bring back. Compositions are read back in floating point too, so they keep the same
+  precision (and highlights) inside the outer sequence, and OpenFX plugins get deep video in
+  float. 8-bit video goes the 8-bit way it always did
 - FFmpeg decoding on a background thread, with frame-accurate seeking (transport and program streams too: TS, MTS, MPG and VOB are searched by timestamp, so a seek steps back until it starts from a keyframe at or before the target)
 - Viewer with transport bar and timecode
 - Multi-track timeline: drag media from the bin onto a track, move clips between tracks,
@@ -406,7 +418,7 @@ What works now:
     (Linux, macOS) work as before
 - **Frame cache**: decoded frames are kept in memory (1 GB by default), shared between clips
   of the same file, so scrubbing back over footage you've already seen is instant
-- **YUV on the GPU**: most video (4:2:0, 8- or 10-bit, from software or hardware decoders) now
+- **YUV on the GPU**: most video (4:2:0, 4:2:2 or 4:4:4, 8 to 16 bits, from software or hardware decoders) now
   stays in the YUV form it's stored in until it reaches the graphics card, which converts it to
   RGB as it draws. Decoding 1080p is about twice as fast as before (3.1 ms a frame instead of
   6.0 ms in testing) and each frame takes 3.1 MB of memory instead of 8.3 MB, so the frame cache
@@ -1346,13 +1358,20 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   track meters move with what's heard. Pan keys reach the mixer as `(offset, pan)` pairs like
   volume keys and are applied per sample (`balance(interpolate(...))`), with the track's pan in
   the clip's static balance.
-- **YUV frames** (`core/src/frame.rs`, `render/src/yuv.rs`): the decoder keeps I420, NV12,
-  yuv420p10 and P010 as tightly packed planes (`Pixels::Yuv`), shrinking them YUV-to-YUV when a
-  preview size is wanted; anything else is converted to RGBA as before. The compositor uploads
-  the planes as unsigned-integer textures and one pass converts them into the layer texture with
-  the frame's matrix (BT.601/709/2020) and range, interpolating the 4:2:0 chroma with MPEG-2
-  siting. `YuvPlanes::to_rgba` is the CPU version (thumbnails, proxies) and the reference the
-  GPU is tested against (within 2/255 for every layout).
+- **YUV frames** (`core/src/frame.rs`, `render/src/yuv.rs`): the decoder keeps NV12, P010 and
+  planar YUV (`YuvLayout::Planar { bits: 8–16, chroma: 4:2:0/4:2:2/4:4:4, alpha }`) as tightly
+  packed planes (`Pixels::Yuv`), shrinking them YUV-to-YUV in the same layout when a preview
+  size is wanted. Other formats deeper than 8 bits go through swscale's RGBA64 and a 64K-entry
+  sRGB-to-linear table into `Pixels::Float`; 8-bit ones to RGBA as before. The compositor
+  uploads the planes as unsigned-integer textures and one pass converts them into the layer
+  texture with the frame's matrix (BT.601/709/2020) and range, interpolating subsampled chroma
+  (MPEG-2 siting for 4:2:0, co-sited for 4:2:2): into an 8-bit sRGB texture with straight alpha
+  for 8-bit video, or (`fs_yuv_float`, `PixelData::is_deep`) an `Rgba16Float` texture, linear and
+  premultiplied, keeping values above white, for deeper video. Hardware-decoded P010 frames
+  (zero-copy) take the float route too. `YuvPlanes::to_rgba` is the CPU version (thumbnails,
+  proxies) and the reference the GPU is tested against (within 2/255 for every layout);
+  `to_float` gives deep video to CPU work (OpenFX) without 8-bit steps. Compositions read their
+  accumulation target back as half floats (`Compositor::read_output_linear`).
 - **Render cache** (`engine/src/render_cache.rs`): frames are keyed by (sequence, frame) and
   stored with a *recipe*, `reelforge_export::frame_recipe`: a hash of everything that decides
   the picture, computed from the project without decoding (media file and frame index, title

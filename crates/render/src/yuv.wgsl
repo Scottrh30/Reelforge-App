@@ -1,5 +1,10 @@
-// YUV 4:2:0 planes -> the layer's RGBA texture (sRGB storage, so we output
-// linear and the hardware encodes). Same maths as core::frame::YuvPlanes::to_rgba.
+// YUV planes (4:2:0, 4:2:2 or 4:4:4, 8–16 bits, with or without alpha) ->
+// the layer's RGBA texture. Same maths as core::frame::YuvPlanes::to_rgba.
+//
+// fs_yuv writes an 8-bit sRGB texture: linear out (the hardware encodes),
+// straight alpha, clamped. fs_yuv_float writes a half-float texture for deep
+// (10-bit and up) video: linear, premultiplied, and values just above white
+// (super-whites, which 10- and 12-bit cameras record) are kept.
 
 struct Params {
     shift: u32,
@@ -12,12 +17,18 @@ struct Params {
     kb: f32,
     size: vec2<u32>,
     csize: vec2<u32>,
+    // log2 of the chroma subsampling, x and y.
+    cshift: vec2<u32>,
+    // The alpha plane's largest value (0: no alpha plane).
+    amax: f32,
+    _pad: u32,
 };
 
 @group(0) @binding(0) var y_tex: texture_2d<u32>;
 @group(0) @binding(1) var u_tex: texture_2d<u32>;
 @group(0) @binding(2) var v_tex: texture_2d<u32>;
 @group(0) @binding(3) var<uniform> p: Params;
+@group(0) @binding(4) var a_tex: texture_2d<u32>;
 
 @vertex
 fn vs_fullscreen(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -42,13 +53,19 @@ fn linear_from_srgb(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3(0.04045));
 }
 
-@fragment
-fn fs_yuv(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let xy = vec2<i32>(pos.xy);
+// Gamma-encoded R'G'B' at pixel `xy` (not clamped).
+fn rgb_at(xy: vec2<i32>) -> vec3<f32> {
     let yv = (f32(textureLoad(y_tex, xy, 0).x >> p.shift) - p.y_off) * p.y_scale;
-    // 4:2:0 chroma: level with even columns, halfway between rows (MPEG-2 siting).
+    // Subsampled chroma: level with even columns; 4:2:0 halfway between rows (MPEG-2 siting).
     let cmax = vec2<f32>(p.csize) - 1.0;
-    let f = vec2(min(f32(xy.x) * 0.5, cmax.x), clamp((f32(xy.y) - 0.5) * 0.5, 0.0, cmax.y));
+    var f = vec2<f32>(xy);
+    if (p.cshift.x != 0u) {
+        f.x = f.x * 0.5;
+    }
+    if (p.cshift.y != 0u) {
+        f.y = (f.y - 0.5) * 0.5;
+    }
+    f = clamp(f, vec2(0.0), cmax);
     let c0 = vec2<i32>(floor(f));
     let c1 = min(c0 + vec2(1, 1), vec2<i32>(cmax));
     let t = f - floor(f);
@@ -58,6 +75,28 @@ fn fs_yuv(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let r = yv + 2.0 * (1.0 - p.kr) * uv.y;
     let b = yv + 2.0 * (1.0 - p.kb) * uv.x;
     let g = (yv - p.kr * r - p.kb * b) / (1.0 - p.kr - p.kb);
-    let rgb = clamp(vec3(r, g, b), vec3(0.0), vec3(1.0));
-    return vec4(linear_from_srgb(rgb), 1.0);
+    return vec3(r, g, b);
+}
+
+fn alpha_at(xy: vec2<i32>) -> f32 {
+    if (p.amax <= 0.0) {
+        return 1.0;
+    }
+    return clamp(f32(textureLoad(a_tex, xy, 0).x) / p.amax, 0.0, 1.0);
+}
+
+@fragment
+fn fs_yuv(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let xy = vec2<i32>(pos.xy);
+    let rgb = clamp(rgb_at(xy), vec3(0.0), vec3(1.0));
+    return vec4(linear_from_srgb(rgb), alpha_at(xy));
+}
+
+@fragment
+fn fs_yuv_float(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let xy = vec2<i32>(pos.xy);
+    // Below black and out-of-gamut negatives go; above white stays.
+    let rgb = max(rgb_at(xy), vec3(0.0));
+    let a = alpha_at(xy);
+    return vec4(linear_from_srgb(rgb) * a, a);
 }

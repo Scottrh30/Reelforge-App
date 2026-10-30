@@ -86,7 +86,7 @@ impl Importer {
             q.add_wait_fence(fence, g.fence_value);
         }
         let o = &self.opened[&g.texture_id];
-        yuv.convert_bound(device, queue, &o.group, &g.params(), g.layout, [g.width, g.height], target);
+        yuv.convert_bound(device, queue, &o.group, &g.params(), g.layout, [g.width, g.height], target, g.layout.deep());
         // The decoder mustn't reuse the texture until the GPU has read it.
         let hold = g.hold.clone();
         queue.on_submitted_work_done(move || drop(hold));

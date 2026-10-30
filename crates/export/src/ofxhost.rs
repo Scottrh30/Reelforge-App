@@ -183,7 +183,14 @@ fn finite(v: f32) -> f32 {
 pub fn to_image(frame: &VideoFrame) -> Image {
     let (w, h) = (frame.width, frame.height);
     let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
-    match &frame.pixels {
+    // Deep video goes over in floating point too, not through 8 bits.
+    let deep = match &frame.pixels {
+        Pixels::Yuv(y) if y.layout.deep() => Some(Arc::new(y.to_float())),
+        Pixels::Gpu(g) if g.layout.deep() => g.cpu().map(|y| Arc::new(y.to_float())),
+        _ => None,
+    };
+    let pixels = deep.map(Pixels::Float);
+    match pixels.as_ref().unwrap_or(&frame.pixels) {
         // Linear, premultiplied: encode the colour, not the alpha.
         Pixels::Float(f) => {
             for p in f.rgba.chunks_exact(4) {

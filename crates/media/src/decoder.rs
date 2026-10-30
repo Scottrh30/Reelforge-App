@@ -12,7 +12,7 @@ use anyhow::{anyhow, Context as _, Result};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
 use ffmpeg_next as ff;
 use ff::software::scaling::{context::Context as Scaler, flag::Flags};
-use reelforge_core::frame::{FloatPixels, Pixels, YuvLayout, YuvMatrix, YuvPlanes};
+use reelforge_core::frame::{Chroma, FloatPixels, Pixels, YuvLayout, YuvMatrix, YuvPlanes};
 use reelforge_core::{Rational, Time};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -147,24 +147,98 @@ impl Drop for DecoderHandle {
 
 type ScalerKey = (ff::format::Pixel, u32, u32, ff::util::color::Space, ff::util::color::Range);
 
-/// The 4:2:0 formats kept as YUV, and the layout they become.
+/// The formats kept as YUV (converted on the GPU as they're drawn), and the
+/// layout they become: 4:2:0, 4:2:2 and 4:4:4, 8 to 16 bits, with or without alpha.
 fn yuv_layout(fmt: ff::format::Pixel) -> Option<YuvLayout> {
     use ff::format::Pixel as P;
+    use Chroma::*;
+    let planar = |bits: u8, chroma, alpha| Some(YuvLayout::Planar { bits, chroma, alpha });
     match fmt {
-        P::YUV420P | P::YUVJ420P => Some(YuvLayout::I420),
         P::NV12 => Some(YuvLayout::Nv12),
-        P::YUV420P10LE => Some(YuvLayout::I420P10),
         P::P010LE => Some(YuvLayout::P010),
+        P::YUV420P | P::YUVJ420P => planar(8, C420, false),
+        P::YUV422P | P::YUVJ422P => planar(8, C422, false),
+        P::YUV444P | P::YUVJ444P => planar(8, C444, false),
+        P::YUVA420P => planar(8, C420, true),
+        P::YUVA422P => planar(8, C422, true),
+        P::YUVA444P => planar(8, C444, true),
+        P::YUV420P10LE => planar(10, C420, false),
+        P::YUV422P10LE => planar(10, C422, false),
+        P::YUV444P10LE => planar(10, C444, false),
+        P::YUV420P12LE => planar(12, C420, false),
+        P::YUV422P12LE => planar(12, C422, false),
+        P::YUV444P12LE => planar(12, C444, false),
+        P::YUV420P16LE => planar(16, C420, false),
+        P::YUV422P16LE => planar(16, C422, false),
+        P::YUV444P16LE => planar(16, C444, false),
+        P::YUVA420P10LE => planar(10, C420, true),
+        P::YUVA422P10LE => planar(10, C422, true),
+        P::YUVA444P10LE => planar(10, C444, true),
+        P::YUVA422P12LE => planar(12, C422, true),
+        P::YUVA444P12LE => planar(12, C444, true),
+        P::YUVA444P16LE => planar(16, C444, true),
         _ => None,
+    }
+}
+
+/// The planar FFmpeg format of a layout (what a shrunken copy is made in).
+fn planar_format(layout: YuvLayout) -> Option<ff::format::Pixel> {
+    use ff::format::Pixel as P;
+    use Chroma::*;
+    let (bits, chroma, alpha) = match layout {
+        YuvLayout::Nv12 => (8, C420, false),
+        YuvLayout::P010 => (10, C420, false),
+        YuvLayout::Planar { bits, chroma, alpha } => (bits, chroma, alpha),
+    };
+    Some(match (bits, chroma, alpha) {
+        (8, C420, false) => P::YUV420P,
+        (8, C422, false) => P::YUV422P,
+        (8, C444, false) => P::YUV444P,
+        (8, C420, true) => P::YUVA420P,
+        (8, C422, true) => P::YUVA422P,
+        (8, C444, true) => P::YUVA444P,
+        (10, C420, false) => P::YUV420P10LE,
+        (10, C422, false) => P::YUV422P10LE,
+        (10, C444, false) => P::YUV444P10LE,
+        (12, C420, false) => P::YUV420P12LE,
+        (12, C422, false) => P::YUV422P12LE,
+        (12, C444, false) => P::YUV444P12LE,
+        (16, C420, false) => P::YUV420P16LE,
+        (16, C422, false) => P::YUV422P16LE,
+        (16, C444, false) => P::YUV444P16LE,
+        (10, C420, true) => P::YUVA420P10LE,
+        (10, C422, true) => P::YUVA422P10LE,
+        (10, C444, true) => P::YUVA444P10LE,
+        (12, C422, true) => P::YUVA422P12LE,
+        (12, C444, true) => P::YUVA444P12LE,
+        (16, C444, true) => P::YUVA444P16LE,
+        _ => return None,
+    })
+}
+
+/// Bits per component of a pixel format (the deepest component).
+fn format_depth(fmt: ff::format::Pixel) -> u32 {
+    // SAFETY: av_pix_fmt_desc_get returns a pointer to static data, or null.
+    unsafe {
+        let d = ff::ffi::av_pix_fmt_desc_get(fmt.into());
+        if d.is_null() {
+            return 8;
+        }
+        let n = ((*d).nb_components as usize).min(4);
+        (&(*d).comp)[..n].iter().map(|c| c.depth as u32).max().unwrap_or(8)
     }
 }
 
 /// Copy a frame's planes into tight rows (FFmpeg pads each row to `stride`).
 fn pack_planes(f: &ff::frame::Video, layout: YuvLayout) -> Vec<Vec<u8>> {
     let (w, h) = (f.width() as usize, f.height() as usize);
-    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let (cw, ch) = layout.chroma_size(w as u32, h as u32);
+    let (cw, ch) = (cw as usize, ch as usize);
     let b = layout.sample_bytes();
-    let shapes: Vec<(usize, usize)> = if layout.interleaved() { vec![(w * b, h), (cw * 2 * b, ch)] } else { vec![(w * b, h), (cw * b, ch), (cw * b, ch)] };
+    let mut shapes: Vec<(usize, usize)> = if layout.interleaved() { vec![(w * b, h), (cw * 2 * b, ch)] } else { vec![(w * b, h), (cw * b, ch), (cw * b, ch)] };
+    if layout.alpha() {
+        shapes.push((w * b, h));
+    }
     shapes
         .into_iter()
         .enumerate()
@@ -227,6 +301,8 @@ struct DecodeState {
     frame_dur: Time,
     max_size: Option<(u32, u32)>,
     scaler: Option<(Scaler, ScalerKey)>,
+    /// The scaler makes 16-bit RGBA (for deep RGB), not 8-bit.
+    scaler_deep: bool,
     generation: u64,
     /// After a seek, drop frames that end before this time (decoding from the keyframe).
     discard_before: Option<Time>,
@@ -317,6 +393,7 @@ impl DecodeState {
             frame_dur,
             max_size,
             scaler: None,
+            scaler_deep: false,
             generation: 0,
             discard_before: None,
             held: None,
@@ -611,15 +688,17 @@ impl DecodeState {
             return Ok(VideoFrame { pts, width: f.width, height: f.height, pixels: Pixels::Float(Arc::new(f)), generation: self.generation });
         }
 
-        // 4:2:0 video stays YUV: the GPU converts it as it draws. Shrinking (for the
+        // YUV video stays YUV: the GPU converts it as it draws (at its own
+        // precision: 10-bit and up into half floats). Shrinking (for the
         // viewer) is a cheap YUV-to-YUV scale; no colour conversion happens here.
-        if let Some(layout) = yuv_layout(fmt) {
+        if let (Some(layout), Some(out_fmt)) = (yuv_layout(fmt), yuv_layout(fmt).and_then(planar_format)) {
+            use ff::format::Pixel as P;
             let matrix = yuv_matrix(space);
-            let full_range = range == ff::util::color::Range::JPEG || fmt == ff::format::Pixel::YUVJ420P;
+            let full_range = range == ff::util::color::Range::JPEG || matches!(fmt, P::YUVJ420P | P::YUVJ422P | P::YUVJ444P);
             let (planes, layout, w, h) = if (dw, dh) == (sw, sh) {
                 (pack_planes(src, layout), layout, sw, sh)
             } else {
-                let (out_fmt, out_layout) = if layout.bits() > 8 { (ff::format::Pixel::YUV420P10LE, YuvLayout::I420P10) } else { (ff::format::Pixel::YUV420P, YuvLayout::I420) };
+                let out_layout = yuv_layout(out_fmt).unwrap_or(layout);
                 let key = (fmt, sw, sh, space, range);
                 if self.scaler.as_ref().map(|(_, k)| *k != key).unwrap_or(true) {
                     self.scaler = Some((Scaler::get(fmt, sw, sh, out_fmt, dw, dh, Flags::BILINEAR)?, key));
@@ -632,8 +711,17 @@ impl DecodeState {
             return Ok(VideoFrame { pts, width: w, height: h, pixels: Pixels::Yuv(Arc::new(yuv)), generation: self.generation });
         }
 
+        // Anything else deeper than 8 bits (RGB 10/12/16-bit: DPX, 16-bit PNG and
+        // TIFF, CineForm RGB, DNxHR 444 RGB): through 16-bit RGBA into half floats.
+        if format_depth(fmt) > 8 {
+            if let Some(f) = self.deep_rgb(src, dw, dh, space, range) {
+                return Ok(VideoFrame { pts, width: f.width, height: f.height, pixels: Pixels::Float(Arc::new(f)), generation: self.generation });
+            }
+        }
+
         let key = (fmt, sw, sh, space, range);
-        if self.scaler.as_ref().map(|(_, k)| *k != key).unwrap_or(true) {
+        if self.scaler.as_ref().map(|(_, k)| *k != key).unwrap_or(true) || self.scaler_deep {
+            self.scaler_deep = false;
             let mut s = Scaler::get(fmt, sw, sh, ff::format::Pixel::RGBA, dw, dh, Flags::BILINEAR)?;
             crate::color::configure(&mut s, space, range, true);
             self.scaler = Some((s, key));
@@ -651,6 +739,65 @@ impl DecodeState {
         }
         Ok(VideoFrame::from_rgba(pts, dw, dh, packed.into(), self.generation))
     }
+}
+
+impl DecodeState {
+    /// `src` (more than 8 bits, not YUV kept as YUV) as half floats, linear
+    /// and premultiplied, via FFmpeg's 16-bit RGBA. `None` if FFmpeg can't
+    /// make 16-bit RGBA of it (the 8-bit route is taken instead).
+    fn deep_rgb(&mut self, src: &ff::frame::Video, dw: u32, dh: u32, space: ff::util::color::Space, range: ff::util::color::Range) -> Option<FloatPixels> {
+        let (fmt, sw, sh) = (src.format(), src.width(), src.height());
+        let key = (fmt, sw, sh, space, range);
+        if self.scaler.as_ref().is_none_or(|(_, k)| *k != key) || !self.scaler_deep {
+            let mut s = Scaler::get(fmt, sw, sh, ff::format::Pixel::RGBA64LE, dw, dh, Flags::BILINEAR).ok()?;
+            crate::color::configure(&mut s, space, range, true);
+            self.scaler = Some((s, key));
+            self.scaler_deep = true;
+        }
+        let mut rgba = ff::frame::Video::empty();
+        self.scaler.as_mut()?.0.run(src, &mut rgba).ok()?;
+        Some(rgba64_to_float(rgba.data(0), rgba.stride(0), dw, dh))
+    }
+}
+
+/// sRGB-encoded 16-bit code value → linear half float, for every value.
+fn srgb16_to_linear_half() -> &'static [u16] {
+    static LUT: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| {
+        (0..=65535u32)
+            .map(|v| {
+                let c = v as f64 / 65535.0;
+                let l = if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+                reelforge_core::frame::f32_to_f16(l as f32)
+            })
+            .collect()
+    })
+}
+
+/// 16-bit straight RGBA rows (sRGB-encoded) → half-float linear premultiplied.
+pub(crate) fn rgba64_to_float(data: &[u8], stride: usize, w: u32, h: u32) -> FloatPixels {
+    use reelforge_core::frame::{f16_to_f32, f32_to_f16};
+    let lut = srgb16_to_linear_half();
+    let (w, h) = (w as usize, h as usize);
+    let mut out = vec![0u16; w * h * 4];
+    let one = f32_to_f16(1.0);
+    for (y, dst) in out.chunks_exact_mut(w * 4).enumerate() {
+        let row = &data[y * stride..y * stride + w * 8];
+        for (px, o) in row.chunks_exact(8).zip(dst.chunks_exact_mut(4)) {
+            let c = |i: usize| u16::from_le_bytes([px[i * 2], px[i * 2 + 1]]);
+            let a = c(3);
+            if a == 65535 {
+                o.copy_from_slice(&[lut[c(0) as usize], lut[c(1) as usize], lut[c(2) as usize], one]);
+            } else {
+                let af = a as f32 / 65535.0;
+                for k in 0..3 {
+                    o[k] = f32_to_f16(f16_to_f32(lut[c(k) as usize]) * af);
+                }
+                o[3] = f32_to_f16(af);
+            }
+        }
+    }
+    FloatPixels { width: w as u32, height: h as u32, rgba: out }
 }
 
 /// A planar float frame (FFmpeg's `gbrp`/`gbrap`/`gray` in 32- or 16-bit

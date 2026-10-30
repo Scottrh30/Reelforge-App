@@ -307,9 +307,11 @@ impl Scene {
             }
         };
         if n.signature != Some(sig) || n.frame.is_none() {
-            n.frame = n.compositor.read_output().map(|rgba| {
+            // Read back in floating point: the composition's own precision
+            // (10-bit footage, highlights above white) carries on outside it.
+            n.frame = n.compositor.read_output_linear().map(|f| {
                 self.generation += 1;
-                VideoFrame::from_rgba(t, size[0], size[1], Arc::from(rgba), self.generation)
+                VideoFrame { pts: t, width: f.width, height: f.height, pixels: reelforge_core::frame::Pixels::Float(Arc::new(f)), generation: self.generation }
             });
             n.signature = Some(sig);
         }

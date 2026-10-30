@@ -54,12 +54,23 @@ pub enum PixelData<'a> {
 }
 
 impl PixelData<'_> {
+    /// Drawn from a half-float layer texture: floating-point pictures, and
+    /// video of more than 8 bits (kept at its precision).
+    pub fn is_deep(&self) -> bool {
+        match self {
+            PixelData::Float(_) => true,
+            PixelData::Yuv(y) => y.layout.deep(),
+            PixelData::Gpu(g) => g.layout.deep(),
+            _ => false,
+        }
+    }
+
     /// The data really is a picture of `size` (and not empty).
     fn matches(&self, size: [u32; 2]) -> bool {
         size[0] > 0
             && match self {
                 PixelData::Rgba(px) => px.len() as u64 == size[0] as u64 * size[1] as u64 * 4,
-                PixelData::Yuv(y) => [y.width, y.height] == size && y.planes.len() == if y.layout.interleaved() { 2 } else { 3 },
+                PixelData::Yuv(y) => [y.width, y.height] == size && y.planes.len() == y.layout.planes(),
                 PixelData::Gpu(g) => [g.width, g.height] == size,
                 PixelData::Float(f) => [f.width, f.height] == size && f.rgba.len() as u64 == size[0] as u64 * size[1] as u64 * 4,
                 PixelData::Solid(_) => true,
@@ -577,7 +588,7 @@ impl Compositor {
             output_pipeline,
             output_alpha_pipeline,
             deep_pipelines,
-            yuv: yuv::YuvConverter::new(device, LAYER_FORMAT),
+            yuv: yuv::YuvConverter::new(device, LAYER_FORMAT, FLOAT_LAYER_FORMAT),
             solid: solid::SolidRenderer::new(device, LAYER_FORMAT),
             particles: particles::ParticleRenderer::new(device, &fx_pl, ACCUM_FORMAT),
             #[cfg(windows)]
@@ -731,7 +742,8 @@ impl Compositor {
                 return; // unchanged since last frame
             }
         }
-        let float = matches!(l.pixels, PixelData::Float(_));
+        // Floating point, and deep (10-bit and up) video: kept in half floats.
+        let float = l.pixels.is_deep();
         let needs_new = self.layers.get(&l.key).is_none_or(|t| t.size != l.pixel_size || t.float != float);
         if needs_new {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -777,11 +789,11 @@ impl Compositor {
             }
             PixelData::Yuv(planes) => {
                 let view = t.texture.create_view(&Default::default());
-                self.yuv.convert(&self.device, &self.queue, l.key, planes, &view);
+                self.yuv.convert(&self.device, &self.queue, l.key, planes, &view, float);
             }
             PixelData::Gpu(g) => {
                 let texture = t.texture.clone();
-                self.draw_gpu_frame(l.key, g, &texture);
+                self.draw_gpu_frame(l.key, g, &texture, float);
             }
             PixelData::Solid(s) => {
                 let view = t.texture.create_view(&Default::default());
@@ -796,7 +808,7 @@ impl Compositor {
     /// The layer texture is filled from a frame on the graphics card: read
     /// straight from the shared texture when that works, otherwise (other
     /// platforms, zero-copy off or broken) copied back and converted as usual.
-    fn draw_gpu_frame(&mut self, key: u64, g: &GpuFrame, texture: &wgpu::Texture) {
+    fn draw_gpu_frame(&mut self, key: u64, g: &GpuFrame, texture: &wgpu::Texture, float: bool) {
         use reelforge_core::frame::zero_copy;
         let view = texture.create_view(&Default::default());
         if zero_copy::enabled() && zero_copy::failure().is_none() {
@@ -806,9 +818,9 @@ impl Compositor {
                 Some(Ok(())) => {
                     // The first frame of each kind: compare with the usual copy.
                     if let Some(check) = g.check.as_ref().filter(|_| !self.gpu_checked.contains(&g.layout)) {
-                        let shared = self.read_rgba8(texture, [g.width, g.height]);
-                        self.yuv.convert(&self.device, &self.queue, key, check, &view);
-                        let copied = self.read_rgba8(texture, [g.width, g.height]);
+                        let shared = self.read_layer8(texture, [g.width, g.height], float);
+                        self.yuv.convert(&self.device, &self.queue, key, check, &view, float);
+                        let copied = self.read_layer8(texture, [g.width, g.height], float);
                         match (shared, copied) {
                             (Some(a), Some(b)) => {
                                 let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
@@ -832,7 +844,7 @@ impl Compositor {
             }
         }
         if let Some(y) = g.check.clone().or_else(|| g.cpu()) {
-            self.yuv.convert(&self.device, &self.queue, key, &y, &view);
+            self.yuv.convert(&self.device, &self.queue, key, &y, &view, float);
         }
     }
 
@@ -1526,10 +1538,36 @@ impl Compositor {
         self.read_rgba8(&t.output, t.size)
     }
 
+    /// Read the last rendered frame back as it was composited: half floats,
+    /// linear light, premultiplied, nothing clipped (for compositions: their
+    /// picture loses nothing on the way into the outer sequence). Blocks on the GPU.
+    pub fn read_output_linear(&self) -> Option<reelforge_core::frame::FloatPixels> {
+        let t = self.targets.as_ref()?;
+        let raw = self.read_texture(&t.accum, t.size, 8)?;
+        let rgba = raw.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+        Some(reelforge_core::frame::FloatPixels { width: t.size[0], height: t.size[1], rgba })
+    }
+
+    /// A layer texture as 8 bits per channel (a half-float one scaled to
+    /// 0–255 linear: for comparing two conversions). Blocks on the GPU.
+    fn read_layer8(&self, texture: &wgpu::Texture, size: [u32; 2], float: bool) -> Option<Vec<u8>> {
+        if !float {
+            return self.read_rgba8(texture, size);
+        }
+        let raw = self.read_texture(texture, size, 8)?;
+        Some(raw.chunks_exact(2).map(|b| (reelforge_core::frame::f16_to_f32(u16::from_le_bytes([b[0], b[1]])).clamp(0.0, 1.0) * 255.0).round() as u8).collect())
+    }
+
     /// Read the top-left `size` of an RGBA8 texture back to memory. Blocks on the GPU.
     fn read_rgba8(&self, texture: &wgpu::Texture, size: [u32; 2]) -> Option<Vec<u8>> {
+        self.read_texture(texture, size, 4)
+    }
+
+    /// Read the top-left `size` of a texture of `bpp` bytes per pixel back to
+    /// memory, rows tightly packed. Blocks on the GPU.
+    fn read_texture(&self, texture: &wgpu::Texture, size: [u32; 2], bpp: u32) -> Option<Vec<u8>> {
         let [w, h] = size;
-        let row = 4 * w;
+        let row = bpp * w;
         let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),

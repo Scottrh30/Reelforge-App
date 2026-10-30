@@ -1,7 +1,7 @@
 //! Pixel-exact compositor tests on a headless GPU (skipped if no adapter is available).
 
 use reelforge_core::{BlendMode, Transform};
-use reelforge_render::{headless_device, Compositor, LayerInput};
+use reelforge_render::{headless_device, Compositor, LayerInput, PixelData};
 
 fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
     rgba.iter().copied().cycle().take((w * h * 4) as usize).collect()
@@ -125,7 +125,7 @@ fn resizing_the_frame_bumps_output_generation() {
     assert_eq!(c.read_output().unwrap().len(), 32 * 16 * 4);
 }
 
-use reelforge_render::{DrawItem, PixelData};
+use reelforge_render::DrawItem;
 
 fn full(key: u64, pixels: &[u8], frame: [u32; 2]) -> LayerInput<'_> {
     layer(key, pixels, [1, 1], [frame[0] as f32, frame[1] as f32], Transform::default(), BlendMode::Normal)
@@ -664,51 +664,145 @@ fn plugins_run_with_params_time_and_several_passes() {
 }
 
 
-/// YUV frames convert on the GPU exactly as the CPU reference does.
+/// A YUV frame of `layout`, `w`×`h`: gradients in Y, U, V and (with alpha) A.
+fn yuv_frame(layout: reelforge_core::frame::YuvLayout, w: u32, h: u32, matrix: reelforge_core::frame::YuvMatrix, full_range: bool) -> reelforge_core::frame::YuvPlanes {
+    let (cw, ch) = layout.chroma_size(w, h);
+    let k = 1u32 << (layout.bits() - 8);
+    let word = |v: u32| -> Vec<u8> {
+        let v = (v * k) << layout.shift();
+        if layout.sample_bytes() == 1 { vec![v as u8] } else { (v as u16).to_le_bytes().to_vec() }
+    };
+    let y: Vec<u8> = (0..w * h).flat_map(|i| word(20 + (i % w) * 13 + (i / w) * 3)).collect();
+    let u: Vec<u32> = (0..cw * ch).map(|i| 40 + (i % cw) * 180 / cw.max(1)).collect();
+    let v: Vec<u32> = (0..cw * ch).map(|i| 220 - (i / cw) * 160 / ch.max(1)).collect();
+    let mut planes = if layout.interleaved() {
+        vec![y, u.iter().zip(&v).flat_map(|(a, b)| [word(*a), word(*b)].concat()).collect()]
+    } else {
+        vec![y, u.iter().flat_map(|a| word(*a)).collect(), v.iter().flat_map(|b| word(*b)).collect()]
+    };
+    if layout.alpha() {
+        // Opaque on the left, see-through on the right.
+        planes.push((0..w * h).flat_map(|i| word(if i % w < w / 2 { 255 } else { 64 })).collect());
+    }
+    reelforge_core::frame::YuvPlanes { layout, width: w, height: h, planes, matrix, full_range }
+}
+
+fn yuv_layer<'a>(yuv: &'a reelforge_core::frame::YuvPlanes, content_id: u64) -> LayerInput<'a> {
+    LayerInput {
+        key: 9,
+        content_id,
+        pixels: PixelData::Yuv(yuv),
+        pixel_size: [yuv.width, yuv.height],
+        layer_size: [yuv.width as f32, yuv.height as f32],
+        transform: Transform::default(),
+        blend: BlendMode::Normal,
+        effects: Vec::new(),
+        mask: None,
+        wipe: None,
+        mesh: None,
+        space: None,
+    }
+}
+
+/// YUV frames of every layout (4:2:0, 4:2:2, 4:4:4; 8 to 16 bits; alpha)
+/// convert on the GPU as the CPU reference does.
 #[test]
 fn yuv_layers_convert_like_the_cpu_reference() {
-    use reelforge_core::frame::{YuvLayout, YuvMatrix, YuvPlanes};
+    use reelforge_core::frame::{Chroma, YuvLayout, YuvMatrix};
     let Some(mut c) = setup() else { return };
     let (w, h) = (16u32, 8u32);
-    let (cw, ch) = (w / 2, h / 2);
-    for layout in [YuvLayout::I420, YuvLayout::Nv12, YuvLayout::I420P10, YuvLayout::P010] {
+    let mut layouts = vec![YuvLayout::Nv12, YuvLayout::P010];
+    for bits in [8u8, 10, 12, 16] {
+        for chroma in [Chroma::C420, Chroma::C422, Chroma::C444] {
+            for alpha in [false, true] {
+                layouts.push(YuvLayout::Planar { bits, chroma, alpha });
+            }
+        }
+    }
+    let mut id = 0;
+    for layout in layouts {
         for (matrix, full_range) in [(YuvMatrix::Bt709, false), (YuvMatrix::Bt601, true), (YuvMatrix::Bt2020, false)] {
-            // A gradient in Y and a different one in each chroma channel.
-            let bits = layout.bits();
-            let k = 1u32 << (bits - 8);
-            let word = |v: u32| -> Vec<u8> {
-                let v = (v * k) << layout.shift();
-                if layout.sample_bytes() == 1 { vec![v as u8] } else { (v as u16).to_le_bytes().to_vec() }
-            };
-            let y: Vec<u8> = (0..w * h).flat_map(|i| word(20 + (i % w) * 13 + (i / w) * 3)).collect();
-            let u: Vec<u32> = (0..cw * ch).map(|i| 40 + (i % cw) * 25).collect();
-            let v: Vec<u32> = (0..cw * ch).map(|i| 220 - (i / cw) * 40).collect();
-            let planes = if layout.interleaved() {
-                vec![y, u.iter().zip(&v).flat_map(|(a, b)| [word(*a), word(*b)].concat()).collect()]
-            } else {
-                vec![y, u.iter().flat_map(|a| word(*a)).collect(), v.iter().flat_map(|b| word(*b)).collect()]
-            };
-            let yuv = YuvPlanes { layout, width: w, height: h, planes, matrix, full_range };
-            let want = yuv.to_rgba();
-            let l = LayerInput {
-                key: 9,
-                content_id: layout as u64 * 10 + matrix as u64 * 2 + full_range as u64,
-                pixels: PixelData::Yuv(&yuv),
-                pixel_size: [w, h],
-                layer_size: [w as f32, h as f32],
-                transform: Transform::default(),
-                blend: BlendMode::Normal,
-                effects: Vec::new(),
-                mask: None,
-                wipe: None,
-                mesh: None, space: None
-            };
-            c.render([w, h], &[l]);
+            let yuv = yuv_frame(layout, w, h, matrix, full_range);
+            id += 1;
+            // Over black, so see-through parts show as darker (as the reference, premultiplied).
+            c.render([w, h], &[yuv_layer(&yuv, id)]);
             let got = c.read_output().unwrap();
-            let worst = got.iter().zip(&want).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| (*a as i32 - *b as i32).abs()).max().unwrap();
+            let want: Vec<u8> = yuv
+                .to_rgba()
+                .chunks_exact(4)
+                .flat_map(|p| {
+                    if p[3] == 255 {
+                        return [p[0], p[1], p[2], 255];
+                    }
+                    let a = p[3] as f32 / 255.0;
+                    let lin = |v: u8| {
+                        let c = v as f32 / 255.0;
+                        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+                    };
+                    let enc = |l: f32| ((if l <= 0.003_130_8 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 }) * 255.0).round() as u8;
+                    [enc(lin(p[0]) * a), enc(lin(p[1]) * a), enc(lin(p[2]) * a), 255]
+                })
+                .collect();
+            // Deep video keeps values above white, which the 8-bit reference
+            // clips: where it clipped and alpha shows them, they differ on purpose.
+            let src = yuv.to_rgba();
+            let clipped = |i: usize| layout.deep() && src[i] == 255 && src[i / 4 * 4 + 3] < 255;
+            let worst = got.iter().zip(&want).enumerate().filter(|(i, _)| i % 4 != 3 && !clipped(*i)).map(|(_, (a, b))| (*a as i32 - *b as i32).abs()).max().unwrap();
             assert!(worst <= 2, "{layout:?} {matrix:?} full={full_range}: off by {worst}");
         }
     }
+}
+
+/// 10- and 12-bit video keeps its precision: a gentle ramp makes more
+/// distinct levels than 8 bits could hold, and gets no banding steps.
+#[test]
+fn deep_video_is_not_cut_to_eight_bits() {
+    use reelforge_core::frame::{f16_to_f32, Chroma, YuvLayout, YuvMatrix, YuvPlanes};
+    let Some(mut c) = setup() else { return };
+    let w = 1024u32;
+    for (bits, chroma) in [(10u8, Chroma::C420), (10, Chroma::C422), (12, Chroma::C444)] {
+        let layout = YuvLayout::Planar { bits, chroma, alpha: false };
+        let (cw, ch) = layout.chroma_size(w, 2);
+        let mid = 1u16 << (bits - 1);
+        // Y climbs one 10-bit code value every two pixels from black: 512
+        // levels, where 8 bits would hold 128.
+        let lo = 64u16 << (bits - 10);
+        let y: Vec<u8> = (0..w * 2).flat_map(|i| (lo + ((i % w) as u16 * (1 << (bits - 10))) / 2).to_le_bytes()).collect();
+        let cplane: Vec<u8> = (0..cw * ch).flat_map(|_| mid.to_le_bytes()).collect();
+        let yuv = YuvPlanes { layout, width: w, height: 2, planes: vec![y, cplane.clone(), cplane], matrix: YuvMatrix::Bt709, full_range: false };
+        c.render([w, 2], &[yuv_layer(&yuv, bits as u64 * 100 + chroma as u64)]);
+        let f = c.read_output_linear().unwrap();
+        let row: Vec<f32> = (0..w as usize).map(|x| f16_to_f32(f.rgba[x * 4 + 1])).collect();
+        let mut levels: Vec<u16> = f.rgba[..w as usize * 4].chunks_exact(4).map(|p| p[1]).collect();
+        levels.dedup();
+        assert!(levels.len() > 400, "{bits}-bit {chroma:?}: only {} levels", levels.len());
+        // Monotonic, and as smooth as the source (no jump bigger than 2 code values).
+        let enc = |l: f32| if l <= 0.003_130_8 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
+        let step = 1.0 / (219.0 * 4.0);
+        for x in 1..w as usize {
+            assert!(row[x] >= row[x - 1], "{bits}-bit: falls at {x}");
+            assert!(enc(row[x]) - enc(row[x - 1]) < 2.5 * step, "{bits}-bit: a step at {x}");
+        }
+    }
+    // 8-bit video still goes the 8-bit way (and super-whites clip there).
+    assert!(!PixelData::Yuv(&yuv_frame(YuvLayout::I420, 4, 4, YuvMatrix::Bt709, false)).is_deep());
+    assert!(PixelData::Yuv(&yuv_frame(YuvLayout::P010, 4, 4, YuvMatrix::Bt709, false)).is_deep());
+}
+
+/// Ten-bit super-whites (above code 940) survive as values above 1, for
+/// grading to bring back; 8-bit sources clip at white as before.
+#[test]
+fn deep_video_keeps_super_whites() {
+    use reelforge_core::frame::{f16_to_f32, Chroma, YuvLayout, YuvMatrix, YuvPlanes};
+    let Some(mut c) = setup() else { return };
+    let layout = YuvLayout::Planar { bits: 10, chroma: Chroma::C444, alpha: false };
+    let plane = |v: u16| -> Vec<u8> { (0..16).flat_map(|_| v.to_le_bytes()).collect() };
+    let yuv = YuvPlanes { layout, width: 4, height: 4, planes: vec![plane(1019), plane(512), plane(512)], matrix: YuvMatrix::Bt709, full_range: false };
+    c.render([4, 4], &[yuv_layer(&yuv, 77)]);
+    let f = c.read_output_linear().unwrap();
+    let g = f16_to_f32(f.rgba[1]);
+    // (1019 − 64) / 876 = 1.090 encoded → about 1.22 linear.
+    assert!(g > 1.15 && g < 1.3, "{g}");
 }
 
 /// A mesh warp puts each part of the layer where its grid says: a layer whose
