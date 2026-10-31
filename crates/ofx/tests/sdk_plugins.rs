@@ -195,7 +195,7 @@ fn several_instances_keep_their_own_settings() {
 #[test]
 fn plugins_that_read_other_frames_get_them() {
     let Some(p) = plugin("FrameAverage") else { return };
-    assert!(p.temporal && p.opengl.is_none());
+    assert!(p.temporal && p.gpu.is_empty() && p.cpu);
     let radius = p.params.iter().position(|q| q.name == "radius").unwrap();
     let mut inst = p.instance().unwrap();
     // It says which frames it wants, by its own settings and within the source.
@@ -222,7 +222,7 @@ fn plugins_that_read_other_frames_get_them() {
 #[test]
 fn an_opengl_plugin_renders_on_the_graphics_card() {
     let Some(p) = plugin("OpenGL") else { return };
-    assert_eq!(p.opengl, Some(true), "OpenGL only");
+    assert_eq!((p.gpu.clone(), p.cpu), (vec![reelforge_ofx::Gpu::OpenGl], false), "OpenGL only");
     let mut inst = p.instance().unwrap();
     let (w, h) = (320u32, 160u32);
     let mut img = flat(w, h, [0.0; 4]);

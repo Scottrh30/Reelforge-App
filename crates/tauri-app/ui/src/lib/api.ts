@@ -445,7 +445,9 @@ export interface EffectView {
   /// Why it isn't rendering (an OpenFX plugin's error).
   error: string | null;
   temporal: boolean;
-  gpu: boolean;
+  gpu: string[];
+  /// What it rendered with last ("OpenCL on …", "the processor").
+  rendered_with: string | null;
 }
 
 export interface CatalogItem {
@@ -528,9 +530,11 @@ export interface OfxView {
   gpu: boolean;
   gpu_status: string;
   gpu_ok: boolean;
+  /// Each way of rendering on the graphics card: name, what on (or why not), works.
+  gpus: [string, string, boolean][];
   scanning: boolean;
   folders: { path: string; place: string; exists: boolean; removable: boolean }[];
-  bundles: { path: string; name: string; effects: { name: string; group: string; version: string; params: number; temporal: boolean; gpu: "" | "yes" | "only" }[]; errors: string[]; blocked: boolean }[];
+  bundles: { path: string; name: string; effects: { name: string; group: string; version: string; params: number; temporal: boolean; gpu: string[]; gpu_only: boolean }[]; errors: string[]; blocked: boolean }[];
   own_folder: string;
 }
 

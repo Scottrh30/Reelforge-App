@@ -73,8 +73,10 @@ pub struct EffectView {
     pub error: Option<String>,
     /// An OpenFX plugin that reads other frames of the clip.
     pub temporal: bool,
-    /// An OpenFX plugin that renders on the graphics card (OpenGL) when it can.
-    pub gpu: bool,
+    /// The ways an OpenFX plugin can render on the graphics card ("CUDA", "OpenCL"…).
+    pub gpu: Vec<String>,
+    /// What it rendered with last ("OpenCL on …", "the processor").
+    pub rendered_with: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -172,7 +174,8 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 points: ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label }).collect()),
                 error: ofx.as_ref().and_then(|_| reelforge_export::ofxhost::error(c.id, index)).filter(|_| fx.enabled),
                 temporal: ofx.as_ref().is_some_and(|d| d.temporal),
-                gpu: ofx.as_ref().is_some_and(|d| d.opengl.is_some()),
+                gpu: ofx.as_ref().map_or_else(Vec::new, |d| d.gpu.clone()),
+                rendered_with: ofx.as_ref().and_then(|_| reelforge_export::ofxhost::rendered_with(c.id, index)),
             }
         })
         .collect()

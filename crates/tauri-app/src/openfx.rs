@@ -104,6 +104,8 @@ pub struct OfxView {
     /// What they'd run on, or why they can't ("" until it's been looked at).
     pub gpu_status: String,
     pub gpu_ok: bool,
+    /// Each way of rendering on the graphics card: (name, what on or why not, works).
+    pub gpus: Vec<(String, String, bool)>,
     pub scanning: bool,
     pub folders: Vec<OfxFolder>,
     pub bundles: Vec<OfxBundle>,
@@ -136,8 +138,10 @@ pub struct OfxEffect {
     pub params: usize,
     /// Reads other frames of the clip.
     pub temporal: bool,
-    /// Renders on the graphics card ("only": it can't use the processor).
-    pub gpu: &'static str,
+    /// The ways it can render on the graphics card ("CUDA", "OpenCL", "OpenGL", "Metal").
+    pub gpu: Vec<String>,
+    /// It can't render on the processor.
+    pub gpu_only: bool,
 }
 
 #[tauri::command]
@@ -158,11 +162,8 @@ pub fn ofx_list() -> OfxView {
                     version: d.version.clone(),
                     params: d.params.len(),
                     temporal: d.temporal,
-                    gpu: match d.opengl {
-                        Some(true) => "only",
-                        Some(false) => "yes",
-                        None => "",
-                    },
+                    gpu: d.gpu.clone(),
+                    gpu_only: !d.cpu,
                 })
                 .collect(),
             errors: r.errors.clone(),
@@ -170,6 +171,11 @@ pub fn ofx_list() -> OfxView {
         })
         .collect();
     // Only once a scan has loaded plugins (it makes the OpenGL context).
+    let gpus = if reports.is_empty() {
+        Vec::new()
+    } else {
+        reelforge_ofx::gpu_report().into_iter().map(|(g, r)| (g.label().to_string(), r.clone().unwrap_or_else(|e| e), r.is_ok())).collect()
+    };
     let (gpu_ok, gpu_status) = if reports.is_empty() {
         (false, String::new())
     } else {
@@ -183,6 +189,7 @@ pub fn ofx_list() -> OfxView {
         gpu: gpu_enabled(),
         gpu_status,
         gpu_ok,
+        gpus,
         scanning,
         folders: folders()
             .into_iter()

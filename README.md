@@ -489,14 +489,18 @@ What works now:
   plugin's **positions get handles in the Viewer** to drag (% of the frame, like Reelforge's
   own). They run on the picture first, in 32-bit float (premultiplied, sRGB-encoded, values
   above 1 kept), before the built-in effects; the Viewer and export both use them. Plugins
-  that **render with OpenGL do so on the graphics card** (Reelforge makes its own OpenGL
-  context; ones that can also use the processor fall back to it if OpenGL fails, and a tick
-  box switches the graphics card off). Plugins that **read other frames** (noise reduction,
+  that **render on the graphics card do: with CUDA, OpenCL or OpenGL**, whichever they
+  support that works here, in that order (NVIDIA's driver for CUDA, the installed OpenCL
+  drivers, and an OpenGL context Reelforge makes; OpenCL on the processor only for plugins
+  with nothing else). If one fails the next is tried, then the processor, if the plugin can;
+  the effect card says what it rendered with, the OpenFX window what each API would run on,
+  and a tick box switches the graphics card off. Plugins that **read other frames** (noise reduction,
   frame blending, optical-flow retiming in the Filter context) are asked which and get them
   from the clip. Plugins load in the background at startup; one that crashes Reelforge while
   loading is skipped the next time (with **Try again** in the window); an effect that fails to
-  render says why on its card. Not offered yet: overlays the plugin draws itself, CUDA, Metal
-  and OpenCL rendering, generators, transitions and the Retimer context. Details in
+  render says why on its card. Not offered: Metal (Apple's, so only on a Mac, which Reelforge
+  doesn't run on), overlays the plugin draws itself, generators, transitions and the Retimer
+  context. Details in
   [PLUGINS.md](PLUGINS.md#openfx-plugins)
 - **Start screen** (when Reelforge opens, and **File → Start screen…**, **Ctrl+Shift+N**): start
   a new project from a preset, drawn to its shape — **Social** (Vertical 9:16 at 30 or 60 fps for

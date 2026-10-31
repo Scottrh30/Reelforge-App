@@ -100,7 +100,7 @@
         {/each}
       </div>
       {:else if ofx}
-      <p class="lead">OpenFX plugins (.ofx bundles, as used by Resolve, Nuke and Vegas) run on the picture before the other effects: on the graphics card for plugins that render with OpenGL, else on the processor. Their settings keyframe like any other, and their positions can be dragged in the Viewer.</p>
+      <p class="lead">OpenFX plugins (.ofx bundles, as used by Resolve, Nuke and Vegas) run on the picture before the other effects: on the graphics card for plugins that render with CUDA, OpenCL or OpenGL, else on the processor. Their settings keyframe like any other, and their positions can be dragged in the Viewer.</p>
       <div class="tools">
         <button onclick={() => act(api.ofxAddFolder())} title="Search another folder for .ofx.bundle plugins">Add folder…</button>
         <button onclick={() => run(api.ofxOpenFolder())} title={ofx.own_folder}>Open OpenFX folder</button>
@@ -112,9 +112,15 @@
       </label>
       <label class="check">
         <input type="checkbox" checked={ofx.gpu} disabled={!ofx.enabled} onchange={(e) => act(api.ofxGpu(e.currentTarget.checked))} />
-        Let plugins render on the graphics card (OpenGL) when they can
-        <span class="muted">{ofx.gpu_status ? (ofx.gpu_ok ? `· ${ofx.gpu_status}` : `· not available: ${ofx.gpu_status}`) : ""}</span>
+        Let plugins render on the graphics card (CUDA, OpenCL or OpenGL) when they can
       </label>
+      {#if ofx.gpus.length}
+        <ul class="gpus" aria-label="Graphics card rendering for plugins">
+          {#each ofx.gpus as [name, what, ok]}
+            <li class:off={!ok}><span class="api">{name}</span> <span class="muted">{ok ? what : `not available: ${what}`}</span></li>
+          {/each}
+        </ul>
+      {/if}
       <div class="list">
         <p class="muted small-text">Searched:</p>
         {#each ofx.folders as f (f.path)}
@@ -141,7 +147,7 @@
             </div>
             {#if b.effects.length}
               <p class="small-text">
-                {#each b.effects as e}<span class="fx">{e.name}{#if e.gpu}<span class="tag" title={e.gpu === "only" ? "Renders only on the graphics card (OpenGL)" : "Renders on the graphics card (OpenGL) when it can"}>GPU{e.gpu === "only" ? " only" : ""}</span>{/if}{#if e.temporal}<span class="tag" title="Reads the clip's neighbouring frames">frames</span>{/if}</span>{/each}
+                {#each b.effects as e}<span class="fx">{e.name}{#each e.gpu as g}<span class="tag gpu" title={e.gpu_only ? `Renders only on the graphics card (${e.gpu.join(", ")})` : `Can render on the graphics card with ${g}`}>{g}</span>{/each}{#if e.gpu.length && e.gpu_only}<span class="tag" title="Can't render on the processor">GPU only</span>{/if}{#if e.temporal}<span class="tag" title="Reads the clip's neighbouring frames">frames</span>{/if}</span>{/each}
               </p>
             {/if}
             {#each b.errors as err}<pre>{err}</pre>{/each}
@@ -218,6 +224,25 @@
   .fx {
     display: inline-block;
     margin-right: 12px;
+  }
+  .gpus {
+    list-style: none;
+    margin: -4px 0 0 26px;
+    padding: 0;
+    font-size: calc(12px * var(--text-scale));
+    display: grid;
+    gap: 2px;
+  }
+  .gpus .api {
+    display: inline-block;
+    min-width: 58px;
+    color: #6ec878;
+  }
+  .gpus .off .api {
+    color: var(--faint);
+  }
+  .tag.gpu {
+    color: #9fd3ff;
   }
   .tag {
     margin-left: 4px;

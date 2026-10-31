@@ -55,6 +55,8 @@ pub struct Pixels {
     pub row_bytes: i32,
     pub depth: &'static str,
     pub components: &'static str,
+    /// `data` is an OpenCL image (not memory or a buffer).
+    pub cl_image: bool,
 }
 
 pub struct ClipObj {
@@ -184,7 +186,8 @@ unsafe extern "C" fn clip_get_image(clip: *mut c_void, time: f64, _region: *cons
         let bounds = [0, 0, px.width as c_int, px.height as c_int];
         let mut img = PropSet::new();
         img.s("OfxPropType", "OfxTypeImage")
-            .p("OfxImagePropData", px.data)
+            .p("OfxImagePropData", if px.cl_image { std::ptr::null_mut() } else { px.data })
+            .p("OfxImageEffectPropOpenCLImage", if px.cl_image { px.data } else { std::ptr::null_mut() })
             .in_("OfxImagePropBounds", &bounds)
             .in_("OfxImagePropRegionOfDefinition", &bounds)
             .i("OfxImagePropRowBytes", px.row_bytes)
@@ -806,6 +809,7 @@ unsafe extern "C" fn fetch_suite(_host: *mut c_void, name: *const c_char, versio
         ("OfxProgressSuite", 2) => &PROGRESS_V2 as *const _ as *const c_void,
         ("OfxTimeLineSuite", 1) => &TIMELINE_SUITE as *const _ as *const c_void,
         ("OfxImageEffectOpenGLRenderSuite", 1) if gl_offered() => &OPENGL_SUITE as *const _ as *const c_void,
+        ("OfxOpenCLProgramSuite", 1) if cl_works() => &OPENCL_PROGRAM_SUITE as *const _ as *const c_void,
         // Interact, parametric parameters, drawing…: not offered.
         _ => std::ptr::null(),
     }
@@ -827,6 +831,45 @@ pub fn gl_works() -> bool {
 pub fn gl_offered() -> bool {
     crate::GPU.load(std::sync::atomic::Ordering::Relaxed) && gl_works()
 }
+
+pub fn cuda_works() -> bool {
+    crate::cuda::available().is_ok()
+}
+
+pub fn cl_works() -> bool {
+    crate::cl::available().is_ok()
+}
+
+pub fn cuda_offered() -> bool {
+    crate::GPU.load(std::sync::atomic::Ordering::Relaxed) && cuda_works()
+}
+
+pub fn cl_offered() -> bool {
+    crate::GPU.load(std::sync::atomic::Ordering::Relaxed) && cl_works()
+}
+
+// The OpenCL program suite: builds a plugin's kernels on the host's context.
+unsafe extern "C" fn cl_compile_program(source: *const c_char, _optional: c_int, result: *mut c_void) -> Status {
+    guard(|| {
+        let (Some(src), false) = (cstr(source), result.is_null()) else { return ERR_BAD_HANDLE };
+        match crate::cl::get().and_then(|c| c.compile(src)) {
+            Ok(prog) => {
+                *(result as *mut *mut c_void) = prog;
+                OK
+            }
+            Err(e) => {
+                log::warn!("OpenFX: {e}");
+                FAILED
+            }
+        }
+    })
+}
+
+#[repr(C)]
+pub struct OpenCLProgramSuiteV1 {
+    compile_program: unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> Status,
+}
+pub static OPENCL_PROGRAM_SUITE: OpenCLProgramSuiteV1 = OpenCLProgramSuiteV1 { compile_program: cl_compile_program };
 
 /// The one host every plugin is given.
 pub fn host() -> *mut OfxHost {
@@ -857,6 +900,12 @@ pub fn host() -> *mut OfxHost {
             .i("OfxImageEffectInstancePropSequentialRender", 0)
             .s("OfxImageEffectPropOpenGLRenderSupported", if gl_works() { "true" } else { "false" })
             .s("OfxImageEffectPropCPURenderSupported", "true")
+            .s("OfxImageEffectPropCudaRenderSupported", if cuda_works() { "true" } else { "false" })
+            .s("OfxImageEffectPropCudaStreamSupported", if cuda_works() { "true" } else { "false" })
+            // OpenCL buffers ("RenderSupported") and images ("Supported").
+            .s("OfxImageEffectPropOpenCLRenderSupported", if cl_works() { "true" } else { "false" })
+            .s("OfxImageEffectPropOpenCLSupported", if cl_works() { "true" } else { "false" })
+            .s("OfxImageEffectPropMetalRenderSupported", "false")
             .sn("OfxOpenGLPropPixelDepth", &["OfxBitDepthFloat", "OfxBitDepthShort", "OfxBitDepthByte"])
             .i("OfxParamHostPropSupportsCustomInteract", 0)
             .i("OfxParamHostPropSupportsCustomAnimation", 0)

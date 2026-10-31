@@ -20,6 +20,8 @@
 //! The headers this follows are the OpenFX standard's (BSD-3-Clause), from
 //! the Academy Software Foundation; no OpenFX code is copied in here.
 
+pub mod cl;
+pub mod cuda;
 pub mod gl;
 mod props;
 mod suites;
@@ -41,6 +43,64 @@ pub fn set_gpu(on: bool) {
 /// Whether OpenGL plugins can run on the graphics card here (and on what).
 pub fn gpu_status() -> Result<String, String> {
     gl::available()
+}
+
+/// The ways plugins can render on the graphics card here: (API, what on, or why not).
+pub fn gpu_report() -> Vec<(Gpu, Result<String, String>)> {
+    vec![
+        (Gpu::Cuda, cuda::available()),
+        (Gpu::OpenCl, cl::available().map(|(n, gpu)| if gpu { n } else { format!("{n}, on the processor") })),
+        (Gpu::OpenGl, gl::available()),
+        (Gpu::Metal, Err("only on a Mac".into())),
+    ]
+}
+
+/// A way a plugin can render on the graphics card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Gpu {
+    Cuda,
+    OpenCl,
+    OpenGl,
+    /// Apple's: a plugin may offer it, but it needs a Mac.
+    Metal,
+}
+
+impl Gpu {
+    pub fn label(self) -> &'static str {
+        match self {
+            Gpu::Cuda => "CUDA",
+            Gpu::OpenCl => "OpenCL",
+            Gpu::OpenGl => "OpenGL",
+            Gpu::Metal => "Metal",
+        }
+    }
+}
+
+/// How one render is done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Backend {
+    Cpu,
+    OpenGl,
+    OpenCl,
+    Cuda,
+}
+
+impl Backend {
+    fn gpu(self) -> Gpu {
+        match self {
+            Backend::Cuda => Gpu::Cuda,
+            Backend::OpenCl => Gpu::OpenCl,
+            _ => Gpu::OpenGl,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Backend::Cpu => "the processor",
+            Backend::OpenGl => "OpenGL",
+            Backend::OpenCl => "OpenCL",
+            Backend::Cuda => "CUDA",
+        }
+    }
 }
 
 pub use props::Status;
@@ -120,8 +180,14 @@ pub struct Plugin {
     pub params: Vec<ParamInfo>,
     /// It reads other frames of its source (and says which with GetFramesNeeded).
     pub temporal: bool,
-    /// It can render with OpenGL (`Some(true)`: only that way).
-    pub opengl: Option<bool>,
+    /// The ways it can render on the graphics card (best first).
+    pub gpu: Vec<Gpu>,
+    /// It can render on the processor too.
+    pub cpu: bool,
+    /// Its CUDA render takes a stream.
+    cuda_stream: bool,
+    /// Its OpenCL render takes buffers (else images).
+    cl_buffers: bool,
     /// The bit depth frames are given in.
     depth: &'static str,
     /// The texture depth for OpenGL renders.
@@ -272,6 +338,11 @@ unsafe fn describe(entry: *const OfxPlugin, library: &Arc<Library>) -> Result<Pl
         .i("OfxImageEffectPluginPropFieldRenderTwiceAlways", 1)
         .i("OfxImageEffectPropMultipleClipDepths", 0)
         .s("OfxImageEffectPropOpenGLRenderSupported", "false")
+        .s("OfxImageEffectPropCudaRenderSupported", "false")
+        .s("OfxImageEffectPropCudaStreamSupported", "false")
+        .s("OfxImageEffectPropOpenCLRenderSupported", "false")
+        .s("OfxImageEffectPropOpenCLSupported", "false")
+        .s("OfxImageEffectPropMetalRenderSupported", "false")
         .s("OfxImageEffectPropCPURenderSupported", "true")
         .s("OfxPropPluginDescription", "");
     let mut general = EffectObj::new(base);
@@ -315,12 +386,27 @@ unsafe fn describe(entry: *const OfxPlugin, library: &Arc<Library>) -> Result<Pl
     let params = desc.params.params.iter().map(|p| param_info(p)).collect();
     let label = desc.props.get_str("OfxPropLabel", 0).filter(|s| !s.is_empty()).unwrap_or_else(|| identifier.clone());
     let temporal = desc.props.get_int("OfxImageEffectPropTemporalClipAccess", 0) == Some(1) || src.props.get_int("OfxImageEffectPropTemporalClipAccess", 0) == Some(1);
-    let gl = desc.props.get_str("OfxImageEffectPropOpenGLRenderSupported", 0).unwrap_or_default();
-    let cpu = desc.props.get_str("OfxImageEffectPropCPURenderSupported", 0).is_none_or(|s| s != "false");
-    let opengl = match gl.as_str() {
-        "true" | "needed" => Some(gl == "needed" || !cpu),
-        _ => None,
-    };
+    let says = |k: &str| desc.props.get_str(k, 0).unwrap_or_default();
+    let yes = |k: &str| matches!(says(k).as_str(), "true" | "needed");
+    let needed = ["OfxImageEffectPropOpenGLRenderSupported", "OfxImageEffectPropCudaRenderSupported", "OfxImageEffectPropOpenCLRenderSupported", "OfxImageEffectPropOpenCLSupported", "OfxImageEffectPropMetalRenderSupported"].iter().any(|k| says(k) == "needed");
+    let cpu = !needed && says("OfxImageEffectPropCPURenderSupported") != "false";
+    // OpenCL buffers ("RenderSupported") or images ("Supported").
+    let cl_buffers = yes("OfxImageEffectPropOpenCLRenderSupported");
+    let cl_images = yes("OfxImageEffectPropOpenCLSupported");
+    let mut gpu = Vec::new();
+    if yes("OfxImageEffectPropCudaRenderSupported") {
+        gpu.push(Gpu::Cuda);
+    }
+    if cl_buffers || cl_images {
+        gpu.push(Gpu::OpenCl);
+    }
+    if yes("OfxImageEffectPropOpenGLRenderSupported") {
+        gpu.push(Gpu::OpenGl);
+    }
+    if yes("OfxImageEffectPropMetalRenderSupported") {
+        gpu.push(Gpu::Metal);
+    }
+    let cuda_stream = yes("OfxImageEffectPropCudaStreamSupported");
     let gl_depths = desc.props.strs("OfxOpenGLPropPixelDepth");
     let gl_depth = ["OfxBitDepthFloat", "OfxBitDepthShort", "OfxBitDepthByte"].into_iter().find(|d| gl_depths.is_empty() || gl_depths.iter().any(|x| x == d)).unwrap_or("OfxBitDepthFloat");
     Ok(Plugin {
@@ -333,7 +419,10 @@ unsafe fn describe(entry: *const OfxPlugin, library: &Arc<Library>) -> Result<Pl
         context,
         params,
         temporal,
-        opengl,
+        gpu,
+        cpu,
+        cuda_stream,
+        cl_buffers,
         depth,
         gl_depth,
         components,
@@ -427,8 +516,10 @@ pub struct Instance {
     others: Vec<(f64, Vec<u8>)>,
     /// Told it's attached to the OpenGL context (OpenGLContextAttached).
     gl_attached: bool,
-    /// OpenGL failed for this instance: the processor from now on.
-    gl_failed: bool,
+    /// Ways of rendering that failed for this instance (not tried again).
+    failed: Vec<Backend>,
+    /// How it rendered last.
+    last: Option<Backend>,
 }
 
 // SAFETY: see `Plugin`; an instance is only used by its owner.
@@ -490,7 +581,7 @@ impl Plugin {
                 .dn("OfxImageEffectPropUnmappedFrameRange", &[0.0, 1e6]);
             effect.clips.push(Box::new(suites::ClipObj::new(d.name.clone(), Box::new(props))));
         }
-        let mut inst = Instance { plugin: self.clone(), effect, created: false, source: Vec::new(), output: Vec::new(), others: Vec::new(), gl_attached: false, gl_failed: false };
+        let mut inst = Instance { plugin: self.clone(), effect, created: false, source: Vec::new(), output: Vec::new(), others: Vec::new(), gl_attached: false, failed: Vec::new(), last: None };
         inst.set_project(1920, 1080, 25.0);
         // SAFETY: the plugin's code, with its own instance handle.
         let st = unsafe { self.call("OfxActionCreateInstance", inst.handle(), None, None) };
@@ -643,8 +734,11 @@ impl Instance {
     }
 
     /// Render one frame (with other frames of the source, for plugins that
-    /// read them). Plugins that can render with OpenGL do, when it's there;
-    /// if that fails, they render on the processor if they can.
+    /// read them). A plugin that can render on the graphics card does, with
+    /// the first of CUDA, OpenCL and OpenGL it supports that works here
+    /// (OpenCL only on a graphics card, unless the processor's OpenCL is all
+    /// a plugin can use); if that fails it tries the next, and the processor
+    /// last, if it can.
     pub fn render_with(&mut self, req: &Request) -> Result<Image, String> {
         let input = req.input;
         let (w, h) = (input.width, input.height);
@@ -657,31 +751,96 @@ impl Instance {
         self.set_project(w, h, req.fps);
         self.set_values(req.values, (w, h));
         self.set_range(req.range);
-        if let Some(only_gl) = self.plugin.opengl {
-            let gl = !self.gl_failed && suites::gl_offered();
-            if gl {
-                match self.render_gl(req) {
-                    Ok(img) => return Ok(img),
-                    Err(e) if !only_gl => {
-                        log::warn!("OpenFX {}: OpenGL render failed ({e}); using the processor", self.plugin.label);
-                        self.gl_failed = true;
-                    }
-                    Err(e) => return Err(e),
+        let order = self.backends();
+        if order.is_empty() {
+            return Err(self.why_no_backend());
+        }
+        let mut last_err = String::new();
+        for b in order {
+            let r = match b {
+                Backend::Cpu => self.render_cpu(req),
+                Backend::OpenGl => self.render_gl(req),
+                Backend::OpenCl | Backend::Cuda => self.render_device(req, b),
+            };
+            match r {
+                Ok(img) => {
+                    self.last = Some(b);
+                    return Ok(img);
                 }
-            } else if only_gl {
-                let why = if !GPU.load(Ordering::Relaxed) { "switched off in Edit > Plugins > OpenFX".to_string() } else { gl::available().err().unwrap_or_else(|| "it failed for this plugin".into()) };
-                return Err(format!("{} only renders on the graphics card (OpenGL), which isn't available: {why}", self.plugin.label));
+                Err(e) if b == Backend::Cpu => return Err(e),
+                Err(e) => {
+                    log::warn!("OpenFX {}: {} render failed ({e}); trying another way", self.plugin.label, b.label());
+                    self.failed.push(b);
+                    last_err = e;
+                }
             }
         }
-        self.render_cpu(req)
+        Err(last_err)
     }
 
-    fn render_cpu(&mut self, req: &Request) -> Result<Image, String> {
+    /// How this instance can render now, best first.
+    fn backends(&self) -> Vec<Backend> {
+        let p = &self.plugin;
+        let mut out = Vec::new();
+        if GPU.load(Ordering::Relaxed) {
+            for b in [Backend::Cuda, Backend::OpenCl, Backend::OpenGl] {
+                if !p.gpu.contains(&b.gpu()) || self.failed.contains(&b) {
+                    continue;
+                }
+                let ok = match b {
+                    Backend::Cuda => suites::cuda_offered(),
+                    // OpenCL on the processor only for a plugin that has nothing better.
+                    Backend::OpenCl => suites::cl_offered() && (cl::available().is_ok_and(|(_, gpu)| gpu) || !p.cpu),
+                    Backend::OpenGl => suites::gl_offered(),
+                    Backend::Cpu => false,
+                };
+                if ok {
+                    out.push(b);
+                }
+            }
+        }
+        if p.cpu {
+            out.push(Backend::Cpu);
+        }
+        out
+    }
+
+    fn why_no_backend(&self) -> String {
+        let p = &self.plugin;
+        let names: Vec<&str> = p.gpu.iter().map(|g| g.label()).collect();
+        let why = if !GPU.load(Ordering::Relaxed) {
+            "the graphics card is switched off for plugins in Edit > Plugins > OpenFX".to_string()
+        } else {
+            p.gpu
+                .iter()
+                .map(|g| match g {
+                    Gpu::Cuda => format!("CUDA: {}", cuda::available().err().unwrap_or_else(|| "failed for this plugin".into())),
+                    Gpu::OpenCl => format!("OpenCL: {}", cl::available().err().unwrap_or_else(|| "failed for this plugin".into())),
+                    Gpu::OpenGl => format!("OpenGL: {}", gl::available().err().unwrap_or_else(|| "failed for this plugin".into())),
+                    Gpu::Metal => "Metal: only on a Mac, which Reelforge doesn't run on".to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        format!("{} only renders on the graphics card ({}), which isn't available: {why}", p.label, names.join(", "))
+    }
+
+    /// What it rendered with last time ("CUDA on …", "the processor").
+    pub fn rendered_with(&self) -> Option<String> {
+        Some(match self.last? {
+            Backend::Cpu => "the processor".to_string(),
+            Backend::OpenGl => format!("OpenGL on {}", gl::available().unwrap_or_default()),
+            Backend::OpenCl => format!("OpenCL on {}", cl::available().map(|c| c.0).unwrap_or_default()),
+            Backend::Cuda => format!("CUDA on {}", cuda::available().unwrap_or_default()),
+        })
+    }
+
+    /// The source (and other frames) in the plugin's depth and components,
+    /// and room for the output: the row length, components and bytes per channel.
+    fn prepare(&mut self, req: &Request) -> (usize, usize, usize) {
         let (w, h) = (req.input.width, req.input.height);
-        let time = req.time;
-        let depth = self.plugin.depth;
         let comps = if self.plugin.components == "OfxImageComponentRGB" { 3 } else { 4 };
-        let bpc = bytes_per_channel(depth);
+        let bpc = bytes_per_channel(self.plugin.depth);
         let row = w as usize * comps * bpc;
         let mut source = std::mem::take(&mut self.source);
         self.to_buffer(req.input, &mut source);
@@ -695,38 +854,36 @@ impl Instance {
         self.others = others;
         self.output.clear();
         self.output.resize(row * h as usize, 0);
-        let px = |buf: &mut Vec<u8>| suites::Pixels {
-            data: buf.as_mut_ptr() as *mut c_void,
-            width: w,
-            height: h,
-            row_bytes: row as i32,
-            depth,
-            components: if comps == 3 { "OfxImageComponentRGB" } else { "OfxImageComponentRGBA" },
-        };
-        let (sp, op) = (px(&mut self.source), px(&mut self.output));
-        let other_px: Vec<(f64, suites::Pixels)> = self.others.iter_mut().map(|(t, b)| (*t, px(b))).collect();
+        (row, comps, bpc)
+    }
+
+    /// Point the clips at these pixels (the Source's at `time` and other times).
+    fn attach(&mut self, time: f64, w: u32, h: u32, source: suites::Pixels, others: Vec<(f64, suites::Pixels)>, output: suites::Pixels) {
         for c in &mut self.effect.clips {
             c.time = time;
             c.others.clear();
             c.pixels = match c.name.as_str() {
                 "Source" => {
-                    c.others = other_px.clone();
-                    Some(sp)
+                    c.others = others.clone();
+                    Some(source)
                 }
-                "Output" => Some(op),
+                "Output" => Some(output),
                 _ => None,
             };
             c.props.dn("OfxImagePropRegionOfDefinition", &[0.0, 0.0, w as f64, h as f64]);
         }
         self.effect.props.d("OfxPropTime", time);
-        let st = self.run_actions(time, w, h, |_| {});
+    }
+
+    fn detach(&mut self) {
         for c in &mut self.effect.clips {
             c.pixels = None;
             c.others.clear();
         }
-        if st != props::OK {
-            return Err(format!("{} failed to render ({st}){}", self.plugin.label, last_message()));
-        }
+    }
+
+    /// The output buffer as an image (top-down float RGBA).
+    fn output_image(&self, w: u32, h: u32, row: usize, comps: usize, bpc: usize) -> Image {
         let mut out = Image { width: w, height: h, rgba: vec![0.0; w as usize * h as usize * 4] };
         for y in 0..h as usize {
             let src = &self.output[y * row..(y + 1) * row];
@@ -747,7 +904,141 @@ impl Instance {
                 }
             }
         }
-        Ok(out)
+        out
+    }
+
+    fn pixels(&self, data: *mut c_void, w: u32, h: u32, row: usize, comps: usize) -> suites::Pixels {
+        suites::Pixels {
+            data,
+            width: w,
+            height: h,
+            row_bytes: row as i32,
+            depth: self.plugin.depth,
+            components: if comps == 3 { "OfxImageComponentRGB" } else { "OfxImageComponentRGBA" },
+            cl_image: false,
+        }
+    }
+
+    fn render_cpu(&mut self, req: &Request) -> Result<Image, String> {
+        let (w, h) = (req.input.width, req.input.height);
+        let (row, comps, bpc) = self.prepare(req);
+        let (sd, od) = (self.source.as_mut_ptr() as *mut c_void, self.output.as_mut_ptr() as *mut c_void);
+        let sp = self.pixels(sd, w, h, row, comps);
+        let op = self.pixels(od, w, h, row, comps);
+        let mut other_px = Vec::new();
+        for k in 0..self.others.len() {
+            let t = self.others[k].0;
+            let d = self.others[k].1.as_mut_ptr() as *mut c_void;
+            other_px.push((t, self.pixels(d, w, h, row, comps)));
+        }
+        self.attach(req.time, w, h, sp, other_px, op);
+        let st = self.run_actions(req.time, w, h, |_| {});
+        self.detach();
+        if st != props::OK {
+            return Err(format!("{} failed to render ({st}){}", self.plugin.label, last_message()));
+        }
+        Ok(self.output_image(w, h, row, comps, bpc))
+    }
+
+    /// Render with CUDA or OpenCL: the pictures in the device's memory (CUDA
+    /// device pointers, OpenCL buffers or images), the plugin told so and
+    /// given the stream or queue, the output copied back.
+    fn render_device(&mut self, req: &Request, b: Backend) -> Result<Image, String> {
+        static DEVICE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
+        let (w, h) = (req.input.width, req.input.height);
+        let (row, comps, bpc) = self.prepare(req);
+        let len = row * h as usize;
+        let st = match b {
+            Backend::Cuda => {
+                let cu = cuda::get()?;
+                let stream = self.plugin.cuda_stream.then_some(cu.stream);
+                cu.with(|| -> Result<c_int, String> {
+                    let mut made: Vec<cuda::DevicePtr> = Vec::new();
+                    let result = (|| -> Result<c_int, String> {
+                        let src = cu.alloc(len, Some(&self.source))?;
+                        made.push(src);
+                        let mut other_px = Vec::new();
+                        for (t, buf) in &self.others {
+                            let p = cu.alloc(len, Some(buf))?;
+                            made.push(p);
+                            other_px.push((*t, self.pixels(p as usize as *mut c_void, w, h, row, comps)));
+                        }
+                        let out = cu.alloc(len, None)?;
+                        made.push(out);
+                        let (sp, op) = (self.pixels(src as usize as *mut c_void, w, h, row, comps), self.pixels(out as usize as *mut c_void, w, h, row, comps));
+                        self.attach(req.time, w, h, sp, other_px, op);
+                        let st = self.run_actions(req.time, w, h, |a| {
+                            a.i("OfxImageEffectPropCudaEnabled", 1);
+                            if let Some(s) = stream {
+                                a.p("OfxImageEffectPropCudaStream", s);
+                            }
+                        });
+                        self.detach();
+                        if st == props::OK {
+                            let mut host = std::mem::take(&mut self.output);
+                            let r = cu.read(out, stream, &mut host);
+                            self.output = host;
+                            r?;
+                        }
+                        Ok(st)
+                    })();
+                    for p in made {
+                        cu.free(p);
+                    }
+                    result
+                })?
+            }
+            _ => {
+                let cl = cl::get()?;
+                // Buffers if the plugin takes them (row-addressed, any components), else images (RGBA).
+                let images = !self.plugin.cl_buffers;
+                if images && comps != 4 {
+                    return Err("OpenCL images need RGBA".into());
+                }
+                let depth = self.plugin.depth;
+                let make = |data: Option<&[u8]>| if images { cl.image(w, h, depth, row, data) } else { cl.buffer(len, data) };
+                let mut made: Vec<cl::Mem> = Vec::new();
+                let result = (|| -> Result<c_int, String> {
+                    let src = make(Some(&self.source))?;
+                    made.push(src);
+                    let mut other_px = Vec::new();
+                    for (t, buf) in &self.others {
+                        let m = make(Some(buf))?;
+                        made.push(m);
+                        let mut p = self.pixels(m, w, h, row, comps);
+                        p.cl_image = images;
+                        other_px.push((*t, p));
+                    }
+                    let out = make(None)?;
+                    made.push(out);
+                    let (mut sp, mut op) = (self.pixels(src, w, h, row, comps), self.pixels(out, w, h, row, comps));
+                    sp.cl_image = images;
+                    op.cl_image = images;
+                    self.attach(req.time, w, h, sp, other_px, op);
+                    let queue = cl.queue;
+                    let st = self.run_actions(req.time, w, h, |a| {
+                        a.i("OfxImageEffectPropOpenCLEnabled", 1).p("OfxImageEffectPropOpenCLCommandQueue", queue);
+                    });
+                    self.detach();
+                    if st == props::OK {
+                        let mut host = std::mem::take(&mut self.output);
+                        let r = cl.read(out, images.then_some((w, h, row)), &mut host);
+                        self.output = host;
+                        r?;
+                    }
+                    Ok(st)
+                })();
+                for m in made {
+                    cl.release(m);
+                }
+                result?
+            }
+        };
+        if st != props::OK {
+            return Err(format!("{} failed to render with {} ({st}){}", self.plugin.label, b.label(), last_message()));
+        }
+        Ok(self.output_image(w, h, row, comps, bpc))
     }
 
     /// BeginSequenceRender, Render, EndSequenceRender; `extra` adds to the
@@ -887,13 +1178,7 @@ impl Instance {
                 Ok(out)
             }
         });
-        match r {
-            Ok(r) => r,
-            Err(e) => {
-                self.gl_failed = true;
-                Err(e)
-            }
-        }
+        r?
     }
 }
 

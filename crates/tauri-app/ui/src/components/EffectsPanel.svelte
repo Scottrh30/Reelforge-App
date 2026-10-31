@@ -157,8 +157,8 @@
       {#if fx.error}
         <p class="warn" title={fx.error}>Not rendering: {fx.error}</p>
       {/if}
-      {#if fx.kind === "OpenFx" && (fx.temporal || fx.gpu || fx.points.length) && !folded[key]}
-        <p class="note">{[fx.gpu && "Uses the graphics card (OpenGL) when it can", fx.temporal && "reads the clip's neighbouring frames", fx.points.length && `drag ${fx.points.length === 1 ? "its point" : "its points"} in the Viewer`].filter(Boolean).join(" · ")}</p>
+      {#if fx.kind === "OpenFx" && (fx.temporal || fx.gpu.length || fx.points.length || fx.rendered_with) && !folded[key]}
+        <p class="note">{[fx.rendered_with ? `Rendering with ${fx.rendered_with}` : fx.gpu.length ? `Can use the graphics card (${fx.gpu.join(", ")})` : "", fx.temporal && "reads the clip's neighbouring frames", fx.points.length && `drag ${fx.points.length === 1 ? "its point" : "its points"} in the Viewer`].filter(Boolean).join(" · ")}</p>
       {/if}
       {#if fx.missing}
         <p class="warn">This plugin isn't installed (id “{fx.plugin}”), so the effect is skipped. Its settings are kept: install the plugin and it comes back.</p>

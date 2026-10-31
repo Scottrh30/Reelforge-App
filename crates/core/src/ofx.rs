@@ -58,8 +58,10 @@ pub struct OfxDef {
     pub revision: u64,
     /// It reads other frames of its source (noise reduction, retiming…).
     pub temporal: bool,
-    /// It renders on the graphics card (OpenGL) when it can (`Some(true)`: only there).
-    pub opengl: Option<bool>,
+    /// The ways it can render on the graphics card ("CUDA", "OpenCL", "OpenGL", "Metal").
+    pub gpu: Vec<String>,
+    /// It can render on the processor (else only on the graphics card).
+    pub cpu: bool,
 }
 
 impl OfxDef {
@@ -279,7 +281,7 @@ mod tests {
         assert_eq!((specs[1].default, specs[1].suffix), (50.0, " %"), "fractions of the frame shown as %");
         assert_eq!(specs[3].ui, ParamUi::Toggle);
         assert_eq!(specs[5].default, 0xff0000 as f32);
-        let def = OfxDef { id: "x".into(), name: "X".into(), group: String::new(), description: String::new(), version: String::new(), bundle: PathBuf::new(), params: specs, slots, plugin_params: descs.len(), revision: 1, temporal: false, opengl: None };
+        let def = OfxDef { id: "x".into(), name: "X".into(), group: String::new(), description: String::new(), version: String::new(), bundle: PathBuf::new(), params: specs, slots, plugin_params: descs.len(), revision: 1, temporal: false, gpu: Vec::new(), cpu: true };
         let v: Vec<f32> = specs.iter().map(|s| s.default).collect();
         let back = def.plugin_values(&v, [1920.0, 1080.0]);
         assert_eq!(back[0], Some(vec![1.0]));
@@ -302,7 +304,7 @@ mod tests {
         assert_eq!(names, ["Centre X", "Centre Y", "Corner X", "Corner Y"]);
         // 75% up from the bottom is 25% down from the top.
         assert_eq!(specs.iter().map(|s| s.default).collect::<Vec<_>>(), vec![25.0, 25.0, 25.0, 75.0]);
-        let def = OfxDef { id: "p".into(), name: "P".into(), group: String::new(), description: String::new(), version: String::new(), bundle: PathBuf::new(), params: specs, slots, plugin_params: 2, revision: 1, temporal: false, opengl: None };
+        let def = OfxDef { id: "p".into(), name: "P".into(), group: String::new(), description: String::new(), version: String::new(), bundle: PathBuf::new(), params: specs, slots, plugin_params: 2, revision: 1, temporal: false, gpu: Vec::new(), cpu: true };
         assert_eq!(def.points(), vec![(0, "Centre".to_string()), (2, "Corner".to_string())]);
         // Dragged to the middle-left, three quarters down, on a 200×100 picture.
         let back = def.plugin_values(&[10.0, 75.0, 10.0, 75.0], [200.0, 100.0]);
@@ -314,7 +316,7 @@ mod tests {
     fn openfx_effects_on_a_clip() {
         use crate::{Effect, EffectKind, Time};
         let (params, slots) = map_params(&[ParamDesc::Double { label: "Amount".into(), dims: 1, normalised: false, point: false, default: vec![0.5], min: vec![0.0], max: vec![1.0] }]);
-        let def = Arc::new(OfxDef { id: "test.ofx.amount".into(), name: "Amount".into(), group: "Test".into(), description: String::new(), version: "1.0".into(), bundle: PathBuf::new(), params, slots, plugin_params: 1, revision: 7, temporal: false, opengl: None });
+        let def = Arc::new(OfxDef { id: "test.ofx.amount".into(), name: "Amount".into(), group: "Test".into(), description: String::new(), version: "1.0".into(), bundle: PathBuf::new(), params, slots, plugin_params: 1, revision: 7, temporal: false, gpu: Vec::new(), cpu: true });
         set_installed(vec![def.clone()]);
         let mut e = Effect::new_ofx(&def);
         assert_eq!((e.kind, e.label(), e.param_specs().len()), (EffectKind::OpenFx, "Amount".to_string(), 1));

@@ -246,13 +246,32 @@ each clip has its own plugin instance, so plugins that keep state between frames
 Plugins get the time (in frames), the frame rate, the clip's frame range and the whole frame.
 Adjustment layers skip OpenFX effects.
 
-**On the graphics card.** A plugin that renders with OpenGL (the OpenFX OpenGL render suite)
-does: Reelforge makes an OpenGL context of its own (WGL on Windows, EGL on Linux), gives the
-plugin its source as textures and the output as the framebuffer, and reads the result back.
-If that fails, a plugin that can also render on the processor does so from then on; one that
-can't says so on its effect card. **Let plugins render on the graphics card** in
-Edit → Plugins… → OpenFX switches it off (the window also shows which graphics card and
-OpenGL version they'd use). The OpenFX window tags such plugins **GPU** (or **GPU only**).
+**On the graphics card.** A plugin that renders on the graphics card does, with the first of
+these it supports that works on your computer:
+
+- **CUDA** (NVIDIA cards; OpenFX 1.5): through NVIDIA's driver, nothing extra to install. The
+  plugin gets its images as device memory in the card's primary context (the one the CUDA
+  runtime uses) and Reelforge's CUDA stream if it takes one.
+- **OpenCL** (OpenFX 1.5): through the OpenCL drivers installed (graphics card makers ship
+  them). One context and in-order queue on the best device; the plugin gets OpenCL buffers or
+  images, whichever it takes, and the queue, and can have its programs built for it (the
+  OpenCL program suite). OpenCL on the processor (no graphics card driver) is only used for a
+  plugin that has no other way to render.
+- **OpenGL** (the OpenGL render suite): Reelforge makes an OpenGL context of its own (WGL on
+  Windows, EGL on Linux), gives the plugin its source as textures and the output as the
+  framebuffer, and reads the result back.
+- **Metal** isn't offered: it's Apple's, and Reelforge doesn't run on Macs.
+
+If one fails, the next is tried, then the processor if the plugin can use it; a plugin that
+can't says so on its effect card. The effect card says what each effect rendered with
+("Rendering with CUDA on NVIDIA GeForce …"). **Let plugins render on the graphics card** in
+Edit → Plugins… → OpenFX switches it all off; under it the window shows what CUDA, OpenCL and
+OpenGL would each run on, or why not, and plugins are tagged with the ways they can render
+(and **GPU only** if they can't use the processor).
+
+The CUDA path has been tested with a stand-in for NVIDIA's driver (the test machines have no
+NVIDIA card), so it hasn't yet run real kernels; OpenCL has been tested with real kernels on
+PoCL (OpenCL on the processor), and OpenGL on Mesa.
 
 **Other frames.** A plugin that reads other frames of its clip (noise reduction, frame
 blending, optical flow, motion blur from motion) is asked which it needs for each frame

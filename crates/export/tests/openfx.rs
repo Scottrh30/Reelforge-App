@@ -209,7 +209,7 @@ fn an_opengl_plugin_renders_in_export() {
     let Some((device, queue)) = headless_device() else { return };
     ofxhost::scan(std::slice::from_ref(&dir), None);
     let gl = reelforge_core::ofx::installed().into_iter().find(|d| d.name == "OFX OpenGL Example").expect("installed");
-    assert_eq!(gl.opengl, Some(true));
+    assert_eq!((gl.gpu.clone(), gl.cpu), (vec!["OpenGL".to_string()], false));
     let s = Time::from_secs_f64;
     let mut p = Project::new();
     let mut sq = Sequence::new("G", 320, 180, FrameRate::new(24, 1));
@@ -227,5 +227,6 @@ fn an_opengl_plugin_renders_in_export() {
     assert!(near(px(&f, 320, 100, 130), [255, 0, 0]), "box: {:?}", px(&f, 320, 100, 130));
     assert!(near(px(&f, 320, 260, 40), [40, 200, 40]), "plane: {:?}", px(&f, 320, 260, 40));
     assert!(ofxhost::error(ClipId(2), 0).is_none());
+    assert!(ofxhost::rendered_with(ClipId(2), 0).is_some_and(|w| w.starts_with("OpenGL on ")), "{:?}", ofxhost::rendered_with(ClipId(2), 0));
     std::fs::remove_file(&out).ok();
 }

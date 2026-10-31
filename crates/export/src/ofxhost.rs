@@ -160,7 +160,8 @@ pub fn describe(p: &Plugin, bundle: &Path) -> OfxDef {
         plugin_params: p.params.len(),
         revision: REVISION.fetch_add(1, Ordering::Relaxed),
         temporal: p.temporal,
-        opengl: p.opengl,
+        gpu: p.gpu.iter().map(|g| g.label().to_string()).collect(),
+        cpu: p.cpu,
     }
 }
 
@@ -237,6 +238,22 @@ pub fn from_image(img: &Image, pts: reelforge_core::Time, generation: u64) -> Vi
 /// Why OpenFX effects didn't render, per (clip, position in its effect
 /// stack), for the effect panel to show. Cleared when they render again.
 static ERRORS: std::sync::Mutex<Vec<((ClipId, usize), String)>> = std::sync::Mutex::new(Vec::new());
+
+/// How OpenFX effects last rendered, per (clip, position): "CUDA on …".
+static RENDERED: std::sync::Mutex<Vec<((ClipId, usize), String)>> = std::sync::Mutex::new(Vec::new());
+
+/// What effect `index` of `clip` (an OpenFX one) last rendered with ("OpenCL on …", "the processor").
+pub fn rendered_with(clip: ClipId, index: usize) -> Option<String> {
+    RENDERED.lock().unwrap().iter().find(|e| e.0 == (clip, index)).map(|e| e.1.clone())
+}
+
+fn set_rendered(clip: ClipId, index: usize, how: Option<String>) {
+    let mut v = RENDERED.lock().unwrap();
+    v.retain(|x| x.0 != (clip, index));
+    if let Some(h) = how {
+        v.push(((clip, index), h));
+    }
+}
 
 /// Why effect `index` of `clip` (an OpenFX one) isn't rendering, if it isn't.
 pub fn error(clip: ClipId, index: usize) -> Option<String> {
@@ -373,6 +390,7 @@ impl OfxRunner {
                     img = out;
                     ran = true;
                     set_error(clip, s.index, None);
+                    set_rendered(clip, s.index, entry.2.rendered_with());
                 }
                 Ok(_) => {
                     if self.failed.insert((clip, s.index, s.def.revision)) {
