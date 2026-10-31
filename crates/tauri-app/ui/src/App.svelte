@@ -23,6 +23,7 @@
   import ExportQueue from "./components/ExportQueue.svelte";
   import EffectsBrowser from "./components/EffectsBrowser.svelte";
   import PluginsDialog from "./components/PluginsDialog.svelte";
+  import StartScreen from "./components/StartScreen.svelte";
   import CollectDialog from "./components/CollectDialog.svelte";
   import PasteAttributes from "./components/PasteAttributes.svelte";
   import Preferences from "./components/Preferences.svelte";
@@ -41,8 +42,19 @@
   const rightShown = $derived(dock.right.filter((p) => app.panels[p]));
   const floating = $derived(dock.float.filter((p) => app.panels[p]));
 
+  /// Show the start screen once the state is in, unless there's crashed work to recover first.
+  let launchStart = $state(false);
+  $effect(() => {
+    if (launchStart && app.s) {
+      launchStart = false;
+      if (!app.s.recoveries.length) app.startOpen = true;
+    }
+  });
+
   onMount(() => {
     start();
+    // Opened without a project to open: the start screen (unless it's switched off).
+    api.startAtLaunch().then((show) => (launchStart = show)).catch(() => {});
     const un: (() => void)[] = [];
     const scale = () => window.devicePixelRatio || 1;
     // Files dropped from the desktop: imported; over the timeline, placed where they land.
@@ -148,6 +160,7 @@
 <ExportQueue />
 <EffectsBrowser />
 <PluginsDialog />
+<StartScreen />
 <CollectDialog />
 <PasteAttributes />
 <Preferences />

@@ -129,7 +129,7 @@ export function onKey(e: KeyboardEvent) {
     }
     return;
   }
-  if (ask.open || app.exportOpen || app.effectsOpen || app.pluginsOpen || app.collectOpen || app.pasteAttrsOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
+  if (ask.open || app.startOpen || app.exportOpen || app.effectsOpen || app.pluginsOpen || app.collectOpen || app.pasteAttrsOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const go = (f: () => unknown) => {
@@ -142,6 +142,7 @@ export function onKey(e: KeyboardEvent) {
     if (k === "s" && e.shiftKey) return go(actions.saveAs);
     if (k === "s") return go(actions.save);
     if (k === "o") return go(actions.open);
+    if (k === "n" && e.shiftKey) return go(() => (app.startOpen = true));
     if (k === "n") return go(actions.newProject);
     if (k === "i") return go(actions.importMedia);
     if (k === "m") return go(actions.exportOpen);

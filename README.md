@@ -498,6 +498,19 @@ What works now:
   render says why on its card. Not offered yet: overlays the plugin draws itself, CUDA, Metal
   and OpenCL rendering, generators, transitions and the Retimer context. Details in
   [PLUGINS.md](PLUGINS.md#openfx-plugins)
+- **Start screen** (when Reelforge opens, and **File → Start screen…**, **Ctrl+Shift+N**): start
+  a new project from a preset, drawn to its shape — **Social** (Vertical 9:16 at 30 or 60 fps for
+  Reels/TikTok/Shorts, Portrait 4:5, Square 1:1), **Web & TV** (1080p at 30, 60, 25 and 29.97
+  fps, 4K UHD at 30, 60 and 24, 720p) and **Cinema** (1080p at 24 and 23.976, Scope 2.39:1 and
+  Flat 1.85:1 at 4K, DCI 2K, 4K and 2K Scope) — or **any size** and frame rate typed in; or from
+  **your templates**: **File → Save as template…** keeps a whole project to start from (its
+  sequences, tracks, titles, effects and media), and a project started from one is new and
+  unsaved, so the template is never written over. **Recent projects** sit beside them, newest
+  first, each with a picture of the Viewer from when it was last saved, its size and frame rate,
+  when, and where; ones that have been moved or deleted say so and can be taken off the list.
+  **File → Open recent** has the last ten. A tick box (also in Settings) decides whether it shows
+  at launch; it doesn't when Reelforge is opened with a project, or when there's crashed work to
+  recover first
 - **Collect project** (**File → Collect project…**): copies the project and every file it uses
   (video, audio, images, LUT files and the fonts titles use) into one folder, in `Media`,
   `LUTs` and `Fonts` subfolders next to the project file, with a progress bar and Stop. Files

@@ -38,6 +38,8 @@ export const app = $state({
   effectsOpen: false,
   pluginsOpen: false,
   settingsOpen: false,
+  /// The start screen (new from a preset or template, recent projects).
+  startOpen: false,
   /// Help → About & diagnostics, on one of its tabs (null: closed).
   aboutTab: null as null | "diagnostics" | "check" | "notices",
   /// Timeline > Duck music under dialogue… is open.

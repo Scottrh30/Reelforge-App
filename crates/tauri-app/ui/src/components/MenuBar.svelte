@@ -2,9 +2,9 @@
   import { PANEL_LABEL, showPanel, dock, type PanelId } from "../lib/dock.svelte";
   import { workspaces, allWorkspaces, find, isBuiltIn, isChanged, modified, switchTo, saveAs, remove, rename, resetLayout, sizes } from "../lib/workspace.svelte";
   import { app, run, say, setPanel } from "../lib/session.svelte";
-  import { actions, askText, question } from "../lib/actions.svelte";
+  import { actions, askText, checkUnsaved, question } from "../lib/actions.svelte";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
-  import { api } from "../lib/api";
+  import { api, type RecentView } from "../lib/api";
   import { openPrefs } from "../lib/prefs.svelte";
   import { view } from "../lib/timeline.svelte";
 
@@ -19,17 +19,51 @@
     ["meters", "Meters"],
   ];
 
+  /// File > Save as template…: name it; it's then on the start screen's Your templates.
+  async function saveTemplate() {
+    const name = await askText("Save as template", "New projects can start from this one (its sequences, tracks, titles, effects and media) on the start screen, under Your templates. A template of the same name is replaced.", app.s?.title && app.s.title !== "Untitled" ? app.s.title : "My template", "Save template");
+    if (name?.trim()) {
+      const path = await run(api.saveAsTemplate(name.trim()));
+      if (path) say(`Saved the template “${name.trim()}”: find it on the start screen (File → Start screen)`);
+    }
+  }
+
+  /// The File menu, with the recent projects fetched first.
+  async function showFile(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const recent = await api.startView().then((v) => v.recent).catch(() => [] as RecentView[]);
+    openMenu({ clientX: r.left, clientY: r.bottom + 2, preventDefault() {}, stopPropagation() {} } as MouseEvent, file(recent));
+  }
+
   function show(e: MouseEvent, items: MenuItem[]) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     openMenu({ clientX: r.left, clientY: r.bottom + 2, preventDefault() {}, stopPropagation() {} } as MouseEvent, items);
   }
 
-  const file = (): MenuItem[] => [
+  const file = (recent: RecentView[]): MenuItem[] => [
     { label: "New project", hint: "Ctrl+N", run: actions.newProject },
+    { label: "Start screen…", hint: "Ctrl+Shift+N", run: () => (app.startOpen = true) },
     { label: "Open…", hint: "Ctrl+O", run: actions.open },
+    {
+      label: "Open recent",
+      disabled: !recent.length,
+      submenu: [
+        ...recent.slice(0, 10).map((r) => ({
+          label: r.name + (r.exists ? "" : "  (not found)"),
+          hint: r.summary,
+          disabled: !r.exists || r.open,
+          run: async () => {
+            if (await checkUnsaved()) await run(api.startOpenRecent(r.path));
+          },
+        })),
+        { separator: true },
+        { label: "More on the start screen…", run: () => (app.startOpen = true) },
+      ],
+    },
     { label: "Open an autosave…", run: actions.openAutosave },
     { label: "Save", hint: "Ctrl+S", run: actions.save },
     { label: "Save as…", hint: "Ctrl+Shift+S", run: actions.saveAs },
+    { label: "Save as template…", run: saveTemplate },
     { separator: true },
     { label: "Import media…", hint: "Ctrl+I", run: actions.importMedia },
     { label: "Export…", hint: "Ctrl+M", run: actions.exportOpen },
@@ -228,7 +262,7 @@
 
 <nav class="bar" aria-label="Menu">
   <span class="mark" aria-hidden="true">R</span>
-  <button class="ghost" onclick={(e) => show(e, file())}>File</button>
+  <button class="ghost" onclick={showFile}>File</button>
   <button class="ghost" onclick={(e) => show(e, edit())}>Edit</button>
   <button class="ghost" onclick={(e) => show(e, tabs())}>Tabs</button>
   <button class="ghost" onclick={(e) => show(e, timeline())}>Timeline</button>

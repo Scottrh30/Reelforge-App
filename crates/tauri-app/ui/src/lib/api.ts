@@ -356,6 +356,7 @@ export interface Prefs {
   cache_mb: number;
   native_decoders: boolean;
   zero_copy: boolean;
+  start_screen: boolean;
 }
 
 export interface SettingsInfo {
@@ -481,6 +482,45 @@ export interface PluginsView {
   entries: PluginView[];
   live_reload: boolean;
   folder: string;
+}
+
+export interface PresetView {
+  id: string;
+  group: string;
+  name: string;
+  detail: string;
+  width: number;
+  height: number;
+  summary: string;
+}
+
+export interface RecentView {
+  path: string;
+  name: string;
+  folder: string;
+  summary: string;
+  at: number;
+  exists: boolean;
+  thumb: boolean;
+  open: boolean;
+}
+
+export interface UserTemplate {
+  name: string;
+  path: string;
+  summary: string;
+  sequences: number;
+  media: number;
+}
+
+export interface StartView {
+  presets: PresetView[];
+  recent: RecentView[];
+  templates: UserTemplate[];
+  templates_dir: string;
+  at_startup: boolean;
+  dirty: boolean;
+  has_project: boolean;
 }
 
 export interface OfxView {
@@ -760,6 +800,17 @@ export const api = {
   ofxUnblock: (path: string) => invoke<string>("ofx_unblock", { path }),
   ofxOpenFolder: () => invoke("ofx_open_folder"),
   ofxGpu: (on: boolean) => invoke<string>("ofx_gpu", { on }),
+  startView: () => invoke<StartView>("start_view"),
+  startAtLaunch: () => invoke<boolean>("start_at_launch"),
+  startNewPreset: (id: string) => invoke("start_new_preset", { id }),
+  startNewCustom: (width: number, height: number, num: number, den: number) => invoke("start_new_custom", { width, height, num, den }),
+  startNewTemplate: (path: string) => invoke("start_new_template", { path }),
+  startOpenRecent: (path: string) => invoke<boolean>("start_open_recent", { path }),
+  startForget: (path: string | null) => invoke("start_forget", { path }),
+  startThumb: (path: string) => invoke<ArrayBuffer>("start_thumb", { path }),
+  saveAsTemplate: (name: string) => invoke<string>("save_as_template", { name }),
+  templateRemove: (path: string) => invoke("template_remove", { path }),
+  startScreenSetting: (on: boolean) => invoke("start_screen_setting", { on }),
   transformKey: (id: number, prop: string) => invoke("transform_key", { id, prop }),
   keyMove: (id: number, channel: string, index: number, at: Ticks, value: number, keepTime: boolean) => invoke<number | null>("key_move", { id, channel, index, at: Math.round(at), value, keepTime }),
   keyInterp: (id: number, channel: string, index: number, interp: Interp) => invoke("key_interp", { id, channel, index, interp }),

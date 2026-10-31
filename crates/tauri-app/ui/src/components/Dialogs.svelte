@@ -40,6 +40,7 @@
   <div class="scrim">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="set-title">
       <h2 id="set-title">Settings</h2>
+      <label class="check" title="New projects from presets and your templates, and your recent projects, when Reelforge opens. File > Start screen shows it any time."><input type="checkbox" bind:checked={prefs.start_screen} /> Show the start screen when Reelforge opens</label>
       <h3>Playback</h3>
       <label class="check" title="Decode on the graphics card. Falls back to software by itself if it doesn't work. Applies to clips opened from now on."><input type="checkbox" bind:checked={prefs.hw_decode} /> Hardware video decoding{info ? ` (${info.hw_api})` : ""}</label>
       {#if info}<p class="info">Status: {info.hw_status}</p>{/if}

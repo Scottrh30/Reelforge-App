@@ -15,6 +15,7 @@ mod webview2_shim;
 mod diag;
 mod export;
 mod fx;
+mod start;
 mod openfx;
 mod keys;
 mod ops;
@@ -174,7 +175,7 @@ fn frame(max_w: u32, max_h: u32, have: i64, jpeg: bool) -> Res<Response> {
 }
 
 /// Box-filter an RGBA picture down by `k` in each direction.
-fn shrink(rgba: &[u8], w: u32, h: u32, k: u32) -> (Vec<u8>, u32, u32) {
+pub(crate) fn shrink(rgba: &[u8], w: u32, h: u32, k: u32) -> (Vec<u8>, u32, u32) {
     let (nw, nh) = (w / k, h / k);
     let mut out = Vec::with_capacity((nw * nh * 4) as usize);
     let n = k * k;
@@ -294,7 +295,10 @@ fn save(save_as: bool) -> Res<bool> {
     };
     let Some(path) = path else { return Ok(false) };
     ed(|e| match e.save_to(&path) {
-        Ok(()) => true,
+        Ok(()) => {
+            start::save_thumbnail(e);
+            true
+        }
         Err(err) => {
             e.status = format!("Save failed: {err:#}");
             false
@@ -1013,19 +1017,20 @@ fn main() {
                 }
             };
             let mut e = Editor::new(gpu, audio);
+            let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
             if let Ok(dir) = app.path().app_config_dir() {
                 let path = dir.join("settings.json");
                 if let Some(p) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Prefs>(&b).ok()) {
                     e.set_prefs(p);
                 }
                 let _ = SETTINGS_PATH.set(path);
+                start::startup(&mut e, &dir, !args.is_empty());
             }
             fx::startup(&mut e);
             openfx::startup();
             e.start_session();
             e.status = "Import media with File > Import, or drop files onto the window.".into();
             // `reelforge project.rfproj` opens it; media files are imported and laid out.
-            let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
             if let Some(p) = args.iter().find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("rfproj"))) {
                 e.open_project_path(p.clone());
             } else if !args.is_empty() {
@@ -1149,6 +1154,17 @@ fn main() {
             openfx::ofx_unblock,
             openfx::ofx_open_folder,
             openfx::ofx_gpu,
+            start::start_view,
+            start::start_at_launch,
+            start::start_new_preset,
+            start::start_new_custom,
+            start::start_new_template,
+            start::start_open_recent,
+            start::start_forget,
+            start::start_thumb,
+            start::save_as_template,
+            start::template_remove,
+            start::start_screen_setting,
             fx::open_folder,
             keys::transform_key,
             keys::key_move,

@@ -64,6 +64,8 @@ pub struct Prefs {
     pub native_decoders: bool,
     /// Leave hardware-decoded frames on the graphics card for the viewer (zero-copy).
     pub zero_copy: bool,
+    /// Show the start screen (presets, templates, recent projects) when Reelforge opens.
+    pub start_screen: bool,
 }
 
 impl Default for Prefs {
@@ -82,6 +84,7 @@ impl Default for Prefs {
             cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB,
             native_decoders: true,
             zero_copy: true,
+            start_screen: true,
         }
     }
 }
@@ -177,6 +180,8 @@ pub struct Editor {
     /// The last thing that happened, for the status bar.
     pub status: String,
     pub project_path: Option<PathBuf>,
+    /// Projects opened or saved lately (the start screen and File > Open recent).
+    pub recent: crate::start::Recent,
     /// Decoders + GPU compositor producing the viewer picture.
     pub preview: Preview,
     /// Finished frames from Render preview.
@@ -240,6 +245,7 @@ impl Editor {
             clipboard: Default::default(),
             status: String::new(),
             project_path: None,
+            recent: Default::default(),
             preview,
             render_cache: RenderCache::new(prefs.render_cache_mb),
             live_edit: None,
@@ -284,6 +290,7 @@ impl Editor {
         fresh.proxies = std::mem::take(&mut self.proxies);
         fresh.session = self.session.take();
         fresh.recoveries = std::mem::take(&mut self.recoveries);
+        fresh.recent = std::mem::take(&mut self.recent);
         fresh.project = project;
         fresh.project_path = path.clone();
         if let Some(s) = &mut fresh.session {
@@ -297,6 +304,48 @@ impl Editor {
     pub fn new_project(&mut self) {
         self.replace_project(Project::new(), None);
         self.status = "New project".into();
+    }
+
+    /// A new project whose sequence is `width` × `height` at `rate` (a
+    /// preset from the start screen, or sizes typed in).
+    pub fn new_project_with(&mut self, width: u32, height: u32, rate: reelforge_core::FrameRate) {
+        self.replace_project(crate::start::project_with(width, height, rate), None);
+        let s = self.seq();
+        self.status = format!("New project: {}", crate::start::summary_of(s));
+    }
+
+    /// A new, unsaved project copied from the template file `path` (its
+    /// sequences, tracks, titles, effects and media).
+    pub fn new_from_template(&mut self, path: &Path) {
+        match load_project(path) {
+            Ok(p) => {
+                self.replace_project(p, None);
+                self.saved_rev = self.rev;
+                self.after_load();
+                let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if !self.status.contains("can't be found") {
+                    self.status = format!("New project from the template \"{name}\"");
+                }
+            }
+            Err(e) => self.status = format!("Couldn't read the template: {e:#}"),
+        }
+    }
+
+    /// Save the project as a template called `name` in `dir` (media by
+    /// full path, so it works from anywhere). Replaces one of that name.
+    pub fn save_as_template(&mut self, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
+        self.commit_live_edit();
+        let path = crate::start::template_file(dir, name).ok_or_else(|| anyhow::anyhow!("give the template a name"))?;
+        std::fs::create_dir_all(dir)?;
+        let json = serde_json::to_string_pretty(&self.project)?;
+        crate::safety::write_atomic(&path, json.as_bytes())?;
+        self.status = format!("Saved the template \"{}\"", path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        Ok(path)
+    }
+
+    /// The main sequence's size and rate, for the recent list.
+    fn summary(&self) -> String {
+        self.project.sequences.first().map(crate::start::summary_of).unwrap_or_default()
     }
 
     /// Mark the project as changed.
@@ -2532,6 +2581,8 @@ impl Editor {
         crate::safety::write_atomic(path, json.as_bytes())?;
         self.status = format!("Saved {}", path.display());
         self.project_path = Some(path.to_owned());
+        let summary = self.summary();
+        self.recent.add(path, summary);
         self.saved_rev = self.rev;
         if let Some(s) = &mut self.session {
             s.set_project(Some(path.to_owned()));
@@ -2545,6 +2596,8 @@ impl Editor {
     pub fn open_autosave(&mut self, path: PathBuf) {
         self.open_project_path(path.clone());
         if self.project_path.as_deref() == Some(path.as_path()) {
+            // An autosave isn't a project of yours to come back to.
+            self.recent.remove(&path);
             self.project_path = None;
             self.saved_rev = self.rev.wrapping_sub(1);
             if let Some(s) = &mut self.session {
@@ -2586,6 +2639,8 @@ impl Editor {
                 self.replace_project(p, Some(path.clone()));
                 self.saved_rev = self.rev;
                 self.status = format!("Opened {}", path.display());
+                let summary = self.summary();
+                self.recent.add(&path, summary);
                 self.after_load();
             }
             Err(e) => self.status = format!("Open failed: {e:#}"),
@@ -2702,6 +2757,46 @@ mod tests {
 
     fn editor() -> Editor {
         Editor::new(None, None)
+    }
+
+    #[test]
+    fn new_from_a_preset_recent_list_and_templates() {
+        let dir = std::env::temp_dir().join(format!("rf_start_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = editor();
+        e.recent = crate::start::Recent::load(dir.join("recent.json"));
+        // A vertical project from its preset.
+        let p = crate::start::preset("vertical-30").unwrap();
+        e.new_project_with(p.width, p.height, p.frame_rate());
+        assert_eq!((e.seq().width, e.seq().height, e.seq().frame_rate.fps()), (1080, 1920, 30.0));
+        assert!(e.project_path.is_none() && !e.is_dirty());
+        // Saving puts it on the recent list (newest first), with its size.
+        e.add_title();
+        let a = dir.join("a.rfproj");
+        e.save_to(&a).unwrap();
+        assert_eq!(e.recent.list.len(), 1);
+        assert_eq!(e.recent.list[0].summary, "1080 × 1920 · 30 fps");
+        // And as a template; a project started from it is the same, but new and unsaved-to.
+        let tpl = e.save_as_template(&dir.join("templates"), "Vertical: my look").unwrap();
+        assert_eq!(tpl.file_name().unwrap(), "Vertical my look.rfproj");
+        let templates = crate::start::user_templates(&dir.join("templates"));
+        assert_eq!((templates.len(), templates[0].name.as_str(), templates[0].summary.as_str()), (1, "Vertical my look", "1080 × 1920 · 30 fps"));
+        e.new_project_with(3840, 2160, reelforge_core::FrameRate::new(24, 1));
+        assert_eq!(e.seq().width, 3840);
+        e.new_from_template(&tpl);
+        assert_eq!((e.seq().width, e.seq().height), (1080, 1920));
+        let clips: usize = e.seq().tracks.iter().map(|t| t.clips.len()).sum();
+        assert_eq!(clips, 1, "the title came along");
+        assert!(e.project_path.is_none(), "Save asks where: the template isn't written over");
+        assert!(e.recent.list.iter().all(|r| !r.path.starts_with(dir.join("templates"))), "templates aren't recent projects");
+        // Opening puts it back on top.
+        let b = dir.join("b.rfproj");
+        e.save_to(&b).unwrap();
+        e.open_project_path(a.clone());
+        assert_eq!(e.recent.list[0].path, std::fs::canonicalize(&a).unwrap());
+        assert_eq!(e.recent.list.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A small real video file made with the ffmpeg CLI (tests skip without it).
