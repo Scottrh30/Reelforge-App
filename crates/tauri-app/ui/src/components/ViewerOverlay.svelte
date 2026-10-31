@@ -322,6 +322,44 @@
       return [{ index, at: [(v(0) / 100) * size[0], (v(1) / 100) * size[1]] as Pt, dir: 0, shape: 0, extent: 0 }];
     });
   });
+  // OpenFX plugins' positions: a handle each (x, y in % of the layer, y down).
+  type FxPoint = { index: number; param: number; label: string; at: Pt };
+  const fxPoints = $derived.by((): FxPoint[] => {
+    if (!ins) return [];
+    return ins.effects.flatMap((fx, index) =>
+      !fx.enabled || !fx.points
+        ? []
+        : fx.points.filter((p) => fx.params.length > p.param + 1).map((p) => ({ index, param: p.param, label: `${fx.label}: ${p.label}`, at: [(fx.params[p.param].value / 100) * size[0], (fx.params[p.param + 1].value / 100) * size[1]] as Pt })),
+    );
+  });
+  /// Drag a plugin's position.
+  function dragFxPoint(e: PointerEvent, m: FxPoint) {
+    if (e.button !== 0 || !ins || !inv || app.live?.playing || busyTracking) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = ins.id;
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const start = toLayer(e);
+    const pump = livePump();
+    const move = (ev: PointerEvent) => {
+      const now = toLayer(ev);
+      let [dx, dy] = [now[0] - start[0], now[1] - start[1]];
+      // Shift: straight across or straight down.
+      if (ev.shiftKey) Math.abs(dx) > Math.abs(dy) ? (dy = 0) : (dx = 0);
+      const x = ((m.at[0] + dx) / size[0]) * 100;
+      const y = ((m.at[1] + dy) / size[1]) * 100;
+      pump.push(() => Promise.all([api.effectParam(id, m.index, m.param, x), api.effectParam(id, m.index, m.param + 1, y)]));
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      await pump.done();
+      await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
   /// Screen pixels the direction arrow is long.
   const ARROW = 46;
   /// Drag an emitter (`"move"`) or the tip of its direction arrow (`"aim"`).
@@ -540,6 +578,18 @@
         {@const [cx, cy] = toBox(m.at)}
         <circle {cx} {cy} r="9" class="bladeend" stroke="#ffd27a" onpointerdown={(e) => dragEmitter(e, m, "move")} role="presentation"><title>Lens flare: drag the light</title></circle>
         <text x={cx} y={cy + 4} text-anchor="middle" class="bladetag">☀</text>
+      {/each}
+    {/if}
+
+    <!-- OpenFX plugins' positions: drag them. -->
+    {#if !drawing}
+      {#each fxPoints as m (m.index + ":" + m.param)}
+        {@const [cx, cy] = toBox(m.at)}
+        <g class="fxpoint">
+          <circle {cx} {cy} r="7" class="bladeend" stroke="#7ad7ff" onpointerdown={(e) => dragFxPoint(e, m)} role="presentation"><title>{m.label}: drag to move (Shift: straight)</title></circle>
+          <path d="M{cx - 11} {cy}H{cx - 4}M{cx + 4} {cy}H{cx + 11}M{cx} {cy - 11}V{cy - 4}M{cx} {cy + 4}V{cy + 11}" class="fxcross" />
+          <text x={cx + 12} y={cy - 9} class="fxlabel">{m.label}</text>
+        </g>
       {/each}
     {/if}
 
@@ -811,6 +861,19 @@
   .bladetag {
     fill: white;
     font-size: calc(10px * var(--text-scale));
+    pointer-events: none;
+  }
+  .fxcross {
+    stroke: #7ad7ff;
+    stroke-width: 1.5;
+    pointer-events: none;
+  }
+  .fxlabel {
+    fill: #cfefff;
+    font-size: calc(10.5px * var(--text-scale));
+    paint-order: stroke;
+    stroke: rgba(0, 0, 0, 0.7);
+    stroke-width: 3px;
     pointer-events: none;
   }
   .draw.ghost {

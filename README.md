@@ -53,7 +53,7 @@ What works now:
   to bring back. Compositions are read back in floating point too, so they keep the same
   precision (and highlights) inside the outer sequence, and OpenFX plugins get deep video in
   float. 8-bit video goes the 8-bit way it always did
-- FFmpeg decoding on a background thread, with frame-accurate seeking (transport and program streams too: TS, MTS, MPG and VOB are searched by timestamp, so a seek steps back until it starts from a keyframe at or before the target)
+- FFmpeg decoding on a background thread, with frame-accurate seeking (transport and program streams too: TS, MTS, MPG and VOB are searched by timestamp, so a seek steps back until it starts from a keyframe at or before the target; MKV and WebM round frame times to the millisecond, so a frame stamped a fraction after its moment still counts as that moment's frame rather than stalling the decoder)
 - Viewer with transport bar and timecode
 - Multi-track timeline: drag media from the bin onto a track, move clips between tracks,
   razor split (`S`), delete (`Del`), scrub, zoom (`Ctrl` + scroll, or the zoom slider in the bar under the tracks), pan (scroll); drag the right edge of the track names to widen them (double-click it to reset)
@@ -485,13 +485,19 @@ What works now:
   Files\OFX\Plugins` on Windows), the `OFX_PLUGIN_PATH` folders, its own OpenFX folder and any
   you add in **Edit → Plugins… → OpenFX**; what it finds shows in the effects browser under
   **OpenFX**, by the plugin's own name. Their settings become ordinary effect settings
-  (numbers, checkboxes, menus, colours; positions as % of the frame) with keyframes, undo and
-  paste attributes. They run on the picture first, on the processor, in 32-bit float
-  (premultiplied, sRGB-encoded, values above 1 kept), before the built-in effects; the Viewer
-  and export both use them. Plugins load in the background at startup; one that crashes
-  Reelforge while loading is skipped the next time (with **Try again** in the window). Not
-  offered yet: on-screen controls, GPU rendering, reading other frames, generators and
-  transitions. Details in [PLUGINS.md](PLUGINS.md#openfx-plugins)
+  (numbers, checkboxes, menus, colours) with keyframes, undo and paste attributes, and a
+  plugin's **positions get handles in the Viewer** to drag (% of the frame, like Reelforge's
+  own). They run on the picture first, in 32-bit float (premultiplied, sRGB-encoded, values
+  above 1 kept), before the built-in effects; the Viewer and export both use them. Plugins
+  that **render with OpenGL do so on the graphics card** (Reelforge makes its own OpenGL
+  context; ones that can also use the processor fall back to it if OpenGL fails, and a tick
+  box switches the graphics card off). Plugins that **read other frames** (noise reduction,
+  frame blending, optical-flow retiming in the Filter context) are asked which and get them
+  from the clip. Plugins load in the background at startup; one that crashes Reelforge while
+  loading is skipped the next time (with **Try again** in the window); an effect that fails to
+  render says why on its card. Not offered yet: overlays the plugin draws itself, CUDA, Metal
+  and OpenCL rendering, generators, transitions and the Retimer context. Details in
+  [PLUGINS.md](PLUGINS.md#openfx-plugins)
 - **Collect project** (**File → Collect project…**): copies the project and every file it uses
   (video, audio, images, LUT files and the fonts titles use) into one folder, in `Media`,
   `LUTs` and `Fonts` subfolders next to the project file, with a progress bar and Stop. Files
@@ -705,7 +711,9 @@ crates/
            list, and offline render: exact frames -> compositor -> MovieWriter, with
            progress/cancel. Runs headless (tests use it without a window).
   ofx/     The OpenFX host: loads .ofx bundles, describes their parameters and renders
-           frames with them (the suites in Rust, the C-variadic calls in a small C shim).
+           frames with them (the suites in Rust, the C-variadic calls in a small C shim),
+           with other frames for temporal plugins and an OpenGL context (EGL / WGL) for
+           plugins that render on the graphics card.
   engine/  Everything an interface needs that isn't drawing: the editor model (Editor:
            project, undo, selection, live edits, import, save/open), playback and the cpal
            audio engine, the viewer picture (Preview), render cache, proxies, autosave and

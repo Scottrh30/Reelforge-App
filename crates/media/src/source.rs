@@ -69,6 +69,14 @@ impl FrameSource {
         }
     }
 
+    /// How far after `t` a frame may be stamped and still count as the frame
+    /// at `t`: containers that store milliseconds (MKV, WebM) round frame
+    /// times up (frame 4 at 24 fps, 166.67 ms, is stored as 167 ms).
+    fn slack(&self) -> Time {
+        let d = self.frame_duration();
+        if d > Time::ZERO { Time(d.0 / 8) } else { Time(Time::TICKS_PER_SECOND / 1000) }
+    }
+
     fn needs_seek(&self, t: Time) -> bool {
         match self.pending_seek {
             Some(s) => t < s || t - s > SEEK_THRESHOLD,
@@ -94,7 +102,8 @@ impl FrameSource {
             self.pending_seek = Some(t);
             self.decoder.seek(t, self.generation);
         }
-        while self.ahead.front().is_some_and(|f| f.pts <= t) {
+        let slack = self.slack();
+        while self.ahead.front().is_some_and(|f| f.pts <= t + slack) {
             self.current = self.ahead.pop_front();
             self.pending_seek = None;
         }
@@ -117,7 +126,7 @@ impl FrameSource {
 
     fn decoder_exact(&self, t: Time) -> bool {
         self.pending_seek.is_none()
-            && self.current.as_ref().is_some_and(|c| c.pts <= t + self.frame_duration() && t < c.pts + self.frame_duration())
+            && self.current.as_ref().is_some_and(|c| c.pts <= t + self.slack() && t + self.slack() < c.pts + self.frame_duration())
     }
 
     /// True when the frame `frame_at(t)` returned is the right one for `t`.

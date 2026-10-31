@@ -13,7 +13,7 @@ use reelforge_core::ClipId;
 use reelforge_media::VideoFrame;
 use reelforge_ofx::{Image, Instance, ParamKind, Plugin, Value};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -137,7 +137,7 @@ pub fn describe(p: &Plugin, bundle: &Path) -> OfxDef {
                 return ParamDesc::Hidden;
             }
             match &q.kind {
-                ParamKind::Double { dims, normalised } => ParamDesc::Double { label, dims: *dims, normalised: *normalised, default: fill(&q.default, *dims, 0.0), min: fill(&q.min, *dims, 0.0), max: fill(&q.max, *dims, 1.0) },
+                ParamKind::Double { dims, normalised, point } => ParamDesc::Double { label, dims: *dims, normalised: *normalised, point: *point, default: fill(&q.default, *dims, 0.0), min: fill(&q.min, *dims, 0.0), max: fill(&q.max, *dims, 1.0) },
                 ParamKind::Int { dims } => ParamDesc::Int { label, dims: *dims, default: fill(&q.default, *dims, 0.0), min: fill(&q.min, *dims, 0.0), max: fill(&q.max, *dims, 100.0) },
                 ParamKind::Bool => ParamDesc::Bool { label, default: q.default.first().is_some_and(|&v| v != 0.0) },
                 ParamKind::Choice(options) | ParamKind::StrChoice { labels: options, .. } => ParamDesc::Choice { label, options: options.clone(), default: q.default.first().map_or(0, |&v| v.max(0.0) as usize) },
@@ -159,6 +159,8 @@ pub fn describe(p: &Plugin, bundle: &Path) -> OfxDef {
         slots,
         plugin_params: p.params.len(),
         revision: REVISION.fetch_add(1, Ordering::Relaxed),
+        temporal: p.temporal,
+        opengl: p.opengl,
     }
 }
 
@@ -232,6 +234,23 @@ pub fn from_image(img: &Image, pts: reelforge_core::Time, generation: u64) -> Vi
     VideoFrame { pts, width: img.width, height: img.height, pixels, generation }
 }
 
+/// Why OpenFX effects didn't render, per (clip, position in its effect
+/// stack), for the effect panel to show. Cleared when they render again.
+static ERRORS: std::sync::Mutex<Vec<((ClipId, usize), String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Why effect `index` of `clip` (an OpenFX one) isn't rendering, if it isn't.
+pub fn error(clip: ClipId, index: usize) -> Option<String> {
+    ERRORS.lock().unwrap().iter().find(|e| e.0 == (clip, index)).map(|e| e.1.clone())
+}
+
+fn set_error(clip: ClipId, index: usize, e: Option<String>) {
+    let mut v = ERRORS.lock().unwrap();
+    v.retain(|x| x.0 != (clip, index));
+    if let Some(e) = e {
+        v.push(((clip, index), e));
+    }
+}
+
 /// Runs clips' OpenFX effects, keeping a plugin instance per effect (plugins
 /// may keep state between frames) and each clip's last result.
 #[derive(Default)]
@@ -240,30 +259,32 @@ pub struct OfxRunner {
     last: HashMap<ClipId, (u64, VideoFrame, u64)>,
     /// Effects that failed, so the error is logged once.
     failed: HashSet<(ClipId, usize, u64)>,
+    /// Each clip's recent source frames (frame number, what it shows,
+    /// picture): rendering frame after frame, the one before is already
+    /// here, so plugins that read it don't make the decoder seek back.
+    recent: HashMap<ClipId, VecDeque<(i64, u64, VideoFrame)>>,
     tick: u64,
 }
+
+/// Source frames kept per clip for plugins that read other frames.
+const RECENT: usize = 40;
 
 impl OfxRunner {
     /// Clip `clip`'s OpenFX `steps` applied to `frame`, at `fps`. The same
     /// frame back when there's nothing to run (or every step failed).
-    pub fn apply(&mut self, clip: ClipId, steps: &[OfxStep], frame: &VideoFrame, media_key: u64, fps: f64) -> VideoFrame {
+    /// `range`: the source's first and last frame; `fetch` gets the source
+    /// at another frame (for plugins that read other frames).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply(&mut self, clip: ClipId, steps: &[OfxStep], frame: &VideoFrame, media_key: u64, fps: f64, range: (f64, f64), fetch: &mut dyn FnMut(f64) -> Option<VideoFrame>) -> VideoFrame {
         self.tick += 1;
         if steps.is_empty() {
             return frame.clone();
         }
-        let mut h = DefaultHasher::new();
-        (media_key, frame.pts, frame.generation, frame.width, frame.height).hash(&mut h);
-        for s in steps {
-            s.hash_into(&mut h);
-        }
-        let key = h.finish();
-        if let Some(e) = self.last.get_mut(&clip).filter(|e| e.0 == key) {
-            e.2 = self.tick;
-            return e.1.clone();
-        }
-        let mut img = to_image(frame);
-        let mut ran = false;
-        for s in steps {
+        let size = [frame.width as f32, frame.height as f32];
+        let fps = if fps > 0.0 { fps } else { 25.0 };
+        // An instance per step, and its values for this picture.
+        let mut plan: Vec<(usize, Vec<Option<Value>>, f64)> = Vec::new();
+        for (k, s) in steps.iter().enumerate() {
             let Some(p) = plugin(&s.def.id) else { continue };
             let slot = (clip, s.index);
             let fresh = !matches!(self.instances.get(&slot), Some((id, rev, ..)) if *id == s.def.id && *rev == s.def.revision);
@@ -276,27 +297,94 @@ impl OfxRunner {
                         if self.failed.insert((clip, s.index, s.def.revision)) {
                             log::warn!("OpenFX {}: {e}", s.def.name);
                         }
+                        set_error(clip, s.index, Some(e));
                         continue;
                     }
                 }
             }
-            let entry = self.instances.get_mut(&slot).unwrap();
+            let values: Vec<Option<Value>> = s.def.plugin_values(&s.values, size).into_iter().map(|v| v.map(Value::Numbers)).collect();
+            // OpenFX counts time in frames.
+            plan.push((k, values, s.time * fps));
+        }
+        // Other frames the plugins want, fetched once for all of them.
+        let mut wanted: Vec<f64> = Vec::new();
+        for (k, values, t) in &plan {
+            let s = &steps[*k];
+            if !s.def.temporal {
+                continue;
+            }
+            let inst = &mut self.instances.get_mut(&(clip, s.index)).unwrap().2;
+            for f in inst.frames_needed(*t, fps, (frame.width, frame.height), values, range) {
+                if !wanted.iter().any(|w| (w - f).abs() < 0.5) {
+                    wanted.push(f);
+                }
+            }
+        }
+        let mut others: Vec<(f64, VideoFrame)> = Vec::new();
+        if !wanted.is_empty() {
+            let recent = self.recent.entry(clip).or_default();
+            let now = plan.first().map_or(0, |p| p.2.round() as i64);
+            let keep = |n: i64, f: &VideoFrame, recent: &mut VecDeque<(i64, u64, VideoFrame)>| {
+                recent.retain(|r| r.0 != n);
+                recent.push_back((n, media_key, f.clone()));
+                while recent.len() > RECENT {
+                    recent.pop_front();
+                }
+            };
+            keep(now, frame, recent);
+            for &t in &wanted {
+                let n = t.round() as i64;
+                let got = match recent.iter().find(|r| r.0 == n && r.1 == media_key) {
+                    Some(r) => Some(r.2.clone()),
+                    None => fetch(t).inspect(|f| keep(n, f, recent)),
+                };
+                if let Some(f) = got.filter(|f| f.width == frame.width && f.height == frame.height) {
+                    others.push((t, f));
+                }
+            }
+        }
+        let mut h = DefaultHasher::new();
+        (media_key, frame.pts, frame.generation, frame.width, frame.height).hash(&mut h);
+        // Switching the graphics card on or off can change what OpenGL-only plugins give.
+        reelforge_ofx::GPU.load(std::sync::atomic::Ordering::Relaxed).hash(&mut h);
+        for s in steps {
+            s.hash_into(&mut h);
+        }
+        for (t, f) in &others {
+            (t.to_bits(), f.pts, f.generation).hash(&mut h);
+        }
+        let key = h.finish();
+        if let Some(e) = self.last.get_mut(&clip).filter(|e| e.0 == key) {
+            e.2 = self.tick;
+            return e.1.clone();
+        }
+        let other_images: Vec<(f64, Image)> = others.iter().map(|(t, f)| (*t, to_image(f))).collect();
+        let mut img = to_image(frame);
+        let mut ran = false;
+        for (k, values, t) in &plan {
+            let s = &steps[*k];
+            let entry = self.instances.get_mut(&(clip, s.index)).unwrap();
             entry.3 = self.tick;
-            let values: Vec<Option<Value>> = s.def.plugin_values(&s.values).into_iter().map(|v| v.map(Value::Numbers)).collect();
-            match entry.2.render(&img, s.time, fps, &values) {
+            // Other frames are the clip's own (before effects above this one).
+            let refs: Vec<(f64, &Image)> = if s.def.temporal { other_images.iter().map(|(t, i)| (*t, i)).collect() } else { Vec::new() };
+            let req = reelforge_ofx::Request { input: &img, time: *t, fps, values, others: &refs, range };
+            match entry.2.render_with(&req) {
                 Ok(out) if out.width == img.width && out.height == img.height => {
                     img = out;
                     ran = true;
+                    set_error(clip, s.index, None);
                 }
                 Ok(_) => {
                     if self.failed.insert((clip, s.index, s.def.revision)) {
                         log::warn!("OpenFX {}: returned a picture of the wrong size", s.def.name);
                     }
+                    set_error(clip, s.index, Some("It returned a picture of the wrong size".into()));
                 }
                 Err(e) => {
                     if self.failed.insert((clip, s.index, s.def.revision)) {
                         log::warn!("OpenFX {}: {e}", s.def.name);
                     }
+                    set_error(clip, s.index, Some(e));
                 }
             }
         }
@@ -313,11 +401,14 @@ impl OfxRunner {
         let tick = self.tick;
         self.instances.retain(|_, e| tick - e.3 < age);
         self.last.retain(|_, e| tick - e.2 < age);
+        let last = &self.last;
+        self.recent.retain(|c, _| last.contains_key(c));
     }
 
     pub fn clear(&mut self) {
         self.instances.clear();
         self.last.clear();
+        self.recent.clear();
         self.failed.clear();
     }
 }

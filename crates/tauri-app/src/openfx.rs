@@ -39,6 +39,11 @@ fn enabled() -> bool {
     !state_dir().join("off").exists()
 }
 
+/// OpenGL plugins may use the graphics card (else the processor, if they can).
+fn gpu_enabled() -> bool {
+    !state_dir().join("gpu-off").exists()
+}
+
 /// Every folder searched, with where it comes from.
 fn folders() -> Vec<(PathBuf, &'static str)> {
     let mut out: Vec<(PathBuf, &'static str)> = Vec::new();
@@ -83,6 +88,7 @@ fn scan() -> String {
 
 /// At startup: scan in the background (a big plugin set takes a while to load).
 pub fn startup() {
+    reelforge_ofx::set_gpu(gpu_enabled());
     if !enabled() {
         return;
     }
@@ -93,6 +99,11 @@ pub fn startup() {
 #[derive(Serialize)]
 pub struct OfxView {
     pub enabled: bool,
+    /// OpenGL plugins may use the graphics card.
+    pub gpu: bool,
+    /// What they'd run on, or why they can't ("" until it's been looked at).
+    pub gpu_status: String,
+    pub gpu_ok: bool,
     pub scanning: bool,
     pub folders: Vec<OfxFolder>,
     pub bundles: Vec<OfxBundle>,
@@ -123,6 +134,10 @@ pub struct OfxEffect {
     pub group: String,
     pub version: String,
     pub params: usize,
+    /// Reads other frames of the clip.
+    pub temporal: bool,
+    /// Renders on the graphics card ("only": it can't use the processor).
+    pub gpu: &'static str,
 }
 
 #[tauri::command]
@@ -137,14 +152,37 @@ pub fn ofx_list() -> OfxView {
             effects: installed
                 .iter()
                 .filter(|d| d.bundle == r.path)
-                .map(|d| OfxEffect { name: d.name.clone(), group: d.group.clone(), version: d.version.clone(), params: d.params.len() })
+                .map(|d| OfxEffect {
+                    name: d.name.clone(),
+                    group: d.group.clone(),
+                    version: d.version.clone(),
+                    params: d.params.len(),
+                    temporal: d.temporal,
+                    gpu: match d.opengl {
+                        Some(true) => "only",
+                        Some(false) => "yes",
+                        None => "",
+                    },
+                })
                 .collect(),
             errors: r.errors.clone(),
             blocked: r.blocked,
         })
         .collect();
+    // Only once a scan has loaded plugins (it makes the OpenGL context).
+    let (gpu_ok, gpu_status) = if reports.is_empty() {
+        (false, String::new())
+    } else {
+        match reelforge_ofx::gpu_status() {
+            Ok(r) => (true, r),
+            Err(e) => (false, e),
+        }
+    };
     OfxView {
         enabled: enabled(),
+        gpu: gpu_enabled(),
+        gpu_status,
+        gpu_ok,
         scanning,
         folders: folders()
             .into_iter()
@@ -206,4 +244,21 @@ pub fn ofx_open_folder() -> Res<()> {
     let dir = own_folder();
     let _ = std::fs::create_dir_all(&dir);
     crate::fx::open_folder(dir.display().to_string())
+}
+
+/// Let OpenGL plugins use the graphics card, or keep them on the processor.
+#[tauri::command]
+pub fn ofx_gpu(on: bool) -> String {
+    let _ = std::fs::create_dir_all(state_dir());
+    let flag = state_dir().join("gpu-off");
+    if on {
+        let _ = std::fs::remove_file(flag);
+    } else {
+        let _ = std::fs::write(flag, "OpenGL for OpenFX plugins switched off in Edit > Plugins\n");
+    }
+    reelforge_ofx::set_gpu(on);
+    changed();
+    let msg = if on { "OpenFX plugins that can will render on the graphics card" } else { "OpenFX plugins will render on the processor (ones that only render on the graphics card stop)" };
+    let _ = crate::ed(|e| e.status = msg.into());
+    msg.into()
 }

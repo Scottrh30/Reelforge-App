@@ -230,22 +230,43 @@ here; you install them as their makers say, and Reelforge finds them.
 group (e.g. "Sapphire Blurs") as the author line. On a clip:
 
 - numbers, checkboxes, menus and colours become effect settings you can keyframe;
-- positions and sizes a plugin gives as a fraction of the frame show as **%** of the frame;
+- **positions** (a plugin's X/Y points: a centre, a light, a corner) show as **%** of the
+  frame, measured from the top left like Reelforge's own, and each gets a handle in the
+  Viewer to drag (Shift: straight across or down). The plugin gets them its own way (a
+  fraction of the frame or pixels, y up);
+- other sizes a plugin gives as a fraction of the frame show as **%** of the frame;
 - a colour with alpha gets a second setting, its opacity;
 - text settings, buttons, custom data and hidden settings keep the plugin's defaults.
 
-**How they run.** OpenFX effects run first, on the processor, on the clip's own picture (a
-plane at full frame size), in the order they're stacked; then the built-in and shader
-effects run on the graphics card. The plugin sees RGBA in 32-bit float (or the depth it
-asks for), premultiplied, sRGB-encoded; values above 1 from HDR or EXR footage are kept. Each
-effect on each clip has its own plugin instance, so plugins that keep state between frames
-work. Plugins get the time, the frame rate and the whole frame. Adjustment layers skip
-OpenFX effects.
+**How they run.** OpenFX effects run first, on the clip's own picture (a plane at full frame
+size), in the order they're stacked; then the built-in and shader effects run on the
+graphics card. The plugin sees RGBA in 32-bit float (or the depth it asks for),
+premultiplied, sRGB-encoded; values above 1 from HDR or EXR footage are kept. Each effect on
+each clip has its own plugin instance, so plugins that keep state between frames work.
+Plugins get the time (in frames), the frame rate, the clip's frame range and the whole frame.
+Adjustment layers skip OpenFX effects.
 
-**Not offered yet**: on-screen controls (overlays), OpenGL/CUDA/Metal rendering, reading
-other frames (temporal effects like most noise reducers need this), and the Generator,
-Transition and Retimer contexts. A plugin that needs one of these may refuse to load or
-render nothing; the window shows its message.
+**On the graphics card.** A plugin that renders with OpenGL (the OpenFX OpenGL render suite)
+does: Reelforge makes an OpenGL context of its own (WGL on Windows, EGL on Linux), gives the
+plugin its source as textures and the output as the framebuffer, and reads the result back.
+If that fails, a plugin that can also render on the processor does so from then on; one that
+can't says so on its effect card. **Let plugins render on the graphics card** in
+Edit → Plugins… → OpenFX switches it off (the window also shows which graphics card and
+OpenGL version they'd use). The OpenFX window tags such plugins **GPU** (or **GPU only**).
+
+**Other frames.** A plugin that reads other frames of its clip (noise reduction, frame
+blending, optical flow, motion blur from motion) is asked which it needs for each frame
+(GetFramesNeeded; a plugin that doesn't say gets the frame either side, and at most 16 either
+side are fetched) and gets them from the clip's media, within the media's length. Those
+frames are the clip's own, before any effects above the plugin. Frames already seen are kept
+for a while, so rendering forwards doesn't make the decoder jump back. Such plugins are
+tagged **frames** in the OpenFX window. Compositions, titles and planes give the same picture
+for every frame.
+
+**Not offered yet**: overlays a plugin draws itself (OpenGL or the Draw suite) and custom
+parameter widgets; CUDA, Metal and OpenCL rendering; and the Generator, Transition and
+Retimer contexts (retiming plugins made for the Filter context work). A plugin that needs one
+of these may refuse to load or render nothing; the window, or its effect card, shows its message.
 
 **Safety.** An OpenFX plugin is a program running inside Reelforge. If one crashes Reelforge
 while loading, Reelforge notices at the next start and skips that bundle (marked "skipped:

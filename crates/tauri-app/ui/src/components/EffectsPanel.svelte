@@ -154,6 +154,12 @@
         <button class="ghost icon" onclick={(e) => more(e, i, fx)} title="More: duplicate, reset, remove" aria-label="More for {fx.label}">⋯</button>
         {/if}
       </div>
+      {#if fx.error}
+        <p class="warn" title={fx.error}>Not rendering: {fx.error}</p>
+      {/if}
+      {#if fx.kind === "OpenFx" && (fx.temporal || fx.gpu || fx.points.length) && !folded[key]}
+        <p class="note">{[fx.gpu && "Uses the graphics card (OpenGL) when it can", fx.temporal && "reads the clip's neighbouring frames", fx.points.length && `drag ${fx.points.length === 1 ? "its point" : "its points"} in the Viewer`].filter(Boolean).join(" · ")}</p>
+      {/if}
       {#if fx.missing}
         <p class="warn">This plugin isn't installed (id “{fx.plugin}”), so the effect is skipped. Its settings are kept: install the plugin and it comes back.</p>
       {/if}
@@ -264,6 +270,11 @@
   .warn {
     color: #f0a050;
     font-size: calc(12px * var(--text-scale));
+    margin: 0;
+  }
+  .note {
+    color: var(--muted);
+    font-size: calc(11.5px * var(--text-scale));
     margin: 0;
   }
   .card {

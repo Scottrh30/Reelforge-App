@@ -66,6 +66,21 @@ pub struct EffectView {
     pub lut: Option<String>,
     pub lut_error: Option<String>,
     pub animated: bool,
+    /// Positions to drag in the Viewer (an OpenFX plugin's): the first of
+    /// each one's two parameters (x, y in % of the layer, y down) and its name.
+    pub points: Vec<PointView>,
+    /// Why it isn't rendering (an OpenFX plugin's error), if it isn't.
+    pub error: Option<String>,
+    /// An OpenFX plugin that reads other frames of the clip.
+    pub temporal: bool,
+    /// An OpenFX plugin that renders on the graphics card (OpenGL) when it can.
+    pub gpu: bool,
+}
+
+#[derive(Serialize)]
+pub struct PointView {
+    pub param: usize,
+    pub label: String,
 }
 
 #[derive(Serialize)]
@@ -101,7 +116,9 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
     let (src, in_clip) = effect_time(e, c);
     c.effects
         .iter()
-        .map(|fx| {
+        .enumerate()
+        .map(|(index, fx)| {
+            let ofx = fx.ofx_def();
             let mut fx = fx.clone();
             fx.normalize();
             let params = fx
@@ -152,6 +169,10 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 curves,
                 lut: lut.map(|p| p.display().to_string()),
                 lut_error,
+                points: ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label }).collect()),
+                error: ofx.as_ref().and_then(|_| reelforge_export::ofxhost::error(c.id, index)).filter(|_| fx.enabled),
+                temporal: ofx.as_ref().is_some_and(|d| d.temporal),
+                gpu: ofx.as_ref().is_some_and(|d| d.opengl.is_some()),
             }
         })
         .collect()

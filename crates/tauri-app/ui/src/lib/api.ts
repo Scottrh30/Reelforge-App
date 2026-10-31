@@ -439,6 +439,12 @@ export interface EffectView {
   lut: string | null;
   lut_error: string | null;
   animated: boolean;
+  /// Positions to drag in the Viewer (an OpenFX plugin's): x at `param`, y at `param + 1`.
+  points: { param: number; label: string }[];
+  /// Why it isn't rendering (an OpenFX plugin's error).
+  error: string | null;
+  temporal: boolean;
+  gpu: boolean;
 }
 
 export interface CatalogItem {
@@ -479,9 +485,12 @@ export interface PluginsView {
 
 export interface OfxView {
   enabled: boolean;
+  gpu: boolean;
+  gpu_status: string;
+  gpu_ok: boolean;
   scanning: boolean;
   folders: { path: string; place: string; exists: boolean; removable: boolean }[];
-  bundles: { path: string; name: string; effects: { name: string; group: string; version: string; params: number }[]; errors: string[]; blocked: boolean }[];
+  bundles: { path: string; name: string; effects: { name: string; group: string; version: string; params: number; temporal: boolean; gpu: "" | "yes" | "only" }[]; errors: string[]; blocked: boolean }[];
   own_folder: string;
 }
 
@@ -750,6 +759,7 @@ export const api = {
   ofxRemoveFolder: (path: string) => invoke<string>("ofx_remove_folder", { path }),
   ofxUnblock: (path: string) => invoke<string>("ofx_unblock", { path }),
   ofxOpenFolder: () => invoke("ofx_open_folder"),
+  ofxGpu: (on: boolean) => invoke<string>("ofx_gpu", { on }),
   transformKey: (id: number, prop: string) => invoke("transform_key", { id, prop }),
   keyMove: (id: number, channel: string, index: number, at: Ticks, value: number, keepTime: boolean) => invoke<number | null>("key_move", { id, channel, index, at: Math.round(at), value, keepTime }),
   keyInterp: (id: number, channel: string, index: number, interp: Interp) => invoke("key_interp", { id, channel, index, interp }),

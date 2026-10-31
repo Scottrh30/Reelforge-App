@@ -1148,6 +1148,7 @@ fn main() {
             openfx::ofx_remove_folder,
             openfx::ofx_unblock,
             openfx::ofx_open_folder,
+            openfx::ofx_gpu,
             fx::open_folder,
             keys::transform_key,
             keys::key_move,

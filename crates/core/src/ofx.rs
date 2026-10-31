@@ -23,6 +23,10 @@ pub enum Slot {
     Choice,
     /// A colour (one parameter, `0xRRGGBB`), and with alpha a second (%).
     Color { alpha: bool },
+    /// A place in the picture: x and y in % of the frame, y down (as
+    /// Reelforge's own effects and the Viewer's handles have them). The
+    /// plugin gets a fraction of the frame (`normalised`) or pixels, y up.
+    Point { normalised: bool },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +56,10 @@ pub struct OfxDef {
     pub plugin_params: usize,
     /// Unique per load, so caches know when a plugin was loaded again.
     pub revision: u64,
+    /// It reads other frames of its source (noise reduction, retiming…).
+    pub temporal: bool,
+    /// It renders on the graphics card (OpenGL) when it can (`Some(true)`: only there).
+    pub opengl: Option<bool>,
 }
 
 impl OfxDef {
@@ -59,16 +67,30 @@ impl OfxDef {
         EffectCategory::OpenFx
     }
 
+    /// Its position parameters: (the first of their two effect parameters, the name).
+    pub fn points(&self) -> Vec<(usize, String)> {
+        self.slots
+            .iter()
+            .filter(|m| matches!(m.slot, Slot::Point { .. }))
+            .map(|m| (m.first, self.params.get(m.first).map_or(String::new(), |p| p.name.trim_end_matches(" X").to_string())))
+            .collect()
+    }
+
     /// The plugin's parameter values from the effect's (`v`, one per
-    /// [`ParamSpec`]): numbers per OpenFX parameter, `None` for the ones
-    /// Reelforge doesn't show (they keep the plugin's default).
-    pub fn plugin_values(&self, v: &[f32]) -> Vec<Option<Vec<f64>>> {
+    /// [`ParamSpec`]) for a picture `size` pixels big: numbers per OpenFX
+    /// parameter, `None` for the ones Reelforge doesn't show (they keep the
+    /// plugin's default).
+    pub fn plugin_values(&self, v: &[f32], size: [f32; 2]) -> Vec<Option<Vec<f64>>> {
         let mut out = vec![None; self.plugin_params];
         let at = |i: usize| v.get(i).copied().unwrap_or(0.0) as f64;
         for m in &self.slots {
             let vals = match m.slot {
                 Slot::Numbers { n, percent } => (0..n).map(|k| if percent { at(m.first + k) / 100.0 } else { at(m.first + k) }).collect(),
                 Slot::Toggle | Slot::Choice => vec![at(m.first).round()],
+                Slot::Point { normalised } => {
+                    let (x, y) = (at(m.first) / 100.0, 1.0 - at(m.first + 1) / 100.0);
+                    if normalised { vec![x, y] } else { vec![x * size[0] as f64, y * size[1] as f64] }
+                }
                 Slot::Color { alpha } => {
                     let c = crate::effects::unpack_rgb(at(m.first) as f32);
                     let mut x: Vec<f64> = c.iter().map(|&c| c as f64).collect();
@@ -90,7 +112,9 @@ impl OfxDef {
 /// that crate, so core doesn't load native code).
 #[derive(Clone, Debug)]
 pub enum ParamDesc {
-    Double { label: String, dims: usize, normalised: bool, default: Vec<f64>, min: Vec<f64>, max: Vec<f64> },
+    /// `point`: a position (2 numbers: fractions of the frame if
+    /// `normalised`, else pixels; y up).
+    Double { label: String, dims: usize, normalised: bool, point: bool, default: Vec<f64>, min: Vec<f64>, max: Vec<f64> },
     Int { label: String, dims: usize, default: Vec<f64>, min: Vec<f64>, max: Vec<f64> },
     Bool { label: String, default: bool },
     Choice { label: String, options: Vec<String>, default: usize },
@@ -103,6 +127,10 @@ fn leak(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
 }
 
+/// A position given in pixels is turned into % of the frame against this
+/// size for its default (OpenFX's own reference frame when a plugin describes itself).
+pub const REFERENCE_SIZE: [f64; 2] = [1920.0, 1080.0];
+
 /// Turn a plugin's parameters into effect parameters (the strings are kept
 /// for the life of the program, as plugins are).
 pub fn map_params(descs: &[ParamDesc]) -> (&'static [ParamSpec], Vec<SlotMap>) {
@@ -112,7 +140,16 @@ pub fn map_params(descs: &[ParamDesc]) -> (&'static [ParamSpec], Vec<SlotMap>) {
     for (i, d) in descs.iter().enumerate() {
         let first = specs.len();
         let slot = match d {
-            ParamDesc::Double { label, dims, normalised, default, min, max } => {
+            ParamDesc::Double { label, dims: 2, normalised, point: true, default, .. } => {
+                // % of the frame, y down, like Reelforge's own positions.
+                let d = |k: usize| default.get(k).copied().unwrap_or(0.5);
+                let (x, y) = if *normalised { (d(0), d(1)) } else { (d(0) / REFERENCE_SIZE[0], d(1) / REFERENCE_SIZE[1]) };
+                for (axis, value) in [("X", x * 100.0), ("Y", (1.0 - y) * 100.0)] {
+                    specs.push(ParamSpec { name: leak(format!("{label} {axis}")), default: value as f32, min: -1000.0, max: 1100.0, suffix: " %", speed: 0.25, ui: ParamUi::Number });
+                }
+                Slot::Point { normalised: *normalised }
+            }
+            ParamDesc::Double { label, dims, normalised, default, min, max, .. } => {
                 for k in 0..*dims {
                     let name = if *dims > 1 { format!("{label} {}", axes[k.min(2)]) } else { label.clone() };
                     let (scale, suffix) = if *normalised { (100.0, " %") } else { (1.0, "") };
@@ -228,9 +265,9 @@ mod tests {
     #[test]
     fn parameters_map_onto_effect_parameters_and_back() {
         let descs = vec![
-            ParamDesc::Double { label: "Gain".into(), dims: 1, normalised: false, default: vec![1.0], min: vec![0.0], max: vec![4.0] },
+            ParamDesc::Double { label: "Gain".into(), dims: 1, normalised: false, point: false, default: vec![1.0], min: vec![0.0], max: vec![4.0] },
             ParamDesc::Hidden,
-            ParamDesc::Double { label: "Centre".into(), dims: 2, normalised: true, default: vec![0.5, 0.25], min: vec![0.0, 0.0], max: vec![1.0, 1.0] },
+            ParamDesc::Double { label: "Centre".into(), dims: 2, normalised: true, point: false, default: vec![0.5, 0.25], min: vec![0.0, 0.0], max: vec![1.0, 1.0] },
             ParamDesc::Bool { label: "Invert".into(), default: true },
             ParamDesc::Choice { label: "Mode".into(), options: vec!["A".into(), "B".into()], default: 1 },
             ParamDesc::Color { label: "Tint".into(), alpha: true, default: vec![1.0, 0.0, 0.0, 0.5] },
@@ -242,9 +279,9 @@ mod tests {
         assert_eq!((specs[1].default, specs[1].suffix), (50.0, " %"), "fractions of the frame shown as %");
         assert_eq!(specs[3].ui, ParamUi::Toggle);
         assert_eq!(specs[5].default, 0xff0000 as f32);
-        let def = OfxDef { id: "x".into(), name: "X".into(), group: String::new(), description: String::new(), version: String::new(), bundle: PathBuf::new(), params: specs, slots, plugin_params: descs.len(), revision: 1 };
+        let def = OfxDef { id: "x".into(), name: "X".into(), group: String::new(), description: String::new(), version: String::new(), bundle: PathBuf::new(), params: specs, slots, plugin_params: descs.len(), revision: 1, temporal: false, opengl: None };
         let v: Vec<f32> = specs.iter().map(|s| s.default).collect();
-        let back = def.plugin_values(&v);
+        let back = def.plugin_values(&v, [1920.0, 1080.0]);
         assert_eq!(back[0], Some(vec![1.0]));
         assert_eq!(back[1], None, "hidden: the plugin's own default");
         assert_eq!(back[2], Some(vec![0.5, 0.25]));
@@ -255,10 +292,29 @@ mod tests {
     }
 
     #[test]
+    fn positions_are_percent_of_the_frame_y_down_and_go_back_in_the_plugins_units() {
+        let descs = vec![
+            ParamDesc::Double { label: "Centre".into(), dims: 2, normalised: true, point: true, default: vec![0.25, 0.75], min: vec![0.0; 2], max: vec![1.0; 2] },
+            ParamDesc::Double { label: "Corner".into(), dims: 2, normalised: false, point: true, default: vec![480.0, 270.0], min: vec![0.0; 2], max: vec![1920.0; 2] },
+        ];
+        let (specs, slots) = map_params(&descs);
+        let names: Vec<&str> = specs.iter().map(|s| s.name).collect();
+        assert_eq!(names, ["Centre X", "Centre Y", "Corner X", "Corner Y"]);
+        // 75% up from the bottom is 25% down from the top.
+        assert_eq!(specs.iter().map(|s| s.default).collect::<Vec<_>>(), vec![25.0, 25.0, 25.0, 75.0]);
+        let def = OfxDef { id: "p".into(), name: "P".into(), group: String::new(), description: String::new(), version: String::new(), bundle: PathBuf::new(), params: specs, slots, plugin_params: 2, revision: 1, temporal: false, opengl: None };
+        assert_eq!(def.points(), vec![(0, "Centre".to_string()), (2, "Corner".to_string())]);
+        // Dragged to the middle-left, three quarters down, on a 200×100 picture.
+        let back = def.plugin_values(&[10.0, 75.0, 10.0, 75.0], [200.0, 100.0]);
+        assert_eq!(back[0], Some(vec![0.1, 0.25]), "a fraction, y up");
+        assert_eq!(back[1], Some(vec![20.0, 25.0]), "pixels, y up");
+    }
+
+    #[test]
     fn openfx_effects_on_a_clip() {
         use crate::{Effect, EffectKind, Time};
-        let (params, slots) = map_params(&[ParamDesc::Double { label: "Amount".into(), dims: 1, normalised: false, default: vec![0.5], min: vec![0.0], max: vec![1.0] }]);
-        let def = Arc::new(OfxDef { id: "test.ofx.amount".into(), name: "Amount".into(), group: "Test".into(), description: String::new(), version: "1.0".into(), bundle: PathBuf::new(), params, slots, plugin_params: 1, revision: 7 });
+        let (params, slots) = map_params(&[ParamDesc::Double { label: "Amount".into(), dims: 1, normalised: false, point: false, default: vec![0.5], min: vec![0.0], max: vec![1.0] }]);
+        let def = Arc::new(OfxDef { id: "test.ofx.amount".into(), name: "Amount".into(), group: "Test".into(), description: String::new(), version: "1.0".into(), bundle: PathBuf::new(), params, slots, plugin_params: 1, revision: 7, temporal: false, opengl: None });
         set_installed(vec![def.clone()]);
         let mut e = Effect::new_ofx(&def);
         assert_eq!((e.kind, e.label(), e.param_specs().len()), (EffectKind::OpenFx, "Amount".to_string(), 1));

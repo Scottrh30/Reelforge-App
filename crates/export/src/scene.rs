@@ -238,7 +238,20 @@ impl Scene {
                     let rgba: Vec<u8> = one.iter().copied().cycle().take(w as usize * h as usize * 4).collect();
                     picture.frame = VideoFrame::from_rgba(picture.frame.pts, w, h, Arc::from(rgba), picture.frame.generation);
                 }
-                picture.frame = self.ofx.apply(l.clip.id, &steps, &picture.frame, mh.finish(), fps);
+                // Other frames of the clip (for plugins that read them): its
+                // media's, from the provider; anything else is the same picture.
+                let media = (l.clip.nested.is_none() && l.clip.plane.is_none() && l.clip.title.is_none()).then(|| project.media(l.clip.media)).flatten();
+                let range = media.map_or((0.0, 1e6), |m| (0.0, (m.info.duration.as_secs_f64() * fps - 1.0).max(0.0)));
+                let here = picture.frame.clone();
+                let mut fetch = |f: f64| -> Option<VideoFrame> {
+                    if media.is_none() {
+                        return Some(here.clone());
+                    }
+                    let mut other = l.clone();
+                    other.source_time = Time::from_secs_f64((f / fps).max(0.0));
+                    provider.picture(project, &other, frame_size).ok().flatten().map(|p| p.frame)
+                };
+                picture.frame = self.ofx.apply(l.clip.id, &steps, &picture.frame, mh.finish(), fps, range, &mut fetch);
             }
         }
         let mask = self.mask_for(l.clip, l.clip.source_time(t), picture.size);

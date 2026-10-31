@@ -7,22 +7,41 @@
 //! 32-bit float RGBA (or 16-bit, 8-bit or RGB when that's all it takes),
 //! premultiplied; parameters set by the host before each render (Reelforge
 //! keyframes them); the property, image effect, parameter, memory,
-//! multithread, message, progress and timeline suites. Not offered: overlays
-//! and custom interacts, OpenGL/GPU rendering, parametric parameters, other
-//! frames (temporal access) and the Generator/Transition/Retimer contexts.
-//! A plugin that needs those may refuse to load, or may still work.
+//! multithread, message, progress and timeline suites; other frames of the
+//! source (temporal access: the host asks which, with GetFramesNeeded, and
+//! has them ready); and OpenGL rendering (the OpenGL render suite, on the
+//! host's own context; see [`gl`]), falling back to the processor. Not
+//! offered: overlays drawn by the plugin and custom interacts (Reelforge
+//! draws handles for a plugin's position parameters instead), CUDA, Metal and
+//! OpenCL rendering, parametric parameters and the Generator, Transition and
+//! Retimer contexts. A plugin that needs those may refuse to load, or may
+//! still work.
 //!
 //! The headers this follows are the OpenFX standard's (BSD-3-Clause), from
 //! the Academy Software Foundation; no OpenFX code is copied in here.
 
+pub mod gl;
 mod props;
 mod suites;
 
 use props::PropSet;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use suites::{EffectObj, OfxHost, ParamObj};
+
+/// Plugins that can render with OpenGL do (switch off to keep them all on the processor).
+pub static GPU: AtomicBool = AtomicBool::new(true);
+
+pub fn set_gpu(on: bool) {
+    GPU.store(on, Ordering::Relaxed);
+}
+
+/// Whether OpenGL plugins can run on the graphics card here (and on what).
+pub fn gpu_status() -> Result<String, String> {
+    gl::available()
+}
 
 pub use props::Status;
 
@@ -48,7 +67,9 @@ pub struct Library {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ParamKind {
     /// `dims` numbers (1–3). `normalised`: given as a fraction of the frame.
-    Double { dims: usize, normalised: bool },
+    /// `point`: a position in the picture (x, y; y up, as OpenFX counts),
+    /// which a host shows as a handle to drag.
+    Double { dims: usize, normalised: bool, point: bool },
     Int { dims: usize },
     Bool,
     Choice(Vec<String>),
@@ -97,8 +118,14 @@ pub struct Plugin {
     pub description: String,
     pub context: &'static str,
     pub params: Vec<ParamInfo>,
+    /// It reads other frames of its source (and says which with GetFramesNeeded).
+    pub temporal: bool,
+    /// It can render with OpenGL (`Some(true)`: only that way).
+    pub opengl: Option<bool>,
     /// The bit depth frames are given in.
     depth: &'static str,
+    /// The texture depth for OpenGL renders.
+    gl_depth: &'static str,
     components: &'static str,
     entry: *const OfxPlugin,
     /// The context descriptor (plugins may keep pointers into it).
@@ -244,6 +271,8 @@ unsafe fn describe(entry: *const OfxPlugin, library: &Arc<Library>) -> Result<Pl
         .i("OfxImageEffectPropTemporalClipAccess", 0)
         .i("OfxImageEffectPluginPropFieldRenderTwiceAlways", 1)
         .i("OfxImageEffectPropMultipleClipDepths", 0)
+        .s("OfxImageEffectPropOpenGLRenderSupported", "false")
+        .s("OfxImageEffectPropCPURenderSupported", "true")
         .s("OfxPropPluginDescription", "");
     let mut general = EffectObj::new(base);
     let st = call(entry, "OfxActionDescribe", &mut *general as *mut EffectObj as *const c_void, None, None);
@@ -285,6 +314,15 @@ unsafe fn describe(entry: *const OfxPlugin, library: &Arc<Library>) -> Result<Pl
     };
     let params = desc.params.params.iter().map(|p| param_info(p)).collect();
     let label = desc.props.get_str("OfxPropLabel", 0).filter(|s| !s.is_empty()).unwrap_or_else(|| identifier.clone());
+    let temporal = desc.props.get_int("OfxImageEffectPropTemporalClipAccess", 0) == Some(1) || src.props.get_int("OfxImageEffectPropTemporalClipAccess", 0) == Some(1);
+    let gl = desc.props.get_str("OfxImageEffectPropOpenGLRenderSupported", 0).unwrap_or_default();
+    let cpu = desc.props.get_str("OfxImageEffectPropCPURenderSupported", 0).is_none_or(|s| s != "false");
+    let opengl = match gl.as_str() {
+        "true" | "needed" => Some(gl == "needed" || !cpu),
+        _ => None,
+    };
+    let gl_depths = desc.props.strs("OfxOpenGLPropPixelDepth");
+    let gl_depth = ["OfxBitDepthFloat", "OfxBitDepthShort", "OfxBitDepthByte"].into_iter().find(|d| gl_depths.is_empty() || gl_depths.iter().any(|x| x == d)).unwrap_or("OfxBitDepthFloat");
     Ok(Plugin {
         library: library.clone(),
         version: (p.version_major, p.version_minor),
@@ -294,7 +332,10 @@ unsafe fn describe(entry: *const OfxPlugin, library: &Arc<Library>) -> Result<Pl
         label,
         context,
         params,
+        temporal,
+        opengl,
         depth,
+        gl_depth,
         components,
         entry,
         descriptor: desc,
@@ -304,11 +345,13 @@ unsafe fn describe(entry: *const OfxPlugin, library: &Arc<Library>) -> Result<Pl
 fn param_info(p: &ParamObj) -> ParamInfo {
     let ps = &p.props;
     let label = ps.get_str("OfxPropLabel", 0).filter(|s| !s.is_empty()).unwrap_or_else(|| p.name.clone());
-    let normalised = ps.get_str("OfxParamPropDoubleType", 0).is_some_and(|t| t.contains("Normalised")) || ps.get_str("OfxParamPropDefaultCoordinateSystem", 0).is_some_and(|t| t == "OfxParamCoordinatesNormalised");
+    let dtype = ps.get_str("OfxParamPropDoubleType", 0).unwrap_or_default();
+    let normalised = dtype.contains("Normalised") || ps.get_str("OfxParamPropDefaultCoordinateSystem", 0).is_some_and(|t| t == "OfxParamCoordinatesNormalised");
     let kind = match p.kind.as_str() {
-        "OfxParamTypeDouble" => ParamKind::Double { dims: 1, normalised },
-        "OfxParamTypeDouble2D" => ParamKind::Double { dims: 2, normalised },
-        "OfxParamTypeDouble3D" => ParamKind::Double { dims: 3, normalised: false },
+        "OfxParamTypeDouble" => ParamKind::Double { dims: 1, normalised, point: false },
+        // XY, XYAbsolute, NormalisedXY, NormalisedXYAbsolute: a place in the picture.
+        "OfxParamTypeDouble2D" => ParamKind::Double { dims: 2, normalised, point: dtype.contains("XY") },
+        "OfxParamTypeDouble3D" => ParamKind::Double { dims: 3, normalised: false, point: false },
         "OfxParamTypeInteger" => ParamKind::Int { dims: 1 },
         "OfxParamTypeInteger2D" => ParamKind::Int { dims: 2 },
         "OfxParamTypeInteger3D" => ParamKind::Int { dims: 3 },
@@ -380,10 +423,32 @@ pub struct Instance {
     /// Pixels the clips point at while rendering, in the plugin's depth.
     source: Vec<u8>,
     output: Vec<u8>,
+    /// Other frames of the source, likewise.
+    others: Vec<(f64, Vec<u8>)>,
+    /// Told it's attached to the OpenGL context (OpenGLContextAttached).
+    gl_attached: bool,
+    /// OpenGL failed for this instance: the processor from now on.
+    gl_failed: bool,
 }
 
 // SAFETY: see `Plugin`; an instance is only used by its owner.
 unsafe impl Send for Instance {}
+
+/// What to render.
+#[derive(Clone, Copy)]
+pub struct Request<'a> {
+    pub input: &'a Image,
+    /// Frames, at `fps`.
+    pub time: f64,
+    pub fps: f64,
+    /// Parameter values by position in the plugin's list (`None`: keep).
+    pub values: &'a [Option<Value>],
+    /// Other frames of the source (time in frames, picture), for plugins
+    /// that read them ([`Plugin::temporal`]); see [`Instance::frames_needed`].
+    pub others: &'a [(f64, &'a Image)],
+    /// The source's first and last frame.
+    pub range: (f64, f64),
+}
 
 impl Plugin {
     /// Make an instance (the plugin's CreateInstance).
@@ -423,9 +488,9 @@ impl Plugin {
                 .dn("OfxImageEffectPropFrameRange", &[0.0, 1e6])
                 .d("OfxImageEffectPropUnmappedFrameRate", 25.0)
                 .dn("OfxImageEffectPropUnmappedFrameRange", &[0.0, 1e6]);
-            effect.clips.push(Box::new(suites::ClipObj { name: d.name.clone(), props: Box::new(props), pixels: None }));
+            effect.clips.push(Box::new(suites::ClipObj::new(d.name.clone(), Box::new(props))));
         }
-        let mut inst = Instance { plugin: self.clone(), effect, created: false, source: Vec::new(), output: Vec::new() };
+        let mut inst = Instance { plugin: self.clone(), effect, created: false, source: Vec::new(), output: Vec::new(), others: Vec::new(), gl_attached: false, gl_failed: false };
         inst.set_project(1920, 1080, 25.0);
         // SAFETY: the plugin's code, with its own instance handle.
         let st = unsafe { self.call("OfxActionCreateInstance", inst.handle(), None, None) };
@@ -506,23 +571,64 @@ impl Instance {
     /// Render `input` at `time` (frames, at `fps`) with these parameter
     /// values (`None` keeps the current value), and return the result.
     pub fn render(&mut self, input: &Image, time: f64, fps: f64, values: &[Option<Value>]) -> Result<Image, String> {
-        let (w, h) = (input.width, input.height);
-        if w == 0 || h == 0 || input.rgba.len() != w as usize * h as usize * 4 {
-            return Err("empty or mismatched picture".into());
+        self.render_with(&Request { input, time, fps, values, others: &[], range: (0.0, 1e6) })
+    }
+
+    fn set_range(&mut self, range: (f64, f64)) {
+        let r = [range.0, range.1.max(range.0)];
+        self.effect.props.dn("OfxImageEffectPropFrameRange", &r).d("OfxImageEffectInstancePropEffectDuration", r[1] - r[0] + 1.0);
+        for c in &mut self.effect.clips {
+            c.props.dn("OfxImageEffectPropFrameRange", &r).dn("OfxImageEffectPropUnmappedFrameRange", &r);
         }
-        self.set_project(w, h, fps);
-        self.set_values(values, (w, h));
-        let depth = self.plugin.depth;
+    }
+
+    /// Which other frames of the source the plugin will want to render at
+    /// `time` with these settings (empty for plugins that don't read other
+    /// frames). Fetch them and pass them in [`Request::others`].
+    pub fn frames_needed(&mut self, time: f64, fps: f64, size: (u32, u32), values: &[Option<Value>], range: (f64, f64)) -> Vec<f64> {
+        if !self.plugin.temporal {
+            return Vec::new();
+        }
+        self.set_project(size.0, size.1, fps);
+        self.set_values(values, size);
+        self.set_range(range);
+        let mut args = PropSet::default();
+        args.d("OfxPropTime", time);
+        let mut out = PropSet::default();
+        out.dn("OfxImageClipPropFrameRange_Source", &[time, time]);
+        let handle = self.handle();
+        // SAFETY: the plugin's code, on its own instance.
+        let st = unsafe { self.plugin.call("OfxImageEffectActionGetFramesNeeded", handle, Some(&mut args), Some(&mut out)) };
+        // Not answered: the frames either side (what most such plugins read).
+        let pairs = if st == props::OK { out.get_dbls("OfxImageClipPropFrameRange_Source") } else { vec![time - 1.0, time + 1.0] };
+        let mut frames: Vec<f64> = Vec::new();
+        for r in pairs.chunks_exact(2) {
+            let (a, b) = (r[0].min(r[1]).max(range.0), r[0].max(r[1]).min(range.1));
+            // At most 16 frames either side.
+            let (a, b) = (a.max(time - 16.0).round(), b.min(time + 16.0).round());
+            let mut t = a;
+            while t <= b {
+                if (t - time).abs() >= 0.5 && !frames.iter().any(|f| (f - t).abs() < 0.5) {
+                    frames.push(t);
+                }
+                t += 1.0;
+            }
+        }
+        frames
+    }
+
+    /// A picture in the plugin's depth and components, rows bottom to top.
+    fn to_buffer(&self, img: &Image, buf: &mut Vec<u8>) {
+        let (w, h) = (img.width as usize, img.height as usize);
         let comps = if self.plugin.components == "OfxImageComponentRGB" { 3 } else { 4 };
-        let bpc = bytes_per_channel(depth);
-        let row = w as usize * comps * bpc;
-        // Rows bottom to top, as OpenFX counts y upwards.
-        self.source.clear();
-        self.source.resize(row * h as usize, 0);
-        for y in 0..h as usize {
-            let src = &input.rgba[(h as usize - 1 - y) * w as usize * 4..][..w as usize * 4];
-            let dst = &mut self.source[y * row..(y + 1) * row];
-            for x in 0..w as usize {
+        let bpc = bytes_per_channel(self.plugin.depth);
+        let row = w * comps * bpc;
+        buf.clear();
+        buf.resize(row * h, 0);
+        for y in 0..h {
+            let src = &img.rgba[(h - 1 - y) * w * 4..][..w * 4];
+            let dst = &mut buf[y * row..(y + 1) * row];
+            for x in 0..w {
                 for ch in 0..comps {
                     let v = src[x * 4 + ch];
                     let at = (x * comps + ch) * bpc;
@@ -534,6 +640,59 @@ impl Instance {
                 }
             }
         }
+    }
+
+    /// Render one frame (with other frames of the source, for plugins that
+    /// read them). Plugins that can render with OpenGL do, when it's there;
+    /// if that fails, they render on the processor if they can.
+    pub fn render_with(&mut self, req: &Request) -> Result<Image, String> {
+        let input = req.input;
+        let (w, h) = (input.width, input.height);
+        if w == 0 || h == 0 || input.rgba.len() != w as usize * h as usize * 4 {
+            return Err("empty or mismatched picture".into());
+        }
+        if req.others.iter().any(|(_, o)| o.width != w || o.height != h || o.rgba.len() != input.rgba.len()) {
+            return Err("other frames of a different size".into());
+        }
+        self.set_project(w, h, req.fps);
+        self.set_values(req.values, (w, h));
+        self.set_range(req.range);
+        if let Some(only_gl) = self.plugin.opengl {
+            let gl = !self.gl_failed && suites::gl_offered();
+            if gl {
+                match self.render_gl(req) {
+                    Ok(img) => return Ok(img),
+                    Err(e) if !only_gl => {
+                        log::warn!("OpenFX {}: OpenGL render failed ({e}); using the processor", self.plugin.label);
+                        self.gl_failed = true;
+                    }
+                    Err(e) => return Err(e),
+                }
+            } else if only_gl {
+                let why = if !GPU.load(Ordering::Relaxed) { "switched off in Edit > Plugins > OpenFX".to_string() } else { gl::available().err().unwrap_or_else(|| "it failed for this plugin".into()) };
+                return Err(format!("{} only renders on the graphics card (OpenGL), which isn't available: {why}", self.plugin.label));
+            }
+        }
+        self.render_cpu(req)
+    }
+
+    fn render_cpu(&mut self, req: &Request) -> Result<Image, String> {
+        let (w, h) = (req.input.width, req.input.height);
+        let time = req.time;
+        let depth = self.plugin.depth;
+        let comps = if self.plugin.components == "OfxImageComponentRGB" { 3 } else { 4 };
+        let bpc = bytes_per_channel(depth);
+        let row = w as usize * comps * bpc;
+        let mut source = std::mem::take(&mut self.source);
+        self.to_buffer(req.input, &mut source);
+        self.source = source;
+        let mut others = std::mem::take(&mut self.others);
+        others.resize_with(req.others.len(), || (0.0, Vec::new()));
+        for ((t, buf), (ot, img)) in others.iter_mut().zip(req.others) {
+            *t = *ot;
+            self.to_buffer(img, buf);
+        }
+        self.others = others;
         self.output.clear();
         self.output.resize(row * h as usize, 0);
         let px = |buf: &mut Vec<u8>| suites::Pixels {
@@ -545,43 +704,25 @@ impl Instance {
             components: if comps == 3 { "OfxImageComponentRGB" } else { "OfxImageComponentRGBA" },
         };
         let (sp, op) = (px(&mut self.source), px(&mut self.output));
+        let other_px: Vec<(f64, suites::Pixels)> = self.others.iter_mut().map(|(t, b)| (*t, px(b))).collect();
         for c in &mut self.effect.clips {
+            c.time = time;
+            c.others.clear();
             c.pixels = match c.name.as_str() {
-                "Source" => Some(sp),
+                "Source" => {
+                    c.others = other_px.clone();
+                    Some(sp)
+                }
                 "Output" => Some(op),
                 _ => None,
             };
             c.props.dn("OfxImagePropRegionOfDefinition", &[0.0, 0.0, w as f64, h as f64]);
         }
-        self.effect.props.d("OfxPropTime", time).dn("OfxImageEffectPropFrameRange", &[time, time]);
-        let handle = self.handle();
-        // SAFETY: the plugin's code, on its own instance, whose clips point at
-        // buffers that outlive these calls.
-        let st = unsafe {
-            let mut seq = PropSet::default();
-            seq.dn("OfxImageEffectPropFrameRange", &[time, time])
-                .d("OfxImageEffectPropFrameStep", 1.0)
-                .i("OfxPropIsInteractive", 0)
-                .dn("OfxImageEffectPropRenderScale", &[1.0, 1.0])
-                .i("OfxImageEffectPropSequentialRenderStatus", 0)
-                .i("OfxImageEffectPropInteractiveRenderStatus", 0);
-            let begin = self.plugin.call("OfxImageEffectActionBeginSequenceRender", handle, Some(&mut seq.clone()), None);
-            let mut args = PropSet::default();
-            args.d("OfxPropTime", time)
-                .s("OfxImageEffectPropFieldToRender", "OfxFieldNone")
-                .in_("OfxImageEffectPropRenderWindow", &[0, 0, w as c_int, h as c_int])
-                .dn("OfxImageEffectPropRenderScale", &[1.0, 1.0])
-                .i("OfxImageEffectPropSequentialRenderStatus", 0)
-                .i("OfxImageEffectPropInteractiveRenderStatus", 0)
-                .i("OfxImageEffectPropRenderQualityDraft", 0);
-            let st = self.plugin.call("OfxImageEffectActionRender", handle, Some(&mut args), None);
-            if ok(begin) {
-                self.plugin.call("OfxImageEffectActionEndSequenceRender", handle, Some(&mut seq), None);
-            }
-            st
-        };
+        self.effect.props.d("OfxPropTime", time);
+        let st = self.run_actions(time, w, h, |_| {});
         for c in &mut self.effect.clips {
             c.pixels = None;
+            c.others.clear();
         }
         if st != props::OK {
             return Err(format!("{} failed to render ({st}){}", self.plugin.label, last_message()));
@@ -608,10 +749,162 @@ impl Instance {
         }
         Ok(out)
     }
+
+    /// BeginSequenceRender, Render, EndSequenceRender; `extra` adds to the
+    /// arguments of each (OpenGL's). The Render action's status.
+    fn run_actions(&mut self, time: f64, w: u32, h: u32, extra: impl Fn(&mut PropSet)) -> c_int {
+        let handle = self.handle();
+        // SAFETY: the plugin's code, on its own instance, whose clips point at
+        // buffers that outlive these calls.
+        unsafe {
+            let mut seq = PropSet::default();
+            seq.dn("OfxImageEffectPropFrameRange", &[time, time])
+                .d("OfxImageEffectPropFrameStep", 1.0)
+                .i("OfxPropIsInteractive", 0)
+                .dn("OfxImageEffectPropRenderScale", &[1.0, 1.0])
+                .i("OfxImageEffectPropSequentialRenderStatus", 0)
+                .i("OfxImageEffectPropInteractiveRenderStatus", 0);
+            extra(&mut seq);
+            let begin = self.plugin.call("OfxImageEffectActionBeginSequenceRender", handle, Some(&mut seq.clone()), None);
+            let mut args = PropSet::default();
+            args.d("OfxPropTime", time)
+                .s("OfxImageEffectPropFieldToRender", "OfxFieldNone")
+                .in_("OfxImageEffectPropRenderWindow", &[0, 0, w as c_int, h as c_int])
+                .dn("OfxImageEffectPropRenderScale", &[1.0, 1.0])
+                .i("OfxImageEffectPropSequentialRenderStatus", 0)
+                .i("OfxImageEffectPropInteractiveRenderStatus", 0)
+                .i("OfxImageEffectPropRenderQualityDraft", 0);
+            extra(&mut args);
+            let st = self.plugin.call("OfxImageEffectActionRender", handle, Some(&mut args), None);
+            if ok(begin) {
+                self.plugin.call("OfxImageEffectActionEndSequenceRender", handle, Some(&mut seq), None);
+            }
+            st
+        }
+    }
+
+    /// Render with OpenGL: the source frames as textures, the output a
+    /// texture bound as the framebuffer (pixel coordinates, y up), read back.
+    fn render_gl(&mut self, req: &Request) -> Result<Image, String> {
+        let (w, h) = (req.input.width, req.input.height);
+        let time = req.time;
+        // Float RGBA, rows bottom to top, as textures want them.
+        let flip = |img: &Image| -> Vec<f32> {
+            let row = img.width as usize * 4;
+            let mut v = Vec::with_capacity(img.rgba.len());
+            for y in (0..img.height as usize).rev() {
+                v.extend_from_slice(&img.rgba[y * row..(y + 1) * row]);
+            }
+            v
+        };
+        let frames: Vec<(f64, Vec<f32>)> = std::iter::once((time, flip(req.input))).chain(req.others.iter().map(|(t, i)| (*t, flip(i)))).collect();
+        let depth = self.plugin.gl_depth;
+        let r = gl::with(|g| {
+            let f = &g.fns;
+            // SAFETY: OpenGL calls on our current context; the plugin's code on its own instance.
+            unsafe {
+                if !self.gl_attached {
+                    let handle = self.handle();
+                    let st = self.plugin.call("OfxActionOpenGLContextAttached", handle, None, None);
+                    if !ok(st) {
+                        return Err(format!("it wouldn't attach to the OpenGL context ({st})"));
+                    }
+                    self.gl_attached = true;
+                }
+                while (f.get_error)() != 0 {}
+                let mut tex = 0;
+                (f.gen_textures)(1, &mut tex);
+                (f.bind_texture)(gl::TEXTURE_2D, tex);
+                (f.tex_image_2d)(gl::TEXTURE_2D, 0, suites::gl_format(depth) as c_int, w as c_int, h as c_int, 0, gl::RGBA, gl::FLOAT, std::ptr::null());
+                (f.tex_parameteri)(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR);
+                (f.tex_parameteri)(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR);
+                (f.bind_texture)(gl::TEXTURE_2D, 0);
+                let mut fbo = 0;
+                (f.gen_framebuffers)(1, &mut fbo);
+                (f.bind_framebuffer)(gl::FRAMEBUFFER, fbo);
+                (f.framebuffer_texture_2d)(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D, tex, 0);
+                let cleanup = |f: &gl::Fns| {
+                    (f.bind_framebuffer)(gl::FRAMEBUFFER, 0);
+                    (f.delete_framebuffers)(1, &fbo);
+                    (f.delete_textures)(1, &tex);
+                };
+                if (f.check_framebuffer_status)(gl::FRAMEBUFFER) != gl::FRAMEBUFFER_COMPLETE {
+                    cleanup(f);
+                    return Err(format!("couldn't draw into a {w}×{h} {depth} texture"));
+                }
+                (f.viewport)(0, 0, w as c_int, h as c_int);
+                (f.matrix_mode)(gl::PROJECTION);
+                (f.load_identity)();
+                (f.ortho)(0.0, w as f64, 0.0, h as f64, -1.0, 1.0);
+                (f.matrix_mode)(gl::MODELVIEW);
+                (f.load_identity)();
+                (f.clear_color)(0.0, 0.0, 0.0, 0.0);
+                (f.clear)(gl::COLOR_BUFFER_BIT);
+                let src = suites::GlClip { frames: frames.iter().map(|(t, v)| (*t, v.as_ptr(), w, h)).collect(), output: None, depth };
+                for c in &mut self.effect.clips {
+                    c.time = time;
+                    c.pixels = None;
+                    c.others.clear();
+                    c.gl = match c.name.as_str() {
+                        "Source" => Some(src.clone()),
+                        "Output" => Some(suites::GlClip { frames: Vec::new(), output: Some((tex, w, h)), depth }),
+                        _ => None,
+                    };
+                    c.props.dn("OfxImagePropRegionOfDefinition", &[0.0, 0.0, w as f64, h as f64]);
+                }
+                self.effect.props.d("OfxPropTime", time);
+                let st = self.run_actions(time, w, h, |a| {
+                    a.i("OfxImageEffectPropOpenGLEnabled", 1).i("OfxImageEffectPropOpenGLTextureIndex", tex as c_int).i("OfxImageEffectPropOpenGLTextureTarget", gl::TEXTURE_2D as c_int);
+                });
+                for c in &mut self.effect.clips {
+                    c.gl = None;
+                }
+                // Errors from the plugin's own drawing are its business (and
+                // harmless ones are common); only the readback's count.
+                let mut n = 0;
+                while (f.get_error)() != 0 && n < 64 {
+                    n += 1;
+                }
+                // The plugin may have bound something else.
+                (f.bind_framebuffer)(gl::FRAMEBUFFER, fbo);
+                (f.finish)();
+                let mut px = vec![0f32; w as usize * h as usize * 4];
+                (f.pixel_storei)(gl::PACK_ALIGNMENT, 4);
+                (f.read_pixels)(0, 0, w as c_int, h as c_int, gl::RGBA, gl::FLOAT, px.as_mut_ptr() as *mut c_void);
+                let err = (f.get_error)();
+                cleanup(f);
+                if st != props::OK {
+                    return Err(format!("{} failed to render with OpenGL ({st}){}", self.plugin.label, last_message()));
+                }
+                if err != 0 {
+                    return Err(format!("OpenGL error {err:#x}"));
+                }
+                let row = w as usize * 4;
+                let mut out = Image { width: w, height: h, rgba: Vec::with_capacity(px.len()) };
+                for y in (0..h as usize).rev() {
+                    out.rgba.extend_from_slice(&px[y * row..(y + 1) * row]);
+                }
+                Ok(out)
+            }
+        });
+        match r {
+            Ok(r) => r,
+            Err(e) => {
+                self.gl_failed = true;
+                Err(e)
+            }
+        }
+    }
 }
 
 impl Drop for Instance {
     fn drop(&mut self) {
+        if self.gl_attached {
+            let h = self.handle();
+            let plugin = self.plugin.clone();
+            // SAFETY: the plugin's code, with the context it was attached to current.
+            let _ = gl::with(|_| unsafe { plugin.call("OfxActionOpenGLContextDetached", h, None, None) });
+        }
         if self.created {
             let h = self.handle();
             // SAFETY: the plugin's code, letting go of its own instance.

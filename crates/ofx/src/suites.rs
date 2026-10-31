@@ -60,7 +60,39 @@ pub struct Pixels {
 pub struct ClipObj {
     pub name: String,
     pub props: Box<PropSet>,
+    /// The image at the render's time.
     pub pixels: Option<Pixels>,
+    /// That time (frames).
+    pub time: f64,
+    /// Images at other times (frames), for plugins that read other frames.
+    pub others: Vec<(f64, Pixels)>,
+    /// While rendering with OpenGL: what textures can be made from.
+    pub gl: Option<GlClip>,
+}
+
+impl ClipObj {
+    pub fn new(name: String, props: Box<PropSet>) -> Self {
+        ClipObj { name, props, pixels: None, time: 0.0, others: Vec::new(), gl: None }
+    }
+
+    /// The image at `time` (frames; the nearest within half a frame).
+    pub fn pixels_at(&self, time: f64) -> Option<Pixels> {
+        if (time - self.time).abs() < 0.5 {
+            return self.pixels;
+        }
+        self.others.iter().find(|(t, _)| (t - time).abs() < 0.5).map(|o| o.1)
+    }
+}
+
+/// A clip's pictures for an OpenGL render: float RGBA, rows bottom to top.
+#[derive(Clone, Default)]
+pub struct GlClip {
+    /// (time in frames, pixels, width, height).
+    pub frames: Vec<(f64, *const f32, u32, u32)>,
+    /// The output: (texture, width, height).
+    pub output: Option<(crate::gl::GLuint, u32, u32)>,
+    /// Which texture format the plugin asked for.
+    pub depth: &'static str,
 }
 
 pub struct EffectObj {
@@ -116,7 +148,7 @@ unsafe extern "C" fn clip_define(effect: *mut c_void, name: *const c_char, out: 
                 .i("OfxImageClipPropIsMask", 0)
                 .s("OfxImageClipPropFieldExtraction", "OfxImageFieldDoubled")
                 .i("OfxImageEffectPropSupportsTiles", 1);
-            e.clips.push(Box::new(ClipObj { name: n.to_string(), props, pixels: None }));
+            e.clips.push(Box::new(ClipObj::new(n.to_string(), props)));
         }
         let c = e.clips.iter_mut().find(|c| c.name == n).unwrap();
         if !out.is_null() {
@@ -144,11 +176,11 @@ unsafe extern "C" fn clip_get_property_set(clip: *mut c_void, out: *mut *mut c_v
     OK
 }
 
-unsafe extern "C" fn clip_get_image(clip: *mut c_void, _time: f64, _region: *const c_void, out: *mut *mut c_void) -> Status {
+unsafe extern "C" fn clip_get_image(clip: *mut c_void, time: f64, _region: *const c_void, out: *mut *mut c_void) -> Status {
     guard(|| {
         let Some(c) = (clip as *mut ClipObj).as_mut() else { return ERR_BAD_HANDLE };
-        // An unconnected clip (an optional mask) has no image.
-        let Some(px) = c.pixels else { return FAILED };
+        // An unconnected clip (an optional mask), or a time not fetched: no image.
+        let Some(px) = c.pixels_at(time) else { return FAILED };
         let bounds = [0, 0, px.width as c_int, px.height as c_int];
         let mut img = PropSet::new();
         img.s("OfxPropType", "OfxTypeImage")
@@ -186,7 +218,11 @@ pub struct RectD {
 
 unsafe extern "C" fn clip_get_rod(clip: *mut c_void, _time: f64, out: *mut RectD) -> Status {
     let Some(c) = (clip as *mut ClipObj).as_mut() else { return ERR_BAD_HANDLE };
-    let (w, h) = c.pixels.map_or((0, 0), |p| (p.width, p.height));
+    let (w, h) = match (c.pixels, c.gl.as_ref()) {
+        (Some(p), _) => (p.width, p.height),
+        (None, Some(g)) => g.output.map(|o| (o.1, o.2)).or(g.frames.first().map(|f| (f.2, f.3))).unwrap_or((0, 0)),
+        _ => (0, 0),
+    };
     *out = RectD { x1: 0.0, y1: 0.0, x2: w as f64, y2: h as f64 };
     OK
 }
@@ -607,6 +643,91 @@ pub static MULTI_THREAD_SUITE: MultiThreadSuiteV1 = MultiThreadSuiteV1 {
     mutex_try_lock,
 };
 
+// ---- OpenGL rendering ----------------------------------------------------------
+
+/// A texture handle's properties.
+fn texture_props(index: crate::gl::GLuint, w: u32, h: u32, depth: &str, owned: bool) -> Box<PropSet> {
+    let bounds = [0, 0, w as c_int, h as c_int];
+    let mut p = PropSet::new();
+    p.s("OfxPropType", "OfxTypeImage")
+        .i("OfxImageEffectPropOpenGLTextureIndex", index as c_int)
+        .i("OfxImageEffectPropOpenGLTextureTarget", crate::gl::TEXTURE_2D as c_int)
+        .s("OfxImageEffectPropPixelDepth", depth)
+        .s("OfxImageEffectPropComponents", "OfxImageComponentRGBA")
+        .s("OfxImageEffectPropPreMultiplication", "OfxImageAlphaPremultiplied")
+        .dn("OfxImageEffectPropRenderScale", &[1.0, 1.0])
+        .d("OfxImagePropPixelAspectRatio", 1.0)
+        .in_("OfxImagePropBounds", &bounds)
+        .in_("OfxImagePropRegionOfDefinition", &bounds)
+        .i("OfxImagePropRowBytes", (w * 16) as c_int)
+        .s("OfxImagePropField", "OfxFieldNone")
+        .s("OfxImagePropUniqueIdentifier", &format!("gl{index}"))
+        .i("ReelforgeOwnedTexture", owned as c_int);
+    p
+}
+
+/// The internal texture format for a pixel depth.
+pub fn gl_format(depth: &str) -> crate::gl::GLenum {
+    match depth {
+        "OfxBitDepthByte" => crate::gl::RGBA8,
+        "OfxBitDepthShort" => crate::gl::RGBA16,
+        _ => crate::gl::RGBA32F,
+    }
+}
+
+unsafe extern "C" fn clip_load_texture(clip: *mut c_void, time: f64, _format: *const c_char, _region: *const RectD, out: *mut *mut c_void) -> Status {
+    guard(|| {
+        let Some(c) = (clip as *mut ClipObj).as_mut() else { return ERR_BAD_HANDLE };
+        let (Some(g), Some(f)) = (c.gl.as_ref(), crate::gl::fns()) else { return FAILED };
+        if c.name == "Output" {
+            let Some((tex, w, h)) = g.output else { return FAILED };
+            *out = Box::into_raw(texture_props(tex, w, h, g.depth, false)) as *mut c_void;
+            return OK;
+        }
+        let Some(&(_, data, w, h)) = g.frames.iter().find(|fr| (fr.0 - time).abs() < 0.5) else { return FAILED };
+        let mut tex = 0;
+        (f.gen_textures)(1, &mut tex);
+        (f.bind_texture)(crate::gl::TEXTURE_2D, tex);
+        (f.pixel_storei)(crate::gl::UNPACK_ALIGNMENT, 4);
+        (f.tex_image_2d)(crate::gl::TEXTURE_2D, 0, gl_format(g.depth) as c_int, w as c_int, h as c_int, 0, crate::gl::RGBA, crate::gl::FLOAT, data as *const c_void);
+        (f.tex_parameteri)(crate::gl::TEXTURE_2D, crate::gl::TEXTURE_MIN_FILTER, crate::gl::LINEAR);
+        (f.tex_parameteri)(crate::gl::TEXTURE_2D, crate::gl::TEXTURE_MAG_FILTER, crate::gl::LINEAR);
+        (f.bind_texture)(crate::gl::TEXTURE_2D, 0);
+        if (f.get_error)() == 0x0505 {
+            (f.delete_textures)(1, &tex);
+            return ERR_MEMORY;
+        }
+        *out = Box::into_raw(texture_props(tex, w, h, g.depth, true)) as *mut c_void;
+        OK
+    })
+}
+
+unsafe extern "C" fn clip_free_texture(handle: *mut c_void) -> Status {
+    if handle.is_null() {
+        return ERR_BAD_HANDLE;
+    }
+    let p = Box::from_raw(handle as *mut PropSet);
+    if p.get_int("ReelforgeOwnedTexture", 0) == Some(1) {
+        if let (Some(f), Some(t)) = (crate::gl::fns(), p.get_int("OfxImageEffectPropOpenGLTextureIndex", 0)) {
+            let t = t as crate::gl::GLuint;
+            (f.delete_textures)(1, &t);
+        }
+    }
+    OK
+}
+
+unsafe extern "C" fn flush_resources() -> Status {
+    REPLY_DEFAULT
+}
+
+#[repr(C)]
+pub struct OpenGLRenderSuiteV1 {
+    clip_load_texture: unsafe extern "C" fn(*mut c_void, f64, *const c_char, *const RectD, *mut *mut c_void) -> Status,
+    clip_free_texture: unsafe extern "C" fn(*mut c_void) -> Status,
+    flush_resources: unsafe extern "C" fn() -> Status,
+}
+pub static OPENGL_SUITE: OpenGLRenderSuiteV1 = OpenGLRenderSuiteV1 { clip_load_texture, clip_free_texture, flush_resources };
+
 // ---- Progress and the timeline (renders here aren't interactive) -------------------
 
 unsafe extern "C" fn progress_start_v1(_e: *mut c_void, _label: *const c_char) -> Status {
@@ -684,9 +805,27 @@ unsafe extern "C" fn fetch_suite(_host: *mut c_void, name: *const c_char, versio
         ("OfxProgressSuite", 1) => &PROGRESS_V1 as *const _ as *const c_void,
         ("OfxProgressSuite", 2) => &PROGRESS_V2 as *const _ as *const c_void,
         ("OfxTimeLineSuite", 1) => &TIMELINE_SUITE as *const _ as *const c_void,
-        // Interact, OpenGL, parametric parameters, drawing…: not offered.
+        ("OfxImageEffectOpenGLRenderSuite", 1) if gl_offered() => &OPENGL_SUITE as *const _ as *const c_void,
+        // Interact, parametric parameters, drawing…: not offered.
         _ => std::ptr::null(),
     }
+}
+
+/// OpenGL works here (found out once).
+pub fn gl_works() -> bool {
+    static WORKS: OnceLock<bool> = OnceLock::new();
+    *WORKS.get_or_init(|| match crate::gl::available() {
+        Ok(r) => {
+            log::info!("OpenFX: plugins can render with OpenGL on {r}");
+            true
+        }
+        Err(_) => false,
+    })
+}
+
+/// Plugins may render with OpenGL (it works, and it isn't switched off).
+pub fn gl_offered() -> bool {
+    crate::GPU.load(std::sync::atomic::Ordering::Relaxed) && gl_works()
 }
 
 /// The one host every plugin is given.
@@ -707,7 +846,7 @@ pub fn host() -> *mut OfxHost {
             .i("OfxImageEffectPropSupportsOverlays", 0)
             .i("OfxImageEffectPropSupportsMultiResolution", 0)
             .i("OfxImageEffectPropSupportsTiles", 0)
-            .i("OfxImageEffectPropTemporalClipAccess", 0)
+            .i("OfxImageEffectPropTemporalClipAccess", 1)
             .sn("OfxImageEffectPropSupportedComponents", &["OfxImageComponentRGBA", "OfxImageComponentRGB"])
             .sn("OfxImageEffectPropSupportedContexts", &["OfxImageEffectContextFilter", "OfxImageEffectContextGeneral"])
             .sn("OfxImageEffectPropSupportedPixelDepths", &["OfxBitDepthFloat", "OfxBitDepthShort", "OfxBitDepthByte"])
@@ -716,7 +855,9 @@ pub fn host() -> *mut OfxHost {
             .i("OfxImageEffectPropSetableFrameRate", 0)
             .i("OfxImageEffectPropSetableFielding", 0)
             .i("OfxImageEffectInstancePropSequentialRender", 0)
-            .s("OfxImageEffectPropOpenGLRenderSupported", "false")
+            .s("OfxImageEffectPropOpenGLRenderSupported", if gl_works() { "true" } else { "false" })
+            .s("OfxImageEffectPropCPURenderSupported", "true")
+            .sn("OfxOpenGLPropPixelDepth", &["OfxBitDepthFloat", "OfxBitDepthShort", "OfxBitDepthByte"])
             .i("OfxParamHostPropSupportsCustomInteract", 0)
             .i("OfxParamHostPropSupportsCustomAnimation", 0)
             .i("OfxParamHostPropSupportsStringAnimation", 0)

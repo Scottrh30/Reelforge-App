@@ -100,7 +100,7 @@
         {/each}
       </div>
       {:else if ofx}
-      <p class="lead">OpenFX plugins (.ofx bundles, as used by Resolve, Nuke and Vegas) run on the picture before the other effects, on the processor. Their settings can be keyframed like any other.</p>
+      <p class="lead">OpenFX plugins (.ofx bundles, as used by Resolve, Nuke and Vegas) run on the picture before the other effects: on the graphics card for plugins that render with OpenGL, else on the processor. Their settings keyframe like any other, and their positions can be dragged in the Viewer.</p>
       <div class="tools">
         <button onclick={() => act(api.ofxAddFolder())} title="Search another folder for .ofx.bundle plugins">Add folder…</button>
         <button onclick={() => run(api.ofxOpenFolder())} title={ofx.own_folder}>Open OpenFX folder</button>
@@ -109,6 +109,11 @@
       <label class="check">
         <input type="checkbox" checked={ofx.enabled} onchange={(e) => act(api.ofxEnable(e.currentTarget.checked))} />
         Load OpenFX plugins <span class="muted">(they're programs: only install ones you trust)</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" checked={ofx.gpu} disabled={!ofx.enabled} onchange={(e) => act(api.ofxGpu(e.currentTarget.checked))} />
+        Let plugins render on the graphics card (OpenGL) when they can
+        <span class="muted">{ofx.gpu_status ? (ofx.gpu_ok ? `· ${ofx.gpu_status}` : `· not available: ${ofx.gpu_status}`) : ""}</span>
       </label>
       <div class="list">
         <p class="muted small-text">Searched:</p>
@@ -135,7 +140,9 @@
               {/if}
             </div>
             {#if b.effects.length}
-              <p class="small-text">{b.effects.map((e) => e.name).join(", ")}</p>
+              <p class="small-text">
+                {#each b.effects as e}<span class="fx">{e.name}{#if e.gpu}<span class="tag" title={e.gpu === "only" ? "Renders only on the graphics card (OpenGL)" : "Renders on the graphics card (OpenGL) when it can"}>GPU{e.gpu === "only" ? " only" : ""}</span>{/if}{#if e.temporal}<span class="tag" title="Reads the clip's neighbouring frames">frames</span>{/if}</span>{/each}
+              </p>
             {/if}
             {#each b.errors as err}<pre>{err}</pre>{/each}
             <p class="muted small-text path">{b.path}</p>
@@ -207,6 +214,18 @@
   }
   .gone {
     text-decoration: line-through;
+  }
+  .fx {
+    display: inline-block;
+    margin-right: 12px;
+  }
+  .tag {
+    margin-left: 4px;
+    padding: 0 5px;
+    border-radius: 8px;
+    font-size: calc(10.5px * var(--text-scale));
+    background: var(--well);
+    color: var(--muted);
   }
   .lead {
     margin: 0;

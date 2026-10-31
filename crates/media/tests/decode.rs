@@ -253,3 +253,32 @@ fn mpg_and_ts_seek_back_to_the_start() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+
+/// Containers that store times in milliseconds (MKV, WebM) round some frame
+/// times up past the exact moment (frame 4 at 24 fps, 166.67 ms, is stored as
+/// 167 ms). Asking for that moment must still give that frame, at once,
+/// going forwards or back.
+#[test]
+fn millisecond_timestamps_still_land_on_exact_frames() {
+    let path = std::env::temp_dir().join(format!("rf_ms_times_{}.mkv", std::process::id()));
+    let ok = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=black:s=160x90:r=24:d=1"])
+        .args(["-vf", "format=gbrp,geq=r='N*8':g='N*8':b='N*8'", "-c:v", "ffv1"])
+        .arg(&path)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    }
+    let rate = FrameRate::new(24, 1);
+    let mut src = FrameSource::open(&path, None).unwrap();
+    let start = std::time::Instant::now();
+    for k in [4, 3, 5, 5, 4, 6, 6, 5, 7, 12, 11, 23] {
+        let f = src.frame_at_blocking(Time::from_frame(k, rate), Duration::from_secs(5)).expect("frame");
+        // Each frame's grey level is 8 × its number.
+        assert_eq!(f.rgba()[0] as i64, 8 * k, "frame {k}");
+    }
+    assert!(start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
+    std::fs::remove_file(&path).ok();
+}
