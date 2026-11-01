@@ -116,6 +116,8 @@ pub struct ClipView {
     pub link: Option<u64>,
     pub speed: f32,
     pub reverse: bool,
+    /// For a retimed clip: the media time its clip time 0 maps to (see `Clip::media_time`).
+    pub anchor: i64,
     pub dissolve_in: i64,
     pub fade_in: i64,
     pub fade_out: i64,
@@ -470,6 +472,7 @@ pub fn state(e: &Editor) -> State {
                     link: c.link,
                     speed: c.speed,
                     reverse: c.reverse,
+                    anchor: c.anchor.0,
                     dissolve_in: c.dissolve_in.0,
                     fade_in: c.audio.fade_in.0,
                     fade_out: c.audio.fade_out.0,

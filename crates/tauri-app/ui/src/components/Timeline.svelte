@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { app, run, tps, fps, timecode, shortTime, snapToFrame, say } from "../lib/session.svelte";
   import { MIN_DB, MAX_DB, volKeys, volumeAt, setVolKey, clampedFades, fadeCurve, tidyDb, dbText, dbGain } from "../lib/audio";
-  import { api, type ClipAudio, type ClipView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind } from "../lib/api";
+  import { api, type ClipAudio, type ClipView, type MediaView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu } from "../lib/menu.svelte";
   import { view, geo, perSequence, TRACK_H, MIN_TRACK_H, MAX_TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack, rowH, rowAtY } from "../lib/timeline.svelte";
@@ -952,6 +952,30 @@
   // ---- Waveforms ----
   // Scaled by the clip's volume (and keys), its fades and the track volume, so
   // it shows what you'll hear; square-rooted so quiet passages stay visible.
+  /// A filmstrip's frames for clip `c` (`l` and `w`: where it is on screen,
+  /// `h` its height): one picture per slot of the media's shape, only those
+  /// on screen, each the frame shown at the slot's middle. Times are rounded
+  /// to a step that depends on the zoom, so scrolling reuses pictures.
+  function strip(c: ClipView, m: MediaView, l: number, w: number, h: number): { x: number; w: number; at: number }[] {
+    const aspect = m.width > 0 && m.height > 0 ? m.width / m.height : 16 / 9;
+    const tw = Math.max(24, Math.round(h * aspect));
+    const first = Math.max(0, Math.floor(-l / tw));
+    const last = Math.min(Math.ceil(w / tw), Math.ceil((lanesW - l) / tw));
+    // Media seconds a slot covers, rounded down to a tidy step (1/4 s at least),
+    // so neighbours never land on the same picture.
+    const step = Math.max(0.25, 2 ** Math.floor(Math.log2(Math.max(1e-6, (tw / view.pps) * (c.speed || 1)))));
+    const out: { x: number; w: number; at: number }[] = [];
+    for (let k = first; k < last; k++) {
+      const x = k * tw;
+      const ct = c.source_in + ((x + Math.min(tw, w - x) / 2) / view.pps) * T;
+      const retimed = c.speed !== 1 || c.reverse;
+      const media = retimed ? c.anchor + ct * (c.reverse ? -c.speed : c.speed) : ct;
+      const at = Math.max(0, Math.round(Math.round(media / T / step) * step * T));
+      out.push({ x, w: Math.min(tw, w - x), at });
+    }
+    return out;
+  }
+
   function wave(canvas: HTMLCanvasElement, p: { media: number; from: number; secs: number; w: number; h: number; speed: number; rev: number; audio: ClipAudio | null; srcIn: number; dur: number; offset: number; trackDb: number }) {
     const draw = (q: typeof p) => {
       const data = app.waveforms.get(q.media);
@@ -1230,7 +1254,18 @@
                   >
                     {#if c.label}<span class="tagbar"></span>{/if}
                     {#if (c.kind === "video" || c.kind === "image") && w > 70 && !tr.collapsed && app.s?.prefs.timeline_thumbnails !== false && mediaById.get(c.media) && !mediaById.get(c.media)!.missing}
-                      <div class="thumb"><Thumb path={mediaById.get(c.media)!.path} at={c.source_in} /></div>
+                      {@const m = mediaById.get(c.media)!}
+                      {#if c.kind === "video" && app.s?.prefs.timeline_filmstrip !== false}
+                        <!-- A filmstrip: frames all along the clip, only where it's on screen. -->
+                        {@const tiles = strip(c, m, l, w, hOf(tr) - 14)}
+                        <div class="strip" aria-hidden="true">
+                          {#each tiles as tile (tile.x)}
+                            <div class="frame" style="left:{tile.x}px; width:{tile.w}px"><Thumb path={m.path} at={tile.at} /></div>
+                          {/each}
+                        </div>
+                      {:else}
+                        <div class="thumb"><Thumb path={m.path} at={c.source_in} /></div>
+                      {/if}
                     {/if}
                     {#if c.kind === "audio" && w > 4 && !tr.collapsed}
                       {@const vis0 = Math.max(0, -l)}
@@ -1954,6 +1989,20 @@
   }
   .clip::after {
     right: 0;
+  }
+  /* A filmstrip behind the clip's name. */
+  .strip {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.88;
+  }
+  .strip .frame {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    overflow: hidden;
+    border-right: 1px solid rgba(0, 0, 0, 0.35);
   }
   .thumb {
     height: 100%;

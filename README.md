@@ -69,10 +69,11 @@ What works now:
 - **Linked clips**: footage with sound lands as a video clip + audio clip that move, split and
   delete together. **Edit → Unlink audio/video** separates them
 - Audio waveforms on clips; per-track mute (**M**) and show/hide (eye) buttons
-- **Timeline thumbnails**: video clips show small frames along their length (speed and reverse
-  included). They're decoded in the background, from the proxy when there is one, nearest-first
-  for the part of the timeline on screen; while zooming, the nearest frame already decoded fills
-  in. Toggle in **Edit → Timeline thumbnails** or Settings
+- **Timeline thumbnails**: video clips show a filmstrip, frames all along their length in the
+  shape of their media (speed and reverse included), only for the part on screen and decoded in
+  the background. Frame times are rounded to a step that suits the zoom, so scrolling and small
+  zoom changes reuse pictures. Taller video tracks give bigger pictures (drag a track's lower
+  edge). **Settings → Clip pictures** picks a filmstrip, the first frame only, or none
 
 - **GPU compositor**: every visible video track is blended into the frame on the GPU
   (wgpu), in linear light with float precision

@@ -98,6 +98,8 @@ export interface ClipView {
   link: number | null;
   speed: number;
   reverse: boolean;
+  /// For a retimed clip: the media time its clip time 0 maps to.
+  anchor: Ticks;
   dissolve_in: Ticks;
   fade_in: Ticks;
   fade_out: Ticks;
@@ -354,6 +356,8 @@ export interface Prefs {
   export_presets: UserPreset[];
   scrub_audio: boolean;
   timeline_thumbnails: boolean;
+  /// A filmstrip all along video clips (else one picture at the start).
+  timeline_filmstrip: boolean;
   viewer_snapping: boolean;
   hw_decode: boolean;
   cache_mb: number;

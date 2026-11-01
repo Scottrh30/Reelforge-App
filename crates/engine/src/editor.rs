@@ -54,6 +54,8 @@ pub struct Prefs {
     pub scrub_audio: bool,
     /// Pictures along video clips in the timeline.
     pub timeline_thumbnails: bool,
+    /// …one at the clip's start, or a filmstrip all along it.
+    pub timeline_filmstrip: bool,
     /// Layers dragged in the viewer snap to the frame and to each other (Alt: free).
     pub viewer_snapping: bool,
     /// Decode video on the graphics card when possible.
@@ -79,6 +81,7 @@ impl Default for Prefs {
             export_presets: Vec::new(),
             scrub_audio: true,
             timeline_thumbnails: true,
+            timeline_filmstrip: true,
             viewer_snapping: true,
             hw_decode: true,
             cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB,
