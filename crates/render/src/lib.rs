@@ -119,16 +119,20 @@ pub enum DeepCurve {
 }
 /// Draw calls per frame (a dissolve uses three).
 const MAX_DRAWS: usize = 128;
-const UNIFORM_SIZE: u64 = 128 + 16 + 41 * 16; // mat4 + vec2 + 2×f32 + 3×vec4, then a mesh header and 41 vec4 of points
+const UNIFORM_SIZE: u64 = 128 + 16 + 32 + 41 * 16; // mat4 + vec2 + 2×f32 + 3×vec4, the effect map and margin, then a mesh header and 41 vec4 of points
 /// Little quads per mesh cell, across and down (a cell is bilinear; this many
 /// straight-edged pieces draw it smoothly).
 const MESH_SUBDIV: u32 = 6;
 /// Effect passes per frame.
 const MAX_FX_PASSES: usize = 256;
-/// 8 × vec4: params 0–7, texel/direction, extra (aspect, time, layer size),
-/// params 8–15, extra2 (texture size, pass, pass count), spare. Built-in
-/// effect shaders only declare the first four; plugins see them all.
-const FX_UNIFORM_SIZE: u64 = 128;
+/// 9 × vec4: params 0–7, texel/direction, extra (aspect, time, layer size),
+/// params 8–15, extra2 (texture size, pass, pass count), params 16–19, and
+/// the map from the target's uv to the layer's (the target can have a margin).
+const FX_UNIFORM_SIZE: u64 = 144;
+/// Where `map` sits in an effect pass's uniform.
+const FX_MAP: usize = 32;
+/// The layer exactly fills its effect targets.
+const NO_MARGIN: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
 const FX_FLOATS: usize = (FX_UNIFORM_SIZE / 4) as usize;
 
 /// One layer to draw.
@@ -474,7 +478,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1032,6 +1036,8 @@ impl Compositor {
         let mut fx_passes: Vec<FxPass> = Vec::new();
         // Which scratch target holds each processed layer's result.
         let mut processed: HashMap<u64, usize> = HashMap::new();
+        // Each processed layer's map from its effect target's uv to its own.
+        let mut margins: HashMap<u64, [f32; 4]> = HashMap::new();
         // Every emitter's particles this frame, and its look.
         let mut particle_sets: Vec<(&reelforge_core::particles::Particles, f32)> = Vec::new();
         for l in all_layers() {
@@ -1051,7 +1057,16 @@ impl Compositor {
                 log::warn!("too many effect passes; skipping effects on some layers");
                 break;
             }
-            self.ensure_fx_targets(l.key, l.pixel_size);
+            // Room round the layer for what glows and shadows spill past its edges.
+            let margin = if below || l.mesh.is_some() { [0, 0] } else { effect_margin(&l.effects, l.pixel_size, l.layer_size) };
+            let padded = [l.pixel_size[0] + 2 * margin[0], l.pixel_size[1] + 2 * margin[1]];
+            self.ensure_fx_targets(l.key, padded);
+            let map = {
+                let (pw, ph) = (l.pixel_size[0].max(1) as f32, l.pixel_size[1].max(1) as f32);
+                [padded[0] as f32 / pw, padded[1] as f32 / ph, -(margin[0] as f32) / pw, -(margin[1] as f32) / ph]
+            };
+            margins.insert(l.key, map);
+            let first_pass = fx_passes.len();
             for (i, e) in l.effects.iter().enumerate() {
                 if let Some(t) = &e.table {
                     self.upload_table((l.key, i), t);
@@ -1073,7 +1088,7 @@ impl Compositor {
             // The frame so far is premultiplied already: copied as it is.
             // A float layer is premultiplied already, so it's copied rather than imported.
             let float = self.layers.get(&l.key).is_some_and(|t| t.float);
-            let (entry, src) = if below { ("fs_copy", Src::Below) } else if float { ("fs_copy", Src::Layer) } else { ("fs_import", Src::Layer) };
+            let (entry, src) = if below { ("fs_copy", Src::Below) } else if float { ("fs_import_float", Src::Layer) } else { ("fs_import", Src::Layer) };
             fx_passes.push(FxPass { key, entry, src, second: Second::None, dst: 0, uniform: [0.0; FX_FLOATS], plugin: None, particles: None });
             let mut cur = 0usize;
             // Plugin passes pushed for this layer: (index in fx_passes, revision, pass).
@@ -1228,6 +1243,9 @@ impl Compositor {
             for (at, set) in particle_marks {
                 fx_passes[at].particles = Some(set);
             }
+            for p in &mut fx_passes[first_pass..] {
+                p.uniform[FX_MAP..FX_MAP + 4].copy_from_slice(&map);
+            }
             processed.insert(l.key, cur);
         }
         let particle_batches = if particle_sets.is_empty() { Vec::new() } else { self.particles.upload(&self.device, &self.queue, &particle_sets) };
@@ -1258,13 +1276,21 @@ impl Compositor {
             /// to `clear`, premultiplied, for a dip), then composite the group into the frame.
             Group { a: Option<Draw>, b: Option<Draw>, over: usize, blend: BlendMode, clear: wgpu::Color },
         }
-        type Uniform<'m> = (Transform, [f32; 2], Option<Wipe>, Option<&'m reelforge_core::meshwarp::MeshShape>, Option<&'m reelforge_core::space3d::LayerSpace>);
+        type Uniform<'m> = (Transform, [f32; 2], Option<Wipe>, Option<&'m reelforge_core::meshwarp::MeshShape>, Option<&'m reelforge_core::space3d::LayerSpace>, [f32; 4]);
         let mut uniforms: Vec<Uniform> = Vec::new();
         fn slot<'m>(u: &mut Vec<Uniform<'m>>, l: (Transform, [f32; 2], Option<Wipe>), mesh: Option<&'m reelforge_core::meshwarp::MeshShape>, space: Option<&'m reelforge_core::space3d::LayerSpace>) -> usize {
             let mesh = mesh.filter(|m| m.is_valid());
-            u.push((l.0, l.1, l.2, mesh, space.filter(|_| mesh.is_none())));
+            u.push((l.0, l.1, l.2, mesh, space.filter(|_| mesh.is_none()), NO_MARGIN));
             u.len() - 1
         }
+        // A processed layer drawn with its margin (texture map; the quad grows to show it).
+        let with_margin = |u: &mut Vec<Uniform>, slot: usize, fx: Option<usize>, key: u64| {
+            if fx.is_some() {
+                if let Some(m) = margins.get(&key) {
+                    u[slot].5 = *m;
+                }
+            }
+        };
         let mut ops = Vec::new();
         for item in items {
             match item {
@@ -1276,6 +1302,7 @@ impl Compositor {
                 }
                 DrawItem::Layer(l) => {
                     let draw = Draw { slot: slot(&mut uniforms, (l.transform, l.layer_size, l.wipe), l.mesh.as_ref(), l.space), key: l.key, fx: processed.get(&l.key).copied() };
+                    with_margin(&mut uniforms, draw.slot, draw.fx, draw.key);
                     ops.push(Op::Frame { draw, blend: l.blend })
                 }
                 DrawItem::Dissolve { from, to, mix, dip } => {
@@ -1301,6 +1328,9 @@ impl Compositor {
                     };
                     let a = draw_a.then(|| Draw { slot: slot(&mut uniforms, (ta, from.layer_size, from.wipe), from.mesh.as_ref(), from.space), key: from.key, fx: processed.get(&from.key).copied() });
                     let b = draw_b.then(|| Draw { slot: slot(&mut uniforms, (tb, to.layer_size, to.wipe), to.mesh.as_ref(), to.space), key: to.key, fx: processed.get(&to.key).copied() });
+                    for d in [&a, &b].into_iter().flatten() {
+                        with_margin(&mut uniforms, d.slot, d.fx, d.key);
+                    }
                     let over = slot(&mut uniforms, (Transform::default(), frame, None), None, None);
                     ops.push(Op::Group { a, b, over, blend: to.blend, clear });
                 }
@@ -1313,7 +1343,7 @@ impl Compositor {
 
         // Uniforms for every draw in one buffer, addressed by dynamic offset.
         let mut data = vec![0u8; self.uniform_stride as usize * uniforms.len().max(1)];
-        for (i, (t, size, wipe, mesh, space)) in uniforms.iter().enumerate() {
+        for (i, (t, size, wipe, mesh, space, fxmap)) in uniforms.iter().enumerate() {
             // (Corner-pinned and 3D layers get a perspective matrix.)
             let mvp = match space {
                 Some(s) => s.mvp,
@@ -1326,7 +1356,15 @@ impl Compositor {
             let w = wipe.unwrap_or(Wipe { iris: false, axis: [0.0; 3], progress: 1.0, softness: 0.1 });
             floats.extend([w.axis[0], w.axis[1], w.axis[2], w.progress.clamp(0.0, 1.0)]);
             floats.extend([w.softness, frame[0], frame[1], if lighting.is_some() { 1.0 } else { 0.0 }]);
-            floats.extend(t.crop_uv());
+            let crop = t.crop_uv();
+            floats.extend(crop);
+            // The effect target's map, and how far the quad reaches past the
+            // crop: the whole margin, on the sides the crop hasn't cut.
+            floats.extend(*fxmap);
+            let (mx, my) = (-fxmap[2], -fxmap[3]);
+            let edge = |c: f32, at: f32| (c - at).abs() < 1e-4;
+            let grow = if mesh.is_some() { [0.0; 4] } else { [if edge(crop[0], 0.0) { mx } else { 0.0 }, if edge(crop[1], 0.0) { my } else { 0.0 }, if edge(crop[2], 1.0) { mx } else { 0.0 }, if edge(crop[3], 1.0) { my } else { 0.0 }] };
+            floats.extend(grow);
             match mesh {
                 Some(m) => {
                     floats.extend([m.cols as f32, m.rows as f32, 1.0, MESH_SUBDIV as f32]);
@@ -1722,4 +1760,36 @@ static ADAPTER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// The graphics card the compositor got (name, API, kind, driver), once one was opened.
 pub fn adapter_info() -> Option<&'static str> {
     ADAPTER.get().map(String::as_str)
+}
+
+/// How far (in texels, x and y) a layer's effects spread past its edges:
+/// a drop shadow by its distance and blur, a glow by its blur. Rounded up to
+/// steps of 32 so an animated shadow doesn't remake its targets every frame,
+/// and capped at the layer's size (and 2048).
+fn effect_margin(effects: &[EffectValues], px: [u32; 2], layer: [f32; 2]) -> [u32; 2] {
+    let (kx, ky) = (px[0] as f32 / layer[0].max(1.0), px[1] as f32 / layer[1].max(1.0));
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    for e in effects {
+        match e.kind {
+            // The blur reaches 3 sigma, and sigma is half the radius (see `blur`).
+            EffectKind::Glow => {
+                x += 1.5 * e.values[1].max(0.0) * kx;
+                y += 1.5 * e.values[1].max(0.0) * ky;
+            }
+            EffectKind::DropShadow => {
+                let (d, a) = (e.values[0].max(0.0), e.values[1].to_radians());
+                x += (a.cos() * d).abs() * kx + 1.5 * e.values[2].max(0.0) * kx;
+                y += (a.sin() * d).abs() * ky + 1.5 * e.values[2].max(0.0) * ky;
+            }
+            _ => {}
+        }
+    }
+    let step = |v: f32, size: u32| -> u32 {
+        if v <= 0.5 {
+            return 0;
+        }
+        let v = (v.ceil() as u32).min(size).min(2048);
+        v.div_ceil(32) * 32
+    };
+    [step(x, px[0]), step(y, px[1])]
 }

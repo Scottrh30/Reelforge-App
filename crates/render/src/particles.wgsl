@@ -11,6 +11,7 @@ struct Fx {
     p3: vec4<f32>,        // turbulence, size at birth, size at death, colour at birth
     extra2: vec4<f32>,
     p4: vec4<f32>,        // colour at death, opacity, look, seed
+    map: vec4<f32>,       // layer uv = target uv × xy + zw (the target can have a margin)
 };
 
 @group(0) @binding(0) var<uniform> fx: Fx;
@@ -95,7 +96,9 @@ fn vs_particle(@builtin(vertex_index) vi: u32, p: Inst) -> VsOut {
         out.info = vec2(radius * kk, 0.0);
     }
     let at = pos + c.x * axis_x + c.y * axis_y;
-    let ndc = at / size * 2.0 - 1.0;
+    // Layer uv → the target (which may have a margin round the layer).
+    let tuv = (at / size - fx.map.zw) / fx.map.xy;
+    let ndc = tuv * 2.0 - 1.0;
     out.pos = vec4(ndc.x, -ndc.y, 0.0, 1.0);
     // Dead or not yet born (it shouldn't be in the list, but just in case): nothing.
     if (age < 0.0 || age >= life) {

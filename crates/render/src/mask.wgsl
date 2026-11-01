@@ -6,6 +6,12 @@ struct Fx {
     p1: vec4<f32>,
     texel_dir: vec4<f32>,
     extra: vec4<f32>,
+    p2: vec4<f32>,
+    p3: vec4<f32>,
+    extra2: vec4<f32>,
+    p4: vec4<f32>,
+    // Layer uv = target uv × xy + zw (see effects.wgsl).
+    map: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> fx: Fx;
@@ -24,8 +30,16 @@ fn vs_fullscreen(@builtin(vertex_index) i: u32) -> VsOut {
     let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     var out: VsOut;
     out.pos = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-    out.uv = vec2(p.x, 1.0 - p.y);
+    out.uv = vec2(p.x, 1.0 - p.y) * fx.map.xy + fx.map.zw;
     return out;
+}
+
+fn to_tex(uv: vec2<f32>) -> vec2<f32> {
+    return (uv - fx.map.zw) / fx.map.xy;
+}
+// The second texture when it's another scratch target (glow, shadow).
+fn second_at(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(second, second_sampler, to_tex(uv));
 }
 
 fn unpremul(c: vec4<f32>) -> vec3<f32> {
@@ -42,15 +56,17 @@ fn to_linear(g: vec3<f32>) -> vec3<f32> {
 // effects see the masked layer, as in HitFilm.
 @fragment
 fn fs_mask(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
-    let m = textureSample(second, second_sampler, in.uv).r;
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    // The mask is in layer uv; nothing outside the layer.
+    let inside = select(0.0, 1.0, all(in.uv >= vec2(0.0)) && all(in.uv <= vec2(1.0)));
+    let m = textureSample(second, second_sampler, in.uv).r * inside;
     return c * m;
 }
 
 // Curves: a 256×1 table per channel, on display values. p0.x = strength %.
 @fragment
 fn fs_curves(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     let g = clamp(to_display(unpremul(c)), vec3(0.0), vec3(1.0));
     let at = (g * 255.0 + 0.5) / 256.0;
     let out = vec3(
@@ -71,7 +87,7 @@ fn lut_slice(rg: vec2<f32>, b: f32, n: f32) -> vec3<f32> {
 
 @fragment
 fn fs_lut(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     let g = clamp(to_display(unpremul(c)), vec3(0.0), vec3(1.0));
     let n = max(fx.p0.y, 2.0);
     let b = g.b * (n - 1.0);
@@ -85,15 +101,15 @@ fn fs_lut(in: VsOut) -> @location(0) vec4<f32> {
 // Glow, last step: add the blurred bright parts back. p0.z = intensity %.
 @fragment
 fn fs_glow_add(in: VsOut) -> @location(0) vec4<f32> {
-    let base = textureSample(src, src_sampler, in.uv);
-    let g = textureSample(second, second_sampler, in.uv) * (fx.p0.z / 100.0);
+    let base = textureSample(src, src_sampler, to_tex(in.uv));
+    let g = second_at(in.uv) * (fx.p0.z / 100.0);
     return vec4(base.rgb + g.rgb, min(base.a + g.a, 1.0));
 }
 
 // Drop shadow, last step: the shadow under the layer.
 @fragment
 fn fs_under(in: VsOut) -> @location(0) vec4<f32> {
-    let top = textureSample(src, src_sampler, in.uv);
-    let below = textureSample(second, second_sampler, in.uv);
+    let top = textureSample(src, src_sampler, to_tex(in.uv));
+    let below = second_at(in.uv);
     return top + below * (1.0 - top.a);
 }

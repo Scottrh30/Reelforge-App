@@ -18,6 +18,11 @@ struct Layer {
     wipe2: vec4<f32>,
     // The part of the layer shown after cropping, as UVs (u0, v0, u1, v1).
     crop: vec4<f32>,
+    // A processed layer's texture can have a margin (room for a glow or
+    // shadow): texture uv = (layer uv − zw) / xy.
+    fxmap: vec4<f32>,
+    // How far the drawn quad reaches past the crop, in layer uv: left, top, right, bottom.
+    grow: vec4<f32>,
     // A mesh warp: cells across, cells down, 1 when on (else 0), subdivisions per cell.
     mesh: vec4<f32>,
     // The grid's points in frame pixels, row by row, two to a vec4. For a lit
@@ -34,10 +39,15 @@ struct Layer {
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
+    // Where to sample the layer's texture.
     @location(0) uv: vec2<f32>,
     // Layer pixels from its centre (for lighting).
     @location(1) local: vec2<f32>,
 };
+
+fn tex_uv(layer_uv: vec2<f32>) -> vec2<f32> {
+    return (layer_uv - layer.fxmap.zw) / layer.fxmap.xy;
+}
 
 fn mesh_point(n: u32) -> vec2<f32> {
     let v = layer.pts[n / 2u];
@@ -76,16 +86,17 @@ fn vs_layer(@builtin(vertex_index) i: u32) -> VsOut {
         let g = (vec2(f32(cx), f32(cy)) + f) / vec2(layer.mesh.x, layer.mesh.y);
         var out: VsOut;
         out.pos = vec4(p.x / frame.x * 2.0 - 1.0, 1.0 - p.y / frame.y * 2.0, 0.0, 1.0);
-        out.uv = mix(layer.crop.xy, layer.crop.zw, g);
+        out.uv = tex_uv(mix(layer.crop.xy, layer.crop.zw, g));
         out.local = vec2(0.0);
         return out;
     }
-    // Only the cropped part of the layer is drawn: a smaller quad, sampling that part.
-    let uv = mix(layer.crop.xy, layer.crop.zw, corners[i]);
+    // Only the cropped part of the layer is drawn: a smaller quad, sampling
+    // that part (and the margin round it where a glow or shadow spills out).
+    let uv = mix(layer.crop.xy - layer.grow.xy, layer.crop.zw + layer.grow.zw, corners[i]);
     let local = (uv - vec2(0.5)) * layer.size;
     var out: VsOut;
     out.pos = layer.mvp * vec4(local, 0.0, 1.0);
-    out.uv = uv;
+    out.uv = tex_uv(uv);
     out.local = local;
     return out;
 }

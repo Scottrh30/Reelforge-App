@@ -198,6 +198,10 @@ semi-transparent edges get dark fringes. Set `premultiplied = true` in plugin.to
 * **Speed:** the shader runs for every pixel of every frame. A few dozen `sample` calls
   per pixel is fine; hundreds (a huge blur in one pass) will slow playback. Split big
   blurs into an across pass and a down pass, as Bloom does.
+* **`uv` can go a little past 0–1.** When the layer also has a glow or a drop shadow, its
+  picture has a margin round it so they can spill out, and your functions are called there
+  too, with `uv` below 0 or above 1. `sample` there gives transparent; positions you work
+  out in `uv` stay where they were on the layer.
 * The full WGSL reference is at https://www.w3.org/TR/WGSL/; for plugins you only need
   the basics above.
 

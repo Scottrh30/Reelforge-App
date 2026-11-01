@@ -380,6 +380,41 @@ fn sharpen_glow_and_drop_shadow() {
     assert!(near(px(&out, 32, 4, 4), [255, 0, 0]), "no shadow up-left");
 }
 
+/// A glow or a drop shadow reaches past the layer's own edges: an opaque
+/// layer smaller than the frame (a full-frame clip shrunk, a logo, a
+/// picture-in-picture) casts its shadow and glows onto what's around it.
+#[test]
+fn glow_and_shadow_spill_past_the_layer() {
+    let Some(mut c) = setup() else { return };
+    let white = solid(16, 16, [255, 255, 255, 255]);
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    // A 16×16 white layer in the middle of a 64×64 red frame: x and y 24–40.
+    let small = || layer(2, &white, [16, 16], [16.0, 16.0], Transform::default(), BlendMode::Normal);
+    // A shadow 6 px down-right (angle 135°), hard-edged, fully dark.
+    c.render([64, 64], &[full(9, &red, [64, 64]), with_fx(small(), vec![fx(EffectKind::DropShadow, &[(0, 8.5), (1, 135.0), (2, 0.0), (3, 100.0)])])]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 64, 32, 32), [255, 255, 255]), "the layer");
+    assert!(px(&out, 64, 43, 43)[0] < 40, "its shadow, outside it: {:?}", px(&out, 64, 43, 43));
+    assert!(near(px(&out, 64, 20, 20), [255, 0, 0]), "none up-left");
+    assert!(near(px(&out, 64, 55, 55), [255, 0, 0]), "nor far away");
+    // Cropped on the right: the shadow isn't drawn past the cut, only where the layer's own edge is.
+    let crop = Transform { crop: [0.0, 0.0, 0.25, 0.0], ..Default::default() };
+    let mut l = small();
+    l.transform = crop;
+    l.content_id = 2;
+    c.render([64, 64], &[full(9, &red, [64, 64]), with_fx(l, vec![fx(EffectKind::DropShadow, &[(0, 8.5), (1, 135.0), (2, 0.0), (3, 100.0)])])]);
+    let out = c.read_output().unwrap();
+    assert!(px(&out, 64, 30, 43)[0] < 40, "below the layer: {:?}", px(&out, 64, 30, 43));
+    assert!(near(px(&out, 64, 39, 33), [255, 0, 0]), "the cut-off right side shows the frame: {:?}", px(&out, 64, 39, 33));
+    // A glow lights the frame round the layer.
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    c.render([64, 64], &[full(10, &black, [64, 64]), with_fx(small(), vec![fx(EffectKind::Glow, &[(0, 50.0), (1, 6.0), (2, 100.0)])])]);
+    let out = c.read_output().unwrap();
+    assert!(px(&out, 64, 20, 32)[0] > 30, "glow left of the layer: {:?}", px(&out, 64, 20, 32));
+    assert!(px(&out, 64, 32, 44)[0] > 30, "and below it: {:?}", px(&out, 64, 32, 44));
+    assert!(px(&out, 64, 2, 2)[0] < 10, "not in the far corner: {:?}", px(&out, 64, 2, 2));
+}
+
 #[test]
 fn energy_blade_core_glow_colour_length_and_motion_blur() {
     use reelforge_core::effects::blade as b;

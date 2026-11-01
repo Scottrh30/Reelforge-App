@@ -19,6 +19,9 @@ struct Fx {
     extra2: vec4<f32>,
     // Params 16–19.
     p4: vec4<f32>,
+    // Where the layer sits in the target (the target can be bigger, so glows
+    // and shadows have room): layer uv = target uv × xy + zw.
+    map: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> fx: Fx;
@@ -36,8 +39,19 @@ fn vs_fullscreen(@builtin(vertex_index) i: u32) -> VsOut {
     let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     var out: VsOut;
     out.pos = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-    out.uv = vec2(p.x, 1.0 - p.y);
+    // Shaders work in the layer's uv (0–1 across the layer; beyond, in the margin).
+    out.uv = vec2(p.x, 1.0 - p.y) * fx.map.xy + fx.map.zw;
     return out;
+}
+
+// A layer uv → where it is in the texture being read (a scratch target).
+fn to_tex(uv: vec2<f32>) -> vec2<f32> {
+    return (uv - fx.map.zw) / fx.map.xy;
+}
+
+// 1 inside the layer, 0 in the margin around it.
+fn inside(uv: vec2<f32>) -> f32 {
+    return select(0.0, 1.0, all(uv >= vec2(0.0)) && all(uv <= vec2(1.0)));
 }
 
 fn unpremul(c: vec4<f32>) -> vec3<f32> {
@@ -49,14 +63,21 @@ const LUMA = vec3<f32>(0.2126, 0.7152, 0.0722);
 // sRGB-uploaded layer (straight alpha, sampled as linear) -> premultiplied.
 @fragment
 fn fs_import(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    // The layer's own texture (layer uv), nothing in the margin.
+    let c = textureSample(src, src_sampler, in.uv) * inside(in.uv);
     return vec4(c.rgb * c.a, c.a);
+}
+
+// A float layer (premultiplied already) brought in the same way.
+@fragment
+fn fs_import_float(in: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(src, src_sampler, in.uv) * inside(in.uv);
 }
 
 // Exposure (stops), contrast %, saturation %, temperature, tint.
 @fragment
 fn fs_color(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     var rgb = unpremul(c);
     rgb = rgb * exp2(fx.p0.x);
     let temp = fx.p0.w / 100.0;
@@ -78,12 +99,12 @@ fn fs_blur(in: VsOut) -> @location(0) vec4<f32> {
     let taps = min(ceil(reach), 64.0);
     let step = reach / max(taps, 1.0);
     let dir = fx.texel_dir.xy * fx.texel_dir.zw;
-    var sum = textureSample(src, src_sampler, in.uv);
+    var sum = textureSample(src, src_sampler, to_tex(in.uv));
     var total = 1.0;
     for (var i = 1.0; i <= taps; i = i + 1.0) {
         let x = i * step;
         let w = exp(-0.5 * x * x / (sigma * sigma));
-        sum = sum + w * (textureSample(src, src_sampler, in.uv + dir * x) + textureSample(src, src_sampler, in.uv - dir * x));
+        sum = sum + w * (textureSample(src, src_sampler, to_tex(in.uv + dir * x)) + textureSample(src, src_sampler, to_tex(in.uv - dir * x)));
         total = total + 2.0 * w;
     }
     return sum / total;
@@ -103,7 +124,7 @@ fn chroma(g: vec3<f32>) -> vec2<f32> {
 // Works on gamma-encoded colour, where "how green is this" matches what you see.
 @fragment
 fn fs_key(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     let g = pow(max(unpremul(c), vec3(0.0)), vec3(1.0 / 2.2));
     let y = dot(g, LUMA);
     let k = normalize(chroma(hue_rgb(fx.p0.x)));
@@ -128,7 +149,7 @@ fn fs_key(in: VsOut) -> @location(0) vec4<f32> {
 // Vignette: p0 = (amount %, size %, softness %).
 @fragment
 fn fs_vignette(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     // 0 at the centre, 1 in the corners, following the layer's shape.
     let d = length((in.uv - 0.5) * 2.0) / sqrt(2.0);
     let soft = fx.p0.z / 100.0;
@@ -148,7 +169,7 @@ fn to_linear(g: vec3<f32>) -> vec3<f32> {
 // Levels, on display values 0–255: p0 = (in black, in white, gamma, out black), p1.x = out white.
 @fragment
 fn fs_levels(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     let g = to_display(unpremul(c));
     let ib = fx.p0.x / 255.0;
     let iw = max(fx.p0.y / 255.0, ib + 1.0 / 255.0);
@@ -161,12 +182,12 @@ fn fs_levels(in: VsOut) -> @location(0) vec4<f32> {
 // Sharpen: p0 = (amount %, radius in texels).
 @fragment
 fn fs_sharpen(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     let d = fx.texel_dir.xy * max(fx.p0.y, 0.5);
     var sum = vec4(0.0);
     for (var i = 0; i < 8; i = i + 1) {
         let a = f32(i) * 0.7853982;
-        sum = sum + textureSample(src, src_sampler, in.uv + vec2(cos(a), sin(a)) * d);
+        sum = sum + textureSample(src, src_sampler, to_tex(in.uv + vec2(cos(a), sin(a)) * d));
     }
     let blurred = sum / 8.0;
     let out = c + (c - blurred) * (fx.p0.x / 100.0);
@@ -177,7 +198,7 @@ fn fs_sharpen(in: VsOut) -> @location(0) vec4<f32> {
 // Glow, step 1: keep the bright parts. p0 = (threshold %, -, -, softness %).
 @fragment
 fn fs_bright(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     let y = dot(to_display(unpremul(c)), LUMA);
     let t = fx.p0.x / 100.0;
     let s = max(fx.p0.w / 100.0, 0.001);
@@ -187,7 +208,7 @@ fn fs_bright(in: VsOut) -> @location(0) vec4<f32> {
 // Drop shadow, step 1: the layer's shape, moved. p0 = (offset x texels, offset y texels, -, opacity %).
 @fragment
 fn fs_shadow(in: VsOut) -> @location(0) vec4<f32> {
-    let a = textureSample(src, src_sampler, in.uv - fx.p0.xy * fx.texel_dir.xy).a;
+    let a = textureSample(src, src_sampler, to_tex(in.uv - fx.p0.xy * fx.texel_dir.xy)).a;
     return vec4(0.0, 0.0, 0.0, a * fx.p0.w / 100.0);
 }
 
@@ -271,7 +292,7 @@ fn blade_at(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, flick: f32) -> BladeHit {
 
 @fragment
 fn fs_blade(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     let size = fx.extra.zw;
     let p = in.uv * size;
     let len = fx.p1.x / 100.0;
@@ -325,7 +346,7 @@ fn fs_blade(in: VsOut) -> @location(0) vec4<f32> {
 // The frame so far (premultiplied already), for an adjustment layer's effects.
 @fragment
 fn fs_copy(in: VsOut) -> @location(0) vec4<f32> {
-    return textureSample(src, src_sampler, in.uv);
+    return textureSample(src, src_sampler, to_tex(in.uv));
 }
 
 // ---- Stylise effects ----------------------------------------------------------
@@ -365,7 +386,7 @@ fn max3(v: vec3<f32>) -> f32 {
 // p1 = (colour, lens style, streak %, ghosts %), p2.x = halo %.
 @fragment
 fn fs_flare(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     let size = fx.extra.zw;
     let p = in.uv * size;
     let light = fx.p0.xy / 100.0 * size;
@@ -443,7 +464,7 @@ fn fs_shake(in: VsOut) -> @location(0) vec4<f32> {
     } else {
         uv = clamp(uv, vec2(0.0), vec2(1.0));
     }
-    return textureSampleLevel(src, src_sampler, uv, 0.0);
+    return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
 }
 
 // Chromatic aberration: p0 = (amount px, direction, angle °, falloff %).
@@ -462,9 +483,9 @@ fn fs_aberration(in: VsOut) -> @location(0) vec4<f32> {
         off = vec2(cos(a), -sin(a)) * fx.p0.x;
     }
     let o = off / size;
-    let r = textureSampleLevel(src, src_sampler, in.uv + o, 0.0);
-    let g = textureSampleLevel(src, src_sampler, in.uv, 0.0);
-    let b = textureSampleLevel(src, src_sampler, in.uv - o, 0.0);
+    let r = textureSampleLevel(src, src_sampler, to_tex(in.uv + o), 0.0);
+    let g = textureSampleLevel(src, src_sampler, to_tex(in.uv), 0.0);
+    let b = textureSampleLevel(src, src_sampler, to_tex(in.uv - o), 0.0);
     return vec4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
 }
 
@@ -483,7 +504,7 @@ fn vnoise(seed: u32, p: vec2<f32>) -> f32 {
 // Film grain: p0 = (amount %, size px, colour %, in highlights %), p1 = (frame rate, seed).
 @fragment
 fn fs_grain(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     if (c.a <= 1e-5) {
         return c;
     }
@@ -536,9 +557,9 @@ fn fs_glitch(in: VsOut) -> @location(0) vec4<f32> {
     let whole = select(0.0, 0.35, rnd3(seed + 4u, st, 1u) < amount * 0.3);
     let split = fx.p0.w * (hit + whole) / size.x;
     var uv = vec2(fract((p.x - shift) / size.x), in.uv.y);
-    let r = textureSampleLevel(src, src_sampler, vec2(fract(uv.x + split), uv.y), 0.0);
-    let g = textureSampleLevel(src, src_sampler, uv, 0.0);
-    let b = textureSampleLevel(src, src_sampler, vec2(fract(uv.x - split), uv.y), 0.0);
+    let r = textureSampleLevel(src, src_sampler, to_tex(vec2(fract(uv.x + split), uv.y)), 0.0);
+    let g = textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+    let b = textureSampleLevel(src, src_sampler, to_tex(vec2(fract(uv.x - split), uv.y)), 0.0);
     var c = vec4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
     // Scan lines, stronger where it's glitching.
     let scan = fx.p1.x / 100.0 * (0.25 + 0.75 * hit);
@@ -550,7 +571,7 @@ fn fs_glitch(in: VsOut) -> @location(0) vec4<f32> {
 // Light leaks: p0 = (colour 1, colour 2, intensity %, size %), p1 = (drift Hz, from, seed).
 @fragment
 fn fs_leaks(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, in.uv);
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
     let aspect = fx.extra.x;
     let seed = seed_of(fx.p1.z);
     let t = fx.extra.y * fx.p1.x;

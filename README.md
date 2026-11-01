@@ -710,8 +710,9 @@ What works now:
 - Colour-accurate decoding: BT.709/BT.601 and full/limited range are read from each file
   (HD footage is no longer decoded with SD colour maths), and exports are tagged BT.709
 
-Not yet: glow and drop shadow reach only as far as the clip's own frame (a shadow from a
-full-frame clip is hidden), and animated text (per-letter reveals).
+Glow and drop shadow reach past the clip's own edges: a layer smaller than the frame (a
+logo, a picture-in-picture, a shrunken clip) casts its shadow and glows onto what's around it,
+except on sides cut by a crop. Not yet: animated text (per-letter reveals).
 See the roadmap at the bottom.
 
 ## Layout
@@ -1444,8 +1445,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    LUTs, blur, sharpen, chroma key, glow, drop shadow, vignette, an effects browser;
    dissolve, dip, wipe, iris, slide and push transitions~~
    (stylise effects: lens flare, light leaks, film grain, glitch, chromatic aberration,
-   camera shake, energy blade, particles; still to add: letting glow/shadow spill outside the
-   layer, saved effect presets)
+   camera shake, energy blade, particles; glow and shadow spill past the layer; still to add:
+   saved effect presets)
 6. **Compositing**: ~~compositions (nested sequences), motion tracking (1, 2 and 4
    points: follow, stabilise with smoothing, corner pin / screen replacement), corner pin,
    masks with Bézier curves and per-point feather, GPU particles~~, titles and track management are done.

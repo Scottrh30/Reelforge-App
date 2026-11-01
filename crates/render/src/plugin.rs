@@ -24,6 +24,8 @@ struct RfFx {
     // xy: texture size in texels, z: pass index, w: pass count
     extra2: vec4<f32>,
     spare: vec4<f32>,
+    // Where the layer sits in the target: layer uv = target uv × xy + zw.
+    map: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> rf: RfFx;
 @group(1) @binding(0) var rf_src: texture_2d<f32>;
@@ -41,9 +43,13 @@ fn rf_vs(@builtin(vertex_index) i: u32) -> RfVsOut {
     let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     var out: RfVsOut;
     out.pos = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-    out.uv = vec2(p.x, 1.0 - p.y);
+    // Your functions get the layer's uv (0–1 across it; a little beyond when
+    // the layer has a glow or shadow that needs room).
+    out.uv = vec2(p.x, 1.0 - p.y) * rf.map.xy + rf.map.zw;
     return out;
 }
+
+fn rf_tex(uv: vec2<f32>) -> vec2<f32> { return (uv - rf.map.zw) / rf.map.xy; }
 
 fn rf_unpremul(c: vec4<f32>) -> vec4<f32> {
     return select(vec4(0.0), vec4(c.rgb / c.a, c.a), c.a > 1e-5);
@@ -62,11 +68,11 @@ fn param_choice(i: i32) -> i32 { return i32(round(param(i))); }
 
 // The picture coming into this pass (the layer, or the previous pass's result),
 // in linear light. sample: straight colour; sample_premul: premultiplied.
-fn sample(uv: vec2<f32>) -> vec4<f32> { return rf_unpremul(textureSampleLevel(rf_src, rf_src_sampler, uv, 0.0)); }
-fn sample_premul(uv: vec2<f32>) -> vec4<f32> { return textureSampleLevel(rf_src, rf_src_sampler, uv, 0.0); }
+fn sample(uv: vec2<f32>) -> vec4<f32> { return rf_unpremul(textureSampleLevel(rf_src, rf_src_sampler, rf_tex(uv), 0.0)); }
+fn sample_premul(uv: vec2<f32>) -> vec4<f32> { return textureSampleLevel(rf_src, rf_src_sampler, rf_tex(uv), 0.0); }
 // The picture as it came into this effect (before its first pass).
-fn original(uv: vec2<f32>) -> vec4<f32> { return rf_unpremul(textureSampleLevel(rf_orig, rf_orig_sampler, uv, 0.0)); }
-fn original_premul(uv: vec2<f32>) -> vec4<f32> { return textureSampleLevel(rf_orig, rf_orig_sampler, uv, 0.0); }
+fn original(uv: vec2<f32>) -> vec4<f32> { return rf_unpremul(textureSampleLevel(rf_orig, rf_orig_sampler, rf_tex(uv), 0.0)); }
+fn original_premul(uv: vec2<f32>) -> vec4<f32> { return textureSampleLevel(rf_orig, rf_orig_sampler, rf_tex(uv), 0.0); }
 
 // One pixel of the layer (at 100% scale) in uv units: offset by 10.0 * pixel()
 // to move 10 pixels. Proxies don't change it.
