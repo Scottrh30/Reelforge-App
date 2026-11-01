@@ -244,6 +244,49 @@
   }
 
   const playing = $derived(app.live?.playing ?? false);
+
+  // Performance readout: pictures shown per second while playing (from the
+  // picture changing), against the frame rate asked for.
+  let shownTimes: number[] = [];
+  let lastRev = -1;
+  let playStart = 0;
+  let shownFps = $state(0);
+  // Every tick (the playhead moves): note a new picture, and count the last second's.
+  $effect(() => {
+    const rev = app.live?.picture_rev;
+    void app.live?.playhead;
+    if (!playing || rev === undefined) {
+      (shownTimes = []), (lastRev = -1), (shownFps = 0), (playStart = 0);
+      return;
+    }
+    const now = performance.now();
+    if (!playStart) playStart = now;
+    if (rev !== lastRev) {
+      if (lastRev !== -1) shownTimes.push(now);
+      lastRev = rev;
+    }
+    shownTimes = shownTimes.filter((t) => now - t <= 1000);
+    // Once it has played for a moment.
+    if (now - playStart > 600) shownFps = (shownTimes.length * 1000) / Math.min(1000, now - playStart);
+  });
+  const wantFps = $derived(app.s ? (app.s.seq.rate_num / app.s.seq.rate_den) * Math.min(1, Math.abs(app.live?.shuttle || 1)) : 0);
+  const perf = $derived.by(() => {
+    const v = app.live?.viewer;
+    if (!v) return null;
+    const share = shownFps && wantFps ? shownFps / wantFps : 1;
+    const level = !playing || !shownFps ? "idle" : share >= 0.95 ? "good" : share >= 0.8 ? "fair" : "poor";
+    const source = !v.layers ? "" : v.proxied === v.layers ? "Proxies" : v.proxied ? `Proxies ${v.proxied}/${v.layers}` : "Originals";
+    const label = playing && shownFps ? `${shownFps.toFixed(1)}/${wantFps.toFixed(wantFps % 1 ? 2 : 0)} fps` : source;
+    const dropped = playing && shownFps ? Math.max(0, Math.round(wantFps - shownFps)) : 0;
+    const tip = [
+      playing && shownFps ? `Playing ${shownFps.toFixed(1)} of ${wantFps.toFixed(2)} frames a second${dropped ? ` (about ${dropped} dropped each second)` : ", none dropped"}` : "Play to see how many frames a second the Viewer keeps up with",
+      v.layers ? `${v.layers} video layer${v.layers === 1 ? "" : "s"} at the playhead: ${v.proxied ? `${v.proxied} from proxies` : "all from the original files"}${!v.proxies_on ? " (proxies are switched off)" : ""}` : "No video at the playhead",
+      `Hardware decoding: ${v.decode}`,
+      v.gpu ? `Drawn on: ${v.gpu}` : "",
+      level === "poor" || level === "fair" ? "To keep up: make proxies (Media panel) or Render preview (Enter)" : "",
+    ].filter(Boolean).join("\n");
+    return { level, label, tip, dropped };
+  });
   const proxies = $derived((app.s?.media ?? []).filter((m) => m.proxy === "ready").length);
 </script>
 
@@ -255,6 +298,7 @@
     <span class="muted">{app.s ? `${app.s.seq.width}×${app.s.seq.height} · ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</span>
     <span class="grow"></span>
     {#if app.live?.from_cache}<span class="rendered" title="Shown from Render preview">Rendered</span>{/if}
+    {#if perf && (perf.label || playing)}<span class="perf {perf.level}" title={perf.tip}><span class="dot" aria-hidden="true"></span>{perf.label}{#if perf.dropped}<span class="drop"> · {perf.dropped} dropped/s</span>{/if}</span>{/if}
     {#if proxies > 0}
       <button
         class="chip"
@@ -422,6 +466,36 @@
   }
   .grow {
     flex: 1;
+  }
+  .perf {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: calc(11.5px * var(--text-scale));
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .perf .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--faint);
+  }
+  .perf.good .dot {
+    background: var(--green);
+  }
+  .perf.fair .dot {
+    background: #e0b040;
+  }
+  .perf.poor .dot {
+    background: #e05040;
+  }
+  .perf.poor {
+    color: var(--text);
+  }
+  .perf .drop {
+    color: #e0b040;
   }
   .rendered {
     color: var(--green);

@@ -87,6 +87,45 @@ struct Live {
     render: Option<f32>,
     /// Bumped when the render cache gains or loses frames.
     render_gen: u64,
+    /// What the Viewer is working from, for its performance readout.
+    viewer: ViewerInfo,
+}
+
+#[derive(Serialize)]
+struct ViewerInfo {
+    /// Video clips with footage showing at the playhead, and how many of them play from proxies.
+    layers: usize,
+    proxied: usize,
+    proxies_on: bool,
+    /// Hardware decoding: "on", "off", or why it isn't used.
+    decode: String,
+    /// The graphics card drawing the picture.
+    gpu: Option<&'static str>,
+}
+
+/// What the Viewer works from at the playhead.
+fn viewer_info(e: &reelforge_engine::editor::Editor) -> ViewerInfo {
+    let t = e.playback.playhead;
+    let s = e.seq();
+    let paths = e.decode_paths();
+    let mut layers = 0;
+    let mut proxied = 0;
+    for tr in s.tracks.iter().filter(|t| t.kind == TrackKind::Video && !t.muted) {
+        for c in tr.clips.iter().filter(|c| c.contains(t)) {
+            let Some(m) = e.project.media(c.media).filter(|m| m.info.video.is_some()) else { continue };
+            layers += 1;
+            if paths.get(&m.id).is_some_and(|p| *p != m.path) {
+                proxied += 1;
+            }
+        }
+    }
+    let decode = if !e.prefs.hw_decode {
+        "off".to_string()
+    } else {
+        let st = reelforge_media::hw::status();
+        if st.starts_with("unavailable") { st } else { format!("on ({})", reelforge_media::hw::api_name()) }
+    };
+    ViewerInfo { layers, proxied, proxies_on: e.prefs.use_proxies, decode, gpu: reelforge_render::adapter_info() }
 }
 
 #[derive(Serialize)]
@@ -133,6 +172,7 @@ fn tick() -> Res<Live> {
             tracking: e.tracking.as_ref().map(|j| (j.clip.0, j.progress)),
             render: e.render_progress(),
             render_gen: e.render_cache.generation,
+            viewer: viewer_info(e),
         }
     })
 }

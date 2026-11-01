@@ -415,7 +415,11 @@ What works now:
   panel; **Make proxy** does it for any clip. Proxies are 960×540 with every frame a keyframe,
   so jumping around is instant (8 s of 4K: ~1.5 s per random seek on the original, 3 ms on the
   proxy). The **Proxies on/off** button in the viewer switches between proxies and originals;
-  export always uses the originals. Proxies are kept per file in your cache folder, so other
+  export always uses the originals. Beside it, the Viewer's **performance readout** says what it
+  plays from (Proxies, Proxies 2/3, Originals) and, while playing, how many frames a second it
+  keeps up with against the sequence's rate, with a dot (green: all of them; amber: most;
+  red: falling behind) and the frames dropped each second; its tooltip adds hardware decoding
+  and the graphics card, and what to do when it can't keep up. Proxies are kept per file in your cache folder, so other
   projects using the same footage reuse them. **Settings → Make proxies as** picks the format:
   - **H.264** (the default): the smallest files, decoded on the graphics card
   - **ProRes 422 Proxy**: 10-bit 4:2:2 colour, so grading looks closer to the original; about
