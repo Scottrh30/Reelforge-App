@@ -56,6 +56,8 @@ pub struct Prefs {
     pub timeline_thumbnails: bool,
     /// …one at the clip's start, or a filmstrip all along it.
     pub timeline_filmstrip: bool,
+    /// A waveform of a video clip's linked sound along its lower edge.
+    pub timeline_video_waveforms: bool,
     /// Layers dragged in the viewer snap to the frame and to each other (Alt: free).
     pub viewer_snapping: bool,
     /// Decode video on the graphics card when possible.
@@ -82,6 +84,7 @@ impl Default for Prefs {
             scrub_audio: true,
             timeline_thumbnails: true,
             timeline_filmstrip: true,
+            timeline_video_waveforms: false,
             viewer_snapping: true,
             hw_decode: true,
             cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB,

@@ -65,6 +65,7 @@
           <option value="off">None</option>
         </select>
       </label>
+      <label class="check" title="A band along the bottom of each video clip that has linked audio, showing that sound (at its volume and fades), so you can cut picture to sound without looking down at the audio tracks"><input type="checkbox" bind:checked={prefs.timeline_video_waveforms} /> Show the linked sound's waveform under video clips</label>
       <label class="check"><input type="checkbox" bind:checked={prefs.viewer_snapping} /> Snap layers in the Viewer to the frame and each other (hold Alt to place freely)</label>
       <label class="field">
         <span>Frame cache</span>

@@ -362,6 +362,7 @@ export interface Prefs {
   timeline_thumbnails: boolean;
   /// A filmstrip all along video clips (else one picture at the start).
   timeline_filmstrip: boolean;
+  timeline_video_waveforms: boolean;
   viewer_snapping: boolean;
   hw_decode: boolean;
   cache_mb: number;

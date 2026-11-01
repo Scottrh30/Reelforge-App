@@ -74,7 +74,9 @@ What works now:
   the background. Frame times are rounded to a step that suits the zoom, so scrolling and small
   zoom changes reuse pictures. Taller video tracks give bigger pictures (drag a track's lower
   edge). Composition clips show a filmstrip of their rendered picture (in the composition's
-  shape), kept until something in the composition changes. **Settings → Clip pictures** picks a
+  shape), kept until something in the composition changes. **Settings → Show the linked sound's
+  waveform under video clips** adds a band along each linked video clip's lower edge showing its
+  sound (at its volume and fades), for cutting picture to sound. **Settings → Clip pictures** picks a
   filmstrip, the first frame only, or none
 
 - **GPU compositor**: every visible video track is blended into the frame on the GPU

@@ -976,6 +976,16 @@
     return out;
   }
 
+  /// Each linked video clip's sound: the audio clip linked to it and that clip's track.
+  const linkedSound = $derived.by(() => {
+    const out = new Map<number, { a: ClipView; tr: TrackView }>();
+    if (!app.s?.prefs.timeline_video_waveforms) return out;
+    const byLink = new Map<number, { a: ClipView; tr: TrackView }>();
+    for (const tr of rows) if (tr.kind === "audio") for (const a of tr.clips) if (a.link != null && a.kind === "audio" && !byLink.has(a.link)) byLink.set(a.link, { a, tr });
+    for (const tr of rows) if (tr.kind === "video") for (const c of tr.clips) if (c.link != null && c.kind === "video" && byLink.has(c.link)) out.set(c.id, byLink.get(c.link)!);
+    return out;
+  });
+
   function wave(canvas: HTMLCanvasElement, p: { media: number; from: number; secs: number; w: number; h: number; speed: number; rev: number; audio: ClipAudio | null; srcIn: number; dur: number; offset: number; trackDb: number }) {
     const draw = (q: typeof p) => {
       const data = app.waveforms.get(q.media);
@@ -1275,6 +1285,22 @@
                           <div class="frame" style="left:{tile.x}px; width:{tile.w}px"><Thumb comp={c.nested} at={tile.at} rev={app.s!.rev} /></div>
                         {/each}
                       </div>
+                    {/if}
+                    {#if c.kind === "video" && w > 4 && !tr.collapsed && linkedSound.get(c.id)}
+                      <!-- The linked sound along the clip's lower edge (where the two overlap, on screen). -->
+                      {@const { a, tr: at } = linkedSound.get(c.id)!}
+                      {@const al = x(a.start) - l}
+                      {@const aw = (a.duration / T) * view.pps}
+                      {@const vis0 = Math.max(0, -l, al)}
+                      {@const vis1 = Math.min(w, lanesW - l, al + aw)}
+                      {@const bh = Math.max(12, Math.round((hOf(tr) - 14) * 0.38))}
+                      {#if vis1 > vis0}
+                        <canvas
+                          class="wave under"
+                          style="left:{vis0}px; width:{vis1 - vis0}px; height:{bh}px"
+                          use:wave={{ media: a.media, from: a.source_in / T + ((vis0 - al) / view.pps) * a.speed, secs: (vis1 - vis0) / view.pps, w: vis1 - vis0, h: bh, speed: a.speed, rev: app.waveforms.size, audio: a.audio, srcIn: a.source_in, dur: a.duration, offset: (vis0 - al) / view.pps, trackDb: at.audio.volume_db }}
+                        ></canvas>
+                      {/if}
                     {/if}
                     {#if c.kind === "audio" && w > 4 && !tr.collapsed}
                       {@const vis0 = Math.max(0, -l)}
@@ -2090,6 +2116,13 @@
     top: 1px;
     height: calc(100% - 2px);
     pointer-events: none;
+  }
+  /* Under a video clip: a band along its lower edge, over the filmstrip. */
+  .wave.under {
+    top: auto;
+    bottom: 1px;
+    background: rgba(12, 20, 16, 0.55);
+    border-top: 1px solid rgba(170, 235, 190, 0.18);
   }
   .box {
     position: absolute;
