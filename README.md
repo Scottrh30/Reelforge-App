@@ -611,6 +611,9 @@ What works now:
     the mask. What's inside the mask is followed, so the background doesn't pull it (when
     bending, detail just outside the mask helps only once it has kept moving with it). Where it slips, drag the points back on that frame and track on from
     there; keys outside the tracked stretch are kept
+  - **Smooth keys** (a mask with keyframes): takes the jitter out of a tracked shape. Each key
+    is eased towards a steady line through its neighbours (1 to 8 frames wide), so shake goes
+    and the movement, even at the ends of the track, stays; one undo step
 - **Compositions**: a composition is a sequence of its own, with its own layers, that
   sits on the timeline as one clip (amber, marked `[C]`). Transform it, add effects, dissolve
   it, trim it like any clip; its audio plays and exports with it

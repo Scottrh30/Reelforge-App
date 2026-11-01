@@ -751,6 +751,12 @@ fn mask_point_add(id: u64, index: usize, point: usize, before: bool) -> Res<Opti
     ed(|e| e.add_mask_point(clip(id), index, point, before))
 }
 
+/// Take the jitter out of a tracked mask's keyframes, `frames` wide.
+#[tauri::command]
+fn mask_smooth(id: u64, index: usize, frames: f32) -> Res<()> {
+    ed(|e| e.smooth_mask(clip(id), index, frames))
+}
+
 /// Trace what key effect `index` keeps into a new mask. Returns its index.
 #[tauri::command]
 fn mask_from_key(id: u64, index: usize) -> Res<Option<usize>> {
@@ -1129,6 +1135,7 @@ fn main() {
             mask_point_add,
             mask_point_add_at,
             mask_from_key,
+            mask_smooth,
             mask_point_delete,
             mask_op,
             tracker_add,

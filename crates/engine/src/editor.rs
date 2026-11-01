@@ -2167,6 +2167,28 @@ impl Editor {
         Some(i)
     }
 
+    /// Smooth mask `index`'s shape keys (see `Mask::smooth_keys`), `frames`
+    /// frames wide. One undo step.
+    pub fn smooth_mask(&mut self, id: ClipId, index: usize, frames: f32) {
+        self.commit_live_edit();
+        if self.seq().is_locked(id) {
+            self.status = LOCKED.into();
+            return;
+        }
+        let sigma = frames.max(0.0) as f64 * self.seq().frame_rate.frame_duration().as_secs_f64();
+        let Some(mut v) = self.visual(id) else { return };
+        let Some(m) = v.masks.get_mut(index) else { return };
+        if m.keys.len() < 3 {
+            self.status = "Smoothing needs a mask with keyframes: track it (Track shape) or key it first".into();
+            return;
+        }
+        let name = m.name.clone();
+        let n = m.smooth_keys(sigma);
+        self.set_visual_live(id, v);
+        self.commit_live_edit();
+        self.status = format!("Smoothed {name}: {n} keyframe{} eased over about {frames:.0} frames (Undo puts them back)", if n == 1 { "" } else { "s" });
+    }
+
     /// Add a mask to a clip as one undo step, named after its shape. Returns its index.
     pub fn add_mask(&mut self, id: ClipId, mut mask: Mask) -> Option<usize> {
         self.commit_live_edit();

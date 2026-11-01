@@ -808,6 +808,7 @@ export const api = {
   setMaskCurves: (id: number, index: number, curves: Curve4[]) => invoke("set_mask_curves", { id, index, curves }),
   maskPointCurve: (id: number, index: number, point: number) => invoke("mask_point_curve", { id, index, point }),
   maskPointAdd: (id: number, index: number, point: number, before: boolean) => invoke<number | null>("mask_point_add", { id, index, point, before }),
+  maskSmooth: (id: number, index: number, frames: number) => invoke("mask_smooth", { id, index, frames }),
   maskFromKey: (id: number, index: number) => invoke<number | null>("mask_from_key", { id, index }),
   maskPointAddAt: (id: number, index: number, at: Pt) => invoke<number | null>("mask_point_add_at", { id, index, at }),
   maskPointDelete: (id: number, index: number, point: number) => invoke<boolean>("mask_point_delete", { id, index, point }),

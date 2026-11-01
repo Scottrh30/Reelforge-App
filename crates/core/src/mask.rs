@@ -266,6 +266,55 @@ impl Mask {
         Some(i + 1)
     }
 
+    /// Take the jitter out of the shape's keyframes (a tracked mask's): each
+    /// key's points (and curve handles) are fitted with a straight line
+    /// through the keys around it, Gaussian-weighted `sigma` seconds wide, so
+    /// shake goes but steady movement (even at the ends of the track) stays;
+    /// keys far apart in time hardly touch. Keys with a different number of
+    /// points are left alone. Returns how many keys moved.
+    pub fn smooth_keys(&mut self, sigma: f64) -> usize {
+        if sigma <= 0.0 || self.keys.len() < 3 {
+            return 0;
+        }
+        let old = self.keys.clone();
+        let mut moved = 0;
+        for (i, k) in self.keys.iter_mut().enumerate() {
+            let n = k.points.len();
+            let t0 = old[i].at.as_secs_f64();
+            // Weighted least squares for value = a + b·(t − t0); `a` is the smoothed value.
+            let near: Vec<(f64, &ShapeKey)> = old
+                .iter()
+                .filter(|o| o.points.len() == n && ((o.at.as_secs_f64() - t0) / sigma).abs() < 3.0)
+                .map(|o| (o.at.as_secs_f64() - t0, o))
+                .collect();
+            let (mut sw, mut st, mut stt) = (0.0, 0.0, 0.0);
+            for (dt, _) in &near {
+                let w = (-0.5 * (dt / sigma).powi(2)).exp();
+                (sw, st, stt) = (sw + w, st + w * dt, stt + w * dt * dt);
+            }
+            let det = sw * stt - st * st;
+            let fit = |vals: &dyn Fn(&ShapeKey) -> f64| -> f64 {
+                let (mut sv, mut stv) = (0.0, 0.0);
+                for (dt, o) in &near {
+                    let w = (-0.5 * (dt / sigma).powi(2)).exp();
+                    let v = vals(o);
+                    (sv, stv) = (sv + w * v, stv + w * dt * v);
+                }
+                if det.abs() > 1e-12 { (stt * sv - st * stv) / det } else { sv / sw.max(1e-12) }
+            };
+            let new_pts: Vec<[f32; 2]> = (0..n).map(|j| [fit(&|o| o.points[j][0] as f64) as f32, fit(&|o| o.points[j][1] as f64) as f32]).collect();
+            let curved = !k.curves.is_empty() && near.iter().all(|(_, o)| o.curves.len() == k.curves.len());
+            if curved {
+                k.curves = (0..k.curves.len()).map(|j| std::array::from_fn(|c| fit(&|o| o.curves[j][c] as f64) as f32)).collect();
+            }
+            if new_pts != k.points {
+                moved += 1;
+            }
+            k.points = new_pts;
+        }
+        moved
+    }
+
     /// The side of the shape at time `t` nearest to `p` (layer pixels): (side
     /// `i`, from point `i` to the next; how far along it, 0–1; distance).
     /// `None` for an ellipse.
@@ -653,6 +702,25 @@ mod tests {
     /// Area inside a polygon (shoelace).
     fn area(p: &[[f32; 2]]) -> f32 {
         (0..p.len()).map(|i| { let (a, b) = (p[i], p[(i + 1) % p.len()]); a[0] * b[1] - b[0] * a[1] }).sum::<f32>().abs() / 2.0
+    }
+
+    #[test]
+    fn smoothing_a_tracked_shape_takes_out_jitter_but_keeps_the_move() {
+        // A square moving 3 px a frame to the right, with ±2 px of shake, at 25 fps.
+        let sq = |x: f32| vec![[x, 0.0], [x + 50.0, 0.0], [x + 50.0, 50.0], [x, 50.0]];
+        let mut m = Mask { shape: MaskShape::Freehand, points: sq(0.0), ..Mask::default() };
+        m.keys = (0..50).map(|k| ShapeKey::new(Time::from_secs_f64(k as f64 / 25.0), sq(3.0 * k as f32 + if k % 2 == 0 { 2.0 } else { -2.0 }))).collect();
+        assert_eq!(m.smooth_keys(3.0 / 25.0), 50);
+        for k in 0..50 {
+            let x = m.keys[k].points[0][0];
+            // ±2 px of shake: almost gone in the middle, mostly at the very ends; the move is kept.
+            let tol = if (5..45).contains(&k) { 0.3 } else { 1.0 };
+            assert!((x - 3.0 * k as f32).abs() < tol, "frame {k}: {x}");
+            assert!((m.keys[k].points[1][0] - m.keys[k].points[0][0] - 50.0).abs() < 1e-3, "the shape kept");
+        }
+        // Too few keys, or none at all: nothing happens.
+        let mut few = Mask { keys: m.keys[..2].to_vec(), ..m.clone() };
+        assert_eq!(few.smooth_keys(1.0), 0);
     }
 
     #[test]
