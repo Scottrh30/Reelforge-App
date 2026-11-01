@@ -1311,3 +1311,30 @@ fn keys_keep_the_layer_inside_a_garbage_matte() {
     let out = c.read_output().unwrap();
     assert!(near(px(&out, 16, 3, 15), [50, 180, 80]) && near(px(&out, 16, 12, 15), [255, 0, 0]));
 }
+
+#[test]
+fn a_lower_output_scale_draws_the_same_picture_smaller() {
+    let Some(mut c) = setup() else { return };
+    let red = solid(64, 32, [255, 0, 0, 255]);
+    let blue = solid(2, 2, [0, 0, 255, 255]);
+    let top = Transform { position: [10.0, 0.0], opacity: 0.5, ..Default::default() };
+    let layers = |red: &'static [u8], blue: &'static [u8]| [layer(1, red, [64, 32], [64.0, 32.0], Transform::default(), BlendMode::Normal), layer(2, blue, [2, 2], [16.0, 16.0], top, BlendMode::Normal)];
+    let (red, blue): (&'static [u8], &'static [u8]) = (Box::leak(red.into_boxed_slice()), Box::leak(blue.into_boxed_slice()));
+    // Half resolution: a 32 × 16 picture, the blue square (x 34–50, y 8–24 in
+    // the frame) at x 17–25, y 4–12.
+    c.output_scale = 0.5;
+    c.render([64, 32], &layers(red, blue));
+    assert_eq!(c.output_size(), Some([32, 16]));
+    let img = c.read_output().unwrap();
+    assert!(near(px(&img, 32, 21, 8), [188, 0, 188]), "{:?}", px(&img, 32, 21, 8));
+    assert!(near(px(&img, 32, 14, 8), [255, 0, 0]), "left of it stays red");
+    assert!(near(px(&img, 32, 21, 2), [255, 0, 0]), "above it stays red");
+    // Quarter, then back to full.
+    c.output_scale = 0.25;
+    c.render([64, 32], &layers(red, blue));
+    assert_eq!(c.output_size(), Some([16, 8]));
+    c.output_scale = 1.0;
+    c.render([64, 32], &layers(red, blue));
+    assert_eq!(c.output_size(), Some([64, 32]));
+    assert!(near(px(&c.read_output().unwrap(), 64, 42, 16), [188, 0, 188]));
+}

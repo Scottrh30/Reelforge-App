@@ -423,7 +423,10 @@ What works now:
   plays from (Proxies, Proxies 2/3, Originals) and, while playing, how many frames a second it
   keeps up with against the sequence's rate, with a dot (green: all of them; amber: most;
   red: falling behind) and the frames dropped each second; its tooltip adds hardware decoding
-  and the graphics card, and what to do when it can't keep up. Proxies are kept per file in your cache folder, so other
+  and the graphics card, and what to do when it can't keep up. The Viewer's **playback quality**
+  (Full, ½ res, ¼ res) draws its picture at that fraction of full resolution and decodes footage
+  that much smaller too, so heavy projects play smoothly; layers, effects and wipes keep their
+  places, and export and Render preview stay full. Proxies are kept per file in your cache folder, so other
   projects using the same footage reuse them. **Settings → Make proxies as** picks the format:
   - **H.264** (the default): the smallest files, decoded on the graphics card
   - **ProRes 422 Proxy**: 10-bit 4:2:2 colour, so grading looks closer to the original; about

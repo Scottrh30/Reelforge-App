@@ -58,6 +58,8 @@ pub struct Prefs {
     pub timeline_filmstrip: bool,
     /// A waveform of a video clip's linked sound along its lower edge.
     pub timeline_video_waveforms: bool,
+    /// Playback quality: the Viewer draws at 1/this of full resolution (1, 2 or 4).
+    pub playback_quality: u32,
     /// Layers dragged in the viewer snap to the frame and to each other (Alt: free).
     pub viewer_snapping: bool,
     /// Decode video on the graphics card when possible.
@@ -85,6 +87,7 @@ impl Default for Prefs {
             timeline_thumbnails: true,
             timeline_filmstrip: true,
             timeline_video_waveforms: false,
+            playback_quality: 1,
             viewer_snapping: true,
             hw_decode: true,
             cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB,
@@ -110,6 +113,22 @@ impl Editor {
         reelforge_core::frame::zero_copy::set_enabled(self.prefs.zero_copy);
         reelforge_media::FrameCache::global().set_budget_mb(self.prefs.cache_mb.clamp(128, 65536));
         reelforge_media::proxy::set_format(self.prefs.proxy_format);
+        self.preview.set_quality(self.prefs.playback_quality);
+    }
+
+    /// Set the Viewer's playback quality (1 full, 2 half, 4 quarter resolution).
+    pub fn set_playback_quality(&mut self, q: u32) {
+        self.prefs.playback_quality = q;
+        self.preview.set_quality(q);
+        self.prefs.playback_quality = self.preview.quality();
+        self.status = format!(
+            "Playback quality: {}",
+            match self.preview.quality() {
+                1 => "full resolution",
+                2 => "half resolution",
+                _ => "quarter resolution",
+            }
+        );
     }
 
     /// Make every proxy again in the current format (those already in it stay).
@@ -3751,6 +3770,41 @@ mod tests {
         assert!(e.seq().find_clip(c).unwrap().1.nested.is_some());
         e.undo();
         assert!(e.seq().find_clip(a).is_some());
+    }
+
+    #[test]
+    fn playback_quality_is_full_half_or_quarter() {
+        let mut e = editor();
+        assert_eq!(e.prefs.playback_quality, 1);
+        e.set_playback_quality(2);
+        assert_eq!((e.prefs.playback_quality, e.preview.quality()), (2, 2));
+        assert!(e.status.contains("half"));
+        // Anything else rounds to the nearest offered.
+        e.set_playback_quality(3);
+        assert_eq!(e.prefs.playback_quality, 2);
+        e.set_playback_quality(8);
+        assert_eq!(e.prefs.playback_quality, 4);
+        e.set_playback_quality(0);
+        assert_eq!(e.prefs.playback_quality, 1);
+        // Kept with the settings.
+        let mut p = e.prefs.clone();
+        p.playback_quality = 4;
+        e.set_prefs(p);
+        assert_eq!(e.preview.quality(), 4);
+
+        // The Viewer's picture at half size, and full again.
+        let Some(gpu) = reelforge_render::headless_device() else { return };
+        let mut e = Editor::new(Some(gpu), None);
+        e.add_title();
+        let [w, h] = [e.seq().width, e.seq().height];
+        e.tick();
+        assert_eq!(e.preview.read_output().unwrap().1, [w, h]);
+        e.set_playback_quality(2);
+        e.tick();
+        assert_eq!(e.preview.read_output().unwrap().1, [w / 2, h / 2]);
+        e.set_playback_quality(1);
+        e.tick();
+        assert_eq!(e.preview.read_output().unwrap().1, [w, h]);
     }
 
     #[test]

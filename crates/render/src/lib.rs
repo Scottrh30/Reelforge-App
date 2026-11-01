@@ -278,6 +278,9 @@ pub struct Compositor {
     /// Render over transparency and keep the alpha in the output (for composite
     /// shots, which are layered again), instead of over opaque black.
     pub transparent: bool,
+    /// Draw at this fraction of the frame size (the Viewer's playback
+    /// quality: 1, ½ or ¼); layers, effects and wipes keep their places.
+    pub output_scale: f32,
     texture_layout: wgpu::BindGroupLayout,
     output_layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
@@ -611,6 +614,7 @@ impl Compositor {
             },
             gpu_checked: Default::default(),
             transparent: false,
+            output_scale: 1.0,
             texture_layout,
             output_layout,
             uniforms,
@@ -993,8 +997,13 @@ impl Compositor {
 
     /// Composite `items` (bottom first) into a `frame_size` frame and submit the GPU work.
     pub fn render_items(&mut self, frame_size: [u32; 2], items: &[DrawItem]) {
-        self.ensure_targets(frame_size);
+        // The picture's pixels: the frame, or a fraction of it (playback quality).
+        // Layers are placed in frame units, so only the targets shrink.
+        let k = if self.output_scale > 0.0 && self.output_scale < 1.0 { self.output_scale } else { 1.0 };
+        let target = frame_size.map(|v| ((v as f32 * k).round() as u32).max(2));
+        self.ensure_targets(target);
         let frame = [frame_size[0] as f32, frame_size[1] as f32];
+        let target_px = [target[0] as f32, target[1] as f32];
         let all_layers = || {
             items.iter().flat_map(|item| match item {
                 DrawItem::Layer(l) => vec![l],
@@ -1427,7 +1436,8 @@ impl Compositor {
             floats.extend([size[0], size[1], t.opacity.clamp(0.0, 1.0), mode]);
             let w = wipe.unwrap_or(Wipe { iris: false, axis: [0.0; 3], progress: 1.0, softness: 0.1 });
             floats.extend([w.axis[0], w.axis[1], w.axis[2], w.progress.clamp(0.0, 1.0)]);
-            floats.extend([w.softness, frame[0], frame[1], if lighting.is_some() { 1.0 } else { 0.0 }]);
+            // The wipe works in the target's pixels (the fragment's position).
+            floats.extend([w.softness, target_px[0], target_px[1], if lighting.is_some() { 1.0 } else { 0.0 }]);
             let crop = t.crop_uv();
             floats.extend(crop);
             // The effect target's map, and how far the quad reaches past the

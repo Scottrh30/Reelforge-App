@@ -363,6 +363,8 @@ export interface Prefs {
   /// A filmstrip all along video clips (else one picture at the start).
   timeline_filmstrip: boolean;
   timeline_video_waveforms: boolean;
+  /// The Viewer's picture at 1/this of full resolution (1, 2 or 4).
+  playback_quality: number;
   viewer_snapping: boolean;
   hw_decode: boolean;
   cache_mb: number;
@@ -755,6 +757,7 @@ export const api = {
   waveformRate: () => invoke<number>("waveform_rate"),
   fontFamilies: () => invoke<string[]>("font_families"),
   thumbnail: (path: string, at: Ticks) => invoke<ArrayBuffer>("thumbnail", { path, at }),
+  setPlaybackQuality: (q: number) => invoke("set_playback_quality", { q }),
   compThumbnail: (seq: number, at: Ticks) => invoke<ArrayBuffer>("comp_thumbnail", { seq, at }),
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),

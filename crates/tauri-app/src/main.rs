@@ -448,6 +448,16 @@ fn set_prefs(prefs: Prefs) -> Res<()> {
     })
 }
 
+/// The Viewer's playback quality: 1 full, 2 half, 4 quarter resolution.
+#[tauri::command]
+fn set_playback_quality(q: u32) -> Res<()> {
+    ed(|e| {
+        e.set_playback_quality(q);
+        e.touch();
+        save_settings(e);
+    })
+}
+
 pub(crate) fn save_settings(e: &Editor) {
     if let Some(p) = SETTINGS_PATH.get() {
         if let Some(dir) = p.parent() {
@@ -1130,6 +1140,7 @@ fn main() {
             font_families,
             thumbnail,
             comp_thumbnail,
+            set_playback_quality,
             new_project,
             open_dialog,
             open_path,

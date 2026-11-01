@@ -53,6 +53,8 @@ struct Slot {
     source: Result<FrameSource, String>,
     /// The file being decoded (the original or its proxy).
     path: std::path::PathBuf,
+    /// The size it decodes at most at.
+    max: (u32, u32),
     last_used: Instant,
 }
 
@@ -110,6 +112,8 @@ pub struct Preview {
     pub from_cache: bool,
     /// Bumped whenever the picture changes (so a viewer knows to fetch it again).
     pub picture_rev: u64,
+    /// Playback quality: the Viewer's picture at 1/this of full resolution (1, 2 or 4).
+    quality: u32,
 }
 
 impl Preview {
@@ -123,7 +127,37 @@ impl Preview {
             let scene = Scene::new(&device, &queue);
             Gpu { device, queue, compositor, scene, cache_render: None }
         });
-        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0 }
+        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1 }
+    }
+
+    /// Playback quality: draw the Viewer's picture at 1/`q` of full
+    /// resolution (1, 2 or 4), decoding footage that much smaller too, so big
+    /// or heavy projects play smoothly. Renders for the render cache stay full.
+    pub fn set_quality(&mut self, q: u32) {
+        let q = match q {
+            0..=1 => 1,
+            2..=3 => 2,
+            _ => 4,
+        };
+        if q == self.quality {
+            return;
+        }
+        self.quality = q;
+        if let Some(g) = &mut self.gpu {
+            g.compositor.output_scale = 1.0 / q as f32;
+        }
+        // Draw again (at the new size) next time.
+        self.last_signature = 0;
+        self.shown_cached = None;
+    }
+
+    pub fn quality(&self) -> u32 {
+        self.quality
+    }
+
+    /// The size the Viewer's footage is decoded at most at.
+    fn decode_max(&self) -> (u32, u32) {
+        (PREVIEW_MAX.0 / self.quality, PREVIEW_MAX.1 / self.quality)
     }
 
     /// The GPU device/queue, for offline work like export.
@@ -167,15 +201,16 @@ impl Preview {
         }
     }
 
-    fn slot<'a>(slots: &'a mut HashMap<ClipId, Slot>, id: ClipId, path: &std::path::Path) -> &'a mut Slot {
+    fn slot<'a>(slots: &'a mut HashMap<ClipId, Slot>, id: ClipId, path: &std::path::Path, max: (u32, u32)) -> &'a mut Slot {
         let open = || Slot {
-            source: FrameSource::open_cached(path, Some(PREVIEW_MAX)).map_err(|e| format!("{e:#}")),
+            source: FrameSource::open_cached(path, Some(max)).map_err(|e| format!("{e:#}")),
             path: path.to_owned(),
+            max,
             last_used: Instant::now(),
         };
         let slot = slots.entry(id).or_insert_with(open);
-        if slot.path != path {
-            // Switched between the original and its proxy.
+        if slot.path != path || slot.max != max {
+            // Switched between the original and its proxy, or to another playback quality.
             *slot = open();
         }
         slot.last_used = Instant::now();
@@ -225,13 +260,14 @@ impl Preview {
         // Warm up decoders for cuts coming up soon (including the early start of an
         // incoming dissolve), so the first frame is ready on time.
         if playing {
+            let max = self.decode_max();
             for tr in sequence.tracks.iter().filter(|tr| tr.kind == reelforge_core::TrackKind::Video && !tr.muted) {
                 for clip in tr.clips.iter() {
                     let shows_at = clip.timeline_start - clip.dissolve_in;
                     if shows_at > t && shows_at <= t + PREFETCH {
                         if let Some(media) = project.media(clip.media) {
                             let path = sources.get(&media.id).unwrap_or(&media.path);
-                            if let Ok(src) = &mut Self::slot(&mut self.slots, clip.id, path).source {
+                            if let Ok(src) = &mut Self::slot(&mut self.slots, clip.id, path, max).source {
                                 src.frame_at(clip.media_at(shows_at).max(Time::ZERO));
                             }
                         }
@@ -240,6 +276,7 @@ impl Preview {
             }
         }
 
+        let max = self.decode_max();
         let Some(gpu) = &mut self.gpu else { return };
         let mut frames = PreviewFrames {
             slots: &mut self.slots,
@@ -249,6 +286,7 @@ impl Preview {
             exact: true,
             error: None,
             blocking: false,
+            max,
         };
         let unchanged = gpu.compositor.output_view().is_some().then_some(self.last_signature);
         match gpu.scene.render(project, seq, t, &mut gpu.compositor, &mut frames, unchanged) {
@@ -281,6 +319,7 @@ impl Preview {
             exact: true,
             error: None,
             blocking: true,
+            max: PREVIEW_MAX,
         };
         if let Err(e) = scene.render(project, seq, t, compositor, &mut frames, None) {
             self.error = Some(format!("{e:#}"));
@@ -306,6 +345,8 @@ struct PreviewFrames<'a> {
     error: Option<String>,
     /// Wait for each exact frame (rendering for the cache) instead of showing what's ready.
     blocking: bool,
+    /// The size frames are decoded at most at.
+    max: (u32, u32),
 }
 
 impl FrameProvider for PreviewFrames<'_> {
@@ -323,7 +364,7 @@ impl FrameProvider for PreviewFrames<'_> {
             let frame = self.offline.entry(media.id).or_insert_with(|| offline_frame(&media.name, [v.width, v.height])).clone();
             return Ok(Some(Picture { frame, size, media: media.id }));
         }
-        let src = match &mut Preview::slot(self.slots, l.clip.id, path).source {
+        let src = match &mut Preview::slot(self.slots, l.clip.id, path, self.max).source {
             Ok(s) => s,
             Err(e) => {
                 self.error = Some(format!("Can't decode {}: {e}", media.name));
