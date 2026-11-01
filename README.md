@@ -584,9 +584,11 @@ What works now:
   - With a tracker on the clip, **Apply to → Mask: …** makes the mask follow the tracked point
   - **Track shape** (rotoscoping, footage clips): draw the mask around something, then ◀ or
     ▶ follows what's inside it from the playhead to the clip's start or end, keying the shape
-    at every frame. Choose how it may move: **Moves**, **Moves, turns, scales**, or
-    **…and tilts** (perspective). Only what's inside the mask is followed, so the background
-    doesn't pull it. Where it slips, drag the points back on that frame and track on from
+    at every frame. Choose how it may move: **Moves**, **Moves, turns, scales**,
+    **…and tilts** (perspective), or **Bends** for things that change shape (cloth, skin,
+    hands, a face): each part of the shape then follows what's under it, on a 4 × 4 grid over
+    the mask. What's inside the mask is followed, so the background doesn't pull it (when
+    bending, detail just outside the mask helps only once it has kept moving with it). Where it slips, drag the points back on that frame and track on from
     there; keys outside the tracked stretch are kept
 - **Compositions**: a composition is a sequence of its own, with its own layers, that
   sits on the timeline as one clip (amber, marked `[C]`). Transform it, add effects, dissolve
@@ -1361,7 +1363,11 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   sought inside the mask's outline (`good_features` takes any outline, even-odd), follows the
   outline's bounding quad; each frame's quad gives a homography from the start, reduced to a
   shift or a similarity about the shape's middle for the simpler motions, and every point and
-  handle end is carried by it into a shape key. The run uses the same `TrackJob` as point
+  handle end is carried by it into a shape key. **Bends** tracks a `mask_grid` (4 × 4 cells
+  over the bounds, grown a tenth) with `MeshTracker::in_region`: each frame the grid is solved
+  from the features inside the outline first, then features outside that have moved with it
+  for `TRUST_FRAMES` frames running join in (holding the outer points); each point and handle
+  end keeps its `MeshCoord` on the grid. The run uses the same `TrackJob` as point
   tracking (`mask: Some(..)`), finishing in `Editor::finish_mask_tracking` as one undo step.
 - **Plugins** (`core/src/plugin.rs`, `render/src/plugin.rs`, `engine/src/plugins.rs`): the
   manifest is parsed into a `PluginDef` (parameter specs interned as `&'static`, like the

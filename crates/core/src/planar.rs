@@ -403,7 +403,7 @@ pub(crate) fn robust_refit(mut h: Homography, src: &[[f32; 2]], dst: &[[f32; 2]]
 
 /// Is `p` inside the convex four-sided `q` (either winding)?
 /// Is `p` inside the outline `q` (any number of points; even-odd)?
-fn inside(q: &[[f32; 2]], p: [f32; 2]) -> bool {
+pub(crate) fn inside(q: &[[f32; 2]], p: [f32; 2]) -> bool {
     let mut odd = false;
     let n = q.len();
     for i in 0..n {

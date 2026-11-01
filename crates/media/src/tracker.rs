@@ -204,14 +204,16 @@ fn follow_region(
 
 /// Rotoscoping: follow what's inside a mask's `outline` (media pixels, as
 /// it is at media time `from`; `quad` is its bounds: top left, top right,
-/// bottom right, bottom left) towards `until`, as a flat surface. Returns
-/// `quad`'s four corners at every frame, for
-/// [`reelforge_core::track::mask_from_region`].
+/// bottom right, bottom left) towards `until`, as a flat surface; or, with
+/// `grid` (a mesh over it, see [`reelforge_core::track::mask_grid`]), as one
+/// that bends. Returns `quad`'s four corners (or the grid's points) at every
+/// frame, for [`reelforge_core::track::mask_from_region`].
 #[allow(clippy::too_many_arguments)]
 pub fn track_outline(
     path: &Path,
     info: &MediaInfo,
     quad: [[f32; 2]; 4],
+    grid: Option<MeshShape>,
     outline: Vec<[f32; 2]>,
     search: f32,
     from: Time,
@@ -231,7 +233,10 @@ pub fn track_outline(
     };
     let (pyr, w, h) = grab(from)?;
     let no_detail = "there's too little detail inside the mask to follow: draw it around something with some texture or print on it";
-    follow_region(quad, outline, search, no_detail, pyr, (w, h), (v.width, v.height), step, from, until, cancel, &mut grab, &mut progress)
+    match grid {
+        Some(g) => follow_grid(g, Some(outline), search, no_detail, pyr, (w, h), (v.width, v.height), step, from, until, cancel, &mut grab, &mut progress),
+        None => follow_region(quad, outline, search, no_detail, pyr, (w, h), (v.width, v.height), step, from, until, cancel, &mut grab, &mut progress),
+    }
 }
 
 /// In [`TrackEnd::Lost`]: the whole surface was lost (planar tracking), not one point.
@@ -252,14 +257,40 @@ fn track_mesh(
     grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
     progress: &mut impl FnMut(f32),
 ) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
-    let (sx, sy) = (w as f32 / mw as f32, h as f32 / mh as f32);
     let start: Vec<[f32; 2]> = tracker.points.iter().map(|p| p.shown_at(from)).collect();
-    let grid = MeshShape { cols: tracker.grid[0], rows: tracker.grid[1], points: start.iter().map(|p| [p[0] * sx, p[1] * sy]).collect() };
+    let grid = MeshShape { cols: tracker.grid[0], rows: tracker.grid[1], points: start };
+    let no_detail = "there's too little detail inside the grid to follow: put it over a surface with some texture or print on it";
+    follow_grid(grid, None, tracker.points[0].search, no_detail, pyr, (w, h), (mw, mh), step, from, until, cancel, grab, progress)
+}
+
+/// Follow a bending surface with grid `grid` (media pixels), using only
+/// what's inside `region` (media pixels) if given: the grid's points as they
+/// move. Fails with `no_detail` when there's too little to follow.
+#[allow(clippy::too_many_arguments)]
+fn follow_grid(
+    grid: MeshShape,
+    region: Option<Vec<[f32; 2]>>,
+    search: f32,
+    no_detail: &str,
+    pyr: Pyramid,
+    (w, h): (usize, usize),
+    (mw, mh): (u32, u32),
+    step: Time,
+    from: Time,
+    until: Time,
+    cancel: &AtomicBool,
+    grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
+    progress: &mut impl FnMut(f32),
+) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
+    let (sx, sy) = (w as f32 / mw as f32, h as f32 / mh as f32);
+    let scaled = |p: &[f32; 2]| [p[0] * sx, p[1] * sy];
+    let start = grid.points.clone();
+    let grid = MeshShape { points: grid.points.iter().map(scaled).collect(), ..grid };
     if !grid.is_valid() || grid.is_folded() {
         return Err(anyhow!("the grid is folded over: drag its corners back so it isn't twisted"));
     }
-    let search = tracker.points[0].search * sx;
-    let mut mesh = MeshTracker::new(&pyr, grid, search).map_err(|_| anyhow!("there's too little detail inside the grid to follow: put it over a surface with some texture or print on it"))?;
+    let region = region.map(|r| r.iter().map(scaled).collect());
+    let mut mesh = MeshTracker::in_region(&pyr, grid, region, search * sx).map_err(|_| anyhow!("{no_detail}"))?;
     let mut out: Vec<Vec<TrackSample>> = start.iter().map(|&p| vec![TrackSample { at: from, pos: p, score: 1.0 }]).collect();
     let backwards = until < from;
     let total = ((until - from).0.abs() / step.0.max(1)).max(1) as f32;

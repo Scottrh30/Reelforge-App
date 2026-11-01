@@ -83,7 +83,7 @@ export interface MediaView {
 }
 
 /// How a tracked mask's shape may move.
-export type MaskMotion = "Position" | "Transform" | "Perspective";
+export type MaskMotion = "Position" | "Transform" | "Perspective" | "Bend";
 
 export type ClipKind = "video" | "audio" | "image" | "title" | "comp" | "camera" | "light" | "point" | "plane" | "adjustment";
 

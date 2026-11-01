@@ -434,7 +434,7 @@ fn a_mask_follows_what_is_inside_it() {
     }).collect();
     let mask = Mask { points: pts.clone(), shape: reelforge_core::mask::MaskShape::Freehand, ..Mask::default() };
     let quad = mask_bounds(&mask, Time::ZERO).unwrap();
-    let (corners, end) = reelforge_media::track_outline(&path, &info, quad, mask.outline(Time::ZERO), 30.0, Time::ZERO, Time::from_secs_f64(1.16), &AtomicBool::new(false), |_| {}).unwrap();
+    let (corners, end) = reelforge_media::track_outline(&path, &info, quad, None, mask.outline(Time::ZERO), 30.0, Time::ZERO, Time::from_secs_f64(1.16), &AtomicBool::new(false), |_| {}).unwrap();
     assert_eq!(end, TrackEnd::Done);
     assert_eq!(corners[0].len(), frames);
     let clip = Clip::new(ClipId(1), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.2), None);
@@ -451,6 +451,37 @@ fn a_mask_follows_what_is_inside_it() {
         eprintln!("mask tracking ({motion:?}): worst point error {worst:.2} px");
         assert!(worst < 2.0, "{motion:?}: mask points off by up to {worst:.2} px");
     }
+    // Bending (a grid over the mask) follows the disc too, with the mask right
+    // up to the disc's edge, so the background (sliding the other way) fills
+    // the grid's outer cells.
+    let edge: Vec<[f32; 2]> = (0..12)
+        .map(|i| {
+            let t = (i as f32 * 30.0).to_radians();
+            [170.0 + 68.0 * t.cos(), 130.0 + 68.0 * t.sin()]
+        })
+        .collect();
+    let edge_mask = Mask { points: edge.clone(), shape: reelforge_core::mask::MaskShape::Freehand, ..Mask::default() };
+    let eq = mask_bounds(&edge_mask, Time::ZERO).unwrap();
+    let (bent, end) = reelforge_media::track_outline(&path, &info, eq, Some(reelforge_core::track::mask_grid(eq)), edge_mask.outline(Time::ZERO), 30.0, Time::ZERO, Time::from_secs_f64(1.16), &AtomicBool::new(false), |_| {}).unwrap();
+    assert_eq!(end, TrackEnd::Done);
+    let m = mask_from_region(&clip, &edge_mask, &bent, MaskMotion::Bend).unwrap();
+    let mut worst = 0f32;
+    for (k, key) in m.keys.iter().enumerate() {
+        for (p, q) in edge.iter().zip(&key.points) {
+            let truth = disc_at(k, *p);
+            worst = worst.max(((q[0] - truth[0]).powi(2) + (q[1] - truth[1]).powi(2)).sqrt());
+        }
+    }
+    if std::env::var("RF_DEBUG").is_ok() {
+        for (k, key) in m.keys.iter().enumerate() {
+            let e: Vec<String> = edge.iter().zip(&key.points).map(|(p, q)| { let t = disc_at(k, *p); format!("{:.1}", ((q[0] - t[0]).powi(2) + (q[1] - t[1]).powi(2)).sqrt()) }).collect();
+            eprintln!("frame {k}: {}", e.join(" "));
+        }
+    }
+    eprintln!("mask tracking (Bend) over a sliding background: worst point error {worst:.2} px");
+    // Right on the subject's edge half of each feature patch is background, so
+    // this is the hard case; a few pixels after 30 frames.
+    assert!(worst < 4.5, "Bend: mask points off by up to {worst:.2} px");
     // Position only: the middle follows, the shape doesn't turn.
     let m = mask_from_region(&clip, &mask, &corners, MaskMotion::Position).unwrap();
     let last = &m.keys[frames - 1].points;
@@ -458,4 +489,71 @@ fn a_mask_follows_what_is_inside_it() {
     let (a, b) = (mid(last), disc_at(frames - 1, mid(&pts)));
     assert!((a[0] - b[0]).abs() < 2.0 && (a[1] - b[1]).abs() < 2.0, "{a:?} vs {b:?}");
     assert!((last[0][0] - last[1][0] - (pts[0][0] - pts[1][0])).abs() < 0.01, "kept its shape");
+}
+
+/// A mask drawn on the rippling sheet follows it as it bends (each point
+/// with what's under it), far closer than any one perspective map can.
+#[test]
+fn a_bending_mask_follows_a_rippling_sheet() {
+    use reelforge_core::mask::{Mask, MaskShape};
+    use reelforge_core::track::{mask_bounds, mask_from_region, mask_grid, MaskMotion};
+    use reelforge_core::{Clip, ClipId, MediaId};
+    let path = std::env::temp_dir().join("rf_track_mesh_mask.mp4");
+    let frames = 30;
+    if !make_sheet_clip(&path, frames) {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    }
+    let info = probe(&path).unwrap();
+    // Eight points round the sheet's middle, in its own (u, v).
+    let uv: Vec<[f32; 2]> = (0..8).map(|i| {
+        let t = (i as f32 * 45.0).to_radians();
+        [0.5 + 0.38 * t.cos(), 0.5 + 0.36 * t.sin()]
+    }).collect();
+    let pts: Vec<[f32; 2]> = uv.iter().map(|p| sheet(0, p[0], p[1])).collect();
+    let mask = Mask { points: pts, shape: MaskShape::Freehand, ..Mask::default() };
+    let quad = mask_bounds(&mask, Time::ZERO).unwrap();
+    let clip = Clip::new(ClipId(1), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.2), None);
+    let until = Time::from_secs_f64((frames - 1) as f64 / 25.0);
+    let err = |m: &Mask| -> (f32, f32) {
+        let (mut sum, mut worst, mut n) = (0f32, 0f32, 0f32);
+        for (k, key) in m.keys.iter().enumerate() {
+            for (q, p) in key.points.iter().zip(&uv) {
+                let t = sheet(k, p[0], p[1]);
+                let e = ((q[0] - t[0]).powi(2) + (q[1] - t[1]).powi(2)).sqrt();
+                (sum, worst, n) = (sum + e, worst.max(e), n + 1.0);
+            }
+        }
+        (sum / n, worst)
+    };
+    let (bent, end) = reelforge_media::track_outline(&path, &info, quad, Some(mask_grid(quad)), mask.outline(Time::ZERO), 20.0, Time::ZERO, until, &AtomicBool::new(false), |_| {}).unwrap();
+    assert_eq!(end, TrackEnd::Done);
+    let m = mask_from_region(&clip, &mask, &bent, MaskMotion::Bend).unwrap();
+    assert_eq!(m.keys.len(), frames);
+    let (mean, worst) = err(&m);
+    let (flat, _) = reelforge_media::track_outline(&path, &info, quad, None, mask.outline(Time::ZERO), 20.0, Time::ZERO, until, &AtomicBool::new(false), |_| {}).unwrap();
+    let (pmean, pworst) = err(&mask_from_region(&clip, &mask, &flat, MaskMotion::Perspective).unwrap());
+    // The best a grid this size can do: its points exactly on the sheet.
+    let g0 = mask_grid(quad);
+    let inv = |p: [f32; 2]| {
+        let (mut u, mut v) = ((p[0] - 130.0) / 220.0, (p[1] - 60.0) / 150.0);
+        for _ in 0..20 {
+            let q = sheet(0, u, v);
+            let e = 1e-3;
+            let (pu, pv) = (sheet(0, u + e, v), sheet(0, u, v + e));
+            let (a, b, c, d) = ((pu[0] - q[0]) / e, (pv[0] - q[0]) / e, (pu[1] - q[1]) / e, (pv[1] - q[1]) / e);
+            let det = a * d - b * c;
+            let (rx, ry) = (p[0] - q[0], p[1] - q[1]);
+            u += (d * rx - b * ry) / det;
+            v += (-c * rx + a * ry) / det;
+        }
+        [u, v]
+    };
+    let guv: Vec<[f32; 2]> = g0.points.iter().map(|&p| inv(p)).collect();
+    let ideal: Vec<Vec<reelforge_core::track::TrackSample>> =
+        guv.iter().map(|q| (0..frames).map(|k| reelforge_core::track::TrackSample { at: Time::from_secs_f64(k as f64 / 25.0), pos: sheet(k, q[0], q[1]), score: 1.0 }).collect()).collect();
+    let (imean, iworst) = err(&mask_from_region(&clip, &mask, &ideal, MaskMotion::Bend).unwrap());
+    eprintln!("bending mask: mean {mean:.2} px, worst {worst:.2} px (best possible grid {imean:.2}, {iworst:.2}); perspective: mean {pmean:.2}, worst {pworst:.2}");
+    assert!(mean < imean + 0.4 && worst < 3.0, "bending mask off by {mean:.2} on average, {worst:.2} at worst");
+    assert!(worst < pworst, "bending beats one perspective map");
 }

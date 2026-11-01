@@ -19,6 +19,13 @@ use crate::meshwarp::{MeshCoord, MeshShape};
 use crate::planar::{good_features, par_map, par_map_enumerated, ransac, PlanarError};
 use crate::track::{FeatureTracker, Luma, Pyramid, MIN_SCORE};
 
+/// A feature outside the followed region starts each frame counting for
+/// nothing; it counts fully once it's seen to move with what's inside (see
+/// [`MeshTracker::step`]).
+const OUTSIDE_WEIGHT: f64 = 0.0;
+/// Frames in a row a feature outside the region must move with it to count.
+const TRUST_FRAMES: u32 = 6;
+
 struct Feature {
     t: FeatureTracker,
     /// Where on the grid it is.
@@ -29,6 +36,8 @@ struct Feature {
     age: u32,
     /// How much it counts in the solve (before the robust re-weighting).
     weight: f64,
+    /// Outside a followed region: frames in a row it has moved with what's inside.
+    with_region: u32,
 }
 
 /// Follows a bending surface from frame to frame.
@@ -48,6 +57,10 @@ pub struct MeshTracker {
     tol: f32,
     rng: u64,
     rejected: Vec<[f32; 2]>,
+    /// What's being followed (an outline in the first frame's pixels, such as
+    /// a mask's); features outside it count only once they've kept moving
+    /// with it (see [`TRUST_FRAMES`]). The whole grid when `None`.
+    region: Option<Vec<[f32; 2]>>,
     /// Share of features that agreed in the last frame, 0–1.
     pub agreement: f32,
 }
@@ -56,6 +69,14 @@ impl MeshTracker {
     /// Start on `mesh` (pixels of `pyr`'s full level); `search` is how far the
     /// surface may move between frames.
     pub fn new(pyr: &Pyramid, mesh: MeshShape, search: f32) -> Result<Self, PlanarError> {
+        Self::in_region(pyr, mesh, None, search)
+    }
+
+    /// Start on `mesh`, following what's inside `region` (an outline in the
+    /// first frame, such as a mask's): what's outside it counts only where it
+    /// keeps moving with what's inside (more of the same surface), never the
+    /// background moving its own way.
+    pub fn in_region(pyr: &Pyramid, mesh: MeshShape, region: Option<Vec<[f32; 2]>>, search: f32) -> Result<Self, PlanarError> {
         if !mesh.is_valid() || mesh.is_folded() {
             return Err(PlanarError::NoDetail);
         }
@@ -77,6 +98,7 @@ impl MeshTracker {
             tol: (width as f32 / 700.0).max(1.5),
             rng: 0x2545_f491_4f6c_dd1d,
             rejected: Vec::new(),
+            region,
             agreement: 1.0,
         };
         t.seed(pyr);
@@ -127,7 +149,10 @@ impl MeshTracker {
                 continue;
             }
             let on_ref = self.reference.apply(at);
-            self.features.push(Feature { t, at, on_ref, misses: 0, age: 0, weight: 1.0 });
+            // Outside the region (behind a mask's subject) it still holds the grid
+            // where there's nothing else, but counts for little next to what's inside.
+            let weight = if self.region.as_ref().is_some_and(|r| !crate::planar::inside(r, on_ref)) { OUTSIDE_WEIGHT } else { 1.0 };
+            self.features.push(Feature { t, at, on_ref, misses: 0, age: 0, weight, with_region: 0 });
         }
     }
 
@@ -163,6 +188,27 @@ impl MeshTracker {
         let pairs: Vec<(MeshCoord, [f32; 2], f64)> = found.iter().map(|&i| (self.features[i].at, results[i].0, self.features[i].weight)).collect();
         let cell = cell_size(&pred);
         let (mut mesh, mut w) = solve_robust(&pred, &pairs, &[(4.0 * self.tol).max(cell / 4.0), 3.0 * self.tol, 2.0 * self.tol]);
+        // Following a region: that solve used only what's inside it. Features
+        // outside that moved with it (more of the same surface) now count
+        // fully, holding the grid's outer points; the rest (the background,
+        // moving its own way) stay out. Solve again with them.
+        let mut prior: Vec<f64> = self.features.iter().map(|f| f.weight).collect();
+        if self.region.is_some() {
+            for &i in &found {
+                if prior[i] == 0.0 {
+                    let f = &mut self.features[i];
+                    let (q, p) = (mesh.apply(f.at), results[i].0);
+                    // It has to keep up for a few frames running (the background can
+                    // happen to move the same way for a moment).
+                    f.with_region = if ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt() < 2.0 * self.tol { f.with_region + 1 } else { 0 };
+                    if f.with_region >= TRUST_FRAMES {
+                        prior[i] = 1.0;
+                    }
+                }
+            }
+            let pairs: Vec<(MeshCoord, [f32; 2], f64)> = found.iter().map(|&i| (self.features[i].at, results[i].0, prior[i])).collect();
+            (mesh, w) = solve_robust(&mesh, &pairs, &[3.0 * self.tol, 2.0 * self.tol]);
+        }
 
         // Re-check features against their first look, bent the way the grid has
         // bent around them, then solve again from the checked positions.
@@ -184,7 +230,7 @@ impl MeshTracker {
                 f.t.place(now.apply(f.at));
             }
         });
-        let pairs: Vec<(MeshCoord, [f32; 2], f64)> = found.iter().filter(|&&i| agrees[i]).map(|&i| (self.features[i].at, self.features[i].t.pos, self.features[i].weight)).collect();
+        let pairs: Vec<(MeshCoord, [f32; 2], f64)> = found.iter().filter(|&&i| agrees[i]).map(|&i| (self.features[i].at, self.features[i].t.pos, prior[i])).collect();
         if pairs.len() >= 8 {
             (mesh, w) = solve_robust(&mesh, &pairs, &[2.0 * self.tol, 2.0 * self.tol]);
         }

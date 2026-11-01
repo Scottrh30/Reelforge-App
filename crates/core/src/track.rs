@@ -1263,6 +1263,23 @@ pub fn follow_mask(clip: &Clip, mask: &crate::mask::Mask, tracker: &Tracker) -> 
     Some(m)
 }
 
+/// A shape key from moved anchors: `n` points, then (when `curved`) both
+/// handle ends of each, turned back into handles.
+fn key_from(moved: &[[f32; 2]], n: usize, curved: bool, at: Time) -> crate::mask::ShapeKey {
+    let points = moved[..n].to_vec();
+    let curves = if curved {
+        (0..n)
+            .map(|k| {
+                let (p, a, b) = (points[k], moved[n + 2 * k], moved[n + 2 * k + 1]);
+                [a[0] - p[0], a[1] - p[1], b[0] - p[0], b[1] - p[1]]
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    crate::mask::ShapeKey { at, points, curves }
+}
+
 /// How a tracked mask's shape may move (see [`mask_from_region`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MaskMotion {
@@ -1273,6 +1290,21 @@ pub enum MaskMotion {
     Transform,
     /// Also tilts in perspective (a flat thing seen at a changing angle).
     Perspective,
+    /// Bends: each part of the shape follows what's under it (cloth, skin,
+    /// hands), tracked on a grid of [`MASK_GRID`] × [`MASK_GRID`] cells.
+    Bend,
+}
+
+/// Cells across and down the grid a bending mask is tracked on.
+pub const MASK_GRID: u8 = 4;
+
+/// The grid a bending mask is tracked on: its bounds (`quad`) grown by a
+/// tenth each way, so the shape's edge isn't on the grid's.
+pub fn mask_grid(quad: [[f32; 2]; 4]) -> crate::meshwarp::MeshShape {
+    let (w, h) = (quad[1][0] - quad[0][0], quad[3][1] - quad[0][1]);
+    let (dx, dy) = (w * 0.1, h * 0.1);
+    let grown = [[quad[0][0] - dx, quad[0][1] - dy], [quad[1][0] + dx, quad[1][1] - dy], [quad[2][0] + dx, quad[2][1] + dy], [quad[3][0] - dx, quad[3][1] + dy]];
+    crate::meshwarp::MeshShape::filling(grown, MASK_GRID, MASK_GRID)
 }
 
 /// The four corners of a mask's outline's bounds at clip time `t`, for
@@ -1295,11 +1327,13 @@ pub fn mask_bounds(mask: &crate::mask::Mask, t: Time) -> Option<[[f32; 2]; 4]> {
 /// Rotoscoping: shape keys for `mask` (on `clip`) at every frame of a
 /// tracked region. `corners` are the region's four corners as tracked (one
 /// list of samples per corner, in media time, all on the same frames; the
-/// first sample is where tracking started, with the mask as it is then).
+/// first sample is where tracking started, with the mask as it is then) or,
+/// for [`MaskMotion::Bend`], the points of its [`mask_grid`].
 /// The shape there is carried along, moved as `motion` allows. Keys the mask
 /// already had inside the tracked span are replaced; others are kept.
 pub fn mask_from_region(clip: &Clip, mask: &crate::mask::Mask, corners: &[Vec<TrackSample>], motion: MaskMotion) -> Option<crate::mask::Mask> {
-    if corners.len() != 4 {
+    let n_grid = (MASK_GRID as usize + 1) * (MASK_GRID as usize + 1);
+    if corners.len() != if motion == MaskMotion::Bend { n_grid } else { 4 } {
         return None;
     }
     let frames = corners[0].len();
@@ -1307,6 +1341,7 @@ pub fn mask_from_region(clip: &Clip, mask: &crate::mask::Mask, corners: &[Vec<Tr
         return None;
     }
     let quad = |i: usize| -> [[f32; 2]; 4] { std::array::from_fn(|k| corners[k][i].pos) };
+    let grid = |i: usize| crate::meshwarp::MeshShape { cols: MASK_GRID, rows: MASK_GRID, points: corners.iter().map(|c| c[i].pos).collect() };
     let t0 = clip.clip_time_of_media(corners[0][0].at)?;
     let base = mask.points_at(t0);
     let curves = mask.curves_at(t0);
@@ -1324,14 +1359,27 @@ pub fn mask_from_region(clip: &Clip, mask: &crate::mask::Mask, corners: &[Vec<Tr
         let (sx, sy) = base.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
         [sx / n.max(1) as f32, sy / n.max(1) as f32]
     };
-    let q0 = quad(0);
+    // Where each point and handle end sits on the grid (bending only).
+    let on_grid: Vec<crate::meshwarp::MeshCoord> = if motion == MaskMotion::Bend {
+        let g0 = grid(0);
+        anchors.iter().map(|&q| g0.locate(q)).collect::<Option<_>>()?
+    } else {
+        Vec::new()
+    };
+    let q0 = if motion == MaskMotion::Bend { [[0.0; 2]; 4] } else { quad(0) };
     let reach = ((q0[1][0] - q0[0][0]).abs().max((q0[3][1] - q0[0][1]).abs()) / 2.0).max(8.0);
     let mut keys: Vec<crate::mask::ShapeKey> = Vec::new();
     for i in 0..frames {
         let Some(at) = clip.clip_time_of_media(corners[0][i].at) else { continue };
+        if motion == MaskMotion::Bend {
+            let g = grid(i);
+            let moved: Vec<[f32; 2]> = on_grid.iter().map(|&m| g.apply(m)).collect();
+            keys.push(key_from(&moved, n, curved, at));
+            continue;
+        }
         let h = if i == 0 { Homography::IDENTITY } else { Homography::from_quads(&q0, &quad(i))? };
         let h = match motion {
-            MaskMotion::Perspective => h,
+            MaskMotion::Perspective | MaskMotion::Bend => h,
             MaskMotion::Position => motion_between(TrackMode::Position, &[mid], &[h.apply(mid)])?,
             MaskMotion::Transform => {
                 let side = [mid[0] + reach, mid[1]];
@@ -1339,18 +1387,7 @@ pub fn mask_from_region(clip: &Clip, mask: &crate::mask::Mask, corners: &[Vec<Tr
             }
         };
         let moved: Vec<[f32; 2]> = anchors.iter().map(|&q| h.apply(q)).collect();
-        let points = moved[..n].to_vec();
-        let cs = if curved {
-            (0..n)
-                .map(|k| {
-                    let (p, a, b) = (points[k], moved[n + 2 * k], moved[n + 2 * k + 1]);
-                    [a[0] - p[0], a[1] - p[1], b[0] - p[0], b[1] - p[1]]
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        keys.push(crate::mask::ShapeKey { at, points, curves: cs });
+        keys.push(key_from(&moved, n, curved, at));
     }
     let (a, b) = (keys.iter().map(|k| k.at).min()?, keys.iter().map(|k| k.at).max()?);
     let mut m = mask.clone();

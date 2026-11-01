@@ -2339,7 +2339,8 @@ impl Editor {
             .name("mask tracker".into())
             .spawn(move || {
                 let progress_tx = tx.clone();
-                let r = reelforge_media::track_outline(&media.path, &media.info, quad, outline, search, from, until, &stop, |p| {
+                let grid = (motion == reelforge_core::track::MaskMotion::Bend).then(|| reelforge_core::track::mask_grid(quad));
+                let r = reelforge_media::track_outline(&media.path, &media.info, quad, grid, outline, search, from, until, &stop, |p| {
                     let _ = progress_tx.send(TrackMsg::Progress(p));
                 });
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));

@@ -19,6 +19,7 @@
     ["Position", "Moves"],
     ["Transform", "Moves, turns, scales"],
     ["Perspective", "…and tilts (perspective)"],
+    ["Bend", "Bends (cloth, skin, hands)"],
   ];
   const progress = $derived(app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null);
   const elsewhere = $derived(!!app.live?.tracking && app.live.tracking[0] !== ins.id);
