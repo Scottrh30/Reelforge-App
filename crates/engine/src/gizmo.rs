@@ -386,7 +386,9 @@ impl Editor {
     /// front of it), else by its transform.
     pub fn layer_map_of(&self, c: &reelforge_core::Clip) -> Option<reelforge_core::transform::LayerMap> {
         let t = self.playback.playhead;
-        let tr = self.project.world_transform(self.active, c, t);
+        // An adjustment layer covers the frame and doesn't move (only its
+        // opacity and crop apply), so its masks are drawn where they act.
+        let tr = if c.adjustment { reelforge_core::Transform::default() } else { self.project.world_transform(self.active, c, t) };
         let size = self.layer_size(c);
         if Self::is_3d_layer(c, &tr) {
             let scene = self.project.scene3d_at(self.active, t);

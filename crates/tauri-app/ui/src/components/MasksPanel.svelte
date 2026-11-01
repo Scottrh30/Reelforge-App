@@ -13,7 +13,10 @@
   const pump = livePump();
 
   // Rotoscoping: track what's inside a mask and key its shape every frame.
-  const trackable = $derived(ins.kind === "video");
+  // Footage follows what's in it; an adjustment layer, solid, title or picture
+  // follows the footage below it.
+  const trackable = $derived(["video", "adjustment", "plane", "title", "image"].includes(ins.kind));
+  const through = $derived(ins.kind !== "video");
   let motion = $state<MaskMotion>("Transform");
   const motions: [MaskMotion, string][] = [
     ["Position", "Moves"],
@@ -150,7 +153,7 @@
       </div>
       {#if trackable}
         <div class="row track">
-          <span class="lbl" title="Follows what's inside the mask from the playhead, keying the shape at every frame. Fix a frame where it slips by dragging the points, then track on from there">Track shape</span>
+          <span class="lbl" title={through ? "Follows what's inside the mask in the footage below this layer, from the playhead, keying the shape at every frame. Fix a frame where it slips by dragging the points, then track on from there" : "Follows what's inside the mask from the playhead, keying the shape at every frame. Fix a frame where it slips by dragging the points, then track on from there"}>Track shape</span>
           {#if progress !== null}
             <div class="bar"><div style="width:{progress * 100}%"></div></div>
             <span class="tc">{Math.round(progress * 100)}%</span>

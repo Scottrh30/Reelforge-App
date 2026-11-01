@@ -137,6 +137,8 @@ pub struct TrackJob {
     pub progress: f32,
     /// Tracking a mask's shape (rotoscoping): which mask, and how it may move.
     pub mask: Option<(usize, reelforge_core::track::MaskMotion)>,
+    /// …through another clip's footage (below an adjustment layer or a solid).
+    pub through: Option<ClipId>,
 }
 
 /// An interactive edit in progress: what's being changed and its value before the gesture.
@@ -2312,7 +2314,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None });
         self.status = "Tracking…".into();
     }
 
@@ -2331,27 +2333,42 @@ impl Editor {
             self.status = LOCKED.into();
             return;
         }
-        let Some(media) = self.project.media(c.media).cloned() else { return };
-        if media.info.video.is_none() || c.title.is_some() || self.project.is_still(c.media) {
-            self.status = "Mask tracking follows moving footage: this clip has none".into();
-            return;
-        }
         let Some(mask) = c.masks.get(index) else { return };
-        let t = self.playback.playhead.max(c.timeline_start).min(c.timeline_end() - frame);
-        let from = c.media_at(t);
-        let until = if forward { c.media_at(c.timeline_end() - frame) } else { c.media_at(c.timeline_start) };
+        // The footage followed: the clip's own, or (an adjustment layer, a
+        // solid, a title) the topmost footage below it at the playhead.
+        let own = self.project.media(c.media).is_some_and(|m| m.info.video.is_some()) && c.title.is_none() && c.nested.is_none() && !self.project.is_still(c.media);
+        let src_id = if own { id } else { match self.footage_below(id) { Some(b) => b, None => {
+            self.status = "Mask tracking follows moving footage: there's none in this clip, or below it at the playhead".into();
+            return;
+        } } };
+        let Some((_, src)) = self.seq().find_clip(src_id) else { return };
+        let Some(media) = self.project.media(src.media).cloned() else { return };
+        // The stretch both clips cover.
+        let (start, end) = (c.timeline_start.max(src.timeline_start), c.timeline_end().min(src.timeline_end()));
+        let t = self.playback.playhead.max(start).min(end - frame);
+        let from = src.media_at(t);
+        let until = if forward { src.media_at(end - frame) } else { src.media_at(start) };
         if from == until {
             self.status = format!("Nothing to track: the playhead is at the clip's {}", if forward { "end" } else { "start" });
             return;
         }
-        // The shape where tracking starts (mask keys are in clip time).
-        let at = c.clip_time_of_media(from).unwrap_or_else(|| c.source_time(t));
-        let Some(quad) = reelforge_core::track::mask_bounds(mask, at) else {
+        // The shape where tracking starts (mask keys are in clip time), in the
+        // footage's pixels.
+        let at = if own { c.clip_time_of_media(from).unwrap_or_else(|| c.source_time(t)) } else { c.source_time(t) };
+        let outline = mask.outline(at);
+        let outline = if own {
+            outline
+        } else {
+            let Some(to_src) = self.layer_to_layer(c, src, t) else { return };
+            outline.into_iter().map(to_src).collect()
+        };
+        let probe = reelforge_core::mask::Mask { points: outline.clone(), shape: reelforge_core::mask::MaskShape::Freehand, ..Default::default() };
+        let Some(quad) = reelforge_core::track::mask_bounds(&probe, Time::ZERO) else {
             self.status = "The mask is too small to track: draw it around what it should follow".into();
             return;
         };
-        let outline = mask.outline(at);
         let name = mask.name.clone();
+        let src_name = media.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         // How far it may move in a frame: a sixteenth of the picture's width.
         let search = (media.info.video.as_ref().map_or(1920, |v| v.width) as f32 / 16.0).max(24.0);
         let (tx, rx) = unbounded();
@@ -2369,8 +2386,49 @@ impl Editor {
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("mask tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)) });
-        self.status = format!("Tracking {name}…");
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id) });
+        self.status = if own { format!("Tracking {name}…") } else { format!("Tracking {name} through the footage below ({src_name})…") };
+    }
+
+    /// The topmost clip of moving footage below clip `id` at the playhead
+    /// (what an adjustment layer's or a solid's mask is tracked through).
+    pub fn footage_below(&self, id: ClipId) -> Option<ClipId> {
+        let s = self.seq();
+        let (ti, c) = s.find_clip(id)?;
+        let t = self.playback.playhead.max(c.timeline_start).min(c.timeline_end());
+        s.tracks[..ti]
+            .iter()
+            .rev()
+            .filter(|tr| tr.kind == TrackKind::Video && !tr.muted)
+            .flat_map(|tr| tr.clips.iter())
+            .find(|b| {
+                b.timeline_start <= t
+                    && t < b.timeline_end()
+                    && b.title.is_none()
+                    && b.nested.is_none()
+                    && self.project.media(b.media).is_some_and(|m| m.info.video.is_some())
+                    && !self.project.is_still(b.media)
+            })
+            .map(|b| b.id)
+    }
+
+    /// Clip `c`'s layer pixels → frame pixels at timeline time `t` (an
+    /// adjustment layer covers the frame and doesn't move).
+    fn layer_frame_map(&self, c: &Clip, t: Time) -> reelforge_core::transform::LayerMap {
+        let tr = if c.adjustment { Transform::default() } else { self.project.world_transform(self.active, c, t) };
+        tr.layer_map(self.layer_size(c), self.frame_px())
+    }
+
+    /// Clip `a`'s layer pixels → clip `b`'s, through the frame, at timeline time `t`.
+    fn layer_to_layer(&self, a: &Clip, b: &Clip, t: Time) -> Option<impl Fn([f32; 2]) -> [f32; 2]> {
+        let (la, lb) = (self.layer_size(a), self.layer_size(b));
+        let ma = self.layer_frame_map(a, t);
+        let mb = self.layer_frame_map(b, t).inverse()?;
+        Some(move |p: [f32; 2]| {
+            let q = ma.apply([p[0] - la[0] / 2.0, p[1] - la[1] / 2.0]);
+            let r = mb.apply(q);
+            [r[0] + lb[0] / 2.0, r[1] + lb[1] / 2.0]
+        })
     }
 
     pub fn cancel_tracking(&mut self) {
@@ -2435,6 +2493,23 @@ impl Editor {
             };
             return;
         }
+        // Tracked through the footage below: each sample back into this
+        // clip's pixels and time, through the frame as both are at that moment.
+        let corners = match job.through {
+            None => corners,
+            Some(b) => {
+                let Some((_, src)) = self.project.sequences.get(job.seq).and_then(|s| s.find_clip(b)) else { return };
+                let mut out = corners.clone();
+                for (k, list) in corners.iter().enumerate() {
+                    for (i, smp) in list.iter().enumerate() {
+                        let Some(tl) = src.timeline_of_media(smp.at) else { continue };
+                        let Some(back) = self.layer_to_layer(src, c, tl) else { continue };
+                        out[k][i] = reelforge_core::track::TrackSample { at: c.source_time(tl), pos: back(smp.pos), score: smp.score };
+                    }
+                }
+                out
+            }
+        };
         let Some(m) = reelforge_core::track::mask_from_region(c, mask, &corners, motion) else {
             self.status = "Couldn't follow the mask: what's inside it turned too far".into();
             return;
@@ -3607,6 +3682,77 @@ mod tests {
         e.undo();
         e.undo();
         assert_eq!(pts(&e), orig);
+    }
+
+    /// A mask on an adjustment layer (no footage of its own) is tracked
+    /// through the footage below it, which is shown at twice its size: the
+    /// keys land in the adjustment layer's own (frame) pixels and time.
+    #[test]
+    fn an_adjustment_layers_mask_tracks_through_the_footage_below() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("rf-engine-adjtrack-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("block.mp4");
+        // 320 × 180: a textured block 60 px wide moving 4 px right a frame over flat grey.
+        let child = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", "320x180", "-r", "25", "-i", "-", "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .spawn();
+        let Ok(mut child) = child else { return };
+        let mut stdin = child.stdin.take().unwrap();
+        let hash = |x: i32, y: i32| (((x * 73856093) ^ (y * 19349663)) as u32 % 160) as u8 + 50;
+        for k in 0..20 {
+            let x0 = 60 + 4 * k;
+            let mut img = vec![120u8; 320 * 180];
+            for y in 60..120 {
+                for x in x0..x0 + 60 {
+                    img[y as usize * 320 + x as usize] = hash((x - x0) / 3, y / 3);
+                }
+            }
+            stdin.write_all(&img).unwrap();
+        }
+        drop(stdin);
+        if !child.wait().is_ok_and(|s| s.success()) {
+            return;
+        }
+        let mut e = editor();
+        e.new_project_with(640, 360, FrameRate::new(25, 1));
+        let info = reelforge_media::probe(&path).unwrap();
+        e.project.media.push(MediaAsset { id: MediaId(1), path: path.clone(), name: "block.mp4".into(), info });
+        let secs = Time::from_secs_f64;
+        let (f, a) = (ClipId(e.project.alloc_id()), ClipId(e.project.alloc_id()));
+        let mut footage = Clip::new(f, MediaId(1), Time::ZERO, Time::ZERO, secs(0.8), None);
+        footage.transform.scale = [2.0, 2.0];
+        e.project.sequences[0].tracks[0].clips.push(footage);
+        let mut adj = Clip::new_adjustment(a, Time::ZERO, secs(0.8));
+        // Round the block as the frame shows it (media 60–120 → frame 120–240 across, 120–240 down).
+        adj.masks.push(Mask { points: vec![[125.0, 125.0], [235.0, 125.0], [235.0, 235.0], [125.0, 235.0]], ..Mask::default() });
+        e.project.sequences[0].tracks[1].clips.push(adj);
+        assert_eq!(e.footage_below(a), Some(f));
+        e.playback.playhead = Time::ZERO;
+        e.start_mask_tracking(a, 0, true, reelforge_core::track::MaskMotion::Position);
+        assert!(e.status.contains("through the footage below"), "{}", e.status);
+        let t0 = std::time::Instant::now();
+        while e.tracking.is_some() && t0.elapsed().as_secs() < 30 {
+            e.poll_tracking();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let m = e.seq().find_clip(a).unwrap().1.masks[0].clone();
+        eprintln!("adjustment mask track: {} keys; {}", m.keys.len(), e.status);
+        assert!(m.keys.len() >= 18, "{} keys: {}", m.keys.len(), e.status);
+        // Moving 4 media px a frame is 8 frame px a frame at 200 %.
+        for key in &m.keys {
+            let k = (key.at.as_secs_f64() * 25.0).round() as f32;
+            let dx = key.points[0][0] - 125.0;
+            assert!((dx - 8.0 * k).abs() < 1.5, "frame {k}: moved {dx}, not {}", 8.0 * k);
+            assert!((key.points[0][1] - 125.0).abs() < 1.5);
+        }
+        // A clip with no footage at all below it can't be tracked.
+        e.project.sequences[0].tracks[0].clips.clear();
+        e.start_mask_tracking(a, 0, true, reelforge_core::track::MaskMotion::Position);
+        assert!(e.tracking.is_none() && e.status.contains("no"), "{}", e.status);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

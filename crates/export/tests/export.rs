@@ -1206,3 +1206,62 @@ fn masks_show_the_layer_inside_them_on_every_kind_of_layer() {
         assert!(px(320, 180) < 30 && px(600, 330) < 30, "{what}: nothing outside it ({}, {})", px(320, 180), px(600, 330));
     }
 }
+
+/// A mask on an adjustment layer limits its effects to part of the frame:
+/// the layers below are changed inside the mask (with a soft edge where
+/// it's feathered) and left alone outside it.
+#[test]
+fn adjustment_layer_masks_limit_the_effect() {
+    use reelforge_core::mask::{Mask, MaskMode, MaskShape};
+    use reelforge_core::{Effect, EffectKind};
+    let Some(red) = solid_clip("rf_red.mp4", "red", "640x360") else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let render = |masks: Vec<Mask>, name: &str| -> Vec<u8> {
+        let mut p = Project::new();
+        p.media.push(asset(1, &red));
+        let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+        seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(1.0), None)];
+        // Above it: an adjustment layer that takes the colour out.
+        let mut adj = Clip::new_adjustment(ClipId(2), s(0.0), s(1.0));
+        let mut grey = Effect::new(EffectKind::ColorCorrect);
+        grey.params[2].value = 0.0;
+        adj.effects = vec![grey];
+        adj.masks = masks;
+        seq.tracks[1].clips = vec![adj];
+        p.sequences = vec![seq];
+        for _ in 0..10 {
+            p.alloc_id();
+        }
+        let out = std::env::temp_dir().join(format!("rf_adj_mask_{name}.mp4"));
+        let mut st = settings(out.clone());
+        (st.end, st.include_audio) = (s(0.2), false);
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        let mut dec = FrameSource::open(&out, None).unwrap();
+        dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap().rgba().to_vec()
+    };
+    let at = |img: &[u8], x: u32, y: u32| -> [i32; 3] {
+        let i = ((y * 640 + x) * 4) as usize;
+        [img[i] as i32, img[i + 1] as i32, img[i + 2] as i32]
+    };
+    let is_red = |c: [i32; 3]| c[0] > 200 && c[1] < 40 && c[2] < 40;
+    let is_grey = |c: [i32; 3]| (c[0] - c[1]).abs() < 12 && (c[1] - c[2]).abs() < 12 && c[0] > 20;
+    // No mask: all grey.
+    let all = render(vec![], "none");
+    assert!(is_grey(at(&all, 100, 180)) && is_grey(at(&all, 540, 180)), "{:?}", at(&all, 540, 180));
+    // The left half only, with a soft edge.
+    let left = Mask { shape: MaskShape::Rectangle, points: vec![[0.0, 0.0], [320.0, 0.0], [320.0, 360.0], [0.0, 360.0]], feather: 30.0, ..Mask::default() };
+    let img = render(vec![left.clone()], "left");
+    assert!(is_grey(at(&img, 100, 180)), "grey inside: {:?}", at(&img, 100, 180));
+    assert!(is_red(at(&img, 540, 180)), "untouched outside: {:?}", at(&img, 540, 180));
+    let edge = at(&img, 320, 180);
+    assert!(!is_red(edge) && !is_grey(edge), "a soft edge: {edge:?}");
+    // Inverted: the other way round.
+    let img = render(vec![Mask { inverted: true, ..left.clone() }], "inverted");
+    assert!(is_red(at(&img, 100, 180)) && is_grey(at(&img, 540, 180)));
+    // A hole cut out of a full-frame mask.
+    let full = Mask { shape: MaskShape::Rectangle, points: vec![[0.0, 0.0], [640.0, 0.0], [640.0, 360.0], [0.0, 360.0]], ..Mask::default() };
+    let hole = Mask { mode: MaskMode::Subtract, points: vec![[280.0, 140.0], [360.0, 140.0], [360.0, 220.0], [280.0, 220.0]], ..Mask::default() };
+    let img = render(vec![full, hole], "hole");
+    assert!(is_red(at(&img, 320, 180)) && is_grey(at(&img, 60, 60)));
+}

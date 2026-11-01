@@ -222,7 +222,10 @@ What works now:
   on a new top track from the playhead, a **New Layer** (a plain plane of colour the size of the
   frame; pick its colour under Layer in Controls), **New Light**, **New Point**, **New Camera** or
   **New Adjustment Layer**. An adjustment layer has no picture: its effects (with its opacity,
-  crop, masks and blend mode) change everything below it. A point is an invisible 3D null:
+  crop, masks and blend mode) change everything below it. Draw a mask on it to grade or blur
+  just part of the frame (a face, the sky): inside the mask the layers below are changed,
+  outside they're left alone, with the mask's feather, Subtract and Invert working as usual;
+  **Track shape** makes the mask follow what's under it in the footage below. A point is an invisible 3D null:
   choose it as a layer's **Parent** (Controls → Layer) and the layer moves, turns and scales with
   it; points can be parented to points, and cameras and lights can follow them too
   - **Pick-whip**: a selected clip on a video track shows a small link button at its top
@@ -588,7 +591,8 @@ What works now:
     work on every kind of layer: footage, pictures, titles, compositions and solid colours (a
     solid's mask and effects run at the layer's full size, so its edges are crisp)
   - With a tracker on the clip, **Apply to → Mask: …** makes the mask follow the tracked point
-  - **Track shape** (rotoscoping, footage clips): draw the mask around something, then ◀ or
+  - **Track shape** (rotoscoping; on an adjustment layer, solid, title or picture it follows
+    the topmost footage below at the playhead): draw the mask around something, then ◀ or
     ▶ follows what's inside it from the playhead to the clip's start or end, keying the shape
     at every frame. Choose how it may move: **Moves**, **Moves, turns, scales**,
     **…and tilts** (perspective), or **Bends** for things that change shape (cloth, skin,
