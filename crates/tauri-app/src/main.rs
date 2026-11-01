@@ -277,6 +277,14 @@ fn thumbnail(path: String, at: i64) -> Res<Response> {
     Ok(Response::new(out))
 }
 
+/// A small JPEG of composition `seq` at its time `at` (ticks), for
+/// composition clips' filmstrips on the timeline.
+#[tauri::command]
+fn comp_thumbnail(seq: usize, at: i64) -> Res<Response> {
+    let jpg = ed(|e| e.comp_thumbnail(seq, Time(at.max(0)), 200))?.ok_or("no picture there")?;
+    Ok(Response::new(jpg))
+}
+
 /// The font families installed on this computer (for Preferences > Fonts);
 /// empty until the background font scan has finished.
 #[tauri::command]
@@ -1121,6 +1129,7 @@ fn main() {
             waveform_rate,
             font_families,
             thumbnail,
+            comp_thumbnail,
             new_project,
             open_dialog,
             open_path,

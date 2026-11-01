@@ -10,6 +10,7 @@ reelforge-core.workspace = true
 reelforge-media.workspace = true
 reelforge-render.workspace = true
 reelforge-export.workspace = true
+jpeg-encoder = "0.7"
 anyhow.workspace = true
 log.workspace = true
 serde.workspace = true

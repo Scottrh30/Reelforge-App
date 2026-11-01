@@ -956,7 +956,7 @@
   /// `h` its height): one picture per slot of the media's shape, only those
   /// on screen, each the frame shown at the slot's middle. Times are rounded
   /// to a step that depends on the zoom, so scrolling reuses pictures.
-  function strip(c: ClipView, m: MediaView, l: number, w: number, h: number): { x: number; w: number; at: number }[] {
+  function strip(c: ClipView, m: { width: number; height: number }, l: number, w: number, h: number): { x: number; w: number; at: number }[] {
     const aspect = m.width > 0 && m.height > 0 ? m.width / m.height : 16 / 9;
     const tw = Math.max(24, Math.round(h * aspect));
     const first = Math.max(0, Math.floor(-l / tw));
@@ -1266,6 +1266,15 @@
                       {:else}
                         <div class="thumb"><Thumb path={m.path} at={c.source_in} /></div>
                       {/if}
+                    {/if}
+                    {#if c.kind === "comp" && c.nested !== null && w > 70 && !tr.collapsed && app.s?.prefs.timeline_thumbnails !== false && app.s?.prefs.timeline_filmstrip !== false && app.s?.sequences[c.nested]}
+                      <!-- A composition's filmstrip: its rendered picture along the clip. -->
+                      {@const tiles = strip(c, app.s!.sequences[c.nested], l, w, hOf(tr) - 14)}
+                      <div class="strip" aria-hidden="true">
+                        {#each tiles as tile (tile.x)}
+                          <div class="frame" style="left:{tile.x}px; width:{tile.w}px"><Thumb comp={c.nested} at={tile.at} rev={app.s!.rev} /></div>
+                        {/each}
+                      </div>
                     {/if}
                     {#if c.kind === "audio" && w > 4 && !tr.collapsed}
                       {@const vis0 = Math.max(0, -l)}

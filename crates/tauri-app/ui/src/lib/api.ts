@@ -100,6 +100,8 @@ export interface ClipView {
   reverse: boolean;
   /// For a retimed clip: the media time its clip time 0 maps to.
   anchor: Ticks;
+  /// A composition clip's sequence.
+  nested: number | null;
   dissolve_in: Ticks;
   fade_in: Ticks;
   fade_out: Ticks;
@@ -752,6 +754,7 @@ export const api = {
   waveformRate: () => invoke<number>("waveform_rate"),
   fontFamilies: () => invoke<string[]>("font_families"),
   thumbnail: (path: string, at: Ticks) => invoke<ArrayBuffer>("thumbnail", { path, at }),
+  compThumbnail: (seq: number, at: Ticks) => invoke<ArrayBuffer>("comp_thumbnail", { seq, at }),
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),
   openPath: (path: string) => invoke("open_path", { path }),

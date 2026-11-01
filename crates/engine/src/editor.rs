@@ -229,6 +229,8 @@ pub struct Editor {
     /// the clip, and its look and title style before (put back by
     /// [`Editor::end_preset_preview`], and before anything else is done).
     preset_preview: Option<(ClipId, ClipVisual, Option<TitleSpec>, bool)>,
+    /// Composition clips' filmstrip pictures: (sequence, time, width) → (recipe, JPEG).
+    comp_thumbs: HashMap<(usize, i64, u32), (u64, Vec<u8>)>,
 }
 
 impl Editor {
@@ -279,6 +281,7 @@ impl Editor {
             recoveries: Vec::new(),
             tracking: None,
             preset_preview: None,
+            comp_thumbs: HashMap::new(),
         }
     }
 
@@ -841,6 +844,52 @@ impl Editor {
     /// How far a render-preview run has got (0–1), while one runs.
     pub fn render_progress(&self) -> Option<f32> {
         self.render_cache.job.as_ref().map(|j| j.fraction())
+    }
+
+    /// A small JPEG of composition `seq` at its time `t` (for composition
+    /// clips' filmstrips), at most `width` pixels wide. Kept until what
+    /// makes that picture changes.
+    pub fn comp_thumbnail(&mut self, seq: usize, t: Time, width: u32) -> Option<Vec<u8>> {
+        if seq >= self.project.sequences.len() {
+            return None;
+        }
+        let sources = self.decode_paths();
+        let recipe = reelforge_export::frame_recipe(&self.project, seq, t, &sources);
+        let key = (seq, t.0, width);
+        if let Some((r, jpg)) = self.comp_thumbs.get(&key) {
+            if *r == recipe {
+                return Some(jpg.clone());
+            }
+        }
+        let (rgba, [w, h]) = self.preview.render_for_cache(&self.project, seq, t, &sources)?;
+        // Shrink by whole steps to about `width` (averaging blocks).
+        let k = (w / width.max(16)).max(1);
+        let (sw, sh) = (w / k, h / k);
+        let mut small = vec![0u8; (sw * sh * 4) as usize];
+        for y in 0..sh {
+            for x in 0..sw {
+                let mut acc = [0u32; 4];
+                for dy in 0..k {
+                    for dx in 0..k {
+                        let i = (((y * k + dy) * w + x * k + dx) * 4) as usize;
+                        for c in 0..4 {
+                            acc[c] += rgba[i + c] as u32;
+                        }
+                    }
+                }
+                let o = ((y * sw + x) * 4) as usize;
+                for c in 0..4 {
+                    small[o + c] = (acc[c] / (k * k)) as u8;
+                }
+            }
+        }
+        let mut jpg = Vec::new();
+        jpeg_encoder::Encoder::new(&mut jpg, 78).encode(&small, sw as u16, sh as u16, jpeg_encoder::ColorType::Rgba).ok()?;
+        if self.comp_thumbs.len() > 400 {
+            self.comp_thumbs.clear();
+        }
+        self.comp_thumbs.insert(key, (recipe, jpg.clone()));
+        Some(jpg)
     }
 
     /// Render the next frames of a render-preview run, for up to ~40 ms.
@@ -3699,6 +3748,26 @@ mod tests {
         assert!(e.seq().find_clip(c).unwrap().1.nested.is_some());
         e.undo();
         assert!(e.seq().find_clip(a).is_some());
+    }
+
+    #[test]
+    fn composition_thumbnails_render_and_follow_edits() {
+        let mut e = editor();
+        assert!(e.comp_thumbnail(9, Time::ZERO, 200).is_none());
+        let Some(gpu) = reelforge_render::headless_device() else { return };
+        let mut e = Editor::new(Some(gpu), None);
+        e.new_composite();
+        let comp = e.active;
+        e.add_title();
+        let first = e.comp_thumbnail(comp, Time::ZERO, 200).expect("a picture");
+        assert_eq!(&first[..2], &[0xff, 0xd8], "a JPEG");
+        // Asked again unchanged: the same picture, from the cache.
+        assert_eq!(e.comp_thumbnail(comp, Time::ZERO, 200).unwrap(), first);
+        // An edit inside the composition: a new picture.
+        let id = e.seq().tracks.iter().flat_map(|t| &t.clips).next().unwrap().id;
+        e.select_only(Some(id));
+        e.delete_selection();
+        assert_ne!(e.comp_thumbnail(comp, Time::ZERO, 200).unwrap(), first);
     }
 
     #[test]

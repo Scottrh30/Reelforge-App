@@ -1,13 +1,19 @@
 <script lang="ts">
-  import { thumb } from "../lib/thumbs";
+  import { compThumb, thumb } from "../lib/thumbs";
 
-  let { path, at = 0, alt = "" }: { path: string; at?: number; alt?: string } = $props();
+  // A media file's picture (`path`), or a composition's (`comp`, its
+  // sequence, as of project revision `rev`).
+  let { path = "", at = 0, alt = "", comp = null, rev = 0 }: { path?: string; at?: number; alt?: string; comp?: number | null; rev?: number } = $props();
   let src = $state<string | null>(null);
 
+  let shown = "";
   $effect(() => {
     let live = true;
-    src = null;
-    thumb(path, at).then((u) => live && (src = u));
+    const key = comp === null ? `${path}@${at}` : `#${comp}@${at}`;
+    // A composition's newer picture replaces the old one when it's ready (no blink).
+    if (key !== shown) src = null;
+    shown = key;
+    (comp === null ? thumb(path, at) : compThumb(comp, at, rev)).then((u) => live && (src = u));
     return () => (live = false);
   });
 </script>
