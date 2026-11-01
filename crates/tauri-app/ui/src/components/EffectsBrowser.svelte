@@ -3,13 +3,42 @@
   // built-in effect and installed plugin by category, with a search box.
   // Add puts the effect at the end of the selected clip's stack.
   import { app, run } from "../lib/session.svelte";
-  import { api, type CatalogGroup, type CatalogItem, type TransitionKind } from "../lib/api";
+  import { api, type CatalogGroup, type CatalogItem, type FxPreset, type TransitionKind } from "../lib/api";
+  import { ask, askText, question } from "../lib/actions.svelte";
 
   let groups = $state<CatalogGroup[]>([]);
   let search = $state("");
   let input = $state<HTMLInputElement | null>(null);
   let added = $state("");
-  let tab = $state<"effects" | "transitions">("effects");
+  let tab = $state<"effects" | "presets" | "transitions">("effects");
+  let presets = $state<FxPreset[]>([]);
+  const reloadPresets = () => api.fxPresetList().then((p) => (presets = p));
+  $effect(() => {
+    if (app.effectsOpen) reloadPresets();
+  });
+  const pShown = $derived(presets.filter((p) => !q || [p.name, p.summary].some((x) => x.toLowerCase().includes(q))));
+  async function applyP(p: FxPreset, replace: boolean) {
+    if (!target) return;
+    await run(api.fxPresetApply(target.id, p.name, replace));
+    added = p.name;
+    setTimeout(() => (added === p.name ? (added = "") : null), 2500);
+  }
+  async function renameP(p: FxPreset) {
+    const to = await askText("Rename preset", "", p.name, "Rename");
+    if (to?.trim() && to.trim() !== p.name) await run(api.fxPresetRename(p.name, to.trim()));
+    reloadPresets();
+  }
+  async function deleteP(p: FxPreset) {
+    if ((await question("Delete preset", `Delete the effect preset “${p.name}”? Clips it was applied to keep their effects.`, ["Delete", "Cancel"])) !== "Delete") return;
+    await run(api.fxPresetDelete(p.name));
+    reloadPresets();
+  }
+  async function savePresetFrom() {
+    if (!target?.effects?.length) return;
+    const name = await askText("Save effects as preset", `The effects on ${target.name}, with their settings and keyframes (timed from the clip's start). A preset of the same name is replaced.`, "My look", "Save preset");
+    if (name?.trim()) await run(api.fxPresetSave(target.id, name.trim()));
+    reloadPresets();
+  }
   let kinds = $state<TransitionKind[]>([]);
   $effect(() => {
     if (app.effectsOpen && !kinds.length) api.transitionList().then((k) => (kinds = k));
@@ -59,7 +88,7 @@
   }
 
   function key(e: KeyboardEvent) {
-    if (app.effectsOpen && e.key === "Escape") {
+    if (app.effectsOpen && !ask.open && e.key === "Escape") {
       e.stopPropagation();
       app.effectsOpen = false;
     }
@@ -75,18 +104,37 @@
         <h2 id="fx-title" class="sr">Effects and transitions</h2>
         <div class="tabs" role="tablist">
           <button role="tab" aria-selected={tab === "effects"} class:active={tab === "effects"} onclick={() => (tab = "effects")}>Effects</button>
+          <button role="tab" aria-selected={tab === "presets"} class:active={tab === "presets"} onclick={() => (tab = "presets")}>Presets</button>
           <button role="tab" aria-selected={tab === "transitions"} class:active={tab === "transitions"} onclick={() => (tab = "transitions")}>Transitions</button>
         </div>
         <span class="for">
-          {#if tab === "transitions"}
+          {#if tab === "presets"}
+            {#if target}Applying to <b>{target.name}</b>{:else}<span class="warn">Select a video, picture or title clip to apply a preset to it</span>{/if}
+          {:else if tab === "transitions"}
             {#if into}Into <b>{into.name}</b> from the clip before it{:else}On the video cut nearest the playhead{/if}
           {:else if target}Adding to <b>{target.name}</b>{:else}<span class="warn">Select a video, picture or title clip to add effects to it</span>{/if}
         </span>
         <button class="ghost close" onclick={() => (app.effectsOpen = false)} aria-label="Close">✕</button>
       </header>
-      <input bind:this={input} type="search" bind:value={search} placeholder={tab === "effects" ? "Search: blur, key, colour…" : "Search: dissolve, wipe, push…"} aria-label="Search effects" />
+      <input bind:this={input} type="search" bind:value={search} placeholder={tab === "effects" ? "Search: blur, key, colour…" : tab === "presets" ? "Search your presets…" : "Search: dissolve, wipe, push…"} aria-label="Search effects" />
       <div class="list">
-        {#if tab === "transitions"}
+        {#if tab === "presets"}
+          {#each pShown as p (p.name)}
+            <div class="item">
+              <div class="text">
+                <span class="name">{p.name}</span>
+                <span class="desc">{p.summary}{#if p.missing.length}<span class="warn">&nbsp;· not installed: {p.missing.join(", ")}</span>{/if}</span>
+              </div>
+              <button class="ghost small" onclick={() => renameP(p)} title="Rename this preset">Rename</button>
+              <button class="ghost small" onclick={() => deleteP(p)} title="Delete this preset">Delete</button>
+              <button disabled={!target} onclick={(e) => applyP(p, e.shiftKey)} title="Add its effects after the clip's own (Shift+click: instead of them)">{added === p.name ? "Applied ✓" : "Apply"}</button>
+            </div>
+          {:else}
+            <p class="muted">{presets.length ? `Nothing matches “${search}”.` : "No presets yet."}</p>
+          {/each}
+          <p class="muted foot">A preset is a stack of effects with their settings and keyframes, timed from the start of the clip, so a fade made over a clip's first second lands on the first second of the clip you apply it to. Apply adds it after the clip's own effects; Shift+click Apply to replace them.
+            {#if target?.effects?.length}<button class="link" onclick={savePresetFrom}>Save {target.name}'s effects as a preset…</button>{/if}</p>
+        {:else if tab === "transitions"}
           {#each tShown as g}
             <h3>{g.label}</h3>
             {#each g.items as k}
@@ -153,6 +201,15 @@
   .tabs button.active {
     color: var(--text);
     border-bottom-color: var(--accent);
+  }
+  button.link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
   }
   .foot {
     font-size: calc(12px * var(--text-scale));

@@ -6,6 +6,7 @@
   import { api, type Inspector, type CatalogGroup, type Curves, type EffectView, type ParamView } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
+  import { askText } from "../lib/actions.svelte";
   import NumberField from "./NumberField.svelte";
   import CurvesEditor from "./CurvesEditor.svelte";
 
@@ -73,8 +74,31 @@
       label: g.label,
       submenu: g.items.map((it) => ({ label: it.plugin ? `${it.label}  ·  plugin` : it.label, run: () => run(api.effectAdd(ins.id, it.kind, it.plugin)) })),
     }));
+    const presets = await api.fxPresetList();
+    items.push(
+      { separator: true },
+      {
+        label: "Presets",
+        submenu: presets.length
+          ? presets.map((p) => ({ label: p.name, hint: `${p.effects}`, run: () => run(api.fxPresetApply(ins.id, p.name, false)) }))
+          : [{ label: "None saved yet", disabled: true, run: () => {} }],
+      },
+      { label: "Save effects as preset…", disabled: !ins.effects.length, run: savePreset },
+    );
     items.push({ separator: true }, { label: "Browse effects…", hint: "E", run: () => (app.effectsOpen = true) }, { label: "Manage plugins…", run: () => (app.pluginsOpen = true) });
     openMenu({ clientX: r.left, clientY: r.bottom + 2, preventDefault() {}, stopPropagation() {} } as MouseEvent, items);
+  }
+
+  // Save the whole stack (settings and keyframes) under a name, for the
+  // effects browser's Presets tab and the Add menu's Presets.
+  async function savePreset() {
+    const name = await askText(
+      "Save effects as preset",
+      `The ${ins.effects.length === 1 ? "effect" : `${ins.effects.length} effects`} on this clip, with their settings and keyframes (timed from the clip's start). Apply it to other clips from Add → Presets or the effects browser (E). A preset of the same name is replaced.`,
+      ins.effects.length === 1 ? ins.effects[0].label : "My look",
+      "Save preset",
+    );
+    if (name?.trim()) await run(api.fxPresetSave(ins.id, name.trim()));
   }
 
   // Colours: 0xRRGGBB numbers ↔ "#rrggbb".

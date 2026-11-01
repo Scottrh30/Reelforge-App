@@ -804,6 +804,14 @@ changing it sets the key there. Curves has its own curve editor (Master, Red, Gr
 Blue: drag points, click the line to add one, right-click to remove), and LUT a .cube
 file picker.
 
+Effect presets: **+ Add → Save effects as preset…** saves the clip's whole stack, with
+every setting and keyframe, under a name. Apply it to other clips from **+ Add → Presets**
+or the effects browser's **Presets** tab (Apply adds it after the clip's own effects;
+Shift+click Apply replaces them), where presets can also be renamed and deleted.
+Keyframes are timed from the clip's start, so a fade over the first second of one clip
+lands on the first second of the next. Presets are kept in `effect-presets.json` in the
+app's settings folder; one that uses a plugin you no longer have says so.
+
 Plugins (Edit → Plugins…): install from a folder or a .zip, make a new one from the
 starter template, open the plugin folder, reload, remove (with a confirmation), and
 reload automatically when a plugin's files change; a plugin that doesn't load says
@@ -1354,6 +1362,11 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   each clip's own time); mask points scale by the ratio of picture sizes. **Nudge** is
   `nudge_clips` in `undo.rs`, which reuses `move_targets`, so links, locks and overlaps behave
   exactly as when dragging.
+- **Effect presets** (`engine/src/fx_presets.rs`): `EffectPreset::from_clip` stores the
+  stack with keys shifted by `-source_in` (cameras', lights' and points' settings stay
+  behind); `effects_for(source_in)` shifts them back onto the target clip.
+  `PresetLibrary` is the JSON file (names unique ignoring case, kept sorted, written via a
+  temporary file).
 - **Viewer snapping** (`engine/src/snap.rs`): a drag is computed from the layer's transform when
   it began plus the pointer's total movement (so snapping never accumulates); the moving
   layer's bounding box is snapped on each axis to the nearest of the frame's and other

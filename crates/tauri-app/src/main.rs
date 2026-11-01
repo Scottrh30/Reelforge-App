@@ -15,6 +15,7 @@ mod webview2_shim;
 mod diag;
 mod export;
 mod fx;
+mod fx_presets;
 mod start;
 mod openfx;
 mod keys;
@@ -1025,6 +1026,7 @@ fn main() {
                 }
                 let _ = SETTINGS_PATH.set(path);
                 start::startup(&mut e, &dir, !args.is_empty());
+                fx_presets::startup(&dir);
             }
             fx::startup(&mut e);
             openfx::startup();
@@ -1131,6 +1133,11 @@ fn main() {
             export::export_run,
             export::export_clear,
             fx::effect_add,
+            fx_presets::fx_preset_list,
+            fx_presets::fx_preset_save,
+            fx_presets::fx_preset_apply,
+            fx_presets::fx_preset_rename,
+            fx_presets::fx_preset_delete,
             fx::effect_op,
             fx::effect_param,
             fx::effect_key,

@@ -459,6 +459,16 @@ export interface CatalogItem {
   version: string;
 }
 
+/// A saved effect preset (a stack of effects with their settings and keyframes).
+export interface FxPreset {
+  name: string;
+  /// "Glow, Blur · 2 keyframes".
+  summary: string;
+  effects: number;
+  /// Plugins it uses that aren't installed.
+  missing: string[];
+}
+
 export interface CatalogGroup {
   label: string;
   items: CatalogItem[];
@@ -789,6 +799,11 @@ export const api = {
   effectCurves: (id: number, index: number, curves: Curves) => invoke("effect_curves", { id, index, curves }),
   effectLut: (id: number, index: number) => invoke("effect_lut", { id, index }),
   effectCatalog: () => invoke<CatalogGroup[]>("effect_catalog"),
+  fxPresetList: () => invoke<FxPreset[]>("fx_preset_list"),
+  fxPresetSave: (id: number, name: string) => invoke<string>("fx_preset_save", { id, name }),
+  fxPresetApply: (id: number, name: string, replace: boolean) => invoke("fx_preset_apply", { id, name, replace }),
+  fxPresetRename: (from: string, to: string) => invoke("fx_preset_rename", { from, to }),
+  fxPresetDelete: (name: string) => invoke("fx_preset_delete", { name }),
   pluginsList: () => invoke<PluginsView>("plugins_list"),
   pluginsInstall: (zip: boolean) => invoke<string | null>("plugins_install", { zip }),
   pluginsNew: () => invoke<string>("plugins_new"),

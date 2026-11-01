@@ -29,8 +29,11 @@
 
   function key(e: KeyboardEvent) {
     if (e.key !== "Escape") return;
-    if (ask.open) ask.resolve(null);
-    else if (app.settingsOpen) app.settingsOpen = false;
+    if (ask.open) {
+      // Only the question closes (not a dialog behind it).
+      e.stopImmediatePropagation();
+      ask.resolve(null);
+    } else if (app.settingsOpen) app.settingsOpen = false;
   }
 </script>
 
@@ -103,7 +106,7 @@
 {/if}
 
 {#if ask.open}
-  <div class="scrim">
+  <div class="scrim top">
     <div class="dialog small" role="alertdialog" aria-modal="true" aria-labelledby="ask-title">
       <h2 id="ask-title">{ask.title}</h2>
       <p>{ask.text}</p>
@@ -144,6 +147,10 @@
     display: grid;
     place-items: center;
     z-index: 40;
+  }
+  /* Questions can come from other dialogs (the effects browser), so above them. */
+  .scrim.top {
+    z-index: 60;
   }
   .dialog {
     width: min(560px, calc(100vw - 32px));
