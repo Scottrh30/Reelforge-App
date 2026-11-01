@@ -135,7 +135,7 @@ export function onKey(e: KeyboardEvent) {
     }
     return;
   }
-  if (ask.open || app.startOpen || app.exportOpen || app.effectsOpen || app.pluginsOpen || app.collectOpen || app.pasteAttrsOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
+  if (ask.open || app.startOpen || app.exportOpen || app.effectsOpen || app.savePreset || app.pluginsOpen || app.collectOpen || app.pasteAttrsOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const go = (f: () => unknown) => {

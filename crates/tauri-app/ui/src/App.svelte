@@ -22,6 +22,7 @@
   import ExportDialog from "./components/ExportDialog.svelte";
   import ExportQueue from "./components/ExportQueue.svelte";
   import EffectsBrowser from "./components/EffectsBrowser.svelte";
+  import SavePresetDialog from "./components/SavePresetDialog.svelte";
   import PluginsDialog from "./components/PluginsDialog.svelte";
   import StartScreen from "./components/StartScreen.svelte";
   import CollectDialog from "./components/CollectDialog.svelte";
@@ -159,6 +160,7 @@
 <AboutDialog />
 <ExportQueue />
 <EffectsBrowser />
+<SavePresetDialog />
 <PluginsDialog />
 <StartScreen />
 <CollectDialog />

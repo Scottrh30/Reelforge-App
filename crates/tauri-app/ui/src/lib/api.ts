@@ -465,12 +465,30 @@ export interface CatalogItem {
   version: string;
 }
 
+/// Where a preset's keyframes land on the clip it's applied to.
+export type PresetTiming = "FromStart" | "FromEnd" | "Stretch";
+
+/// What goes into a preset (see Save as preset…).
+export interface PresetSaveOptions {
+  /// Which of the clip's effects, by position.
+  effects: number[];
+  masks: boolean;
+  motion: boolean;
+  blend: boolean;
+  timing: PresetTiming;
+}
+
 /// A saved effect preset (a stack of effects with their settings and keyframes).
 export interface FxPreset {
   name: string;
   /// "Glow, Blur · 2 keyframes".
   summary: string;
   effects: number;
+  masks: number;
+  motion: boolean;
+  /// Its blend mode's name, if it sets one.
+  blend: string | null;
+  timing: PresetTiming;
   /// Plugins it uses that aren't installed.
   missing: string[];
 }
@@ -814,7 +832,7 @@ export const api = {
   effectPlate: (id: number, index: number, file: boolean) => invoke("effect_plate", { id, index, file }),
   effectCatalog: () => invoke<CatalogGroup[]>("effect_catalog"),
   fxPresetList: () => invoke<FxPreset[]>("fx_preset_list"),
-  fxPresetSave: (id: number, name: string) => invoke<string>("fx_preset_save", { id, name }),
+  fxPresetSave: (id: number, name: string, opts: PresetSaveOptions | null = null) => invoke<string>("fx_preset_save", { id, name, opts }),
   fxPresetApply: (id: number, name: string, replace: boolean) => invoke("fx_preset_apply", { id, name, replace }),
   fxPresetRename: (from: string, to: string) => invoke("fx_preset_rename", { from, to }),
   fxPresetDelete: (name: string) => invoke("fx_preset_delete", { name }),

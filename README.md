@@ -840,13 +840,18 @@ changing it sets the key there. Curves has its own curve editor (Master, Red, Gr
 Blue: drag points, click the line to add one, right-click to remove), and LUT a .cube
 file picker.
 
-Effect presets: **+ Add → Save effects as preset…** saves the clip's whole stack, with
-every setting and keyframe, under a name. Apply it to other clips from **+ Add → Presets**
-or the effects browser's **Presets** tab (Apply adds it after the clip's own effects;
-Shift+click Apply replaces them), where presets can also be renamed and deleted.
-Keyframes are timed from the clip's start, so a fade over the first second of one clip
-lands on the first second of the next. Presets are kept in `effect-presets.json` in the
-app's settings folder; one that uses a plugin you no longer have says so.
+Effect presets: **+ Add → Save as preset…** saves the clip's look under a name. Choose what
+goes in: any of its effects (all ticked to start with, each with every setting and keyframe),
+its **masks** (scaled to the size of each clip they go on), its **position, scale, rotation and
+opacity** with their keyframes (a ready-made move like a slide-in or a slow push), and its
+**blend mode**. Choose where keyframes land: **from the clip's start** (a fade over one clip's
+first second lands on the next one's first second), **before the clip's end** (fade-outs and
+exits), or **stretched to the clip's length** (a move across the whole clip). Apply it to
+other clips from **+ Add → Presets** or the effects browser's **Presets** tab (Apply adds its
+effects and masks after the clip's own and sets its motion and blend mode; Shift+click Apply
+replaces the clip's effects and masks), where presets can also be renamed and deleted. Presets
+are kept in `effect-presets.json` in the app's settings folder; one that uses a plugin you no
+longer have says so.
 
 Plugins (Edit → Plugins…): install from a folder or a .zip, make a new one from the
 starter template, open the plugin folder, reload, remove (with a confirmation), and
@@ -1409,9 +1414,13 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   each clip's own time); mask points scale by the ratio of picture sizes. **Nudge** is
   `nudge_clips` in `undo.rs`, which reuses `move_targets`, so links, locks and overlaps behave
   exactly as when dragging.
-- **Effect presets** (`engine/src/fx_presets.rs`): `EffectPreset::from_clip` stores the
-  stack with keys shifted by `-source_in` (cameras', lights' and points' settings stay
-  behind); `effects_for(source_in)` shifts them back onto the target clip.
+- **Effect presets** (`engine/src/fx_presets.rs`): `EffectPreset::from_visual` stores the
+  chosen effects, masks (with the layer size they were drawn in), motion (`MOTION_PROPS` of the
+  transform and their curves; crop and corner pin stay) and blend mode, every key time made
+  relative to the clip's start, plus the clip's length; cameras', lights' and points' settings
+  stay behind. `apply` places each key by the preset's `Timing` (the same offset, the same
+  distance from the end, or scaled by the length ratio) after the target's `source_in`. Older
+  presets load as effects-only, from the start.
   `PresetLibrary` is the JSON file (names unique ignoring case, kept sorted, written via a
   temporary file).
 - **Viewer snapping** (`engine/src/snap.rs`): a drag is computed from the layer's transform when

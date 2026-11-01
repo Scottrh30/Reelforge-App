@@ -2,10 +2,9 @@
 //! under a name (the Effects section's "Save as preset…"), and apply, rename
 //! or delete presets from the effects browser's Presets tab.
 
-use crate::fx::edit;
 use crate::{ed, Res};
 use reelforge_core::ClipId;
-use reelforge_engine::fx_presets::{EffectPreset, PresetLibrary};
+use reelforge_engine::fx_presets::{EffectPreset, PresetLibrary, SaveOptions};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -30,6 +29,11 @@ pub struct PresetView {
     /// "Glow, Blur · 2 keyframes".
     pub summary: String,
     pub effects: usize,
+    pub masks: usize,
+    pub motion: bool,
+    pub blend: Option<String>,
+    /// "FromStart", "FromEnd" or "Stretch".
+    pub timing: reelforge_engine::fx_presets::Timing,
     /// Plugins it uses that aren't installed now.
     pub missing: Vec<String>,
 }
@@ -43,22 +47,28 @@ pub fn fx_preset_list() -> Vec<PresetView> {
                 name: p.name.clone(),
                 summary: p.summary(),
                 effects: p.effects.len(),
+                masks: p.masks.len(),
+                motion: p.motion.is_some(),
+                blend: p.blend.map(|b| b.label().to_string()),
+                timing: p.timing,
                 missing: p.effects.iter().filter(|e| !e.plugin_installed()).map(|e| e.label()).collect(),
             })
             .collect()
     })
 }
 
-/// Save clip `id`'s effects as preset `name` (replacing one of that name).
+/// Save clip `id`'s look as preset `name` (replacing one of that name):
+/// what `opts` chooses (all its effects and nothing else when `None`).
 #[tauri::command]
-pub fn fx_preset_save(id: u64, name: String) -> Res<String> {
-    let (effects, source_in) = ed(|e| {
+pub fn fx_preset_save(id: u64, name: String, opts: Option<SaveOptions>) -> Res<String> {
+    let opts = opts.unwrap_or_default();
+    let (v, source_in, length, layer) = ed(|e| {
         e.commit_live_edit();
-        e.seq().find_clip(ClipId(id)).map(|(_, c)| (c.visual().effects.clone(), c.source_in))
+        e.seq().find_clip(ClipId(id)).map(|(_, c)| (c.visual(), c.source_in, c.duration, e.layer_size(c)))
     })?
     .ok_or("Select the clip whose effects to save first")?;
-    let Some(p) = EffectPreset::from_clip(&name, &effects, source_in) else {
-        return Err("That clip has no effects to save".into());
+    let Some(p) = EffectPreset::from_visual(&name, &v, source_in, length, layer, &opts) else {
+        return Err("Nothing to save: choose at least one effect, the masks, the motion or the blend mode".into());
     };
     if p.name.is_empty() {
         return Err("A preset needs a name".into());
@@ -76,7 +86,7 @@ pub fn fx_preset_apply(id: u64, name: String, replace: bool) -> Res<()> {
     let preset = with(|lib| lib.get(&name).cloned()).ok_or_else(|| format!("There's no preset called \"{name}\""))?;
     ed(|e| {
         e.commit_live_edit();
-        let Some((scene, source_in)) = e.seq().find_clip(ClipId(id)).map(|(_, c)| (c.scene.is_some(), c.source_in)) else {
+        let Some((scene, source_in, length, layer, locked)) = e.seq().find_clip(ClipId(id)).map(|(_, c)| (c.scene.is_some(), c.source_in, c.duration, e.layer_size(c), e.seq().is_locked(c.id))) else {
             e.status = "Select a video, picture or title clip first".into();
             return;
         };
@@ -84,14 +94,13 @@ pub fn fx_preset_apply(id: u64, name: String, replace: bool) -> Res<()> {
             e.status = "Cameras, lights and points have no picture to put effects on".into();
             return;
         }
-        let fx = preset.effects_for(source_in);
-        edit(e, id, |list, _, _| {
-            if replace {
-                // A camera's, light's or point's own settings stay.
-                list.retain(|f| matches!(f.kind, reelforge_core::EffectKind::Camera | reelforge_core::EffectKind::Light | reelforge_core::EffectKind::Point));
-            }
-            list.extend(fx);
-        });
+        if locked {
+            e.status = "That clip's track is locked".into();
+            return;
+        }
+        let Some(mut v) = e.visual(ClipId(id)) else { return };
+        preset.apply(&mut v, source_in, length, layer, replace);
+        e.set_visual_live(ClipId(id), v);
         e.commit_live_edit();
         e.status = format!("Applied the effect preset \"{}\"", preset.name);
     })

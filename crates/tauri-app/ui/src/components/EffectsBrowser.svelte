@@ -33,12 +33,13 @@
     await run(api.fxPresetDelete(p.name));
     reloadPresets();
   }
-  async function savePresetFrom() {
-    if (!target?.effects?.length) return;
-    const name = await askText("Save effects as preset", `The effects on ${target.name}, with their settings and keyframes (timed from the clip's start). A preset of the same name is replaced.`, "My look", "Save preset");
-    if (name?.trim()) await run(api.fxPresetSave(target.id, name.trim()));
-    reloadPresets();
+  function savePresetFrom() {
+    if (target) app.savePreset = { clip: target.id };
   }
+  // Back from Save as preset…: show the new one.
+  $effect(() => {
+    if (app.effectsOpen && !app.savePreset) reloadPresets();
+  });
   let kinds = $state<TransitionKind[]>([]);
   $effect(() => {
     if (app.effectsOpen && !kinds.length) api.transitionList().then((k) => (kinds = k));
@@ -88,7 +89,7 @@
   }
 
   function key(e: KeyboardEvent) {
-    if (app.effectsOpen && !ask.open && e.key === "Escape") {
+    if (app.effectsOpen && !ask.open && !app.savePreset && e.key === "Escape") {
       e.stopPropagation();
       app.effectsOpen = false;
     }
@@ -132,8 +133,8 @@
           {:else}
             <p class="muted">{presets.length ? `Nothing matches “${search}”.` : "No presets yet."}</p>
           {/each}
-          <p class="muted foot">A preset is a stack of effects with their settings and keyframes, timed from the start of the clip, so a fade made over a clip's first second lands on the first second of the clip you apply it to. Apply adds it after the clip's own effects; Shift+click Apply to replace them.
-            {#if target?.effects?.length}<button class="link" onclick={savePresetFrom}>Save {target.name}'s effects as a preset…</button>{/if}</p>
+          <p class="muted foot">A preset is a stack of effects with their settings and keyframes, and can also hold masks, a move and opacity, and a blend mode. Its keyframes land from the clip's start, before its end, or stretched to its length, as chosen when it was saved. Apply adds it after the clip's own effects; Shift+click Apply to replace them.
+            {#if target}<button class="link" onclick={savePresetFrom}>Save {target.name}'s look as a preset…</button>{/if}</p>
         {:else if tab === "transitions"}
           {#each tShown as g}
             <h3>{g.label}</h3>

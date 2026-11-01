@@ -36,6 +36,8 @@ export const app = $state({
   queueOpen: false,
   /// The effects browser and the Plugins window.
   effectsOpen: false,
+  /// Save as preset… open for this clip.
+  savePreset: null as null | { clip: number },
   pluginsOpen: false,
   settingsOpen: false,
   /// The start screen (new from a preset or template, recent projects).
