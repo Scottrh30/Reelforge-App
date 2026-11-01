@@ -422,6 +422,36 @@
     el.addEventListener("pointerup", up);
   }
 
+  // The key-colour eyedropper: a click picks round a point, a drag averages the box.
+  const keyPick = $derived(app.keyPick && ins && app.keyPick.clip === ins.id ? app.keyPick : null);
+  $effect(() => {
+    if (app.keyPick && (!ins || app.keyPick.clip !== ins.id)) app.keyPick = null;
+  });
+  let pickBox = $state<[Pt, Pt] | null>(null);
+  function pickDown(e: PointerEvent) {
+    if (!keyPick || !inv || e.button !== 0) return;
+    e.stopPropagation();
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const start = toLayer(e);
+    pickBox = [start, start];
+    const move = (m: PointerEvent) => {
+      if (pickBox) pickBox = [start, toLayer(m)];
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      const [a, b] = pickBox ?? [start, start];
+      pickBox = null;
+      const { clip, index } = keyPick!;
+      app.keyPick = null;
+      app.note = "";
+      await run(api.effectKeyPick(clip, index, a, b));
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
   // Freehand: each click adds a point; clicking the first one (or Enter, or a double-click) closes it.
   let hover = $state<Pt | null>(null);
   function drawClick(e: MouseEvent) {
@@ -658,6 +688,15 @@
       <rect x="0" y="0" width="100%" height="100%" class="catch tool-{tool}" onpointerdown={toolDown} role="presentation" />
     {/if}
 
+    <!-- The key-colour eyedropper. -->
+    {#if keyPick}
+      <rect x="0" y="0" width="100%" height="100%" class="catch picker" onpointerdown={pickDown} role="presentation" />
+      {#if pickBox}
+        {@const [a, b] = pickBox}
+        <polygon points={pts([a, [b[0], a[1]], b, [a[0], b[1]]])} class="pickbox" />
+      {/if}
+    {/if}
+
     <!-- Freehand drawing. -->
     {#if drawing}
       <rect
@@ -798,6 +837,16 @@
   }
   .tool-move {
     cursor: move;
+  }
+  .picker {
+    cursor: crosshair;
+  }
+  .pickbox {
+    fill: rgba(255, 255, 255, 0.12);
+    stroke: #fff;
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+    pointer-events: none;
   }
   .tool-resize {
     cursor: nwse-resize;

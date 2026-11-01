@@ -805,6 +805,7 @@ export const api = {
   bladeIgnite: (id: number, index: number, retract: boolean, seconds: number) => invoke("blade_ignite", { id, index, retract, seconds }),
   effectCurves: (id: number, index: number, curves: Curves) => invoke("effect_curves", { id, index, curves }),
   effectLut: (id: number, index: number) => invoke("effect_lut", { id, index }),
+  effectKeyPick: (id: number, index: number, a: Pt, b: Pt) => invoke<string>("effect_key_pick", { id, index, a, b }),
   effectPlate: (id: number, index: number, file: boolean) => invoke("effect_plate", { id, index, file }),
   effectCatalog: () => invoke<CatalogGroup[]>("effect_catalog"),
   fxPresetList: () => invoke<FxPreset[]>("fx_preset_list"),

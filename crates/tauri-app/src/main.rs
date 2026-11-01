@@ -1141,6 +1141,7 @@ fn main() {
             export::export_clear,
             fx::effect_add,
             fx::effect_plate,
+            fx::effect_key_pick,
             fx_presets::fx_preset_list,
             fx_presets::fx_preset_save,
             fx_presets::fx_preset_apply,

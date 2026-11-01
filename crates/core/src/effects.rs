@@ -201,6 +201,48 @@ pub mod key {
     /// Difference key parameters.
     pub const DIFF_TOLERANCE: usize = 0;
     pub const DIFF_SOFTNESS: usize = 1;
+
+    /// The chroma key's colour plane (as the shader's `chroma`): Cb and Cr of
+    /// a display-encoded (gamma) colour, Rec. 709.
+    fn chroma([r, g, b]: [f32; 3]) -> [f32; 2] {
+        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        [(b - y) / 1.8556, (r - y) / 1.5748]
+    }
+
+    /// The colour of key hue `h`° (as the shader's `hue_rgb`).
+    fn hue_rgb(h: f32) -> [f32; 3] {
+        let k = |n: f32| (n + h / 60.0).rem_euclid(6.0);
+        let f = |n: f32| 1.0 - k(n).min(4.0 - k(n)).clamp(0.0, 1.0);
+        [f(5.0), f(3.0), f(1.0)]
+    }
+
+    /// What the eyedropper sets from the screen colour it picked
+    /// (display-encoded RGB, 0–1, averaged over the area): the key hue that
+    /// points straight at it, and a lower threshold and softness (scaled
+    /// down together) if the current ones (in %) wouldn't take it all out (a
+    /// dull or dark screen). `None` for a grey, which has no hue to key.
+    pub fn pick(rgb: [f32; 3], threshold: f32, softness: f32) -> Option<(f32, Option<(f32, f32)>)> {
+        let c = chroma(rgb);
+        let len = (c[0] * c[0] + c[1] * c[1]).sqrt();
+        if len < 0.02 {
+            return None;
+        }
+        // The hue whose direction in the colour plane is closest (to 0.1°).
+        let dir = |h: f32| {
+            let k = chroma(hue_rgb(h));
+            let n = (k[0] * k[0] + k[1] * k[1]).sqrt().max(1e-6);
+            (c[0] * k[0] + c[1] * k[1]) / (n * len)
+        };
+        let coarse = (0..720).map(|i| i as f32 * 0.5).max_by(|a, b| dir(*a).total_cmp(&dir(*b))).unwrap_or(0.0);
+        let hue = (-5..=5).map(|i| coarse + i as f32 * 0.1).max_by(|a, b| dir(*a).total_cmp(&dir(*b))).unwrap_or(coarse).rem_euclid(360.0);
+        // Pointing straight at it, its strength is its length in the plane; the
+        // key is fully see-through above threshold + softness (each half a unit
+        // per 100 %). Keep a margin so the screen's darker parts go too.
+        let top = (threshold + softness) / 200.0;
+        let k = 0.8 * len / top.max(1e-6);
+        let lower = (k < 1.0).then(|| ((threshold * k * 10.0).round() / 10.0, (softness * k * 10.0).round() / 10.0));
+        Some(((hue * 10.0).round() / 10.0, lower))
+    }
 }
 
 /// The matte settings every keyer ends with (see [`key::matte_base`]).
@@ -967,6 +1009,25 @@ mod tests {
                 _ => assert!(!v.is_identity(), "{kind:?} should do something by default"),
             }
         }
+    }
+
+    #[test]
+    fn the_eyedropper_aims_the_key_at_the_picked_colour() {
+        // A typical green screen and a blue one.
+        let (h, t) = key::pick([50.0 / 255.0, 180.0 / 255.0, 80.0 / 255.0], 12.0, 10.0).unwrap();
+        assert!((100.0..150.0).contains(&h), "green: {h}");
+        assert_eq!(t, None, "a strong screen keeps the threshold");
+        let (h, _) = key::pick([0.1, 0.25, 0.85], 12.0, 10.0).unwrap();
+        assert!((200.0..250.0).contains(&h), "blue: {h}");
+        // A pure primary lands on its own hue.
+        let (h, _) = key::pick([0.0, 1.0, 0.0], 12.0, 10.0).unwrap();
+        assert!((h - 120.0).abs() < 1.0, "{h}");
+        // A dull, dark screen: the threshold comes down so it goes.
+        let (_, t) = key::pick([0.18, 0.26, 0.19], 12.0, 10.0).unwrap();
+        let (t, s) = t.expect("lowered");
+        assert!(t < 12.0 && s < 10.0 && (t / s - 1.2).abs() < 0.1, "{t} {s}");
+        // Grey has no hue.
+        assert!(key::pick([0.5, 0.5, 0.5], 12.0, 10.0).is_none());
     }
 
     #[test]

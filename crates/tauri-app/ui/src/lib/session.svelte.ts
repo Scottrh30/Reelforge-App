@@ -59,6 +59,9 @@ export const app = $state({
   activeMaskPoint: null as null | number,
   /// Drawing a freehand mask: the clip and the points so far (layer pixels).
   drawing: null as null | { clip: number; points: [number, number][] },
+  /// The chroma key eyedropper: clicking or dragging in the Viewer picks the
+  /// key colour of effect `index` of clip `clip`.
+  keyPick: null as null | { clip: number; index: number },
   /// The Viewer's mask tool: dragging a mask moves it, or resizes it about its centre.
   maskTool: null as null | "move" | "resize",
 });

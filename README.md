@@ -249,7 +249,10 @@ What works now:
     with full trilinear interpolation, with a Strength mix
   - **Gaussian blur**: radius in pixels (two separable passes, any size)
   - **Sharpen**: unsharp mask with amount and radius
-  - **Chroma key**: pick the key colour by hue (green by default, with a swatch), threshold,
+  - **Chroma key**: **Pick key colour**, then click the screen in the Viewer (or drag a box
+    over it to average a patch: best on an uneven screen) to aim the key at it; for a dull or
+    dark screen it also lowers Threshold and Softness so all of it goes. Or set the key colour
+    by hue (green by default, with a swatch), threshold,
     softness and spill suppression (the screen's tint taken out of what's kept, brightness
     unchanged). Then the matte: **Clip black** and **Clip white** make the nearly-gone fully
     gone and the nearly-solid fully solid; **Choke** shrinks the edge inwards (or, negative,

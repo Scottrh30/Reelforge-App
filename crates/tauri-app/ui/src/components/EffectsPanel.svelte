@@ -254,6 +254,22 @@
           </div>
           {#if fx.lut_error}<p class="warn">{fx.lut_error}</p>{/if}
         {/if}
+        {#if fx.kind === "ChromaKey"}
+          {@const picking = app.keyPick?.clip === ins.id && app.keyPick.index === i}
+          <div class="row">
+            <button class="small" class:active={picking} aria-pressed={picking} onclick={() => {
+              if (picking) {
+                app.keyPick = null;
+                app.note = "";
+              } else {
+                app.keyPick = { clip: ins.id, index: i };
+                app.drawing = null;
+                app.maskTool = null;
+                app.note = "Click the screen in the Viewer to key its colour, or drag a box over it to average a patch (Esc cancels)";
+              }
+            }} title="Pick the key colour from the picture in the Viewer: click, or drag a box to average a patch">{picking ? "Picking… (Esc)" : "Pick key colour"}</button>
+          </div>
+        {/if}
         {#if fx.kind === "DifferenceKey"}
           <div class="row lut">
             <span class="file" title={fx.plate ? `${fx.plate[0]} at ${fx.plate[1]}` : ""}>{fx.plate ? `Plate: ${fileName(fx.plate[0])} · ${fx.plate[1]}` : "No clean plate yet"}</span>

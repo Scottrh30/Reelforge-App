@@ -115,6 +115,12 @@ async function deleteKey(ripple: boolean) {
 export function onKey(e: KeyboardEvent) {
   const t = e.target as HTMLElement;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+  if (app.keyPick && e.key === "Escape") {
+    e.preventDefault();
+    app.keyPick = null;
+    app.note = "";
+    return;
+  }
   if (app.maskTool && e.key === "Escape" && !app.drawing) {
     e.preventDefault();
     app.maskTool = null;

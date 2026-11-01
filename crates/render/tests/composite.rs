@@ -1237,3 +1237,41 @@ fn difference_key_removes_what_matches_the_plate() {
     // Without its plate it changes nothing.
     assert!(fx(EffectKind::DifferenceKey, &[]).is_identity());
 }
+
+/// The eyedropper's settings (`key::pick`) take out the screen it was picked
+/// from, even a dull, dark one the default settings leave behind, and keep a
+/// skin tone.
+#[test]
+fn a_picked_key_colour_takes_the_screen_out() {
+    use reelforge_core::effects::key;
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    let mut n = 80;
+    for screen in [[46u8, 66, 48], [40, 70, 150], [60, 175, 95]] {
+        let mut img = Vec::new();
+        for y in 0..8 {
+            for _ in 0..8 {
+                img.extend(if y < 4 { [screen[0], screen[1], screen[2], 255] } else { [205, 150, 125, 255] });
+            }
+        }
+        let rgb = screen.map(|v| v as f32 / 255.0);
+        let (hue, lower) = key::pick(rgb, 12.0, 10.0).unwrap();
+        let mut set = vec![(0, hue)];
+        if let Some((t, s)) = lower {
+            set.extend([(1, t), (2, s)]);
+        }
+        n += 1;
+        let fg = layer(n, &img, [8, 8], [8.0, 8.0], Transform::default(), BlendMode::Normal);
+        c.render([8, 8], &[full(1, &red, [8, 8]), with_fx(fg, vec![fx(EffectKind::ChromaKey, &set)])]);
+        let out = c.read_output().unwrap();
+        assert!(near(px(&out, 8, 4, 1), [255, 0, 0]), "{screen:?} keyed (hue {hue}, threshold {lower:?}): {:?}", px(&out, 8, 4, 1));
+        assert!(near(px(&out, 8, 4, 6), [205, 150, 125]), "{screen:?}: skin stays: {:?}", px(&out, 8, 4, 6));
+    }
+    // The dull screen does need the lower threshold: with the default it stays.
+    n += 1;
+    let img: Vec<u8> = (0..64).flat_map(|_| [46u8, 66, 48, 255]).collect();
+    let (hue, _) = key::pick([46.0 / 255.0, 66.0 / 255.0, 48.0 / 255.0], 12.0, 10.0).unwrap();
+    let fg = layer(n, &img, [8, 8], [8.0, 8.0], Transform::default(), BlendMode::Normal);
+    c.render([8, 8], &[full(1, &red, [8, 8]), with_fx(fg, vec![fx(EffectKind::ChromaKey, &[(0, hue)])])]);
+    assert!(!near(px(&c.read_output().unwrap(), 8, 4, 4), [255, 0, 0]));
+}

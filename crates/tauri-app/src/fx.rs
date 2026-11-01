@@ -319,6 +319,87 @@ pub fn effect_param(id: u64, index: usize, param: usize, value: f32) -> Res<()> 
     })
 }
 
+/// The eyedropper: aim chroma key `index` at the colour of the clip's own
+/// picture (before effects) at the playhead, averaged over the box from `a`
+/// to `b` (layer pixels; a click averages a small square round it). Sets the
+/// key hue, and lowers the threshold if the screen wouldn't all go. One undo step.
+#[tauri::command]
+pub fn effect_key_pick(id: u64, index: usize, a: [f32; 2], b: [f32; 2]) -> Res<String> {
+    use reelforge_core::effects::key;
+    let (path, at, layer, threshold, softness) = ed(|e| {
+        let (_, c) = e.seq().find_clip(ClipId(id))?;
+        let fx = c.effects.get(index).filter(|f| f.kind == EffectKind::ChromaKey)?;
+        let (src, _) = effect_time(e, c);
+        let m = e.project.media(c.media)?;
+        let size = e.project.picture_size(c)?;
+        Some((m.path.clone(), e.track_time(c), size, fx.value_at(1, src), fx.value_at(2, src)))
+    })?
+    .ok_or("The eyedropper picks from a video or picture clip's own footage")?;
+    let mut src = reelforge_media::FrameSource::open_cached(&path, None).map_err(|e| format!("{e:#}"))?;
+    let f = src.frame_at_blocking(at, std::time::Duration::from_secs(10)).ok_or("Couldn't read the frame at the playhead")?;
+    let rgba = f.pixels.to_rgba();
+    // Layer pixels → the frame's (a proxy may be smaller).
+    let (sx, sy) = (f.width as f32 / layer[0].max(1) as f32, f.height as f32 / layer[1].max(1) as f32);
+    let small = (a[0] - b[0]).abs() < 3.0 && (a[1] - b[1]).abs() < 3.0;
+    let r = if small { 4.0 } else { 0.0 };
+    let clampx = |v: f32| (v * sx).round().clamp(0.0, f.width as f32 - 1.0) as u32;
+    let clampy = |v: f32| (v * sy).round().clamp(0.0, f.height as f32 - 1.0) as u32;
+    let (x0, x1) = (clampx(a[0].min(b[0]) - r), clampx(a[0].max(b[0]) + r));
+    let (y0, y1) = (clampy(a[1].min(b[1]) - r), clampy(a[1].max(b[1]) + r));
+    let mut sum = [0f64; 3];
+    let mut n = 0f64;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let p = &rgba[((y * f.width + x) * 4) as usize..][..4];
+            if p[3] > 0 {
+                for k in 0..3 {
+                    sum[k] += p[k] as f64;
+                }
+                n += 1.0;
+            }
+        }
+    }
+    if n == 0.0 {
+        return Err("Nothing to pick there: the picture is see-through".into());
+    }
+    let rgb = sum.map(|v| (v / n / 255.0) as f32);
+    let hex = format!("#{:02x}{:02x}{:02x}", (rgb[0] * 255.0).round() as u8, (rgb[1] * 255.0).round() as u8, (rgb[2] * 255.0).round() as u8);
+    let Some((hue, lower)) = key::pick(rgb, threshold, softness) else {
+        let msg = format!("That's grey ({hex}): there's no colour to key. Pick the screen, or use the luma key for black or white");
+        let _ = ed(|e| e.status = msg.clone());
+        return Ok(msg);
+    };
+    ed(|e| {
+        e.commit_live_edit();
+        edit(e, id, |list, src, in_clip| {
+            let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::ChromaKey) else { return };
+            fx.normalize();
+            let mut set = |param: usize, v: f32| {
+                let p = &mut fx.params[param];
+                if p.keys.is_animated() {
+                    if in_clip {
+                        p.keys.set(src, v);
+                    }
+                } else {
+                    p.value = v;
+                }
+            };
+            set(0, hue);
+            if let Some((t, s)) = lower {
+                set(1, t);
+                set(2, s);
+            }
+        });
+        e.commit_live_edit();
+        let msg = match lower {
+            Some((t, s)) => format!("Key colour picked: {hex}, hue {hue:.1}°; threshold and softness lowered to {t:.1} % and {s:.1} % so all of it goes"),
+            None => format!("Key colour picked: {hex}, hue {hue:.1}°"),
+        };
+        e.status = msg.clone();
+        msg
+    })
+}
+
 /// Set energy blade `index`'s colours to ready-made preset `preset`
 /// (see [`reelforge_core::effects::blade::PRESETS`]): one undo step. Animated
 /// colours get a key at the playhead.
