@@ -751,6 +751,12 @@ fn mask_point_add(id: u64, index: usize, point: usize, before: bool) -> Res<Opti
     ed(|e| e.add_mask_point(clip(id), index, point, before))
 }
 
+/// Trace what key effect `index` keeps into a new mask. Returns its index.
+#[tauri::command]
+fn mask_from_key(id: u64, index: usize) -> Res<Option<usize>> {
+    ed(|e| e.mask_from_key(clip(id), index))
+}
+
 /// Add a mask point on its outline where it passes nearest `at` (layer pixels).
 #[tauri::command]
 fn mask_point_add_at(id: u64, index: usize, at: [f32; 2]) -> Res<Option<usize>> {
@@ -1122,6 +1128,7 @@ fn main() {
             mask_point_curve,
             mask_point_add,
             mask_point_add_at,
+            mask_from_key,
             mask_point_delete,
             mask_op,
             tracker_add,

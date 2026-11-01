@@ -273,6 +273,10 @@ What works now:
     plate travels with the project (Collect files copies it with the media)
   - All three keys share the matte settings: Clip black/white, Choke, Edge softness and the
     black-and-white **View → Matte**
+  - **Mask from this key** (on each key's card): traces what the key keeps at the playhead
+    (its biggest area) into a new freehand mask, with as few points as the outline needs. Edit
+    it, track it (Track shape), or set its Use to a garbage matte to protect a subject the key
+    eats into
   - **Garbage mattes**: set a mask's **Use** to **Garbage matte: keys keep what's inside**
     and every key on the clip keeps the layer inside it, however much it looks like the screen
     (a green shirt, a dark logo on a luma key); it doesn't cut the layer, and shows dashed in

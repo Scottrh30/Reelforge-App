@@ -2127,6 +2127,46 @@ impl Editor {
         clip.media_at(self.playback.playhead.max(clip.timeline_start).min(clip.timeline_end()))
     }
 
+    /// Mask from key: trace what key effect `index` of clip `id` keeps at the
+    /// playhead (its biggest kept area) into a new freehand mask, to edit,
+    /// track, or use as a garbage matte. Returns the new mask's index.
+    pub fn mask_from_key(&mut self, id: ClipId, index: usize) -> Option<usize> {
+        self.commit_live_edit();
+        let (_, c) = self.seq().find_clip(id)?;
+        let Some(fx) = c.effects.get(index).filter(|e| reelforge_core::effects::key::matte_base(e.kind).is_some()) else {
+            self.status = "Choose a chroma, luma or difference key".into();
+            return None;
+        };
+        let Some(media) = self.project.media(c.media).filter(|m| m.info.video.is_some()).cloned() else {
+            self.status = "Mask from key works on a clip with a picture of its own".into();
+            return None;
+        };
+        let layer = self.layer_size(c);
+        let src = self.mask_time(c);
+        let values = fx.eval(src);
+        let at = self.track_time(c);
+        // A small picture is plenty for an outline.
+        let frame = reelforge_media::FrameSource::open(&media.path, Some((480, 480))).ok().and_then(|mut s| s.frame_at_blocking(at, std::time::Duration::from_secs(10)));
+        let Some(f) = frame else {
+            self.status = "Couldn't read the frame at the playhead".into();
+            return None;
+        };
+        let (w, h) = (f.width as usize, f.height as usize);
+        let rgba = f.pixels.to_rgba();
+        let plate = values.table.as_ref().map(|t| (t.rgba.as_slice(), t.width as usize, t.height as usize));
+        let alpha = reelforge_core::matte::key_alpha(&values, &rgba, w, h, plate);
+        let Some(outline) = reelforge_core::matte::largest_outline(&alpha, w, h, 48) else {
+            self.status = "The key keeps nothing here to outline: move the playhead to where the subject is".into();
+            return None;
+        };
+        let (kx, ky) = (layer[0] / w as f32, layer[1] / h as f32);
+        let mask = Mask { shape: reelforge_core::mask::MaskShape::Freehand, points: outline.iter().map(|p| [p[0] * kx, p[1] * ky]).collect(), ..Mask::default() };
+        let n = mask.points.len();
+        let i = self.add_mask(id, mask)?;
+        self.status = format!("Mask from key: {n} points round what the key keeps. Edit or track it, or set its Use to a garbage matte");
+        Some(i)
+    }
+
     /// Add a mask to a clip as one undo step, named after its shape. Returns its index.
     pub fn add_mask(&mut self, id: ClipId, mut mask: Mask) -> Option<usize> {
         self.commit_live_edit();
@@ -3943,6 +3983,43 @@ mod tests {
         let parts = ClipParts { audio: Some(clip(&e, au).audio), ..ClipParts::default() };
         let opts = SaveOptions { effects: Some(vec![]), audio: true, ..SaveOptions::default() };
         assert!(EffectPreset::from_clip_parts("x", &clip(&e, a).visual(), &parts, Time::ZERO, secs(2.0), [1.0, 1.0], &opts).is_some());
+    }
+
+    /// Mask from key: a green screen with a skin-coloured box: the new mask
+    /// goes round the box, in the layer's pixels, as one undo step.
+    #[test]
+    fn a_mask_traced_from_a_key() {
+        let dir = std::env::temp_dir().join(format!("rf-engine-maskkey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("screen.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x32b450:s=640x360:r=25:d=1,drawbox=x=200:y=100:w=240:h=160:color=0xcd967d:t=fill", "-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return;
+        }
+        let mut e = editor();
+        let info = reelforge_media::probe(&path).unwrap();
+        e.project.media.push(MediaAsset { id: MediaId(1), path: path.clone(), name: "screen.mp4".into(), info });
+        let id = ClipId(e.project.alloc_id());
+        let mut c = Clip::new(id, MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.0), None);
+        c.effects.push(reelforge_core::Effect::new(EffectKind::ColorCorrect));
+        c.effects.push(reelforge_core::Effect::new(EffectKind::ChromaKey));
+        e.project.sequences[0].tracks[0].clips.push(c);
+        assert!(e.mask_from_key(id, 0).is_none(), "not a key");
+        let undo = e.undo.position();
+        let i = e.mask_from_key(id, 1).expect(&e.status);
+        assert_eq!(e.undo.position(), undo + 1);
+        let m = &e.seq().find_clip(id).unwrap().1.masks[i];
+        let xs: Vec<f32> = m.points.iter().map(|p| p[0]).collect();
+        let ys: Vec<f32> = m.points.iter().map(|p| p[1]).collect();
+        let (x0, x1) = (xs.iter().cloned().fold(f32::MAX, f32::min), xs.iter().cloned().fold(f32::MIN, f32::max));
+        let (y0, y1) = (ys.iter().cloned().fold(f32::MAX, f32::min), ys.iter().cloned().fold(f32::MIN, f32::max));
+        assert!((x0 - 200.0).abs() < 6.0 && (x1 - 440.0).abs() < 6.0 && (y0 - 100.0).abs() < 6.0 && (y1 - 260.0).abs() < 6.0, "{x0}–{x1} × {y0}–{y1}");
+        assert!(m.points.len() <= 12, "a box needs few points: {}", m.points.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

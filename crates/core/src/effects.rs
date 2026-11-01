@@ -204,13 +204,13 @@ pub mod key {
 
     /// The chroma key's colour plane (as the shader's `chroma`): Cb and Cr of
     /// a display-encoded (gamma) colour, Rec. 709.
-    fn chroma([r, g, b]: [f32; 3]) -> [f32; 2] {
+    pub(crate) fn chroma([r, g, b]: [f32; 3]) -> [f32; 2] {
         let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
         [(b - y) / 1.8556, (r - y) / 1.5748]
     }
 
     /// The colour of key hue `h`° (as the shader's `hue_rgb`).
-    fn hue_rgb(h: f32) -> [f32; 3] {
+    pub(crate) fn hue_rgb(h: f32) -> [f32; 3] {
         let k = |n: f32| (n + h / 60.0).rem_euclid(6.0);
         let f = |n: f32| 1.0 - k(n).min(4.0 - k(n)).clamp(0.0, 1.0);
         [f(5.0), f(3.0), f(1.0)]

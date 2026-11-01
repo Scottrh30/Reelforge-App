@@ -273,6 +273,14 @@
             }} title="Pick the key colour from the picture in the Viewer: click, or drag a box to average a patch">{picking ? "Picking… (Esc)" : "Pick key colour"}</button>
           </div>
         {/if}
+        {#if fx.kind === "ChromaKey" || fx.kind === "LumaKey" || fx.kind === "DifferenceKey"}
+          <div class="row">
+            <button class="small" onclick={async () => {
+              const m = await run(api.maskFromKey(ins.id, i));
+              if (typeof m === "number") app.activeMask = { clip: ins.id, index: m };
+            }} title="Trace what this key keeps at the playhead (its biggest area) into a new mask to edit, track, or use as a garbage matte">Mask from this key</button>
+          </div>
+        {/if}
         {#if fx.kind === "DifferenceKey"}
           <div class="row lut">
             <span class="file" title={fx.plate ? `${fx.plate[0]} at ${fx.plate[1]}` : ""}>{fx.plate ? `Plate: ${fileName(fx.plate[0])} · ${fx.plate[1]}` : "No clean plate yet"}</span>
