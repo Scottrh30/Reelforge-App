@@ -523,7 +523,7 @@ fn input(g: &Gathered) -> LayerInput<'_> {
         transform: g.transform,
         blend: g.blend,
         effects: g.effects.clone(),
-        mask: g.mask.as_ref().map(|(hash, img)| MaskInput { content_id: *hash, pixels: &img.data, size: [img.width, img.height] }),
+        mask: g.mask.as_ref().map(|(hash, img)| MaskInput { content_id: *hash, pixels: &img.data, size: [img.width, img.height], keep: &img.keep }),
         wipe: g.wipe,
         mesh: g.mesh.clone(),
         space: g.space.as_ref(),

@@ -1275,3 +1275,39 @@ fn a_picked_key_colour_takes_the_screen_out() {
     c.render([8, 8], &[full(1, &red, [8, 8]), with_fx(fg, vec![fx(EffectKind::ChromaKey, &[(0, hue)])])]);
     assert!(!near(px(&c.read_output().unwrap(), 8, 4, 4), [255, 0, 0]));
 }
+
+/// A garbage matte for keys: inside it the layer is kept, however much it
+/// looks like the screen; outside, the key works as usual. With a layer
+/// mask too, what the mask cuts away stays cut.
+#[test]
+fn keys_keep_the_layer_inside_a_garbage_matte() {
+    use reelforge_core::effects::key;
+    use reelforge_render::MaskInput;
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    // All green screen: 16 × 16.
+    let img: Vec<u8> = (0..16 * 16).flat_map(|_| [50u8, 180, 80, 255]).collect();
+    // The keep mask: the left half. The layer mask: all but the bottom row.
+    let keep: Vec<u8> = (0..16 * 16).map(|i| if i % 16 < 8 { 255 } else { 0 }).collect();
+    let all: Vec<u8> = (0..16 * 16).map(|i| if i / 16 < 15 { 255 } else { 0 }).collect();
+    let mut n = 90;
+    for choke in [0.0, 2.0] {
+        n += 1;
+        let mut fg = layer(n, &img, [16, 16], [16.0, 16.0], Transform::default(), BlendMode::Normal);
+        fg.mask = Some(MaskInput { content_id: 5, pixels: &all, size: [16, 16], keep: &keep });
+        fg = with_fx(fg, vec![fx(EffectKind::ChromaKey, &[(key::CHOKE, choke)])]);
+        c.render([16, 16], &[full(1, &red, [16, 16]), fg]);
+        let out = c.read_output().unwrap();
+        assert!(near(px(&out, 16, 3, 8), [50, 180, 80]), "choke {choke}: kept inside the matte: {:?}", px(&out, 16, 3, 8));
+        assert!(near(px(&out, 16, 12, 8), [255, 0, 0]), "choke {choke}: keyed outside it: {:?}", px(&out, 16, 12, 8));
+        assert!(near(px(&out, 16, 3, 15), [255, 0, 0]), "choke {choke}: the layer mask still cuts: {:?}", px(&out, 16, 3, 15));
+    }
+    // Only garbage mattes (no layer mask): the layer isn't cut anywhere.
+    n += 1;
+    let full_mask = vec![255u8; 16 * 16];
+    let mut fg = layer(n, &img, [16, 16], [16.0, 16.0], Transform::default(), BlendMode::Normal);
+    fg.mask = Some(MaskInput { content_id: 6, pixels: &full_mask, size: [16, 16], keep: &keep });
+    c.render([16, 16], &[full(1, &red, [16, 16]), with_fx(fg, vec![fx(EffectKind::ChromaKey, &[])])]);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 16, 3, 15), [50, 180, 80]) && near(px(&out, 16, 12, 15), [255, 0, 0]));
+}

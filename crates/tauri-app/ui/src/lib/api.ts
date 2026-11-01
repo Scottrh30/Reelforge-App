@@ -310,6 +310,8 @@ export interface Mask {
   curves?: [number, number, number, number][];
   /** Feather per point (layer px); negative or missing = the mask's feather. */
   feathers?: number[];
+  /** A garbage matte for keys: inside it, keys keep the layer (it doesn't cut the layer). */
+  key_keep?: boolean;
 }
 
 export type Curve4 = [number, number, number, number];

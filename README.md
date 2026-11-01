@@ -273,6 +273,12 @@ What works now:
     plate travels with the project (Collect files copies it with the media)
   - All three keys share the matte settings: Clip black/white, Choke, Edge softness and the
     black-and-white **View → Matte**
+  - **Garbage mattes**: set a mask's **Use** to **Garbage matte: keys keep what's inside**
+    and every key on the clip keeps the layer inside it, however much it looks like the screen
+    (a green shirt, a dark logo on a luma key); it doesn't cut the layer, and shows dashed in
+    the Viewer. Several combine with Add, Subtract and Intersect like ordinary masks. To keep
+    something *out* (a light stand, the screen's edge), draw an ordinary mask: it cuts the
+    layer before the key. Both can be tracked and animated like any mask
   - **Glow**: threshold, radius, intensity and softness; bright areas bloom outwards
   - **Drop shadow**: distance, angle, softness and opacity, from the layer's alpha
   - **Vignette**: amount, size and softness

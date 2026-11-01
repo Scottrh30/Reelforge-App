@@ -101,6 +101,12 @@ pub struct Mask {
     /// Not used by ellipses.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub feathers: Vec<f32>,
+    /// A garbage matte for keys: instead of cutting the layer, what's inside
+    /// it is always kept by its chroma, luma and difference keys (a subject
+    /// near the screen's colour, a dark logo on a luma key). Several of these
+    /// combine with their modes like ordinary masks.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub key_keep: bool,
 }
 
 impl Default for Mask {
@@ -118,6 +124,7 @@ impl Default for Mask {
             enabled: true,
             curves: Vec::new(),
             feathers: Vec::new(),
+            key_keep: false,
         }
     }
 }
@@ -449,7 +456,11 @@ pub fn outline(shape: MaskShape, pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 pub struct MaskImage {
     pub width: u32,
     pub height: u32,
+    /// What's kept of the layer (all of it when only keys' garbage mattes are set).
     pub data: Vec<u8>,
+    /// Where keys must keep the layer ([`Mask::key_keep`]), the same size;
+    /// empty when there are none.
+    pub keep: Vec<u8>,
 }
 
 /// Do these masks do anything (any enabled, with a shape)?
@@ -465,7 +476,7 @@ pub fn mask_hash(masks: &[Mask], t: Time, layer: [f32; 2]) -> u64 {
     layer[0].to_bits().hash(&mut h);
     layer[1].to_bits().hash(&mut h);
     for m in masks.iter().filter(|m| m.enabled) {
-        (m.shape, m.mode, m.inverted).hash(&mut h);
+        (m.shape, m.mode, m.inverted, m.key_keep).hash(&mut h);
         for f in [m.feather, m.expansion, m.opacity] {
             f.to_bits().hash(&mut h);
         }
@@ -490,27 +501,34 @@ pub fn rasterize(masks: &[Mask], t: Time, layer: [f32; 2], max_side: u32) -> Opt
     }
     let k = (max_side as f32 / layer[0].max(layer[1]).max(1.0)).min(1.0);
     let (w, h) = (((layer[0] * k).ceil() as usize).max(1), ((layer[1] * k).ceil() as usize).max(1));
-    let mut acc: Option<Vec<f32>> = None;
-    for m in masks.iter().filter(|m| m.enabled) {
-        let line = m.outline_feathered(t);
-        let poly: Vec<[f32; 2]> = line.iter().map(|(p, _)| [p[0] * k, p[1] * k]).collect();
-        if poly.len() < 3 {
-            continue;
+    let combine = |keep: bool| -> Option<Vec<f32>> {
+        let mut acc: Option<Vec<f32>> = None;
+        for m in masks.iter().filter(|m| m.enabled && m.key_keep == keep) {
+            let line = m.outline_feathered(t);
+            let poly: Vec<[f32; 2]> = line.iter().map(|(p, _)| [p[0] * k, p[1] * k]).collect();
+            if poly.len() < 3 {
+                continue;
+            }
+            let feathers: Vec<f32> = line.iter().map(|(_, f)| f.max(0.0) * k).collect();
+            let a = shape_alpha(&poly, &feathers, w, h, m.expansion * k);
+            let acc = acc.get_or_insert_with(|| vec![if m.mode == MaskMode::Add { 0.0 } else { 1.0 }; w * h]);
+            for (o, v) in acc.iter_mut().zip(a) {
+                let v = if m.inverted { 1.0 - v } else { v } * m.opacity.clamp(0.0, 1.0);
+                *o = match m.mode {
+                    MaskMode::Add => *o + v - *o * v,
+                    MaskMode::Subtract => *o * (1.0 - v),
+                    MaskMode::Intersect => *o * v,
+                };
+            }
         }
-        let feathers: Vec<f32> = line.iter().map(|(_, f)| f.max(0.0) * k).collect();
-        let a = shape_alpha(&poly, &feathers, w, h, m.expansion * k);
-        let acc = acc.get_or_insert_with(|| vec![if m.mode == MaskMode::Add { 0.0 } else { 1.0 }; w * h]);
-        for (o, v) in acc.iter_mut().zip(a) {
-            let v = if m.inverted { 1.0 - v } else { v } * m.opacity.clamp(0.0, 1.0);
-            *o = match m.mode {
-                MaskMode::Add => *o + v - *o * v,
-                MaskMode::Subtract => *o * (1.0 - v),
-                MaskMode::Intersect => *o * v,
-            };
-        }
+        acc
+    };
+    let to8 = |a: Vec<f32>| a.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).collect::<Vec<u8>>();
+    let (layer_mask, keep) = (combine(false), combine(true));
+    if layer_mask.is_none() && keep.is_none() {
+        return None;
     }
-    let acc = acc?;
-    Some(MaskImage { width: w as u32, height: h as u32, data: acc.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).collect() })
+    Some(MaskImage { width: w as u32, height: h as u32, data: layer_mask.map_or_else(|| vec![255; w * h], to8), keep: keep.map(to8).unwrap_or_default() })
 }
 
 /// Coverage of one closed polygon on a `w`×`h` grid (pixel centres at +0.5),
@@ -635,6 +653,21 @@ mod tests {
     /// Area inside a polygon (shoelace).
     fn area(p: &[[f32; 2]]) -> f32 {
         (0..p.len()).map(|i| { let (a, b) = (p[i], p[(i + 1) % p.len()]); a[0] * b[1] - b[0] * a[1] }).sum::<f32>().abs() / 2.0
+    }
+
+    #[test]
+    fn garbage_mattes_for_keys_dont_cut_the_layer() {
+        let left = Mask { points: vec![[0.0, 0.0], [50.0, 0.0], [50.0, 100.0], [0.0, 100.0]], key_keep: true, ..Mask::default() };
+        let img = rasterize(&[left.clone()], Time::ZERO, [100.0, 100.0], 100).unwrap();
+        assert!(img.data.iter().all(|&v| v == 255), "the layer isn't cut");
+        assert_eq!((img.keep.len(), img.keep[10 * 100 + 10], img.keep[10 * 100 + 90]), (100 * 100, 255, 0));
+        // With an ordinary mask as well: each does its own job.
+        let top = Mask { points: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]], ..Mask::default() };
+        let img = rasterize(&[left, top.clone()], Time::ZERO, [100.0, 100.0], 100).unwrap();
+        assert_eq!((img.data[10 * 100 + 90], img.data[90 * 100 + 10]), (255, 0));
+        assert_eq!(img.keep[90 * 100 + 10], 255);
+        // None of them: no keep image.
+        assert!(rasterize(&[top], Time::ZERO, [100.0, 100.0], 100).unwrap().keep.is_empty());
     }
 
     #[test]

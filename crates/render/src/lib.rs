@@ -196,11 +196,17 @@ impl Wipe {
 /// A layer's mask: 8-bit alpha, stretched over the whole layer.
 #[derive(Clone, Copy)]
 pub struct MaskInput<'a> {
-    /// Changes whenever `pixels` changes.
+    /// Changes whenever `pixels` (or `keep`) changes.
     pub content_id: u64,
     pub pixels: &'a [u8],
     pub size: [u32; 2],
+    /// Where keys must keep the layer (garbage mattes), the same size as
+    /// `pixels`; empty when there are none.
+    pub keep: &'a [u8],
 }
+
+/// Masks of a layer's key garbage mattes are kept under the layer's key with this bit flipped.
+const KEEP_MASK: u64 = 1 << 62;
 
 /// Something to draw, bottom first.
 // Built per frame and consumed at once, so the size difference doesn't matter.
@@ -1002,6 +1008,9 @@ impl Compositor {
             }
             if let Some(m) = l.mask.filter(|m| m.pixels.len() as u64 == m.size[0] as u64 * m.size[1] as u64 && m.size[0] > 0) {
                 self.upload_mask(l.key, &m);
+                if m.keep.len() == m.pixels.len() {
+                    self.upload_mask(l.key ^ KEEP_MASK, &MaskInput { pixels: m.keep, ..m });
+                }
             }
         }
 
@@ -1018,6 +1027,8 @@ impl Compositor {
         enum Second {
             None,
             Mask,
+            /// Where keys keep the layer (masks marked as keys' garbage mattes).
+            KeepMask,
             Table(usize),
             Scratch(usize),
         }
@@ -1042,12 +1053,17 @@ impl Compositor {
         let mut particle_sets: Vec<(&reelforge_core::particles::Particles, f32)> = Vec::new();
         for l in all_layers() {
             let masked = l.mask.is_some() && self.masks.contains_key(&l.key);
+            // Keys keep the layer inside its garbage mattes.
+            let keep = l.mask.is_some_and(|m| !m.keep.is_empty()) && self.masks.contains_key(&(l.key ^ KEEP_MASK));
             let below = matches!(l.pixels, PixelData::Below);
             if (l.effects.is_empty() && !masked) || !(below || self.layers.contains_key(&l.key)) || processed.contains_key(&l.key) {
                 continue;
             }
             let cost = |e: &EffectValues| match e.kind {
                 EffectKind::Blur => 2,
+                // At most: the key, two choke and two softness passes, putting it
+                // together, and two for a garbage matte.
+                EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey => 8,
                 EffectKind::Glow | EffectKind::DropShadow => 4,
                 EffectKind::Plugin => e.plugin.as_ref().map_or(0, |p| p.passes.len()),
                 _ => 1,
@@ -1180,34 +1196,42 @@ impl Compositor {
                             }
                         };
                         let (choke, soft) = (v[key::CHOKE], v[key::EDGE_SOFTNESS]);
-                        if choke.abs() < 0.01 && soft < 0.01 {
+                        // The keyed layer ends up in `keyed`, with `spare` free; `cur`
+                        // (the layer before the key) is left as it is.
+                        let (keyed, spare) = if choke.abs() < 0.01 && soft < 0.01 {
                             push(entry, cur, second, o1, uniform(&v, [0.0; 2]));
-                            cur = o1;
+                            (o1, o2)
                         } else {
                             // Straight colour with the matte in alpha, then the matte
-                            // choked and softened (each in two directions), then put together.
+                            // choked and softened (each across, then down, back into
+                            // `o1`), then put together into `o2`.
                             let mut first = v;
                             first[9] = 1.0;
                             push(entry, cur, second, o1, uniform(&first, [0.0; 2]));
-                            let (mut a, mut b) = (o1, o2);
-                            let mut pass = |entry: &'static str, reach: f32, sign: f32, from: usize, into: usize| {
+                            let mut pass = |entry: &'static str, reach: f32, sign: f32| {
                                 let mut vx = [0.0; reelforge_core::effects::MAX_PARAMS];
                                 (vx[0], vx[1]) = (reach * kx, sign);
                                 let mut vy = vx;
                                 vy[0] = reach * ky;
-                                push(entry, from, Second::None, cur, uniform(&vx, [1.0, 0.0]));
-                                push(entry, cur, Second::None, into, uniform(&vy, [0.0, 1.0]));
+                                push(entry, o1, Second::None, o2, uniform(&vx, [1.0, 0.0]));
+                                push(entry, o2, Second::None, o1, uniform(&vy, [0.0, 1.0]));
                             };
                             if choke.abs() >= 0.01 {
-                                pass("fs_key_choke", choke.abs(), choke.signum(), a, b);
-                                std::mem::swap(&mut a, &mut b);
+                                pass("fs_key_choke", choke.abs(), choke.signum());
                             }
                             if soft >= 0.01 {
-                                pass("fs_key_soft", soft * 0.5, 0.0, a, b);
-                                std::mem::swap(&mut a, &mut b);
+                                pass("fs_key_soft", soft * 0.5, 0.0);
                             }
-                            push("fs_key_out", a, Second::None, b, uniform(&v, [0.0; 2]));
-                            cur = b;
+                            push("fs_key_out", o1, Second::None, o2, uniform(&v, [0.0; 2]));
+                            (o2, o1)
+                        };
+                        if keep {
+                            // Garbage matte: inside it the layer as it was before the
+                            // key, over the keyed one.
+                            push("fs_mask", cur, Second::KeepMask, spare, [0.0; FX_FLOATS]);
+                            push("fs_under", spare, Second::Scratch(keyed), cur, [0.0; FX_FLOATS]);
+                        } else {
+                            cur = keyed;
                         }
                     }
                     EffectKind::Vignette => {
@@ -1477,6 +1501,7 @@ impl Compositor {
             let second = match p.second {
                 Second::None => None,
                 Second::Mask => Some(self.masks.get(&p.key).map(|m| &m.bind_group)),
+                Second::KeepMask => Some(self.masks.get(&(p.key ^ KEEP_MASK)).map(|m| &m.bind_group)),
                 Second::Table(e) => Some(self.tables.get(&(p.key, e)).map(|t| &t.bind_group)),
                 Second::Scratch(s) => Some(Some(&fx.binds[s])),
             };
@@ -1614,7 +1639,7 @@ impl Compositor {
         self.yuv.retain(&keep);
         self.solid.retain(&keep);
         self.fx_targets.retain(|k, _| keep(*k));
-        self.masks.retain(|k, _| keep(*k));
+        self.masks.retain(|k, _| keep(*k & !KEEP_MASK));
         self.tables.retain(|k, _| keep(k.0));
     }
 

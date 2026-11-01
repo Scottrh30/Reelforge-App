@@ -549,6 +549,7 @@
         <polygon
           points={pts(m.outline)}
           class="mask"
+          class:keep={!!m.mask.key_keep}
           class:on={i === active}
           class:off={!m.mask.enabled}
           stroke={MASK}
@@ -782,6 +783,10 @@
     fill: rgba(255, 110, 200, 0.06);
     pointer-events: fill;
     cursor: move;
+  }
+  /* A key's garbage matte: dashed, so it's told apart from masks that cut. */
+  .mask.keep {
+    stroke-dasharray: 6 4;
   }
   .mask.off {
     opacity: 0.35;

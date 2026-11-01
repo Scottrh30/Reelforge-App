@@ -11,6 +11,7 @@
   const active = $derived(app.activeMask?.clip === ins.id ? app.activeMask.index : null);
   const drawing = $derived(app.drawing?.clip === ins.id);
   const pump = livePump();
+  const hasKey = $derived(ins.effects.some((e) => ["ChromaKey", "LumaKey", "DifferenceKey"].includes(e.kind)));
 
   // Rotoscoping: track what's inside a mask and key its shape every frame.
   // Footage follows what's in it; an adjustment layer, solid, title or picture
@@ -101,6 +102,14 @@
         </select>
         <label class="check"><input type="checkbox" checked={m.inverted} onchange={(e) => change(i, (n) => (n.inverted = e.currentTarget.checked), true)} /> Invert</label>
       </div>
+      <div class="row">
+        <span class="lbl" title="What the mask does. A garbage matte for keys keeps the layer inside it whatever the chroma, luma or difference key says (a subject near the screen's colour, a dark logo on a luma key); it doesn't cut the layer. To keep something out of the shot, use an ordinary mask (it cuts the layer before the key).">Use</span>
+        <select value={m.key_keep ? "keep" : "cut"} aria-label="What this mask does" onchange={(e) => change(i, (n) => (n.key_keep = e.currentTarget.value === "keep"), true)}>
+          <option value="cut">Cut the layer (show only inside)</option>
+          <option value="keep">Garbage matte: keys keep what's inside</option>
+        </select>
+      </div>
+      {#if m.key_keep && !hasKey}<p class="note">This clip has no chroma, luma or difference key yet: add one and it keeps what's inside this mask.</p>{/if}
       <div class="grid">
         <div class="field">
           <span class="lbl">Feather</span>
