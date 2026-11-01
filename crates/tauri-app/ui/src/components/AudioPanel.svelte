@@ -91,7 +91,7 @@
 </script>
 
 <div class="group">
-  <h4>Sound</h4>
+  <div class="phead"><h4>Sound</h4><button class="ghost small" onclick={() => (app.savePreset = { clip: ins.id })} title="Save the volume, pan and fades (with their keyframes) as a preset for other clips">Save as preset…</button></div>
   {#if Array.isArray(shown.ducking) && shown.ducking.length}
     <p class="note">Ducked under dialogue: the dip in the volume keyframes was added by Timeline › Duck music under dialogue… Duck again to replace it, or remove it there (your own keyframes stay).</p>
   {/if}
@@ -144,6 +144,17 @@
   .group {
     padding: 8px 0 12px;
     border-bottom: 1px solid var(--line-soft);
+  }
+  .phead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .phead .small {
+    min-height: 20px;
+    padding: 0 6px;
+    font-size: calc(11.5px * var(--text-scale));
   }
   h4 {
     font-size: calc(12.5px * var(--text-scale));

@@ -476,6 +476,10 @@ export interface PresetSaveOptions {
   motion: boolean;
   blend: boolean;
   timing: PresetTiming;
+  title: boolean;
+  audio: boolean;
+  transition: boolean;
+  folder: string;
 }
 
 /// A saved effect preset (a stack of effects with their settings and keyframes).
@@ -489,6 +493,14 @@ export interface FxPreset {
   /// Its blend mode's name, if it sets one.
   blend: string | null;
   timing: PresetTiming;
+  folder: string;
+  favourite: boolean;
+  /// Comes with Reelforge: can't be renamed, moved or deleted.
+  builtin: boolean;
+  /// Has a picture (fxPresetThumb).
+  thumb: boolean;
+  /// What it goes on.
+  parts: ("look" | "title" | "audio" | "transition")[];
   /// Plugins it uses that aren't installed.
   missing: string[];
 }
@@ -833,7 +845,16 @@ export const api = {
   effectCatalog: () => invoke<CatalogGroup[]>("effect_catalog"),
   fxPresetList: () => invoke<FxPreset[]>("fx_preset_list"),
   fxPresetSave: (id: number, name: string, opts: PresetSaveOptions | null = null) => invoke<string>("fx_preset_save", { id, name, opts }),
-  fxPresetApply: (id: number, name: string, replace: boolean) => invoke("fx_preset_apply", { id, name, replace }),
+  fxPresetApply: (id: number, name: string, replace: boolean) => invoke<number>("fx_preset_apply", { id, name, replace }),
+  fxPresetFolders: () => invoke<string[]>("fx_preset_folders"),
+  fxPresetClipExtras: (id: number) => invoke<{ title: boolean; audio: boolean; transition: string | null }>("fx_preset_clip_extras", { id }),
+  fxPresetPreview: (id: number, name: string) => invoke("fx_preset_preview", { id, name }),
+  fxPresetPreviewEnd: () => invoke("fx_preset_preview_end"),
+  fxPresetThumb: (name: string) => invoke<ArrayBuffer>("fx_preset_thumb", { name }),
+  fxPresetFavourite: (name: string, on: boolean) => invoke("fx_preset_favourite", { name, on }),
+  fxPresetFolder: (name: string, folder: string) => invoke("fx_preset_folder", { name, folder }),
+  fxPresetExport: (names: string[]) => invoke<string | null>("fx_preset_export", { names }),
+  fxPresetImport: () => invoke<string | null>("fx_preset_import"),
   fxPresetRename: (from: string, to: string) => invoke("fx_preset_rename", { from, to }),
   fxPresetDelete: (name: string) => invoke("fx_preset_delete", { name }),
   pluginsList: () => invoke<PluginsView>("plugins_list"),

@@ -320,14 +320,16 @@
     const h = hitTrack(d.x, d.y);
     if (!h || h.track == null) return null;
     const tr = seq?.tracks[h.track];
-    if (!tr || tr.kind !== "video") return null;
+    // Presets can go on audio clips too (audio levels).
+    if (!tr || (tr.kind !== "video" && !d.preset)) return null;
     const t = h.secs * T;
     return tr.clips.find((c) => c.start <= t && t < clipEnd(c)) ?? null;
   });
   function windowUp() {
     const fx = app.dragEffect;
     if (fx && fxTarget) {
-      if (fx.kind) run(api.effectAdd(fxTarget.id, fx.kind, fx.plugin));
+      if (fx.preset) run(api.fxPresetApply(fxTarget.id, fx.preset, false));
+      else if (fx.kind) run(api.effectAdd(fxTarget.id, fx.kind, fx.plugin));
       else if (fx.transition) run(api.transitionApply(fx.transition, fxTarget.id));
       return;
     }

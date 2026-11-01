@@ -2,7 +2,7 @@
   // A title clip's text and styling: font, size and colour, alignment and
   // spacing, outline, shadow and a box behind it, plus placement presets.
   // Typing or dragging a value is one undo step.
-  import { run } from "../lib/session.svelte";
+  import { app, run } from "../lib/session.svelte";
   import { api, type Inspector, type TitleSpec } from "../lib/api";
   import NumberField from "./NumberField.svelte";
 
@@ -79,7 +79,7 @@
 </script>
 
 <div class="group">
-  <h4>Title</h4>
+  <div class="phead"><h4>Title</h4><button class="ghost small" onclick={() => (app.savePreset = { clip: ins.id })} title="Save this title's style (font, size, colours, outline, shadow, background) as a preset for other titles">Save as preset…</button></div>
   <textarea rows="3" value={t.text} aria-label="Title text" placeholder="Type the title…" oninput={(e) => set((s) => (s.text = e.currentTarget.value))} onblur={commit}></textarea>
   <div class="grid">
     <span class="lbl">Font</span>
@@ -179,6 +179,17 @@
   .group {
     padding: 8px 0 12px;
     border-bottom: 1px solid var(--line-soft);
+  }
+  .phead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .phead .small {
+    min-height: 20px;
+    padding: 0 6px;
+    font-size: calc(11.5px * var(--text-scale));
   }
   h4 {
     font-size: calc(12.5px * var(--text-scale));

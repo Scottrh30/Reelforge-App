@@ -1,10 +1,10 @@
 <script lang="ts">
-  // The Effects panel: every effect and transition in its group, by name.
+  // The Effects panel: your presets, and every effect and transition in its group, by name.
   // Double-click one to add it to the selected clip (a transition goes in at
   // the selected clip's start, or the cut nearest the playhead), or drag it
   // onto a clip on the timeline.
   import { app, run } from "../lib/session.svelte";
-  import { api, type CatalogGroup, type CatalogItem, type TransitionKind } from "../lib/api";
+  import { api, type CatalogGroup, type CatalogItem, type FxPreset, type TransitionKind } from "../lib/api";
 
   let groups = $state<CatalogGroup[]>([]);
   let transitions = $state<TransitionKind[]>([]);
@@ -17,6 +17,11 @@
   });
   $effect(() => {
     api.transitionList().then((k) => (transitions = k));
+  });
+  // Saved presets (again whenever Save as preset… closes).
+  let presets = $state<FxPreset[]>([]);
+  $effect(() => {
+    if (!app.savePreset) api.fxPresetList().then((p) => (presets = p));
   });
 
   // Which groups are open (remembered).
@@ -38,8 +43,10 @@
   // While searching, every group with a match is open.
   const isOpen = (label: string) => !!q || (open[label] ?? false);
 
-  type Entry = { label: string; effect?: CatalogItem; transition?: TransitionKind };
+  type Entry = { label: string; effect?: CatalogItem; transition?: TransitionKind; preset?: FxPreset };
+  const sortedPresets = $derived([...presets].sort((a, b) => Number(b.favourite) - Number(a.favourite)));
   const all = $derived<{ label: string; items: Entry[] }[]>([
+    ...(presets.length ? [{ label: "Presets", items: sortedPresets.map((p) => ({ label: p.favourite ? `★ ${p.name}` : p.name, preset: p })) }] : []),
     ...groups.map((g) => ({ label: g.label, items: g.items.map((it) => ({ label: it.label, effect: it })) })),
     { label: "Transitions", items: transitions.map((k) => ({ label: k.label, transition: k })) },
   ]);
@@ -48,7 +55,15 @@
   const target = $derived(app.s?.inspector?.visual ? app.s.inspector : null);
 
   async function apply(e: Entry, clip: number | null) {
-    if (e.effect) {
+    if (e.preset) {
+      // Any kind of clip (audio presets go on audio); several selected: all of them.
+      const id = clip ?? app.s?.inspector?.id;
+      if (id == null) {
+        app.note = "Select a clip first (or drag the preset onto one)";
+        return;
+      }
+      await run(api.fxPresetApply(id, e.preset.name, false));
+    } else if (e.effect) {
       const id = clip ?? target?.id;
       if (id == null) {
         app.note = "Select a clip first (or drag the effect onto one)";
@@ -67,7 +82,7 @@
     const y0 = ev.clientY;
     const move = (m: PointerEvent) => {
       if (!app.dragEffect && Math.hypot(m.clientX - x0, m.clientY - y0) < 5) return;
-      app.dragEffect = { name: e.label, kind: e.effect?.kind ?? null, plugin: e.effect?.plugin ?? null, transition: e.transition?.kind ?? null, x: m.clientX, y: m.clientY };
+      app.dragEffect = { name: e.label, kind: e.effect?.kind ?? null, plugin: e.effect?.plugin ?? null, transition: e.transition?.kind ?? null, preset: e.preset?.name, x: m.clientX, y: m.clientY };
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -90,7 +105,7 @@
         <span class="count">{g.items.length}</span>
       </button>
       {#if isOpen(g.label)}
-        {#each g.items as e (e.label + (e.effect?.plugin ?? ""))}
+        {#each g.items as e (e.label + (e.effect?.plugin ?? "") + (e.preset ? "p" : ""))}
           <div class="item" role="treeitem" aria-selected="false" tabindex="0" onpointerdown={(ev) => down(ev, e)} ondblclick={() => apply(e, null)} onkeydown={(ev) => ev.key === "Enter" && apply(e, null)}>{e.label}</div>
         {/each}
       {/if}

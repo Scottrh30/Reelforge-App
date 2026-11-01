@@ -840,18 +840,32 @@ changing it sets the key there. Curves has its own curve editor (Master, Red, Gr
 Blue: drag points, click the line to add one, right-click to remove), and LUT a .cube
 file picker.
 
-Effect presets: **+ Add → Save as preset…** saves the clip's look under a name. Choose what
-goes in: any of its effects (all ticked to start with, each with every setting and keyframe),
-its **masks** (scaled to the size of each clip they go on), its **position, scale, rotation and
-opacity** with their keyframes (a ready-made move like a slide-in or a slow push), and its
-**blend mode**. Choose where keyframes land: **from the clip's start** (a fade over one clip's
-first second lands on the next one's first second), **before the clip's end** (fade-outs and
-exits), or **stretched to the clip's length** (a move across the whole clip). Apply it to
-other clips from **+ Add → Presets** or the effects browser's **Presets** tab (Apply adds its
-effects and masks after the clip's own and sets its motion and blend mode; Shift+click Apply
-replaces the clip's effects and masks), where presets can also be renamed and deleted. Presets
-are kept in `effect-presets.json` in the app's settings folder; one that uses a plugin you no
-longer have says so.
+Presets: **+ Add → Save as preset…** (or **Save as preset…** in the Sound and Title sections)
+saves a clip's look under a name, in a folder if you like. Choose what goes in: any of its
+effects (all ticked to start with, each with every setting and keyframe), its **masks** (scaled
+to the size of each clip they go on), its **position, scale, rotation and opacity** with their
+keyframes (a slide-in, a slow push), its **blend mode**, a title's **style** (font, size,
+colours, outline, shadow and background, not the words), its **audio levels** (volume, pan and
+fades with their keyframes; for a video clip, its linked audio's) and the **transition into
+it**. Choose where keyframes land: **from the clip's start**, **before the clip's end** (fades
+and exits), or **stretched to the clip's length**. A small picture of the Viewer is kept with
+it.
+  - **Applying**: from the effects browser's **Presets** tab (hover a preset to see it on the
+    clip first; nothing changes until you click Apply), **+ Add → Presets**, or the Effects
+    panel's Presets group (double-click, or drag a preset onto a clip on the timeline). With
+    several clips selected, Apply puts it on all of them as one undo step. Effects and masks go
+    after the clip's own (Shift+click Apply replaces them); its motion, blend mode, title style,
+    audio levels and transition replace the clip's.
+  - **Organising**: ★ marks favourites (top of the list and of + Add → Presets); ⋯ renames a
+    preset, moves it to a folder (or a new one), exports it or deletes it; folders fold shut.
+    **Import…** and **Export yours…** read and write `.rfpreset` files, to back up or share
+    (an imported name that's taken gets a number).
+  - **Starter looks** come with Reelforge: Teal and orange, Black and white, Film look, Dreamy
+    glow, Warm and soft, Old video (VHS), Green screen, Blue screen, Fade in, Fade out (sets
+    only the opacity, over the clip's last second) and Slow push in (stretched over the clip).
+    They can be starred and exported, not renamed or deleted.
+  - Presets are kept in `effect-presets.json` (pictures in `preset-pictures`) in the app's
+    settings folder; one that uses a plugin you no longer have says so.
 
 Plugins (Edit → Plugins…): install from a folder or a .zip, make a new one from the
 starter template, open the plugin folder, reload, remove (with a confirmation), and
@@ -1420,7 +1434,12 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   relative to the clip's start, plus the clip's length; cameras', lights' and points' settings
   stay behind. `apply` places each key by the preset's `Timing` (the same offset, the same
   distance from the end, or scaled by the length ratio) after the target's `source_in`. Older
-  presets load as effects-only, from the start.
+  presets load as effects-only, from the start. `Motion::props` limits a move to some properties
+  (a fade sets only the opacity). `Editor::apply_preset` puts one on many clips as a single
+  `Batch` (visual, title style, linked audio, transition); `preview_preset` changes the clip
+  directly and `end_preset_preview` (also run first by `commit_live_edit`) puts it back without
+  leaving it unsaved. `PresetLibrary` keeps the starters out of the file (`starters()`), only
+  which are starred.
   `PresetLibrary` is the JSON file (names unique ignoring case, kept sorted, written via a
   temporary file).
 - **Viewer snapping** (`engine/src/snap.rs`): a drag is computed from the layer's transform when

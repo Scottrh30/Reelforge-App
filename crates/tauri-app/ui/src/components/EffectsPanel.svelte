@@ -3,7 +3,7 @@
   // of the list applied first. Add, reorder, switch off, edit and keyframe.
   import { untrack } from "svelte";
   import { app, run } from "../lib/session.svelte";
-  import { api, type Inspector, type CatalogGroup, type Curves, type EffectView, type ParamView } from "../lib/api";
+  import { api, type FxPreset, type Inspector, type CatalogGroup, type Curves, type EffectView, type ParamView } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
   import NumberField from "./NumberField.svelte";
@@ -78,9 +78,7 @@
       { separator: true },
       {
         label: "Presets",
-        submenu: presets.length
-          ? presets.map((p) => ({ label: p.name, hint: `${p.effects}`, run: () => run(api.fxPresetApply(ins.id, p.name, false)) }))
-          : [{ label: "None saved yet", disabled: true, run: () => {} }],
+        submenu: presetMenu(presets.filter((p) => p.parts.includes("look"))),
       },
       { label: "Save as preset…", run: savePreset },
     );
@@ -90,6 +88,18 @@
 
   // Save the whole stack (settings and keyframes) under a name, for the
   // effects browser's Presets tab and the Add menu's Presets.
+  // Presets for the Add menu: favourites first, then a submenu per folder.
+  function presetMenu(list: FxPreset[]): MenuItem[] {
+    const one = (p: FxPreset): MenuItem => ({ label: p.favourite ? `★ ${p.name}` : p.name, run: () => run(api.fxPresetApply(ins.id, p.name, false)) });
+    const favs = list.filter((p) => p.favourite).map(one);
+    const folders = [...new Set(list.map((p) => (p.builtin ? "Starter looks" : p.folder)).filter(Boolean))];
+    const loose = list.filter((p) => !p.builtin && !p.folder).map(one);
+    const out: MenuItem[] = [...favs];
+    if (favs.length && (loose.length || folders.length)) out.push({ separator: true });
+    out.push(...loose);
+    for (const f of folders) out.push({ label: f, submenu: list.filter((p) => (p.builtin ? "Starter looks" : p.folder) === f).map(one) });
+    return out.length ? out : [{ label: "None saved yet", disabled: true, run: () => {} }];
+  }
   function savePreset() {
     app.savePreset = { clip: ins.id };
   }

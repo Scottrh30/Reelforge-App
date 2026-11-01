@@ -12,7 +12,7 @@
 use reelforge_core::anim::{Curve, Prop, TransformAnim};
 use reelforge_core::effects::{Effect, EffectKind};
 use reelforge_core::mask::Mask;
-use reelforge_core::{BlendMode, ClipVisual, Time, Transform};
+use reelforge_core::{BlendMode, ClipAudio, ClipVisual, Time, TitleSpec, Transform, Transition};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -34,6 +34,38 @@ pub enum Timing {
 pub struct Motion {
     pub transform: Transform,
     pub anim: TransformAnim,
+    /// Which properties it sets ("position", "scale", "rotation", "anchor",
+    /// "opacity", "depth", "orientation"); all of them when empty. A fade
+    /// sets only the opacity and leaves the clip where it is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<String>,
+}
+
+impl Motion {
+    fn sets(&self, p: Prop) -> bool {
+        self.props.is_empty() || self.props.iter().any(|n| n == prop_name(p))
+    }
+}
+
+fn prop_name(p: Prop) -> &'static str {
+    match p {
+        Prop::Position => "position",
+        Prop::Scale => "scale",
+        Prop::Rotation => "rotation",
+        Prop::Anchor => "anchor",
+        Prop::Opacity => "opacity",
+        Prop::Depth => "depth",
+        Prop::Orientation => "orientation",
+        Prop::Crop => "crop",
+        Prop::Pin => "pin",
+    }
+}
+
+/// A transition into the clip: its kind and length.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransitionPreset {
+    pub kind: Transition,
+    pub length: Time,
 }
 
 /// What goes into a preset besides the chosen effects.
@@ -46,6 +78,14 @@ pub struct SaveOptions {
     pub motion: bool,
     pub blend: bool,
     pub timing: Timing,
+    /// A title's style (font, size, colours, outline, shadow, background; not its words).
+    pub title: bool,
+    /// The clip's audio: volume, pan and fades, with their keyframes.
+    pub audio: bool,
+    /// The transition into the clip.
+    pub transition: bool,
+    /// The folder it's filed under ("" for none).
+    pub folder: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -67,6 +107,47 @@ pub struct EffectPreset {
     /// How long the clip it came from was (for [`Timing::FromEnd`] and [`Timing::Stretch`]).
     #[serde(default)]
     pub length: Time,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<TitleSpec>,
+    /// Volume and pan keys are from the clip's start, like the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<ClipAudio>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<TransitionPreset>,
+    /// Filed under ("" for none).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub favourite: bool,
+    /// A small picture of the Viewer when it was saved (a file name in the
+    /// presets' pictures folder).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb: Option<String>,
+    /// Comes with Reelforge (can't be renamed, deleted or replaced).
+    #[serde(skip)]
+    pub builtin: bool,
+}
+
+/// What else a clip has that a preset can take (see [`EffectPreset::from_clip_parts`]).
+#[derive(Clone, Debug, Default)]
+pub struct ClipParts {
+    pub title: Option<TitleSpec>,
+    pub audio: Option<ClipAudio>,
+    pub transition: Option<TransitionPreset>,
+}
+
+fn retime_audio(a: &ClipAudio, f: &impl Fn(Time) -> Time) -> ClipAudio {
+    let mut a = a.clone();
+    for k in &mut a.volume_keys {
+        k.at = f(k.at);
+    }
+    for k in &mut a.pan_keys {
+        k.at = f(k.at);
+    }
+    // What ducking added belongs to that clip's dialogue, not a preset.
+    a.ducking.clear();
+    a.crossfade_in = Time::ZERO;
+    a
 }
 
 /// The transform properties a preset's motion carries.
@@ -151,6 +232,56 @@ impl EffectPreset {
         Self::from_visual(name, &v, source_in, Time::ZERO, [0.0, 0.0], &SaveOptions::default())
     }
 
+    /// As [`Self::from_visual`], plus the title style, audio and transition
+    /// `opts` chooses from `parts`.
+    pub fn from_clip_parts(name: &str, v: &ClipVisual, parts: &ClipParts, source_in: Time, length: Time, layer: [f32; 2], opts: &SaveOptions) -> Option<Self> {
+        let rel = |t: Time| t - source_in;
+        let title = parts.title.clone().filter(|_| opts.title).map(|t| TitleSpec { text: String::new(), ..t });
+        let audio = parts.audio.as_ref().filter(|_| opts.audio).map(|a| retime_audio(a, &rel));
+        let transition = parts.transition.filter(|_| opts.transition);
+        let mut p = match Self::from_visual(name, v, source_in, length, layer, opts) {
+            Some(p) => p,
+            None if title.is_some() || audio.is_some() || transition.is_some() => Self::empty(name, length, opts.timing),
+            None => return None,
+        };
+        (p.title, p.audio, p.transition, p.folder) = (title, audio, transition, opts.folder.trim().to_string());
+        Some(p)
+    }
+
+    fn empty(name: &str, length: Time, timing: Timing) -> Self {
+        Self {
+            name: name.trim().to_string(),
+            effects: Vec::new(),
+            masks: Vec::new(),
+            layer: [0.0, 0.0],
+            motion: None,
+            blend: None,
+            timing,
+            length,
+            title: None,
+            audio: None,
+            transition: None,
+            folder: String::new(),
+            favourite: false,
+            thumb: None,
+            builtin: false,
+        }
+    }
+
+    /// Does it change a clip's picture (effects, masks, motion or blend mode)?
+    pub fn has_visual(&self) -> bool {
+        !self.effects.is_empty() || !self.masks.is_empty() || self.motion.is_some() || self.blend.is_some()
+    }
+
+    /// The audio to put on a clip (media from `source_in`, `length` long).
+    pub fn audio_on(&self, source_in: Time, length: Time) -> Option<ClipAudio> {
+        let a = self.audio.as_ref()?;
+        let mut a = retime_audio(a, &|t| self.place(t, source_in, length));
+        a.fade_in = a.fade_in.min(length);
+        a.fade_out = a.fade_out.min(length - a.fade_in);
+        Some(a)
+    }
+
     /// A preset from a clip's look `v` (its media starts at `source_in`, it
     /// lasts `length`, its layer is `layer` pixels), with what `opts` chooses.
     /// `None` when that's nothing.
@@ -171,13 +302,13 @@ impl EffectPreset {
             }
             transform.three_d = v.transform.three_d;
             transform.lit = v.transform.lit;
-            Motion { transform, anim: retime_motion(&v.anim, &rel) }
+            Motion { transform, anim: retime_motion(&v.anim, &rel), props: Vec::new() }
         });
         let blend = opts.blend.then_some(v.blend);
         if effects.is_empty() && masks.is_empty() && motion.is_none() && blend.is_none() {
             return None;
         }
-        Some(Self { name: name.trim().to_string(), effects: retime_effects(&effects, &rel), masks, layer, motion, blend, timing: opts.timing, length })
+        Some(Self { effects: retime_effects(&effects, &rel), masks, layer, motion, blend, folder: opts.folder.trim().to_string(), ..Self::empty(name, length, opts.timing) })
     }
 
     /// Preset time `t` (from the original clip's start) → source time on a
@@ -222,13 +353,24 @@ impl EffectPreset {
             v.masks.extend(masks);
         }
         if let Some(m) = &self.motion {
-            for p in MOTION_PROPS {
-                v.transform.copy_prop(p, &m.transform);
-            }
-            v.transform.three_d = m.transform.three_d;
-            v.transform.lit = m.transform.lit;
             let a = retime_motion(&m.anim, &f);
-            (v.anim.position, v.anim.scale, v.anim.rotation, v.anim.opacity, v.anim.anchor, v.anim.depth, v.anim.orientation) = (a.position, a.scale, a.rotation, a.opacity, a.anchor, a.depth, a.orientation);
+            for p in MOTION_PROPS.into_iter().filter(|p| m.sets(*p)) {
+                v.transform.copy_prop(p, &m.transform);
+                match p {
+                    Prop::Position => v.anim.position = a.position.clone(),
+                    Prop::Scale => v.anim.scale = a.scale.clone(),
+                    Prop::Rotation => v.anim.rotation = a.rotation.clone(),
+                    Prop::Opacity => v.anim.opacity = a.opacity.clone(),
+                    Prop::Anchor => v.anim.anchor = a.anchor.clone(),
+                    Prop::Depth => v.anim.depth = a.depth.clone(),
+                    Prop::Orientation => v.anim.orientation = a.orientation.clone(),
+                    Prop::Crop | Prop::Pin => {}
+                }
+            }
+            if m.props.is_empty() {
+                v.transform.three_d = m.transform.three_d;
+                v.transform.lit = m.transform.lit;
+            }
         }
         if let Some(b) = self.blend {
             v.blend = b;
@@ -242,7 +384,8 @@ impl EffectPreset {
             let a = &m.anim;
             a.position.0.len() + a.scale.0.len() + a.rotation.0.len() + a.opacity.0.len() + a.anchor.0.len() + a.depth.0.len() + a.orientation.0.len()
         });
-        fx + masks + motion
+        let audio = self.audio.as_ref().map_or(0, |a| a.volume_keys.len() + a.pan_keys.len());
+        fx + masks + motion + audio
     }
 
     /// "Glow, Blur + 1 mask, motion, Screen · 4 keyframes from the end".
@@ -254,11 +397,20 @@ impl EffectPreset {
             1 => extra.push("1 mask".into()),
             n => extra.push(format!("{n} masks")),
         }
-        if self.motion.is_some() {
-            extra.push("motion".into());
+        if let Some(m) = &self.motion {
+            extra.push(if m.props.len() == 1 { m.props[0].clone() } else { "motion".into() });
         }
         if let Some(b) = self.blend {
             extra.push(format!("{} blend", b.label()));
+        }
+        if self.title.is_some() {
+            extra.push("title style".into());
+        }
+        if self.audio.is_some() {
+            extra.push("audio levels".into());
+        }
+        if let Some(t) = self.transition {
+            extra.push(format!("{} in ({:.1} s)", t.kind.label(), t.length.as_secs_f64()));
         }
         if !extra.is_empty() {
             if !s.is_empty() {
@@ -279,21 +431,107 @@ impl EffectPreset {
     }
 }
 
+// ---- Starter looks ---------------------------------------------------------------
+
+/// The folder the starter looks are in.
+pub const STARTERS: &str = "Starter looks";
+
+fn fx(kind: EffectKind, set: &[(usize, f32)]) -> Effect {
+    let mut e = Effect::new(kind);
+    for &(i, v) in set {
+        e.params[i].value = v;
+    }
+    e
+}
+
+/// An opacity-only move: keys (time from the start, opacity 0–1).
+fn opacity_move(keys: &[(f64, f32)]) -> Motion {
+    let mut anim = TransformAnim::default();
+    anim.opacity = Curve(keys.iter().map(|&(t, v)| reelforge_core::anim::Key::new(Time::from_secs_f64(t), v, reelforge_core::anim::Interp::Ease)).collect());
+    Motion { transform: Transform::default(), anim, props: vec!["opacity".into()] }
+}
+
+/// The looks that come with Reelforge, made of built-in effects only.
+pub fn starters() -> Vec<EffectPreset> {
+    use reelforge_core::effects::{aberration, glitch, grain, key};
+    let one = Time::from_secs_f64(1.0);
+    let look = |name: &str, effects: Vec<Effect>| EffectPreset { effects, folder: STARTERS.into(), builtin: true, ..EffectPreset::empty(name, Time::ZERO, Timing::FromStart) };
+    let mut teal = Effect::new(EffectKind::Curves);
+    teal.data = Some(reelforge_core::EffectData::Curves(reelforge_core::lut::Curves {
+        master: vec![[0.0, 0.0], [0.25, 0.22], [0.75, 0.79], [1.0, 1.0]],
+        red: vec![[0.0, 0.0], [0.5, 0.5], [0.8, 0.86], [1.0, 1.0]],
+        green: vec![[0.0, 0.0], [1.0, 1.0]],
+        blue: vec![[0.0, 0.06], [0.3, 0.33], [0.7, 0.64], [1.0, 0.92]],
+    }));
+    let mut out = vec![
+        look("Teal and orange", vec![teal, fx(EffectKind::ColorCorrect, &[(2, 112.0)])]),
+        look("Black and white", vec![fx(EffectKind::ColorCorrect, &[(1, 115.0), (2, 0.0)])]),
+        look("Film look", vec![fx(EffectKind::ColorCorrect, &[(1, 108.0), (2, 88.0), (3, 8.0)]), fx(EffectKind::FilmGrain, &[(grain::AMOUNT, 18.0)]), fx(EffectKind::Vignette, &[(0, 30.0)])]),
+        look("Dreamy glow", vec![fx(EffectKind::Glow, &[(0, 55.0), (1, 40.0), (2, 70.0)]), fx(EffectKind::ColorCorrect, &[(0, 0.15), (1, 92.0)])]),
+        look("Warm and soft", vec![fx(EffectKind::ColorCorrect, &[(1, 95.0), (3, 25.0)]), fx(EffectKind::Glow, &[(0, 75.0), (1, 25.0), (2, 35.0)])]),
+        look("Old video (VHS)", vec![
+            fx(EffectKind::ChromaticAberration, &[(aberration::AMOUNT, 4.0), (1, 1.0)]),
+            fx(EffectKind::Glitch, &[(glitch::AMOUNT, 8.0)]),
+            fx(EffectKind::FilmGrain, &[(grain::AMOUNT, 30.0)]),
+            fx(EffectKind::ColorCorrect, &[(2, 80.0)]),
+        ]),
+        look("Green screen", vec![fx(EffectKind::ChromaKey, &[(key::CHOKE, 1.0), (key::EDGE_SOFTNESS, 1.5)])]),
+        look("Blue screen", vec![fx(EffectKind::ChromaKey, &[(0, 230.0), (key::CHOKE, 1.0), (key::EDGE_SOFTNESS, 1.5)])]),
+    ];
+    out.push(EffectPreset { motion: Some(opacity_move(&[(0.0, 0.0), (1.0, 1.0)])), ..look("Fade in", Vec::new()) });
+    out.push(EffectPreset { motion: Some(opacity_move(&[(0.0, 1.0), (1.0, 0.0)])), timing: Timing::FromEnd, length: one, ..look("Fade out", Vec::new()) });
+    let mut push = TransformAnim::default();
+    push.scale = Curve(vec![reelforge_core::anim::Key::new(Time::ZERO, [1.0, 1.0], reelforge_core::anim::Interp::Linear), reelforge_core::anim::Key::new(one, [1.1, 1.1], reelforge_core::anim::Interp::Linear)]);
+    out.push(EffectPreset { motion: Some(Motion { transform: Transform::default(), anim: push, props: vec!["scale".into()] }), timing: Timing::Stretch, length: one, ..look("Slow push in", Vec::new()) });
+    out
+}
+
 /// The saved presets, in one file.
 #[derive(Debug)]
 pub struct PresetLibrary {
     file: PathBuf,
     pub list: Vec<EffectPreset>,
+    /// Starter looks marked as favourites (by name).
+    starred: Vec<String>,
+}
+
+/// The file: the presets, and which starter looks are favourites. (Older
+/// files are just the list.)
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum LibraryFile {
+    Full {
+        presets: Vec<EffectPreset>,
+        #[serde(default)]
+        starred: Vec<String>,
+    },
+    List(Vec<EffectPreset>),
 }
 
 fn same(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
 }
 
+fn err(msg: impl Into<String>) -> std::io::Error {
+    std::io::Error::other(msg.into())
+}
+
+/// Presets exported to a file (.rfpreset).
+#[derive(Serialize, Deserialize)]
+struct Exported {
+    reelforge_presets: u32,
+    presets: Vec<EffectPreset>,
+}
+
 impl PresetLibrary {
     pub fn load(file: &Path) -> Self {
-        let list = std::fs::read_to_string(file).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        Self { file: file.to_path_buf(), list }
+        let parsed = std::fs::read_to_string(file).ok().and_then(|s| serde_json::from_str::<LibraryFile>(&s).ok());
+        let (list, starred) = match parsed {
+            Some(LibraryFile::Full { presets, starred }) => (presets, starred),
+            Some(LibraryFile::List(l)) => (l, Vec::new()),
+            None => (Vec::new(), Vec::new()),
+        };
+        Self { file: file.to_path_buf(), list, starred }
     }
 
     fn save(&self) -> std::io::Result<()> {
@@ -301,18 +539,50 @@ impl PresetLibrary {
             std::fs::create_dir_all(d)?;
         }
         let tmp = self.file.with_extension("tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(&self.list).unwrap_or_default())?;
+        let body = LibraryFile::Full { presets: self.list.clone(), starred: self.starred.clone() };
+        std::fs::write(&tmp, serde_json::to_string_pretty(&body).unwrap_or_default())?;
         std::fs::rename(tmp, &self.file)
     }
 
-    pub fn get(&self, name: &str) -> Option<&EffectPreset> {
-        self.list.iter().find(|p| same(&p.name, name))
+    /// Where presets' pictures are kept.
+    pub fn pictures(&self) -> PathBuf {
+        self.file.parent().map_or_else(|| PathBuf::from("preset-pictures"), |d| d.join("preset-pictures"))
+    }
+
+    /// Everything: your presets, then the starter looks; favourites marked.
+    pub fn all(&self) -> Vec<EffectPreset> {
+        let mut v = self.list.clone();
+        v.extend(starters().into_iter().map(|mut p| {
+            p.favourite = self.starred.iter().any(|n| same(n, &p.name));
+            p
+        }));
+        v
+    }
+
+    pub fn get(&self, name: &str) -> Option<EffectPreset> {
+        self.all().into_iter().find(|p| same(&p.name, name))
+    }
+
+    fn is_starter(name: &str) -> bool {
+        starters().iter().any(|p| same(&p.name, name))
     }
 
     /// Add `p`, replacing one of the same name (case aside). Kept in name order.
     pub fn put(&mut self, p: EffectPreset) -> std::io::Result<()> {
         if p.name.is_empty() {
-            return Err(std::io::Error::other("a preset needs a name"));
+            return Err(err("a preset needs a name"));
+        }
+        if Self::is_starter(&p.name) {
+            return Err(err(format!("\"{}\" is one of the starter looks: choose another name", p.name)));
+        }
+        // Keep the old one's favourite mark and folder if it's replaced without one.
+        let old = self.list.iter().find(|q| same(&q.name, &p.name)).cloned();
+        let mut p = p;
+        if let Some(o) = &old {
+            p.favourite |= o.favourite;
+            if o.thumb != p.thumb {
+                self.drop_picture(o.thumb.as_deref());
+            }
         }
         self.list.retain(|q| !same(&q.name, &p.name));
         self.list.push(p);
@@ -323,20 +593,100 @@ impl PresetLibrary {
     pub fn rename(&mut self, from: &str, to: &str) -> std::io::Result<()> {
         let to = to.trim();
         if to.is_empty() {
-            return Err(std::io::Error::other("a preset needs a name"));
+            return Err(err("a preset needs a name"));
         }
-        if !same(from, to) && self.get(to).is_some() {
-            return Err(std::io::Error::other(format!("there's already a preset called \"{to}\"")));
+        if Self::is_starter(from) {
+            return Err(err("the starter looks can't be renamed"));
         }
-        let Some(p) = self.list.iter_mut().find(|p| same(&p.name, from)) else { return Err(std::io::Error::other("no such preset")) };
+        if !same(from, to) && (self.list.iter().any(|p| same(&p.name, to)) || Self::is_starter(to)) {
+            return Err(err(format!("there's already a preset called \"{to}\"")));
+        }
+        let Some(p) = self.list.iter_mut().find(|p| same(&p.name, from)) else { return Err(err("no such preset")) };
         p.name = to.to_string();
         self.list.sort_by_key(|p| p.name.to_lowercase());
         self.save()
     }
 
+    fn drop_picture(&self, thumb: Option<&str>) {
+        if let Some(t) = thumb {
+            let _ = std::fs::remove_file(self.pictures().join(t));
+        }
+    }
+
     pub fn remove(&mut self, name: &str) -> std::io::Result<()> {
+        if Self::is_starter(name) {
+            return Err(err("the starter looks can't be deleted"));
+        }
+        if let Some(p) = self.list.iter().find(|p| same(&p.name, name)) {
+            self.drop_picture(p.thumb.as_deref());
+        }
         self.list.retain(|p| !same(&p.name, name));
         self.save()
+    }
+
+    pub fn set_favourite(&mut self, name: &str, on: bool) -> std::io::Result<()> {
+        if Self::is_starter(name) {
+            self.starred.retain(|n| !same(n, name));
+            if on {
+                self.starred.push(name.to_string());
+            }
+        } else {
+            let Some(p) = self.list.iter_mut().find(|p| same(&p.name, name)) else { return Err(err("no such preset")) };
+            p.favourite = on;
+        }
+        self.save()
+    }
+
+    /// File preset `name` under `folder` ("" for none).
+    pub fn set_folder(&mut self, name: &str, folder: &str) -> std::io::Result<()> {
+        if Self::is_starter(name) {
+            return Err(err("the starter looks stay in their folder"));
+        }
+        let Some(p) = self.list.iter_mut().find(|p| same(&p.name, name)) else { return Err(err("no such preset")) };
+        p.folder = folder.trim().to_string();
+        self.save()
+    }
+
+    /// The folders your presets are in, by name.
+    pub fn folders(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.list.iter().map(|p| p.folder.clone()).filter(|f| !f.is_empty()).collect();
+        v.sort_by_key(|f| f.to_lowercase());
+        v.dedup_by(|a, b| same(a, b));
+        v
+    }
+
+    /// Presets `names` as the contents of a .rfpreset file.
+    pub fn export(&self, names: &[String]) -> String {
+        let presets: Vec<EffectPreset> = self.all().into_iter().filter(|p| names.iter().any(|n| same(n, &p.name))).map(|p| EffectPreset { thumb: None, favourite: false, ..p }).collect();
+        serde_json::to_string_pretty(&Exported { reelforge_presets: 1, presets }).unwrap_or_default()
+    }
+
+    /// Add the presets in a .rfpreset file's contents. A name that's taken
+    /// gets a number ("Look (2)"). Returns the names added.
+    pub fn import(&mut self, text: &str) -> std::io::Result<Vec<String>> {
+        let e: Exported = serde_json::from_str(text).map_err(|e| err(format!("that isn't a Reelforge presets file ({e})")))?;
+        let mut added = Vec::new();
+        for mut p in e.presets {
+            p.builtin = false;
+            p.thumb = None;
+            let base = p.name.trim().to_string();
+            let taken = |n: &str, l: &[EffectPreset]| l.iter().any(|q| same(&q.name, n)) || Self::is_starter(n);
+            let mut name = base.clone();
+            let mut k = 2;
+            while taken(&name, &self.list) {
+                name = format!("{base} ({k})");
+                k += 1;
+            }
+            p.name = name.clone();
+            if same(&p.folder, STARTERS) {
+                p.folder.clear();
+            }
+            self.list.push(p);
+            added.push(name);
+        }
+        self.list.sort_by_key(|p| p.name.to_lowercase());
+        self.save()?;
+        Ok(added)
     }
 }
 
@@ -390,7 +740,7 @@ mod tests {
     #[test]
     fn presets_carry_masks_motion_and_blend_when_chosen() {
         let v = source();
-        let all = SaveOptions { effects: Some(vec![0]), masks: true, motion: true, blend: true, timing: Timing::FromStart };
+        let all = SaveOptions { effects: Some(vec![0]), masks: true, motion: true, blend: true, timing: Timing::FromStart, ..SaveOptions::default() };
         let p = EffectPreset::from_visual("Slide in", &v, secs(10.0), secs(4.0), [200.0, 100.0], &all).unwrap();
         assert_eq!(p.effects.len(), 1, "only the chosen effect");
         assert_eq!((p.masks.len(), p.blend), (1, Some(BlendMode::Screen)));
@@ -441,6 +791,52 @@ mod tests {
     }
 
     #[test]
+    fn starter_looks_are_sound() {
+        let all = starters();
+        assert!(all.len() >= 10);
+        for p in &all {
+            assert!(p.builtin && p.folder == STARTERS && p.has_visual(), "{}", p.name);
+            for e in &p.effects {
+                assert_eq!(e.params.len(), e.kind.params().len(), "{}: {:?}", p.name, e.kind);
+            }
+        }
+        // A fade sets only the opacity: the clip stays where it is.
+        let fade = all.iter().find(|p| p.name == "Fade out").unwrap();
+        let mut v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };
+        v.transform.position = [50.0, 20.0];
+        v.transform.scale = [0.5, 0.5];
+        fade.apply(&mut v, secs(2.0), secs(6.0), [100.0, 100.0], false);
+        assert_eq!((v.transform.position, v.transform.scale), ([50.0, 20.0], [0.5, 0.5]));
+        assert_eq!(v.anim.opacity.0.iter().map(|k| k.at).collect::<Vec<_>>(), [secs(7.0), secs(8.0)], "over the last second");
+        assert!(v.anim.position.is_empty());
+    }
+
+    #[test]
+    fn titles_audio_and_transitions_go_in_when_chosen() {
+        let v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };
+        let mut audio = ClipAudio { volume_db: -6.0, fade_in: secs(0.5), ..ClipAudio::default() };
+        audio.volume_keys.push(reelforge_core::VolumeKey { at: secs(11.0), db: -20.0 });
+        let parts = ClipParts {
+            title: Some(TitleSpec { text: "Hello".into(), size: 90.0, ..TitleSpec::default() }),
+            audio: Some(audio),
+            transition: Some(TransitionPreset { kind: Transition::default(), length: secs(0.5) }),
+        };
+        let opts = SaveOptions { effects: Some(vec![]), title: true, audio: true, transition: true, folder: "Lower thirds".into(), ..SaveOptions::default() };
+        let p = EffectPreset::from_clip_parts("Big title", &v, &parts, secs(10.0), secs(4.0), [100.0, 100.0], &opts).unwrap();
+        assert!(!p.has_visual());
+        let t = p.title.as_ref().unwrap();
+        assert_eq!((t.text.as_str(), t.size), ("", 90.0), "the style, not the words");
+        assert_eq!(p.audio.as_ref().unwrap().volume_keys[0].at, secs(1.0));
+        assert_eq!(p.folder, "Lower thirds");
+        let a = p.audio_on(secs(3.0), secs(0.25)).unwrap();
+        assert_eq!((a.volume_keys[0].at, a.fade_in), (secs(4.0), secs(0.25)), "keys placed; fades fit the clip");
+        assert!(p.summary().contains("title style, audio levels"), "{}", p.summary());
+        // None of it chosen: nothing to save.
+        let none = SaveOptions { effects: Some(vec![]), ..SaveOptions::default() };
+        assert!(EffectPreset::from_clip_parts("x", &v, &parts, secs(10.0), secs(4.0), [100.0, 100.0], &none).is_none());
+    }
+
+    #[test]
     fn the_library_saves_renames_and_removes() {
         let dir = std::env::temp_dir().join(format!("rf_fxpresets_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -455,13 +851,35 @@ mod tests {
         let lib2 = PresetLibrary::load(&file);
         assert_eq!(lib2.list.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["blurry", "warm"]);
         assert_eq!(lib2.get("WARM").unwrap().effects[0].kind, EffectKind::Glow);
+        // The starter looks are there too, and can't be renamed, deleted or replaced.
+        assert!(lib2.get("Film look").is_some_and(|p| p.builtin && p.folder == STARTERS));
         let mut lib = lib2;
         assert!(lib.rename("blurry", "Warm").is_err());
         lib.rename("blurry", "Dreamy").unwrap();
         lib.remove("warm").unwrap();
-        let lib3 = PresetLibrary::load(&file);
+        let mut lib3 = PresetLibrary::load(&file);
         assert_eq!(lib3.list.len(), 1);
         assert_eq!(lib3.list[0].name, "Dreamy");
+        assert!(lib3.rename("Film look", "Mine").is_err() && lib3.remove("Film look").is_err());
+        assert!(lib3.put(EffectPreset::from_clip("film LOOK", &[Effect::new(EffectKind::Blur)], Time::ZERO).unwrap()).is_err());
+        // Favourites (yours and the starters') and folders are kept.
+        lib3.set_favourite("Dreamy", true).unwrap();
+        lib3.set_favourite("Film look", true).unwrap();
+        lib3.set_folder("Dreamy", " Looks ").unwrap();
+        let lib4 = PresetLibrary::load(&file);
+        assert!(lib4.get("dreamy").is_some_and(|p| p.favourite && p.folder == "Looks"));
+        assert!(lib4.get("Film look").unwrap().favourite);
+        assert_eq!(lib4.folders(), ["Looks"]);
+        // Export and import: a taken name gets a number; starters come in as yours.
+        let text = lib4.export(&["Dreamy".into(), "Film look".into()]);
+        let mut lib5 = PresetLibrary::load(&file);
+        assert_eq!(lib5.import(&text).unwrap(), ["Dreamy (2)", "Film look (2)"]);
+        let fl = lib5.get("Film look (2)").unwrap();
+        assert!(!fl.builtin && fl.folder.is_empty() && !fl.favourite && fl.effects.len() == 3);
+        assert!(lib5.import("{\"x\":1}").is_err());
+        // Files from before favourites (a plain list) still load.
+        std::fs::write(&file, serde_json::to_string(&vec![EffectPreset::from_clip("Old", &[Effect::new(EffectKind::Blur)], Time::ZERO).unwrap()]).unwrap()).unwrap();
+        assert_eq!(PresetLibrary::load(&file).list[0].name, "Old");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

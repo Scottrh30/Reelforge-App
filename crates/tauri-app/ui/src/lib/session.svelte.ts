@@ -49,7 +49,7 @@ export const app = $state({
   /// Media being dragged from the Media panel (pointer position in the window).
   dragMedia: null as null | { id: number; name: string; x: number; y: number },
   /// An effect or transition being dragged from the Effects panel.
-  dragEffect: null as null | { name: string; kind: EffectKind | null; plugin: string | null; transition: Transition | null; x: number; y: number },
+  dragEffect: null as null | { name: string; kind: EffectKind | null; plugin: string | null; transition: Transition | null; preset?: string; x: number; y: number },
   // Reactive, so clips redraw their waveform when it arrives.
   waveforms: new SvelteMap<number, Uint8Array>(),
   waveformRate: 100,

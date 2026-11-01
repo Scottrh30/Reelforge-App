@@ -17,6 +17,12 @@
   let motion = $state(false);
   let blend = $state(false);
   let timing = $state<PresetTiming>("FromStart");
+  let folder = $state("");
+  let folders = $state<string[]>([]);
+  let extras = $state<{ title: boolean; audio: boolean; transition: string | null }>({ title: false, audio: false, transition: null });
+  let title = $state(false);
+  let audio = $state(false);
+  let transition = $state(false);
   let input = $state<HTMLInputElement | null>(null);
 
   // Fresh choices each time it opens: every effect, the blend mode if it isn't Normal.
@@ -32,20 +38,34 @@
     motion = false;
     blend = blendName !== "Normal";
     timing = "FromStart";
+    (title = false), (audio = false), (transition = false);
+    extras = { title: false, audio: false, transition: null };
+    api.fxPresetFolders().then((f) => (folders = f));
+    api.fxPresetClipExtras(id).then((x) => {
+      extras = x;
+      // A title's style is what a title preset is usually for.
+      title = x.title;
+      if (x.title && !savable.length) name = "My title style";
+      // An audio clip: its levels are what there is to save.
+      if (x.audio && ins?.kind === "audio") {
+        audio = true;
+        name = "My audio levels";
+      }
+    });
     queueMicrotask(() => input?.select());
   });
   $effect(() => {
     if (app.savePreset && !ins) app.savePreset = null;
   });
 
-  const anything = $derived(chosen.length > 0 || (masks && (ins?.masks.length ?? 0) > 0) || motion || blend);
+  const anything = $derived(chosen.length > 0 || (masks && (ins?.masks.length ?? 0) > 0) || motion || blend || (title && extras.title) || (audio && extras.audio) || (transition && !!extras.transition));
   const toggle = (i: number) => (chosen = chosen.includes(i) ? chosen.filter((x) => x !== i) : [...chosen, i].sort((a, b) => a - b));
 
   async function save() {
     if (!ins || !name.trim() || !anything) return;
     const id = ins.id;
     app.savePreset = null;
-    await run(api.fxPresetSave(id, name.trim(), { effects: chosen, masks, motion, blend, timing }));
+    await run(api.fxPresetSave(id, name.trim(), { effects: chosen, masks, motion, blend, timing, title: title && extras.title, audio: audio && extras.audio, transition: transition && !!extras.transition, folder: folder.trim() }));
   }
   function key(e: KeyboardEvent) {
     if (!app.savePreset) return;
@@ -64,7 +84,10 @@
       <h2 id="sp-title">Save as preset</h2>
       <p class="muted">From <b>{ins.name}</b>. Apply it to other clips from + Add → Presets or the effects browser (E). A preset of the same name is replaced.</p>
       <label class="name">Name <input bind:this={input} bind:value={name} onkeydown={(e) => e.key === "Enter" && save()} /></label>
+      <label class="name">Folder <input bind:value={folder} list="sp-folders" placeholder="None (type a name to make one)" /></label>
+      <datalist id="sp-folders">{#each folders as f}<option value={f}></option>{/each}</datalist>
 
+      {#if ins.kind !== "audio"}
       <fieldset>
         <legend>Effects</legend>
         {#each savable as { e, i } (i)}
@@ -74,11 +97,17 @@
         {/each}
       </fieldset>
 
+      {/if}
       <fieldset>
-        <legend>Also</legend>
+        <legend>{ins.kind === "audio" ? "Save" : "Also"}</legend>
+        {#if ins.kind !== "audio"}
         <label class="check" class:dim={!ins.masks.length}><input type="checkbox" bind:checked={masks} disabled={!ins.masks.length} /> Masks{ins.masks.length ? ` (${ins.masks.length})` : " (none)"}<span class="muted"> · scaled to each clip's size</span></label>
         <label class="check"><input type="checkbox" bind:checked={motion} /> Position, scale, rotation and opacity{#if moving}<span class="muted"> · with their keyframes</span>{/if}</label>
         <label class="check"><input type="checkbox" bind:checked={blend} /> Blend mode<span class="muted"> · {blendName}</span></label>
+        {/if}
+        {#if extras.title}<label class="check"><input type="checkbox" bind:checked={title} /> Title style<span class="muted"> · font, size, colours, outline, shadow, background (not the words)</span></label>{/if}
+        {#if extras.audio}<label class="check"><input type="checkbox" bind:checked={audio} /> Audio levels<span class="muted"> · volume, pan and fades, with their keyframes</span></label>{/if}
+        {#if extras.transition}<label class="check"><input type="checkbox" bind:checked={transition} /> Transition into the clip<span class="muted"> · {extras.transition}</span></label>{/if}
       </fieldset>
 
       <fieldset>
@@ -137,6 +166,9 @@
   }
   .name input {
     flex: 1;
+  }
+  .name {
+    min-width: 0;
   }
   fieldset {
     border: 1px solid var(--line-soft);

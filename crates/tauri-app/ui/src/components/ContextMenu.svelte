@@ -40,7 +40,13 @@
 </script>
 
 <svelte:window
-  onkeydown={(e) => menu.open && e.key === "Escape" && closeMenu()}
+  onkeydown={(e) => {
+    // Only the menu closes (not a dialog it was opened from).
+    if (menu.open && e.key === "Escape") {
+      e.stopImmediatePropagation();
+      closeMenu();
+    }
+  }}
   onresize={closeMenu}
 />
 

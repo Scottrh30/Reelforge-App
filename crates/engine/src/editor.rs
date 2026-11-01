@@ -222,6 +222,10 @@ pub struct Editor {
     pub recoveries: Vec<crate::safety::Recovery>,
     /// A motion-tracking run in progress.
     pub tracking: Option<TrackJob>,
+    /// A preset shown on a clip while it's hovered in the effects browser:
+    /// the clip, and its look and title style before (put back by
+    /// [`Editor::end_preset_preview`], and before anything else is done).
+    preset_preview: Option<(ClipId, ClipVisual, Option<TitleSpec>, bool)>,
 }
 
 impl Editor {
@@ -271,6 +275,7 @@ impl Editor {
             session: None,
             recoveries: Vec::new(),
             tracking: None,
+            preset_preview: None,
         }
     }
 
@@ -1696,6 +1701,7 @@ impl Editor {
 
     /// Turn the pending live edit into one undoable command.
     pub fn commit_live_edit(&mut self) {
+        self.end_preset_preview();
         let Some(edit) = self.live_edit.take() else { return };
         let seq = self.active;
         let cmd: Option<Box<dyn Command>> = match edit {
@@ -1970,6 +1976,132 @@ impl Editor {
             if left > 0 { format!("; {left} still missing") } else { String::new() },
             if problems.is_empty() { String::new() } else { format!(" ({})", problems.join("; ")) }
         );
+    }
+
+    // ---- Presets --------------------------------------------------------------------
+
+    /// Put preset `p` on clips `ids` (adding its effects and masks after
+    /// theirs, or in place of them with `replace`): its look on video clips,
+    /// its title style on titles, its audio levels on audio clips (and the
+    /// audio linked to a video clip), its transition into clips that have a
+    /// clip before them. One undo step. Returns how many clips changed.
+    pub fn apply_preset(&mut self, ids: &[ClipId], p: &crate::fx_presets::EffectPreset, replace: bool) -> usize {
+        self.commit_live_edit();
+        let seq = self.active;
+        let s = &self.project.sequences[seq];
+        let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+        let mut changed: Vec<ClipId> = Vec::new();
+        let mut done_audio: Vec<ClipId> = Vec::new();
+        let mut locked = 0;
+        for &id in ids {
+            let Some((ti, c)) = s.find_clip(id) else { continue };
+            if c.scene.is_some() {
+                continue;
+            }
+            if s.tracks[ti].locked {
+                locked += 1;
+                continue;
+            }
+            let video = s.tracks[ti].kind == TrackKind::Video;
+            let before = cmds.len();
+            if video && p.has_visual() {
+                let old = c.visual();
+                let mut new = old.clone();
+                p.apply(&mut new, c.source_in, c.duration, self.layer_size(c), replace);
+                if new != old {
+                    cmds.push(Box::new(SetClipVisual { seq, id, old, new }));
+                }
+            }
+            if let (Some(style), Some(old)) = (&p.title, &c.title) {
+                let new = TitleSpec { text: old.text.clone(), ..style.clone() };
+                if new != *old {
+                    cmds.push(Box::new(SetTitle { seq, id, old: old.clone(), new }));
+                }
+            }
+            if p.audio.is_some() {
+                // The clip itself if it's audio, else the audio linked to it.
+                let targets: Vec<ClipId> = if video { reelforge_core::undo::expand_links(&self.project, seq, &[id]) } else { vec![id] };
+                for a in targets {
+                    let Some((ati, ac)) = s.find_clip(a) else { continue };
+                    if s.tracks[ati].kind != TrackKind::Audio || s.tracks[ati].locked || done_audio.contains(&a) {
+                        continue;
+                    }
+                    done_audio.push(a);
+                    let Some(mut new) = p.audio_on(ac.source_in, ac.duration) else { continue };
+                    (new.crossfade_in, new.ducking) = (ac.audio.crossfade_in, ac.audio.ducking.clone());
+                    if new != ac.audio {
+                        cmds.push(Box::new(SetClipAudio { seq, id: a, old: ac.audio.clone(), new }));
+                    }
+                }
+            }
+            if let (Some(t), true) = (p.transition, video) {
+                if let Some(left) = self.project.clip_before(seq, id).and_then(|l| s.find_clip(l)).map(|(_, l)| l.duration) {
+                    let len = t.length.snap(s.frame_rate).min(left.min(c.duration));
+                    if c.transition != t.kind {
+                        cmds.push(Box::new(reelforge_core::transition::SetTransition { seq, id, old: c.transition, new: t.kind }));
+                    }
+                    if c.dissolve_in != len {
+                        cmds.push(Box::new(reelforge_core::undo::SetDissolve { seq, id, old: c.dissolve_in, new: len }));
+                    }
+                }
+            }
+            if cmds.len() > before {
+                changed.push(id);
+            }
+        }
+        let n = changed.len();
+        if cmds.is_empty() {
+            self.status = if locked > 0 {
+                "Those clips are on locked tracks".into()
+            } else {
+                format!("Nothing for \"{}\" to change on {}", p.name, if ids.len() == 1 { "that clip" } else { "those clips" })
+            };
+            return 0;
+        }
+        let name = format!("Apply preset {}", p.name);
+        self.execute(Box::new(Batch { name, cmds }));
+        self.status = match n {
+            1 => format!("Applied the preset \"{}\"", p.name),
+            n => format!("Applied the preset \"{}\" to {n} clips", p.name),
+        };
+        n
+    }
+
+    /// Show preset `p` on clip `id` without changing the project for good
+    /// (hovering it in the effects browser); see [`Self::end_preset_preview`].
+    pub fn preview_preset(&mut self, id: ClipId, p: &crate::fx_presets::EffectPreset) {
+        self.commit_live_edit();
+        let seq = self.active;
+        let layer = match self.seq().find_clip(id) {
+            Some((_, c)) if c.scene.is_none() => self.layer_size(c),
+            _ => return,
+        };
+        let Some((_, c)) = self.project.sequences[seq].find_clip_mut(id) else { return };
+        let (old_v, old_t) = (c.visual(), c.title.clone());
+        let mut v = old_v.clone();
+        p.apply(&mut v, c.source_in, c.duration, layer, false);
+        c.set_visual(v);
+        if let (Some(style), Some(t)) = (&p.title, c.title.as_mut()) {
+            *t = TitleSpec { text: t.text.clone(), ..style.clone() };
+        }
+        let clean = !self.is_dirty();
+        self.preset_preview = Some((id, old_v, old_t, clean));
+        self.touch();
+    }
+
+    /// Put back what a preset preview changed.
+    pub fn end_preset_preview(&mut self) {
+        let Some((id, v, t, clean)) = self.preset_preview.take() else { return };
+        let seq = self.active;
+        if let Some((_, c)) = self.project.sequences.get_mut(seq).and_then(|s| s.find_clip_mut(id)) {
+            c.set_visual(v);
+            c.title = t;
+        }
+        self.touch();
+        // Nothing has really changed.
+        if clean {
+            self.saved_rev = self.rev;
+        }
     }
 
     // ---- Masks --------------------------------------------------------------------
@@ -2888,7 +3020,8 @@ impl Editor {
         if self.proxies.poll() {
             self.status = "A proxy is ready: the viewer uses it now".into();
         }
-        if let Some(s) = &mut self.session {
+        // (Not while a preset is only being previewed.)
+        if let Some(s) = self.session.as_mut().filter(|_| self.preset_preview.is_none()) {
             if let Some(msg) = s.tick(&self.project, self.rev, self.prefs.autosave_minutes) {
                 if msg.starts_with("Autosave failed") {
                     self.status = msg;
@@ -3753,6 +3886,60 @@ mod tests {
         e.start_mask_tracking(a, 0, true, reelforge_core::track::MaskMotion::Position);
         assert!(e.tracking.is_none() && e.status.contains("no"), "{}", e.status);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A preset goes on several clips in one undo step: the look on video
+    /// clips, the title style on titles (keeping their words), the audio on
+    /// the audio linked to a video clip, the transition where there's a clip
+    /// before. Previewing changes nothing for good.
+    #[test]
+    fn presets_go_on_many_clips_at_once_and_preview_leaves_no_trace() {
+        use crate::fx_presets::{ClipParts, EffectPreset, SaveOptions, TransitionPreset};
+        let mut e = editor();
+        let secs = Time::from_secs_f64;
+        let (a, b, t, au) = (ClipId(e.project.alloc_id()), ClipId(e.project.alloc_id()), ClipId(e.project.alloc_id()), ClipId(e.project.alloc_id()));
+        let link = Some(77);
+        let s = &mut e.project.sequences[0];
+        let v1 = s.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let a1 = s.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        s.tracks[v1].clips.push(Clip::new(a, MediaId(1), Time::ZERO, Time::ZERO, secs(2.0), link));
+        s.tracks[v1].clips.push(Clip::new(b, MediaId(1), secs(2.0), secs(2.0), secs(2.0), None));
+        s.tracks[a1].clips.push(Clip::new(au, MediaId(1), Time::ZERO, Time::ZERO, secs(2.0), link));
+        let v2 = s.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Video).nth(1).unwrap().0;
+        s.tracks[v2].clips.push(Clip::new_title(t, Time::ZERO, secs(2.0), TitleSpec { text: "Keep me".into(), ..TitleSpec::default() }));
+        let blur = EffectPreset::from_clip("Blurry", &[reelforge_core::Effect::new(EffectKind::Blur)], Time::ZERO).unwrap();
+        let mut p = blur.clone();
+        p.title = Some(TitleSpec { text: String::new(), size: 120.0, ..TitleSpec::default() });
+        p.audio = Some(ClipAudio { volume_db: -9.0, ..ClipAudio::default() });
+        p.transition = Some(TransitionPreset { kind: reelforge_core::Transition::default(), length: secs(0.5) });
+        let undo_before = e.undo.position();
+        assert_eq!(e.apply_preset(&[a, b, t], &p, false), 3);
+        assert_eq!(e.undo.position(), undo_before + 1, "one undo step");
+        let clip = |e: &Editor, id| e.seq().find_clip(id).unwrap().1.clone();
+        assert_eq!(clip(&e, a).effects.len(), 1);
+        assert_eq!(clip(&e, b).dissolve_in, secs(0.5), "a transition where there's a clip before");
+        assert_eq!(clip(&e, a).dissolve_in, Time::ZERO, "none at the start");
+        assert_eq!(clip(&e, au).audio.volume_db, -9.0, "the linked audio");
+        let tt = clip(&e, t).title.unwrap();
+        assert_eq!((tt.text.as_str(), tt.size), ("Keep me", 120.0));
+        e.undo();
+        assert!(clip(&e, a).effects.is_empty() && clip(&e, au).audio.volume_db == 0.0 && clip(&e, t).title.unwrap().size != 120.0);
+        // Preview, then put back: nothing changed, nothing to save, no undo step.
+        e.saved_rev = e.rev;
+        let undo_before = e.undo.position();
+        e.preview_preset(a, &blur);
+        assert_eq!(clip(&e, a).effects.len(), 1);
+        e.end_preset_preview();
+        assert!(clip(&e, a).effects.is_empty() && !e.is_dirty());
+        assert_eq!(e.undo.position(), undo_before);
+        // Anything else done ends the preview first.
+        e.preview_preset(a, &blur);
+        e.commit_live_edit();
+        assert!(clip(&e, a).effects.is_empty());
+        // Built from a clip's parts.
+        let parts = ClipParts { audio: Some(clip(&e, au).audio), ..ClipParts::default() };
+        let opts = SaveOptions { effects: Some(vec![]), audio: true, ..SaveOptions::default() };
+        assert!(EffectPreset::from_clip_parts("x", &clip(&e, a).visual(), &parts, Time::ZERO, secs(2.0), [1.0, 1.0], &opts).is_some());
     }
 
     #[test]
