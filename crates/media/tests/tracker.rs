@@ -369,3 +369,93 @@ fn mesh_tracks_a_rippling_sheet_on_video() {
     eprintln!("mesh on video: mean {mean:.2} px (best possible 4×3 grid {best:.2}), worst {worst:.2} px");
     assert!(mean < best + 0.6, "mean {mean:.2} vs {best:.2}");
 }
+
+// ---- Mask tracking (rotoscoping) ------------------------------------------------
+
+/// Where point `p` of the disc (as it is at frame 0) is at frame `k`: it
+/// drifts right and down, turns 1.2° a frame and grows 0.4 % a frame.
+fn disc_at(k: usize, p: [f32; 2]) -> [f32; 2] {
+    let c0 = [170.0f32, 130.0];
+    let c = [c0[0] + 2.5 * k as f32, c0[1] + 0.8 * k as f32];
+    let (s, a) = (1.0 + 0.004 * k as f32, (1.2 * k as f32).to_radians());
+    let (dx, dy) = (p[0] - c0[0], p[1] - c0[1]);
+    [c[0] + s * (a.cos() * dx - a.sin() * dy), c[1] + s * (a.sin() * dx + a.cos() * dy)]
+}
+
+/// A textured disc turning, growing and drifting over a textured background
+/// sliding the other way: a mask drawn inside the disc follows the disc (the
+/// background, outside the mask, is left out).
+#[test]
+fn a_mask_follows_what_is_inside_it() {
+    use reelforge_core::mask::Mask;
+    use reelforge_core::track::{mask_from_region, mask_bounds, MaskMotion};
+    use reelforge_core::{Clip, ClipId, MediaId};
+    let path = std::env::temp_dir().join("rf_track_mask.mp4");
+    let frames = 30;
+    let child = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", &format!("{W}x{H}"), "-r", "25", "-i", "-", "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p"])
+        .arg(&path)
+        .stdin(std::process::Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    };
+    let mut stdin = child.stdin.take().unwrap();
+    let radius = 70.0f32;
+    for k in 0..frames {
+        let (c, s, a) = (disc_at(k, [170.0, 130.0]), 1.0 + 0.004 * k as f32, (1.2 * k as f32).to_radians());
+        let mut img = vec![0u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let (dx, dy) = (x as f32 + 0.5 - c[0], y as f32 + 0.5 - c[1]);
+                // Back to the disc's frame-0 coordinates.
+                let (u, v) = ((a.cos() * dx + a.sin() * dy) / s, (-a.sin() * dx + a.cos() * dy) / s);
+                let g = if u * u + v * v < radius * radius {
+                    40.0 + 160.0 * noise(u / 6.0 + 50.0, v / 6.0 + 50.0) + 40.0 * noise(u / 2.5, v / 2.5)
+                } else {
+                    // The background slides left.
+                    let bx = x as f32 + 3.0 * k as f32;
+                    30.0 + 180.0 * noise(bx / 7.0, y as f32 / 7.0)
+                };
+                img[y * W + x] = g.clamp(0.0, 255.0) as u8;
+            }
+        }
+        stdin.write_all(&img).unwrap();
+    }
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    let info = probe(&path).unwrap();
+
+    // A pentagon inside the disc.
+    let pts: Vec<[f32; 2]> = (0..5).map(|i| {
+        let t = (i as f32 * 72.0 - 90.0).to_radians();
+        [170.0 + 55.0 * t.cos(), 130.0 + 55.0 * t.sin()]
+    }).collect();
+    let mask = Mask { points: pts.clone(), shape: reelforge_core::mask::MaskShape::Freehand, ..Mask::default() };
+    let quad = mask_bounds(&mask, Time::ZERO).unwrap();
+    let (corners, end) = reelforge_media::track_outline(&path, &info, quad, mask.outline(Time::ZERO), 30.0, Time::ZERO, Time::from_secs_f64(1.16), &AtomicBool::new(false), |_| {}).unwrap();
+    assert_eq!(end, TrackEnd::Done);
+    assert_eq!(corners[0].len(), frames);
+    let clip = Clip::new(ClipId(1), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.2), None);
+    for motion in [MaskMotion::Transform, MaskMotion::Perspective] {
+        let m = mask_from_region(&clip, &mask, &corners, motion).unwrap();
+        assert_eq!(m.keys.len(), frames);
+        let mut worst = 0f32;
+        for (k, key) in m.keys.iter().enumerate() {
+            for (p, q) in pts.iter().zip(&key.points) {
+                let truth = disc_at(k, *p);
+                worst = worst.max(((q[0] - truth[0]).powi(2) + (q[1] - truth[1]).powi(2)).sqrt());
+            }
+        }
+        eprintln!("mask tracking ({motion:?}): worst point error {worst:.2} px");
+        assert!(worst < 2.0, "{motion:?}: mask points off by up to {worst:.2} px");
+    }
+    // Position only: the middle follows, the shape doesn't turn.
+    let m = mask_from_region(&clip, &mask, &corners, MaskMotion::Position).unwrap();
+    let last = &m.keys[frames - 1].points;
+    let mid = |p: &[[f32; 2]]| [p.iter().map(|q| q[0]).sum::<f32>() / 5.0, p.iter().map(|q| q[1]).sum::<f32>() / 5.0];
+    let (a, b) = (mid(last), disc_at(frames - 1, mid(&pts)));
+    assert!((a[0] - b[0]).abs() < 2.0 && (a[1] - b[1]).abs() < 2.0, "{a:?} vs {b:?}");
+    assert!((last[0][0] - last[1][0] - (pts[0][0] - pts[1][0])).abs() < 0.01, "kept its shape");
+}

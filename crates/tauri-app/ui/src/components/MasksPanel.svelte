@@ -1,7 +1,7 @@
 <script lang="ts">
   // The Masks section of the Controls panel.
   import { app, run, say } from "../lib/session.svelte";
-  import { api, type Inspector, type Mask } from "../lib/api";
+  import { api, type Inspector, type Mask, type MaskMotion } from "../lib/api";
   import { livePump } from "../lib/live";
   import NumberField from "./NumberField.svelte";
 
@@ -11,6 +11,17 @@
   const active = $derived(app.activeMask?.clip === ins.id ? app.activeMask.index : null);
   const drawing = $derived(app.drawing?.clip === ins.id);
   const pump = livePump();
+
+  // Rotoscoping: track what's inside a mask and key its shape every frame.
+  const trackable = $derived(ins.kind === "video");
+  let motion = $state<MaskMotion>("Transform");
+  const motions: [MaskMotion, string][] = [
+    ["Position", "Moves"],
+    ["Transform", "Moves, turns, scales"],
+    ["Perspective", "…and tilts (perspective)"],
+  ];
+  const progress = $derived(app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null);
+  const elsewhere = $derived(!!app.live?.tracking && app.live.tracking[0] !== ins.id);
 
   const masks = (): Mask[] => ins.masks.map((m) => structuredClone($state.snapshot(m.mask)) as Mask);
 
@@ -136,11 +147,51 @@
         <span class="grow"></span>
         <button class="small" onclick={() => remove(i)}>Remove</button>
       </div>
+      {#if trackable}
+        <div class="row track">
+          <span class="lbl" title="Follows what's inside the mask from the playhead, keying the shape at every frame. Fix a frame where it slips by dragging the points, then track on from there">Track shape</span>
+          {#if progress !== null}
+            <div class="bar"><div style="width:{progress * 100}%"></div></div>
+            <span class="tc">{Math.round(progress * 100)}%</span>
+            <button class="small" onclick={() => run(api.trackCancel())}>Stop</button>
+          {:else}
+            <select bind:value={motion} aria-label="How the shape may move" title="How the shape may move as it follows">
+              {#each motions as [v, l]}<option value={v}>{l}</option>{/each}
+            </select>
+            <button class="small" disabled={elsewhere} onclick={() => run(api.maskTrack(ins.id, i, false, motion))} title="From the playhead back to the clip's start">◀</button>
+            <button class="small" disabled={elsewhere} onclick={() => run(api.maskTrack(ins.id, i, true, motion))} title="From the playhead to the clip's end">▶</button>
+          {/if}
+        </div>
+      {/if}
     </div>
   {/each}
 </div>
 
 <style>
+  .track {
+    gap: 6px;
+  }
+  .track .lbl {
+    color: var(--muted);
+  }
+  .track select {
+    flex: 1;
+    min-width: 0;
+  }
+  .bar {
+    flex: 1;
+    height: 8px;
+    background: var(--base);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .bar div {
+    height: 100%;
+    background: var(--accent);
+  }
+  .tc {
+    font-variant-numeric: tabular-nums;
+  }
   .group {
     padding: 8px 0 12px;
     border-bottom: 1px solid var(--line-soft);

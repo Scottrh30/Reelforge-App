@@ -27,7 +27,7 @@ pub use mixer::{MixClip, Mixer, TrackPeaks, MAX_TRACK_METERS};
 pub use probe::probe;
 pub use reelforge_codecs as codecs;
 pub use source::FrameSource;
-pub use tracker::{track_point, track_points, TrackEnd};
+pub use tracker::{track_outline, track_point, track_points, TrackEnd};
 
 use std::sync::Once;
 

@@ -82,6 +82,9 @@ export interface MediaView {
   detail: string;
 }
 
+/// How a tracked mask's shape may move.
+export type MaskMotion = "Position" | "Transform" | "Perspective";
+
 export type ClipKind = "video" | "audio" | "image" | "title" | "comp" | "camera" | "light" | "point" | "plane" | "adjustment";
 
 export interface ClipView {
@@ -774,6 +777,7 @@ export const api = {
   trackerOp: (id: number, op: "clear" | "remove") => invoke("tracker_op", { id, op }),
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
   trackCancel: () => invoke("track_cancel"),
+  maskTrack: (id: number, index: number, forward: boolean, motion: MaskMotion) => invoke("mask_track", { id, index, forward, motion }),
   trackApply: (id: number, target: number, mask: number | null, blade: number | null, smoothing: number, axes?: TrackAxes) => invoke("track_apply", { id, target, mask, blade, smoothing, axes }),
   exportOptions: () => invoke<ExportOptions>("export_options"),
   diagnostics: () => invoke<string>("diagnostics"),

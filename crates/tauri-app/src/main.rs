@@ -895,6 +895,12 @@ fn track_start(id: u64, forward: bool) -> Res<()> {
     ed(|e| e.start_tracking(clip(id), forward))
 }
 
+/// Rotoscoping: track what's inside mask `index` and key its shape.
+#[tauri::command]
+fn mask_track(id: u64, index: usize, forward: bool, motion: reelforge_core::track::MaskMotion) -> Res<()> {
+    ed(|e| e.start_mask_tracking(clip(id), index, forward, motion))
+}
+
 #[tauri::command]
 fn track_cancel() -> Res<()> {
     ed(|e| e.cancel_tracking())
@@ -1121,6 +1127,7 @@ fn main() {
             tracker_op,
             track_start,
             track_cancel,
+            mask_track,
             track_apply,
             show_in_folder,
             export::export_options,

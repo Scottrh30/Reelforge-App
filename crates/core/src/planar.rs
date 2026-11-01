@@ -45,6 +45,9 @@ pub struct PlanarTracker {
     features: Vec<Feature>,
     /// The surface's corners in the first frame.
     quad: [[f32; 2]; 4],
+    /// Where features are looked for, in the first frame (the quad, or a
+    /// mask's outline).
+    region: Vec<[f32; 2]>,
     /// First frame → current frame.
     h: Homography,
     /// …as it was one frame earlier (for predicting the next).
@@ -72,6 +75,12 @@ impl PlanarTracker {
     /// of `pyr`'s full level). `search` is how far the surface may move
     /// between frames.
     pub fn new(pyr: &Pyramid, quad: [[f32; 2]; 4], search: f32) -> Result<Self, PlanarError> {
+        Self::in_region(pyr, quad, quad.to_vec(), search)
+    }
+
+    /// Start on `quad`, following only what's inside `region` (an outline,
+    /// such as a mask's: features outside it, the background, are left out).
+    pub fn in_region(pyr: &Pyramid, quad: [[f32; 2]; 4], region: Vec<[f32; 2]>, search: f32) -> Result<Self, PlanarError> {
         let img = pyr.level(0);
         let (width, height) = (img.width, img.height);
         // Patches of about 1/90 of the frame width, odd, 15–31 px.
@@ -79,6 +88,7 @@ impl PlanarTracker {
         let mut p = PlanarTracker {
             features: Vec::new(),
             quad,
+            region,
             h: Homography::IDENTITY,
             prev: Homography::IDENTITY,
             first: img.data.to_vec(),
@@ -116,7 +126,7 @@ impl PlanarTracker {
     /// Add features inside the surface as it is now, away from existing ones.
     fn seed(&mut self, pyr: &Pyramid) {
         let img = pyr.level(0);
-        let now = self.corners();
+        let now: Vec<[f32; 2]> = self.region.iter().map(|&c| self.h.apply(c)).collect();
         let want = self.target.saturating_sub(self.features.len());
         if want == 0 {
             return;
@@ -392,17 +402,24 @@ pub(crate) fn robust_refit(mut h: Homography, src: &[[f32; 2]], dst: &[[f32; 2]]
 }
 
 /// Is `p` inside the convex four-sided `q` (either winding)?
-fn inside(q: &[[f32; 2]; 4], p: [f32; 2]) -> bool {
-    let side = |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
-    let s: Vec<f32> = (0..4).map(|i| side(q[i], q[(i + 1) % 4])).collect();
-    s.iter().all(|&v| v >= 0.0) || s.iter().all(|&v| v <= 0.0)
+/// Is `p` inside the outline `q` (any number of points; even-odd)?
+fn inside(q: &[[f32; 2]], p: [f32; 2]) -> bool {
+    let mut odd = false;
+    let n = q.len();
+    for i in 0..n {
+        let (a, b) = (q[i], q[(i + n - 1) % n]);
+        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
+            odd = !odd;
+        }
+    }
+    odd
 }
 
 /// Up to `max` well-spread features inside `region` of `img`, best first: the
 /// smallest eigenvalue of the gradient structure tensor over a 5×5 window
 /// (Shi–Tomasi), at least `min_dist` apart and from `taken`, and `margin`
 /// pixels inside the picture.
-pub fn good_features(img: &Luma, region: &[[f32; 2]; 4], max: usize, min_dist: f32, margin: f32, taken: &[[f32; 2]]) -> Vec<[f32; 2]> {
+pub fn good_features(img: &Luma, region: &[[f32; 2]], max: usize, min_dist: f32, margin: f32, taken: &[[f32; 2]]) -> Vec<[f32; 2]> {
     let (w, h) = (img.width as isize, img.height as isize);
     let m = margin.ceil() as isize + 3;
     let xs = region.iter().map(|p| p[0]);

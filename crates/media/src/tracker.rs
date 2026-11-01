@@ -147,11 +147,35 @@ fn track_plane(
     grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
     progress: &mut impl FnMut(f32),
 ) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
-    let (sx, sy) = (w as f32 / mw as f32, h as f32 / mh as f32);
     let start: Vec<[f32; 2]> = tracker.points.iter().map(|p| p.shown_at(from)).collect();
-    let quad: [[f32; 2]; 4] = std::array::from_fn(|i| [start[i][0] * sx, start[i][1] * sy]);
-    let search = tracker.points[0].search * sx;
-    let mut plane = PlanarTracker::new(&pyr, quad, search).map_err(|_| anyhow!("there's too little detail inside the shape to follow: draw it around a surface with some texture or print on it"))?;
+    let quad: [[f32; 2]; 4] = std::array::from_fn(|i| start[i]);
+    let no_detail = "there's too little detail inside the shape to follow: draw it around a surface with some texture or print on it";
+    follow_region(quad, quad.to_vec(), tracker.points[0].search, no_detail, pyr, (w, h), (mw, mh), step, from, until, cancel, grab, progress)
+}
+
+/// Follow what's inside `region` (media pixels; `quad` bounds it) as a flat
+/// surface: `quad`'s corners as they move. Fails with `no_detail` when
+/// there's too little to follow.
+#[allow(clippy::too_many_arguments)]
+fn follow_region(
+    quad: [[f32; 2]; 4],
+    region: Vec<[f32; 2]>,
+    search: f32,
+    no_detail: &str,
+    pyr: Pyramid,
+    (w, h): (usize, usize),
+    (mw, mh): (u32, u32),
+    step: Time,
+    from: Time,
+    until: Time,
+    cancel: &AtomicBool,
+    grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
+    progress: &mut impl FnMut(f32),
+) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
+    let (sx, sy) = (w as f32 / mw as f32, h as f32 / mh as f32);
+    let start = quad;
+    let scaled = |p: [f32; 2]| [p[0] * sx, p[1] * sy];
+    let mut plane = PlanarTracker::in_region(&pyr, quad.map(scaled), region.into_iter().map(scaled).collect(), search * sx).map_err(|_| anyhow!("{no_detail}"))?;
     let mut out: Vec<Vec<TrackSample>> = start.iter().map(|&p| vec![TrackSample { at: from, pos: p, score: 1.0 }]).collect();
     let backwards = until < from;
     let total = ((until - from).0.abs() / step.0.max(1)).max(1) as f32;
@@ -176,6 +200,38 @@ fn track_plane(
         n += 1.0;
         progress((n / total).min(1.0));
     }
+}
+
+/// Rotoscoping: follow what's inside a mask's `outline` (media pixels, as
+/// it is at media time `from`; `quad` is its bounds: top left, top right,
+/// bottom right, bottom left) towards `until`, as a flat surface. Returns
+/// `quad`'s four corners at every frame, for
+/// [`reelforge_core::track::mask_from_region`].
+#[allow(clippy::too_many_arguments)]
+pub fn track_outline(
+    path: &Path,
+    info: &MediaInfo,
+    quad: [[f32; 2]; 4],
+    outline: Vec<[f32; 2]>,
+    search: f32,
+    from: Time,
+    until: Time,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(f32),
+) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
+    let v = info.video.as_ref().ok_or_else(|| anyhow!("this clip has no video to track"))?;
+    let step = v.frame_rate.frame_duration();
+    let mut src = FrameSource::open(path, None)?;
+    let wait = Duration::from_secs(20);
+    let levels = Pyramid::levels_for(search);
+    let mut grab = |t: Time| -> Result<(Pyramid, usize, usize)> {
+        let f = src.frame_at_blocking(t, wait).ok_or_else(|| anyhow!("no frame at {t}"))?;
+        let (w, h) = (f.width as usize, f.height as usize);
+        Ok((Pyramid::new(f.luma(), w, h, levels), w, h))
+    };
+    let (pyr, w, h) = grab(from)?;
+    let no_detail = "there's too little detail inside the mask to follow: draw it around something with some texture or print on it";
+    follow_region(quad, outline, search, no_detail, pyr, (w, h), (v.width, v.height), step, from, until, cancel, &mut grab, &mut progress)
 }
 
 /// In [`TrackEnd::Lost`]: the whole surface was lost (planar tracking), not one point.

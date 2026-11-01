@@ -135,6 +135,8 @@ pub struct TrackJob {
     cancel: Arc<std::sync::atomic::AtomicBool>,
     /// 0–1.
     pub progress: f32,
+    /// Tracking a mask's shape (rotoscoping): which mask, and how it may move.
+    pub mask: Option<(usize, reelforge_core::track::MaskMotion)>,
 }
 
 /// An interactive edit in progress: what's being changed and its value before the gesture.
@@ -2287,8 +2289,64 @@ impl Editor {
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0 });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None });
         self.status = "Tracking…".into();
+    }
+
+    /// Rotoscoping: track what's inside mask `index` of clip `id` from the
+    /// playhead to the end of the clip (or back to its start), in the
+    /// background, then key the mask's shape at every frame, moving as
+    /// `motion` allows.
+    pub fn start_mask_tracking(&mut self, id: ClipId, index: usize, forward: bool, motion: reelforge_core::track::MaskMotion) {
+        self.commit_live_edit();
+        if self.tracking.is_some() {
+            return;
+        }
+        let frame = self.seq().frame_rate.frame_duration();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        if self.seq().is_locked(id) {
+            self.status = LOCKED.into();
+            return;
+        }
+        let Some(media) = self.project.media(c.media).cloned() else { return };
+        if media.info.video.is_none() || c.title.is_some() || self.project.is_still(c.media) {
+            self.status = "Mask tracking follows moving footage: this clip has none".into();
+            return;
+        }
+        let Some(mask) = c.masks.get(index) else { return };
+        let t = self.playback.playhead.max(c.timeline_start).min(c.timeline_end() - frame);
+        let from = c.media_at(t);
+        let until = if forward { c.media_at(c.timeline_end() - frame) } else { c.media_at(c.timeline_start) };
+        if from == until {
+            self.status = format!("Nothing to track: the playhead is at the clip's {}", if forward { "end" } else { "start" });
+            return;
+        }
+        // The shape where tracking starts (mask keys are in clip time).
+        let at = c.clip_time_of_media(from).unwrap_or_else(|| c.source_time(t));
+        let Some(quad) = reelforge_core::track::mask_bounds(mask, at) else {
+            self.status = "The mask is too small to track: draw it around what it should follow".into();
+            return;
+        };
+        let outline = mask.outline(at);
+        let name = mask.name.clone();
+        // How far it may move in a frame: a sixteenth of the picture's width.
+        let search = (media.info.video.as_ref().map_or(1920, |v| v.width) as f32 / 16.0).max(24.0);
+        let (tx, rx) = unbounded();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = cancel.clone();
+        self.playback.pause();
+        std::thread::Builder::new()
+            .name("mask tracker".into())
+            .spawn(move || {
+                let progress_tx = tx.clone();
+                let r = reelforge_media::track_outline(&media.path, &media.info, quad, outline, search, from, until, &stop, |p| {
+                    let _ = progress_tx.send(TrackMsg::Progress(p));
+                });
+                let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
+            })
+            .expect("mask tracker thread");
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)) });
+        self.status = format!("Tracking {name}…");
     }
 
     pub fn cancel_tracking(&mut self) {
@@ -2310,6 +2368,7 @@ impl Editor {
         let job = self.tracking.take().unwrap();
         match result {
             Err(e) => self.status = format!("Tracking failed: {e}"),
+            Ok((samples, end)) if job.mask.is_some() => self.finish_mask_tracking(&job, samples, end),
             Ok((samples, end)) => {
                 let n = samples.first().map_or(0, |s| s.len().saturating_sub(1));
                 let Some(old) = self.project.sequences.get(job.seq).and_then(|s| s.find_clip(job.clip)).and_then(|(_, c)| c.tracker.clone()) else { return };
@@ -2336,6 +2395,39 @@ impl Editor {
                 self.status = status;
             }
         }
+    }
+
+    /// A mask tracking run is done: key the mask's shape (one undo step).
+    fn finish_mask_tracking(&mut self, job: &TrackJob, corners: Vec<Vec<reelforge_core::track::TrackSample>>, end: reelforge_media::TrackEnd) {
+        let Some((index, motion)) = job.mask else { return };
+        let n = corners.first().map_or(0, |s| s.len().saturating_sub(1));
+        let Some((_, c)) = self.project.sequences.get(job.seq).and_then(|s| s.find_clip(job.clip)) else { return };
+        let Some(mask) = c.masks.get(index) else { return };
+        let rate = self.project.sequences[job.seq].frame_rate;
+        if n == 0 {
+            self.status = match end {
+                reelforge_media::TrackEnd::Lost(t, _) => format!("Lost what's inside {} straight away, at {} (source time): draw it around something with more detail", mask.name, t.timecode(rate)),
+                _ => "Nothing tracked".into(),
+            };
+            return;
+        }
+        let Some(m) = reelforge_core::track::mask_from_region(c, mask, &corners, motion) else {
+            self.status = "Couldn't follow the mask: what's inside it turned too far".into();
+            return;
+        };
+        let name = m.name.clone();
+        let old = c.visual();
+        let mut new = old.clone();
+        new.masks[index] = m;
+        self.execute(Box::new(SetClipVisual { seq: job.seq, id: job.clip, old, new }));
+        self.status = match end {
+            reelforge_media::TrackEnd::Done => format!("{name} tracked over {n} frames: check it, fix any frame by dragging its points, and track on from there"),
+            reelforge_media::TrackEnd::Cancelled => format!("Stopped: {name} tracked over {n} frames"),
+            reelforge_media::TrackEnd::Lost(t, _) => format!(
+                "{name} tracked over {n} frames, then lost what's inside it at {} (source time): go there, fix the shape and track on",
+                t.timecode(rate)
+            ),
+        };
     }
 
     /// Take a clip's mesh warp off (it goes back to its transform).

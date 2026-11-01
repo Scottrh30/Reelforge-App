@@ -1263,6 +1263,112 @@ pub fn follow_mask(clip: &Clip, mask: &crate::mask::Mask, tracker: &Tracker) -> 
     Some(m)
 }
 
+/// How a tracked mask's shape may move (see [`mask_from_region`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MaskMotion {
+    /// Moves only.
+    Position,
+    /// Moves, turns and grows or shrinks.
+    #[default]
+    Transform,
+    /// Also tilts in perspective (a flat thing seen at a changing angle).
+    Perspective,
+}
+
+/// The four corners of a mask's outline's bounds at clip time `t`, for
+/// tracking what's inside it.
+pub fn mask_bounds(mask: &crate::mask::Mask, t: Time) -> Option<[[f32; 2]; 4]> {
+    let o = mask.outline(t);
+    if o.len() < 3 {
+        return None;
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for p in &o {
+        x0 = x0.min(p[0]);
+        y0 = y0.min(p[1]);
+        x1 = x1.max(p[0]);
+        y1 = y1.max(p[1]);
+    }
+    (x1 - x0 >= 4.0 && y1 - y0 >= 4.0).then_some([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+}
+
+/// Rotoscoping: shape keys for `mask` (on `clip`) at every frame of a
+/// tracked region. `corners` are the region's four corners as tracked (one
+/// list of samples per corner, in media time, all on the same frames; the
+/// first sample is where tracking started, with the mask as it is then).
+/// The shape there is carried along, moved as `motion` allows. Keys the mask
+/// already had inside the tracked span are replaced; others are kept.
+pub fn mask_from_region(clip: &Clip, mask: &crate::mask::Mask, corners: &[Vec<TrackSample>], motion: MaskMotion) -> Option<crate::mask::Mask> {
+    if corners.len() != 4 {
+        return None;
+    }
+    let frames = corners[0].len();
+    if frames < 2 || corners.iter().any(|c| c.len() != frames) {
+        return None;
+    }
+    let quad = |i: usize| -> [[f32; 2]; 4] { std::array::from_fn(|k| corners[k][i].pos) };
+    let t0 = clip.clip_time_of_media(corners[0][0].at)?;
+    let base = mask.points_at(t0);
+    let curves = mask.curves_at(t0);
+    let curved = mask.is_curved(t0);
+    let n = base.len();
+    let mut anchors = base.clone();
+    if curved {
+        for (p, c) in base.iter().zip(&curves) {
+            anchors.push([p[0] + c[0], p[1] + c[1]]);
+            anchors.push([p[0] + c[2], p[1] + c[3]]);
+        }
+    }
+    // Turned and scaled about the shape's middle.
+    let mid = {
+        let (sx, sy) = base.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
+        [sx / n.max(1) as f32, sy / n.max(1) as f32]
+    };
+    let q0 = quad(0);
+    let reach = ((q0[1][0] - q0[0][0]).abs().max((q0[3][1] - q0[0][1]).abs()) / 2.0).max(8.0);
+    let mut keys: Vec<crate::mask::ShapeKey> = Vec::new();
+    for i in 0..frames {
+        let Some(at) = clip.clip_time_of_media(corners[0][i].at) else { continue };
+        let h = if i == 0 { Homography::IDENTITY } else { Homography::from_quads(&q0, &quad(i))? };
+        let h = match motion {
+            MaskMotion::Perspective => h,
+            MaskMotion::Position => motion_between(TrackMode::Position, &[mid], &[h.apply(mid)])?,
+            MaskMotion::Transform => {
+                let side = [mid[0] + reach, mid[1]];
+                motion_between(TrackMode::Transform, &[mid, side], &[h.apply(mid), h.apply(side)])?
+            }
+        };
+        let moved: Vec<[f32; 2]> = anchors.iter().map(|&q| h.apply(q)).collect();
+        let points = moved[..n].to_vec();
+        let cs = if curved {
+            (0..n)
+                .map(|k| {
+                    let (p, a, b) = (points[k], moved[n + 2 * k], moved[n + 2 * k + 1]);
+                    [a[0] - p[0], a[1] - p[1], b[0] - p[0], b[1] - p[1]]
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        keys.push(crate::mask::ShapeKey { at, points, curves: cs });
+    }
+    let (a, b) = (keys.iter().map(|k| k.at).min()?, keys.iter().map(|k| k.at).max()?);
+    let mut m = mask.clone();
+    if m.keys.is_empty() {
+        // Not animated before: the shape outside the span is the one tracking started from.
+        m.points = base;
+        if curved {
+            m.curves = curves;
+        }
+    }
+    m.keys.retain(|k| k.at < a || k.at > b);
+    for k in keys {
+        let i = m.keys.partition_point(|x| x.at < k.at);
+        m.keys.insert(i, k);
+    }
+    Some(m)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

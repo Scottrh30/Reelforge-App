@@ -564,6 +564,12 @@ What works now:
     sets a keyframe there
   - Masks are applied before the clip's effects and move with the layer's transform
   - With a tracker on the clip, **Apply to → Mask: …** makes the mask follow the tracked point
+  - **Track shape** (rotoscoping, footage clips): draw the mask around something, then ◀ or
+    ▶ follows what's inside it from the playhead to the clip's start or end, keying the shape
+    at every frame. Choose how it may move: **Moves**, **Moves, turns, scales**, or
+    **…and tilts** (perspective). Only what's inside the mask is followed, so the background
+    doesn't pull it. Where it slips, drag the points back on that frame and track on from
+    there; keys outside the tracked stretch are kept
 - **Compositions**: a composition is a sequence of its own, with its own layers, that
   sits on the timeline as one clip (amber, marked `[C]`). Transform it, add effects, dissolve
   it, trim it like any clip; its audio plays and exports with it
@@ -1332,6 +1338,13 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   homography; `follow_keys` composes it with the target's transform (or, stabilising, applies
   its inverse, optionally against a Gaussian-smoothed camera path) and writes position /
   rotation / scale keys, or corner-pin keys
+- **Mask tracking** (`track_outline` in `media/src/tracker.rs`, `mask_from_region` in
+  `core/src/track.rs`): a `PlanarTracker` started with `in_region`, so its features are only
+  sought inside the mask's outline (`good_features` takes any outline, even-odd), follows the
+  outline's bounding quad; each frame's quad gives a homography from the start, reduced to a
+  shift or a similarity about the shape's middle for the simpler motions, and every point and
+  handle end is carried by it into a shape key. The run uses the same `TrackJob` as point
+  tracking (`mask: Some(..)`), finishing in `Editor::finish_mask_tracking` as one undo step.
 - **Plugins** (`core/src/plugin.rs`, `render/src/plugin.rs`, `engine/src/plugins.rs`): the
   manifest is parsed into a `PluginDef` (parameter specs interned as `&'static`, like the
   built-in effects' tables, so reloading the same manifest leaks nothing) and published in a
