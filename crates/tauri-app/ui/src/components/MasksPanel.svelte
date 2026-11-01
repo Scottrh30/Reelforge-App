@@ -129,7 +129,7 @@
             {/if}
           </div>
         {:else}
-          <p class="note">Click a point in the Viewer to give it its own feather. Double-click a point to make it a curve, or Alt-drag one to pull out its handles. Right-click a point to add points beside it or delete it.</p>
+          <p class="note">Click a point in the Viewer to give it its own feather. Double-click a point to make it a curve, or Alt-drag one to pull out its handles. Right-click the mask's line to add a point there, or a point to add points beside it or delete it.</p>
         {/if}
       {/if}
       <div class="row">

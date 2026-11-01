@@ -75,6 +75,36 @@
     ]);
   }
 
+  /// Right-click on a mask's line: add a point there.
+  function lineMenu(e: MouseEvent, index: number) {
+    if (!ins || !inv) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const id = ins.id;
+    const m = ins.masks[index];
+    const at = toLayer(e);
+    app.activeMask = { clip: id, index };
+    openMenu(e, [
+      { heading: true, label: m.mask.name },
+      {
+        label: "Add a point here",
+        run: async () => {
+          const p = await run(api.maskPointAddAt(id, index, at));
+          if (typeof p === "number") app.activeMaskPoint = p;
+        },
+      },
+    ]);
+  }
+
+  /// Left-click on a mask's line: drag the mask being edited, or start editing this one.
+  function lineDown(e: PointerEvent, index: number) {
+    if (e.button !== 0 || !ins) return;
+    if (index === active) return dragMask(e, index, null);
+    e.stopPropagation();
+    app.activeMask = { clip: ins.id, index };
+    app.activeMaskPoint = null;
+  }
+
   function dragMask(e: PointerEvent, index: number, point: number | null | "resize") {
     if (e.button !== 0 || !ins || !inv || app.live?.playing) return;
     e.stopPropagation();
@@ -525,6 +555,10 @@
           onpointerdown={(e) => (i === active ? dragMask(e, i, null) : null)}
           role="presentation"
         />
+        {#if m.mask.shape !== "Ellipse" && m.mask.enabled && !drawing}
+          <!-- The line itself (a wide invisible stroke): right-click adds a point there. -->
+          <polygon points={pts(m.outline)} class="maskline" oncontextmenu={(e) => lineMenu(e, i)} onpointerdown={(e) => lineDown(e, i)} role="presentation"><title>Click to edit this mask; right-click to add a point here</title></polygon>
+        {/if}
       {/if}
     {/each}
     {#if active !== null && ins.masks[active] && ins.masks[active].mask.shape !== "Ellipse" && !drawing}
@@ -840,6 +874,12 @@
   }
   .picker {
     cursor: crosshair;
+  }
+  .maskline {
+    fill: none;
+    stroke: transparent;
+    stroke-width: 12;
+    pointer-events: stroke;
   }
   .pickbox {
     fill: rgba(255, 255, 255, 0.12);

@@ -2080,6 +2080,29 @@ impl Editor {
         Some(new)
     }
 
+    /// Add a point to mask `index` where its outline (as it is at the
+    /// playhead) passes nearest to `at` (layer pixels): right-clicking the
+    /// line. One undo step. Returns the new point's index.
+    pub fn add_mask_point_near(&mut self, id: ClipId, index: usize, at: [f32; 2]) -> Option<usize> {
+        self.commit_live_edit();
+        let t = self.seq().find_clip(id).map(|(_, c)| self.mask_time(c))?;
+        let mut v = self.visual(id)?;
+        let m = v.masks.get_mut(index)?;
+        let Some((side, s, _)) = m.nearest_side(t, at) else {
+            self.status = "An ellipse has no points to add: use a freehand mask for that".into();
+            return None;
+        };
+        let was_rect = m.shape == reelforge_core::mask::MaskShape::Rectangle;
+        let new = m.insert_point_on(side, s)?;
+        if was_rect && m.name.starts_with("Rectangle") {
+            m.name = m.name.replacen("Rectangle", "Freehand", 1);
+        }
+        self.set_visual_live(id, v);
+        self.commit_live_edit();
+        self.status = format!("Added point {}: drag it to shape the mask{}", new + 1, if was_rect { " (it's a freehand mask now)" } else { "" });
+        Some(new)
+    }
+
     /// Take point `point` out of mask `index` (a mask keeps at least three). One undo step.
     pub fn delete_mask_point(&mut self, id: ClipId, index: usize, point: usize) -> bool {
         self.commit_live_edit();

@@ -569,7 +569,9 @@ What works now:
     smooth curve with two handles, or **Alt-drag** a point to pull its handles out. Dragging one
     handle turns the other to keep the curve smooth through the point; **Alt** bends just that
     side. Double-click again for a sharp corner. Rectangles and freehand masks can be curved
-  - **Adding and deleting points**: right-click a point in the Viewer for **Add a point after
+  - **Adding and deleting points**: right-click the mask's line in the Viewer for **Add a point
+    here** (right where you clicked; on a curve the shape stays the same), or right-click a
+    point for **Add a point after
     this one** / **before this one** (halfway along that side, on the curve if it's curved, so
     the shape doesn't change), **Delete point** (a mask keeps at least three) and curve / sharp
     corner; the Masks panel has **Add point** and **Delete** for the selected point too. Each is

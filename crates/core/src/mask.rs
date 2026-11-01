@@ -225,26 +225,73 @@ impl Mask {
     /// becomes a freehand shape. Returns the new point's index, or `None`
     /// for an ellipse or a bad index.
     pub fn insert_point_after(&mut self, i: usize) -> Option<usize> {
+        self.insert_point_on(i, 0.5)
+    }
+
+    /// Add a point on side `i` (from point `i` to the next), `s` (0–1) of the
+    /// way along it, in the shape and every keyframe (each keyframe's side is
+    /// cut at the same place, and curves keep their shape). As
+    /// [`Self::insert_point_after`] otherwise.
+    pub fn insert_point_on(&mut self, i: usize, s: f32) -> Option<usize> {
         let n = self.points.len().max(self.keys.first().map_or(0, |k| k.points.len()));
         if self.shape == MaskShape::Ellipse || i >= n || n < 2 {
             return None;
         }
-        split_side(&mut self.points, &mut self.curves, i);
+        let s = s.clamp(0.01, 0.99);
+        split_side_at(&mut self.points, &mut self.curves, i, s);
         for k in &mut self.keys {
-            split_side(&mut k.points, &mut k.curves, i);
+            split_side_at(&mut k.points, &mut k.curves, i, s);
         }
         if self.feathers.iter().any(|&f| f >= 0.0) {
             // Halfway between its neighbours' feathers (a missing one is the mask's).
             let own = |j: usize| self.feathers.get(j % n).copied().filter(|f| *f >= 0.0);
             let mid = match (own(i), own(i + 1)) {
                 (None, None) => -1.0,
-                (a, b) => (a.unwrap_or(self.feather) + b.unwrap_or(self.feather)) / 2.0,
+                (a, b) => {
+                    let (a, b) = (a.unwrap_or(self.feather), b.unwrap_or(self.feather));
+                    a + (b - a) * s
+                }
             };
             self.feathers.resize(n, -1.0);
             self.feathers.insert(i + 1, mid);
         }
         self.shape = MaskShape::Freehand;
         Some(i + 1)
+    }
+
+    /// The side of the shape at time `t` nearest to `p` (layer pixels): (side
+    /// `i`, from point `i` to the next; how far along it, 0–1; distance).
+    /// `None` for an ellipse.
+    pub fn nearest_side(&self, t: Time, p: [f32; 2]) -> Option<(usize, f32, f32)> {
+        if self.shape == MaskShape::Ellipse {
+            return None;
+        }
+        let pts = self.points_at(t);
+        let curves = self.curves_at(t);
+        let n = pts.len();
+        if n < 2 {
+            return None;
+        }
+        let handle = |k: usize, slot: usize| curves.get(k).map_or([0.0, 0.0], |c| [c[slot], c[slot + 1]]);
+        let mut best: Option<(usize, f32, f32)> = None;
+        const STEPS: usize = 64;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let (a, b) = (pts[i], pts[j]);
+            let (o, inn) = (handle(i, 2), handle(j, 0));
+            let (c1, c2) = ([a[0] + o[0], a[1] + o[1]], [b[0] + inn[0], b[1] + inn[1]]);
+            let straight = o == [0.0, 0.0] && inn == [0.0, 0.0];
+            for k in 0..=STEPS {
+                let s = k as f32 / STEPS as f32;
+                // A straight side is cut proportionally (see `split_side_at`).
+                let q = if straight { [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s] } else { cubic(a, c1, c2, b, s) };
+                let d = ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt();
+                if best.is_none_or(|x| d < x.2) {
+                    best = Some((i, s, d));
+                }
+            }
+        }
+        best
     }
 
     /// Take point `i` out of the shape and every keyframe. A shape keeps at
@@ -545,7 +592,10 @@ fn shape_alpha(poly: &[[f32; 2]], feathers: &[f32], w: usize, h: usize, expansio
 /// Split the side from point `i` to the next of a closed shape in two at its
 /// middle: a straight side at its midpoint, a curved one on the curve (de
 /// Casteljau), with the handles either side shortened so the shape is unchanged.
-fn split_side(points: &mut Vec<[f32; 2]>, curves: &mut Vec<[f32; 4]>, i: usize) {
+/// Split side `i` (from point `i` to the next) at `s` (0–1 along it): a new
+/// point there, and a curved side's handles cut so its shape stays the same
+/// (de Casteljau).
+fn split_side_at(points: &mut Vec<[f32; 2]>, curves: &mut Vec<[f32; 4]>, i: usize, s: f32) {
     let n = points.len();
     if i >= n || n < 2 {
         return;
@@ -555,18 +605,18 @@ fn split_side(points: &mut Vec<[f32; 2]>, curves: &mut Vec<[f32; 4]>, i: usize) 
     let (p0, p3) = (points[i], points[j]);
     let out = [curves[i][2], curves[i][3]];
     let inn = [curves[j][0], curves[j][1]];
-    let mid = |a: [f32; 2], b: [f32; 2]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+    let lerp = |a: [f32; 2], b: [f32; 2]| [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s];
     let sub = |a: [f32; 2], b: [f32; 2]| [a[0] - b[0], a[1] - b[1]];
     if out == [0.0, 0.0] && inn == [0.0, 0.0] {
-        points.insert(i + 1, mid(p0, p3));
+        points.insert(i + 1, lerp(p0, p3));
         curves.insert(i + 1, [0.0; 4]);
         return;
     }
     let p1 = [p0[0] + out[0], p0[1] + out[1]];
     let p2 = [p3[0] + inn[0], p3[1] + inn[1]];
-    let (p01, p12, p23) = (mid(p0, p1), mid(p1, p2), mid(p2, p3));
-    let (p012, p123) = (mid(p01, p12), mid(p12, p23));
-    let m = mid(p012, p123);
+    let (p01, p12, p23) = (lerp(p0, p1), lerp(p1, p2), lerp(p2, p3));
+    let (p012, p123) = (lerp(p01, p12), lerp(p12, p23));
+    let m = lerp(p012, p123);
     let o = sub(p01, p0);
     curves[i][2] = o[0];
     curves[i][3] = o[1];
@@ -585,6 +635,49 @@ mod tests {
     /// Area inside a polygon (shoelace).
     fn area(p: &[[f32; 2]]) -> f32 {
         (0..p.len()).map(|i| { let (a, b) = (p[i], p[(i + 1) % p.len()]); a[0] * b[1] - b[0] * a[1] }).sum::<f32>().abs() / 2.0
+    }
+
+    #[test]
+    fn a_point_goes_where_the_side_was_clicked_and_curves_keep_their_shape() {
+        // A square, 0–100; click a quarter of the way along its top side.
+        let mut m = Mask { shape: MaskShape::Rectangle, points: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]], ..Mask::default() };
+        let (i, s, d) = m.nearest_side(Time::ZERO, [25.0, 3.0]).unwrap();
+        assert_eq!(i, 0);
+        assert!((s - 0.25).abs() < 0.02 && (d - 3.0).abs() < 0.1, "{s} {d}");
+        assert_eq!(m.insert_point_on(i, s), Some(1));
+        assert!((m.points[1][0] - 25.0).abs() < 2.0 && m.points[1][1] == 0.0);
+        assert_eq!(m.shape, MaskShape::Freehand);
+        // The bottom side, now from point 3 (100, 100) to point 4 (0, 100).
+        assert_eq!(m.nearest_side(Time::ZERO, [70.0, 98.0]).unwrap().0, 3);
+        // A curved side: the outline is the same after the cut, and the new
+        // point is on the curve.
+        let mut c = Mask { shape: MaskShape::Freehand, points: vec![[0.0, 0.0], [100.0, 0.0], [50.0, 80.0]], curves: vec![[0.0, 0.0, 30.0, -40.0], [-30.0, -40.0, 0.0, 0.0], [0.0; 4]], ..Mask::default() };
+        let before = c.outline(Time::ZERO);
+        let (i, s, _) = c.nearest_side(Time::ZERO, [70.0, -25.0]).unwrap();
+        assert_eq!(i, 0);
+        c.insert_point_on(i, s).unwrap();
+        // Distance from `q` to the old outline (a closed polyline).
+        let to_old = |q: [f32; 2]| {
+            (0..before.len())
+                .map(|k| {
+                    let (a, b) = (before[k], before[(k + 1) % before.len()]);
+                    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                    let t = (((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / (dx * dx + dy * dy).max(1e-9)).clamp(0.0, 1.0);
+                    ((a[0] + dx * t - q[0]).powi(2) + (a[1] + dy * t - q[1]).powi(2)).sqrt()
+                })
+                .fold(f32::MAX, f32::min)
+        };
+        let near = to_old(c.points[1]);
+        assert!(near < 0.5, "the new point is on the old curve ({near})");
+        for q in c.outline(Time::ZERO) {
+            let d = to_old(q);
+            assert!(d < 0.5, "the outline keeps its shape ({d} at {q:?})");
+        }
+        // Keyframes are cut at the same place.
+        let mut k = Mask { shape: MaskShape::Freehand, points: vec![[0.0, 0.0], [100.0, 0.0], [50.0, 80.0]], ..Mask::default() };
+        k.keys = vec![ShapeKey::new(Time::ZERO, k.points.clone()), ShapeKey::new(Time::from_secs_f64(1.0), vec![[0.0, 0.0], [200.0, 0.0], [50.0, 80.0]])];
+        k.insert_point_on(0, 0.25).unwrap();
+        assert_eq!(k.keys[1].points[1], [50.0, 0.0]);
     }
 
     #[test]
