@@ -250,7 +250,12 @@ What works now:
   - **Gaussian blur**: radius in pixels (two separable passes, any size)
   - **Sharpen**: unsharp mask with amount and radius
   - **Chroma key**: pick the key colour by hue (green by default, with a swatch), threshold,
-    softness and spill suppression
+    softness and spill suppression (the screen's tint taken out of what's kept, brightness
+    unchanged). Then the matte: **Clip black** and **Clip white** make the nearly-gone fully
+    gone and the nearly-solid fully solid; **Choke** shrinks the edge inwards (or, negative,
+    grows it, taking the colour from inside); **Edge softness** blurs only the matte, so the
+    picture stays sharp. **View → Matte** shows the matte in black and white (white kept,
+    black keyed out), the quickest way to spot holes and noise
   - **Glow**: threshold, radius, intensity and softness; bright areas bloom outwards
   - **Drop shadow**: distance, angle, softness and opacity, from the layer's alpha
   - **Vignette**: amount, size and softness

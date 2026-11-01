@@ -162,11 +162,31 @@ const COLOR_CORRECT: [ParamSpec; 5] = [
     spec("Tint", 0.0, -100.0, 100.0, "", 0.5),
 ];
 const BLUR: [ParamSpec; 1] = [spec("Radius", 10.0, 0.0, 250.0, " px", 0.25)];
-const CHROMA_KEY: [ParamSpec; 4] = [
+/// Chroma key parameter indices past the first four (key hue, threshold,
+/// softness, spill).
+pub mod key {
+    pub const CLIP_BLACK: usize = 4;
+    pub const CLIP_WHITE: usize = 5;
+    pub const CHOKE: usize = 6;
+    pub const EDGE_SOFTNESS: usize = 7;
+    pub const VIEW: usize = 8;
+    /// `VIEW` values.
+    pub const VIEW_RESULT: f32 = 0.0;
+    pub const VIEW_MATTE: f32 = 1.0;
+}
+
+const CHROMA_KEY: [ParamSpec; 9] = [
     spec("Key hue", 120.0, 0.0, 360.0, "°", 0.5),
     spec("Threshold", 12.0, 0.0, 100.0, " %", 0.2),
     spec("Softness", 10.0, 0.0, 100.0, " %", 0.2),
     spec("Spill", 60.0, 0.0, 100.0, " %", 0.5),
+    // The matte: what's below Clip black becomes fully see-through, above Clip white fully solid.
+    spec("Clip black", 0.0, 0.0, 99.0, " %", 0.2),
+    spec("Clip white", 100.0, 1.0, 100.0, " %", 0.2),
+    // + shrinks the matte (eats into the edge), − grows it.
+    spec("Choke", 0.0, -20.0, 20.0, " px", 0.05),
+    spec("Edge softness", 0.0, 0.0, 30.0, " px", 0.05),
+    choice("View", &["Result", "Matte (black and white)"]),
 ];
 const LEVELS: [ParamSpec; 5] = [
     spec("Input black", 0.0, 0.0, 254.0, "", 0.5),
@@ -545,7 +565,7 @@ impl EffectKind {
             EffectKind::Lut => "Apply a colour look or camera conversion from a .cube LUT file.",
             EffectKind::Blur => "Soft, even blur.",
             EffectKind::Sharpen => "Crisper edges and detail.",
-            EffectKind::ChromaKey => "Remove a green or blue screen.",
+            EffectKind::ChromaKey => "Remove a green or blue screen: spill suppression, matte clipping, choke and edge softness, and a black-and-white matte view.",
             EffectKind::Glow => "Bright areas bloom out with a soft halo.",
             EffectKind::DropShadow => "A soft shadow behind a title, logo or keyed subject.",
             EffectKind::Vignette => "Darken the edges to draw the eye to the middle.",
@@ -608,6 +628,7 @@ impl EffectKind {
             EffectKind::Particles => &[(0, "Emitter"), (4, "Birth"), (7, "Motion"), (13, "Look")],
             EffectKind::Camera => &[(0, "Position"), (3, "Point of interest"), (6, "Lens"), (8, "Depth of field")],
             EffectKind::Point => &[(0, "Position"), (3, "Rotation and scale")],
+            EffectKind::ChromaKey => &[(0, "Key"), (4, "Matte")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff")],
             _ => &[],
         }

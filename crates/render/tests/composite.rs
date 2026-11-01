@@ -1114,3 +1114,55 @@ fn stylise_effects_do_what_they_say() {
     let warm = (0..h).map(|y| px(&lk0, w, 4, y)).max_by_key(|p| lum(*p)).unwrap();
     assert!(warm[0] > warm[2] + 40, "warm: {warm:?}");
 }
+
+/// A 32×32 green screen with a skin-toned 12×12 square in the middle (10–21),
+/// keyed over black: the matte view, clipping, choke and edge softness.
+#[test]
+fn key_matte_view_choke_and_softness() {
+    use reelforge_core::effects::key;
+    let Some(mut c) = setup() else { return };
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    let mut img = Vec::new();
+    for y in 0..32 {
+        for x in 0..32 {
+            img.extend(if (10..22).contains(&x) && (10..22).contains(&y) { [205, 150, 125, 255] } else { [50, 180, 80, 255] });
+        }
+    }
+    let mut n = 10;
+    let mut shot = |set: &[(usize, f32)]| {
+        n += 1;
+        let fg = layer(n, &img, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+        c.render([32, 32], &[full(1, &black, [32, 32]), with_fx(fg, vec![fx(EffectKind::ChromaKey, set)])]);
+        c.read_output().unwrap()
+    };
+    let row = |img: &[u8], y: u32| -> Vec<u8> { (0..32).map(|x| px(img, 32, x, y)[1]).collect() };
+    // The matte: white where kept, black where keyed out (opaque, over the black below).
+    let m = shot(&[(key::VIEW, key::VIEW_MATTE)]);
+    assert!(near(px(&m, 32, 16, 16), [255, 255, 255]) && near(px(&m, 32, 3, 16), [0, 0, 0]), "{:?}", row(&m, 16));
+    // The result: the square, the screen gone.
+    let r = shot(&[]);
+    assert!(near(px(&r, 32, 16, 16), [205, 150, 125]) && near(px(&r, 32, 3, 16), [0, 0, 0]));
+    // Choke 3 px: the square's matte shrinks by 3 px each side; −3 grows it.
+    let m = shot(&[(key::VIEW, key::VIEW_MATTE), (key::CHOKE, 3.0)]);
+    let r16 = row(&m, 16);
+    assert!(r16[12] < 10 && r16[13] > 245 && r16[18] > 245 && r16[19] < 10, "choke: {r16:?}");
+    assert!(px(&m, 32, 16, 12)[0] < 10 && px(&m, 32, 16, 13)[0] > 245, "both ways");
+    let m = shot(&[(key::VIEW, key::VIEW_MATTE), (key::CHOKE, -3.0)]);
+    let r16 = row(&m, 16);
+    assert!(r16[6] < 10 && r16[7] > 245 && r16[24] > 245 && r16[25] < 10, "grow: {r16:?}");
+    // …and grown, the extra ring takes the square's colour, not the screen's.
+    let r = shot(&[(key::CHOKE, -2.0)]);
+    assert!(near(px(&r, 32, 8, 16), [205, 150, 125]), "{:?}", px(&r, 32, 8, 16));
+    // Edge softness: the edge ramps over several pixels; the middle stays solid.
+    let m = shot(&[(key::VIEW, key::VIEW_MATTE), (key::EDGE_SOFTNESS, 4.0)]);
+    let r16 = row(&m, 16);
+    let between = r16[7..13].iter().filter(|&&v| v > 20 && v < 235).count();
+    assert!(between >= 3 && r16[16] > 245 && r16[2] < 10, "soft: {r16:?}");
+    // Clip white below how much of the screen is left lifts a half-keyed screen to solid.
+    let half = shot(&[(key::VIEW, key::VIEW_MATTE), (1, 0.0), (2, 100.0)]);
+    let clipped = shot(&[(key::VIEW, key::VIEW_MATTE), (1, 0.0), (2, 100.0), (key::CLIP_WHITE, 20.0)]);
+    let (h, k) = (px(&half, 32, 3, 3)[0], px(&clipped, 32, 3, 3)[0]);
+    assert!(h > 5 && h < 250 && k > h, "clip white: {h} → {k}");
+    let gone = shot(&[(key::VIEW, key::VIEW_MATTE), (1, 0.0), (2, 100.0), (key::CLIP_BLACK, 98.0)]);
+    assert!(px(&gone, 32, 3, 3)[0] < h, "clip black");
+}

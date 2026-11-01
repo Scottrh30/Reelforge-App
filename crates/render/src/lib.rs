@@ -478,7 +478,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1159,8 +1159,37 @@ impl Compositor {
                         cur = o1;
                     }
                     EffectKind::ChromaKey => {
-                        push("fs_key", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
-                        cur = o1;
+                        use reelforge_core::effects::key;
+                        let (choke, soft) = (e.values[key::CHOKE], e.values[key::EDGE_SOFTNESS]);
+                        if choke.abs() < 0.01 && soft < 0.01 {
+                            push("fs_key", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                            cur = o1;
+                        } else {
+                            // Straight colour with the matte in alpha, then the matte
+                            // choked and softened (each in two directions), then put together.
+                            let mut v = e.values;
+                            v[9] = 1.0;
+                            push("fs_key", cur, Second::None, o1, uniform(&v, [0.0; 2]));
+                            let (mut a, mut b) = (o1, o2);
+                            let mut pass = |entry: &'static str, reach: f32, sign: f32, from: usize, into: usize| {
+                                let mut vx = [0.0; reelforge_core::effects::MAX_PARAMS];
+                                (vx[0], vx[1]) = (reach * kx, sign);
+                                let mut vy = vx;
+                                vy[0] = reach * ky;
+                                push(entry, from, Second::None, cur, uniform(&vx, [1.0, 0.0]));
+                                push(entry, cur, Second::None, into, uniform(&vy, [0.0, 1.0]));
+                            };
+                            if choke.abs() >= 0.01 {
+                                pass("fs_key_choke", choke.abs(), choke.signum(), a, b);
+                                std::mem::swap(&mut a, &mut b);
+                            }
+                            if soft >= 0.01 {
+                                pass("fs_key_soft", soft * 0.5, 0.0, a, b);
+                                std::mem::swap(&mut a, &mut b);
+                            }
+                            push("fs_key_out", a, Second::None, b, uniform(&e.values, [0.0; 2]));
+                            cur = b;
+                        }
                     }
                     EffectKind::Vignette => {
                         push("fs_vignette", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));

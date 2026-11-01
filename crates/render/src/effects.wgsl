@@ -120,7 +120,10 @@ fn chroma(g: vec3<f32>) -> vec2<f32> {
     return vec2((g.b - y) / 1.8556, (g.r - y) / 1.5748);
 }
 
-// Chroma key: p0 = (key hue°, threshold %, softness %, spill %).
+// Chroma key: p0 = (key hue°, threshold %, softness %, spill %), p1 = (clip
+// black %, clip white %, choke, edge softness), p2.x = view (0 result, 1 the
+// matte in black and white), p2.y = 1 to output straight (not premultiplied)
+// colour with the matte in alpha, for the choke and softness passes below.
 // Works on gamma-encoded colour, where "how green is this" matches what you see.
 @fragment
 fn fs_key(in: VsOut) -> @location(0) vec4<f32> {
@@ -135,7 +138,11 @@ fn fs_key(in: VsOut) -> @location(0) vec4<f32> {
     let strength = along - across;
     let lo = fx.p0.y / 100.0 * 0.5;
     let hi = lo + fx.p0.z / 100.0 * 0.5 + 1e-4;
-    let keep = 1.0 - smoothstep(lo, hi, strength);
+    var keep = 1.0 - smoothstep(lo, hi, strength);
+    // Clip the matte: below black is gone, above white is solid.
+    let cb = fx.p1.x / 100.0;
+    let cw = max(fx.p1.y / 100.0, cb + 0.01);
+    keep = clamp((keep - cb) / (cw - cb), 0.0, 1.0);
     // Spill suppression: take the key colour's tint out of what remains.
     let c2 = cc - k * max(strength, 0.0) * (fx.p0.w / 100.0);
     let r = y + 1.5748 * c2.y;
@@ -143,7 +150,74 @@ fn fs_key(in: VsOut) -> @location(0) vec4<f32> {
     let gg = (y - 0.2126 * r - 0.0722 * b) / 0.7152;
     let lin = pow(max(vec3(r, gg, b), vec3(0.0)), vec3(2.2));
     let a = c.a * keep;
+    if (fx.p2.y > 0.5) {
+        return vec4(lin, a);
+    }
+    if (fx.p2.x > 0.5) {
+        return key_matte(a);
+    }
     return vec4(lin * a, a);
+}
+
+// The matte view: kept is white, keyed out black, over the whole layer.
+fn key_matte(a: f32) -> vec4<f32> {
+    return vec4(vec3(a), 1.0);
+}
+
+// Choke, one direction (straight colour, matte in alpha): p0.x = reach in
+// texels, p0.y = 1 to shrink the matte (the smallest alpha around), −1 to
+// grow it (the largest, with that pixel's colour).
+@fragment
+fn fs_key_choke(in: VsOut) -> @location(0) vec4<f32> {
+    let dir = fx.texel_dir.xy * fx.texel_dir.zw;
+    var best = textureSample(src, src_sampler, to_tex(in.uv));
+    let reach = min(fx.p0.x, 64.0);
+    let shrink = fx.p0.y > 0.0;
+    let whole = ceil(reach);
+    for (var i = 1.0; i <= whole; i = i + 1.0) {
+        // The last step counts only as far as the reach goes past the one before.
+        let w = clamp(reach - (i - 1.0), 0.0, 1.0);
+        for (var s = -1.0; s <= 1.0; s = s + 2.0) {
+            let t = textureSample(src, src_sampler, to_tex(in.uv + dir * i * s));
+            if (shrink) {
+                best.a = mix(best.a, min(best.a, t.a), w);
+            } else if (t.a > best.a) {
+                best = vec4(mix(best.rgb, t.rgb, w), mix(best.a, t.a, w));
+            }
+        }
+    }
+    return best;
+}
+
+// Edge softness, one direction: a Gaussian blur of the matte only (the colour
+// stays sharp). p0.x = sigma in texels.
+@fragment
+fn fs_key_soft(in: VsOut) -> @location(0) vec4<f32> {
+    let sigma = max(fx.p0.x, 0.01);
+    let reach = 3.0 * sigma;
+    let taps = min(ceil(reach), 64.0);
+    let step = reach / max(taps, 1.0);
+    let dir = fx.texel_dir.xy * fx.texel_dir.zw;
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    var sum = c.a;
+    var total = 1.0;
+    for (var i = 1.0; i <= taps; i = i + 1.0) {
+        let x = i * step;
+        let w = exp(-0.5 * x * x / (sigma * sigma));
+        sum = sum + w * (textureSample(src, src_sampler, to_tex(in.uv + dir * x)).a + textureSample(src, src_sampler, to_tex(in.uv - dir * x)).a);
+        total = total + 2.0 * w;
+    }
+    return vec4(c.rgb, sum / total);
+}
+
+// The keyed layer from straight colour and matte: p2.x = view (see fs_key).
+@fragment
+fn fs_key_out(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    if (fx.p2.x > 0.5) {
+        return key_matte(c.a);
+    }
+    return vec4(c.rgb * c.a, c.a);
 }
 
 // Vignette: p0 = (amount %, size %, softness %).
