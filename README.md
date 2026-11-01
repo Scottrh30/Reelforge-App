@@ -1476,11 +1476,12 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    LUTs, blur, sharpen, chroma key, glow, drop shadow, vignette, an effects browser;
    dissolve, dip, wipe, iris, slide and push transitions~~
    (stylise effects: lens flare, light leaks, film grain, glitch, chromatic aberration,
-   camera shake, energy blade, particles; glow and shadow spill past the layer; still to add:
-   saved effect presets)
+   camera shake, energy blade, particles; glow and shadow spill past the layer; saved effect
+   presets; a chroma key with matte clipping, choke, edge softness and a matte view)
 6. **Compositing**: ~~compositions (nested sequences), motion tracking (1, 2 and 4
-   points: follow, stabilise with smoothing, corner pin / screen replacement), corner pin,
-   masks with Bézier curves and per-point feather, GPU particles~~, titles and track management are done.
+   points, planar and mesh: follow, stabilise with smoothing, corner pin / screen replacement),
+   corner pin, masks with Bézier curves and per-point feather, mask tracking for rotoscoping,
+   GPU particles~~, titles and track management are done.
    Still to come: automatic
    zoom to hide stabilisation edges, animated text presets (3D layers, a camera
    and lights are in).
