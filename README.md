@@ -582,7 +582,9 @@ What works now:
     feather blends between points along the sides (**Reset** goes back to the mask's feather)
   - **Animate shape**: once ticked, reshaping the mask (points and handles) at the playhead
     sets a keyframe there
-  - Masks are applied before the clip's effects and move with the layer's transform
+  - Masks are applied before the clip's effects and move with the layer's transform. They
+    work on every kind of layer: footage, pictures, titles, compositions and solid colours (a
+    solid's mask and effects run at the layer's full size, so its edges are crisp)
   - With a tracker on the clip, **Apply to → Mask: …** makes the mask follow the tracked point
   - **Track shape** (rotoscoping, footage clips): draw the mask around something, then ◀ or
     ▶ follows what's inside it from the playhead to the clip's start or end, keying the shape

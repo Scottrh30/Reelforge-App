@@ -1057,12 +1057,16 @@ impl Compositor {
                 log::warn!("too many effect passes; skipping effects on some layers");
                 break;
             }
+            // The resolution its effects and mask run at: its own pixels, except
+            // for a tiny picture stretched over the layer (a solid colour's 1 × 1),
+            // which gets the layer's size so a mask's edge or a blur has room.
+            let fx_px = fx_resolution(l.pixel_size, l.layer_size);
             // Room round the layer for what glows and shadows spill past its edges.
-            let margin = if below || l.mesh.is_some() { [0, 0] } else { effect_margin(&l.effects, l.pixel_size, l.layer_size) };
-            let padded = [l.pixel_size[0] + 2 * margin[0], l.pixel_size[1] + 2 * margin[1]];
+            let margin = if below || l.mesh.is_some() { [0, 0] } else { effect_margin(&l.effects, fx_px, l.layer_size) };
+            let padded = [fx_px[0] + 2 * margin[0], fx_px[1] + 2 * margin[1]];
             self.ensure_fx_targets(l.key, padded);
             let map = {
-                let (pw, ph) = (l.pixel_size[0].max(1) as f32, l.pixel_size[1].max(1) as f32);
+                let (pw, ph) = (fx_px[0].max(1) as f32, fx_px[1].max(1) as f32);
                 [padded[0] as f32 / pw, padded[1] as f32 / ph, -(margin[0] as f32) / pw, -(margin[1] as f32) / ph]
             };
             margins.insert(l.key, map);
@@ -1072,7 +1076,7 @@ impl Compositor {
                     self.upload_table((l.key, i), t);
                 }
             }
-            let [pw, ph] = [l.pixel_size[0].max(1) as f32, l.pixel_size[1].max(1) as f32];
+            let [pw, ph] = [fx_px[0].max(1) as f32, fx_px[1].max(1) as f32];
             let aspect = l.layer_size[0] / l.layer_size[1].max(1.0);
             // Frame pixels at 100% scale → this layer's texels.
             let (kx, ky) = (pw / l.layer_size[0].max(1.0), ph / l.layer_size[1].max(1.0));
@@ -1804,6 +1808,15 @@ static ADAPTER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// The graphics card the compositor got (name, API, kind, driver), once one was opened.
 pub fn adapter_info() -> Option<&'static str> {
     ADAPTER.get().map(String::as_str)
+}
+
+/// The resolution a layer's effects and mask run at (see the call).
+fn fx_resolution(pixel_size: [u32; 2], layer_size: [f32; 2]) -> [u32; 2] {
+    if pixel_size[0] >= 16 || pixel_size[1] >= 16 {
+        return pixel_size;
+    }
+    let side = |v: f32| (v.round() as u32).clamp(1, 4096);
+    [side(layer_size[0]), side(layer_size[1])]
 }
 
 /// How far (in texels, x and y) a layer's effects spread past its edges:

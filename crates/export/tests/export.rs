@@ -1164,3 +1164,45 @@ fn film_grain_changes_every_exported_frame() {
     assert!(differ(&a, &b) > 1000 && differ(&b, &c) > 1000, "{} {}", differ(&a, &b), differ(&b, &c));
     std::fs::remove_file(&out).ok();
 }
+
+/// A mask shows the layer inside it and nothing outside, on every kind of
+/// layer: a solid colour (a 1 × 1 picture stretched over the frame, whose
+/// mask used to be judged at that one pixel), a title and a picture, with
+/// the mask off to one side.
+#[test]
+fn masks_show_the_layer_inside_them_on_every_kind_of_layer() {
+    use reelforge_core::mask::{Mask, MaskShape};
+    let Some(red) = solid_clip("rf_red.mp4", "red", "640x360") else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    // A freehand triangle in the top-left quarter: the layer's middle is outside it.
+    let tri = Mask { shape: MaskShape::Freehand, points: vec![[40.0, 40.0], [280.0, 60.0], [60.0, 160.0]], ..Mask::default() };
+    // A title whose background box covers the frame.
+    let spec = reelforge_core::TitleSpec { text: "M".into(), size: 80.0, color: [255, 255, 255, 255], background: true, background_color: [0, 0, 255, 255], background_padding: 400.0, ..Default::default() };
+    let kinds: Vec<(&str, Clip)> = vec![
+        ("solid colour", Clip::new_plane(ClipId(2), s(0.0), s(1.0), [0, 200, 0, 255])),
+        ("video", Clip::new(ClipId(2), MediaId(1), s(0.0), s(0.0), s(1.0), None)),
+        ("title", Clip::new_title(ClipId(2), s(0.0), s(1.0), spec)),
+    ];
+    for (what, mut clip) in kinds {
+        clip.masks = vec![tri.clone()];
+        let mut p = Project::new();
+        p.media.push(asset(1, &red));
+        let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+        seq.tracks[0].clips = vec![clip];
+        p.sequences = vec![seq];
+        for _ in 0..10 {
+            p.alloc_id();
+        }
+        let out = std::env::temp_dir().join(format!("rf_masked_{}.mp4", what.replace(' ', "_")));
+        let mut st = settings(out.clone());
+        (st.end, st.include_audio) = (s(0.2), false);
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        let mut dec = FrameSource::open(&out, None).unwrap();
+        let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+        let px = |x: u32, y: u32| f.rgba()[((y * 640 + x) * 4) as usize..][..3].iter().map(|&v| v as i32).sum::<i32>();
+        // Inside the triangle near its first corner, and well outside it.
+        assert!(px(80, 70) > 150, "{what}: the layer shows inside the mask ({})", px(80, 70));
+        assert!(px(320, 180) < 30 && px(600, 330) < 30, "{what}: nothing outside it ({}, {})", px(320, 180), px(600, 330));
+    }
+}
