@@ -524,7 +524,9 @@ What works now:
   a new project from a preset, drawn to its shape — **Social** (Vertical 9:16 at 30 or 60 fps for
   Reels/TikTok/Shorts, Portrait 4:5, Square 1:1), **Web & TV** (1080p at 30, 60, 25 and 29.97
   fps, 4K UHD at 30, 60 and 24, 720p) and **Cinema** (1080p at 24 and 23.976, Scope 2.39:1 and
-  Flat 1.85:1 at 4K, DCI 2K, 4K and 2K Scope) — or **any size** and frame rate typed in; or from
+  Flat 1.85:1 at 4K, DCI 2K, 4K and 2K Scope). Click a card for its usual frame rate (outlined),
+  or one of the rates under it: every preset also offers 25, 30, 50 and 60 fps. Each section
+  folds shut with a click on its heading (remembered). Or **any size** and frame rate typed in; or from
   **your templates**: **File → Save as template…** keeps a whole project to start from (its
   sequences, tracks, titles, effects and media), and a project started from one is new and
   unsaved, so the template is never written over. **Recent projects** sit beside them, newest

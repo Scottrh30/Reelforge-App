@@ -47,7 +47,27 @@
     await run(make());
     app.startOpen = false;
   }
-  const fromPreset = (p: PresetView) => begin(() => api.startNewPreset(p.id));
+  const fromPreset = (p: PresetView, rate: [number, number] | null = null) => begin(() => api.startNewPreset(p.id, rate));
+
+  // Preset groups folded shut, remembered between sessions (all open to start with).
+  const FOLD_KEY = "reelforge.start.folded";
+  let folded = $state<Record<string, boolean>>(
+    (() => {
+      try {
+        return JSON.parse(localStorage.getItem(FOLD_KEY) ?? "{}") ?? {};
+      } catch {
+        return {};
+      }
+    })(),
+  );
+  function toggle(g: string) {
+    folded[g] = !folded[g];
+    try {
+      localStorage.setItem(FOLD_KEY, JSON.stringify(folded));
+    } catch {
+      // Not remembered, then.
+    }
+  }
   const fromTemplate = (path: string) => begin(() => api.startNewTemplate(path));
   function fromCustom() {
     const [num, den] = custom.rate.split("/").map(Number);
@@ -175,20 +195,33 @@
           {:else}
             <div class="scroll">
               {#each groups as g}
-                <h3>{g}</h3>
-                <div class="grid">
-                  {#each view.presets.filter((p) => p.group === g) as p (p.id)}
+                {@const list = view.presets.filter((p) => p.group === g)}
+                <button class="group" aria-expanded={!folded[g]} aria-controls="presets-{g}" onclick={() => toggle(g)} title={folded[g] ? `Show the ${g} presets` : `Hide the ${g} presets`}>
+                  <span class="chev" class:shut={folded[g]} aria-hidden="true">▾</span>
+                  <h3>{g}</h3>
+                  <span class="count">{list.length}</span>
+                </button>
+                {#if !folded[g]}
+                <div class="grid" id="presets-{g}">
+                  {#each list as p (p.id)}
                     {@const [sw, sh] = shape(p.width, p.height)}
-                    <button class="card" onclick={() => fromPreset(p)} title="New {p.name} project ({p.summary})">
+                    <div class="card" role="button" tabindex="0" onclick={() => fromPreset(p)} onkeydown={(e) => e.target === e.currentTarget && e.key === "Enter" && fromPreset(p)} title="New {p.name} project ({p.summary})">
                       <div class="shape"><div class="box" style="width:{sw}px;height:{sh}px"></div><span>{ratio(p.width, p.height)}</span></div>
                       <div class="text">
                         <span class="name">{p.name}</span>
                         <span class="sum">{p.summary}</span>
                         <span class="detail">{p.detail}</span>
+                        <span class="rates" role="group" aria-label="Frame rate (fps)" title="Frame rate: click one to start at it">
+                          {#each p.rates as [n, d, label]}
+                            {@const own = n === p.rate[0] && d === p.rate[1]}
+                            <button class="rate" class:own onclick={(e) => (e.stopPropagation(), fromPreset(p, [n, d]))} title="New {p.name} project at {label} fps{own ? ' (its usual rate)' : ''}">{label}</button>
+                          {/each}
+                        </span>
                       </div>
-                    </button>
+                    </div>
                   {/each}
                 </div>
+                {/if}
               {/each}
             </div>
           {/if}
@@ -498,14 +531,73 @@
     min-height: 0;
     padding-right: 4px;
   }
+  .group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0 0;
+    padding: 2px 4px;
+    min-height: 24px;
+    background: none;
+    border: 0;
+    border-radius: 5px;
+    color: var(--muted);
+    cursor: pointer;
+    text-align: left;
+  }
+  .group:hover,
+  .group:focus-visible {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .scroll .group:first-child {
+    margin-top: 0;
+  }
+  .chev {
+    display: inline-block;
+    width: 12px;
+    transition: transform 0.12s;
+  }
+  .chev.shut {
+    transform: rotate(-90deg);
+  }
+  .group h3 {
+    color: inherit;
+  }
+  .rates {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
+    margin-top: 3px;
+  }
+  .rate {
+    min-height: 18px;
+    padding: 0 4px;
+    border-radius: 4px;
+    font-size: calc(10.5px * var(--text-scale));
+    font-variant-numeric: tabular-nums;
+    background: var(--panel);
+    border: 1px solid var(--line-soft);
+    color: var(--muted);
+  }
+  .rate:hover,
+  .rate:focus-visible {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .rate.own {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--line-soft));
+  }
   h3 {
     margin: 6px 0 0;
     font-size: calc(12px * var(--text-scale));
     font-weight: 600;
     color: var(--muted);
   }
-  .scroll h3:first-child {
-    margin-top: 0;
+  .group h3 {
+    margin: 0;
   }
   .empty {
     color: var(--muted);

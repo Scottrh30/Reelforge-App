@@ -27,6 +27,19 @@ impl Preset {
         FrameRate::new(self.rate.0 as i64, self.rate.1 as i64)
     }
 
+    /// The frame rates it can start at: its own, and 25, 30, 50 and 60 fps,
+    /// slowest first.
+    pub fn rates(&self) -> Vec<(u32, u32)> {
+        let mut v = vec![self.rate];
+        for r in EXTRA_RATES {
+            if !v.iter().any(|&(n, d)| n as u64 * r.1 as u64 == r.0 as u64 * d as u64) {
+                v.push(r);
+            }
+        }
+        v.sort_by(|a, b| (a.0 as u64 * b.1 as u64).cmp(&(b.0 as u64 * a.1 as u64)));
+        v
+    }
+
     /// e.g. "1080 × 1920 · 30 fps".
     pub fn summary(&self) -> String {
         format!("{} × {} · {} fps", self.width, self.height, rate_label(self.frame_rate()))
@@ -47,6 +60,9 @@ pub fn rate_label(r: FrameRate) -> String {
 const fn p(id: &'static str, group: &'static str, name: &'static str, detail: &'static str, width: u32, height: u32, rate: (u32, u32)) -> Preset {
     Preset { id, group, name, detail, width, height, rate }
 }
+
+/// Frame rates every preset also offers.
+pub const EXTRA_RATES: [(u32, u32); 4] = [(25, 1), (30, 1), (50, 1), (60, 1)];
 
 /// The built-in presets, in the order the start screen shows them.
 pub const PRESETS: &[Preset] = &[
@@ -224,6 +240,21 @@ mod tests {
         assert_eq!(preset("film-2398").unwrap().summary(), "1920 × 1080 · 23.976 fps");
         let scope = preset("scope-uhd").unwrap();
         assert!((scope.width as f64 / scope.height as f64 - 2.39).abs() < 0.01);
+    }
+
+    #[test]
+    fn every_preset_offers_25_30_50_and_60_fps_and_its_own() {
+        for p in PRESETS {
+            let r = p.rates();
+            for x in EXTRA_RATES {
+                assert!(r.contains(&x), "{}: {x:?}", p.id);
+            }
+            assert!(r.contains(&p.rate), "{}", p.id);
+            let fps: Vec<f64> = r.iter().map(|&(n, d)| n as f64 / d as f64).collect();
+            assert!(fps.windows(2).all(|w| w[0] < w[1]), "{}: slowest first, no repeats: {fps:?}", p.id);
+        }
+        assert_eq!(preset("film-2398").unwrap().rates(), vec![(24000, 1001), (25, 1), (30, 1), (50, 1), (60, 1)]);
+        assert_eq!(preset("hd-30").unwrap().rates(), vec![(25, 1), (30, 1), (50, 1), (60, 1)]);
     }
 
     #[test]

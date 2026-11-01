@@ -36,6 +36,10 @@ pub struct PresetView {
     pub width: u32,
     pub height: u32,
     pub summary: String,
+    /// The frame rates it can start at: (numerator, denominator, "29.97"), and
+    /// which one is its own.
+    pub rates: Vec<(u32, u32, String)>,
+    pub rate: (u32, u32),
 }
 
 #[derive(Serialize)]
@@ -74,7 +78,17 @@ pub fn start_view() -> Res<StartView> {
         StartView {
             presets: PRESETS
                 .iter()
-                .map(|p| PresetView { id: p.id, group: p.group, name: p.name, detail: p.detail, width: p.width, height: p.height, summary: p.summary() })
+                .map(|p| PresetView {
+                    id: p.id,
+                    group: p.group,
+                    name: p.name,
+                    detail: p.detail,
+                    width: p.width,
+                    height: p.height,
+                    summary: p.summary(),
+                    rates: p.rates().into_iter().map(|(n, d)| (n, d, start::rate_label(FrameRate::new(n as i64, d as i64)))).collect(),
+                    rate: p.rate,
+                })
                 .collect(),
             recent: e
                 .recent
@@ -107,9 +121,11 @@ pub fn start_at_launch() -> bool {
 }
 
 #[tauri::command]
-pub fn start_new_preset(id: String) -> Res<()> {
+pub fn start_new_preset(id: String, rate: Option<(u32, u32)>) -> Res<()> {
     let p = start::preset(&id).ok_or_else(|| format!("no preset \"{id}\""))?;
-    ed(|e| e.new_project_with(p.width, p.height, p.frame_rate()))
+    // One of the rates it offers (its own when none is given).
+    let (n, d) = rate.filter(|r| p.rates().contains(r)).unwrap_or(p.rate);
+    ed(|e| e.new_project_with(p.width, p.height, FrameRate::new(n as i64, d as i64)))
 }
 
 /// A new project of any size: `rate` as numerator and denominator (30/1, 30000/1001…).

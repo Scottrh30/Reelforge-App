@@ -510,6 +510,10 @@ export interface PresetView {
   width: number;
   height: number;
   summary: string;
+  /// Frame rates it can start at: [numerator, denominator, "29.97"].
+  rates: [number, number, string][];
+  /// Its own rate (what clicking the card uses).
+  rate: [number, number];
 }
 
 export interface RecentView {
@@ -831,7 +835,7 @@ export const api = {
   ofxGpu: (on: boolean) => invoke<string>("ofx_gpu", { on }),
   startView: () => invoke<StartView>("start_view"),
   startAtLaunch: () => invoke<boolean>("start_at_launch"),
-  startNewPreset: (id: string) => invoke("start_new_preset", { id }),
+  startNewPreset: (id: string, rate: [number, number] | null = null) => invoke("start_new_preset", { id, rate }),
   startNewCustom: (width: number, height: number, num: number, den: number) => invoke("start_new_custom", { width, height, num, den }),
   startNewTemplate: (path: string) => invoke("start_new_template", { path }),
   startOpenRecent: (path: string) => invoke<boolean>("start_open_recent", { path }),
