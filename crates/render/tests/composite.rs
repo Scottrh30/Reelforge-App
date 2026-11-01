@@ -1166,3 +1166,74 @@ fn key_matte_view_choke_and_softness() {
     let gone = shot(&[(key::VIEW, key::VIEW_MATTE), (1, 0.0), (2, 100.0), (key::CLIP_BLACK, 98.0)]);
     assert!(px(&gone, 32, 3, 3)[0] < h, "clip black");
 }
+
+/// Luma key: a dark background goes, the bright subject stays; "light parts"
+/// does the reverse. The shared matte settings (choke) work for it too.
+#[test]
+fn luma_key_removes_dark_or_light() {
+    use reelforge_core::effects::key;
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    // Near-black around a light grey 12×12 square at 10–21.
+    let mut img = Vec::new();
+    for y in 0..32 {
+        for x in 0..32 {
+            img.extend(if (10..22).contains(&x) && (10..22).contains(&y) { [200, 200, 200, 255] } else { [12, 12, 12, 255] });
+        }
+    }
+    let mut n = 40;
+    let mut shot = |kind: EffectKind, set: &[(usize, f32)]| {
+        n += 1;
+        let fg = layer(n, &img, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+        c.render([32, 32], &[full(1, &red, [32, 32]), with_fx(fg, vec![fx(kind, set)])]);
+        c.read_output().unwrap()
+    };
+    let r = shot(EffectKind::LumaKey, &[]);
+    assert!(near(px(&r, 32, 3, 3), [255, 0, 0]) && near(px(&r, 32, 16, 16), [200, 200, 200]), "dark keyed: {:?} {:?}", px(&r, 32, 3, 3), px(&r, 32, 16, 16));
+    let r = shot(EffectKind::LumaKey, &[(key::LUMA_MODE, 1.0), (key::LUMA_THRESHOLD, 30.0)]);
+    assert!(near(px(&r, 32, 3, 3), [12, 12, 12]) && near(px(&r, 32, 16, 16), [255, 0, 0]), "light keyed");
+    // Choke 3 px through the luma key's own matte settings (from index 3).
+    let base = key::matte_base(EffectKind::LumaKey).unwrap();
+    let m = shot(EffectKind::LumaKey, &[(base + 4, key::VIEW_MATTE), (base + 2, 3.0)]);
+    let row: Vec<u8> = (0..32).map(|x| px(&m, 32, x, 16)[0]).collect();
+    assert!(row[12] < 10 && row[13] > 245 && row[18] > 245 && row[19] < 10, "choke: {row:?}");
+}
+
+/// Difference key: whatever matches the clean plate goes; what differs stays.
+#[test]
+fn difference_key_removes_what_matches_the_plate() {
+    use reelforge_core::effects::key;
+    use std::sync::Arc;
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    // A busy background (a gradient with noise), and the same with a blue square on it.
+    let bg = |x: u32, y: u32| -> [u8; 4] { [(x * 7 + y * 3) as u8 % 200 + 20, (y * 6) as u8 % 180 + 40, ((x ^ y) * 9) as u8 % 160 + 50, 255] };
+    let mut plate = Vec::new();
+    let mut shot = Vec::new();
+    for y in 0..32u32 {
+        for x in 0..32u32 {
+            plate.extend(bg(x, y));
+            shot.extend(if (10..22).contains(&x) && (10..22).contains(&y) { [30, 60, 230, 255] } else { bg(x, y) });
+        }
+    }
+    let table = Arc::new(reelforge_core::lut::Table { id: 77, width: 32, height: 32, rgba: plate, cube_size: 0 });
+    let mut e = fx(EffectKind::DifferenceKey, &[]);
+    e.table = Some(table.clone());
+    let fg = layer(60, &shot, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+    c.render([32, 32], &[full(1, &red, [32, 32]), with_fx(fg, vec![e])]);
+    let r = c.read_output().unwrap();
+    for (x, y) in [(2, 2), (5, 28), (28, 9), (30, 30)] {
+        assert!(near(px(&r, 32, x, y), [255, 0, 0]), "background at {x},{y} keyed: {:?}", px(&r, 32, x, y));
+    }
+    assert!(near(px(&r, 32, 16, 16), [30, 60, 230]), "the square stays: {:?}", px(&r, 32, 16, 16));
+    // The matte view, with the matte settings from index 2.
+    let base = key::matte_base(EffectKind::DifferenceKey).unwrap();
+    let mut e = fx(EffectKind::DifferenceKey, &[(base + 4, key::VIEW_MATTE)]);
+    e.table = Some(table);
+    let fg = layer(61, &shot, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+    c.render([32, 32], &[full(1, &red, [32, 32]), with_fx(fg, vec![e])]);
+    let m = c.read_output().unwrap();
+    assert!(near(px(&m, 32, 2, 2), [0, 0, 0]) && near(px(&m, 32, 16, 16), [255, 255, 255]));
+    // Without its plate it changes nothing.
+    assert!(fx(EffectKind::DifferenceKey, &[]).is_identity());
+}

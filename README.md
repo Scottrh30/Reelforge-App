@@ -256,6 +256,16 @@ What works now:
     grows it, taking the colour from inside); **Edge softness** blurs only the matte, so the
     picture stays sharp. **View → Matte** shows the matte in black and white (white kept,
     black keyed out), the quickest way to spot holes and noise
+  - **Luma key**: removes the dark parts (or, with **Key out → Light parts**, the light ones)
+    by brightness, with threshold and softness: fire, smoke, sparks and light shot on black,
+    or a subject on white
+  - **Difference key**: removes whatever matches a **clean plate**, a frame of the shot with
+    only the background in it. Go to such a frame (before the subject walks in) and press
+    **Use frame at playhead**, or **Choose file…** for a picture or video of it; then raise
+    **Tolerance** until the background is gone. For a locked-off camera and no screen. The
+    plate travels with the project (Collect files copies it with the media)
+  - All three keys share the matte settings: Clip black/white, Choke, Edge softness and the
+    black-and-white **View → Matte**
   - **Glow**: threshold, radius, intensity and softness; bright areas bloom outwards
   - **Drop shadow**: distance, angle, softness and opacity, from the layer's alpha
   - **Vignette**: amount, size and softness
@@ -1477,7 +1487,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    dissolve, dip, wipe, iris, slide and push transitions~~
    (stylise effects: lens flare, light leaks, film grain, glitch, chromatic aberration,
    camera shake, energy blade, particles; glow and shadow spill past the layer; saved effect
-   presets; a chroma key with matte clipping, choke, edge softness and a matte view)
+   presets; chroma, luma and difference keys with matte clipping, choke, edge softness and a
+   matte view)
 6. **Compositing**: ~~compositions (nested sequences), motion tracking (1, 2 and 4
    points, planar and mesh: follow, stabilise with smoothing, corner pin / screen replacement),
    corner pin, masks with Bézier curves and per-point feather, mask tracking for rotoscoping,

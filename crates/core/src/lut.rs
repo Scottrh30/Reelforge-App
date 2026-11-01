@@ -257,3 +257,38 @@ mod tests {
         assert!(parse_cube("LUT_1D_SIZE 16\n").is_err());
     }
 }
+
+/// Reads a clean plate (the frame of a picture or video file at a media
+/// time) as RGBA8; set by the media crate, which can decode files.
+pub type PlateLoader = fn(&Path, crate::Time) -> Option<(u32, u32, Vec<u8>)>;
+static PLATE_LOADER: OnceLock<PlateLoader> = OnceLock::new();
+
+pub fn set_plate_loader(f: PlateLoader) {
+    let _ = PLATE_LOADER.set(f);
+}
+
+/// A difference key's clean plate as a table the GPU samples (by layer uv),
+/// cached by file, time and modification time.
+pub fn load_plate(path: &Path, at: crate::Time) -> Option<Arc<Table>> {
+    type Cache = Mutex<HashMap<(PathBuf, i64), (std::time::SystemTime, Option<Arc<Table>>)>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    let cache = CACHE.get_or_init(Default::default);
+    let key = (path.to_path_buf(), at.0);
+    if let Some((m, t)) = cache.lock().unwrap().get(&key) {
+        if *m == modified {
+            return t.clone();
+        }
+    }
+    let loaded = PLATE_LOADER.get().and_then(|f| f(path, at)).map(|(width, height, rgba)| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (&key, modified).hash(&mut h);
+        Arc::new(Table { id: h.finish() | 1 << 63, width, height, rgba, cube_size: 0 })
+    });
+    // Not cached when there's no loader yet (it may be set later).
+    if PLATE_LOADER.get().is_some() {
+        cache.lock().unwrap().insert(key, (modified, loaded.clone()));
+    }
+    loaded
+}

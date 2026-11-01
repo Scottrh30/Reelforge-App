@@ -29,6 +29,7 @@ pub use reelforge_codecs as codecs;
 pub use source::FrameSource;
 pub use tracker::{track_outline, track_point, track_points, TrackEnd};
 
+use std::path::Path;
 use std::sync::Once;
 
 /// Initialise FFmpeg once per process. Safe to call repeatedly.
@@ -55,7 +56,15 @@ pub fn init() {
         // something already started it.
         let _ = rayon::ThreadPoolBuilder::new().thread_name(|i| format!("decode-{i}")).build_global();
         ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Error);
+        reelforge_core::lut::set_plate_loader(load_plate);
     });
+}
+
+/// A difference key's clean plate: the frame of `path` at media time `at`, as RGBA8.
+fn load_plate(path: &Path, at: reelforge_core::Time) -> Option<(u32, u32, Vec<u8>)> {
+    let mut src = source::FrameSource::open(path, None).ok()?;
+    let f = src.frame_at_blocking(at, std::time::Duration::from_secs(20))?;
+    Some((f.width, f.height, f.pixels.to_rgba().to_vec()))
 }
 
 /// FFmpeg's version and licence, as the loaded libraries report them.

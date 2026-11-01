@@ -113,3 +113,29 @@ fn fs_under(in: VsOut) -> @location(0) vec4<f32> {
     let below = second_at(in.uv);
     return top + below * (1.0 - top.a);
 }
+
+// Difference key: what's close to the clean plate (the second texture, 8-bit
+// sRGB, sampled by layer uv) becomes transparent. p0 = (tolerance %, softness
+// %), p1 = (clip black %, clip white %, -, -), p2.x = view (1 the matte),
+// p2.y = 1 for straight colour with the matte in alpha (see effects.wgsl's fs_key).
+@fragment
+fn fs_diff_key(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let lin = unpremul(c);
+    let plate = textureSample(second, second_sampler, clamp(in.uv, vec2(0.0), vec2(1.0))).rgb;
+    let d = abs(to_display(lin) - plate);
+    // The largest channel difference, so a change in any one colour counts.
+    let diff = max(d.r, max(d.g, d.b));
+    let t = fx.p0.x / 100.0;
+    let keep_in = smoothstep(t, t + fx.p0.y / 100.0 + 1e-4, diff);
+    let cb = fx.p1.x / 100.0;
+    let cw = max(fx.p1.y / 100.0, cb + 0.01);
+    let a = c.a * clamp((keep_in - cb) / (cw - cb), 0.0, 1.0);
+    if (fx.p2.y > 0.5) {
+        return vec4(lin, a);
+    }
+    if (fx.p2.x > 0.5) {
+        return vec4(vec3(a), 1.0);
+    }
+    return vec4(lin * a, a);
+}

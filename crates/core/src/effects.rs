@@ -26,6 +26,11 @@ pub enum EffectKind {
     Blur,
     /// Makes one colour (by hue) transparent, for green/blue screen.
     ChromaKey,
+    /// Makes the dark (or light) parts transparent: a black or white background.
+    LumaKey,
+    /// Makes transparent whatever matches a clean plate (a picture of the
+    /// background alone, in `Effect::data`).
+    DifferenceKey,
     /// Darkens the edges of the layer.
     Vignette,
     /// Input and output black/white points and gamma.
@@ -108,6 +113,9 @@ pub enum EffectData {
     Curves(Curves),
     /// A .cube file.
     Lut(PathBuf),
+    /// A difference key's clean plate: the frame of a picture or video file
+    /// at media time `at`.
+    Plate { path: PathBuf, at: crate::Time },
 }
 
 /// How a parameter is shown and edited.
@@ -173,20 +181,68 @@ pub mod key {
     /// `VIEW` values.
     pub const VIEW_RESULT: f32 = 0.0;
     pub const VIEW_MATTE: f32 = 1.0;
+
+    use super::EffectKind;
+    /// Where a keyer's shared matte settings (clip black, clip white, choke,
+    /// edge softness, view) start among its parameters.
+    pub fn matte_base(kind: EffectKind) -> Option<usize> {
+        match kind {
+            EffectKind::ChromaKey => Some(CLIP_BLACK),
+            EffectKind::LumaKey => Some(3),
+            EffectKind::DifferenceKey => Some(2),
+            _ => None,
+        }
+    }
+
+    /// Luma key parameters.
+    pub const LUMA_MODE: usize = 0;
+    pub const LUMA_THRESHOLD: usize = 1;
+    pub const LUMA_SOFTNESS: usize = 2;
+    /// Difference key parameters.
+    pub const DIFF_TOLERANCE: usize = 0;
+    pub const DIFF_SOFTNESS: usize = 1;
 }
 
-const CHROMA_KEY: [ParamSpec; 9] = [
-    spec("Key hue", 120.0, 0.0, 360.0, "°", 0.5),
-    spec("Threshold", 12.0, 0.0, 100.0, " %", 0.2),
-    spec("Softness", 10.0, 0.0, 100.0, " %", 0.2),
-    spec("Spill", 60.0, 0.0, 100.0, " %", 0.5),
-    // The matte: what's below Clip black becomes fully see-through, above Clip white fully solid.
+/// The matte settings every keyer ends with (see [`key::matte_base`]).
+const MATTE: [ParamSpec; 5] = [
+    // What's below Clip black becomes fully see-through, above Clip white fully solid.
     spec("Clip black", 0.0, 0.0, 99.0, " %", 0.2),
     spec("Clip white", 100.0, 1.0, 100.0, " %", 0.2),
     // + shrinks the matte (eats into the edge), − grows it.
     spec("Choke", 0.0, -20.0, 20.0, " px", 0.05),
     spec("Edge softness", 0.0, 0.0, 30.0, " px", 0.05),
     choice("View", &["Result", "Matte (black and white)"]),
+];
+const LUMA_KEY: [ParamSpec; 8] = [
+    choice("Key out", &["Dark parts", "Light parts"]),
+    spec("Threshold", 10.0, 0.0, 100.0, " %", 0.2),
+    spec("Softness", 10.0, 0.0, 100.0, " %", 0.2),
+    MATTE[0],
+    MATTE[1],
+    MATTE[2],
+    MATTE[3],
+    MATTE[4],
+];
+const DIFFERENCE_KEY: [ParamSpec; 7] = [
+    spec("Tolerance", 8.0, 0.0, 100.0, " %", 0.2),
+    spec("Softness", 8.0, 0.0, 100.0, " %", 0.2),
+    MATTE[0],
+    MATTE[1],
+    MATTE[2],
+    MATTE[3],
+    MATTE[4],
+];
+
+const CHROMA_KEY: [ParamSpec; 9] = [
+    spec("Key hue", 120.0, 0.0, 360.0, "°", 0.5),
+    spec("Threshold", 12.0, 0.0, 100.0, " %", 0.2),
+    spec("Softness", 10.0, 0.0, 100.0, " %", 0.2),
+    spec("Spill", 60.0, 0.0, 100.0, " %", 0.5),
+    MATTE[0],
+    MATTE[1],
+    MATTE[2],
+    MATTE[3],
+    MATTE[4],
 ];
 const LEVELS: [ParamSpec; 5] = [
     spec("Input black", 0.0, 0.0, 254.0, "", 0.5),
@@ -494,7 +550,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 18] = [
+    pub const ALL: [EffectKind; 20] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -502,6 +558,8 @@ impl EffectKind {
         EffectKind::Blur,
         EffectKind::Sharpen,
         EffectKind::ChromaKey,
+        EffectKind::LumaKey,
+        EffectKind::DifferenceKey,
         EffectKind::Glow,
         EffectKind::DropShadow,
         EffectKind::Vignette,
@@ -520,6 +578,8 @@ impl EffectKind {
             EffectKind::ColorCorrect => "Colour correction",
             EffectKind::Blur => "Gaussian blur",
             EffectKind::ChromaKey => "Chroma key",
+            EffectKind::LumaKey => "Luma key",
+            EffectKind::DifferenceKey => "Difference key",
             EffectKind::Vignette => "Vignette",
             EffectKind::Levels => "Levels",
             EffectKind::Curves => "Curves",
@@ -547,7 +607,7 @@ impl EffectKind {
         match self {
             EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
-            EffectKind::ChromaKey => EffectCategory::Keying,
+            EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain => EffectCategory::Stylize,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
@@ -566,6 +626,8 @@ impl EffectKind {
             EffectKind::Blur => "Soft, even blur.",
             EffectKind::Sharpen => "Crisper edges and detail.",
             EffectKind::ChromaKey => "Remove a green or blue screen: spill suppression, matte clipping, choke and edge softness, and a black-and-white matte view.",
+            EffectKind::LumaKey => "Remove a black (or white) background by brightness: fire, smoke, sparks and light shot on black.",
+            EffectKind::DifferenceKey => "Remove whatever matches a clean plate (a frame of the background alone), for a locked-off shot with no screen.",
             EffectKind::Glow => "Bright areas bloom out with a soft halo.",
             EffectKind::DropShadow => "A soft shadow behind a title, logo or keyed subject.",
             EffectKind::Vignette => "Darken the edges to draw the eye to the middle.",
@@ -590,6 +652,8 @@ impl EffectKind {
             EffectKind::ColorCorrect => &COLOR_CORRECT,
             EffectKind::Blur => &BLUR,
             EffectKind::ChromaKey => &CHROMA_KEY,
+            EffectKind::LumaKey => &LUMA_KEY,
+            EffectKind::DifferenceKey => &DIFFERENCE_KEY,
             EffectKind::Vignette => &VIGNETTE,
             EffectKind::Levels => &LEVELS,
             EffectKind::Curves => &CURVES,
@@ -629,6 +693,8 @@ impl EffectKind {
             EffectKind::Camera => &[(0, "Position"), (3, "Point of interest"), (6, "Lens"), (8, "Depth of field")],
             EffectKind::Point => &[(0, "Position"), (3, "Rotation and scale")],
             EffectKind::ChromaKey => &[(0, "Key"), (4, "Matte")],
+            EffectKind::LumaKey => &[(0, "Key"), (3, "Matte")],
+            EffectKind::DifferenceKey => &[(0, "Key"), (2, "Matte")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff")],
             _ => &[],
         }
@@ -685,7 +751,9 @@ impl EffectValues {
         match self.kind {
             EffectKind::ColorCorrect => v[0] == 0.0 && v[1] == 100.0 && v[2] == 100.0 && v[3] == 0.0 && v[4] == 0.0,
             EffectKind::Blur => v[0] < 0.05,
-            EffectKind::ChromaKey => false,
+            EffectKind::ChromaKey | EffectKind::LumaKey => false,
+            // Without its clean plate it does nothing.
+            EffectKind::DifferenceKey => self.table.is_none(),
             EffectKind::Vignette => v[0] == 0.0,
             EffectKind::Levels => v[0] == 0.0 && v[1] == 255.0 && v[2] == 1.0 && v[3] == 0.0 && v[4] == 255.0,
             EffectKind::Curves | EffectKind::Lut => self.table.is_none() || v[0] == 0.0,
@@ -846,6 +914,7 @@ impl Effect {
         match (&self.data, self.kind) {
             (Some(EffectData::Curves(c)), EffectKind::Curves) if !c.is_identity() => Some(Arc::new(c.table())),
             (Some(EffectData::Lut(path)), EffectKind::Lut) => crate::lut::load_cube(path).ok(),
+            (Some(EffectData::Plate { path, at }), EffectKind::DifferenceKey) => crate::lut::load_plate(path, *at),
             _ => None,
         }
     }
@@ -891,7 +960,8 @@ mod tests {
             let v = e.eval(Time::ZERO);
             match kind {
                 // These start neutral, for you to adjust.
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => assert!(v.is_identity(), "{kind:?}"),
+                // …or need a file first (a LUT, a clean plate).
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut | EffectKind::DifferenceKey => assert!(v.is_identity(), "{kind:?}"),
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 _ => assert!(!v.is_identity(), "{kind:?} should do something by default"),

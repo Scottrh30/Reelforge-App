@@ -1140,6 +1140,7 @@ fn main() {
             export::export_run,
             export::export_clear,
             fx::effect_add,
+            fx::effect_plate,
             fx_presets::fx_preset_list,
             fx_presets::fx_preset_save,
             fx_presets::fx_preset_apply,

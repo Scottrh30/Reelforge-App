@@ -33,7 +33,8 @@ impl FileKind {
 }
 
 impl Project {
-    /// Visit every file path the project refers to: media, LUT files and title fonts.
+    /// Visit every file path the project refers to: media (and difference keys'
+    /// clean plates), LUT files and title fonts.
     pub fn for_each_path_mut(&mut self, mut f: impl FnMut(FileKind, &mut PathBuf)) {
         for m in &mut self.media {
             f(FileKind::Media, &mut m.path);
@@ -42,8 +43,11 @@ impl Project {
             for t in &mut s.tracks {
                 for c in &mut t.clips {
                     for e in &mut c.effects {
-                        if let Some(EffectData::Lut(p)) = &mut e.data {
-                            f(FileKind::Lut, p);
+                        match &mut e.data {
+                            Some(EffectData::Lut(p)) => f(FileKind::Lut, p),
+                            // A clean plate is a picture or video file (often the clip's own).
+                            Some(EffectData::Plate { path, .. }) => f(FileKind::Media, path),
+                            _ => {}
                         }
                     }
                     if let Some(p) = c.title.as_mut().and_then(|t| t.font.path.as_mut()) {

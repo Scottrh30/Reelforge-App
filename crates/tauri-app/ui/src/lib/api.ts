@@ -406,7 +406,7 @@ export interface ViewerFeedback {
 
 // ---- Effects ----
 
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks";
 
 export interface Curves {
   master: Pt[];
@@ -442,6 +442,9 @@ export interface EffectView {
   curves: Curves | null;
   lut: string | null;
   lut_error: string | null;
+  /// A difference key's clean plate: [file, timecode in it].
+  plate: [string, string] | null;
+  plate_error: string | null;
   animated: boolean;
   /// Positions to drag in the Viewer (an OpenFX plugin's): x at `param`, y at `param + 1`.
   points: { param: number; label: string }[];
@@ -802,6 +805,7 @@ export const api = {
   bladeIgnite: (id: number, index: number, retract: boolean, seconds: number) => invoke("blade_ignite", { id, index, retract, seconds }),
   effectCurves: (id: number, index: number, curves: Curves) => invoke("effect_curves", { id, index, curves }),
   effectLut: (id: number, index: number) => invoke("effect_lut", { id, index }),
+  effectPlate: (id: number, index: number, file: boolean) => invoke("effect_plate", { id, index, file }),
   effectCatalog: () => invoke<CatalogGroup[]>("effect_catalog"),
   fxPresetList: () => invoke<FxPreset[]>("fx_preset_list"),
   fxPresetSave: (id: number, name: string) => invoke<string>("fx_preset_save", { id, name }),

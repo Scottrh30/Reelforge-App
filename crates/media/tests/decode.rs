@@ -282,3 +282,28 @@ fn millisecond_timestamps_still_land_on_exact_frames() {
     assert!(start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
     std::fs::remove_file(&path).ok();
 }
+
+/// A difference key's clean plate is read through the loader `init` sets: a
+/// frame of a video at a time, as RGBA8 at the video's size.
+#[test]
+fn clean_plates_load_from_video_frames() {
+    let path = std::env::temp_dir().join("rf_plate_src.mp4");
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x3080c0:s=96x64:r=25:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+        .arg(&path)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    }
+    reelforge_media::init();
+    let t = reelforge_core::lut::load_plate(&path, reelforge_core::Time::from_secs_f64(0.5)).expect("plate");
+    assert_eq!((t.width, t.height, t.rgba.len()), (96, 64, 96 * 64 * 4));
+    let p = &t.rgba[(32 * 96 + 48) * 4..][..3];
+    assert!((p[0] as i32 - 0x30).abs() < 6 && (p[1] as i32 - 0x80).abs() < 6 && (p[2] as i32 - 0xc0).abs() < 6, "{p:?}");
+    // Cached: the same table again.
+    let again = reelforge_core::lut::load_plate(&path, reelforge_core::Time::from_secs_f64(0.5)).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&t, &again));
+    assert!(reelforge_core::lut::load_plate(std::path::Path::new("/nonexistent/plate.png"), reelforge_core::Time::ZERO).is_none());
+}

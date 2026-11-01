@@ -254,6 +254,16 @@
           </div>
           {#if fx.lut_error}<p class="warn">{fx.lut_error}</p>{/if}
         {/if}
+        {#if fx.kind === "DifferenceKey"}
+          <div class="row lut">
+            <span class="file" title={fx.plate ? `${fx.plate[0]} at ${fx.plate[1]}` : ""}>{fx.plate ? `Plate: ${fileName(fx.plate[0])} · ${fx.plate[1]}` : "No clean plate yet"}</span>
+          </div>
+          <div class="row">
+            <button class="small" onclick={() => run(api.effectPlate(ins.id, i, false))} title="Go to a frame where only the background is in shot (before the subject walks in), then press this">Use frame at playhead</button>
+            <button class="small" onclick={() => run(api.effectPlate(ins.id, i, true))} title="A picture or video of the same shot with nothing in front">Choose file…</button>
+          </div>
+          {#if fx.plate_error}<p class="warn">{fx.plate_error}</p>{:else if !fx.plate}<p class="note">The clean plate is the shot with only the background in it. Go to such a frame (before the subject comes in) and press Use frame at playhead; the camera mustn't move. Then raise Tolerance until the background is gone (View → Matte shows it).</p>{/if}
+        {/if}
       {/if}
     </div>
   {/each}

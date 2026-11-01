@@ -164,6 +164,37 @@ fn key_matte(a: f32) -> vec4<f32> {
     return vec4(vec3(a), 1.0);
 }
 
+// What every keyer does with its matte `keep` (0–1) and the colour `lin`
+// (linear, straight): clip it (p1.xy), then output as fs_key does.
+fn key_finish(lin: vec3<f32>, src_a: f32, keep_in: f32) -> vec4<f32> {
+    let cb = fx.p1.x / 100.0;
+    let cw = max(fx.p1.y / 100.0, cb + 0.01);
+    let a = src_a * clamp((keep_in - cb) / (cw - cb), 0.0, 1.0);
+    if (fx.p2.y > 0.5) {
+        return vec4(lin, a);
+    }
+    if (fx.p2.x > 0.5) {
+        return key_matte(a);
+    }
+    return vec4(lin * a, a);
+}
+
+// Luma key: p0 = (key out: 0 dark, 1 light; threshold %; softness %), then
+// the matte settings as fs_key. Works on the brightness you see.
+@fragment
+fn fs_luma_key(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let lin = unpremul(c);
+    let y = dot(pow(max(lin, vec3(0.0)), vec3(1.0 / 2.2)), LUMA);
+    let t = fx.p0.y / 100.0;
+    let s = fx.p0.z / 100.0 + 1e-4;
+    var keep = smoothstep(t, t + s, y);
+    if (fx.p0.x > 0.5) {
+        keep = 1.0 - smoothstep(1.0 - t - s, 1.0 - t, y);
+    }
+    return key_finish(lin, c.a, keep);
+}
+
 // Choke, one direction (straight colour, matte in alpha): p0.x = reach in
 // texels, p0.y = 1 to shrink the matte (the smallest alpha around), −1 to
 // grow it (the largest, with that pixel's colour).

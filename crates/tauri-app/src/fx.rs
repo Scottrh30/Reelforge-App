@@ -65,6 +65,9 @@ pub struct EffectView {
     /// The .cube file (LUT effect), and what's wrong with it, if anything.
     pub lut: Option<String>,
     pub lut_error: Option<String>,
+    /// A difference key's clean plate: (file, where in it), or why it can't be read.
+    pub plate: Option<(String, String)>,
+    pub plate_error: Option<String>,
     pub animated: bool,
     /// Positions to drag in the Viewer (an OpenFX plugin's): the first of
     /// each one's two parameters (x, y in % of the layer, y down) and its name.
@@ -160,6 +163,20 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 _ => (None, None),
             };
             let lut_error = lut.as_ref().and_then(|p| reelforge_core::lut::load_cube(p).err());
+            let rate = e.seq().frame_rate;
+            let (plate, plate_error) = match &fx.data {
+                Some(EffectData::Plate { path, at }) => (
+                    Some((path.display().to_string(), at.timecode(rate))),
+                    if !path.exists() {
+                        Some("The clean plate's file is missing: choose it again".to_string())
+                    } else if reelforge_core::lut::load_plate(path, *at).is_none() {
+                        Some("The clean plate couldn't be read from that file".to_string())
+                    } else {
+                        None
+                    },
+                ),
+                _ => (None, None),
+            };
             EffectView {
                 label: fx.label(),
                 kind: fx.kind,
@@ -171,6 +188,8 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 curves,
                 lut: lut.map(|p| p.display().to_string()),
                 lut_error,
+                plate,
+                plate_error,
                 points: ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label }).collect()),
                 error: ofx.as_ref().and_then(|_| reelforge_export::ofxhost::error(c.id, index)).filter(|_| fx.enabled),
                 temporal: ofx.as_ref().is_some_and(|d| d.temporal),
@@ -486,6 +505,48 @@ pub fn effect_lut(id: u64, index: usize) -> Res<()> {
             Some(msg) => format!("That LUT can't be used: {msg}"),
             None => format!("LUT: {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
         };
+    })
+}
+
+/// Set a difference key's clean plate: the clip's own frame at the playhead
+/// (`file` false), or a frame of a picture or video file you choose.
+#[tauri::command]
+pub fn effect_plate(id: u64, index: usize, file: bool) -> Res<()> {
+    let chosen = if file {
+        let Some(p) = rfd::FileDialog::new()
+            .set_title("A clean plate: a picture (or video) of the background alone")
+            .add_filter("Pictures and video", &["png", "jpg", "jpeg", "tif", "tiff", "exr", "bmp", "webp", "mp4", "mov", "mkv", "mxf", "avi", "webm"])
+            .pick_file()
+        else {
+            return Ok(());
+        };
+        Some((p, Time::ZERO))
+    } else {
+        None
+    };
+    ed(|e| {
+        e.commit_live_edit();
+        let Some((_, c)) = e.seq().find_clip(ClipId(id)) else { return };
+        let (path, at) = match chosen {
+            Some(x) => x,
+            None => {
+                let Some(m) = e.project.media(c.media) else {
+                    e.status = "This clip has no footage of its own to take a clean plate from: choose a file".into();
+                    return;
+                };
+                (m.path.clone(), e.track_time(c))
+            }
+        };
+        let ok = reelforge_core::lut::load_plate(&path, at).is_some();
+        let rate = e.seq().frame_rate;
+        edit(e, id, |list, _, _| {
+            if let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::DifferenceKey) {
+                fx.data = Some(EffectData::Plate { path: path.clone(), at });
+            }
+        });
+        e.commit_live_edit();
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        e.status = if ok { format!("Clean plate: {name} at {}", at.timecode(rate)) } else { format!("Couldn't read a frame from {name}") };
     })
 }
 

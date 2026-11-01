@@ -456,7 +456,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -478,7 +478,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1158,18 +1158,33 @@ impl Compositor {
                         push("fs_color", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
                         cur = o1;
                     }
-                    EffectKind::ChromaKey => {
+                    EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey => {
                         use reelforge_core::effects::key;
-                        let (choke, soft) = (e.values[key::CHOKE], e.values[key::EDGE_SOFTNESS]);
+                        let Some(base) = key::matte_base(e.kind) else { continue };
+                        // The shaders take the matte settings at 4–8 and the "straight" flag at 9.
+                        let mut v = e.values;
+                        v[base..].fill(0.0);
+                        v[key::CLIP_BLACK..=key::VIEW].copy_from_slice(&e.values[base..base + 5]);
+                        let (entry, second) = match e.kind {
+                            EffectKind::ChromaKey => ("fs_key", Second::None),
+                            EffectKind::LumaKey => ("fs_luma_key", Second::None),
+                            _ => {
+                                if !self.tables.contains_key(&(key, i)) {
+                                    continue;
+                                }
+                                ("fs_diff_key", Second::Table(i))
+                            }
+                        };
+                        let (choke, soft) = (v[key::CHOKE], v[key::EDGE_SOFTNESS]);
                         if choke.abs() < 0.01 && soft < 0.01 {
-                            push("fs_key", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                            push(entry, cur, second, o1, uniform(&v, [0.0; 2]));
                             cur = o1;
                         } else {
                             // Straight colour with the matte in alpha, then the matte
                             // choked and softened (each in two directions), then put together.
-                            let mut v = e.values;
-                            v[9] = 1.0;
-                            push("fs_key", cur, Second::None, o1, uniform(&v, [0.0; 2]));
+                            let mut first = v;
+                            first[9] = 1.0;
+                            push(entry, cur, second, o1, uniform(&first, [0.0; 2]));
                             let (mut a, mut b) = (o1, o2);
                             let mut pass = |entry: &'static str, reach: f32, sign: f32, from: usize, into: usize| {
                                 let mut vx = [0.0; reelforge_core::effects::MAX_PARAMS];
@@ -1187,7 +1202,7 @@ impl Compositor {
                                 pass("fs_key_soft", soft * 0.5, 0.0, a, b);
                                 std::mem::swap(&mut a, &mut b);
                             }
-                            push("fs_key_out", a, Second::None, b, uniform(&e.values, [0.0; 2]));
+                            push("fs_key_out", a, Second::None, b, uniform(&v, [0.0; 2]));
                             cur = b;
                         }
                     }
