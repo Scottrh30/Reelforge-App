@@ -12,7 +12,7 @@ use anyhow::{anyhow, Context as _, Result};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
 use ffmpeg_next as ff;
 use ff::software::scaling::{context::Context as Scaler, flag::Flags};
-use reelforge_core::frame::{Chroma, FloatPixels, Pixels, YuvLayout, YuvMatrix, YuvPlanes};
+use reelforge_core::frame::{Chroma, FloatPixels, Pixels, Transfer, YuvLayout, YuvMatrix, YuvPlanes};
 use reelforge_core::{Rational, Time};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -651,13 +651,14 @@ impl DecodeState {
             let full_range = src.color_range() == ff::util::color::Range::JPEG;
             // SAFETY: `src` is a decoded D3D11VA frame.
             if let Some(mut g) = unsafe { crate::zerocopy::export(src.as_ptr(), [w, h], matrix, full_range) } {
+                g.transfer = self.transfer_of(src);
                 if !self.gpu_checked {
                     // The first one also comes the usual way, to be checked against.
                     let mut sw = ff::frame::Video::empty();
                     // SAFETY: as above, into an empty frame.
                     if unsafe { crate::hw::download(src.as_ptr(), sw.as_mut_ptr()) } {
                         if let Some(layout) = yuv_layout(sw.format()) {
-                            g.check = Some(Arc::new(YuvPlanes { layout, width: w, height: h, planes: pack_planes(&sw, layout), matrix, full_range }));
+                            g.check = Some(Arc::new(YuvPlanes { layout, width: w, height: h, planes: pack_planes(&sw, layout), matrix, full_range, transfer: g.transfer }));
                         }
                     }
                     self.gpu_checked = true;
@@ -707,7 +708,7 @@ impl DecodeState {
                 self.scaler.as_mut().unwrap().0.run(src, &mut small)?;
                 (pack_planes(&small, out_layout), out_layout, dw, dh)
             };
-            let yuv = YuvPlanes { layout, width: w, height: h, planes, matrix, full_range };
+            let yuv = YuvPlanes { layout, width: w, height: h, planes, matrix, full_range, transfer: self.transfer_of(src) };
             return Ok(VideoFrame { pts, width: w, height: h, pixels: Pixels::Yuv(Arc::new(yuv)), generation: self.generation });
         }
 
@@ -742,6 +743,23 @@ impl DecodeState {
 }
 
 impl DecodeState {
+    /// How `src`'s signal maps to light: its own tag, else the stream's
+    /// (HDR10 is PQ, HLG broadcasts are HLG; anything else counts as SDR).
+    fn transfer_of(&self, src: &ff::frame::Video) -> Transfer {
+        use ff::ffi::AVColorTransferCharacteristic as T;
+        let of = |t: T| match t {
+            T::AVCOL_TRC_SMPTE2084 => Some(Transfer::Pq),
+            T::AVCOL_TRC_ARIB_STD_B67 => Some(Transfer::Hlg),
+            T::AVCOL_TRC_UNSPECIFIED | T::AVCOL_TRC_RESERVED | T::AVCOL_TRC_RESERVED0 => None,
+            _ => Some(Transfer::Sdr),
+        };
+        // SAFETY: reading fields of a valid frame and of the stream's parameters.
+        let frame = of(unsafe { (*src.as_ptr()).color_trc });
+        frame
+            .or_else(|| self.ictx.stream(self.stream_index).and_then(|st| of(unsafe { (*st.parameters().as_ptr()).color_trc })))
+            .unwrap_or(Transfer::Sdr)
+    }
+
     /// `src` (more than 8 bits, not YUV kept as YUV) as half floats, linear
     /// and premultiplied, via FFmpeg's 16-bit RGBA. `None` if FFmpeg can't
     /// make 16-bit RGBA of it (the 8-bit route is taken instead).

@@ -27,6 +27,12 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
                 frame_rate: FrameRate(rate),
                 codec,
                 time_base: to_rational(st.time_base()),
+                // SAFETY: reading a field of the stream's parameters.
+                hdr: match unsafe { (*st.parameters().as_ptr()).color_trc } {
+                    ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084 => Some("PQ".into()),
+                    ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67 => Some("HLG".into()),
+                    _ => None,
+                },
             })
         }
         None => None,

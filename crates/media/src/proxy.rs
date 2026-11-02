@@ -202,7 +202,7 @@ mod tests {
     fn info(w: u32, h: u32, codec: &str, secs: f64) -> MediaInfo {
         MediaInfo {
             duration: Time::from_secs_f64(secs),
-            video: Some(VideoStreamInfo { width: w, height: h, frame_rate: FrameRate::new(30, 1), codec: codec.into(), time_base: Rational::new(1, 30) }),
+            video: Some(VideoStreamInfo { width: w, height: h, frame_rate: FrameRate::new(30, 1), codec: codec.into(), time_base: Rational::new(1, 30), hdr: None }),
             audio: None,
             container: String::new(),
         }

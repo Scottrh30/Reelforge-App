@@ -657,7 +657,7 @@ mod recipe_tests {
             name: "a.mp4".into(),
             info: MediaInfo {
                 duration: Time::from_secs_f64(10.0),
-                video: Some(VideoStreamInfo { width: 640, height: 360, frame_rate: FrameRate::new(25, 1), codec: "h264".into(), time_base: reelforge_core::Rational::new(1, 25) }),
+                video: Some(VideoStreamInfo { width: 640, height: 360, frame_rate: FrameRate::new(25, 1), codec: "h264".into(), time_base: reelforge_core::Rational::new(1, 25), hdr: None }),
                 audio: None,
                 container: String::new(),
             },

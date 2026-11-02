@@ -126,7 +126,12 @@ What works now:
     vignettes), **HDR10 (PQ)** or **HDR (HLG)**, both 10-bit BT.2020. For HDR, white in the edit
     becomes 203 nits (PQ) or 75% signal (HLG), the ITU-R BT.2408 reference, and anything the
     edit pushes brighter than white (glow, exposure) keeps its extra brightness instead of
-    clipping. HDR10 files carry mastering metadata. 10-bit and HDR exports render at 16 bits per
+    clipping. HDR10 files carry mastering metadata. **HDR footage** (HDR10/PQ or HLG, tagged in
+    the file; an **HDR** badge in the Media panel) comes in as HDR: its signal is turned into
+    light the same way (203 nits or 75% signal is white, BT.2020 brought into the edit's BT.709),
+    so its highlights stay above white through effects and grading, and an HDR export of an
+    untouched HDR clip gives back the same signal. The Viewer and SDR exports show it with SDR
+    white at white and the highlights cut (no tone mapping yet). 10-bit and HDR exports render at 16 bits per
     channel; ProRes, CineForm, DNxHR HQX/444 and 10-bit DNxHD get the 16-bit render too (they're
     always 10-bit or more). Other codecs stay 8-bit SDR
   - **Rate** (H.264/H.265): a **Quality** setting (constant quality), or a target **Bitrate**
@@ -1580,8 +1585,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 4. ~~Export: H.264/H.265/ProRes/DNxHR/image sequences/WAV, presets including vertical video,
    fit/fill/stretch, GPU encoders, an in/out range, an export queue, 10-bit/HDR10/HLG HEVC,
    target bitrates, your own presets~~
-   (still to add: HDR footage in (it's decoded as SDR today), 10-bit/HDR for GPU encoders'
-   metadata)
+   (HDR footage in, PQ and HLG; still to add: 10-bit/HDR for GPU encoders' metadata)
 5. ~~**Effects**: the effect stack, keyframable parameters, colour correction, levels, curves,
    LUTs, blur, sharpen, chroma key, glow, drop shadow, vignette, an effects browser;
    dissolve, dip, wipe, iris, slide and push transitions~~

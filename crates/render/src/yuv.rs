@@ -236,7 +236,7 @@ fn params_bytes(p: &YuvParams, layout: YuvLayout, size: [u32; 2], csize: [u32; 2
         sx,
         sy,
         amax.to_bits(),
-        0,
+        p.transfer.code(),
     ];
     for (i, w) in words.iter().enumerate() {
         u[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());

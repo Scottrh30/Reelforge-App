@@ -141,6 +141,7 @@
             {:else if m.proxy}
               <span class="flag" class:bad={m.proxy === "failed"} class:ready={m.proxy === "ready"} title={m.proxy_error ?? (m.proxy === "ready" ? `A small ${m.proxy_format ?? ""} copy for smooth editing; export uses the original` : "")}>{proxyLabel(m)}</span>
             {/if}
+            {#if m.hdr}<span class="hdr" title="HDR footage ({m.hdr === 'PQ' ? 'HDR10, PQ' : 'HLG'}): its highlights are kept above white for HDR export; SDR shows and exports them cut at white">HDR</span>{/if}
           </div>
           <div class="name" title={m.path}>{m.name}</div>
           <div class="muted detail">{m.detail}</div>
@@ -170,6 +171,18 @@
     min-height: 22px;
     padding: 0 7px;
     font-size: calc(12px * var(--text-scale));
+  }
+  .hdr {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    font-size: calc(10px * var(--text-scale));
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 0 4px;
+    border-radius: 3px;
+    color: #1b1b1f;
+    background: linear-gradient(90deg, #ffd27a, #fff3c4);
   }
   .flag.ready {
     color: #7fdc8c;

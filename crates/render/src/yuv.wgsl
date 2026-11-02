@@ -21,7 +21,8 @@ struct Params {
     cshift: vec2<u32>,
     // The alpha plane's largest value (0: no alpha plane).
     amax: f32,
-    _pad: u32,
+    // How the signal maps to light: 0 SDR, 1 PQ (HDR10), 2 HLG.
+    transfer: u32,
 };
 
 @group(0) @binding(0) var y_tex: texture_2d<u32>;
@@ -85,11 +86,55 @@ fn alpha_at(xy: vec2<i32>) -> f32 {
     return clamp(f32(textureLoad(a_tex, xy, 0).x) / p.amax, 0.0, 1.0);
 }
 
+// SDR white is 203 nits in PQ and 75% signal in HLG (ITU-R BT.2408): 1.0 here,
+// so HDR highlights come out above 1. The inverses of output.wgsl's HDR curves.
+const SDR_WHITE_NITS = 203.0;
+const HLG_SDR_WHITE = 0.26496256;
+
+fn linear_from_pq(e: vec3<f32>) -> vec3<f32> {
+    let m1 = 0.1593017578125;
+    let m2 = 78.84375;
+    let c1 = 0.8359375;
+    let c2 = 18.8515625;
+    let c3 = 18.6875;
+    let q = pow(clamp(e, vec3(0.0), vec3(1.0)), vec3(1.0 / m2));
+    let y = pow(max(q - c1, vec3(0.0)) / (c2 - c3 * q), vec3(1.0 / m1));
+    return y * (10000.0 / SDR_WHITE_NITS);
+}
+
+fn linear_from_hlg(e: vec3<f32>) -> vec3<f32> {
+    let a = 0.17883277;
+    let b = 0.28466892;
+    let c = 0.55991073;
+    let x = max(e, vec3(0.0));
+    let lo = x * x / 3.0;
+    let hi = (exp((x - c) / a) + b) / 12.0;
+    return select(hi, lo, x <= vec3(0.5)) / HLG_SDR_WHITE;
+}
+
+// Linear BT.2020 → linear BT.709 (WGSL matrices are column by column).
+const BT2020_TO_709 = mat3x3<f32>(
+    vec3(1.660491, -0.124551, -0.018151),
+    vec3(-0.587641, 1.132900, -0.100579),
+    vec3(-0.072850, -0.008349, 1.118730),
+);
+
+// Signal → linear light in the compositor's BT.709 (HDR: wide primaries brought in, negatives cut).
+fn linear_from_signal(rgb: vec3<f32>) -> vec3<f32> {
+    if (p.transfer == 1u) {
+        return max(BT2020_TO_709 * linear_from_pq(rgb), vec3(0.0));
+    }
+    if (p.transfer == 2u) {
+        return max(BT2020_TO_709 * linear_from_hlg(rgb), vec3(0.0));
+    }
+    return linear_from_srgb(rgb);
+}
+
 @fragment
 fn fs_yuv(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let xy = vec2<i32>(pos.xy);
     let rgb = clamp(rgb_at(xy), vec3(0.0), vec3(1.0));
-    return vec4(linear_from_srgb(rgb), alpha_at(xy));
+    return vec4(clamp(linear_from_signal(rgb), vec3(0.0), vec3(1.0)), alpha_at(xy));
 }
 
 @fragment
@@ -98,5 +143,5 @@ fn fs_yuv_float(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     // Below black and out-of-gamut negatives go; above white stays.
     let rgb = max(rgb_at(xy), vec3(0.0));
     let a = alpha_at(xy);
-    return vec4(linear_from_srgb(rgb) * a, a);
+    return vec4(linear_from_signal(rgb) * a, a);
 }

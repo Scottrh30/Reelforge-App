@@ -1561,7 +1561,7 @@ mod tests {
             name: String::new(),
             info: MediaInfo {
                 duration: Time::from_secs_f64(secs),
-                video: Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: "h264".into(), time_base: Rational::new(1, 30) }),
+                video: Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: "h264".into(), time_base: Rational::new(1, 30), hdr: None }),
                 audio: None,
                 container: String::new(),
             },
@@ -1892,7 +1892,7 @@ mod composite_tests {
             name: name.into(),
             info: MediaInfo {
                 duration: s(dur),
-                video: video.map(|(width, height, frame_rate)| VideoStreamInfo { width, height, frame_rate, codec: "h264".into(), time_base: crate::time::Rational::new(1, 90000) }),
+                video: video.map(|(width, height, frame_rate)| VideoStreamInfo { width, height, frame_rate, codec: "h264".into(), time_base: crate::time::Rational::new(1, 90000), hdr: None }),
                 audio: audio.then(|| AudioStreamInfo { sample_rate: 48000, channels: 2, codec: "aac".into() }),
                 container: String::new(),
             },

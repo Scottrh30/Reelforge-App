@@ -104,3 +104,30 @@ fn deep_rgb_becomes_half_float() {
         assert!(row.windows(2).all(|w| w[1] >= w[0]), "{}", path.display());
     }
 }
+
+/// HDR footage is recognised: HEVC tagged PQ (HDR10) and HLG comes out as
+/// YUV marked with its transfer (and the native decoder's frames too, by the
+/// stream's tag); untagged footage is SDR.
+#[test]
+fn hdr_footage_is_tagged_with_its_transfer() {
+    use reelforge_core::frame::Transfer;
+    let flat = "lum=512:cb=512:cr=512";
+    // x265 writes the tags into the stream itself (its VUI), as cameras and HDR masters do.
+    let tagged = |params: &'static str| -> Vec<&'static str> { vec!["-c:v", "libx265", "-x265-params", params] };
+    let Some(pq) = make("pq.mp4", "yuv420p10le", flat, &tagged("log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc")) else { eprintln!("ffmpeg CLI not found; skipping"); return };
+    let Some(hlg) = make("hlg.mp4", "yuv420p10le", flat, &tagged("log-level=error:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc")) else { return };
+    let Some(sdr) = make("sdr10.mp4", "yuv420p10le", flat, &["-c:v", "libx265", "-x265-params", "log-level=error"]) else { return };
+    for native in [false, true] {
+        reelforge_media::codecs::set_enabled(native);
+        for (path, want) in [(&pq, Transfer::Pq), (&hlg, Transfer::Hlg), (&sdr, Transfer::Sdr)] {
+            let f = frame(path, None);
+            let Pixels::Yuv(y) = &f.pixels else { panic!("{path:?}: not YUV") };
+            assert_eq!(y.transfer, want, "{path:?} (native decoders {native})");
+            assert_eq!(y.layout.bits(), 10);
+        }
+    }
+    reelforge_media::codecs::set_enabled(true);
+    // The Media panel's HDR badge comes from the probe.
+    let hdr = |p: &PathBuf| reelforge_media::probe(p).unwrap().video.unwrap().hdr;
+    assert_eq!((hdr(&pq).as_deref(), hdr(&hlg).as_deref(), hdr(&sdr)), (Some("PQ"), Some("HLG"), None));
+}

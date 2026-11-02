@@ -90,6 +90,8 @@ export interface MediaView {
   height: number;
   fps: number;
   has_audio: boolean;
+  /// HDR footage: "PQ" or "HLG".
+  hdr?: string | null;
   missing: boolean;
   proxy: string;
   proxy_error: string | null;

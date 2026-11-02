@@ -274,7 +274,7 @@ fn download(hold: &Hold, layout: YuvLayout, size: [u32; 2], matrix: YuvMatrix, f
                 uv.extend_from_slice(std::slice::from_raw_parts(cbase.add(r * pitch), cw * 2 * b));
             }
             ctx.Unmap(&st, 0);
-            Some(YuvPlanes { layout, width: size[0], height: size[1], planes: vec![y, uv], matrix, full_range })
+            Some(YuvPlanes { layout, width: size[0], height: size[1], planes: vec![y, uv], matrix, full_range, transfer: Default::default() })
         })
     }
 }

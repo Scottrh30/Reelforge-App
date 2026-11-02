@@ -58,6 +58,8 @@ pub struct MediaView {
     pub height: u32,
     pub fps: f64,
     pub has_audio: bool,
+    /// HDR footage: "PQ" or "HLG".
+    pub hdr: Option<String>,
     pub missing: bool,
     /// "", "queued", "building 40%", "ready" or "failed".
     pub proxy: String,
@@ -440,6 +442,7 @@ pub fn state(e: &Editor) -> State {
                 height: v.map_or(0, |v| v.height),
                 fps: v.map_or(0.0, |v| v.frame_rate.fps()),
                 has_audio: m.info.audio.is_some(),
+                hdr: m.info.video.as_ref().and_then(|v| v.hdr.clone()),
                 missing: !reelforge_core::imageseq::media_exists(&m.path),
                 proxy,
                 proxy_error,

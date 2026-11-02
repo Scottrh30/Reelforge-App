@@ -467,7 +467,7 @@ fn frames_on_the_graphics_card_fall_back_to_the_usual_copy() {
     let (w, h) = (16u32, 8u32);
     let y: Vec<u8> = (0..w * h).map(|i| 16 + (i % w) as u8 * 13).collect();
     let uv: Vec<u8> = (0..(w / 2) * (h / 2)).flat_map(|_| [100u8, 200]).collect();
-    let planes = YuvPlanes { layout: YuvLayout::Nv12, width: w, height: h, planes: vec![y, uv], matrix: YuvMatrix::Bt709, full_range: false };
+    let planes = YuvPlanes { layout: YuvLayout::Nv12, width: w, height: h, planes: vec![y, uv], matrix: YuvMatrix::Bt709, full_range: false, transfer: Default::default() };
     let draw = |c: &mut reelforge_render::Compositor, px: &Pixels, id| {
         c.render([w, h], &[LayerInput { content_id: id, pixels: PixelData::from(px), ..layer(1, &[], [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal) }]);
         c.read_output().unwrap()
@@ -719,7 +719,7 @@ fn yuv_frame(layout: reelforge_core::frame::YuvLayout, w: u32, h: u32, matrix: r
         // Opaque on the left, see-through on the right.
         planes.push((0..w * h).flat_map(|i| word(if i % w < w / 2 { 255 } else { 64 })).collect());
     }
-    reelforge_core::frame::YuvPlanes { layout, width: w, height: h, planes, matrix, full_range }
+    reelforge_core::frame::YuvPlanes { layout, width: w, height: h, planes, matrix, full_range, transfer: Default::default() }
 }
 
 fn yuv_layer<'a>(yuv: &'a reelforge_core::frame::YuvPlanes, content_id: u64) -> LayerInput<'a> {
@@ -804,7 +804,7 @@ fn deep_video_is_not_cut_to_eight_bits() {
         let lo = 64u16 << (bits - 10);
         let y: Vec<u8> = (0..w * 2).flat_map(|i| (lo + ((i % w) as u16 * (1 << (bits - 10))) / 2).to_le_bytes()).collect();
         let cplane: Vec<u8> = (0..cw * ch).flat_map(|_| mid.to_le_bytes()).collect();
-        let yuv = YuvPlanes { layout, width: w, height: 2, planes: vec![y, cplane.clone(), cplane], matrix: YuvMatrix::Bt709, full_range: false };
+        let yuv = YuvPlanes { layout, width: w, height: 2, planes: vec![y, cplane.clone(), cplane], matrix: YuvMatrix::Bt709, full_range: false, transfer: Default::default() };
         c.render([w, 2], &[yuv_layer(&yuv, bits as u64 * 100 + chroma as u64)]);
         let f = c.read_output_linear().unwrap();
         let row: Vec<f32> = (0..w as usize).map(|x| f16_to_f32(f.rgba[x * 4 + 1])).collect();
@@ -832,7 +832,7 @@ fn deep_video_keeps_super_whites() {
     let Some(mut c) = setup() else { return };
     let layout = YuvLayout::Planar { bits: 10, chroma: Chroma::C444, alpha: false };
     let plane = |v: u16| -> Vec<u8> { (0..16).flat_map(|_| v.to_le_bytes()).collect() };
-    let yuv = YuvPlanes { layout, width: 4, height: 4, planes: vec![plane(1019), plane(512), plane(512)], matrix: YuvMatrix::Bt709, full_range: false };
+    let yuv = YuvPlanes { layout, width: 4, height: 4, planes: vec![plane(1019), plane(512), plane(512)], matrix: YuvMatrix::Bt709, full_range: false, transfer: Default::default() };
     c.render([4, 4], &[yuv_layer(&yuv, 77)]);
     let f = c.read_output_linear().unwrap();
     let g = f16_to_f32(f.rgba[1]);
@@ -1358,4 +1358,51 @@ fn a_fine_mesh_warp_draws_where_its_points_are() {
     assert!(near(px(&img, 64, 4, 16), [0, 255, 0]), "inside the grid");
     assert!(near(px(&img, 64, 22, 16), [0, 255, 0]), "in the spike (x 17 → 24)");
     assert!(near(px(&img, 64, 40, 16), [0, 0, 0]), "past the grid: nothing");
+}
+
+/// HDR footage (10-bit PQ and HLG, BT.2020) comes in as HDR: SDR white at 1,
+/// highlights above it, and written out again with the same curve it's the
+/// same signal (a grey and a 1000-nit highlight, through PQ and back).
+#[test]
+fn hdr_footage_stays_hdr_through_to_an_hdr_export() {
+    use reelforge_core::frame::{f16_to_f32, Chroma, Transfer, YuvLayout, YuvMatrix, YuvPlanes};
+    use reelforge_render::DeepCurve;
+    let Some(mut c) = setup() else { return };
+    let layout = YuvLayout::Planar { bits: 10, chroma: Chroma::C444, alpha: false };
+    // Full-range 10-bit neutral greys: Y code = signal × 1023, chroma at 512.
+    let frame = |signal: f32, transfer: Transfer| {
+        let y = (signal * 1023.0).round() as u16;
+        let plane = |v: u16| -> Vec<u8> { (0..16).flat_map(|_| v.to_le_bytes()).collect() };
+        YuvPlanes { layout, width: 4, height: 4, planes: vec![plane(y), plane(512), plane(512)], matrix: YuvMatrix::Bt2020, full_range: true, transfer }
+    };
+    for (i, (transfer, curve, signal, want)) in [
+        // PQ: 203 nits (SDR white) is signal 0.5806; 1000 nits is 0.7518 (4.93 × white).
+        (Transfer::Pq, DeepCurve::Pq, 0.5806, 1.0),
+        (Transfer::Pq, DeepCurve::Pq, 0.7518, 1000.0 / 203.0),
+        // HLG: 75% signal is SDR white; 90% is well above it.
+        (Transfer::Hlg, DeepCurve::Hlg, 0.75, 1.0),
+        (Transfer::Hlg, DeepCurve::Hlg, 0.9, Transfer::Hlg.linear(0.9)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let yuv = frame(signal, transfer);
+        c.render([4, 4], &[yuv_layer(&yuv, 91 + i as u64)]);
+        let f = c.read_output_linear().unwrap();
+        let g = f16_to_f32(f.rgba[1]);
+        assert!((g / want - 1.0).abs() < 0.02, "{transfer:?} {signal}: {g} (want {want})");
+        // The CPU's conversion agrees.
+        let cpu = f16_to_f32(yuv.to_float().rgba[1]);
+        assert!((cpu / g - 1.0).abs() < 0.01, "{transfer:?} CPU {cpu} vs GPU {g}");
+        // Out through the same curve: the same signal.
+        let out = c.read_output_deep(curve).unwrap();
+        let back = out[1] as f32 / 65535.0;
+        let code = (signal * 1023.0).round() / 1023.0;
+        assert!((back - code).abs() < 0.004, "{transfer:?} {signal} came back {back}");
+    }
+    // An SDR picture of HDR footage (thumbnails, 8-bit): white at white, the highlight cut.
+    let hi = frame(0.7518, Transfer::Pq).to_rgba();
+    assert_eq!(hi[1], 255);
+    let white = frame(0.5806, Transfer::Pq).to_rgba();
+    assert!(white[1] >= 253, "{}", white[1]);
 }

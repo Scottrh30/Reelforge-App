@@ -118,6 +118,78 @@ impl YuvMatrix {
     }
 }
 
+/// How a picture's signal maps to light.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Transfer {
+    /// Standard dynamic range (BT.709/sRGB-style gamma).
+    #[default]
+    Sdr,
+    /// HDR10's perceptual quantizer (SMPTE ST 2084), absolute: 0–10 000 nits.
+    Pq,
+    /// Hybrid log-gamma (ARIB STD-B67), relative.
+    Hlg,
+}
+
+/// Reference (SDR) white in PQ, nits (ITU-R BT.2408): 1.0 in the compositor.
+pub const SDR_WHITE_NITS: f32 = 203.0;
+/// Scene light that HLG puts at 75% signal (BT.2408's reference white).
+pub const HLG_SDR_WHITE: f32 = 0.264_962_56;
+/// Linear BT.2020 RGB → linear BT.709 RGB (HDR footage's wide primaries into
+/// the compositor's; colours outside BT.709 come out negative, and are cut).
+pub const BT2020_TO_709: [[f32; 3]; 3] = [[1.660_491, -0.587_641, -0.072_850], [-0.124_551, 1.132_900, -0.008_349], [-0.018_151, -0.100_579, 1.118_730]];
+
+impl Transfer {
+    pub fn is_hdr(self) -> bool {
+        self != Transfer::Sdr
+    }
+
+    /// What the GPU shader is told.
+    pub fn code(self) -> u32 {
+        match self {
+            Transfer::Sdr => 0,
+            Transfer::Pq => 1,
+            Transfer::Hlg => 2,
+        }
+    }
+
+    /// A signal value (0–1) → linear light, 1.0 being SDR white (so an HDR
+    /// highlight comes out above 1). The inverse of what HDR export writes.
+    pub fn linear(self, e: f32) -> f32 {
+        let e = e.max(0.0);
+        match self {
+            Transfer::Sdr => {
+                if e <= 0.04045 {
+                    e / 12.92
+                } else {
+                    ((e + 0.055) / 1.055).powf(2.4)
+                }
+            }
+            Transfer::Pq => {
+                let (m1, m2, c1, c2, c3) = (0.159_301_76, 78.843_75, 0.835_937_5, 18.851_563, 18.6875);
+                let p = e.min(1.0).powf(1.0 / m2);
+                let y = ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1);
+                y * 10_000.0 / SDR_WHITE_NITS
+            }
+            Transfer::Hlg => {
+                let (a, b, c) = (0.178_832_77, 0.284_668_92, 0.559_910_7);
+                let s = if e <= 0.5 { e * e / 3.0 } else { (((e - c) / a).exp() + b) / 12.0 };
+                s / HLG_SDR_WHITE
+            }
+        }
+    }
+
+    /// Linear R'G'B' at a pixel: through the transfer, and from BT.2020 to
+    /// BT.709 primaries for HDR (negatives cut).
+    pub fn rgb_linear(self, rgb: [f32; 3]) -> [f32; 3] {
+        let l = rgb.map(|c| self.linear(c));
+        if !self.is_hdr() {
+            return l;
+        }
+        let m = BT2020_TO_709;
+        [0, 1, 2].map(|i| (m[i][0] * l[0] + m[i][1] * l[1] + m[i][2] * l[2]).max(0.0))
+    }
+}
+
 /// One decoded 4:2:0 picture, tightly packed (no row padding).
 #[derive(Clone, PartialEq)]
 pub struct YuvPlanes {
@@ -130,11 +202,13 @@ pub struct YuvPlanes {
     pub matrix: YuvMatrix,
     /// Full-range (0–255) rather than TV range (16–235).
     pub full_range: bool,
+    /// SDR, or HDR (PQ, HLG; BT.2020 primaries).
+    pub transfer: Transfer,
 }
 
 impl std::fmt::Debug for YuvPlanes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "YuvPlanes({:?} {}x{} {:?}{})", self.layout, self.width, self.height, self.matrix, if self.full_range { " full" } else { "" })
+        write!(f, "YuvPlanes({:?} {}x{} {:?}{}{})", self.layout, self.width, self.height, self.matrix, if self.full_range { " full" } else { "" }, if self.transfer.is_hdr() { format!(" {:?}", self.transfer) } else { String::new() })
     }
 }
 
@@ -150,6 +224,7 @@ pub struct YuvParams {
     pub c_scale: f32,
     pub kr: f32,
     pub kb: f32,
+    pub transfer: Transfer,
 }
 
 impl YuvPlanes {
@@ -173,7 +248,7 @@ impl YuvPlanes {
         } else {
             (16.0 * k, 1.0 / (219.0 * k), 128.0 * k, 1.0 / (224.0 * k))
         };
-        YuvParams { shift: self.layout.shift(), y_off, y_scale, c_off, c_scale, kr, kb }
+        YuvParams { shift: self.layout.shift(), y_off, y_scale, c_off, c_scale, kr, kb, transfer: self.transfer }
     }
 
     fn sample(&self, plane: usize, index: usize) -> f32 {
@@ -242,9 +317,18 @@ impl YuvPlanes {
     pub fn to_rgba(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity((self.width * self.height * 4) as usize);
         let p = self.params();
+        let srgb = |c: f32| {
+            let c = c.clamp(0.0, 1.0);
+            if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+        };
         for y in 0..self.height {
             for x in 0..self.width {
-                let [r, g, b] = self.rgb_with(&p, x, y);
+                let mut rgb = self.rgb_with(&p, x, y);
+                if self.transfer.is_hdr() {
+                    // HDR into an 8-bit SDR picture: SDR white at white, highlights cut.
+                    rgb = self.transfer.rgb_linear(rgb).map(srgb);
+                }
+                let [r, g, b] = rgb;
                 let a = self.alpha_at(x, y);
                 out.extend_from_slice(&[(r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8, (a * 255.0).round() as u8]);
             }
@@ -257,12 +341,11 @@ impl YuvPlanes {
     pub fn to_float(&self) -> FloatPixels {
         let p = self.params();
         let mut rgba = Vec::with_capacity((self.width * self.height * 4) as usize);
-        let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
         for y in 0..self.height {
             for x in 0..self.width {
                 let a = self.alpha_at(x, y);
-                for c in self.rgb_with(&p, x, y) {
-                    rgba.push(f32_to_f16(lin(c) * a));
+                for c in self.transfer.rgb_linear(self.rgb_with(&p, x, y)) {
+                    rgba.push(f32_to_f16(c * a));
                 }
                 rgba.push(f32_to_f16(a));
             }
@@ -440,6 +523,8 @@ pub struct GpuFrame {
     pub height: u32,
     pub matrix: YuvMatrix,
     pub full_range: bool,
+    /// SDR or HDR (set after [`GpuFrame::new`] when known).
+    pub transfer: Transfer,
     /// The shared texture's handle, and a number that identifies the texture
     /// for as long as it exists (so the compositor can keep it open).
     pub texture: u64,
@@ -481,6 +566,7 @@ impl GpuFrame {
             height: size[1],
             matrix,
             full_range,
+            transfer: Transfer::Sdr,
             texture: texture.0,
             texture_id: texture.1,
             alloc: texture.2,
@@ -496,12 +582,19 @@ impl GpuFrame {
 
     /// The frame in main memory (copied back once, on first use).
     pub fn cpu(&self) -> Option<Arc<YuvPlanes>> {
-        self.cpu.get_or_init(|| (self.download)().map(Arc::new)).clone()
+        self.cpu
+            .get_or_init(|| {
+                (self.download)().map(|mut y| {
+                    y.transfer = self.transfer;
+                    Arc::new(y)
+                })
+            })
+            .clone()
     }
 
     /// The same numbers for the conversion as the CPU path uses.
     pub fn params(&self) -> YuvParams {
-        YuvPlanes { layout: self.layout, width: self.width, height: self.height, planes: Vec::new(), matrix: self.matrix, full_range: self.full_range }.params()
+        YuvPlanes { layout: self.layout, width: self.width, height: self.height, planes: Vec::new(), matrix: self.matrix, full_range: self.full_range, transfer: self.transfer }.params()
     }
 
     pub fn chroma_size(&self) -> (u32, u32) {
@@ -652,7 +745,7 @@ mod tests {
         if layout.alpha() {
             planes.push(put(((1u32 << layout.bits()) - 1) as u16, (w * h) as usize));
         }
-        YuvPlanes { layout, width: w, height: h, planes, matrix, full_range }
+        YuvPlanes { layout, width: w, height: h, planes, matrix, full_range, transfer: Transfer::Sdr }
     }
 
     #[test]

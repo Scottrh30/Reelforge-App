@@ -38,6 +38,9 @@ pub struct VideoStreamInfo {
     pub frame_rate: FrameRate,
     pub codec: String,
     pub time_base: Rational,
+    /// HDR footage: "PQ" (HDR10) or "HLG"; `None` for SDR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hdr: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -983,7 +986,7 @@ mod crossfade_tests {
     fn video_layers_dissolve_between_adjacent_clips() {
         let mut p = Project::new();
         let mut m = media(1, 10.0);
-        m.info.video = Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: String::new(), time_base: Rational::new(1, 30) });
+        m.info.video = Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: String::new(), time_base: Rational::new(1, 30), hdr: None });
         p.media.push(m);
         // A: source 0–4 at 0–4. B: source 5–9 at 4–8, 1 s dissolve (both have spare media).
         let mut a = Clip::new(ClipId(10), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
