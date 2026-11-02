@@ -38,6 +38,13 @@
     Planar: "A whole flat surface, in perspective",
     Mesh: "A surface that bends",
   };
+  // Choosing Custom… shows boxes for any number of cells across and down.
+  let customGrid = $state(false);
+  function setGrid(c: number, r: number) {
+    if (!ins?.tracker) return;
+    const fit = (v: number) => Math.min(32, Math.max(1, Math.round(Number.isFinite(v) ? v : 1)));
+    run(api.trackerGrid(ins.id, fit(c), fit(r)));
+  }
   const grids: [number, number][] = [[2, 2], [3, 3], [4, 3], [4, 4], [6, 4], [6, 6], [8, 6], [8, 8], [16, 16], [32, 32]];
   const hints: Record<TrackMode, string> = {
     Position: "Drag the box in the Viewer onto a sharp detail (a corner, a mark, a light), then track. The outer box is how far it may move per frame.",
@@ -155,12 +162,28 @@
         <div class="grid">
           {#if t.mode === "Mesh"}
             <span class="lbl" title="Cells across × down. Changing it starts the grid again from its four corners">Grid</span>
-            <select value={`${t.grid[0]}x${t.grid[1]}`} aria-label="Mesh grid" onchange={(e) => {
-              const [c, r] = e.currentTarget.value.split("x").map(Number);
-              run(api.trackerGrid(ins.id, c, r));
-            }}>
-              {#each grids as [c, r]}<option value={`${c}x${r}`}>{c} × {r} cells</option>{/each}
-            </select>
+            {@const preset = grids.some(([c, r]) => c === t.grid[0] && r === t.grid[1])}
+            <span class="gridpick">
+              <select value={customGrid || !preset ? "custom" : `${t.grid[0]}x${t.grid[1]}`} aria-label="Mesh grid" onchange={(e) => {
+                const v = e.currentTarget.value;
+                if (v === "custom") {
+                  customGrid = true;
+                  return;
+                }
+                customGrid = false;
+                const [c, r] = v.split("x").map(Number);
+                run(api.trackerGrid(ins.id, c, r));
+              }}>
+                {#each grids as [c, r]}<option value={`${c}x${r}`}>{c} × {r} cells</option>{/each}
+                <option value="custom">Custom…</option>
+              </select>
+              {#if customGrid || !preset}
+                <!-- Any size: cells across × down, 1 to 32 each. -->
+                <input class="cells" type="number" min="1" max="32" step="1" value={t.grid[0]} aria-label="Cells across" title="Cells across (1–32)" onchange={(e) => setGrid(Number(e.currentTarget.value), t.grid[1])} />
+                <span class="times" aria-hidden="true">×</span>
+                <input class="cells" type="number" min="1" max="32" step="1" value={t.grid[1]} aria-label="Cells down" title="Cells down (1–32)" onchange={(e) => setGrid(t.grid[0], Number(e.currentTarget.value))} />
+              {/if}
+            </span>
           {/if}
           {#if !areaTracked(t.mode)}
             <span class="lbl">Feature box</span>
@@ -403,5 +426,20 @@
   .bar div {
     height: 100%;
     background: var(--accent);
+  }
+  .gridpick {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  .gridpick select {
+    min-width: 0;
+  }
+  .cells {
+    width: 46px;
+  }
+  .times {
+    color: var(--muted);
   }
 </style>

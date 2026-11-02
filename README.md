@@ -682,7 +682,8 @@ What works now:
     it, the corners stay within 1 px of where they really are. It takes about 20 ms a frame at
     1080p on two cores, on top of decoding.
   - **Mesh: a surface that bends**: for cloth, skin, a flag, paper, anything that doesn't stay
-    flat. A grid (2 × 2 to 32 × 32 cells; **Grid** in the panel) fills the four big corner handles
+    flat. A grid (2 × 2 to 32 × 32 cells, or **Custom…** for any number across and down up to
+    32 each; **Grid** in the panel) fills the four big corner handles
     you drag over the surface; before tracking, the inner points can be dragged too, to follow a
     curve, and moving a corner afterwards carries them along with it (they keep their shape).
     A grid finer than 8 × 8 is tracked as a coarser one first (with about five features per

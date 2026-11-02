@@ -1547,6 +1547,11 @@ mod tests {
         // A different number of cells.
         t.set_grid(32, 32, Time::ZERO);
         assert_eq!(t.points.len(), 33 * 33);
+        // Any size, not just the listed ones; 32 at most.
+        t.set_grid(12, 5, Time::ZERO);
+        assert_eq!((t.grid, t.points.len()), ([12, 5], 13 * 6));
+        t.set_grid(40, 0, Time::ZERO);
+        assert_eq!(t.grid, [32, 1]);
     }
     use crate::project::{ClipId, MediaId};
 
