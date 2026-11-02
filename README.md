@@ -426,7 +426,10 @@ What works now:
   and the graphics card, and what to do when it can't keep up. The Viewer's **playback quality**
   (Full, ½ res, ¼ res) draws its picture at that fraction of full resolution and decodes footage
   that much smaller too, so heavy projects play smoothly; layers, effects and wipes keep their
-  places, and export and Render preview stay full. In its menu, **Full resolution when paused**
+  places, and export and Render preview stay full. **Automatic** steps down by itself (full → ½ →
+  ¼) when playing falls behind (frames taking most of their time to draw, or a quarter of them
+  not ready in time) and back up after about 3 s with room to spare (8 s just after stepping
+  down, so it doesn't see-saw); the button shows what it picked. In its menu, **Full resolution when paused**
   keeps the still picture sharp while playback stays light. Proxies are kept per file in your cache folder, so other
   projects using the same footage reuse them. **Settings → Make proxies as** picks the format:
   - **H.264** (the default): the smallest files, decoded on the graphics card

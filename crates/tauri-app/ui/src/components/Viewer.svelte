@@ -9,12 +9,19 @@
 
   // Playback quality: the picture at full, half or quarter resolution.
   const QUALITY: Record<number, string> = { 1: "Full", 2: "½ res", 4: "¼ res" };
+  const quality = $derived.by(() => {
+    const q = app.s?.prefs.playback_quality ?? 1;
+    if (q !== 0) return QUALITY[q] ?? "Full";
+    const now = app.live?.viewer?.quality ?? 1;
+    return now === 1 ? "Auto" : `Auto ${now === 2 ? "½" : "¼"}`;
+  });
   function qualityMenu(e: MouseEvent) {
     const p = app.s?.prefs;
     if (!p) return;
     const q = p.playback_quality ?? 1;
     openMenu(e, [
       { heading: true, label: "Playback quality" },
+      { label: "Automatic (lower when playing falls behind)", checked: q === 0, run: () => run(api.setPlaybackQuality(0)) },
       { label: "Full resolution", checked: q === 1, run: () => run(api.setPlaybackQuality(1)) },
       { label: "Half resolution", checked: q === 2, run: () => run(api.setPlaybackQuality(2)) },
       { label: "Quarter resolution", checked: q === 4, run: () => run(api.setPlaybackQuality(4)) },
@@ -327,10 +334,10 @@
     {#if app.live && !app.live.exact && !playing}<span class="muted" title="Some layers are still decoding">Catching up…</span>{/if}
     <button
       class="chip quality"
-      class:low={(app.s?.prefs.playback_quality ?? 1) > 1}
+      class:low={(app.live?.viewer?.quality ?? 1) > 1}
       aria-haspopup="menu"
-      title="Playback quality: draw the Viewer's picture at full, half or quarter resolution (footage is decoded that much smaller too), so heavy projects play smoothly. Export and Render preview always use full resolution."
-      onclick={qualityMenu}>{QUALITY[app.s?.prefs.playback_quality ?? 1] ?? "Full"}{#if app.s?.prefs.full_when_paused && (app.s?.prefs.playback_quality ?? 1) > 1}<span class="paused-full" title="Full resolution when paused"> ⏸ full</span>{/if} ▾</button
+      title="Playback quality: draw the Viewer's picture at full, half or quarter resolution (footage is decoded that much smaller too), so heavy projects play smoothly; Automatic steps down by itself when playing falls behind and back up when it can. Export and Render preview always use full resolution."
+      onclick={qualityMenu}>{quality}{#if app.s?.prefs.full_when_paused && (app.s?.prefs.playback_quality ?? 1) !== 1}<span class="paused-full" title="Full resolution when paused"> ⏸ full</span>{/if} ▾</button
     >
     <div class="zoom" role="group" aria-label="Viewer zoom">
       <button class="chip" class:on={hand} onclick={() => (hand = !hand)} title="Hand: drag the picture around (or drag with the middle mouse button anywhere)" aria-pressed={hand}>

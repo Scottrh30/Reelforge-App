@@ -118,6 +118,8 @@ pub struct Preview {
     pub full_when_paused: bool,
     /// The resolution divisor drawing now (the quality, or 1 while paused).
     active: u32,
+    /// Quality 0: chosen by itself while playing.
+    pub auto: AutoQuality,
 }
 
 impl Preview {
@@ -131,7 +133,7 @@ impl Preview {
             let scene = Scene::new(&device, &queue);
             Gpu { device, queue, compositor, scene, cache_render: None }
         });
-        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1, full_when_paused: false, active: 1 }
+        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1, full_when_paused: false, active: 1, auto: AutoQuality::default() }
     }
 
     /// Playback quality: draw the Viewer's picture at 1/`q` of full
@@ -139,7 +141,9 @@ impl Preview {
     /// or heavy projects play smoothly. Renders for the render cache stay full.
     pub fn set_quality(&mut self, q: u32) {
         let q = match q {
-            0..=1 => 1,
+            // Automatic.
+            0 => 0,
+            1 => 1,
             2..=3 => 2,
             _ => 4,
         };
@@ -236,7 +240,12 @@ impl Preview {
     pub fn update(&mut self, project: &Project, seq: usize, t: Time, playing: bool, sources: &HashMap<MediaId, PathBuf>, cache: &mut RenderCache) {
         let Some(sequence) = project.sequences.get(seq) else { return };
         self.error = None;
-        self.activate(if self.full_when_paused && !playing { 1 } else { self.quality });
+        let chosen = if self.quality == 0 { self.auto.level } else { self.quality };
+        self.activate(if self.full_when_paused && !playing { 1 } else { chosen });
+        if !playing {
+            self.auto.pause();
+        }
+        let (began, rev0) = (Instant::now(), self.picture_rev);
 
         let frame = crate::render_cache::frame_index(t, sequence.frame_rate);
         let recipe = reelforge_export::frame_recipe(project, seq, t, sources);
@@ -316,6 +325,11 @@ impl Preview {
         if let Some(e) = frames.error {
             self.error = Some(e);
         }
+        // Judged on frames actually drawn (ticks between frames draw nothing).
+        if playing && self.quality == 0 && (self.picture_rev != rev0 || !self.exact) {
+            let frame = Duration::from_secs_f64(1.0 / sequence.frame_rate.fps().max(1.0));
+            self.auto.observe(Instant::now(), began.elapsed(), !self.exact, frame);
+        }
         self.slots.retain(|_, s| s.last_used.elapsed() < IDLE_CLOSE);
         self.titles.retain(|_, t| t.last_used.elapsed() < IDLE_CLOSE);
     }
@@ -349,6 +363,75 @@ impl Preview {
 }
 
 /// The viewer's frames: whatever each clip's preview-size decoder has ready.
+/// Automatic playback quality: steps the Viewer's resolution down (full →
+/// ½ → ¼) when playing falls behind, and back up once it's had room to
+/// spare for a while.
+#[derive(Debug, Clone)]
+pub struct AutoQuality {
+    /// The divisor now (1, 2 or 4).
+    pub level: u32,
+    window_start: Option<Instant>,
+    frames: u32,
+    late: u32,
+    busy: Duration,
+    /// Windows in a row with room to spare.
+    calm: u32,
+    /// When it last stepped down (stepping back up then waits longer).
+    last_down: Option<Instant>,
+}
+
+impl Default for AutoQuality {
+    fn default() -> Self {
+        AutoQuality { level: 1, window_start: None, frames: 0, late: 0, busy: Duration::ZERO, calm: 0, last_down: None }
+    }
+}
+
+/// Seconds of playing each judgement covers.
+const AUTO_WINDOW: f64 = 0.75;
+
+impl AutoQuality {
+    /// One frame drawn while playing at `now`: it took `took`, and `late`
+    /// when a layer wasn't ready with its frame. `frame` is the sequence's
+    /// frame duration. Returns the level to draw at.
+    pub fn observe(&mut self, now: Instant, took: Duration, late: bool, frame: Duration) -> u32 {
+        let start = *self.window_start.get_or_insert(now);
+        self.frames += 1;
+        self.late += late as u32;
+        self.busy += took;
+        let span = now.duration_since(start).as_secs_f64();
+        if span < AUTO_WINDOW || self.frames < 4 {
+            return self.level;
+        }
+        let late_share = self.late as f64 / self.frames as f64;
+        // Drawing time against the time a frame has.
+        let load = self.busy.as_secs_f64() / self.frames as f64 / frame.as_secs_f64().max(1e-3);
+        if (late_share > 0.25 || load > 0.85) && self.level < 4 {
+            self.level *= 2;
+            self.calm = 0;
+            self.last_down = Some(now);
+        } else if late_share < 0.05 && load < 0.3 && self.level > 1 {
+            self.calm += 1;
+            // About 3 s of room to spare; 8 s soon after stepping down (so it doesn't see-saw).
+            let need = if self.last_down.is_some_and(|t| now.duration_since(t).as_secs_f64() < 10.0) { 11 } else { 4 };
+            if self.calm >= need {
+                self.level /= 2;
+                self.calm = 0;
+            }
+        } else {
+            self.calm = 0;
+        }
+        self.window_start = Some(now);
+        (self.frames, self.late, self.busy) = (0, 0, Duration::ZERO);
+        self.level
+    }
+
+    /// Playing stopped: the next judgement starts afresh (the level stays).
+    pub fn pause(&mut self) {
+        self.window_start = None;
+        (self.frames, self.late, self.busy) = (0, 0, Duration::ZERO);
+    }
+}
+
 struct PreviewFrames<'a> {
     slots: &'a mut HashMap<ClipId, Slot>,
     titles: &'a mut HashMap<ClipId, TitleCache>,
@@ -393,5 +476,45 @@ impl FrameProvider for PreviewFrames<'_> {
             f
         };
         Ok(frame.map(|frame| Picture { frame, size, media: media.id }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Play `secs` at 25 fps where each frame takes `took` ms and every
+    /// `late_every`th is late (0: none). Returns the level after.
+    fn play(a: &mut AutoQuality, t: &mut Instant, secs: f64, took: f64, late_every: u32) -> u32 {
+        let frame = Duration::from_millis(40);
+        for i in 0..(secs * 25.0) as u32 {
+            *t += frame;
+            a.observe(*t, Duration::from_secs_f64(took / 1000.0), late_every > 0 && i % late_every == 0, frame);
+        }
+        a.level
+    }
+
+    #[test]
+    fn automatic_quality_steps_down_when_behind_and_back_up_when_easy() {
+        let mut a = AutoQuality::default();
+        let mut t = Instant::now();
+        assert_eq!(play(&mut a, &mut t, 3.0, 10.0, 0), 1, "keeping up: full");
+        // Slow drawing (38 of 40 ms): half within a second or so, then quarter.
+        assert!(play(&mut a, &mut t, 1.6, 38.0, 0) >= 2);
+        assert_eq!(play(&mut a, &mut t, 3.0, 38.0, 0), 4, "no lower than a quarter");
+        // Easy again, soon after stepping down: it waits about 8 s.
+        assert_eq!(play(&mut a, &mut t, 5.0, 5.0, 0), 4);
+        assert_eq!(play(&mut a, &mut t, 4.0, 5.0, 0), 2);
+        // Later, about 3 s does.
+        assert_eq!(play(&mut a, &mut t, 3.5, 5.0, 0), 1);
+        // Frames not ready in time (the decoder behind) count too.
+        let l = play(&mut a, &mut t, 1.6, 5.0, 2);
+        assert!(l >= 2);
+        // Middling: stays put.
+        assert_eq!(play(&mut a, &mut t, 6.0, 20.0, 0), l);
+        // A pause doesn't count as time with room to spare.
+        a.pause();
+        t += Duration::from_secs(30);
+        assert_eq!(play(&mut a, &mut t, 0.5, 5.0, 0), l);
     }
 }

@@ -725,7 +725,7 @@ export interface Live {
   render: number | null;
   render_gen: number;
   /// What the Viewer works from, for its performance readout.
-  viewer: { layers: number; proxied: number; proxies_on: boolean; decode: string; gpu: string | null };
+  viewer: { layers: number; proxied: number; proxies_on: boolean; decode: string; gpu: string | null; quality: number };
 }
 
 export interface AttrOffers {

@@ -58,7 +58,8 @@ pub struct Prefs {
     pub timeline_filmstrip: bool,
     /// A waveform of a video clip's linked sound along its lower edge.
     pub timeline_video_waveforms: bool,
-    /// Playback quality: the Viewer draws at 1/this of full resolution (1, 2 or 4).
+    /// Playback quality: the Viewer draws at 1/this of full resolution (1, 2
+    /// or 4; 0: automatic, lower while playing falls behind).
     pub playback_quality: u32,
     /// …but the paused picture at full resolution.
     pub full_when_paused: bool,
@@ -127,7 +128,8 @@ impl Editor {
         self.status = if on { "Full resolution when paused".into() } else { "Paused picture at the playback quality".into() };
     }
 
-    /// Set the Viewer's playback quality (1 full, 2 half, 4 quarter resolution).
+    /// Set the Viewer's playback quality (1 full, 2 half, 4 quarter resolution,
+    /// 0 automatic).
     pub fn set_playback_quality(&mut self, q: u32) {
         self.prefs.playback_quality = q;
         self.preview.set_quality(q);
@@ -135,6 +137,7 @@ impl Editor {
         self.status = format!(
             "Playback quality: {}",
             match self.preview.quality() {
+                0 => "automatic (lower while playing falls behind)",
                 1 => "full resolution",
                 2 => "half resolution",
                 _ => "quarter resolution",
@@ -3796,7 +3799,8 @@ mod tests {
         e.set_playback_quality(8);
         assert_eq!(e.prefs.playback_quality, 4);
         e.set_playback_quality(0);
-        assert_eq!(e.prefs.playback_quality, 1);
+        assert_eq!(e.prefs.playback_quality, 0, "automatic");
+        assert!(e.status.contains("automatic"));
         // Kept with the settings.
         let mut p = e.prefs.clone();
         p.playback_quality = 4;

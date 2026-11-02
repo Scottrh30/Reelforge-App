@@ -101,6 +101,8 @@ struct ViewerInfo {
     decode: String,
     /// The graphics card drawing the picture.
     gpu: Option<&'static str>,
+    /// The picture is drawn at 1/this of full resolution now.
+    quality: u32,
 }
 
 /// What the Viewer works from at the playhead.
@@ -125,7 +127,7 @@ fn viewer_info(e: &reelforge_engine::editor::Editor) -> ViewerInfo {
         let st = reelforge_media::hw::status();
         if st.starts_with("unavailable") { st } else { format!("on ({})", reelforge_media::hw::api_name()) }
     };
-    ViewerInfo { layers, proxied, proxies_on: e.prefs.use_proxies, decode, gpu: reelforge_render::adapter_info() }
+    ViewerInfo { layers, proxied, proxies_on: e.prefs.use_proxies, decode, gpu: reelforge_render::adapter_info(), quality: e.preview.active_quality() }
 }
 
 #[derive(Serialize)]
