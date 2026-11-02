@@ -95,6 +95,10 @@
         oncontextmenu={(e) => compMenu(e, c.index, c.name)}
         title="{c.width}×{c.height}, {c.fps.toFixed(3).replace('.000', '')} fps"
       >
+        <!-- What it looks like (a third of the way in), in its own shape; redrawn when it changes. -->
+        <span class="cpic" style="aspect-ratio:{Math.max(1, c.width)} / {Math.max(1, c.height)}" aria-hidden="true">
+          {#if app.s}<Thumb comp={c.index} at={Math.round(c.duration / 3)} rev={app.s.rev} />{/if}
+        </span>
         <span class="badge">Comp</span>
         <span class="name">{c.name}</span>
         <span class="muted tc">{shortTime(c.duration)}</span>
@@ -220,6 +224,15 @@
   }
   .comp.open {
     border-color: var(--clip-comp);
+  }
+  .cpic {
+    flex: none;
+    height: 30px;
+    max-width: 54px;
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--well);
+    border: 1px solid color-mix(in srgb, var(--clip-comp) 50%, transparent);
   }
   .comp .name {
     flex: 1;

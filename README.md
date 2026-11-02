@@ -73,7 +73,8 @@ What works now:
   shape of their media (speed and reverse included), only for the part on screen and decoded in
   the background. Frame times are rounded to a step that suits the zoom, so scrolling and small
   zoom changes reuse pictures. Taller video tracks give bigger pictures (drag a track's lower
-  edge). Composition clips show a filmstrip of their rendered picture (in the composition's
+  edge). In the Media panel each composition shows a small picture of itself (a third of the
+  way in, in its shape). Composition clips show a filmstrip of their rendered picture (in the composition's
   shape), kept until something in the composition changes. **Settings → Show the linked sound's
   waveform under video clips** adds a band along each linked video clip's lower edge showing its
   sound (at its volume and fades), for cutting picture to sound. **Settings → Clip pictures** picks a
