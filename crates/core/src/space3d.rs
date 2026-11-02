@@ -210,6 +210,8 @@ pub struct Light {
     /// 0 none, 1 smooth, 2 inverse square; and the distance it works over.
     pub falloff: u32,
     pub radius: f32,
+    /// How dark the shadows 3D layers cast in this light are, 0–1 (0: none).
+    pub shadow: f32,
 }
 
 fn srgb_to_linear(c: f32) -> f32 {
@@ -240,6 +242,7 @@ impl Light {
             cone: [half.cos(), (half * (1.0 - feather)).cos()],
             falloff: (v(li::FALLOFF) as u32).min(2),
             radius: v(li::RADIUS).max(1.0),
+            shadow: if v(li::SHADOWS) >= 0.5 { (v(li::SHADOW_DARKNESS) / 100.0).clamp(0.0, 1.0) } else { 0.0 },
         }
     }
 
@@ -343,6 +346,9 @@ pub struct LayerSpace {
     /// Frame pixels per layer pixel at the anchor (for depth-of-field blur).
     pub scale: f32,
     pub lighting: Option<Lighting>,
+    /// The layer's plane in the world: where its centre is, and its X and Y
+    /// axes per layer pixel (for the shadows it casts).
+    pub plane: [V3; 3],
 }
 
 impl LayerSpace {
@@ -402,7 +408,7 @@ pub fn layer_space(t: &Transform, layer: [f32; 2], scene: &Scene3d) -> LayerSpac
     let depth = dot(sub(pos, cam.position), f);
     let scale = focal / depth.max(NEAR) * ((t.scale[0].abs() + t.scale[1].abs()) * 0.5);
     let lighting = (t.lit && !scene.lights.is_empty()).then(|| Lighting { origin, u: mul(u, 1.0), v: mul(v, 1.0), camera: cam.position, lights: scene.lights.clone() });
-    LayerSpace { mvp, map, depth, scale, lighting }
+    LayerSpace { mvp, map, depth, scale, lighting, plane: [origin, u, v] }
 }
 
 /// A solid object (3D text) as the camera sees it. Its own coordinates are
@@ -551,7 +557,7 @@ mod tests {
     #[test]
     fn lights_point_spot_directional_ambient() {
         let up: V3 = [0.0, 0.0, -1.0]; // a layer facing the default camera
-        let mk = |kind, falloff| Light { kind, color: [1.0, 1.0, 1.0], position: [0.0, 0.0, -500.0], direction: [0.0, 0.0, 1.0], cone: [(30f32).to_radians().cos(), (15f32).to_radians().cos()], falloff, radius: 1000.0 };
+        let mk = |kind, falloff| Light { kind, color: [1.0, 1.0, 1.0], position: [0.0, 0.0, -500.0], direction: [0.0, 0.0, 1.0], cone: [(30f32).to_radians().cos(), (15f32).to_radians().cos()], falloff, radius: 1000.0, shadow: 0.0 };
         // Point light straight in front: full; off to the side: less.
         let p = mk(0, 0);
         assert!((p.reach([0.0, 0.0, 0.0], up)[0] - 1.0).abs() < 1e-4);

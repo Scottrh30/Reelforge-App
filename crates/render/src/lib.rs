@@ -123,6 +123,14 @@ const UNIFORM_SIZE: u64 = 128 + 16 + 32 + MESH_VEC4S as u64 * 16; // mat4 + vec2
 /// vec4s holding a mesh's points, two to each: enough for the biggest grid
 /// (33 × 33 points). Must match `pts` in composite.wgsl.
 const MESH_VEC4S: usize = 545;
+/// 3D layers that can cast shadows in one frame (each gets a tile of the atlas).
+const MAX_OCCLUDERS: usize = 8;
+/// The shadow atlas: 4 × 4 tiles of this many pixels.
+const ATLAS_TILE: u32 = 256;
+/// Where occluders start in a lit layer's point list (after the plane, the
+/// camera and room for every light), in vec4s.
+const OCCLUDER_BASE: usize = 4 + 4 * reelforge_core::space3d::MAX_LIGHTS;
+
 /// Little quads per mesh cell, across and down (a cell is bilinear; this many
 /// straight-edged pieces draw it smoothly): six for small grids, fewer for
 /// fine ones, whose cells are small already.
@@ -293,6 +301,9 @@ pub struct Compositor {
     uniform_bind: wgpu::BindGroup,
     uniform_stride: u64,
     sampler: wgpu::Sampler,
+    /// 3D layers' outlines, for the shadows they cast (see `occluder.wgsl`).
+    shadow_atlas_view: wgpu::TextureView,
+    occluder_pipeline: wgpu::RenderPipeline,
     layers: HashMap<u64, LayerTex>,
     /// Mask textures, by layer key.
     masks: HashMap<u64, LayerTex>,
@@ -349,17 +360,37 @@ impl Compositor {
 
         let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("layer uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: wgpu::BufferSize::new(UNIFORM_SIZE),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(UNIFORM_SIZE),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                // The shadow atlas: 3D layers' outlines, for lit layers' shadows.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+            ],
         });
+        let shadow_atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("shadow atlas"),
+            size: wgpu::Extent3d { width: ATLAS_TILE * 4, height: ATLAS_TILE * 4, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let shadow_atlas_view = shadow_atlas.create_view(&Default::default());
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("layer texture"),
             entries: &[
@@ -576,15 +607,39 @@ impl Compositor {
         let uniform_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("layer uniforms"),
             layout: &uniform_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniforms,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(UNIFORM_SIZE),
-                }),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &uniforms,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(UNIFORM_SIZE),
+                    }),
+                },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&shadow_atlas_view) },
+            ],
         });
+        // Draws a layer's alpha into its tile of the shadow atlas.
+        let occluder_pipeline = {
+            let shader = device.create_shader_module(wgpu::include_wgsl!("occluder.wgsl"));
+            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("occluder"), bind_group_layouts: &[Some(&texture_layout)], immediate_size: 0 });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("occluder"),
+                layout: Some(&pl),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_tile"), compilation_options: Default::default(), buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_alpha"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("layer"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -627,6 +682,8 @@ impl Compositor {
             uniform_bind,
             uniform_stride,
             sampler,
+            shadow_atlas_view,
+            occluder_pipeline,
             layers: HashMap::new(),
             masks: HashMap::new(),
             fx2_pipelines,
@@ -1428,6 +1485,50 @@ impl Compositor {
             }
         }
 
+        // Shadows: when a light casts them, the 3D layers being drawn (up to
+        // MAX_OCCLUDERS) each get a tile of the shadow atlas with their outline,
+        // and lit layers trace their light past them (see composite.wgsl).
+        let casts = uniforms.iter().any(|u| u.4.and_then(|s| s.lighting.as_ref()).is_some_and(|l| l.lights.iter().any(|g| g.shadow > 0.0 && g.kind != 3)));
+        let mut occluders: Vec<(usize, u64, Option<usize>)> = Vec::new();
+        if casts {
+            let mut add = |d: &Draw| {
+                if occluders.len() < MAX_OCCLUDERS && uniforms[d.slot].4.is_some() && uniforms[d.slot].0.opacity > 0.0 {
+                    occluders.push((d.slot, d.key, d.fx));
+                }
+            };
+            for op in &ops {
+                match op {
+                    Op::Frame { draw, .. } => add(draw),
+                    Op::Group { a, b, .. } => {
+                        for d in [a, b].into_iter().flatten() {
+                            add(d);
+                        }
+                    }
+                    Op::Adjust { .. } => {}
+                }
+            }
+        }
+        let occluder_floats: Vec<f32> = occluders
+            .iter()
+            .enumerate()
+            .flat_map(|(k, &(slot, _, _))| {
+                let (t, size, _, _, space, fxmap) = &uniforms[slot];
+                let [o, u, v] = space.map_or([[0.0; 3]; 3], |s| s.plane);
+                let tile = [(k % 4) as f32 * 0.25, (k / 4) as f32 * 0.25, 0.25, 0.0];
+                [
+                    [o[0], o[1], o[2], size[0] * 0.5],
+                    [u[0], u[1], u[2], size[1] * 0.5],
+                    [v[0], v[1], v[2], t.opacity.clamp(0.0, 1.0)],
+                    t.crop_uv(),
+                    *fxmap,
+                    tile,
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<f32>>()
+            })
+            .collect();
+
         // Uniforms for every draw in one buffer, addressed by dynamic offset.
         let mut data = vec![0u8; self.uniform_stride as usize * uniforms.len().max(1)];
         for (i, (t, size, wipe, mesh, space, fxmap)) in uniforms.iter().enumerate() {
@@ -1465,15 +1566,20 @@ impl Compositor {
                     // A lit 3D layer: its plane, the camera and the lights where the mesh would go.
                     if let Some(l) = lighting {
                         let n = l.lights.len().min(reelforge_core::space3d::MAX_LIGHTS);
+                        let pts0 = floats.len();
                         floats.extend([l.origin[0], l.origin[1], l.origin[2], n as f32]);
                         floats.extend([l.u[0], l.u[1], l.u[2], 0.0]);
                         floats.extend([l.v[0], l.v[1], l.v[2], 0.0]);
-                        floats.extend([l.camera[0], l.camera[1], l.camera[2], 0.0]);
+                        floats.extend([l.camera[0], l.camera[1], l.camera[2], occluders.len() as f32]);
                         for g in &l.lights[..n] {
                             floats.extend([g.position[0], g.position[1], g.position[2], g.kind as f32]);
                             floats.extend([g.direction[0], g.direction[1], g.direction[2], g.falloff as f32]);
                             floats.extend([g.color[0], g.color[1], g.color[2], g.radius]);
-                            floats.extend([g.cone[0], g.cone[1], 0.0, 0.0]);
+                            floats.extend([g.cone[0], g.cone[1], g.shadow, 0.0]);
+                        }
+                        if !occluders.is_empty() {
+                            floats.resize(pts0 + OCCLUDER_BASE * 4, 0.0);
+                            floats.extend_from_slice(&occluder_floats);
                         }
                     }
                 }
@@ -1550,6 +1656,22 @@ impl Compositor {
         for (i, p) in fx_passes.iter().enumerate() {
             if !adjust.contains(&p.key) {
                 encode_fx(&mut enc, i, p);
+            }
+        }
+        // The shadow casters' outlines into the atlas (from what they'll be drawn with).
+        if !occluders.is_empty() {
+            let mut pass = pass_on(&mut enc, &self.shadow_atlas_view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            pass.set_pipeline(&self.occluder_pipeline);
+            for (k, &(_, key, fx)) in occluders.iter().enumerate() {
+                let bind = match fx {
+                    Some(i) => self.fx_targets.get(&key).map(|f| &f.binds[i]),
+                    None => self.layers.get(&key).map(|t| &t.bind_group),
+                };
+                let Some(bind) = bind else { continue };
+                let (x, y) = ((k % 4) as u32 * ATLAS_TILE, (k / 4) as u32 * ATLAS_TILE);
+                pass.set_viewport(x as f32, y as f32, ATLAS_TILE as f32, ATLAS_TILE as f32, 0.0, 1.0);
+                pass.set_bind_group(0, bind, &[]);
+                pass.draw(0..3, 0..1);
             }
         }
 

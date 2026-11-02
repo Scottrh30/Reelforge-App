@@ -782,8 +782,13 @@ What works now:
     layers are shaded by them (both sides, per pixel), unless **Lit by the scene's lights** is
     unticked (for a screen or a sign that glows by itself); with none, 3D layers show as they are.
     Up to 8 lights at once. A light's position and point of interest can be dragged in the Viewer
-  - Everything about cameras and lights keyframes like effect settings. Not yet: shadows,
-    layers that cut through each other (they're sorted by their middles)
+  - **Shadows**: a light with **Casts shadows** on (the default; **Shadow darkness**, 80%)
+    darkens what 3D layers block of it on the lit 3D layers behind them. The blocker's own
+    picture counts, so a cut-out or text casts its shape and its opacity how dark; each pixel
+    traces its way to the light past the other layers' planes. Up to 8 layers cast shadows at a
+    time, their outlines drawn into a 1024-pixel atlas each frame
+  - Everything about cameras and lights keyframes like effect settings. Not yet: layers that
+    cut through each other (they're sorted by their middles)
 - **Corner pin** (Transform section of the Controls panel): tick it to stretch a layer in
   perspective by its four corners. Drag the pink corner handles in the Viewer (**Shift**: straight
   across or down; dragging the middle moves all four). It can be keyframed like any property,

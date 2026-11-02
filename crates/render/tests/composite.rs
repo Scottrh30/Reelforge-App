@@ -517,7 +517,7 @@ fn layers_in_3d_perspective_and_light() {
     assert!(near(px(&out, 200, 100, 50), [0, 0, 0]) && near(px(&out, 200, 10, 10), [0, 0, 0]));
 
     // A red spot light aimed at the middle: the middle is red, the edge of the square dark.
-    let spot = Light { kind: 1, color: [1.0, 0.0, 0.0], position: [0.0, 0.0, -200.0], direction: [0.0, 0.0, 1.0], cone: [(8f32).to_radians().cos(), (4f32).to_radians().cos()], falloff: 0, radius: 1000.0 };
+    let spot = Light { kind: 1, color: [1.0, 0.0, 0.0], position: [0.0, 0.0, -200.0], direction: [0.0, 0.0, 1.0], cone: [(8f32).to_radians().cos(), (4f32).to_radians().cos()], falloff: 0, radius: 1000.0, shadow: 0.0 };
     let lit = Scene3d { camera: cam, lights: vec![spot] };
     let out = draw(&mut c, t, &layer_space(&t, [64.0, 64.0], &lit));
     let mid = px(&out, 200, 100, 50);
@@ -1405,4 +1405,55 @@ fn hdr_footage_stays_hdr_through_to_an_hdr_export() {
     assert_eq!(hi[1], 255);
     let white = frame(0.5806, Transfer::Pq).to_rgba();
     assert!(white[1] >= 253, "{}", white[1]);
+}
+
+/// Shadows: a small square between a light and a big wall casts a shadow on
+/// the wall, as dark as the light says; its picture's shape counts (a
+/// transparent hole lets light through), and a light without shadows casts none.
+#[test]
+fn three_d_layers_cast_shadows_on_each_other() {
+    use reelforge_core::space3d::{layer_space, Camera, Light, Scene3d};
+    let Some(mut c) = setup() else { return };
+    let (frame, f) = ([400u32, 200u32], [400.0f32, 200.0f32]);
+    let cam = Camera::default_for(f);
+    let white = solid(4, 4, [255, 255, 255, 255]);
+    // A blocker with a transparent left half.
+    let mut half = Vec::new();
+    for _y in 0..8 {
+        for x in 0..8 {
+            half.extend(if x < 4 { [0, 0, 0, 0] } else { [255, 255, 255, 255] });
+        }
+    }
+    let wall = Transform { three_d: true, ..Default::default() };
+    let blocker = Transform { three_d: true, depth: -300.0, ..Default::default() };
+    // A point light straight in front, so the shadow lands right behind the blocker, a little bigger.
+    let light = |shadow: f32| Light { kind: 0, color: [1.0; 3], position: [0.0, 0.0, -600.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 1000.0, shadow };
+    let render = |c: &mut reelforge_render::Compositor, shadow: f32, blocker_pixels: &[u8], blocker_px: [u32; 2]| {
+        let scene = Scene3d { camera: cam, lights: vec![light(shadow)] };
+        let (ws, bs) = (layer_space(&wall, [360.0, 180.0], &scene), layer_space(&blocker, [40.0, 40.0], &scene));
+        let b = LayerInput { space: Some(&bs), ..layer(3, blocker_pixels, blocker_px, [40.0, 40.0], blocker, BlendMode::Normal) };
+        c.render(frame, &[LayerInput { space: Some(&ws), ..layer(2, &white, [4, 4], [360.0, 180.0], wall, BlendMode::Normal) }, b]);
+        c.read_output().unwrap()
+    };
+    // The blocker sits at depth −300, so it shows bigger on screen; its shadow on
+    // the wall (seen past it) peeks out around it: look just outside the
+    // blocker's picture but inside where the shadow falls.
+    // On screen the blocker spans ±40·f/(f−300)/2; its shadow on the wall
+    // (light at −600, blocker at −300: twice the size) spans ±40 at depth 0.
+    let k = cam.focal() / (cam.focal() - 300.0);
+    let blocker_half = 20.0 * k;
+    assert!(blocker_half < 38.0, "the shadow must peek out: {blocker_half}");
+    let probe = (200 + 36) as u32; // right of the blocker, inside the shadow
+    let off = render(&mut c, 0.0, &white, [4, 4]);
+    assert!(near(px(&off, 400, probe, 100), [255, 255, 255]), "no shadows: {:?}", px(&off, 400, probe, 100));
+    let on = render(&mut c, 0.8, &white, [4, 4]);
+    let g = px(&on, 400, probe, 100);
+    // 80% darker in linear light: 0.2 → about 124 in sRGB.
+    assert!((110..140).contains(&g[0]), "shadowed: {g:?}");
+    // Far from the blocker: lit as before.
+    assert!(near(px(&on, 400, 200 + 120, 100), [255, 255, 255]));
+    // The blocker's own picture counts: its transparent left half lets light through.
+    let holed = render(&mut c, 0.8, &half, [8, 8]);
+    assert!(near(px(&holed, 400, 200 - 36, 100), [255, 255, 255]), "through the hole: {:?}", px(&holed, 400, 200 - 36, 100));
+    assert!((110..140).contains(&px(&holed, 400, probe, 100)[0]), "behind the solid half: {:?}", px(&holed, 400, probe, 100));
 }

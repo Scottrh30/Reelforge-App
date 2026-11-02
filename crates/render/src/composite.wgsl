@@ -34,6 +34,8 @@ struct Layer {
 };
 
 @group(0) @binding(0) var<uniform> layer: Layer;
+// 3D layers' outlines (alpha), a tile each, for the shadows they cast.
+@group(0) @binding(1) var shadow_atlas: texture_2d<f32>;
 @group(1) @binding(0) var layer_tex: texture_2d<f32>;
 @group(1) @binding(1) var layer_sampler: sampler;
 
@@ -119,8 +121,58 @@ fn wipe_factor(p: vec2<f32>) -> f32 {
     return clamp((e - q) / soft, 0.0, 1.0);
 }
 
+// Where shadow casters start in `pts` (after the plane, camera and 8 lights),
+// six vec4s each: centre + half width, X axis + half height, Y axis +
+// opacity, the crop (uv), the effect target's map, and its atlas tile.
+const OCCLUDER_BASE = 36u;
+
+// How much of a light's way from world point `p` (direction `l`, `dist` away;
+// any distance for a directional light) the other 3D layers block, 0–1.
+fn occlusion(p: vec3<f32>, l: vec3<f32>, dist: f32, directional: bool) -> f32 {
+    let count = u32(layer.pts[3].w);
+    var through = 1.0;
+    for (var j = 0u; j < count; j = j + 1u) {
+        let b = OCCLUDER_BASE + j * 6u;
+        let o = layer.pts[b].xyz;
+        let hw = layer.pts[b].w;
+        let u = layer.pts[b + 1u].xyz;
+        let hh = layer.pts[b + 1u].w;
+        let v = layer.pts[b + 2u].xyz;
+        let opacity = layer.pts[b + 2u].w;
+        let crop = layer.pts[b + 3u];
+        let fx = layer.pts[b + 4u];
+        let tile = layer.pts[b + 5u];
+        let n = cross(u, v);
+        let den = dot(n, l);
+        if (abs(den) < 1e-9) {
+            continue;
+        }
+        let t = dot(n, o - p) / den;
+        // In front of the point (not its own plane), and before the light.
+        if (t <= 0.5 || (!directional && t >= dist - 0.5)) {
+            continue;
+        }
+        let d = p + l * t - o;
+        let local = vec2(dot(d, u) / dot(u, u), dot(d, v) / dot(v, v));
+        let uv = local / vec2(2.0 * hw, 2.0 * hh) + 0.5;
+        if (any(uv < crop.xy) || any(uv > crop.zw)) {
+            continue;
+        }
+        let tex = (uv - fx.zw) / fx.xy;
+        if (any(tex < vec2(0.0)) || any(tex > vec2(1.0))) {
+            continue;
+        }
+        // Inside the tile (half a texel in), from the layer's picture.
+        let texel = 0.5 / 1024.0;
+        let at = tile.xy + clamp(tex * tile.z, vec2(texel), vec2(tile.z - texel));
+        let a = textureSampleLevel(shadow_atlas, layer_sampler, at, 0.0).r * opacity;
+        through = through * (1.0 - a);
+    }
+    return 1.0 - through;
+}
+
 // The light reaching a lit 3D layer's pixel at `local` (same maths as
-// `reelforge_core::space3d::Light::reach`).
+// `reelforge_core::space3d::Light::reach`), less the shadows other 3D layers cast.
 fn lighting(local: vec2<f32>) -> vec3<f32> {
     let origin = layer.pts[0].xyz;
     let u = layer.pts[1].xyz;
@@ -164,7 +216,12 @@ fn lighting(local: vec2<f32>) -> vec3<f32> {
         if (kind > 0.5 && kind < 1.5) {
             spot = smoothstep(cone.x, max(cone.y, cone.x + 1e-4), dot(-l, dir));
         }
-        sum = sum + color * max(dot(n, l), 0.0) * atten * spot;
+        var shade = 1.0;
+        let darkness = layer.pts[b + 3u].z;
+        if (darkness > 0.0) {
+            shade = 1.0 - darkness * occlusion(p, l, dist, kind > 1.5);
+        }
+        sum = sum + color * max(dot(n, l), 0.0) * atten * spot * shade;
     }
     return sum;
 }

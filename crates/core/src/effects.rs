@@ -346,6 +346,9 @@ pub mod light {
     pub const FEATHER: usize = 10;
     pub const FALLOFF: usize = 11;
     pub const RADIUS: usize = 12;
+    /// 3D layers between the light and another layer shade it (1) or not (0).
+    pub const SHADOWS: usize = 13;
+    pub const SHADOW_DARKNESS: usize = 14;
     /// What the light kinds are called (the Type menu).
     pub const KINDS: [&str; 4] = ["Point", "Spot", "Directional", "Ambient"];
 }
@@ -381,7 +384,7 @@ const CAMERA: [ParamSpec; 11] = [
     spec("Blur", 25.0, 0.0, 250.0, " px", 0.25),
 ];
 
-const LIGHT: [ParamSpec; 13] = [
+const LIGHT: [ParamSpec; 15] = [
     choice("Type", &light::KINDS),
     color("Colour", 0xffffff),
     spec("Intensity", 100.0, 0.0, 1000.0, " %", 0.5),
@@ -395,6 +398,8 @@ const LIGHT: [ParamSpec; 13] = [
     spec("Cone feather", 50.0, 0.0, 100.0, " %", 0.5),
     choice("Falloff", &["None", "Smooth", "Inverse square"]),
     spec("Falloff distance", 1500.0, 1.0, 100000.0, " px", 1.0),
+    ParamSpec { name: "Casts shadows", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Shadow darkness", 80.0, 0.0, 100.0, " %", 0.5),
 ];
 
 /// Energy blade parameter indices.
@@ -737,7 +742,7 @@ impl EffectKind {
             EffectKind::ChromaKey => &[(0, "Key"), (4, "Matte")],
             EffectKind::LumaKey => &[(0, "Key"), (3, "Matte")],
             EffectKind::DifferenceKey => &[(0, "Key"), (2, "Matte")],
-            EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff")],
+            EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows")],
             _ => &[],
         }
     }
