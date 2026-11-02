@@ -347,6 +347,12 @@ What works now:
   - **Light leaks** (Light & stylize): soft blooms of coloured light drifting in from the
     left, right, top, bottom, corners or anywhere, between two colours, screened onto the
     picture. **Drift** sets how fast they wander and pulse; **Seed** gives another pattern
+  - **Neon edges** (Light & stylize): a glowing neon tube along the layer's edges — its
+    outline (**Shape**, from transparency, for logos and titles) or the outlines in the
+    picture (**Picture**, from brightness). **Colour**, **Tube width**, **Glow radius** and
+    **Glow intensity** shape the light, **Hot core** whitens the tube's middle, **Original
+    layer** fades the layer itself (0 % = the neon alone), and **Flicker** makes it stutter
+    like a failing sign. The *Neon sign* starter look sets one up
   - **Film grain** (Light & stylize): grain that changes every frame (**Frame rate**, 0 =
     still), from fine to coarse (**Size**), mono to colour, strongest in the midtones and
     kept out of the highlights unless **In highlights** is raised

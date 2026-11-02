@@ -453,7 +453,7 @@ fn opacity_move(keys: &[(f64, f32)]) -> Motion {
 
 /// The looks that come with Reelforge, made of built-in effects only.
 pub fn starters() -> Vec<EffectPreset> {
-    use reelforge_core::effects::{aberration, glitch, grain, key};
+    use reelforge_core::effects::{aberration, glitch, grain, key, neon};
     let one = Time::from_secs_f64(1.0);
     let look = |name: &str, effects: Vec<Effect>| EffectPreset { effects, folder: STARTERS.into(), builtin: true, ..EffectPreset::empty(name, Time::ZERO, Timing::FromStart) };
     let mut teal = Effect::new(EffectKind::Curves);
@@ -475,6 +475,7 @@ pub fn starters() -> Vec<EffectPreset> {
             fx(EffectKind::FilmGrain, &[(grain::AMOUNT, 30.0)]),
             fx(EffectKind::ColorCorrect, &[(2, 80.0)]),
         ]),
+        look("Neon sign", vec![fx(EffectKind::NeonEdges, &[(neon::ORIGINAL, 15.0), (neon::WIDTH, 5.0), (neon::GLOW_RADIUS, 30.0), (neon::FLICKER, 25.0)])]),
         look("Green screen", vec![fx(EffectKind::ChromaKey, &[(key::CHOKE, 1.0), (key::EDGE_SOFTNESS, 1.5)])]),
         look("Blue screen", vec![fx(EffectKind::ChromaKey, &[(0, 230.0), (key::CHOKE, 1.0), (key::EDGE_SOFTNESS, 1.5)])]),
     ];

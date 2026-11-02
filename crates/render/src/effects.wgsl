@@ -714,3 +714,79 @@ fn fs_leaks(in: VsOut) -> @location(0) vec4<f32> {
     let screened = 1.0 - (1.0 - base * c.a / max(a2, 1e-5)) * (1.0 - l);
     return vec4(to_linear(screened) * a2, a2);
 }
+
+// ---- Neon edges (shared by fs_neon_edge and fs_neon_mix) ----
+// p0 = (edges from: 0 shape / 1 picture, colour, tube width px, glow radius px),
+// p1 = (glow intensity %, hot core %, edge threshold %, original layer %),
+// p2 = (flicker %, flicker speed Hz); extra = (-, time, layer size).
+
+fn neon_rgb(v: f32) -> vec3<f32> {
+    let c = u32(clamp(round(v), 0.0, 16777215.0));
+    let g = vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0;
+    return pow(g, vec3(2.2));
+}
+
+fn neon_hash(a: f32, b: f32) -> f32 {
+    return fract(sin(a * 12.9898 + b * 78.233) * 43758.5453);
+}
+
+// How lit the tubes are now: 1, dipping and stuttering as it flickers.
+fn neon_flicker() -> f32 {
+    let amount = clamp(fx.p2.x / 100.0, 0.0, 1.0);
+    if (amount <= 0.0) {
+        return 1.0;
+    }
+    let tick = floor(fx.extra.y * max(fx.p2.y, 0.01));
+    let r = neon_hash(tick, fx.texel_dir.z);
+    // Mostly on; now and then a dip, sometimes nearly out.
+    let dip = select(0.0, select(0.5, 0.95, r > 0.93), r > 0.65);
+    return 1.0 - amount * dip;
+}
+
+// The edge strength at layer uv, 0–1: how much the shape's transparency (or
+// the picture's brightness) changes within half a tube width.
+fn neon_edge(uv: vec2<f32>) -> f32 {
+    let r = max(fx.p0.z * 0.5, 0.5) / max(fx.extra.zw, vec2(1.0));
+    let picture = fx.p0.x > 0.5;
+    var lo = 1e9;
+    var hi = -1e9;
+    for (var k = 0; k < 12; k = k + 1) {
+        let a = f32(k) * 0.5235988;
+        let d = vec2(cos(a), sin(a));
+        for (var s = 1; s <= 2; s = s + 1) {
+            let c = textureSampleLevel(src, src_sampler, to_tex(uv + d * r * f32(s) * 0.5), 0.0);
+            var v = c.a;
+            if (picture) {
+                v = dot(pow(max(select(vec3(0.0), c.rgb / c.a, c.a > 1e-5), vec3(0.0)), vec3(1.0 / 2.2)), vec3(0.2126, 0.7152, 0.0722)) * c.a;
+            }
+            lo = min(lo, v);
+            hi = max(hi, v);
+        }
+    }
+    let c0 = textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+    var v0 = c0.a;
+    if (picture) {
+        v0 = dot(pow(max(select(vec3(0.0), c0.rgb / c0.a, c0.a > 1e-5), vec3(0.0)), vec3(1.0 / 2.2)), vec3(0.2126, 0.7152, 0.0722)) * c0.a;
+    }
+    lo = min(lo, v0);
+    hi = max(hi, v0);
+    let t = fx.p1.z / 100.0;
+    if (picture) {
+        return smoothstep(t, t + 0.12, hi - lo);
+    }
+    return smoothstep(t * 0.5, t * 0.5 + 0.35, hi - lo);
+}
+
+// The tube at uv: premultiplied light, its middle white-hot.
+fn neon_tube(uv: vec2<f32>) -> vec4<f32> {
+    let e = neon_edge(uv) * neon_flicker();
+    let col = neon_rgb(fx.p0.y);
+    let hot = mix(col, vec3(1.0), clamp(fx.p1.y / 100.0, 0.0, 1.0) * e * e);
+    return vec4(hot * e, e);
+}
+
+// Neon edges, step 1: the tubes alone (to be blurred into the glow).
+@fragment
+fn fs_neon_edge(in: VsOut) -> @location(0) vec4<f32> {
+    return neon_tube(in.uv);
+}

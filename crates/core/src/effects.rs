@@ -68,6 +68,9 @@ pub enum EffectKind {
     Glitch,
     /// Soft drifting blooms of coloured light, like film light leaks.
     LightLeaks,
+    /// Glowing neon tubes traced along the layer's edges (its shape, or the
+    /// edges in the picture), with a hot core, a glow and an optional flicker.
+    NeonEdges,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -518,6 +521,21 @@ pub mod grain {
     pub const SPEED: usize = 4;
     pub const SEED: usize = 5;
 }
+/// Neon edges parameter indices.
+pub mod neon {
+    pub const SOURCE: usize = 0;
+    pub const COLOR: usize = 1;
+    pub const WIDTH: usize = 2;
+    pub const GLOW_RADIUS: usize = 3;
+    pub const GLOW_INTENSITY: usize = 4;
+    pub const CORE: usize = 5;
+    pub const THRESHOLD: usize = 6;
+    pub const ORIGINAL: usize = 7;
+    pub const FLICKER: usize = 8;
+    pub const FLICKER_SPEED: usize = 9;
+    /// Where the edges come from (the Edges menu).
+    pub const SOURCES: [&str; 2] = ["Shape (transparency)", "Picture (brightness)"];
+}
 pub mod glitch {
     pub const AMOUNT: usize = 0;
     pub const BLOCK: usize = 1;
@@ -571,6 +589,18 @@ const FILM_GRAIN: [ParamSpec; 6] = [
     spec("Frame rate", 24.0, 0.0, 120.0, " fps", 0.1),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
+const NEON: [ParamSpec; 10] = [
+    choice("Edges from", &neon::SOURCES),
+    color("Colour", 0x2ae6ff),
+    spec("Tube width", 4.0, 0.0, 100.0, " px", 0.1),
+    spec("Glow radius", 24.0, 0.0, 300.0, " px", 0.25),
+    spec("Glow intensity", 150.0, 0.0, 500.0, " %", 0.5),
+    spec("Hot core", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Edge threshold", 15.0, 0.0, 100.0, " %", 0.5),
+    spec("Original layer", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Flicker", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Flicker speed", 6.0, 0.0, 60.0, " Hz", 0.1),
+];
 const GLITCH: [ParamSpec; 7] = [
     spec("Amount", 40.0, 0.0, 100.0, " %", 0.5),
     spec("Block size", 40.0, 2.0, 1000.0, " px", 0.5),
@@ -597,7 +627,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 20] = [
+    pub const ALL: [EffectKind; 21] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -614,6 +644,7 @@ impl EffectKind {
         EffectKind::Particles,
         EffectKind::LensFlare,
         EffectKind::LightLeaks,
+        EffectKind::NeonEdges,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -644,6 +675,7 @@ impl EffectKind {
             EffectKind::FilmGrain => "Film grain",
             EffectKind::Glitch => "Glitch",
             EffectKind::LightLeaks => "Light leaks",
+            EffectKind::NeonEdges => "Neon edges",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -656,7 +688,7 @@ impl EffectKind {
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
-            EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain => EffectCategory::Stylize,
+            EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges => EffectCategory::Stylize,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
@@ -688,6 +720,7 @@ impl EffectKind {
             EffectKind::FilmGrain => "Film grain that changes every frame: fine or coarse, mono or colour, kept out of the highlights.",
             EffectKind::Glitch => "Digital glitches: slices and blocks jump sideways, colours split and scan lines flicker.",
             EffectKind::LightLeaks => "Soft blooms of warm coloured light drifting in from the edges, like light leaking into a film camera.",
+            EffectKind::NeonEdges => "Glowing neon tubes along the edges of a title, logo or keyed subject (or the edges in the picture): a hot core, a coloured glow, and a flicker if you like.",
             EffectKind::Camera => "The 3D camera: where it is, what it looks at, its field of view and depth of field.",
             EffectKind::Light => "A light for 3D layers.",
             EffectKind::Point => "An invisible point: layers parented to it move, turn and scale with it.",
@@ -716,6 +749,7 @@ impl EffectKind {
             EffectKind::FilmGrain => &FILM_GRAIN,
             EffectKind::Glitch => &GLITCH,
             EffectKind::LightLeaks => &LIGHT_LEAKS,
+            EffectKind::NeonEdges => &NEON,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -817,11 +851,20 @@ impl EffectValues {
             EffectKind::FilmGrain => v[grain::AMOUNT] == 0.0,
             EffectKind::Glitch => v[glitch::AMOUNT] == 0.0,
             EffectKind::LightLeaks => v[leaks::INTENSITY] == 0.0,
+            EffectKind::NeonEdges => v[neon::WIDTH] == 0.0 && v[neon::GLOW_INTENSITY] == 0.0 && v[neon::ORIGINAL] == 100.0,
             EffectKind::Particles => v[crate::particles::OPACITY] == 0.0 || self.particles.as_ref().is_none_or(|p| p.list.is_empty()),
             EffectKind::EnergyBlade => v[blade::OPACITY] == 0.0 || v[blade::LENGTH] == 0.0 || (v[blade::CORE_WIDTH] == 0.0 && v[blade::GLOW_INTENSITY] == 0.0),
             // Settings of a camera or light clip, not drawn as an effect.
             EffectKind::Camera | EffectKind::Light | EffectKind::Point => true,
         }
+    }
+}
+
+impl EffectValues {
+    /// Does it change from one moment to the next with its settings left
+    /// alone (its kind always does, or it's set to flicker)?
+    pub fn moves_with_time(&self) -> bool {
+        self.kind.animates_with_time() || (self.kind == EffectKind::NeonEdges && self.values[neon::FLICKER] > 0.0)
     }
 }
 

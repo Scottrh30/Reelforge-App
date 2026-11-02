@@ -1492,3 +1492,51 @@ fn three_d_layers_cut_through_each_other() {
     assert!(near(px(&out, 400, 200, 100), [0, 255, 0]));
     assert!(near(px(&out, 400, 200 - 30, 100), [l[0], l[1], l[2]]));
 }
+
+/// Neon edges: a white square on a transparent layer gets a cyan tube along
+/// its edge with a glow outside it, keeps its middle (or not, at Original 0),
+/// finds the edges in a picture's brightness, and flickers when asked.
+#[test]
+fn neon_edges_trace_the_shape() {
+    use reelforge_core::effects::neon;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let square: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if (50..110).contains(&x) && (25..65).contains(&y) { [255u8; 4] } else { [0, 0, 0, 0] })).collect();
+    let mut key = 900u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], set: &[(usize, f32)], t: f32| {
+        let mut v = fx(EffectKind::NeonEdges, set);
+        v.time = t;
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let img = draw(&mut c, &square, &[(neon::CORE, 0.0)], 0.0);
+    // On the edge (just outside the square, where the tube is over nothing): cyan, bright.
+    let edge = px(&img, w, 48, 45);
+    assert!(edge[2] > 200 && edge[1] > 200 && edge[0] < 120, "tube: {edge:?}");
+    // Just outside: the glow, cyan, dimmer.
+    let glow = px(&img, w, 40, 45);
+    assert!(glow[2] > 30 && glow[2] < edge[2] && glow[0] < glow[2], "glow: {glow:?}");
+    // Far away: nothing; the middle: the white square.
+    assert!(px(&img, w, 2, 2)[2] < 10, "{:?}", px(&img, w, 2, 2));
+    assert!(near(px(&img, w, 80, 45), [255, 255, 255]));
+    // Original 0: the middle is dark, the tube still there (a neon sign).
+    let sign = draw(&mut c, &square, &[(neon::ORIGINAL, 0.0), (neon::GLOW_INTENSITY, 0.0)], 0.0);
+    assert!(px(&sign, w, 80, 45)[2] < 10 && px(&sign, w, 48, 45)[2] > 200);
+    // Hot core: the tube's middle goes white.
+    let hot = draw(&mut c, &square, &[(neon::CORE, 100.0), (neon::GLOW_INTENSITY, 0.0)], 0.0);
+    assert!(px(&hot, w, 48, 45)[0] > edge[0] + 60, "{:?}", px(&hot, w, 48, 45));
+    // From the picture: an opaque black-to-white step gets a tube at the step.
+    let step: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| if x < 80 { [0u8, 0, 0, 255] } else { [255u8; 4] })).collect();
+    let pic = draw(&mut c, &step, &[(neon::SOURCE, 1.0), (neon::ORIGINAL, 0.0), (neon::GLOW_INTENSITY, 0.0)], 0.0);
+    assert!(px(&pic, w, 80, 45)[2] > 150 && px(&pic, w, 30, 45)[2] < 10 && px(&pic, w, 130, 45)[2] < 10);
+    // Flicker: some moments dimmer than others.
+    let mut lit = |t: f32| {
+        let i = draw(&mut c, &square, &[(neon::FLICKER, 100.0), (neon::FLICKER_SPEED, 10.0), (neon::GLOW_INTENSITY, 0.0)], t);
+        px(&i, w, 48, 45)[2]
+    };
+    let levels: Vec<u8> = (0..30).map(|k| lit(k as f32 * 0.1)).collect();
+    assert!(levels.iter().max().unwrap() - levels.iter().min().unwrap() > 40, "{levels:?}");
+}

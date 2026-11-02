@@ -525,7 +525,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -547,7 +547,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1244,6 +1244,18 @@ impl Compositor {
                         push("fs_bright", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
                         blur(&mut push, e.values[1], o1, o2, o1);
                         push("fs_glow_add", cur, Second::Scratch(o1), o2, uniform(&e.values, [0.0; 2]));
+                        cur = o2;
+                    }
+                    EffectKind::NeonEdges => {
+                        // The tube along the edges → blurred into the glow → the layer
+                        // (as much as asked), the tube and its glow added up.
+                        let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        push("fs_neon_edge", cur, Second::None, o1, u);
+                        blur(&mut push, e.values[reelforge_core::effects::neon::GLOW_RADIUS], o1, o2, o1);
+                        push("fs_neon_mix", cur, Second::Scratch(o1), o2, u);
                         cur = o2;
                     }
                     EffectKind::DropShadow => {
@@ -2063,6 +2075,12 @@ fn effect_margin(effects: &[EffectValues], px: [u32; 2], layer: [f32; 2]) -> [u3
             EffectKind::Glow => {
                 x += 1.5 * e.values[1].max(0.0) * kx;
                 y += 1.5 * e.values[1].max(0.0) * ky;
+            }
+            EffectKind::NeonEdges => {
+                use reelforge_core::effects::neon;
+                let r = 1.5 * e.values[neon::GLOW_RADIUS].max(0.0) + e.values[neon::WIDTH].max(0.0);
+                x += r * kx;
+                y += r * ky;
             }
             EffectKind::DropShadow => {
                 let (d, a) = (e.values[0].max(0.0), e.values[1].to_radians());

@@ -462,7 +462,7 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
             e.table.as_ref().map(|t| t.id).hash(h);
             e.particles.as_ref().map(|p| p.id).hash(h);
             // Flicker, shake, grain… change with time.
-            if e.kind.animates_with_time() {
+            if e.moves_with_time() {
                 e.time.to_bits().hash(h);
             }
             if let Some(p) = &e.plugin {
@@ -620,7 +620,7 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
             }
             e.table.as_ref().map(|t| t.id).hash(h);
             e.particles.as_ref().map(|p| p.id).hash(h);
-            if e.kind.animates_with_time() {
+            if e.moves_with_time() {
                 e.time.to_bits().hash(h);
             }
             // A reloaded plugin (new revision) or one that animates with time changes the picture.
