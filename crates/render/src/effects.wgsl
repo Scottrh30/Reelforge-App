@@ -902,3 +902,85 @@ fn fs_halftone(in: VsOut) -> @location(0) vec4<f32> {
     let d = mix(orig, out, fx.p1.w / 100.0);
     return vec4(to_linear(max(d, vec3(0.0))) * c.a, c.a);
 }
+
+// CRT / VHS: p0 = (curvature %, scan lines %, line spacing px, phosphor mask %),
+// p1 = (colour bleed px, wobble px, noise %, tracking %),
+// p2 = (vignette %, brightness %, speed Hz, seed).
+fn crt_at(uv: vec2<f32>) -> vec4<f32> {
+    let c = textureSampleLevel(src, src_sampler, to_tex(clamp(uv, vec2(0.0), vec2(1.0))), 0.0);
+    if (c.a <= 1e-5) {
+        return vec4(0.0);
+    }
+    return vec4(to_display(c.rgb / c.a), c.a);
+}
+
+@fragment
+fn fs_crt(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let t = fx.extra.y * max(fx.p2.z, 0.0) / 10.0;
+    let seed = seed_of(fx.p2.w);
+    let frame = ibits(fx.extra.y * 30.0);
+    // The bulge of the glass: the picture is pulled in towards the corners.
+    let cc = in.uv * 2.0 - 1.0;
+    let k = fx.p0.x / 100.0 * 0.3;
+    let w = cc * (1.0 + k * vec2(cc.y * cc.y, cc.x * cc.x));
+    var uv = w * 0.5 + 0.5;
+    let inside = all(abs(w) <= vec2(1.0));
+    // Soft rounded corners of the tube (only when it's curved).
+    let edge = (vec2(1.0) - abs(w)) * size;
+    let round_px = fx.p0.x / 100.0 * 0.06 * min(size.x, size.y);
+    let r = max(round_px, 1.0);
+    let q = max(vec2(r) - edge, vec2(0.0));
+    let corner = select(0.0, clamp(r - length(q) + 0.5, 0.0, 1.0), inside);
+    let line = floor(uv.y * size.y);
+    // Tracking: each line wobbles sideways a little, and a band of worse
+    // tracking rolls down the picture.
+    let li = ibits(line);
+    let wob = (wander(seed + 3u, line * 0.04 + t * 8.0) * 0.6 + (rnd3(seed, li, frame) - 0.5) * 0.8) * fx.p1.y;
+    let band_at = fract(t * 0.35 + rnd3(seed, 7u, 7u));
+    let dy = (uv.y - band_at);
+    let in_band = exp(-dy * dy / 0.0016);
+    let track = fx.p1.w / 100.0;
+    let band_shift = in_band * track * (20.0 + 40.0 * rnd3(seed + 9u, li, frame)) ;
+    uv.x += (wob + band_shift) / size.x;
+    // Colour bleed: the brightness is sharp, the colour smeared to the right
+    // (as on tape), with red and blue a little apart.
+    let base = crt_at(uv);
+    var col = base.rgb;
+    let bleed = fx.p1.x;
+    if (bleed > 0.01) {
+        var smear = vec3(0.0);
+        for (var i = 0; i < 6; i++) {
+            let o = f32(i) / 5.0 * bleed;
+            smear += crt_at(uv - vec2(o / size.x, 0.0)).rgb;
+        }
+        smear /= 6.0;
+        let y = dot(col, LUMA);
+        col = clamp(vec3(y) + (smear - vec3(dot(smear, LUMA))), vec3(0.0), vec3(1.0));
+        let split = bleed * 0.35 / size.x;
+        col.r = mix(col.r, crt_at(uv + vec2(split, 0.0)).r, 0.5);
+        col.b = mix(col.b, crt_at(uv - vec2(split, 0.0)).b, 0.5);
+    }
+    // Noise: snow that changes every frame, and streaks in the tracking band.
+    let noise = fx.p1.z / 100.0;
+    let px = in.uv * size;
+    let snow = rnd3(seed + 1u, ibits(px.x) ^ (ibits(px.y) << 16u), frame) - 0.5;
+    col += vec3(snow * noise * 0.5);
+    let streak = step(1.0 - in_band * track * 0.35, rnd3(seed + 2u, li, frame)) * rnd3(seed + 4u, ibits(px.x / 6.0), li ^ frame);
+    col = mix(col, vec3(1.0), streak * 0.8);
+    // Scan lines: dark gaps between the lines of the picture.
+    let spacing = max(fx.p0.z, 1.0);
+    let s = 0.5 + 0.5 * cos(6.2831853 * (uv.y * size.y) / spacing);
+    col *= mix(1.0, 0.25 + 0.75 * s, fx.p0.y / 100.0);
+    // The phosphor mask: red, green and blue stripes.
+    let m = u32(floor(px.x)) % 3u;
+    let stripe = select(select(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), m == 1u), vec3(1.0, 0.0, 0.0), m == 0u);
+    col *= mix(vec3(1.0), 0.35 + stripe * 1.3, fx.p0.w / 100.0);
+    // Darker towards the edges of the tube, then the brightness.
+    let vig = 1.0 - fx.p2.x / 100.0 * pow(clamp(length(cc) * 0.72, 0.0, 1.0), 2.5);
+    col *= vig * fx.p2.y / 100.0;
+    // Outside the glass is black (over the layer's own shape).
+    let a = max(base.a, 0.0) * corner + (1.0 - corner) * textureSample(src, src_sampler, to_tex(in.uv)).a;
+    let shown = col * corner;
+    return vec4(to_linear(max(shown, vec3(0.0))) * a, a);
+}

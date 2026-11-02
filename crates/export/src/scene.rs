@@ -699,7 +699,7 @@ mod recipe_tests {
         p.sequences = vec![seq];
         let at = |p: &Project, s: f64| frame_recipe(p, 0, Time::from_secs_f64(s), &none);
         assert_eq!(at(&p, 1.0), at(&p, 2.0), "a plain plane is the same picture throughout");
-        for kind in [EffectKind::FilmGrain, EffectKind::CameraShake, EffectKind::Glitch, EffectKind::LightLeaks] {
+        for kind in [EffectKind::FilmGrain, EffectKind::CameraShake, EffectKind::Glitch, EffectKind::LightLeaks, EffectKind::Crt] {
             p.sequences[0].tracks[0].clips[0].effects = vec![Effect::new(kind)];
             assert_ne!(at(&p, 1.0), at(&p, 1.04), "{kind:?}");
         }

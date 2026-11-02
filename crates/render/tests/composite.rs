@@ -1584,3 +1584,48 @@ fn halftone_prints_dots() {
     let none = draw(&mut c, &flat([128, 128, 128]), &[(halftone::MIX, 0.0)]);
     assert!(near(px(&none, w, 80, 45), [128, 128, 128]));
 }
+
+#[test]
+fn crt_curves_lines_and_snow() {
+    use reelforge_core::effects::crt;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [150u8, 150, 150, 255]).collect();
+    let mut key = 2900u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], set: &[(usize, f32)], t: f32| {
+        key += 1;
+        let mut v = fx(EffectKind::Crt, set);
+        v.time = t;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    // Curved glass: the corners are black, the middle is the picture.
+    let curved = draw(&mut c, &grey, &[(crt::SCANLINES, 0.0), (crt::MASK, 0.0), (crt::NOISE, 0.0), (crt::VIGNETTE, 0.0), (crt::BRIGHTNESS, 100.0), (crt::CURVATURE, 100.0)], 1.0);
+    assert!(px(&curved, w, 1, 1)[0] < 10, "{:?}", px(&curved, w, 1, 1));
+    assert!(near(px(&curved, w, 80, 45), [150, 150, 150]), "{:?}", px(&curved, w, 80, 45));
+    // Scan lines: down a column, light lines and dark gaps every 4 px.
+    let lines = draw(&mut c, &grey, &[(crt::CURVATURE, 0.0), (crt::SCANLINES, 100.0), (crt::MASK, 0.0), (crt::NOISE, 0.0), (crt::WOBBLE, 0.0), (crt::VIGNETTE, 0.0), (crt::BRIGHTNESS, 100.0)], 1.0);
+    let col: Vec<u8> = (30..46).map(|y| px(&lines, w, 80, y)[0]).collect();
+    let (lo, hi) = (*col.iter().min().unwrap(), *col.iter().max().unwrap());
+    assert!(hi > 130 && lo < 90, "{col:?}");
+    // Phosphor mask: neighbouring columns lean red, green, blue.
+    let mask = draw(&mut c, &grey, &[(crt::CURVATURE, 0.0), (crt::SCANLINES, 0.0), (crt::MASK, 100.0), (crt::NOISE, 0.0), (crt::WOBBLE, 0.0), (crt::BLEED, 0.0), (crt::VIGNETTE, 0.0), (crt::BRIGHTNESS, 100.0)], 1.0);
+    let lean: Vec<usize> = (78..81).map(|x| { let p = px(&mask, w, x, 45); (0..3).max_by_key(|&i| p[i]).unwrap() }).collect();
+    let mut sorted = lean.clone();
+    sorted.sort();
+    assert_eq!(sorted, vec![0, 1, 2], "{lean:?}");
+    // Colour bleed: a red bar's colour smears to the right of it.
+    let bar: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| if (60..70).contains(&x) { [220u8, 20, 20, 255] } else { [20, 20, 20, 255] })).collect();
+    let flat = [(crt::CURVATURE, 0.0), (crt::SCANLINES, 0.0), (crt::MASK, 0.0), (crt::NOISE, 0.0), (crt::WOBBLE, 0.0), (crt::VIGNETTE, 0.0), (crt::BRIGHTNESS, 100.0)];
+    let sharp = draw(&mut c, &bar, &[&flat[..], &[(crt::BLEED, 0.0)]].concat(), 1.0);
+    let smear = draw(&mut c, &bar, &[&flat[..], &[(crt::BLEED, 12.0)]].concat(), 1.0);
+    let redness = |p: [u8; 4]| p[0] as i32 - p[1] as i32;
+    assert!(redness(px(&smear, w, 75, 45)) > redness(px(&sharp, w, 75, 45)) + 30, "{:?} {:?}", px(&smear, w, 75, 45), px(&sharp, w, 75, 45));
+    // Snow and wobble change from frame to frame.
+    let a = draw(&mut c, &grey, &[(crt::NOISE, 60.0)], 1.0);
+    let b = draw(&mut c, &grey, &[(crt::NOISE, 60.0)], 1.04);
+    let differ = a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| (x[0] as i32 - y[0] as i32).abs() > 10).count();
+    assert!(differ > (w * h / 10) as usize, "{differ}");
+}

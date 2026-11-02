@@ -74,6 +74,9 @@ pub enum EffectKind {
     /// A print look: the picture as a screen of dots (or lines), in black and
     /// white, four-colour CMYK or dots of the picture's own colour.
     Halftone,
+    /// An old screen or tape: the curved glass of a CRT, scan lines, a
+    /// phosphor mask, VHS colour bleed, tracking wobble and snow.
+    Crt,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -554,6 +557,21 @@ pub mod halftone {
     /// The Shape menu.
     pub const SHAPES: [&str; 3] = ["Round dots", "Square dots", "Lines"];
 }
+/// CRT / VHS parameter indices.
+pub mod crt {
+    pub const CURVATURE: usize = 0;
+    pub const SCANLINES: usize = 1;
+    pub const SPACING: usize = 2;
+    pub const MASK: usize = 3;
+    pub const BLEED: usize = 4;
+    pub const WOBBLE: usize = 5;
+    pub const NOISE: usize = 6;
+    pub const TRACKING: usize = 7;
+    pub const VIGNETTE: usize = 8;
+    pub const BRIGHTNESS: usize = 9;
+    pub const SPEED: usize = 10;
+    pub const SEED: usize = 11;
+}
 pub mod glitch {
     pub const AMOUNT: usize = 0;
     pub const BLOCK: usize = 1;
@@ -629,6 +647,20 @@ const HALFTONE: [ParamSpec; 8] = [
     color("Paper", 0xf6f1e6),
     spec("Mix", 100.0, 0.0, 100.0, " %", 0.5),
 ];
+const CRT: [ParamSpec; 12] = [
+    spec("Curvature", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Scan lines", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Line spacing", 4.0, 1.0, 40.0, " px", 0.05),
+    spec("Phosphor mask", 20.0, 0.0, 100.0, " %", 0.5),
+    spec("Colour bleed", 3.0, 0.0, 60.0, " px", 0.05),
+    spec("Tracking wobble", 1.5, 0.0, 60.0, " px", 0.05),
+    spec("Noise", 12.0, 0.0, 100.0, " %", 0.5),
+    spec("Tracking band", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Vignette", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Brightness", 115.0, 50.0, 200.0, " %", 0.5),
+    spec("Speed", 10.0, 0.0, 60.0, "", 0.1),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
 const GLITCH: [ParamSpec; 7] = [
     spec("Amount", 40.0, 0.0, 100.0, " %", 0.5),
     spec("Block size", 40.0, 2.0, 1000.0, " px", 0.5),
@@ -655,7 +687,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 22] = [
+    pub const ALL: [EffectKind; 23] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -674,6 +706,7 @@ impl EffectKind {
         EffectKind::LightLeaks,
         EffectKind::NeonEdges,
         EffectKind::Halftone,
+        EffectKind::Crt,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -706,6 +739,7 @@ impl EffectKind {
             EffectKind::LightLeaks => "Light leaks",
             EffectKind::NeonEdges => "Neon edges",
             EffectKind::Halftone => "Halftone",
+            EffectKind::Crt => "CRT / VHS",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -718,7 +752,7 @@ impl EffectKind {
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
-            EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone => EffectCategory::Stylize,
+            EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
@@ -750,6 +784,7 @@ impl EffectKind {
             EffectKind::FilmGrain => "Film grain that changes every frame: fine or coarse, mono or colour, kept out of the highlights.",
             EffectKind::Glitch => "Digital glitches: slices and blocks jump sideways, colours split and scan lines flicker.",
             EffectKind::LightLeaks => "Soft blooms of warm coloured light drifting in from the edges, like light leaking into a film camera.",
+            EffectKind::Crt => "An old TV or a worn tape: the bulging glass and scan lines of a CRT, a phosphor mask, VHS colour bleed, tracking wobble, a rolling tracking band and snow.",
             EffectKind::Halftone => "The picture printed as a screen of dots or lines, like a newspaper photo or a comic: black and white, four-colour CMYK, or dots of its own colour.",
             EffectKind::NeonEdges => "Glowing neon tubes along the edges of a title, logo or keyed subject (or the edges in the picture): a hot core, a coloured glow, and a flicker if you like.",
             EffectKind::Camera => "The 3D camera: where it is, what it looks at, its field of view and depth of field.",
@@ -782,6 +817,7 @@ impl EffectKind {
             EffectKind::LightLeaks => &LIGHT_LEAKS,
             EffectKind::NeonEdges => &NEON,
             EffectKind::Halftone => &HALFTONE,
+            EffectKind::Crt => &CRT,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -884,6 +920,17 @@ impl EffectValues {
             EffectKind::Glitch => v[glitch::AMOUNT] == 0.0,
             EffectKind::LightLeaks => v[leaks::INTENSITY] == 0.0,
             EffectKind::Halftone => v[halftone::MIX] == 0.0,
+            EffectKind::Crt => {
+                v[crt::CURVATURE] == 0.0
+                    && v[crt::SCANLINES] == 0.0
+                    && v[crt::MASK] == 0.0
+                    && v[crt::BLEED] == 0.0
+                    && v[crt::WOBBLE] == 0.0
+                    && v[crt::NOISE] == 0.0
+                    && v[crt::TRACKING] == 0.0
+                    && v[crt::VIGNETTE] == 0.0
+                    && v[crt::BRIGHTNESS] == 100.0
+            }
             EffectKind::NeonEdges => v[neon::WIDTH] == 0.0 && v[neon::GLOW_INTENSITY] == 0.0 && v[neon::ORIGINAL] == 100.0,
             EffectKind::Particles => v[crate::particles::OPACITY] == 0.0 || self.particles.as_ref().is_none_or(|p| p.list.is_empty()),
             EffectKind::EnergyBlade => v[blade::OPACITY] == 0.0 || v[blade::LENGTH] == 0.0 || (v[blade::CORE_WIDTH] == 0.0 && v[blade::GLOW_INTENSITY] == 0.0),
@@ -897,7 +944,10 @@ impl EffectValues {
     /// Does it change from one moment to the next with its settings left
     /// alone (its kind always does, or it's set to flicker)?
     pub fn moves_with_time(&self) -> bool {
-        self.kind.animates_with_time() || (self.kind == EffectKind::NeonEdges && self.values[neon::FLICKER] > 0.0)
+        let v = &self.values;
+        self.kind.animates_with_time()
+            || (self.kind == EffectKind::NeonEdges && v[neon::FLICKER] > 0.0)
+            || (self.kind == EffectKind::Crt && (v[crt::WOBBLE] > 0.0 || v[crt::NOISE] > 0.0 || v[crt::TRACKING] > 0.0))
     }
 }
 

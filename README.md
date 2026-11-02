@@ -359,6 +359,13 @@ What works now:
     or *Colour dots* (each dot the picture's own colour); **Shape**: round dots, square
     dots or lines; **Dot size**, **Angle**, **Contrast**, the **Ink** and **Paper** colours,
     and **Mix** to blend it with the picture. The *Comic print* starter look sets one up
+  - **CRT / VHS** (Light & stylize): an old TV or a worn tape. **Curvature** bulges the
+    glass (black, rounded corners), **Scan lines** and **Line spacing** draw the dark gaps
+    between lines, **Phosphor mask** the red, green and blue stripes; **Colour bleed**
+    smears the colour sideways (sharp brightness, soft colour, as on tape), **Tracking
+    wobble** jitters each line, **Tracking band** rolls a band of bad tracking down the
+    picture, and **Noise** adds snow. **Vignette**, **Brightness**, **Speed** and **Seed**
+    finish it. The *Old TV* and *VHS tape* starter looks set one up
   - **Film grain** (Light & stylize): grain that changes every frame (**Frame rate**, 0 =
     still), from fine to coarse (**Size**), mono to colour, strongest in the midtones and
     kept out of the highlights unless **In highlights** is raised
