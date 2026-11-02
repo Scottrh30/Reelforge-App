@@ -686,6 +686,9 @@ What works now:
     32 each; **Grid** in the panel) fills the four big corner handles
     you drag over the surface; before tracking, the inner points can be dragged too, to follow a
     curve, and moving a corner afterwards carries them along with it (they keep their shape).
+    **Shift+click** points, or **Shift+drag** a box over the grid, to pick several (Escape drops
+    them): dragging a picked point moves them all. **Falloff** (in the panel, in cells) makes
+    the points around a dragged one follow it, less and less with distance (a smooth fade).
     A grid finer than 8 × 8 is tracked as a coarser one first (with about five features per
     cell, at least 4 × 4), which the fine grid then adds detail to where features say so, so
     cells smaller than a feature don't drift. Many small features inside are followed, and every frame the grid's points are solved

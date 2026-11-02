@@ -27,12 +27,20 @@
   $effect(() => {
     if (app.activeMask && (!ins || app.activeMask.clip !== ins.id || app.activeMask.index >= ins.masks.length)) app.activeMask = null;
     if (app.drawing && (!ins || app.drawing.clip !== ins.id)) app.drawing = null;
+    // Picked mesh points belong to that clip's grid as it is.
+    const n = ins?.tracker?.mode === "Mesh" ? ins.tracker.shown.length : 0;
+    if (app.meshSel && (!ins || app.meshSel.clip !== ins.id || app.meshSel.points.some((p) => p >= n))) app.meshSel = null;
   });
 
   /// Layer pixels → box pixels.
   function toBox(p: Pt): Pt {
     const [fx, fy] = layerToFrame(map!, size, p);
     return [fit.x + fx * fit.k, fit.y + fy * fit.k];
+  }
+  /// A pointer position (client pixels) → box pixels.
+  function toBoxPt(e: PointerEvent | MouseEvent): Pt {
+    const r = box!.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
   }
   /// A pointer position (client pixels) → layer pixels.
   function toLayer(e: PointerEvent | MouseEvent): Pt {
@@ -251,27 +259,96 @@
     dragMask(e, hit, app.maskTool === "resize" ? "resize" : null);
   }
 
-  /// Drag tracker point `i`'s box onto a detail.
+  /// Drag tracker point `i`'s box onto a detail. On a mesh: Shift+click
+  /// picks points (or drops them); dragging a picked point moves all the
+  /// picked ones, and with a falloff the points around follow, fading out.
   function dragTracker(e: PointerEvent, i: number) {
     const t = ins?.tracker;
     if (e.button !== 0 || !ins || !t || !inv || app.live?.playing || busyTracking) return;
     e.stopPropagation();
     e.preventDefault();
     const id = ins.id;
+    const mesh = t.mode === "Mesh";
+    const picked = mesh && app.meshSel?.clip === id ? app.meshSel.points : [];
+    if (mesh && e.shiftKey) {
+      app.meshSel = { clip: id, points: picked.includes(i) ? picked.filter((p) => p !== i) : [...picked, i] };
+      return;
+    }
+    // Dragging a point that isn't picked picks it alone.
+    const group = picked.includes(i) ? picked : [i];
+    if (mesh && !picked.includes(i)) app.meshSel = { clip: id, points: [i] };
     const el = e.currentTarget as SVGElement;
     el.setPointerCapture(e.pointerId);
     const start = toLayer(e);
-    const from = [...t.shown[i]] as Pt;
+    const from = t.shown.map((p) => [...p] as Pt);
+    const weights = mesh ? meshWeights(t.grid, group, app.meshFalloff) : [];
+    // One point and no falloff: as before (a corner before tracking carries the grid).
+    const many = mesh && weights.filter((w) => w > 0).length > 1;
     const pump = livePump();
     const move = (ev: PointerEvent) => {
       const now = toLayer(ev);
-      pump.push(() => api.trackerMove(id, i, [from[0] + now[0] - start[0], from[1] + now[1] - start[1]]));
+      const [dx, dy] = [now[0] - start[0], now[1] - start[1]];
+      if (many) {
+        const moves: [number, Pt][] = weights.flatMap((w, k) => (w > 0 ? [[k, [from[k][0] + dx * w, from[k][1] + dy * w] as Pt] as [number, Pt]] : []));
+        pump.push(() => api.trackerMoveMany(id, moves));
+      } else {
+        pump.push(() => api.trackerMove(id, i, [from[i][0] + dx, from[i][1] + dy]));
+      }
     };
     const up = async () => {
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       await pump.done();
       await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
+  /// How much each point of a `grid` mesh moves with the `group`: 1 for the
+  /// group, fading smoothly to 0 at `falloff` cells from the nearest of them.
+  function meshWeights(grid: [number, number], group: number[], falloff: number): number[] {
+    const [gc, gr] = grid;
+    const n = (gc + 1) * (gr + 1);
+    const at = (k: number) => [k % (gc + 1), Math.floor(k / (gc + 1))];
+    const g = group.map(at);
+    return Array.from({ length: n }, (_, k) => {
+      if (group.includes(k)) return 1;
+      if (falloff <= 0) return 0;
+      const [x, y] = at(k);
+      const d = Math.min(...g.map(([a, b]) => Math.hypot(x - a, y - b)));
+      if (d >= falloff) return 0;
+      const s = 1 - d / falloff;
+      return s * s * (3 - 2 * s);
+    });
+  }
+
+  /// Shift+drag over a mesh: pick the points inside the box (added to those picked).
+  let meshBox = $state<{ a: Pt; b: Pt } | null>(null);
+  function meshBoxDown(e: PointerEvent) {
+    const t = ins?.tracker;
+    if (!e.shiftKey || e.button !== 0 || !ins || !t || t.mode !== "Mesh" || !inv || app.live?.playing || busyTracking) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = ins.id;
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const a = toBoxPt(e);
+    meshBox = { a, b: a };
+    const move = (ev: PointerEvent) => meshBox && (meshBox = { a, b: toBoxPt(ev) });
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      if (!meshBox) return;
+      const [x0, x1] = [Math.min(meshBox.a[0], meshBox.b[0]), Math.max(meshBox.a[0], meshBox.b[0])];
+      const [y0, y1] = [Math.min(meshBox.a[1], meshBox.b[1]), Math.max(meshBox.a[1], meshBox.b[1])];
+      const inBox = t.shown.flatMap((p, k) => {
+        const [x, y] = toBox(p);
+        return x >= x0 && x <= x1 && y >= y0 && y <= y1 ? [k] : [];
+      });
+      const had = app.meshSel?.clip === id ? app.meshSel.points : [];
+      app.meshSel = { clip: id, points: [...new Set([...had, ...inBox])] };
+      meshBox = null;
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
@@ -503,6 +580,8 @@
 
 </script>
 
+<svelte:window onkeydown={(e) => e.key === "Escape" && app.meshSel && !e.defaultPrevented && (app.meshSel = null)} />
+
 {#if ins?.parent_link}
   <!-- The selected layer's link to the point it follows. -->
   {@const [a, b] = ins.parent_link.map((p) => [fit.x + p[0] * fit.k, fit.y + p[1] * fit.k])}
@@ -666,14 +745,15 @@
         {@const [gc, gr] = t.grid}
         {@const row = (j: number) => t.shown.slice(j * (gc + 1), (j + 1) * (gc + 1))}
         {@const col = (i: number) => Array.from({ length: gr + 1 }, (_, j) => t.shown[j * (gc + 1) + i])}
-        <polygon points={pts([...row(0), ...col(gc).slice(1), ...row(gr).reverse().slice(1), ...col(0).reverse().slice(1, -1)])} class="plane" />
+        <polygon points={pts([...row(0), ...col(gc).slice(1), ...row(gr).reverse().slice(1), ...col(0).reverse().slice(1, -1)])} class="plane meshplane" onpointerdown={meshBoxDown} role="presentation"><title>Shift+drag: pick the mesh points in a box (Shift+click a point to pick it or drop it); dragging a picked point moves them all</title></polygon>
         {#each Array.from({ length: gr + 1 }, (_, j) => j) as j}<polyline points={pts(row(j))} class="meshline" />{/each}
         {#each Array.from({ length: gc + 1 }, (_, i) => i) as i}<polyline points={pts(col(i))} class="meshline" />{/each}
         {#each t.shown as c, i}
           {@const corner = i === 0 || i === gc || i === (gr + 1) * (gc + 1) - 1 || i === gr * (gc + 1)}
           {@const [cx, cy] = toBox(c)}
-          <circle cx={cx} cy={cy} r={corner ? 6 : gc >= 32 || gr >= 32 ? 2 : gc >= 16 || gr >= 16 ? 2.5 : 3.5} class="corner" class:inner={!corner} stroke={corner ? POINT_COLOURS[[0, gc, (gr + 1) * (gc + 1) - 1, gr * (gc + 1)].indexOf(i)] : "white"} onpointerdown={(e) => dragTracker(e, i)} role="presentation" />
+          <circle cx={cx} cy={cy} r={corner ? 6 : gc >= 32 || gr >= 32 ? 2 : gc >= 16 || gr >= 16 ? 2.5 : 3.5} class="corner" class:inner={!corner} class:picked={app.meshSel?.clip === ins.id && app.meshSel.points.includes(i)} stroke={corner ? POINT_COLOURS[[0, gc, (gr + 1) * (gc + 1) - 1, gr * (gc + 1)].indexOf(i)] : "white"} onpointerdown={(e) => dragTracker(e, i)} role="presentation" />
         {/each}
+        {#if meshBox}<rect x={Math.min(meshBox.a[0], meshBox.b[0])} y={Math.min(meshBox.a[1], meshBox.b[1])} width={Math.abs(meshBox.b[0] - meshBox.a[0])} height={Math.abs(meshBox.b[1] - meshBox.a[1])} class="meshbox" />{/if}
       {:else if t.mode === "Planar"}
         <!-- A planar tracker: the surface's outline, with a handle at each corner. -->
         <polygon points={pts(t.shown)} class="plane" />
@@ -818,6 +898,21 @@
     stroke: rgba(255, 255, 255, 0.8);
     stroke-width: 1.4;
     stroke-dasharray: 6 4;
+    pointer-events: none;
+  }
+  /* A mesh's area takes Shift+drag (a box to pick points); other presses pass on. */
+  .meshplane {
+    pointer-events: visiblePainted;
+  }
+  .corner.picked,
+  .corner.inner.picked {
+    fill: var(--accent);
+    stroke: white;
+  }
+  .meshbox {
+    fill: rgba(242, 169, 59, 0.12);
+    stroke: var(--accent);
+    stroke-dasharray: 4 3;
     pointer-events: none;
   }
   .meshline {

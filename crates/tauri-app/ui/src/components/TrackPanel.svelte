@@ -38,6 +38,12 @@
     Planar: "A whole flat surface, in perspective",
     Mesh: "A surface that bends",
   };
+  function setFalloff(v: number) {
+    app.meshFalloff = Math.max(0, Math.min(16, Math.round(v * 10) / 10));
+    try {
+      localStorage.setItem("reelforge.meshFalloff", String(app.meshFalloff));
+    } catch {}
+  }
   // Choosing Custom… shows boxes for any number of cells across and down.
   let customGrid = $state(false);
   function setGrid(c: number, r: number) {
@@ -182,6 +188,16 @@
                 <input class="cells" type="number" min="1" max="32" step="1" value={t.grid[0]} aria-label="Cells across" title="Cells across (1–32)" onchange={(e) => setGrid(Number(e.currentTarget.value), t.grid[1])} />
                 <span class="times" aria-hidden="true">×</span>
                 <input class="cells" type="number" min="1" max="32" step="1" value={t.grid[1]} aria-label="Cells down" title="Cells down (1–32)" onchange={(e) => setGrid(t.grid[0], Number(e.currentTarget.value))} />
+              {/if}
+            </span>
+          {/if}
+          {#if t.mode === "Mesh"}
+            <span class="lbl" title="Dragging a mesh point, the points around it follow, less and less, out to this many cells (0: only the point). Shift+click points, or Shift+drag a box over the grid, to pick several and move them together">Falloff</span>
+            <span class="gridpick">
+              <NumberField label="Falloff" value={app.meshFalloff} min={0} max={16} step={0.05} digits={1} suffix=" cells" oninput={setFalloff} oncommit={() => {}} />
+              {#if app.meshSel?.clip === ins.id && app.meshSel.points.length}
+                <span class="muted nowrap">{app.meshSel.points.length} picked</span>
+                <button class="ghost small" onclick={() => (app.meshSel = null)} title="Drop the picked points (Escape)">Clear</button>
               {/if}
             </span>
           {/if}
@@ -441,5 +457,12 @@
   }
   .times {
     color: var(--muted);
+  }
+  .small {
+    min-height: 22px;
+    padding: 0 8px;
+  }
+  .nowrap {
+    white-space: nowrap;
   }
 </style>

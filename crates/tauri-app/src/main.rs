@@ -939,6 +939,28 @@ fn tracker_move(id: u64, point: usize, pos: [f32; 2]) -> Res<()> {
     })
 }
 
+/// Move several tracker points at once (a group of mesh points, with the
+/// ones around them following softly): `moves` are (point, position in
+/// layer pixels) at the playhead, as for `tracker_move`, but a corner moves
+/// on its own here (the rest of the grid isn't carried along).
+#[tauri::command]
+fn tracker_move_many(id: u64, moves: Vec<(usize, [f32; 2])>) -> Res<()> {
+    ed(|e| {
+        if e.tracking.is_some() {
+            return;
+        }
+        let Some((_, c)) = e.seq().find_clip(clip(id)) else { return };
+        let (Some(mut t), [w, h], src) = (c.tracker.clone(), e.layer_size(c), e.track_time(c)) else { return };
+        for (i, pos) in moves {
+            let pos = [pos[0].clamp(-w, 2.0 * w), pos[1].clamp(-h, 2.0 * h)];
+            if let Some(p) = t.points.get_mut(i) {
+                p.move_to(src, pos);
+            }
+        }
+        e.set_tracker_live(clip(id), Some(t));
+    })
+}
+
 /// A mesh tracker's grid: cells across and down (its corners stay; tracked paths are cleared).
 #[tauri::command]
 fn tracker_grid(id: u64, cols: u8, rows: u8) -> Res<()> {
@@ -1213,6 +1235,7 @@ fn main() {
             tracker_sizes,
             tracker_smooth,
             tracker_grid,
+            tracker_move_many,
             mesh_remove,
             tracker_move,
             tracker_op,

@@ -57,6 +57,16 @@ export const app = $state({
   panels: loadPanels(),
   /// The mask being edited in the Viewer (of the selected clip), by index.
   activeMask: null as null | { clip: number; index: number },
+  /// Mesh tracker points picked in the Viewer (Shift+click, Shift+drag a box), to move together.
+  meshSel: null as null | { clip: number; points: number[] },
+  /// How far (in cells) points around a dragged mesh point follow it, fading out; 0: none.
+  meshFalloff: (() => {
+    try {
+      return Math.max(0, Number(localStorage.getItem("reelforge.meshFalloff") ?? 0) || 0);
+    } catch {
+      return 0;
+    }
+  })(),
   /// The point of the edited mask last clicked in the Viewer (for its own feather).
   activeMaskPoint: null as null | number,
   /// Drawing a freehand mask: the clip and the points so far (layer pixels).

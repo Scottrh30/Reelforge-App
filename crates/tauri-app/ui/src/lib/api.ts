@@ -831,6 +831,7 @@ export const api = {
   trackerSmooth: (id: number, frames: number) => invoke("tracker_smooth", { id, frames }),
   trackerGrid: (id: number, cols: number, rows: number) => invoke("tracker_grid", { id, cols, rows }),
   meshRemove: (id: number) => invoke("mesh_remove", { id }),
+  trackerMoveMany: (id: number, moves: [number, Pt][]) => invoke("tracker_move_many", { id, moves }),
   trackerMove: (id: number, point: number, pos: Pt) => invoke("tracker_move", { id, point, pos }),
   trackerOp: (id: number, op: "clear" | "remove") => invoke("tracker_op", { id, op }),
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
