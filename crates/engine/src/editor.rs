@@ -48,6 +48,8 @@ pub struct Prefs {
     pub autosave_minutes: u32,
     /// Size limit of the render cache.
     pub render_cache_mb: usize,
+    /// Rendered frames kept on disk too (in the cache folder), MB; 0: not at all.
+    pub render_cache_disk_mb: usize,
     /// Export settings saved under a name.
     pub export_presets: Vec<crate::presets::UserPreset>,
     /// Play the sound under the playhead while scrubbing.
@@ -85,6 +87,7 @@ impl Default for Prefs {
             proxy_format: Default::default(),
             autosave_minutes: 2,
             render_cache_mb: 2048,
+            render_cache_disk_mb: 8192,
             export_presets: Vec::new(),
             scrub_audio: true,
             timeline_thumbnails: true,
@@ -111,6 +114,7 @@ impl Editor {
 
     pub fn apply_prefs(&mut self) {
         self.render_cache.set_budget_mb(self.prefs.render_cache_mb);
+        self.apply_render_disk();
         self.playback.scrub_audio = self.prefs.scrub_audio;
         reelforge_media::hw::set_enabled(self.prefs.hw_decode);
         reelforge_media::codecs::set_enabled(self.prefs.native_decoders);
@@ -119,6 +123,20 @@ impl Editor {
         reelforge_media::proxy::set_format(self.prefs.proxy_format);
         self.preview.set_quality(self.prefs.playback_quality);
         self.preview.full_when_paused = self.prefs.full_when_paused;
+    }
+
+    /// Keep rendered frames on disk as the settings say (the same store across projects).
+    fn apply_render_disk(&mut self) {
+        let mb = self.prefs.render_cache_disk_mb as u64;
+        if mb == 0 {
+            self.render_cache.disk = None;
+            return;
+        }
+        let dir = self.render_disk_dir.clone().unwrap_or_else(|| reelforge_media::proxy::cache_dir().join("render"));
+        match &self.render_cache.disk {
+            Some(d) if d.dir() == dir => d.set_budget(mb << 20),
+            _ => self.render_cache.disk = Some(crate::render_cache::DiskStore::open(&dir, mb << 20)),
+        }
     }
 
     /// Show the paused picture at full resolution whatever the playback quality.
@@ -229,6 +247,9 @@ pub struct Editor {
     pub preview: Preview,
     /// Finished frames from Render preview.
     pub render_cache: RenderCache,
+    /// Where rendered frames are kept on disk (`None`: the cache folder's
+    /// `render`; tests use their own).
+    pub render_disk_dir: Option<PathBuf>,
     live_edit: Option<LiveEdit>,
     pub meters: crate::meters::Meters,
     /// The sequence shown in the timeline and viewer (0 = the main edit).
@@ -297,6 +318,7 @@ impl Editor {
             recent: Default::default(),
             preview,
             render_cache: RenderCache::new(prefs.render_cache_mb),
+            render_disk_dir: cfg!(test).then(|| std::env::temp_dir().join(format!("rf_render_cache_test_{}", std::process::id()))),
             live_edit: None,
             meters: Default::default(),
             active: 0,
@@ -338,6 +360,9 @@ impl Editor {
         fresh.playback.scrub_audio = self.playback.scrub_audio;
         fresh.prefs = self.prefs.clone();
         fresh.render_cache.set_budget_mb(fresh.prefs.render_cache_mb);
+        // The frames on disk stay (they're for any project).
+        fresh.render_cache.disk = self.render_cache.disk.clone();
+        fresh.render_disk_dir = self.render_disk_dir.clone();
         fresh.proxies = std::mem::take(&mut self.proxies);
         fresh.session = self.session.take();
         fresh.recoveries = std::mem::take(&mut self.recoveries);
@@ -3886,6 +3911,55 @@ mod tests {
         e.select_only(Some(id));
         e.delete_selection();
         assert_ne!(e.comp_thumbnail(comp, Time::ZERO, 200).unwrap(), first);
+    }
+
+    #[test]
+    fn rendered_previews_are_found_on_disk_by_a_new_session() {
+        let dir = std::env::temp_dir().join(format!("rf_render_disk_editor_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let Some(gpu) = reelforge_render::headless_device() else { return };
+        let mut e = Editor::new(Some(gpu), None);
+        e.render_disk_dir = Some(dir.clone());
+        e.prefs.render_cache_disk_mb = 256;
+        e.apply_prefs();
+        e.add_title();
+        let id = e.seq().tracks.iter().flat_map(|t| &t.clips).next().unwrap().id;
+        // Half a second of it.
+        let a = e.active;
+        {
+            // Letters fading in: every frame differs (a still title's frames are all
+            // one picture, kept once).
+            let c = e.project.sequences[a].find_clip_mut(id).unwrap().1;
+            c.duration = Time::from_secs_f64(0.5);
+            c.title.as_mut().unwrap().anim = reelforge_core::TextAnim { kind: reelforge_core::TextAnimKind::FadeLetters, stagger: 0.04, length: 0.4, delay: 0.0, out: false };
+        }
+        e.render_preview();
+        for _ in 0..200 {
+            if e.render_cache.job.is_none() {
+                break;
+            }
+            e.tick();
+        }
+        assert!(e.status.starts_with("Rendered the preview"), "{}", e.status);
+        e.render_cache.disk.as_ref().unwrap().flush();
+        let on_disk = e.render_cache.disk.as_ref().unwrap().stats().1;
+        assert!(on_disk >= 10, "{on_disk}: {}", e.status);
+        // Another session (the app reopened): the same edit finds its frames.
+        let Some(gpu) = reelforge_render::headless_device() else { return };
+        let mut f = Editor::new(Some(gpu), None);
+        f.render_disk_dir = Some(dir.clone());
+        f.prefs.render_cache_disk_mb = 256;
+        f.apply_prefs();
+        f.project = e.project.clone();
+        f.render_preview();
+        for _ in 0..200 {
+            if f.render_cache.job.is_none() {
+                break;
+            }
+            f.tick();
+        }
+        assert!(f.status.starts_with("Preview already rendered"), "{}", f.status);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -381,6 +381,8 @@ export interface Prefs {
   proxy_format: ProxyFormat;
   autosave_minutes: number;
   render_cache_mb: number;
+  /// Rendered frames kept on disk too, MB (0: not).
+  render_cache_disk_mb: number;
   export_presets: UserPreset[];
   scrub_audio: boolean;
   timeline_thumbnails: boolean;
@@ -408,6 +410,8 @@ export interface SettingsInfo {
   cache_hits: number;
   render_frames: number;
   render_mb: number;
+  render_disk_frames: number;
+  render_disk_mb: number;
   proxies: number;
   proxy_bytes: number;
   proxy_dir: string;
@@ -783,6 +787,7 @@ export const api = {
   waveformRate: () => invoke<number>("waveform_rate"),
   fontFamilies: () => invoke<string[]>("font_families"),
   thumbnail: (path: string, at: Ticks) => invoke<ArrayBuffer>("thumbnail", { path, at }),
+  clearRenderCache: () => invoke("clear_render_cache"),
   setPlaybackQuality: (q: number) => invoke("set_playback_quality", { q }),
   setFullWhenPaused: (on: boolean) => invoke("set_full_when_paused", { on }),
   audioFxKinds: () => invoke<AudioFxInfo[]>("audio_fx_kinds"),

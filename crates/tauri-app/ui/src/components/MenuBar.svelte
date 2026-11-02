@@ -208,6 +208,7 @@
     app.live?.render != null
       ? { label: `Stop rendering the preview (${Math.round((app.live.render ?? 0) * 100)}%)`, hint: "Esc", run: () => actions.act("stop_render_preview") }
       : { label: "Render preview", hint: "Enter", run: () => actions.act("render_preview") },
+    { label: "Clear render cache", run: () => run(api.clearRenderCache()) },
     { label: "Zoom to fit", hint: "\\", run: () => (view.fit = true) },
     { separator: true },
     { label: "Mark in", hint: "I", run: () => actions.act("mark_in") },

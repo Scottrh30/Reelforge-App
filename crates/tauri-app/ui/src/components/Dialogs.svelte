@@ -77,6 +77,16 @@
         <div class="row"><input type="number" min="256" max="32768" step="256" bind:value={prefs.render_cache_mb} style="width:100px" /> MB</div>
       </label>
       {#if info}<p class="info">Holding {info.render_frames} rendered frames ({info.render_mb} MB)</p>{/if}
+      <label class="field" title="Rendered previews are also kept on disk, in the cache folder, so reopening a project (or another using the same clips and effects) finds them again. The least recently used go first when it's full. 0 keeps them in memory only.">
+        <span>…and on disk</span>
+        <div class="row"><input type="number" min="0" max="1048576" step="1024" bind:value={prefs.render_cache_disk_mb} style="width:100px" /> MB</div>
+      </label>
+      {#if info}
+        <p class="info">
+          {info.render_disk_frames} frames on disk ({info.render_disk_mb} MB)
+          <button class="tiny" disabled={!info.render_frames && !info.render_disk_frames} onclick={async () => { await run(api.clearRenderCache()); info = await api.settingsInfo(); }} title="Forget every rendered preview, in memory and on disk">Clear</button>
+        </p>
+      {/if}
 
       <h3>Proxies</h3>
       <label class="check" title="Small all-keyframe copies of heavy footage. Export always uses the original files."><input type="checkbox" bind:checked={prefs.use_proxies} /> Play proxies in the viewer when they're ready</label>
@@ -256,5 +266,11 @@
     text-decoration: underline;
     cursor: pointer;
     font: inherit;
+  }
+  .info .tiny {
+    min-height: 18px;
+    padding: 0 6px;
+    margin-left: 6px;
+    font-size: calc(11px * var(--text-scale));
   }
 </style>

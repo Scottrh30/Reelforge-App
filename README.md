@@ -506,7 +506,13 @@ What works now:
   only makes the frames it changes stale (the bar goes away there); undo the edit and they're
   good again. `Esc`, or pressing Play, stops a run. Rendered frames are kept in memory (viewer
   size, at most 1080p), within the **Render cache** size in Settings (2 GB by default, about 10
-  s of 1080p at 25 fps); **Edit → Clear render cache** empties it
+  s of 1080p at 25 fps), and **on disk** too (the cache folder's `render`, deflated, 8 GB by
+  default; **…and on disk** in Settings, 0 for memory only), named by each frame's recipe: so
+  reopening a project, or another using the same clips and effects, finds its rendered frames
+  again (identical frames, like a still title's, are kept once). Frames are written in the
+  background; one not in memory is read back from disk when it's needed. The least recently
+  used files go first when the disk budget is full. **Edit → Clear render cache** (or **Clear**
+  in Settings) empties both
 - **Autosave and crash recovery**: the project is autosaved every 2 minutes (when it has
   changed). If Reelforge doesn't close properly, it offers to recover that work the next time
   it starts; **File > Open an autosave…** opens older ones. Saving always writes a new file and
@@ -1626,4 +1632,5 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 7. ~~**Performance**: proxy media, a frame cache, hardware decode, YUV frames converted on the
    GPU, render preview~~
    (zero-copy from the hardware decoder is in for Windows, D3D11VA to Direct3D 12, but is
-   still to be tried on real hardware; VAAPI to Vulkan on Linux; render cache on disk)
+   still to be tried on real hardware; VAAPI to Vulkan on Linux; the render cache is kept on
+   disk too)

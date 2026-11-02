@@ -836,7 +836,8 @@ impl Project {
         let dissolves = self.dissolves(seq);
         let frame = s.frame_rate.frame_duration();
         fn layer<'a>(p: &Project, seq: usize, track: usize, c: &'a Clip, t: Time, frame: Time) -> Layer<'a> {
-            let source_time = if p.is_still(c.media) { Time::ZERO } else { c.media_at(t) };
+            // (A title has no media, but its text animation runs on the clip's time.)
+            let source_time = if p.is_still(c.media) && c.title.is_none() { Time::ZERO } else { c.media_at(t) };
             // Keys are anchored to source time (also for stills, like the transform's).
             Layer { track, clip: c, source_time, transform: p.world_transform(seq, c, t), blend: c.blend, effects: c.effects_moving(t, frame) }
         }

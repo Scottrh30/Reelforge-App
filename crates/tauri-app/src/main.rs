@@ -406,6 +406,9 @@ struct SettingsInfo {
     cache_hits: f32,
     render_frames: usize,
     render_mb: usize,
+    /// Rendered frames kept on disk.
+    render_disk_frames: usize,
+    render_disk_mb: u64,
     proxies: usize,
     proxy_bytes: u64,
     proxy_dir: String,
@@ -419,6 +422,7 @@ fn settings_info() -> Res<SettingsInfo> {
     ed(|e| {
         let (used, frames, hits) = reelforge_media::FrameCache::global().stats();
         let (rused, rframes) = e.render_cache.stats();
+        let (dused, dframes) = e.render_cache.disk.as_ref().map_or((0, 0), |d| d.stats());
         let dir = reelforge_media::proxy::cache_dir().join("proxies");
         let (proxy_bytes, proxies) = std::fs::read_dir(&dir)
             .map(|rd| rd.flatten().filter_map(|f| f.metadata().ok()).filter(|m| m.is_file()).fold((0, 0), |(b, n), m| (b + m.len(), n + 1)))
@@ -432,12 +436,24 @@ fn settings_info() -> Res<SettingsInfo> {
             cache_hits: hits,
             render_frames: rframes,
             render_mb: rused >> 20,
+            render_disk_frames: dframes,
+            render_disk_mb: dused >> 20,
             proxies,
             proxy_bytes,
             proxy_dir: dir.display().to_string(),
             autosave_dir: reelforge_engine::safety::autosave_dir().display().to_string(),
             native: reelforge_media::codecs::Codec::ALL.into_iter().filter(|c| c.available()).map(|c| c.label()).collect(),
         }
+    })
+}
+
+/// Forget every rendered frame, in memory and on disk.
+#[tauri::command]
+fn clear_render_cache() -> Res<()> {
+    ed(|e| {
+        e.render_cache.clear_all(true);
+        e.status = "Rendered previews cleared".into();
+        e.touch();
     })
 }
 
@@ -1166,8 +1182,10 @@ fn main() {
             let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
             if let Ok(dir) = app.path().app_config_dir() {
                 let path = dir.join("settings.json");
-                if let Some(p) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Prefs>(&b).ok()) {
-                    e.set_prefs(p);
+                match std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Prefs>(&b).ok()) {
+                    Some(p) => e.set_prefs(p),
+                    // First run: the defaults (rendered frames kept on disk, and so on).
+                    None => e.apply_prefs(),
                 }
                 let _ = SETTINGS_PATH.set(path);
                 start::startup(&mut e, &dir, !args.is_empty());
@@ -1215,6 +1233,7 @@ fn main() {
             recover,
             dismiss_recovery,
             set_prefs,
+            clear_render_cache,
             settings_info,
             add_to_timeline,
             new_composition_from_media,
@@ -1395,6 +1414,10 @@ fn main() {
                 e.playback.pause();
                 if let Some(s) = &e.session {
                     s.end();
+                }
+                // Rendered frames still being written to disk are finished.
+                if let Some(d) = &e.render_cache.disk {
+                    d.flush();
                 }
             });
         }

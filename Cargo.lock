@@ -3329,6 +3329,7 @@ dependencies = [
  "crossbeam-channel",
  "jpeg-encoder",
  "log",
+ "miniz_oxide 0.9.1",
  "reelforge-core",
  "reelforge-export",
  "reelforge-media",
