@@ -458,6 +458,16 @@ fn set_playback_quality(q: u32) -> Res<()> {
     })
 }
 
+/// Show the paused picture at full resolution whatever the playback quality.
+#[tauri::command]
+fn set_full_when_paused(on: bool) -> Res<()> {
+    ed(|e| {
+        e.set_full_when_paused(on);
+        e.touch();
+        save_settings(e);
+    })
+}
+
 pub(crate) fn save_settings(e: &Editor) {
     if let Some(p) = SETTINGS_PATH.get() {
         if let Some(dir) = p.parent() {
@@ -1138,6 +1148,7 @@ fn main() {
             thumbnail,
             comp_thumbnail,
             set_playback_quality,
+            set_full_when_paused,
             new_project,
             open_dialog,
             open_path,

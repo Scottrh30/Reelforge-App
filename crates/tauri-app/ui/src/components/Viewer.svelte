@@ -5,6 +5,23 @@
   import { actions } from "../lib/actions.svelte";
   import ViewerOverlay from "./ViewerOverlay.svelte";
   import ViewerTools from "./ViewerTools.svelte";
+  import { openMenu } from "../lib/menu.svelte";
+
+  // Playback quality: the picture at full, half or quarter resolution.
+  const QUALITY: Record<number, string> = { 1: "Full", 2: "½ res", 4: "¼ res" };
+  function qualityMenu(e: MouseEvent) {
+    const p = app.s?.prefs;
+    if (!p) return;
+    const q = p.playback_quality ?? 1;
+    openMenu(e, [
+      { heading: true, label: "Playback quality" },
+      { label: "Full resolution", checked: q === 1, run: () => run(api.setPlaybackQuality(1)) },
+      { label: "Half resolution", checked: q === 2, run: () => run(api.setPlaybackQuality(2)) },
+      { label: "Quarter resolution", checked: q === 4, run: () => run(api.setPlaybackQuality(4)) },
+      { separator: true },
+      { label: "Full resolution when paused", checked: !!p.full_when_paused, run: () => run(api.setFullWhenPaused(!p.full_when_paused)) },
+    ]);
+  }
 
   let box: HTMLDivElement | undefined = $state();
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -308,18 +325,13 @@
       >
     {/if}
     {#if app.live && !app.live.exact && !playing}<span class="muted" title="Some layers are still decoding">Catching up…</span>{/if}
-    <select
-      class="quality"
+    <button
+      class="chip quality"
       class:low={(app.s?.prefs.playback_quality ?? 1) > 1}
-      aria-label="Playback quality"
+      aria-haspopup="menu"
       title="Playback quality: draw the Viewer's picture at full, half or quarter resolution (footage is decoded that much smaller too), so heavy projects play smoothly. Export and Render preview always use full resolution."
-      value={String(app.s?.prefs.playback_quality ?? 1)}
-      onchange={(e) => run(api.setPlaybackQuality(Number(e.currentTarget.value)))}
+      onclick={qualityMenu}>{QUALITY[app.s?.prefs.playback_quality ?? 1] ?? "Full"}{#if app.s?.prefs.full_when_paused && (app.s?.prefs.playback_quality ?? 1) > 1}<span class="paused-full" title="Full resolution when paused"> ⏸ full</span>{/if} ▾</button
     >
-      <option value="1">Full</option>
-      <option value="2">½ res</option>
-      <option value="4">¼ res</option>
-    </select>
     <div class="zoom" role="group" aria-label="Viewer zoom">
       <button class="chip" class:on={hand} onclick={() => (hand = !hand)} title="Hand: drag the picture around (or drag with the middle mouse button anywhere)" aria-pressed={hand}>
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M5.5 8V3.2a1 1 0 0 1 2 0V7.5M7.5 7V2.3a1 1 0 0 1 2 0V7M9.5 7V3a1 1 0 0 1 2 0v5.2M11.5 6.5a1 1 0 0 1 2 0V10c0 2.8-2 4.5-4.5 4.5S5 13.5 3.6 11.4L2.4 9.6a1 1 0 0 1 1.6-1.2L5.5 10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" /></svg>
@@ -677,9 +689,10 @@
     font-size: calc(12px * var(--text-scale));
   }
   .quality {
-    min-height: 22px;
-    padding: 0 4px;
     font-size: calc(12px * var(--text-scale));
+  }
+  .paused-full {
+    color: var(--muted);
   }
   .quality.low {
     color: var(--accent);

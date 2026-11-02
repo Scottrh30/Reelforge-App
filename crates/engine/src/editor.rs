@@ -60,6 +60,8 @@ pub struct Prefs {
     pub timeline_video_waveforms: bool,
     /// Playback quality: the Viewer draws at 1/this of full resolution (1, 2 or 4).
     pub playback_quality: u32,
+    /// …but the paused picture at full resolution.
+    pub full_when_paused: bool,
     /// Layers dragged in the viewer snap to the frame and to each other (Alt: free).
     pub viewer_snapping: bool,
     /// Decode video on the graphics card when possible.
@@ -88,6 +90,7 @@ impl Default for Prefs {
             timeline_filmstrip: true,
             timeline_video_waveforms: false,
             playback_quality: 1,
+            full_when_paused: false,
             viewer_snapping: true,
             hw_decode: true,
             cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB,
@@ -114,6 +117,14 @@ impl Editor {
         reelforge_media::FrameCache::global().set_budget_mb(self.prefs.cache_mb.clamp(128, 65536));
         reelforge_media::proxy::set_format(self.prefs.proxy_format);
         self.preview.set_quality(self.prefs.playback_quality);
+        self.preview.full_when_paused = self.prefs.full_when_paused;
+    }
+
+    /// Show the paused picture at full resolution whatever the playback quality.
+    pub fn set_full_when_paused(&mut self, on: bool) {
+        self.prefs.full_when_paused = on;
+        self.preview.full_when_paused = on;
+        self.status = if on { "Full resolution when paused".into() } else { "Paused picture at the playback quality".into() };
     }
 
     /// Set the Viewer's playback quality (1 full, 2 half, 4 quarter resolution).
@@ -3805,6 +3816,18 @@ mod tests {
         e.set_playback_quality(1);
         e.tick();
         assert_eq!(e.preview.read_output().unwrap().1, [w, h]);
+
+        // Full when paused: quarter while playing, full again on pausing.
+        e.set_playback_quality(4);
+        e.set_full_when_paused(true);
+        e.tick();
+        assert_eq!(e.preview.read_output().unwrap().1, [w, h], "paused: full");
+        e.playback.play();
+        e.tick();
+        assert_eq!(e.preview.read_output().unwrap().1, [w / 4, h / 4], "playing: quarter");
+        e.playback.pause();
+        e.tick();
+        assert_eq!(e.preview.read_output().unwrap().1, [w, h], "paused again: full");
     }
 
     #[test]

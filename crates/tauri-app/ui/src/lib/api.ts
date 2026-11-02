@@ -365,6 +365,8 @@ export interface Prefs {
   timeline_video_waveforms: boolean;
   /// The Viewer's picture at 1/this of full resolution (1, 2 or 4).
   playback_quality: number;
+  /// …but the paused picture at full resolution.
+  full_when_paused: boolean;
   viewer_snapping: boolean;
   hw_decode: boolean;
   cache_mb: number;
@@ -758,6 +760,7 @@ export const api = {
   fontFamilies: () => invoke<string[]>("font_families"),
   thumbnail: (path: string, at: Ticks) => invoke<ArrayBuffer>("thumbnail", { path, at }),
   setPlaybackQuality: (q: number) => invoke("set_playback_quality", { q }),
+  setFullWhenPaused: (on: boolean) => invoke("set_full_when_paused", { on }),
   compThumbnail: (seq: number, at: Ticks) => invoke<ArrayBuffer>("comp_thumbnail", { seq, at }),
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),

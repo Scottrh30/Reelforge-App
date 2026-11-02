@@ -114,6 +114,10 @@ pub struct Preview {
     pub picture_rev: u64,
     /// Playback quality: the Viewer's picture at 1/this of full resolution (1, 2 or 4).
     quality: u32,
+    /// Show the paused picture at full resolution whatever the playback quality.
+    pub full_when_paused: bool,
+    /// The resolution divisor drawing now (the quality, or 1 while paused).
+    active: u32,
 }
 
 impl Preview {
@@ -127,7 +131,7 @@ impl Preview {
             let scene = Scene::new(&device, &queue);
             Gpu { device, queue, compositor, scene, cache_render: None }
         });
-        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1 }
+        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1, full_when_paused: false, active: 1 }
     }
 
     /// Playback quality: draw the Viewer's picture at 1/`q` of full
@@ -139,25 +143,34 @@ impl Preview {
             2..=3 => 2,
             _ => 4,
         };
-        if q == self.quality {
-            return;
-        }
         self.quality = q;
-        if let Some(g) = &mut self.gpu {
-            g.compositor.output_scale = 1.0 / q as f32;
-        }
-        // Draw again (at the new size) next time.
-        self.last_signature = 0;
-        self.shown_cached = None;
     }
 
     pub fn quality(&self) -> u32 {
         self.quality
     }
 
+    /// The resolution divisor the picture was last drawn at.
+    pub fn active_quality(&self) -> u32 {
+        self.active
+    }
+
+    /// Draw at 1/`q` from now on (when it changes, the next frame is drawn again).
+    fn activate(&mut self, q: u32) {
+        if q == self.active {
+            return;
+        }
+        self.active = q;
+        if let Some(g) = &mut self.gpu {
+            g.compositor.output_scale = 1.0 / q as f32;
+        }
+        self.last_signature = 0;
+        self.shown_cached = None;
+    }
+
     /// The size the Viewer's footage is decoded at most at.
     fn decode_max(&self) -> (u32, u32) {
-        (PREVIEW_MAX.0 / self.quality, PREVIEW_MAX.1 / self.quality)
+        (PREVIEW_MAX.0 / self.active, PREVIEW_MAX.1 / self.active)
     }
 
     /// The GPU device/queue, for offline work like export.
@@ -223,6 +236,7 @@ impl Preview {
     pub fn update(&mut self, project: &Project, seq: usize, t: Time, playing: bool, sources: &HashMap<MediaId, PathBuf>, cache: &mut RenderCache) {
         let Some(sequence) = project.sequences.get(seq) else { return };
         self.error = None;
+        self.activate(if self.full_when_paused && !playing { 1 } else { self.quality });
 
         let frame = crate::render_cache::frame_index(t, sequence.frame_rate);
         let recipe = reelforge_export::frame_recipe(project, seq, t, sources);
