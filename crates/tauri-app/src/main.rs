@@ -744,6 +744,31 @@ fn set_clip_audio(id: u64, audio: ClipAudio) -> Res<()> {
     ed(|e| e.set_clip_audio_live(clip(id), audio))
 }
 
+/// The audio effects there are, with their parameters (for the Audio panel).
+#[derive(Serialize)]
+struct AudioFxInfo {
+    kind: reelforge_core::audiofx::AudioFxKind,
+    label: &'static str,
+    params: Vec<AudioParamInfo>,
+}
+#[derive(Serialize)]
+struct AudioParamInfo {
+    name: &'static str,
+    default: f32,
+    min: f32,
+    max: f32,
+    suffix: &'static str,
+    speed: f32,
+}
+
+#[tauri::command]
+fn audio_fx_kinds() -> Vec<AudioFxInfo> {
+    reelforge_core::audiofx::AudioFxKind::ALL
+        .iter()
+        .map(|&k| AudioFxInfo { kind: k, label: k.label(), params: k.specs().iter().map(|s| AudioParamInfo { name: s.name, default: s.default, min: s.min, max: s.max, suffix: s.suffix, speed: s.speed }).collect() })
+        .collect()
+}
+
 #[tauri::command]
 fn set_speed(id: u64, speed: f32, reverse: bool) -> Res<()> {
     ed(|e| e.set_speed(clip(id), speed, reverse))
@@ -1178,6 +1203,7 @@ fn main() {
             font_families,
             thumbnail,
             comp_thumbnail,
+            audio_fx_kinds,
             set_playback_quality,
             set_full_when_paused,
             new_project,

@@ -50,11 +50,28 @@ export interface TitleSpec {
   [key: string]: unknown;
 }
 
+export type AudioFxKind = "Eq" | "Compressor" | "Limiter" | "Reverb" | "NoiseReduction";
+export interface AudioParam {
+  value: number;
+  keys: { at: Ticks; value: number; interp?: string }[];
+}
+export interface AudioEffect {
+  kind: AudioFxKind;
+  enabled: boolean;
+  params: AudioParam[];
+}
+export interface AudioFxInfo {
+  kind: AudioFxKind;
+  label: string;
+  params: { name: string; default: number; min: number; max: number; suffix: string; speed: number }[];
+}
+
 export interface ClipAudio {
   volume_db: number;
   pan: number;
   fade_in: Ticks;
   fade_out: Ticks;
+  effects?: AudioEffect[];
   [key: string]: unknown;
 }
 
@@ -763,6 +780,7 @@ export const api = {
   thumbnail: (path: string, at: Ticks) => invoke<ArrayBuffer>("thumbnail", { path, at }),
   setPlaybackQuality: (q: number) => invoke("set_playback_quality", { q }),
   setFullWhenPaused: (on: boolean) => invoke("set_full_when_paused", { on }),
+  audioFxKinds: () => invoke<AudioFxInfo[]>("audio_fx_kinds"),
   compThumbnail: (seq: number, at: Ticks) => invoke<ArrayBuffer>("comp_thumbnail", { seq, at }),
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),

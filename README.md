@@ -170,6 +170,17 @@ What works now:
   Controls panel has previous/next keyframe buttons, a diamond to add/remove a keyframe at the
   playhead, and Clear. Keyframes are tied to the clip's source audio, so they move, split and
   trim with it
+- **Audio effects** (Controls panel → Sound → Effects → **+ Add**): **EQ** (a 12 dB/octave low
+  cut, low and high shelves, a bell in the middle), **Compressor** (threshold, ratio, attack,
+  release, soft knee, make-up gain), **Limiter** (input gain, a ceiling nothing goes over, 5 ms
+  of look-ahead, release), **Reverb** (Freeverb: room size, damping, width, mix, pre-delay) and
+  **Noise reduction** (spectral gating that learns the steady background noise as it plays:
+  how far to turn it down, and how readily). They work on the clip's own sound, in order, before
+  its volume, pan and fades; each can be switched off, moved, reset or removed, and every setting
+  keyframes at the playhead like volume. Playback and export use the same processing, and
+  effects with look-ahead (limiter, noise reduction) are fed that far ahead so the sound stays in
+  sync. After a jump each chain hears up to 2 s of what came before first, so it plays as if it
+  had been running (scrubbing skips that). A reverb's tail stops where the clip ends.
 - **Duck music under dialogue** (**Timeline → Duck music under dialogue…**): tick the dialogue
   and music audio tracks, and Reelforge listens to the dialogue and lowers the music wherever
   someone speaks: by how much (default 12 dB), what counts as speech (a loudness threshold),
@@ -1559,7 +1570,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 1. ~~Player and editor shell~~
 2. ~~Audio playback, mixing, A/V sync, linked clips, waveforms, volume/pan, fades, scrubbing,
    volume keyframes, crossfades, meters, track meters, pan keyframes~~
-   (still to add: audio effects like EQ/compressor)
+   (audio effects: EQ, compressor, limiter, reverb, noise reduction)
 3. ~~Compositor and editing: layers, transforms, opacity, blend modes, viewer gizmo, keyframes
    and a curve editor, cross-dissolves, trimming, ripple/roll/slip/slide, ripple delete, track
    locking~~

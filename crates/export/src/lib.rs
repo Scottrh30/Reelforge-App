@@ -171,6 +171,9 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                         // Media heard at the new start, and the combined rate.
                         let x_at_start = a + r * (cs + (start - ws) as f64);
                         m.source_in = (m.source_in as f64 + (x_at_start - m.start as f64) * m.rate).round() as i64;
+                        // Effect keyframes run at the composition's speed too.
+                        m.fx_src0 += (x_at_start - m.start as f64) * m.fx_scale;
+                        m.fx_scale *= r;
                         m.rate *= r;
                         let k = 1.0 / r.abs();
                         let stretch = |v: i64| (v as f64 * k).round() as i64;
@@ -186,6 +189,7 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                         let cut = ws - m.start;
                         m.start = ws;
                         m.source_in += (cut as f64 * m.rate).round() as i64;
+                        m.fx_src0 += cut as f64 * m.fx_scale;
                         m.len -= cut;
                         m.fade_in = (m.fade_in - cut).max(0);
                         m.volume_keys.iter_mut().chain(m.pan_keys.iter_mut()).for_each(|k| k.0 -= cut);
@@ -258,6 +262,10 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                 volume_keys,
                 pan_keys,
                 track: ti,
+                effects: c.audio.effects.clone(),
+                // The clip's own time at the start (keyframes are in it).
+                fx_src0: source_in.to_frame(sr) as f64,
+                fx_scale: 1.0,
             };
             if clip.gain > 0.0 {
                 out.push(clip);

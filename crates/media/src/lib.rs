@@ -4,6 +4,7 @@
 //! at time t" every repaint, and the source keeps a decoder thread running ahead.
 
 pub mod audio;
+pub mod audiofx;
 pub mod cache;
 pub mod color;
 pub mod decoder;

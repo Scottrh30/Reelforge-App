@@ -62,11 +62,14 @@ pub struct ClipAudio {
     /// time, dB), so it can be replaced or taken off. See [`crate::duck`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ducking: Vec<VolumeKey>,
+    /// Effects on the clip's sound, in order, before its volume, pan and fades.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<crate::audiofx::AudioEffect>,
 }
 
 impl Default for ClipAudio {
     fn default() -> Self {
-        Self { volume_db: 0.0, pan: 0.0, fade_in: Time::ZERO, fade_out: Time::ZERO, volume_keys: Vec::new(), crossfade_in: Time::ZERO, pan_keys: Vec::new(), ducking: Vec::new() }
+        Self { volume_db: 0.0, pan: 0.0, fade_in: Time::ZERO, fade_out: Time::ZERO, volume_keys: Vec::new(), crossfade_in: Time::ZERO, pan_keys: Vec::new(), ducking: Vec::new(), effects: Vec::new() }
     }
 }
 

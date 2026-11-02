@@ -244,3 +244,60 @@ fn varispeed_slows_reverses_and_pitches() {
     let frozen = MixClip { rate: 0.0, ..MixClip::plain(ClipId(1), path, 0, r, r) };
     assert_eq!(rms(&render(frozen, 0.0, 1.0)), 0.0);
 }
+
+/// Clip effects in the mix: in sync (a limiter's look-ahead is made up for),
+/// the same in any block size, after a jump the same as played through, and
+/// keyframes followed.
+#[test]
+fn mixer_runs_clip_effects_in_sync() {
+    use reelforge_core::audiofx::{comp, limit, AudioEffect, AudioFxKind};
+    use reelforge_core::anim::{Curve, Interp, Key};
+    use reelforge_core::Time;
+    let Some(path) = make_clip() else { return };
+    let r = RATE as i64;
+    let base = MixClip::plain(ClipId(1), path.clone(), 0, 0, 3 * r);
+    let render = |clip: &MixClip, block: usize, from: f64, to: f64| {
+        let mut m = Mixer::new(RATE);
+        m.set_clips(vec![clip.clone()]);
+        let (a, b) = ((from * RATE as f64) as i64, (to * RATE as f64) as i64);
+        let mut out = vec![0.0; (b - a) as usize * 2];
+        for (i, chunk) in out.chunks_mut(block * 2).enumerate() {
+            m.render(a + (i * block) as i64, chunk);
+        }
+        out
+    };
+    let max_diff = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+
+    // A limiter that never has to act (ceiling 0 dB, the tone peaks at −18):
+    // exactly the plain sound, not 5 ms late.
+    let mut lim = AudioEffect::new(AudioFxKind::Limiter);
+    lim.params[limit::CEILING].value = 0.0;
+    let limited = MixClip { effects: vec![lim], ..base.clone() };
+    let plain = render(&base, 1024, 0.5, 1.5);
+    let d = max_diff(&render(&limited, 1024, 0.5, 1.5), &plain);
+    assert!(d < 1e-4, "limiter at rest changes nothing: {d}");
+
+    // A compressor: the same whatever the block size, and starting in the middle
+    // (a jump) matches having played from the start once it has settled.
+    let mut c = AudioEffect::new(AudioFxKind::Compressor);
+    c.params[comp::THRESHOLD].value = -30.0;
+    c.params[comp::RATIO].value = 8.0;
+    let squashed = MixClip { effects: vec![c.clone()], ..base.clone() };
+    let whole = render(&squashed, 4800, 0.0, 3.0);
+    let small = render(&squashed, 333, 0.0, 3.0);
+    assert!(max_diff(&whole, &small) < 1e-5, "block size doesn't matter");
+    let jumped = render(&squashed, 1024, 2.0, 2.5);
+    let d = max_diff(&jumped, &whole[2 * r as usize * 2..(2.5 * RATE as f64) as usize * 2]);
+    assert!(d < 1e-3, "after a jump: {d}");
+    let level = |b: &[f32]| rms(&b[(RATE as usize) * 2..(2 * RATE as usize) * 2]);
+    let k = 20.0 * (level(&whole) / level(&render(&base, 4800, 0.0, 3.0))).log10();
+    assert!(k < -6.0, "compressed: {k:.1} dB");
+
+    // Keyframed: the threshold rises out of the way over the clip, so the end is
+    // louder than the start.
+    let mut keyed = c;
+    keyed.params[comp::THRESHOLD].keys = Curve(vec![Key::new(Time::ZERO, -40.0, Interp::Linear), Key::new(Time::from_secs_f64(3.0), 0.0, Interp::Linear)]);
+    let out = render(&MixClip { effects: vec![keyed], ..base.clone() }, 1024, 0.0, 3.0);
+    let at = |s: f64| rms(&out[(s * RATE as f64) as usize * 2..((s + 0.2) * RATE as f64) as usize * 2]);
+    assert!(at(2.6) > at(0.4) * 2.0, "{} vs {}", at(2.6), at(0.4));
+}

@@ -258,7 +258,7 @@ fn scrub_snippet(mixer: &mut Mixer, at: i64, generation: u64, rate: f64) -> Bloc
     let n = (SCRUB_SECS * rate) as usize;
     let ramp = ((SCRUB_RAMP_SECS * rate) as usize).max(1);
     let mut data = vec![0.0; n * 2];
-    mixer.render(at, &mut data);
+    mixer.render_quick(at, &mut data);
     for i in 0..ramp.min(n / 2) {
         let g = 0.5 - 0.5 * (std::f32::consts::PI * i as f32 / ramp as f32).cos();
         for k in [i, n - 1 - i] {

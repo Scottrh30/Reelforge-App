@@ -5,6 +5,7 @@
   import { app, run, timecode } from "../lib/session.svelte";
   import { api, type ClipAudio, type Inspector } from "../lib/api";
   import NumberField from "./NumberField.svelte";
+  import AudioEffects from "./AudioEffects.svelte";
   import { MIN_DB, MAX_DB, volKeys, panKeys, volumeAt, panAt, setVolKey, setPanKey, dbText, panText, defaultAudio } from "../lib/audio";
   import { tps } from "../lib/session.svelte";
 
@@ -136,6 +137,9 @@
   </div>
   {#if vAnim && onClip}
     <p class="note">At {timecode(ph)}. Ctrl+click the volume line on the timeline to add a key; Alt+click a key to remove it.</p>
+  {/if}
+  {#if ins.kind !== "comp"}
+    <AudioEffects audio={shown} {src} {onClip} {edit} {once} {commit} />
   {/if}
   <button class="reset" onclick={() => once((n) => Object.assign(n, defaultAudio(), { crossfade_in: n.crossfade_in }))}>Reset audio</button>
 </div>
