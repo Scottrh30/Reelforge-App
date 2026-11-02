@@ -413,7 +413,8 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
             }
             (None, Some(spec)) => {
                 2u8.hash(h);
-                spec.content_hash(frame_size).hash(h);
+                let at = crate::title_clock(l);
+                spec.content_hash_at(frame_size, at.0, at.1).hash(h);
                 [frame_size[0] as f32, frame_size[1] as f32]
             }
             (None, None) => {

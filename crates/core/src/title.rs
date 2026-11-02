@@ -113,6 +113,114 @@ pub struct TitleSpec {
     /// The colour of 3D text's sides (`None`: the text colour).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side_color: Option<[u8; 4]>,
+    /// Letters, words or lines coming in (and going out) one after another.
+    #[serde(default, skip_serializing_if = "TextAnim::is_none")]
+    pub anim: TextAnim,
+}
+
+/// How a title's text comes in, piece by piece.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TextAnimKind {
+    /// All at once (no animation).
+    #[default]
+    None,
+    /// Letter by letter, each appearing at once, like typing.
+    Typewriter,
+    /// Letter by letter, each fading in.
+    FadeLetters,
+    /// Word by word, each fading in.
+    FadeWords,
+    /// Line by line, each sliding up into place as it fades in.
+    SlideLines,
+    /// Letter by letter, each dropping in from above and bouncing to rest.
+    Bounce,
+}
+
+impl TextAnimKind {
+    pub const ALL: [TextAnimKind; 6] = [TextAnimKind::None, TextAnimKind::Typewriter, TextAnimKind::FadeLetters, TextAnimKind::FadeWords, TextAnimKind::SlideLines, TextAnimKind::Bounce];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TextAnimKind::None => "None",
+            TextAnimKind::Typewriter => "Typewriter",
+            TextAnimKind::FadeLetters => "Fade in letters",
+            TextAnimKind::FadeWords => "Fade in words",
+            TextAnimKind::SlideLines => "Slide up lines",
+            TextAnimKind::Bounce => "Bounce in letters",
+        }
+    }
+}
+
+/// A title's text animation.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextAnim {
+    pub kind: TextAnimKind,
+    /// Seconds between one piece starting and the next.
+    pub stagger: f32,
+    /// Seconds each piece takes to come in.
+    pub length: f32,
+    /// Seconds into the clip before the first piece starts.
+    pub delay: f32,
+    /// Also go out again at the end of the clip, in the same order.
+    pub out: bool,
+}
+
+impl Default for TextAnim {
+    fn default() -> Self {
+        TextAnim { kind: TextAnimKind::None, stagger: 0.05, length: 0.4, delay: 0.0, out: false }
+    }
+}
+
+impl TextAnim {
+    pub fn is_none(&self) -> bool {
+        self.kind == TextAnimKind::None
+    }
+
+    /// Sensible timing for a kind (picked in the Title panel).
+    pub fn preset(kind: TextAnimKind) -> Self {
+        let (stagger, length) = match kind {
+            TextAnimKind::None => (0.05, 0.4),
+            TextAnimKind::Typewriter => (0.06, 0.0),
+            TextAnimKind::FadeLetters => (0.04, 0.4),
+            TextAnimKind::FadeWords => (0.25, 0.5),
+            TextAnimKind::SlideLines => (0.35, 0.6),
+            TextAnimKind::Bounce => (0.06, 0.7),
+        };
+        TextAnim { kind, stagger, length, delay: 0.0, out: false }
+    }
+}
+
+/// One glyph's state at a moment of a text animation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphState {
+    /// Opacity, 0–1.
+    pub alpha: f32,
+    /// Moved down by this much, in ems (negative: up).
+    pub dy: f32,
+}
+
+fn smooth(p: f32) -> f32 {
+    let p = p.clamp(0.0, 1.0);
+    p * p * (3.0 - 2.0 * p)
+}
+
+/// The usual "ease out bounce": falls to 1, bouncing a little less each time.
+fn bounce(p: f32) -> f32 {
+    let (n, d) = (7.5625, 2.75);
+    let p = p.clamp(0.0, 1.0);
+    if p < 1.0 / d {
+        n * p * p
+    } else if p < 2.0 / d {
+        let q = p - 1.5 / d;
+        n * q * q + 0.75
+    } else if p < 2.5 / d {
+        let q = p - 2.25 / d;
+        n * q * q + 0.9375
+    } else {
+        let q = p - 2.625 / d;
+        n * q * q + 0.984375
+    }
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -141,6 +249,7 @@ impl Default for TitleSpec {
             background_padding: 24.0,
             extrude: 0.0,
             side_color: None,
+            anim: TextAnim::default(),
         }
     }
 }
@@ -169,6 +278,116 @@ impl TitleSpec {
         if first.is_empty() { "(empty title)".into() } else { first.to_string() }
     }
 
+    /// Which piece of the animation each character of the text (newlines
+    /// left out, in order, as laid out) belongs to, and how many pieces there
+    /// are. Spaces go with the piece after them.
+    pub fn anim_pieces(&self) -> (Vec<usize>, usize) {
+        let lines: Vec<&str> = self.text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+        let mut out = Vec::new();
+        let mut n = 0usize;
+        match self.anim.kind {
+            TextAnimKind::SlideLines => {
+                for l in &lines {
+                    let chars = l.chars().count();
+                    out.extend(std::iter::repeat_n(n, chars));
+                    if chars > 0 {
+                        n += 1;
+                    }
+                }
+            }
+            TextAnimKind::FadeWords => {
+                // Each word its own piece; spaces go with the word after them.
+                let mut words: Vec<Option<usize>> = Vec::new();
+                for l in &lines {
+                    let mut in_word = false;
+                    for ch in l.chars() {
+                        if ch.is_whitespace() {
+                            in_word = false;
+                            words.push(None);
+                        } else {
+                            if !in_word {
+                                n += 1;
+                                in_word = true;
+                            }
+                            words.push(Some(n - 1));
+                        }
+                    }
+                }
+                let mut next = n.saturating_sub(1);
+                for w in words.iter().rev() {
+                    if let Some(i) = w {
+                        next = *i;
+                    }
+                    out.push(w.unwrap_or(next));
+                }
+                out.reverse();
+            }
+            _ => {
+                let mut k = 0usize;
+                for l in &lines {
+                    for ch in l.chars() {
+                        out.push(k);
+                        if !ch.is_whitespace() {
+                            k += 1;
+                        }
+                    }
+                }
+                n = k;
+            }
+        }
+        (out, n)
+    }
+
+    /// Every glyph's state at `t` seconds into a clip `dur` seconds long
+    /// (`None` without an animation).
+    pub fn glyph_states(&self, t: f32, dur: f32) -> Option<Vec<GlyphState>> {
+        if self.anim.is_none() || self.is_3d() {
+            return None;
+        }
+        let a = self.anim;
+        let (pieces, n) = self.anim_pieces();
+        let progress = |i: usize| -> f32 {
+            let start = a.delay + i as f32 * a.stagger.max(0.0);
+            let p_in = if a.length <= 0.0 { if t >= start { 1.0 } else { 0.0 } } else { ((t - start) / a.length).clamp(0.0, 1.0) };
+            if !a.out {
+                return p_in;
+            }
+            // Going out: the first piece first, the last one gone as the clip ends.
+            let leave = dur - a.length.max(0.0) - (n.saturating_sub(1) - i.min(n.saturating_sub(1))) as f32 * a.stagger.max(0.0);
+            let p_out = if a.length <= 0.0 { if t < dur - (n.saturating_sub(1) - i.min(n.saturating_sub(1))) as f32 * a.stagger.max(0.0) { 1.0 } else { 0.0 } } else { (1.0 - (t - leave) / a.length).clamp(0.0, 1.0) };
+            p_in.min(p_out)
+        };
+        Some(
+            pieces
+                .iter()
+                .map(|&i| {
+                    let p = progress(i);
+                    match a.kind {
+                        TextAnimKind::None => GlyphState { alpha: 1.0, dy: 0.0 },
+                        TextAnimKind::Typewriter => GlyphState { alpha: if p > 0.0 { 1.0 } else { 0.0 }, dy: 0.0 },
+                        TextAnimKind::FadeLetters | TextAnimKind::FadeWords => GlyphState { alpha: smooth(p), dy: 0.0 },
+                        TextAnimKind::SlideLines => GlyphState { alpha: smooth(p), dy: (1.0 - smooth(p)) * 0.5 },
+                        TextAnimKind::Bounce => GlyphState { alpha: (p * 5.0).min(1.0), dy: -(1.0 - bounce(p)) * 0.8 },
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// [`Self::content_hash`] including the animation's state at `t` seconds
+    /// into a clip `dur` long (quantised: frames that look the same share it).
+    pub fn content_hash_at(&self, frame: [u32; 2], t: f32, dur: f32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let base = self.content_hash(frame);
+        let Some(states) = self.glyph_states(t, dur) else { return base };
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        base.hash(&mut h);
+        for g in states {
+            ((g.alpha * 255.0).round() as i32, (g.dy * self.size * 8.0).round() as i32).hash(&mut h);
+        }
+        h.finish()
+    }
+
     /// A stable hash of everything that affects the picture (plus the frame size).
     pub fn content_hash(&self, frame: [u32; 2]) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -191,6 +410,10 @@ impl TitleSpec {
         }
         (self.color, self.outline_color, self.shadow_color, self.background_color).hash(&mut h);
         (self.align, self.shadow, self.background, self.side_color).hash(&mut h);
+        if !self.anim.is_none() {
+            // (Its state at a moment is in `content_hash_at`.)
+            (self.anim.kind, self.anim.stagger.to_bits(), self.anim.length.to_bits(), self.anim.delay.to_bits(), self.anim.out).hash(&mut h);
+        }
         h.finish()
     }
 }
@@ -225,5 +448,63 @@ mod tests {
         let sides = TitleSpec { side_color: Some([255, 0, 0, 255]), ..deep.clone() };
         assert_ne!(sides.content_hash([1920, 1080]), deep.content_hash([1920, 1080]));
         assert_eq!(TitleSpec { text: "\n  Hello world \nmore".into(), ..a }.label(), "Hello world");
+    }
+}
+
+#[cfg(test)]
+mod anim_tests {
+    use super::*;
+
+    fn spec(text: &str, kind: TextAnimKind) -> TitleSpec {
+        TitleSpec { text: text.into(), anim: TextAnim::preset(kind), ..TitleSpec::default() }
+    }
+
+    #[test]
+    fn pieces_are_letters_words_or_lines() {
+        // Letters: spaces take the next letter's turn.
+        assert_eq!(spec("ab c", TextAnimKind::Typewriter).anim_pieces(), (vec![0, 1, 2, 2], 3));
+        assert_eq!(spec("hi you\nall", TextAnimKind::FadeWords).anim_pieces(), (vec![0, 0, 1, 1, 1, 1, 2, 2, 2], 3));
+        assert_eq!(spec("one\n\ntwo", TextAnimKind::SlideLines).anim_pieces(), (vec![0, 0, 0, 1, 1, 1], 2));
+    }
+
+    #[test]
+    fn states_follow_the_clock() {
+        let s = spec("abc", TextAnimKind::Typewriter);
+        let shown = |t: f32| s.glyph_states(t, 5.0).unwrap().iter().filter(|g| g.alpha > 0.0).count();
+        assert_eq!((shown(0.0), shown(0.07), shown(0.13), shown(3.0)), (1, 2, 3, 3));
+        // Fading words: halfway through the first word's fade, it's half there.
+        let mut w = spec("one two", TextAnimKind::FadeWords);
+        w.anim.length = 1.0;
+        w.anim.stagger = 1.0;
+        let g = w.glyph_states(0.5, 10.0).unwrap();
+        assert!((g[0].alpha - 0.5).abs() < 1e-5 && g[4].alpha == 0.0);
+        // Sliding lines start half an em low and arrive.
+        let l = spec("a\nb", TextAnimKind::SlideLines);
+        let g = l.glyph_states(0.0, 5.0).unwrap();
+        assert_eq!((g[0].dy, g[0].alpha), (0.5, 0.0));
+        let g = l.glyph_states(2.0, 5.0).unwrap();
+        assert!(g.iter().all(|g| g.dy == 0.0 && g.alpha == 1.0));
+        // Bouncing letters drop from above and settle.
+        let b = spec("ab", TextAnimKind::Bounce);
+        let g = b.glyph_states(0.0, 5.0).unwrap();
+        assert!(g[0].dy < -0.7);
+        assert_eq!(b.glyph_states(2.0, 5.0).unwrap()[1].dy, 0.0);
+        // Going out too: gone at the end, first piece first.
+        let mut o = spec("ab", TextAnimKind::FadeLetters);
+        o.anim.out = true;
+        let g = o.glyph_states(5.0, 5.0).unwrap();
+        assert!(g.iter().all(|g| g.alpha == 0.0));
+        let g = o.glyph_states(4.6, 5.0).unwrap();
+        assert!(g[0].alpha < g[1].alpha, "{g:?}");
+        // No animation: no states, and the picture's hash doesn't move with time.
+        let none = TitleSpec::default();
+        assert!(none.glyph_states(1.0, 5.0).is_none());
+        assert_eq!(none.content_hash_at([100, 100], 0.0, 5.0), none.content_hash_at([100, 100], 3.0, 5.0));
+        assert_ne!(s.content_hash_at([100, 100], 0.0, 5.0), s.content_hash_at([100, 100], 3.0, 5.0));
+        assert_eq!(s.content_hash_at([100, 100], 3.0, 5.0), s.content_hash_at([100, 100], 4.0, 5.0), "settled: the same picture");
+        // Round trip, and older files without it.
+        let j = serde_json::to_string(&b).unwrap();
+        assert_eq!(serde_json::from_str::<TitleSpec>(&j).unwrap(), b);
+        assert!(!serde_json::to_string(&none).unwrap().contains("anim"));
     }
 }

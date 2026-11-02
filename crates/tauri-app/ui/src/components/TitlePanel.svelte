@@ -71,6 +71,20 @@
     await run(api.commit());
   }
 
+  // Text animation: kinds and the timing each starts with (as in TextAnim::preset).
+  type AnimKind = "None" | "Typewriter" | "FadeLetters" | "FadeWords" | "SlideLines" | "Bounce";
+  type Anim = { kind: AnimKind; stagger: number; length: number; delay: number; out: boolean };
+  const ANIM_LABELS: Record<AnimKind, string> = { None: "None", Typewriter: "Typewriter", FadeLetters: "Fade in letters", FadeWords: "Fade in words", SlideLines: "Slide up lines", Bounce: "Bounce in letters" };
+  const ANIM_PRESETS: Record<AnimKind, Anim> = {
+    None: { kind: "None", stagger: 0.05, length: 0.4, delay: 0, out: false },
+    Typewriter: { kind: "Typewriter", stagger: 0.06, length: 0, delay: 0, out: false },
+    FadeLetters: { kind: "FadeLetters", stagger: 0.04, length: 0.4, delay: 0, out: false },
+    FadeWords: { kind: "FadeWords", stagger: 0.25, length: 0.5, delay: 0, out: false },
+    SlideLines: { kind: "SlideLines", stagger: 0.35, length: 0.6, delay: 0, out: false },
+    Bounce: { kind: "Bounce", stagger: 0.06, length: 0.7, delay: 0, out: false },
+  };
+  const anim = $derived(({ ...ANIM_PRESETS.None, ...((t.anim as Partial<Anim>) ?? {}) }) as Anim);
+
   const aligns = [
     ["Left", "Left", "M2 3h10M2 6h7M2 9h10M2 12h6"],
     ["Center", "Centre", "M2 3h12M4 6h8M2 9h12M5 12h6"],
@@ -164,6 +178,23 @@
     {#if t.background}
       <span class="lbl sub">Padding</span>
       <NumberField label="Box padding" value={t.background_padding ?? 0} min={0} max={500} step={0.2} digits={0} suffix=" px" oninput={(v) => set((s) => (s.background_padding = v))} oncommit={commit} />
+    {/if}
+
+    <span class="lbl" class:off={solid} title="Bring the text in piece by piece: letters, words or lines one after another (not for 3D text)">Animate</span>
+    <select value={anim.kind} disabled={solid} aria-label="Text animation" onchange={(e) => { const k = e.currentTarget.value as AnimKind; once((s) => (s.anim = { ...ANIM_PRESETS[k], out: !!(s.anim as any)?.out })); }}>
+      {#each Object.entries(ANIM_LABELS) as [k, label]}<option value={k}>{label}</option>{/each}
+    </select>
+    {#if anim.kind !== "None" && !solid}
+      <span class="lbl sub" title="Time between one piece starting and the next">Stagger</span>
+      <NumberField label="Stagger" value={anim.stagger} min={0} max={5} step={0.002} digits={2} suffix=" s" oninput={(v) => set((s) => (s.anim = { ...anim, stagger: v }))} oncommit={commit} />
+      {#if anim.kind !== "Typewriter"}
+        <span class="lbl sub" title="How long each piece takes to come in">Each takes</span>
+        <NumberField label="Each piece takes" value={anim.length} min={0.01} max={10} step={0.005} digits={2} suffix=" s" oninput={(v) => set((s) => (s.anim = { ...anim, length: v }))} oncommit={commit} />
+      {/if}
+      <span class="lbl sub" title="Seconds into the clip before the first piece starts">Delay</span>
+      <NumberField label="Delay" value={anim.delay} min={0} max={60} step={0.005} digits={2} suffix=" s" oninput={(v) => set((s) => (s.anim = { ...anim, delay: v }))} oncommit={commit} />
+      <span></span>
+      <label class="check" title="At the end of the clip, the pieces go again in the same order, finishing as it ends"><input type="checkbox" checked={anim.out} onchange={(e) => once((s) => (s.anim = { ...anim, out: e.currentTarget.checked }))} /> Out at the end too</label>
     {/if}
 
     <span class="lbl">Place</span>

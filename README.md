@@ -426,7 +426,14 @@ What works now:
   colour) and a background box for lower thirds, plus one-click **Centre / Lower third / Top**
   placement. Titles are ordinary layers, so the transform, keyframes, effects, dissolves and
   blend modes all work on them; click the text in the Viewer to select and drag it. Titles are
-  purple on the timeline and can be any length
+  purple on the timeline and can be any length. **Animate** brings the text in piece by piece:
+  **Typewriter** (letters appear in turn), **Fade in letters**, **Fade in words**, **Slide up
+  lines** (each rising half an em into place as it fades in) or **Bounce in letters** (each
+  dropping in and bouncing to rest), with the time between pieces (**Stagger**), how long each
+  takes, a **Delay**, and **Out at the end too** (they leave in the same order, gone as the clip
+  ends). Pieces in the same state are drawn together, outline and shadow included, so a fading
+  letter keeps its edges; the box behind stays put. It's part of the title's style, so a title
+  preset carries it to other titles
 - **3D text** (**Timeline → Add 3D text**, or set **3D depth** on any title): the letters are
   extruded into solid 3D objects, as deep as **3D depth** (pixels), seen through the camera and
   lit by the scene's lights, or by a soft light from above left when there are none. **Sides**
@@ -813,7 +820,7 @@ What works now:
 
 Glow and drop shadow reach past the clip's own edges: a layer smaller than the frame (a
 logo, a picture-in-picture, a shrunken clip) casts its shadow and glows onto what's around it,
-except on sides cut by a crop. Not yet: animated text (per-letter reveals).
+except on sides cut by a crop.
 See the roadmap at the bottom.
 
 ## Layout
@@ -1605,7 +1612,8 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    screen replacement),
    corner pin, masks with Bézier curves and per-point feather, mask tracking for rotoscoping,
    GPU particles~~, titles and track management are done.
-   Still to come: animated text presets (3D layers, a camera and lights are in).
+   Animated text (typewriter, fading letters and words, sliding lines, bouncing letters), 3D
+   layers, a camera and lights are in.
 7. ~~**Performance**: proxy media, a frame cache, hardware decode, YUV frames converted on the
    GPU, render preview~~
    (zero-copy from the hardware decoder is in for Windows, D3D11VA to Direct3D 12, but is

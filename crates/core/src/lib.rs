@@ -41,7 +41,7 @@ pub use edit::{TrimMode, TrimPlan};
 pub use effects::{Effect, EffectCategory, EffectData, EffectKind, EffectValues, Param, ParamSpec, ParamUi};
 pub use project::*;
 pub use time::{FrameRate, Rational, Time};
-pub use title::{FontChoice, TextAlign, TitleSpec};
+pub use title::{FontChoice, GlyphState, TextAlign, TextAnim, TextAnimKind, TitleSpec};
 pub use transform::{Affine2, BlendMode, Transform};
 pub use transition::Transition;
 pub use undo::{Command, UndoStack};

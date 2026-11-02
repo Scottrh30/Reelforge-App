@@ -31,8 +31,9 @@ struct TitleCache {
 }
 
 /// Rasterise `spec` (or reuse the cached image) for clip `id`.
-fn title_frame(titles: &mut HashMap<ClipId, TitleCache>, id: ClipId, spec: &reelforge_core::TitleSpec, frame: [u32; 2]) -> VideoFrame {
-    let hash = spec.content_hash(frame);
+fn title_frame(titles: &mut HashMap<ClipId, TitleCache>, id: ClipId, spec: &reelforge_core::TitleSpec, frame: [u32; 2], at: (f32, f32)) -> VideoFrame {
+    // (A text animation's state at `at`: seconds into the clip, and its length.)
+    let hash = spec.content_hash_at(frame, at.0, at.1);
     let entry = titles.entry(id).or_insert_with(|| TitleCache {
         hash: hash ^ 1,
         frame: VideoFrame::from_rgba(Time::ZERO, 0, 0, Arc::from(Vec::new()), 0),
@@ -41,7 +42,7 @@ fn title_frame(titles: &mut HashMap<ClipId, TitleCache>, id: ClipId, spec: &reel
         last_used: Instant::now(),
     });
     if entry.hash != hash {
-        let r = reelforge_render::text::render_title(spec, frame);
+        let r = reelforge_render::text::render_title_at(spec, frame, at.0, at.1);
         entry.frame = VideoFrame::from_rgba(Time::ZERO, r.width, r.height, r.rgba, hash);
         (entry.hash, entry.bounds, entry.missing_font) = (hash, r.bounds, r.missing_font);
     }
@@ -450,7 +451,7 @@ impl FrameProvider for PreviewFrames<'_> {
     fn picture(&mut self, project: &Project, l: &Layer, frame_size: [u32; 2]) -> anyhow::Result<Option<Picture>> {
         if let Some(spec) = &l.clip.title {
             // Titles are drawn on a canvas the size of the frame, so 100% is their natural size.
-            let frame = title_frame(self.titles, l.clip.id, spec, frame_size);
+            let frame = title_frame(self.titles, l.clip.id, spec, frame_size, reelforge_export::title_clock(l));
             return Ok(Some(Picture { frame, size: [frame_size[0] as f32, frame_size[1] as f32], media: MediaId::GENERATED }));
         }
         let Some(media) = project.media(l.clip.media) else { return Ok(None) };

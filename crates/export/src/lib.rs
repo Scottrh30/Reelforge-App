@@ -275,6 +275,11 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
     out
 }
 
+/// For a title's text animation: seconds into its clip at layer `l`, and the clip's length.
+pub fn title_clock(l: &Layer) -> (f32, f32) {
+    ((l.source_time - l.clip.source_in).as_secs_f64().max(0.0) as f32, l.clip.duration.as_secs_f64() as f32)
+}
+
 /// Exact, full-size frames for export: one blocking decoder per clip, and titles.
 struct ExactFrames {
     sources: HashMap<ClipId, (FrameSource, u64)>,
@@ -287,14 +292,15 @@ impl FrameProvider for ExactFrames {
     fn picture(&mut self, project: &Project, l: &Layer, frame_size: [u32; 2]) -> Result<Option<Picture>> {
         let tick = self.tick;
         if let Some(spec) = &l.clip.title {
-            let hash = spec.content_hash(frame_size);
+            let at = title_clock(l);
+            let hash = spec.content_hash_at(frame_size, at.0, at.1);
             let frame = match self.titles.get_mut(&l.clip.id) {
                 Some((h, f, used)) if *h == hash => {
                     *used = tick;
                     f.clone()
                 }
                 _ => {
-                    let r = reelforge_render::text::render_title(spec, frame_size);
+                    let r = reelforge_render::text::render_title_at(spec, frame_size, at.0, at.1);
                     let f = VideoFrame::from_rgba(Time::ZERO, r.width, r.height, r.rgba, hash);
                     self.titles.insert(l.clip.id, (hash, f.clone(), tick));
                     f

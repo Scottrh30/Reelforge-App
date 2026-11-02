@@ -318,20 +318,101 @@ pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layou
 
 pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
     let (w, h) = (frame[0].max(1), frame[1].max(1));
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
     let (font, missing_font) = load_font(&spec.font);
-
-    // ---- Layout ----
     let lay = layout(spec, &font, [w, h]);
-    let text_box = lay.text_box;
-    let has_text = lay.glyphs.iter().any(|g| font.outline_glyph(g.clone()).is_some());
-    if !has_text && !spec.background {
+    draw(spec, &font, &lay.glyphs, lay.text_box, spec.background, [w, h], missing_font)
+}
+
+/// `spec` at `t` seconds into a clip `dur` long: with a text animation, its
+/// letters, words or lines each where and as visible as the animation has
+/// them then (the box behind stays put). Without one, [`render_title`].
+pub fn render_title_at(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32) -> RenderedTitle {
+    let Some(states) = spec.glyph_states(t, dur) else { return render_title(spec, frame) };
+    let (w, h) = (frame[0].max(1), frame[1].max(1));
+    let (font, missing_font) = load_font(&spec.font);
+    let lay = layout(spec, &font, [w, h]);
+    // Where the whole title is (for selecting it in the Viewer), as if settled.
+    let full = draw_bounds(spec, &font, &lay);
+    let mut out = if spec.background { draw(spec, &font, &[], lay.text_box, true, [w, h], missing_font).rgba.to_vec() } else { vec![0u8; (w * h * 4) as usize] };
+    // Glyphs in the same state are drawn together (outline, shadow and all),
+    // then laid over the canvas as one, so fading letters don't lose their
+    // edges to their neighbours'.
+    let q = |g: &reelforge_core::GlyphState| ((g.alpha * 255.0).round() as i32, (g.dy * spec.size * 8.0).round() as i32);
+    let mut groups: Vec<((i32, i32), Vec<usize>)> = Vec::new();
+    for (i, g) in states.iter().enumerate().take(lay.glyphs.len()) {
+        let k = q(g);
+        if k.0 <= 0 {
+            continue;
+        }
+        match groups.iter_mut().find(|(key, _)| *key == k) {
+            Some((_, v)) => v.push(i),
+            None => groups.push((k, vec![i])),
+        }
+    }
+    for ((alpha, dy8), idx) in groups {
+        let dy = dy8 as f32 / 8.0;
+        let glyphs: Vec<ab_glyph::Glyph> = idx
+            .iter()
+            .map(|&i| {
+                let mut g = lay.glyphs[i].clone();
+                g.position.y += dy;
+                g
+            })
+            .collect();
+        let b = lay.text_box;
+        let part = draw(spec, &font, &glyphs, [b[0], b[1] + dy, b[2], b[3] + dy], false, [w, h], missing_font);
+        let a = alpha as f32 / 255.0;
+        // "Over", straight alpha in sRGB (as the title is drawn).
+        for (o, p) in out.chunks_exact_mut(4).zip(part.rgba.chunks_exact(4)) {
+            let pa = p[3] as f32 / 255.0 * a;
+            if pa <= 0.0 {
+                continue;
+            }
+            let oa = o[3] as f32 / 255.0;
+            let ra = pa + oa * (1.0 - pa);
+            for k in 0..3 {
+                o[k] = ((p[k] as f32 * pa + o[k] as f32 * oa * (1.0 - pa)) / ra).round().clamp(0.0, 255.0) as u8;
+            }
+            o[3] = (ra * 255.0).round() as u8;
+        }
+    }
+    RenderedTitle { width: w, height: h, rgba: out.into(), bounds: full, missing_font }
+}
+
+/// Where a title's text (and box) is, settled, without drawing it.
+fn draw_bounds(spec: &TitleSpec, font: &FontArc, lay: &Layout) -> Option<[f32; 4]> {
+    let mut ink: Option<[f32; 4]> = None;
+    for g in &lay.glyphs {
+        if let Some(og) = font.outline_glyph(g.clone()) {
+            let b = og.px_bounds();
+            ink = Some(match ink {
+                None => [b.min.x, b.min.y, b.max.x, b.max.y],
+                Some(k) => [k[0].min(b.min.x), k[1].min(b.min.y), k[2].max(b.max.x), k[3].max(b.max.y)],
+            });
+        }
+    }
+    let o = spec.outline.max(0.0);
+    if spec.background {
+        let (t, i, p) = (lay.text_box, ink.unwrap_or(lay.text_box), spec.background_padding.max(0.0));
+        return Some([t[0].min(i[0]) - p - o, t[1] - p - o, t[2].max(i[2]) + p + o, t[3] + p + o]);
+    }
+    ink.map(|k| [k[0] - o, k[1] - o, k[2] + o, k[3] + o])
+}
+
+/// Draw `glyphs` (laid out in a block `text_box`) as `spec` styles them,
+/// with its box behind them when `background`, on a transparent canvas.
+fn draw(spec: &TitleSpec, font: &FontArc, glyphs: &[ab_glyph::Glyph], text_box: [f32; 4], background: bool, frame: [u32; 2], missing_font: bool) -> RenderedTitle {
+    let [w, h] = frame;
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    let font = font.clone();
+    let has_text = glyphs.iter().any(|g| font.outline_glyph(g.clone()).is_some());
+    if !has_text && !background {
         return RenderedTitle { width: w, height: h, rgba: rgba.into(), bounds: None, missing_font };
     }
 
     // Work only in the region the title can touch.
     let outline = spec.outline.max(0.0);
-    let pad = if spec.background { spec.background_padding.max(0.0) } else { 0.0 };
+    let pad = if background { spec.background_padding.max(0.0) } else { 0.0 };
     let (sdx, sdy) = if spec.shadow {
         let a = spec.shadow_angle.to_radians();
         (spec.shadow_distance * a.cos(), spec.shadow_distance * a.sin())
@@ -352,7 +433,7 @@ pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
     // ---- Fill coverage ----
     let mut fill = Plane::new(rx0, ry0, rw, rh);
     let mut ink: Option<[f32; 4]> = None; // tight bounds of the glyph pixels
-    for g in &lay.glyphs {
+    for g in glyphs {
         {
             let Some(og) = font.outline_glyph(g.clone()) else { continue };
             let b = og.px_bounds();
@@ -433,7 +514,7 @@ pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
             let i = y * rw + x;
             let (px, py) = (x as i32 + rx0, y as i32 + ry0);
             let mut acc = [0.0f32; 4];
-            if spec.background {
+            if background {
                 layer(&mut acc, spec.background_color, in_box(px as f32 + 0.5, py as f32 + 0.5));
             }
             if let Some(s) = &shadow {
@@ -453,7 +534,7 @@ pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
         }
     }
 
-    let bounds = if spec.background {
+    let bounds = if background {
         Some(box_rect)
     } else if has_text {
         Some([ink[0] - outline, ink[1] - outline, ink[2] + outline, ink[3] + outline])
@@ -474,6 +555,46 @@ mod tests {
 
     fn plain(text: &str) -> TitleSpec {
         TitleSpec { text: text.into(), size: 60.0, shadow: false, ..TitleSpec::default() }
+    }
+
+    /// Animated titles: letters show up in turn, fades are partial, sliding
+    /// lines start low, and once settled it's the same picture as without.
+    #[test]
+    fn animated_titles_draw_each_piece_in_its_state() {
+        use reelforge_core::{TextAnim, TextAnimKind};
+        let alpha_in = |r: &RenderedTitle, x0: u32, x1: u32| (0..r.height).flat_map(|y| (x0..x1).map(move |x| (x, y))).map(|(x, y)| px(r, x, y)[3] as u32).max().unwrap_or(0);
+        let mut s = plain("HHHH");
+        s.anim = TextAnim::preset(TextAnimKind::Typewriter);
+        let settled = render_title(&s, [400, 200]);
+        let b = settled.bounds.unwrap();
+        let (l, r) = (b[0] as u32, b[2] as u32);
+        let quarter = (r - l) / 4;
+        // Typing: at 0.07 s two letters are there, the last two not yet.
+        let early = render_title_at(&s, [400, 200], 0.07, 5.0);
+        assert!(alpha_in(&early, l, l + quarter) > 200);
+        assert_eq!(alpha_in(&early, r - quarter + 2, r), 0);
+        assert_eq!(early.bounds, settled.bounds, "selected by where the whole title will be");
+        // Settled: the same as a still title (box and shadow too).
+        let mut full = s.clone();
+        (full.background, full.shadow) = (true, true);
+        let a = render_title(&full, [400, 200]);
+        let z = render_title_at(&full, [400, 200], 4.0, 5.0);
+        let diff = a.rgba.iter().zip(z.rgba.iter()).map(|(p, q)| (*p as i32 - *q as i32).abs()).max().unwrap();
+        assert!(diff <= 2, "{diff}");
+        // Fading words: one word halfway in is about half as opaque.
+        let mut f = plain("HH HH");
+        f.anim = TextAnim { kind: TextAnimKind::FadeWords, stagger: 1.0, length: 1.0, delay: 0.0, out: false };
+        let half = render_title_at(&f, [400, 200], 0.5, 5.0);
+        let b = render_title(&f, [400, 200]).bounds.unwrap();
+        let a0 = alpha_in(&half, b[0] as u32, b[0] as u32 + 20);
+        assert!((100..160).contains(&a0), "{a0}");
+        assert_eq!(alpha_in(&half, b[2] as u32 - 20, b[2] as u32), 0);
+        // Sliding lines: lower than where they settle.
+        let mut sl = plain("H");
+        sl.anim = TextAnim { kind: TextAnimKind::SlideLines, stagger: 0.0, length: 1.0, delay: 0.0, out: false };
+        let mid = render_title_at(&sl, [200, 200], 0.3, 5.0);
+        let top_row = |r: &RenderedTitle| (0..r.height).find(|&y| (0..r.width).any(|x| px(r, x, y)[3] > 20)).unwrap();
+        assert!(top_row(&mid) > top_row(&render_title(&sl, [200, 200])) + 5);
     }
 
     #[test]
