@@ -913,10 +913,14 @@ fn tracker_smooth(id: u64, frames: f32) -> Res<()> {
     })
 }
 
+/// The most frames a correction is eased into on each side.
+const MAX_BLEND: usize = 120;
+
 /// Move tracker point `point` to `pos` (layer pixels) at the playhead: on a
-/// tracked frame this corrects the track; elsewhere it's where tracking starts.
+/// tracked frame this corrects the track (eased into `blend` tracked frames
+/// on each side); elsewhere it's where tracking starts.
 #[tauri::command]
-fn tracker_move(id: u64, point: usize, pos: [f32; 2]) -> Res<()> {
+fn tracker_move(id: u64, point: usize, pos: [f32; 2], blend: Option<usize>) -> Res<()> {
     ed(|e| {
         if e.tracking.is_some() {
             return;
@@ -933,7 +937,7 @@ fn tracker_move(id: u64, point: usize, pos: [f32; 2]) -> Res<()> {
             t.move_mesh_corner(point, pos, src);
         } else {
             let Some(p) = t.points.get_mut(point) else { return };
-            p.move_to(src, pos);
+            p.move_blended(src, pos, blend.unwrap_or(0).min(MAX_BLEND));
         }
         e.set_tracker_live(clip(id), Some(t));
     })
@@ -944,7 +948,7 @@ fn tracker_move(id: u64, point: usize, pos: [f32; 2]) -> Res<()> {
 /// layer pixels) at the playhead, as for `tracker_move`, but a corner moves
 /// on its own here (the rest of the grid isn't carried along).
 #[tauri::command]
-fn tracker_move_many(id: u64, moves: Vec<(usize, [f32; 2])>) -> Res<()> {
+fn tracker_move_many(id: u64, moves: Vec<(usize, [f32; 2])>, blend: Option<usize>) -> Res<()> {
     ed(|e| {
         if e.tracking.is_some() {
             return;
@@ -954,7 +958,7 @@ fn tracker_move_many(id: u64, moves: Vec<(usize, [f32; 2])>) -> Res<()> {
         for (i, pos) in moves {
             let pos = [pos[0].clamp(-w, 2.0 * w), pos[1].clamp(-h, 2.0 * h)];
             if let Some(p) = t.points.get_mut(i) {
-                p.move_to(src, pos);
+                p.move_blended(src, pos, blend.unwrap_or(0).min(MAX_BLEND));
             }
         }
         e.set_tracker_live(clip(id), Some(t));

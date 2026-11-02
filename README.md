@@ -713,6 +713,9 @@ What works now:
   fine: raise **Search** and big areas are searched coarse-to-fine, starting where the last
   movement predicts. If a point is lost (blocked, out of frame) tracking stops and says which;
   go there, drag it back onto its detail (that corrects the track at that frame) and track on.
+  **Blend fixes** (frames) eases such a correction into that many tracked frames on each side,
+  fading out (a raised cosine), so the path doesn't jump at the corrected frame; it works for
+  every kind of track, mesh points included (and with a group of them picked).
   **Smooth track** (frames) takes the jitter out of the tracked paths without tracking again:
   the Viewer draws the smoothed paths solid and the raw ones faint and dotted, and everything you
   apply the track to (layers, masks, blades, stabilising) uses the smoothed paths. The tracked

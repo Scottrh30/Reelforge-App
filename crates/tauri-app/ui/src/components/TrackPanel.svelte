@@ -38,6 +38,12 @@
     Planar: "A whole flat surface, in perspective",
     Mesh: "A surface that bends",
   };
+  function setBlend(v: number) {
+    app.trackBlend = Math.max(0, Math.min(120, Math.round(v)));
+    try {
+      localStorage.setItem("reelforge.trackBlend", String(app.trackBlend));
+    } catch {}
+  }
   function setFalloff(v: number) {
     app.meshFalloff = Math.max(0, Math.min(16, Math.round(v * 10) / 10));
     try {
@@ -231,6 +237,10 @@
             <div class="ctl">
               <NumberField label="Smooth track" value={smoothDraft ?? t.smooth} min={0} max={30} step={0.05} digits={1} suffix=" frames" oninput={smoothTo} oncommit={smoothDone} />
               {#if t.smooth > 0}<button class="ghost tiny" onclick={() => { smoothTo(0); smoothDone(); }} title="No smoothing" aria-label="No smoothing">↺</button>{/if}
+            </div>
+            <span class="lbl" title="Dragging a point on a tracked frame corrects it there; this eases the correction into this many tracked frames on each side (fading out), so the path doesn't jump at that frame. 0: that frame only">Blend fixes</span>
+            <div class="ctl">
+              <NumberField label="Blend fixes" value={app.trackBlend} min={0} max={120} step={0.1} digits={0} suffix=" frames" oninput={setBlend} oncommit={() => {}} />
             </div>
           </div>
           {#if t.smooth > 0}<p class="note">The solid lines in the Viewer are the smoothed paths; the faint dotted ones are as tracked. Apply the track again to use the new smoothing.</p>{/if}

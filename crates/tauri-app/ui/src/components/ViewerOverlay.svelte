@@ -290,9 +290,9 @@
       const [dx, dy] = [now[0] - start[0], now[1] - start[1]];
       if (many) {
         const moves: [number, Pt][] = weights.flatMap((w, k) => (w > 0 ? [[k, [from[k][0] + dx * w, from[k][1] + dy * w] as Pt] as [number, Pt]] : []));
-        pump.push(() => api.trackerMoveMany(id, moves));
+        pump.push(() => api.trackerMoveMany(id, moves, app.trackBlend));
       } else {
-        pump.push(() => api.trackerMove(id, i, [from[i][0] + dx, from[i][1] + dy]));
+        pump.push(() => api.trackerMove(id, i, [from[i][0] + dx, from[i][1] + dy], app.trackBlend));
       }
     };
     const up = async () => {

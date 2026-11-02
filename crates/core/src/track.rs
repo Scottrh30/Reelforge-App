@@ -103,6 +103,28 @@ impl PointTrack {
         }
     }
 
+    /// [`Self::move_to`], with a correction on the tracked path eased into
+    /// the `span` tracked frames on each side (fully at `t`, fading to
+    /// nothing past `span`), so the path doesn't jump at that frame.
+    pub fn move_blended(&mut self, t: Time, pos: [f32; 2], span: usize) {
+        if span == 0 || !self.covers(t) {
+            return self.move_to(t, pos);
+        }
+        let before = self.pos_at(t).unwrap_or(pos);
+        self.move_to(t, pos);
+        let Some(i) = self.path.iter().position(|s| s.at == t) else { return };
+        let d = [pos[0] - before[0], pos[1] - before[1]];
+        for k in 1..=span {
+            // Raised cosine: 1 at the frame itself, 0 at span + 1 away.
+            let w = 0.5 * (1.0 + (std::f32::consts::PI * k as f32 / (span + 1) as f32).cos());
+            for j in [i.checked_sub(k), Some(i + k)].into_iter().flatten() {
+                if let Some(s) = self.path.get_mut(j) {
+                    s.pos = [s.pos[0] + d[0] * w, s.pos[1] + d[1] * w];
+                }
+            }
+        }
+    }
+
     /// Put new samples in, replacing any old ones in the time they cover.
     pub fn merge(&mut self, mut samples: Vec<TrackSample>) {
         if samples.is_empty() {
@@ -1520,6 +1542,34 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn corrections_ease_into_the_frames_around() {
+        let f = |k: i64| Time(k * 1000);
+        let mut p = PointTrack { path: (0..10).map(|k| TrackSample { at: f(k), pos: [k as f32 * 10.0, 0.0], score: 1.0 }).collect(), ..Default::default() };
+        // 3 frames each side: frame 5 moves 8 px down, its neighbours less and less.
+        p.move_blended(f(5), [50.0, 8.0], 3);
+        let ys: Vec<f32> = p.path.iter().map(|s| s.pos[1]).collect();
+        assert_eq!(ys[5], 8.0);
+        assert!((ys[4] - 8.0 * 0.853_553).abs() < 1e-3 && (ys[6] - ys[4]).abs() < 1e-6, "{ys:?}");
+        assert!((ys[3] - 4.0).abs() < 1e-3 && (ys[2] - 8.0 * 0.146_447).abs() < 1e-3, "{ys:?}");
+        assert_eq!((ys[1], ys[9]), (0.0, 0.0));
+        // x untouched (the move was straight down).
+        assert!(p.path.iter().enumerate().all(|(k, s)| s.pos[0] == k as f32 * 10.0));
+        // Dragged on in small steps (as a drag sends them), the same result.
+        let mut q = PointTrack { path: (0..10).map(|k| TrackSample { at: f(k), pos: [k as f32 * 10.0, 0.0], score: 1.0 }).collect(), ..Default::default() };
+        for y in [2.0, 5.0, 8.0] {
+            q.move_blended(f(5), [50.0, y], 3);
+        }
+        for (a, b) in p.path.iter().zip(&q.path) {
+            assert!((a.pos[1] - b.pos[1]).abs() < 1e-4);
+        }
+        // Span 0, or off the path: as `move_to`.
+        q.move_blended(f(5), [50.0, 0.0], 0);
+        assert_eq!(q.path[4].pos[1], p.path[4].pos[1]);
+        q.move_blended(f(20), [1.0, 2.0], 3);
+        assert_eq!((q.point, q.start), ([1.0, 2.0], f(20)));
+    }
 
     #[test]
     fn moving_a_mesh_corner_keeps_the_grids_shape() {

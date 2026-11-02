@@ -59,6 +59,14 @@ export const app = $state({
   activeMask: null as null | { clip: number; index: number },
   /// Mesh tracker points picked in the Viewer (Shift+click, Shift+drag a box), to move together.
   meshSel: null as null | { clip: number; points: number[] },
+  /// A correction to a tracked frame eases into this many tracked frames on each side (0: that frame only).
+  trackBlend: (() => {
+    try {
+      return Math.max(0, Math.round(Number(localStorage.getItem("reelforge.trackBlend") ?? 0) || 0));
+    } catch {
+      return 0;
+    }
+  })(),
   /// How far (in cells) points around a dragged mesh point follow it, fading out; 0: none.
   meshFalloff: (() => {
     try {
