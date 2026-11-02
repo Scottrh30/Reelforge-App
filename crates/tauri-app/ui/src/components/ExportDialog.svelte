@@ -383,7 +383,7 @@
           {/if}
 
           <span class="lbl">Encoder</span>
-          <label class="check" class:off={!codec.hardware} title={codec.hardware ? "Much faster, slightly bigger files at the same quality. If no GPU encoder works, the software one is used." : "Only H.264 and H.265 have GPU encoders"}>
+          <label class="check" class:off={!codec.hardware} title={codec.hardware ? "Much faster, slightly bigger files at the same quality. 10-bit and HDR work too on H.265 (Main 10, with HDR10's metadata), where the card can. If no GPU encoder works, the software one is used." : "Only H.264 and H.265 have GPU encoders"}>
             <input type="checkbox" checked={spec.hardware && codec.hardware} disabled={!codec.hardware} onchange={(e) => (spec!.hardware = e.currentTarget.checked)} />
             Use the graphics card (NVENC / Quick Sync / AMF)
           </label>

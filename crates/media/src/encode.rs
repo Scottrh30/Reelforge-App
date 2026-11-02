@@ -537,6 +537,8 @@ struct VideoOut {
     color: ColorOut,
     /// The alpha channel is written (letterbox bars are then transparent).
     alpha: bool,
+    /// Each frame carries the HDR10 metadata (for encoders that write it from there).
+    hdr10_frames: bool,
 }
 
 struct AudioOut {
@@ -605,6 +607,9 @@ impl MovieWriter {
                     st.set_avg_frame_rate(fps);
                     st.index()
                 };
+                if s.effective_color() == ColorOut::HdrPq {
+                    add_stream_hdr10(&mut octx, stream);
+                }
                 let pix = encoder.format();
                 let yuv = !is_rgb(pix);
                 let range = if pix == ff::format::Pixel::YUVJ420P { Range::JPEG } else { Range::MPEG };
@@ -619,7 +624,9 @@ impl MovieWriter {
                     crate::color::configure(&mut scaler, if color.is_hdr() { Space::BT2020NCL } else { Space::BT709 }, range, false);
                 }
                 let time_base = encoder.time_base();
-                Some(VideoOut { encoder, stream, time_base, scaler, in_size: (iw, ih), pad, frame: ff::frame::Video::new(pix, w, h), next_pts: 0, range, yuv, deep, color, alpha: s.keeps_alpha() })
+                // x265 writes HDR10's SEI from its own settings; other encoders from the frames.
+                let hdr10_frames = color == ColorOut::HdrPq && video_codec != "libx265";
+                Some(VideoOut { encoder, stream, time_base, scaler, in_size: (iw, ih), pad, frame: ff::frame::Video::new(pix, w, h), next_pts: 0, range, yuv, deep, color, alpha: s.keeps_alpha(), hdr10_frames })
             }
             None => None,
         };
@@ -727,6 +734,9 @@ impl MovieWriter {
             v.frame.set_color_range(v.range);
             v.frame.set_color_primaries(primaries);
             v.frame.set_color_transfer_characteristic(trc);
+        }
+        if v.hdr10_frames {
+            add_frame_hdr10(&mut v.frame);
         }
         v.next_pts += 1;
         v.encoder.send_frame(&v.frame)?;
@@ -876,6 +886,99 @@ impl Drop for MovieWriter {
                 let _ = std::fs::remove_file(&self.path);
             }
         }
+    }
+}
+
+// ---- HDR10 metadata -------------------------------------------------------------
+
+/// libavutil's `AVMasteringDisplayMetadata` (SMPTE ST 2086), not in the
+/// generated bindings: chromaticities and luminances as rationals.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MasteringDisplay {
+    /// R, G, B, each (x, y).
+    display_primaries: [[ff::ffi::AVRational; 2]; 3],
+    white_point: [ff::ffi::AVRational; 2],
+    min_luminance: ff::ffi::AVRational,
+    max_luminance: ff::ffi::AVRational,
+    has_primaries: i32,
+    has_luminance: i32,
+}
+
+/// libavutil's `AVContentLightMetadata` (CTA-861.3): MaxCLL and MaxFALL, nits.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ContentLight {
+    max_cll: u32,
+    max_fall: u32,
+}
+
+/// The HDR10 metadata exports carry (the same as given to x265): mastered on
+/// a P3-D65 display of 0.0001–1000 nits, brightest pixel 1000, brightest
+/// frame on average 400.
+fn hdr10_metadata() -> (MasteringDisplay, ContentLight) {
+    let q = |n: i32, d: i32| ff::ffi::AVRational { num: n, den: d };
+    let c = |v: i32| q(v, 50_000);
+    let md = MasteringDisplay {
+        display_primaries: [[c(34_000), c(16_000)], [c(13_250), c(34_500)], [c(7_500), c(3_000)]],
+        white_point: [c(15_635), c(16_450)],
+        min_luminance: q(1, 10_000),
+        max_luminance: q(1_000, 1),
+        has_primaries: 1,
+        has_luminance: 1,
+    };
+    (md, ContentLight { max_cll: 1_000, max_fall: 400 })
+}
+
+fn bytes_of<T: Copy>(v: &T) -> &[u8] {
+    // SAFETY: a plain-old-data `repr(C)` value, read as its bytes.
+    unsafe { std::slice::from_raw_parts(v as *const T as *const u8, std::mem::size_of::<T>()) }
+}
+
+/// Put the HDR10 metadata on stream `index` of `octx` (so MP4 and MOV carry
+/// it in `mdcv`/`clli` boxes, whatever the encoder).
+fn add_stream_hdr10(octx: &mut ff::format::context::Output, index: usize) {
+    let (md, cl) = hdr10_metadata();
+    // SAFETY: the stream exists; its codec parameters are valid and owned by the context.
+    unsafe {
+        let st = *(*octx.as_mut_ptr()).streams.add(index);
+        let par = (*st).codecpar;
+        use ff::ffi::AVPacketSideDataType as T;
+        for (kind, data) in [(T::AV_PKT_DATA_MASTERING_DISPLAY_METADATA, bytes_of(&md)), (T::AV_PKT_DATA_CONTENT_LIGHT_LEVEL, bytes_of(&cl))] {
+            let sd = ff::ffi::av_packet_side_data_new(&mut (*par).coded_side_data, &mut (*par).nb_coded_side_data, kind, data.len(), 0);
+            if !sd.is_null() {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), (*sd).data, data.len());
+            }
+        }
+    }
+}
+
+/// Put the HDR10 metadata on `frame`, for encoders that write it into the
+/// bitstream from there (hardware HEVC encoders: as SEI messages players read).
+fn add_frame_hdr10(frame: &mut ff::frame::Video) {
+    let (md, cl) = hdr10_metadata();
+    use ff::ffi::AVFrameSideDataType as T;
+    for (kind, data) in [(T::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA, bytes_of(&md)), (T::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL, bytes_of(&cl))] {
+        // SAFETY: a valid frame; the new side data is `data.len()` bytes.
+        unsafe {
+            ff::ffi::av_frame_remove_side_data(frame.as_mut_ptr(), kind);
+            let sd = ff::ffi::av_frame_new_side_data(frame.as_mut_ptr(), kind, data.len());
+            if !sd.is_null() {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), (*sd).data, data.len());
+            }
+        }
+    }
+}
+
+/// Options a hardware HEVC encoder needs for `color`: the Main 10 profile
+/// for 10-bit (most pick 8-bit Main otherwise, or refuse P010).
+fn hardware_hevc_options(name: &str, color: ColorOut) -> Vec<(&'static str, &'static str)> {
+    if !color.ten_bit() || !name.starts_with("hevc_") {
+        return Vec::new();
+    }
+    match name {
+        "hevc_nvenc" | "hevc_qsv" | "hevc_amf" | "hevc_videotoolbox" | "hevc_vaapi" => vec![("profile", "main10")],
+        _ => Vec::new(),
     }
 }
 
@@ -1050,6 +1153,9 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
         }
         if kind == VideoCodec::H265 && name != "libx265" {
             opts.set("tag", "hvc1"); // so Apple players accept the MP4
+            for (k, v) in hardware_hevc_options(name, color) {
+                opts.set(k, v);
+            }
         }
         if let Some(kbps) = target {
             // Average `kbps`, peaks to 1.5×.
@@ -1158,3 +1264,44 @@ mod fit_tests {
         assert_eq!((cr.w, cr.h, cr.x, cr.y), (640, 360, 0, -60));
     }
 }
+
+#[cfg(test)]
+mod hdr_tests {
+    use super::*;
+
+    #[test]
+    fn hdr10_metadata_matches_libavutil_and_x265() {
+        // The C structs' sizes (6 + 2 + 2 rationals and two ints; two unsigned).
+        assert_eq!(std::mem::size_of::<MasteringDisplay>(), 88);
+        assert_eq!(std::mem::size_of::<ContentLight>(), 8);
+        let (md, cl) = hdr10_metadata();
+        // What x265 is given: G(13250,34500) B(7500,3000) R(34000,16000) WP(15635,16450) L(10000000,1).
+        let v = |r: ff::ffi::AVRational| r.num as f64 / r.den as f64;
+        assert_eq!((v(md.display_primaries[0][0]), v(md.display_primaries[1][1]), v(md.display_primaries[2][0])), (0.68, 0.69, 0.15));
+        assert_eq!((v(md.white_point[0]), v(md.white_point[1])), (0.3127, 0.329));
+        assert_eq!((v(md.max_luminance), v(md.min_luminance)), (1000.0, 0.0001));
+        assert_eq!((cl.max_cll, cl.max_fall), (1000, 400));
+        // On a frame, readable back.
+        let mut f = ff::frame::Video::new(ff::format::Pixel::P010LE, 16, 16);
+        add_frame_hdr10(&mut f);
+        add_frame_hdr10(&mut f); // again: replaced, not doubled
+        unsafe {
+            let sd = ff::ffi::av_frame_get_side_data(f.as_ptr(), ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+            assert!(!sd.is_null());
+            let back = *((*sd).data as *const ContentLight);
+            assert_eq!((back.max_cll, back.max_fall), (1000, 400));
+            assert_eq!((*f.as_ptr()).nb_side_data, 2);
+        }
+    }
+
+    #[test]
+    fn hardware_hevc_gets_main10_for_ten_bit_only() {
+        assert_eq!(hardware_hevc_options("hevc_nvenc", ColorOut::HdrPq), vec![("profile", "main10")]);
+        assert_eq!(hardware_hevc_options("hevc_qsv", ColorOut::Sdr10), vec![("profile", "main10")]);
+        assert_eq!(hardware_hevc_options("hevc_amf", ColorOut::HdrHlg), vec![("profile", "main10")]);
+        assert!(hardware_hevc_options("hevc_nvenc", ColorOut::Sdr8).is_empty());
+        assert!(hardware_hevc_options("h264_nvenc", ColorOut::HdrPq).is_empty());
+        assert!(hardware_hevc_options("hevc_mf", ColorOut::HdrPq).is_empty(), "Media Foundation takes no profile option");
+    }
+}
+

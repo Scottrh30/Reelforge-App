@@ -931,6 +931,21 @@ fn exports_10_bit_sdr_and_hdr_with_the_right_curves_and_tags() {
         if color.is_hdr() {
             assert!(info.contains("color_primaries=bt2020"), "{color:?}: {info}");
         }
+        // HDR10 carries its mastering display and light levels in the file
+        // itself (MP4 mdcv/clli), whichever encoder made it.
+        let side = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "default=nw=1"])
+            .arg(&out)
+            .output()
+            .unwrap();
+        let side = String::from_utf8_lossy(&side.stdout).into_owned();
+        if color == ColorOut::HdrPq {
+            assert!(side.contains("side_data_type=Mastering display metadata"), "{side}");
+            assert!(side.contains("max_luminance=1000/1") || side.contains("max_luminance=10000000/10000"), "{side}");
+            assert!(side.contains("side_data_type=Content light level metadata") && side.contains("max_content=1000") && side.contains("max_average=400"), "{side}");
+        } else {
+            assert!(!side.contains("Mastering display"), "{color:?}: {side}");
+        }
         let y = centre_luma_10bit(&out, 320, 180) as i32;
         assert!((y - want).abs() <= 6, "{color:?}: white is {y}, want {want}");
     }

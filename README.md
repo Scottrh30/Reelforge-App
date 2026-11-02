@@ -126,7 +126,10 @@ What works now:
     vignettes), **HDR10 (PQ)** or **HDR (HLG)**, both 10-bit BT.2020. For HDR, white in the edit
     becomes 203 nits (PQ) or 75% signal (HLG), the ITU-R BT.2408 reference, and anything the
     edit pushes brighter than white (glow, exposure) keeps its extra brightness instead of
-    clipping. HDR10 files carry mastering metadata. **HDR footage** (HDR10/PQ or HLG, tagged in
+    clipping. HDR10 files carry mastering metadata, in the stream (SEI) and in the MP4/MOV
+    itself (`mdcv`/`clli` boxes), with the GPU encoders too: they get the Main 10 profile for
+    10-bit and HDR (NVENC, Quick Sync, AMF, VideoToolbox, VA-API), the colour tags, and the HDR10
+    metadata on every frame to write as SEI. **HDR footage** (HDR10/PQ or HLG, tagged in
     the file; an **HDR** badge in the Media panel) comes in as HDR: its signal is turned into
     light the same way (203 nits or 75% signal is white, BT.2020 brought into the edit's BT.709),
     so its highlights stay above white through effects and grading, and an HDR export of an
@@ -1585,7 +1588,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 4. ~~Export: H.264/H.265/ProRes/DNxHR/image sequences/WAV, presets including vertical video,
    fit/fill/stretch, GPU encoders, an in/out range, an export queue, 10-bit/HDR10/HLG HEVC,
    target bitrates, your own presets~~
-   (HDR footage in, PQ and HLG; still to add: 10-bit/HDR for GPU encoders' metadata)
+   (HDR footage in, PQ and HLG; 10-bit and HDR from the GPU encoders, with HDR10 metadata)
 5. ~~**Effects**: the effect stack, keyframable parameters, colour correction, levels, curves,
    LUTs, blur, sharpen, chroma key, glow, drop shadow, vignette, an effects browser;
    dissolve, dip, wipe, iris, slide and push transitions~~
