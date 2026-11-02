@@ -790,3 +790,115 @@ fn neon_tube(uv: vec2<f32>) -> vec4<f32> {
 fn fs_neon_edge(in: VsOut) -> @location(0) vec4<f32> {
     return neon_tube(in.uv);
 }
+
+// Halftone: p0 = (style, cell px, angle °, shape), p1 = (contrast %, ink, paper, mix %).
+// Style 0 = black & white (ink on paper), 1 = CMYK print (four screens at
+// their own angles), 2 = colour dots (each dot the picture's colour).
+// Shape 0 = round dots, 1 = square dots, 2 = lines.
+fn ht_rgb(v: f32) -> vec3<f32> {
+    let c = u32(clamp(round(v), 0.0, 16777215.0));
+    return vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0;
+}
+
+fn ht_rot(p: vec2<f32>, a: f32) -> vec2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+/// The cell centre (layer px) of the screen at angle `a` that pixel `p` is in.
+fn ht_centre(p: vec2<f32>, cell: f32, a: f32) -> vec2<f32> {
+    let q = ht_rot(p, a) / cell;
+    return ht_rot((floor(q) + 0.5) * cell, -a);
+}
+
+/// How much of pixel `p` a dot of ink amount `v` (0..1) covers.
+fn ht_cover(v: f32, p: vec2<f32>, cell: f32, a: f32, shape: f32) -> f32 {
+    if (v <= 0.002) {
+        return 0.0;
+    }
+    let f = fract(ht_rot(p, a) / cell) - 0.5;
+    let aa = 0.75 / cell;
+    var d: f32;
+    var r: f32;
+    if (shape < 0.5) {
+        // A circle's area is the ink amount until the dots touch (at 78.5 %),
+        // then they grow into the corners.
+        d = length(f);
+        r = select(mix(0.5, 0.7072, (v - 0.7854) / 0.2146), sqrt(v / 3.14159), v <= 0.7854);
+    } else if (shape < 1.5) {
+        d = max(abs(f.x), abs(f.y));
+        r = 0.5 * sqrt(v);
+    } else {
+        d = abs(f.y);
+        r = 0.5 * v;
+    }
+    return 1.0 - smoothstep(r - aa, r + aa, d);
+}
+
+/// The layer's straight display colour at layer px `p` (and its alpha).
+fn ht_at(p: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
+    let c = textureSampleLevel(src, src_sampler, to_tex(clamp(p / size, vec2(0.0), vec2(1.0))), 0.0);
+    if (c.a <= 1e-4) {
+        return vec4(0.0);
+    }
+    return vec4(to_display(c.rgb / c.a), c.a);
+}
+
+fn ht_contrast(v: f32) -> f32 {
+    return clamp((v - 0.5) * fx.p1.x / 100.0 + 0.5, 0.0, 1.0);
+}
+
+@fragment
+fn fs_halftone(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    if (c.a <= 1e-5) {
+        return c;
+    }
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let cell = max(fx.p0.y, 1.0);
+    let a = radians(fx.p0.z);
+    let shape = fx.p0.w;
+    let ink = ht_rgb(fx.p1.y);
+    let paper = ht_rgb(fx.p1.z);
+    var out: vec3<f32>;
+    if (fx.p0.x < 0.5) {
+        let s = ht_at(ht_centre(p, cell, a), size);
+        let v = ht_contrast(1.0 - dot(s.rgb, LUMA)) * s.a;
+        out = mix(paper, ink, ht_cover(v, p, cell, a, shape));
+    } else if (fx.p0.x < 1.5) {
+        // Four screens: cyan, magenta and yellow 30° apart around black (at the angle).
+        let ac = a - radians(30.0);
+        let am = a + radians(30.0);
+        let ay = a - radians(45.0);
+        let sc = ht_at(ht_centre(p, cell, ac), size);
+        let sm = ht_at(ht_centre(p, cell, am), size);
+        let sy = ht_at(ht_centre(p, cell, ay), size);
+        let sk = ht_at(ht_centre(p, cell, a), size);
+        let cmy = vec3(1.0 - sc.r, 1.0 - sm.g, 1.0 - sy.b);
+        let k = ht_contrast(min(min(1.0 - sk.r, 1.0 - sk.g), 1.0 - sk.b)) * sk.a;
+        // Full under-colour removal: the black screen carries the grey.
+        let kc = min(min(1.0 - sc.r, 1.0 - sc.g), 1.0 - sc.b);
+        let km = min(min(1.0 - sm.r, 1.0 - sm.g), 1.0 - sm.b);
+        let ky = min(min(1.0 - sy.r, 1.0 - sy.g), 1.0 - sy.b);
+        let vc = ht_contrast(clamp((cmy.x - kc) / max(1.0 - kc, 1e-3), 0.0, 1.0)) * sc.a;
+        let vm = ht_contrast(clamp((cmy.y - km) / max(1.0 - km, 1e-3), 0.0, 1.0)) * sm.a;
+        let vy = ht_contrast(clamp((cmy.z - ky) / max(1.0 - ky, 1e-3), 0.0, 1.0)) * sy.a;
+        out = paper;
+        out *= mix(vec3(1.0), vec3(0.0, 0.68, 0.94), ht_cover(vc, p, cell, ac, shape));
+        out *= mix(vec3(1.0), vec3(0.93, 0.0, 0.55), ht_cover(vm, p, cell, am, shape));
+        out *= mix(vec3(1.0), vec3(1.0, 0.94, 0.0), ht_cover(vy, p, cell, ay, shape));
+        out *= mix(vec3(1.0), ink, ht_cover(k, p, cell, a, shape));
+    } else {
+        // Dots of the picture's own colour (a little richer), as big as it is dark.
+        let s = ht_at(ht_centre(p, cell, a), size);
+        let l = dot(s.rgb, LUMA);
+        let v = ht_contrast(0.25 + 0.75 * (1.0 - l)) * s.a;
+        let rich = clamp(mix(vec3(l), s.rgb, 1.35), vec3(0.0), vec3(1.0));
+        out = mix(paper, rich, ht_cover(v, p, cell, a, shape));
+    }
+    let orig = to_display(c.rgb / c.a);
+    let d = mix(orig, out, fx.p1.w / 100.0);
+    return vec4(to_linear(max(d, vec3(0.0))) * c.a, c.a);
+}

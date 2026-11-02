@@ -71,6 +71,9 @@ pub enum EffectKind {
     /// Glowing neon tubes traced along the layer's edges (its shape, or the
     /// edges in the picture), with a hot core, a glow and an optional flicker.
     NeonEdges,
+    /// A print look: the picture as a screen of dots (or lines), in black and
+    /// white, four-colour CMYK or dots of the picture's own colour.
+    Halftone,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -536,6 +539,21 @@ pub mod neon {
     /// Where the edges come from (the Edges menu).
     pub const SOURCES: [&str; 2] = ["Shape (transparency)", "Picture (brightness)"];
 }
+/// Halftone parameter indices.
+pub mod halftone {
+    pub const STYLE: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const ANGLE: usize = 2;
+    pub const SHAPE: usize = 3;
+    pub const CONTRAST: usize = 4;
+    pub const INK: usize = 5;
+    pub const PAPER: usize = 6;
+    pub const MIX: usize = 7;
+    /// The Style menu.
+    pub const STYLES: [&str; 3] = ["Black & white", "CMYK print", "Colour dots"];
+    /// The Shape menu.
+    pub const SHAPES: [&str; 3] = ["Round dots", "Square dots", "Lines"];
+}
 pub mod glitch {
     pub const AMOUNT: usize = 0;
     pub const BLOCK: usize = 1;
@@ -601,6 +619,16 @@ const NEON: [ParamSpec; 10] = [
     spec("Flicker", 0.0, 0.0, 100.0, " %", 0.5),
     spec("Flicker speed", 6.0, 0.0, 60.0, " Hz", 0.1),
 ];
+const HALFTONE: [ParamSpec; 8] = [
+    choice("Style", &halftone::STYLES),
+    spec("Dot size", 10.0, 2.0, 200.0, " px", 0.1),
+    spec("Angle", 45.0, -90.0, 90.0, "°", 0.25),
+    choice("Shape", &halftone::SHAPES),
+    spec("Contrast", 100.0, 0.0, 400.0, " %", 0.5),
+    color("Ink", 0x161616),
+    color("Paper", 0xf6f1e6),
+    spec("Mix", 100.0, 0.0, 100.0, " %", 0.5),
+];
 const GLITCH: [ParamSpec; 7] = [
     spec("Amount", 40.0, 0.0, 100.0, " %", 0.5),
     spec("Block size", 40.0, 2.0, 1000.0, " px", 0.5),
@@ -627,7 +655,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 21] = [
+    pub const ALL: [EffectKind; 22] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -645,6 +673,7 @@ impl EffectKind {
         EffectKind::LensFlare,
         EffectKind::LightLeaks,
         EffectKind::NeonEdges,
+        EffectKind::Halftone,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -676,6 +705,7 @@ impl EffectKind {
             EffectKind::Glitch => "Glitch",
             EffectKind::LightLeaks => "Light leaks",
             EffectKind::NeonEdges => "Neon edges",
+            EffectKind::Halftone => "Halftone",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -688,7 +718,7 @@ impl EffectKind {
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
-            EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges => EffectCategory::Stylize,
+            EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone => EffectCategory::Stylize,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
@@ -720,6 +750,7 @@ impl EffectKind {
             EffectKind::FilmGrain => "Film grain that changes every frame: fine or coarse, mono or colour, kept out of the highlights.",
             EffectKind::Glitch => "Digital glitches: slices and blocks jump sideways, colours split and scan lines flicker.",
             EffectKind::LightLeaks => "Soft blooms of warm coloured light drifting in from the edges, like light leaking into a film camera.",
+            EffectKind::Halftone => "The picture printed as a screen of dots or lines, like a newspaper photo or a comic: black and white, four-colour CMYK, or dots of its own colour.",
             EffectKind::NeonEdges => "Glowing neon tubes along the edges of a title, logo or keyed subject (or the edges in the picture): a hot core, a coloured glow, and a flicker if you like.",
             EffectKind::Camera => "The 3D camera: where it is, what it looks at, its field of view and depth of field.",
             EffectKind::Light => "A light for 3D layers.",
@@ -750,6 +781,7 @@ impl EffectKind {
             EffectKind::Glitch => &GLITCH,
             EffectKind::LightLeaks => &LIGHT_LEAKS,
             EffectKind::NeonEdges => &NEON,
+            EffectKind::Halftone => &HALFTONE,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -851,6 +883,7 @@ impl EffectValues {
             EffectKind::FilmGrain => v[grain::AMOUNT] == 0.0,
             EffectKind::Glitch => v[glitch::AMOUNT] == 0.0,
             EffectKind::LightLeaks => v[leaks::INTENSITY] == 0.0,
+            EffectKind::Halftone => v[halftone::MIX] == 0.0,
             EffectKind::NeonEdges => v[neon::WIDTH] == 0.0 && v[neon::GLOW_INTENSITY] == 0.0 && v[neon::ORIGINAL] == 100.0,
             EffectKind::Particles => v[crate::particles::OPACITY] == 0.0 || self.particles.as_ref().is_none_or(|p| p.list.is_empty()),
             EffectKind::EnergyBlade => v[blade::OPACITY] == 0.0 || v[blade::LENGTH] == 0.0 || (v[blade::CORE_WIDTH] == 0.0 && v[blade::GLOW_INTENSITY] == 0.0),

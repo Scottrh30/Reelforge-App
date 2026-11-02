@@ -353,6 +353,12 @@ What works now:
     **Glow intensity** shape the light, **Hot core** whitens the tube's middle, **Original
     layer** fades the layer itself (0 % = the neon alone), and **Flicker** makes it stutter
     like a failing sign. The *Neon sign* starter look sets one up
+  - **Halftone** (Light & stylize): the picture printed as a screen of dots, like a
+    newspaper photo or a comic. **Style**: *Black & white* (Ink on Paper), *CMYK print*
+    (cyan, magenta, yellow and black screens at their own angles, so they form rosettes)
+    or *Colour dots* (each dot the picture's own colour); **Shape**: round dots, square
+    dots or lines; **Dot size**, **Angle**, **Contrast**, the **Ink** and **Paper** colours,
+    and **Mix** to blend it with the picture. The *Comic print* starter look sets one up
   - **Film grain** (Light & stylize): grain that changes every frame (**Frame rate**, 0 =
     still), from fine to coarse (**Size**), mono to colour, strongest in the midtones and
     kept out of the highlights unless **In highlights** is raised

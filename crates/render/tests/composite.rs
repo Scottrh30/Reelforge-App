@@ -1540,3 +1540,47 @@ fn neon_edges_trace_the_shape() {
     let levels: Vec<u8> = (0..30).map(|k| lit(k as f32 * 0.1)).collect();
     assert!(levels.iter().max().unwrap() - levels.iter().min().unwrap() > 40, "{levels:?}");
 }
+
+#[test]
+fn halftone_prints_dots() {
+    use reelforge_core::effects::halftone;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let flat = |rgb: [u8; 3]| -> Vec<u8> { (0..w * h).flat_map(|_| [rgb[0], rgb[1], rgb[2], 255]).collect() };
+    let mut key = 1900u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], set: &[(usize, f32)]| {
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        c.render([w, h], &[with_fx(l, vec![fx(EffectKind::Halftone, set)])]);
+        c.read_output().unwrap()
+    };
+    // Black ink (0x161616) and paper (0xf6f1e6): count the inked pixels.
+    let inked = |img: &[u8]| img.chunks(4).filter(|p| p[0] < 128).count() as f32 / (w * h) as f32;
+    let grey = draw(&mut c, &flat([128, 128, 128]), &[]);
+    let f = inked(&grey);
+    assert!((0.35..0.65).contains(&f), "mid grey half inked: {f}");
+    // Only ink and paper (the dots' soft edges aside).
+    let pure = grey.chunks(4).filter(|p| p[0] < 40 || p[0] > 230).count() as f32 / (w * h) as f32;
+    assert!(pure > 0.7, "{pure}");
+    assert!(inked(&draw(&mut c, &flat([250, 250, 250]), &[])) < 0.02);
+    assert!(inked(&draw(&mut c, &flat([5, 5, 5]), &[])) > 0.95);
+    // Lighter grey, less ink; square dots and lines work too.
+    let light = inked(&draw(&mut c, &flat([200, 200, 200]), &[]));
+    assert!(light < f - 0.15, "{light} vs {f}");
+    for shape in [1.0, 2.0] {
+        let s = inked(&draw(&mut c, &flat([128, 128, 128]), &[(halftone::SHAPE, shape)]));
+        assert!((0.35..0.65).contains(&s), "shape {shape}: {s}");
+    }
+    // CMYK print of red: magenta and yellow dots, so red on average.
+    let avg = |img: &[u8], ch: usize| img.chunks(4).map(|p| p[ch] as f32).sum::<f32>() / (w * h) as f32;
+    let red = draw(&mut c, &flat([230, 20, 20]), &[(halftone::STYLE, 1.0)]);
+    assert!(avg(&red, 0) > avg(&red, 1) + 60.0 && avg(&red, 0) > avg(&red, 2) + 40.0, "{} {} {}", avg(&red, 0), avg(&red, 1), avg(&red, 2));
+    // Colour dots of blue: blue dots on paper.
+    let blue = draw(&mut c, &flat([30, 40, 200]), &[(halftone::STYLE, 2.0)]);
+    assert!(blue.chunks(4).any(|p| p[2] as i32 > p[0] as i32 + 100), "blue dots");
+    assert!(blue.chunks(4).any(|p| p[0] > 230 && p[1] > 230), "paper between");
+    // Mix 0: the picture as it was.
+    let none = draw(&mut c, &flat([128, 128, 128]), &[(halftone::MIX, 0.0)]);
+    assert!(near(px(&none, w, 80, 45), [128, 128, 128]));
+}

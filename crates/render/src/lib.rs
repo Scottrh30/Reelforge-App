@@ -547,7 +547,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1378,7 +1378,7 @@ impl Compositor {
                         particle_sets.push((ps, e.values[reelforge_core::particles::LOOK]));
                         cur = o1;
                     }
-                    EffectKind::LensFlare | EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks => {
+                    EffectKind::LensFlare | EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::Halftone => {
                         // A number of its own (its place in the stack), the time and the layer's size.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
                         u[13] = e.time;
@@ -1390,6 +1390,7 @@ impl Compositor {
                             EffectKind::ChromaticAberration => "fs_aberration",
                             EffectKind::FilmGrain => "fs_grain",
                             EffectKind::Glitch => "fs_glitch",
+                            EffectKind::Halftone => "fs_halftone",
                             _ => "fs_leaks",
                         };
                         push(entry, cur, Second::None, o1, u);
