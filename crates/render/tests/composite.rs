@@ -1457,3 +1457,38 @@ fn three_d_layers_cast_shadows_on_each_other() {
     assert!(near(px(&holed, 400, 200 - 36, 100), [255, 255, 255]), "through the hole: {:?}", px(&holed, 400, 200 - 36, 100));
     assert!((110..140).contains(&px(&holed, 400, probe, 100)[0]), "behind the solid half: {:?}", px(&holed, 400, probe, 100));
 }
+
+/// 3D layers that cut through each other do: a red one facing the camera and
+/// a blue one turned 45° through the same middle, drawn after it. Each shows
+/// on the side where it's nearer (not the later one all over), and a 2D
+/// layer after them still covers both.
+#[test]
+fn three_d_layers_cut_through_each_other() {
+    use reelforge_core::space3d::{layer_space, Camera, Scene3d};
+    let Some(mut c) = setup() else { return };
+    let (frame, f) = ([400u32, 200u32], [400.0f32, 200.0f32]);
+    let scene = Scene3d { camera: Camera::default_for(f), lights: Vec::new() };
+    let red = solid(4, 4, [255, 0, 0, 255]);
+    let blue = solid(4, 4, [0, 0, 255, 255]);
+    let flat = Transform { three_d: true, ..Default::default() };
+    let mut turned = flat;
+    turned.orientation = [0.0, 45.0];
+    let (rs, bs) = (layer_space(&flat, [160.0, 120.0], &scene), layer_space(&turned, [160.0, 120.0], &scene));
+    let layers = [LayerInput { space: Some(&rs), ..layer(1, &red, [4, 4], [160.0, 120.0], flat, BlendMode::Normal) }, LayerInput { space: Some(&bs), ..layer(2, &blue, [4, 4], [160.0, 120.0], turned, BlendMode::Normal) }];
+    c.render(frame, &layers);
+    let out = c.read_output().unwrap();
+    let (l, r) = (px(&out, 400, 200 - 30, 100), px(&out, 400, 200 + 30, 100));
+    let is = |p: [u8; 4], want: [u8; 3]| near(p, want);
+    assert!(
+        (is(l, [255, 0, 0]) && is(r, [0, 0, 255])) || (is(l, [0, 0, 255]) && is(r, [255, 0, 0])),
+        "one side each: left {l:?}, right {r:?}"
+    );
+    // A 2D layer after the 3D run is drawn over it as usual.
+    let green = solid(4, 4, [0, 255, 0, 255]);
+    let mut all = layers.to_vec();
+    all.push(layer(3, &green, [4, 4], [40.0, 40.0], Transform::default(), BlendMode::Normal));
+    c.render(frame, &all);
+    let out = c.read_output().unwrap();
+    assert!(near(px(&out, 400, 200, 100), [0, 255, 0]));
+    assert!(near(px(&out, 400, 200 - 30, 100), [l[0], l[1], l[2]]));
+}

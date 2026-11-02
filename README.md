@@ -787,8 +787,12 @@ What works now:
     picture counts, so a cut-out or text casts its shape and its opacity how dark; each pixel
     traces its way to the light past the other layers' planes. Up to 8 layers cast shadows at a
     time, their outlines drawn into a 1024-pixel atlas each frame
-  - Everything about cameras and lights keyframes like effect settings. Not yet: layers that
-    cut through each other (they're sorted by their middles)
+  - **Layers that cut through each other** do: consecutive 3D layers are drawn with a depth
+    buffer, so where two cross, each shows on the side where it's nearer. They're still drawn
+    back to front by their middles (for see-through parts), and nearly transparent pixels
+    (under 2%) don't hide what's behind them. A 2D layer, an adjustment layer or a blend mode
+    that reads the frame below starts a new run
+  - Everything about cameras and lights keyframes like effect settings
 - **Corner pin** (Transform section of the Controls panel): tick it to stretch a layer in
   perspective by its four corners. Drag the pink corner handles in the Viewer (**Shift**: straight
   across or down; dragging the middle moves all four). It can be keyframed like any property,

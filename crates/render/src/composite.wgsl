@@ -226,9 +226,17 @@ fn lighting(local: vec2<f32>) -> vec3<f32> {
     return sum;
 }
 
+// In a run of 3D layers (depth-tested): pixels fainter than this are left
+// out, so they don't hide what's behind them. 0 elsewhere.
+override DEPTH_CUT: f32 = 0.0;
+
 @fragment
 fn fs_layer(in: VsOut) -> @location(0) vec4<f32> {
-    return layer_color(in);
+    let c = layer_color(in);
+    if (c.a < DEPTH_CUT) {
+        discard;
+    }
+    return c;
 }
 
 fn layer_color(in: VsOut) -> vec4<f32> {
@@ -245,7 +253,11 @@ fn layer_color(in: VsOut) -> vec4<f32> {
 // float target): no extra premultiply, just the group's overall opacity.
 @fragment
 fn fs_layer_premul(in: VsOut) -> @location(0) vec4<f32> {
-    return layer_color_premul(in);
+    let c = layer_color_premul(in);
+    if (c.a < DEPTH_CUT) {
+        discard;
+    }
+    return c;
 }
 
 fn layer_color_premul(in: VsOut) -> vec4<f32> {

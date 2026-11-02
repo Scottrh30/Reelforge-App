@@ -123,6 +123,11 @@ const UNIFORM_SIZE: u64 = 128 + 16 + 32 + MESH_VEC4S as u64 * 16; // mat4 + vec2
 /// vec4s holding a mesh's points, two to each: enough for the biggest grid
 /// (33 × 33 points). Must match `pts` in composite.wgsl.
 const MESH_VEC4S: usize = 545;
+/// Depth for runs of 3D layers.
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// A 3D layer's pixels fainter than this don't hide what's behind them.
+const DEPTH_CUT: f64 = 0.02;
+
 /// 3D layers that can cast shadows in one frame (each gets a tile of the atlas).
 const MAX_OCCLUDERS: usize = 8;
 /// The shadow atlas: 4 × 4 tiles of this many pixels.
@@ -267,6 +272,8 @@ struct Targets {
     /// A copy of the frame so far, for a layer whose blend mode reads it.
     backdrop: wgpu::Texture,
     backdrop_bind: wgpu::BindGroup,
+    /// Depth, for runs of 3D layers (so layers that cut through each other do).
+    depth_view: wgpu::TextureView,
 }
 
 pub struct Compositor {
@@ -275,6 +282,9 @@ pub struct Compositor {
     layer_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
     /// Draws a premultiplied group texture over the frame, per blend mode.
     group_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
+    /// The same, depth-tested, for runs of 3D layers.
+    layer_pipelines_3d: HashMap<BlendMode, wgpu::RenderPipeline>,
+    group_pipelines_3d: HashMap<BlendMode, wgpu::RenderPipeline>,
     /// Adds layers into a group target (colour and alpha both summed).
     sum_pipeline: wgpu::RenderPipeline,
     /// Same, for a layer whose effects already made it premultiplied.
@@ -437,8 +447,8 @@ impl Compositor {
             bind_group_layouts: &[Some(&uniform_layout), Some(&texture_layout), Some(&output_layout)],
             immediate_size: 0,
         });
-        let make_with = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>| {
-            let constants = mode.map(|m| [("MODE", m as f64)]);
+        let make_full = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>, depth: bool| {
+            let constants: Vec<(&str, f64)> = mode.map(|m| ("MODE", m as f64)).into_iter().chain(depth.then_some(("DEPTH_CUT", DEPTH_CUT))).collect();
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(if mode.is_some() { &blend_pl } else { &layer_pl }),
@@ -451,17 +461,28 @@ impl Compositor {
                 fragment: Some(wgpu::FragmentState {
                     module: &layer_shader,
                     entry_point: Some(entry),
-                    compilation_options: wgpu::PipelineCompilationOptions { constants: constants.as_ref().map_or(&[][..], |c| &c[..]), ..Default::default() },
+                    compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
                     targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 primitive: wgpu::PrimitiveState::default(), // no culling: flips/negative scale are fine
-                depth_stencil: None,
+                depth_stencil: depth.then(|| wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
                 cache: None,
             })
         };
+        let make_with = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>| make_full(label, entry, blend, mode, false);
         let make = |label: &str, entry: &str, blend: wgpu::BlendState| make_with(label, entry, blend, None);
+        // 3D runs: depth-tested, for every blend mode that doesn't read the frame under it.
+        let per_mode_3d = |entry: &str| -> HashMap<BlendMode, wgpu::RenderPipeline> {
+            BlendMode::ALL.into_iter().filter(|m| !m.reads_backdrop()).map(|m| (m, make_full(m.label(), entry, blend_state(m), None, true))).collect()
+        };
         let per_mode = |plain: &str, blend_entry: &str| -> HashMap<BlendMode, wgpu::RenderPipeline> {
             BlendMode::ALL
                 .into_iter()
@@ -471,6 +492,8 @@ impl Compositor {
         };
         let layer_pipelines = per_mode("fs_layer", "fs_blend");
         let group_pipelines = per_mode("fs_layer_premul", "fs_blend_premul");
+        let layer_pipelines_3d = per_mode_3d("fs_layer");
+        let group_pipelines_3d = per_mode_3d("fs_layer_premul");
         let sum = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
         let sum_pipeline = make("dissolve sum", "fs_layer", wgpu::BlendState { color: sum, alpha: sum });
         let sum_premul_pipeline = make("dissolve sum (premultiplied)", "fs_layer_premul", wgpu::BlendState { color: sum, alpha: sum });
@@ -652,6 +675,8 @@ impl Compositor {
             queue: queue.clone(),
             layer_pipelines,
             group_pipelines,
+            layer_pipelines_3d,
+            group_pipelines_3d,
             sum_pipeline,
             sum_premul_pipeline,
             fx_pipelines,
@@ -808,7 +833,8 @@ impl Compositor {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        self.targets = Some(Targets { size, accum_view, group_view, group_bind, output, output_view, output_bind, accum_bind, accum, backdrop, backdrop_bind });
+        let depth_view = tex("3D depth", DEPTH_FORMAT, U::RENDER_ATTACHMENT).create_view(&Default::default());
+        self.targets = Some(Targets { size, accum_view, group_view, group_bind, output, output_view, output_bind, accum_bind, accum, backdrop, backdrop_bind, depth_view });
         self.output_generation += 1;
     }
 
@@ -1702,12 +1728,54 @@ impl Compositor {
             enc.copy_texture_to_texture(targets.accum.as_image_copy(), targets.backdrop.as_image_copy(), extent);
             true
         };
+        // Consecutive 3D layers are drawn in one pass with a depth buffer (cleared
+        // as the run starts), so where they cut through each other the nearer
+        // one shows; still back to front, for what's see-through.
+        let mut depth_run = false;
+        let depth_pass = |enc: &mut wgpu::CommandEncoder| {
+            enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("3D layers"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &targets.accum_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &targets.depth_view,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            })
+            .forget_lifetime()
+        };
         for op in &ops {
+            if !matches!(op, Op::Frame { .. }) && depth_run {
+                drop(frame_pass.take());
+                depth_run = false;
+            }
             match op {
+                Op::Frame { draw, blend } if uniforms[draw.slot].4.is_some() && !blend.reads_backdrop() => {
+                    let Some(bind) = source(draw) else { continue };
+                    if !depth_run {
+                        drop(frame_pass.take());
+                        frame_pass = Some(depth_pass(&mut enc));
+                        depth_run = true;
+                    }
+                    let Some(pass) = frame_pass.as_mut() else { continue };
+                    pass.set_pipeline(if draw.fx.is_some() || premul(draw) { &self.group_pipelines_3d[blend] } else { &self.layer_pipelines_3d[blend] });
+                    pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
+                    pass.set_bind_group(1, bind, &[]);
+                    pass.draw(0..verts[draw.slot], 0..1);
+                }
                 Op::Frame { draw, blend } => {
                     let Some(bind) = source(draw) else { continue };
-                    if blend.reads_backdrop() {
+                    if blend.reads_backdrop() || depth_run {
                         drop(frame_pass.take());
+                        depth_run = false;
                     }
                     let read = copy_backdrop(&mut enc, *blend);
                     let pass = frame_pass.get_or_insert_with(|| pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Load));
