@@ -680,6 +680,9 @@ fn track_op(index: usize, op: String, name: Option<String>, to: Option<usize>) -
         "untarget" => e.set_target_track(None),
         "rename" => e.rename_track(index, name.unwrap_or_default()),
         "collapse" => e.toggle_collapse(index),
+        "waveforms_on" => e.set_track_waveforms(index, Some(true)),
+        "waveforms_off" => e.set_track_waveforms(index, Some(false)),
+        "waveforms_default" => e.set_track_waveforms(index, None),
         "height" => e.set_track_height(index, to.unwrap_or(52).min(u16::MAX as usize) as u16),
         // Of the track's kind ("…_all") or every track ("…_every").
         "collapse_all" | "expand_all" | "reset_heights" => {

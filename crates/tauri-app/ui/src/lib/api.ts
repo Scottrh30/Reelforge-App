@@ -124,6 +124,8 @@ export interface TrackView {
   /// Row height in the timeline, and whether it's collapsed to a thin row.
   height: number;
   collapsed: boolean;
+  /// Linked-sound waveforms under its clips: shown, hidden, or as Settings says (null).
+  waveforms: boolean | null;
 }
 
 export interface SeqView {
@@ -799,7 +801,7 @@ export const api = {
   seek: (t: Ticks) => invoke("seek", { t: Math.max(0, Math.round(t)) }),
   trackOp: (
     index: number,
-    op: "mute" | "lock" | "delete" | "rename" | "duplicate" | "target" | "untarget" | "collapse" | "height" | "collapse_all" | "expand_all" | "reset_heights" | "collapse_every" | "expand_every",
+    op: "mute" | "lock" | "delete" | "rename" | "duplicate" | "target" | "untarget" | "collapse" | "waveforms_on" | "waveforms_off" | "waveforms_default" | "height" | "collapse_all" | "expand_all" | "reset_heights" | "collapse_every" | "expand_every",
     name?: string,
     to?: number,
   ) => invoke("track_op", { index, op, name, to }),

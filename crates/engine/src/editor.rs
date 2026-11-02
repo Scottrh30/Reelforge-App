@@ -1276,6 +1276,19 @@ impl Editor {
         }
     }
 
+    /// Show a video track's linked-sound waveforms under its clips (`Some`), or
+    /// hide them, or follow Settings (`None`).
+    pub fn set_track_waveforms(&mut self, track: usize, on: Option<bool>) {
+        let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
+        tr.waveforms = on;
+        self.status = match on {
+            Some(true) => format!("{}: sound waveforms shown under its clips", tr.name),
+            Some(false) => format!("{}: sound waveforms hidden", tr.name),
+            None => format!("{}: sound waveforms as in Settings", tr.name),
+        };
+        self.touch();
+    }
+
     /// Collapse a track to a thin row, or expand it again.
     pub fn toggle_collapse(&mut self, track: usize) {
         let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
@@ -3784,6 +3797,21 @@ mod tests {
         assert!(e.seq().find_clip(c).unwrap().1.nested.is_some());
         e.undo();
         assert!(e.seq().find_clip(a).is_some());
+    }
+
+    #[test]
+    fn a_tracks_waveform_switch_is_saved_with_it() {
+        let mut e = editor();
+        let v = e.seq().tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        assert_eq!(e.seq().tracks[v].waveforms, None);
+        e.set_track_waveforms(v, Some(true));
+        assert_eq!(e.seq().tracks[v].waveforms, Some(true));
+        let json = serde_json::to_string(&e.project).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sequences[0].tracks[v].waveforms, Some(true));
+        e.set_track_waveforms(v, None);
+        // Not written when it follows Settings (older projects read the same).
+        assert!(!serde_json::to_string(&e.seq().tracks[v]).unwrap().contains("waveforms"));
     }
 
     #[test]

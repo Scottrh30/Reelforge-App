@@ -407,6 +407,10 @@ pub struct Track {
     /// Shown as a thin row (name only, clips as a strip).
     #[serde(default)]
     pub collapsed: bool,
+    /// A video track: show its clips' linked sound as a waveform along their
+    /// lower edge (`None`: as Settings says).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveforms: Option<bool>,
 }
 
 impl Track {
@@ -419,7 +423,7 @@ impl Track {
     }
 
     pub fn new(name: impl Into<String>, kind: TrackKind) -> Self {
-        Self { name: name.into(), kind, clips: Vec::new(), muted: false, audio: TrackAudio::default(), locked: false, height: Self::DEFAULT_HEIGHT, collapsed: false }
+        Self { name: name.into(), kind, clips: Vec::new(), muted: false, audio: TrackAudio::default(), locked: false, height: Self::DEFAULT_HEIGHT, collapsed: false, waveforms: None }
     }
     pub fn clip_at(&self, t: Time) -> Option<&Clip> {
         self.clips.iter().find(|c| c.contains(t))

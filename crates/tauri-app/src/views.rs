@@ -101,6 +101,8 @@ pub struct TrackView {
     /// Row height in the timeline, and whether it's collapsed to a thin row.
     pub height: u16,
     pub collapsed: bool,
+    /// Linked-sound waveforms under its clips: shown, hidden, or as Settings says (`None`).
+    pub waveforms: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -460,6 +462,7 @@ pub fn state(e: &Editor) -> State {
             audio: t.audio,
             height: t.height,
             collapsed: t.collapsed,
+            waveforms: t.waveforms,
             clips: t
                 .clips
                 .iter()

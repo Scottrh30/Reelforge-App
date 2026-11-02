@@ -539,6 +539,18 @@
       { label: tr.locked ? "Unlock track" : "Lock track", run: () => run(api.trackOp(tr.index, "lock")) },
       { separator: true },
       { label: tr.collapsed ? "Expand track" : "Collapse track", run: () => run(api.trackOp(tr.index, "collapse")) },
+      ...(tr.kind === "video"
+        ? [
+            {
+              label: "Sound waveforms under clips",
+              submenu: [
+                { label: `As in Settings (${app.s?.prefs.timeline_video_waveforms ? "shown" : "hidden"})`, checked: tr.waveforms == null, run: () => run(api.trackOp(tr.index, "waveforms_default")) },
+                { label: "Show on this track", checked: tr.waveforms === true, run: () => run(api.trackOp(tr.index, "waveforms_on")) },
+                { label: "Hide on this track", checked: tr.waveforms === false, run: () => run(api.trackOp(tr.index, "waveforms_off")) },
+              ],
+            },
+          ]
+        : []),
       { label: tr.kind === "video" ? "Collapse all video tracks" : "Collapse all audio tracks", run: () => run(api.trackOp(tr.index, "collapse_all")) },
       { label: tr.kind === "video" ? "Expand all video tracks" : "Expand all audio tracks", run: () => run(api.trackOp(tr.index, "expand_all")) },
       { label: "Reset track heights", run: () => run(api.trackOp(tr.index, "reset_heights")) },
@@ -979,10 +991,12 @@
   /// Each linked video clip's sound: the audio clip linked to it and that clip's track.
   const linkedSound = $derived.by(() => {
     const out = new Map<number, { a: ClipView; tr: TrackView }>();
-    if (!app.s?.prefs.timeline_video_waveforms) return out;
+    const global = !!app.s?.prefs.timeline_video_waveforms;
+    const shows = (tr: TrackView) => tr.waveforms ?? global;
+    if (!rows.some((tr) => tr.kind === "video" && shows(tr))) return out;
     const byLink = new Map<number, { a: ClipView; tr: TrackView }>();
     for (const tr of rows) if (tr.kind === "audio") for (const a of tr.clips) if (a.link != null && a.kind === "audio" && !byLink.has(a.link)) byLink.set(a.link, { a, tr });
-    for (const tr of rows) if (tr.kind === "video") for (const c of tr.clips) if (c.link != null && c.kind === "video" && byLink.has(c.link)) out.set(c.id, byLink.get(c.link)!);
+    for (const tr of rows) if (tr.kind === "video" && shows(tr)) for (const c of tr.clips) if (c.link != null && c.kind === "video" && byLink.has(c.link)) out.set(c.id, byLink.get(c.link)!);
     return out;
   });
 
