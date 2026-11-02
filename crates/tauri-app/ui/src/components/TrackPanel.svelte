@@ -4,7 +4,7 @@
   // then put the motion on any layer, a mask, or the clip itself (stabilise),
   // choosing which parts of the motion to use.
   import { app, run, timecode } from "../lib/session.svelte";
-  import { api, type TrackAxes, type TrackMode, type TrackerView } from "../lib/api";
+  import { api, type StabZoom, type TrackAxes, type TrackMode, type TrackerView } from "../lib/api";
   import { livePump } from "../lib/live";
   import NumberField from "./NumberField.svelte";
 
@@ -69,6 +69,7 @@
   const areaTracked = (m: TrackMode) => m === "Planar" || m === "Mesh";
 
   let smoothing = $state(0);
+  let stabZoom = $state<StabZoom>("Off");
   let target = $state("");
   let axes = $state<TrackAxes>({ x: true, y: true, rotation: true, scale: true });
   const t = $derived(ins?.tracker ?? null);
@@ -121,7 +122,7 @@
   }
   function apply() {
     if (!ins || !chosen) return;
-    run(api.trackApply(ins.id, chosen.clip, chosen.mask, chosen.blade, smoothing, { ...axes }));
+    run(api.trackApply(ins.id, chosen.clip, chosen.mask, chosen.blade, smoothing, { ...axes }, stabilising ? stabZoom : "Off"));
   }
 </script>
 
@@ -271,6 +272,16 @@
             <div class="grid">
               <span class="lbl" title="Smooth camera: 0 locks the shot completely. Higher keeps slow, deliberate camera moves and only takes out the shake: 10 to 30 frames suits most handheld footage">Keep camera moves</span>
               <NumberField label="Smoothing" value={smoothing} min={0} max={120} step={0.25} digits={0} suffix=" frames" oninput={(v) => (smoothing = v)} oncommit={() => {}} />
+            </div>
+          {/if}
+          {#if stabilising && t.mode !== "Mesh"}
+            <div class="grid">
+              <span class="lbl" title="Moving the clip against the shake uncovers its edges. Zoom in just enough that they never show: one zoom for the whole clip, or a zoom that eases with the motion (less where the shake is small)">Hide edges</span>
+              <select bind:value={stabZoom} aria-label="Hide edges">
+                <option value="Off">Off (edges show)</option>
+                <option value="Fixed">Zoom in once</option>
+                <option value="Follow">Zoom with the motion</option>
+              </select>
             </div>
           {/if}
           <div class="row">

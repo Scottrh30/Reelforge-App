@@ -2962,6 +2962,12 @@ impl Editor {
     /// [`Self::apply_track`] with only the chosen parts of the motion
     /// (X and Y position; rotation and scale for two-point tracks).
     pub fn apply_track_axes(&mut self, tracked: ClipId, target: ClipId, smoothing: f32, axes: Axes) {
+        self.apply_track_with(tracked, target, smoothing, axes, reelforge_core::track::StabZoom::Off);
+    }
+
+    /// [`Self::apply_track_axes`], and when stabilising, zooming in (`zoom`)
+    /// to hide the edges the counter-motion uncovers.
+    pub fn apply_track_with(&mut self, tracked: ClipId, target: ClipId, smoothing: f32, axes: Axes, zoom: reelforge_core::track::StabZoom) {
         if !axes.x && !axes.y && !axes.rotation && !axes.scale {
             self.status = "Nothing to apply: tick at least one of X, Y, rotation or scale".into();
             return;
@@ -2976,7 +2982,7 @@ impl Editor {
         let (layer, target_layer) = (self.layer_size(a), self.layer_size(b));
         let frame = [s.width as f32, s.height as f32];
         let stabilise = tracked == target;
-        let opts = ApplyOptions { stabilise, smoothing: if stabilise { smoothing } else { 0.0 }, axes };
+        let opts = ApplyOptions { stabilise, smoothing: if stabilise { smoothing } else { 0.0 }, axes, zoom: if stabilise { zoom } else { Default::default() } };
         let mode = track.mode;
         if b.scene == Some(reelforge_core::space3d::SceneObject::Point) && !stabilise {
             if s.is_locked(target) {

@@ -349,6 +349,9 @@ export interface MaskView {
 
 export type TrackMode = "Position" | "Transform" | "CornerPin" | "Planar" | "Mesh";
 
+/** How a stabilised clip hides the edges its counter-motion uncovers. */
+export type StabZoom = "Off" | "Fixed" | "Follow";
+
 export interface TrackSource {
   id: number;
   name: string;
@@ -859,7 +862,7 @@ export const api = {
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
   trackCancel: () => invoke("track_cancel"),
   maskTrack: (id: number, index: number, forward: boolean, motion: MaskMotion) => invoke("mask_track", { id, index, forward, motion }),
-  trackApply: (id: number, target: number, mask: number | null, blade: number | null, smoothing: number, axes?: TrackAxes) => invoke("track_apply", { id, target, mask, blade, smoothing, axes }),
+  trackApply: (id: number, target: number, mask: number | null, blade: number | null, smoothing: number, axes?: TrackAxes, zoom: StabZoom = "Off") => invoke("track_apply", { id, target, mask, blade, smoothing, axes, zoom }),
   exportOptions: () => invoke<ExportOptions>("export_options"),
   diagnostics: () => invoke<string>("diagnostics"),
   notices: () => invoke<string>("notices"),

@@ -744,7 +744,11 @@ What works now:
   data is kept, so it can go back to 0 at any time; apply the track again after changing it.
   It suits a shaky track of a steady move; real shake of the camera is something the layer
   should follow, so leave it at 0 there. When **stabilising**, **Keep camera moves** (frames)
-  keeps deliberate camera moves and takes out only the shake. Everything is written as ordinary keyframes you can edit or undo, and masks on the
+  keeps deliberate camera moves and takes out only the shake, and **Hide edges** zooms in just
+  enough that the edges the counter-motion uncovers never show: **Zoom in once** (one zoom for
+  the whole clip, enough for its worst moment) or **Zoom with the motion** (each frame's least
+  zoom, held over a moving maximum and eased, so it never lets an edge through but zooms less
+  where the shake is small). It works on corner-pinned (perspective) stabilising too. Everything is written as ordinary keyframes you can edit or undo, and masks on the
   clip can follow the track too
   - **Onto a point**: choose a **Point** (made with **New… → New Point**) under **Apply to** and
     the point follows the track; every layer, camera and light parented to it follows too, so
@@ -1597,12 +1601,11 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
    presets; chroma, luma and difference keys with matte clipping, choke, edge softness and a
    matte view)
 6. **Compositing**: ~~compositions (nested sequences), motion tracking (1, 2 and 4
-   points, planar and mesh: follow, stabilise with smoothing, corner pin / screen replacement),
+   points, planar and mesh: follow, stabilise with smoothing and edge-hiding zoom, corner pin /
+   screen replacement),
    corner pin, masks with Bézier curves and per-point feather, mask tracking for rotoscoping,
    GPU particles~~, titles and track management are done.
-   Still to come: automatic
-   zoom to hide stabilisation edges, animated text presets (3D layers, a camera
-   and lights are in).
+   Still to come: animated text presets (3D layers, a camera and lights are in).
 7. ~~**Performance**: proxy media, a frame cache, hardware decode, YUV frames converted on the
    GPU, render preview~~
    (zero-copy from the hardware decoder is in for Windows, D3D11VA to Direct3D 12, but is

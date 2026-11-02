@@ -1028,12 +1028,73 @@ pub struct ApplyOptions {
     /// Which parts of the motion are applied. Left out, that part of the
     /// layer stays as it was.
     pub axes: Axes,
+    /// Stabilising: zoom in to hide the edges the counter-motion uncovers.
+    pub zoom: StabZoom,
 }
 
 impl Default for ApplyOptions {
     fn default() -> Self {
-        Self { stabilise: false, smoothing: 0.0, axes: Axes::ALL }
+        Self { stabilise: false, smoothing: 0.0, axes: Axes::ALL, zoom: StabZoom::Off }
     }
+}
+
+/// How a stabilised clip hides the edges its counter-motion uncovers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum StabZoom {
+    /// Not at all: the gaps show.
+    #[default]
+    Off,
+    /// One zoom for the whole clip: just enough for its worst moment.
+    Fixed,
+    /// Zoom that changes with the motion (eased over about this many frames
+    /// as the smoothing, a second at least): less zoom where the shake is
+    /// small, never letting an edge show.
+    Follow,
+}
+
+/// The least zoom (about the frame's centre, at least 1) at which `quad`
+/// (where the picture lands on the frame) covers the whole `frame`.
+pub fn cover_zoom(quad: &[[f32; 2]; 4], frame: [f32; 2]) -> f32 {
+    let c = [frame[0] / 2.0, frame[1] / 2.0];
+    // (A hair inside, so a picture exactly the frame's size counts as covering it.)
+    let e = 0.01;
+    let corners = [[e, e], [frame[0] - e, e], [frame[0] - e, frame[1] - e], [e, frame[1] - e]];
+    // Zooming the picture by s about c covers corner F when c + (F − c)/s is inside it.
+    let covers = |s: f32| corners.iter().all(|f| crate::planar::inside(quad, [c[0] + (f[0] - c[0]) / s, c[1] + (f[1] - c[1]) / s]));
+    if covers(1.0) {
+        return 1.0;
+    }
+    let (mut lo, mut hi) = (1.0f32, 2.0f32);
+    while !covers(hi) {
+        hi *= 2.0;
+        if hi > 64.0 {
+            return 64.0; // the picture doesn't reach the centre: nothing sensible
+        }
+    }
+    for _ in 0..30 {
+        let mid = (lo + hi) / 2.0;
+        if covers(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+/// Per-frame zooms `need` (each the least that frame needs) as zooms to use
+/// over `radius` frames: a moving maximum, then a moving average no wider, so
+/// every frame still gets at least what it needs.
+fn eased_zoom(need: &[f32], radius: usize) -> Vec<f32> {
+    let n = need.len();
+    let max: Vec<f32> = (0..n).map(|i| need[i.saturating_sub(radius)..(i + radius + 1).min(n)].iter().fold(1.0f32, |a, &b| a.max(b))).collect();
+    (0..n)
+        .map(|i| {
+            let w = &max[i.saturating_sub(radius)..(i + radius + 1).min(n)];
+            // Near the ends the window is short on one side: never below this frame's own need.
+            (w.iter().sum::<f32>() / w.len() as f32).max(need[i])
+        })
+        .collect()
 }
 
 /// The parts of a tracked motion to apply: movement across (X) and down (Y),
@@ -1208,7 +1269,37 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
     put(&mut anim.rotation, rot_keys);
     put(&mut anim.scale, scale_keys);
     put(&mut anim.pin, pin_keys);
+    if opts.stabilise && opts.zoom != StabZoom::Off {
+        zoom_to_cover(&mut anim, target, target_layer, frame, &motions.iter().map(|m| m.0).collect::<Vec<_>>(), use_pin, opts);
+    }
     Some(anim)
+}
+
+/// Zoom a stabilised clip's keys (about the frame's centre) so its picture
+/// covers the frame at every tracked moment `times` (see [`StabZoom`]).
+fn zoom_to_cover(anim: &mut TransformAnim, target: &Clip, layer: [f32; 2], frame: [f32; 2], times: &[Time], pinned: bool, opts: ApplyOptions) {
+    let moved = Clip { anim: anim.clone(), ..target.clone() };
+    let at = |t: Time| moved.transform_at(t.max(target.timeline_start).min(target.timeline_end()));
+    let need: Vec<f32> = times.iter().map(|&t| cover_zoom(&at(t).corners(layer, frame), frame)).collect();
+    let zoom: Vec<f32> = match opts.zoom {
+        StabZoom::Off => return,
+        StabZoom::Fixed => vec![need.iter().fold(1.0f32, |a, &b| a.max(b)); need.len()],
+        StabZoom::Follow => eased_zoom(&need, (opts.smoothing.round() as usize).max(25)),
+    };
+    let c = [frame[0] / 2.0, frame[1] / 2.0];
+    for (&t, &z) in times.iter().zip(&zoom) {
+        let src = target.source_time(t);
+        let tr = at(t);
+        if pinned {
+            if let Some(pin) = tr.valid_pin() {
+                anim.pin.set(src, pin.map(|p| [c[0] + (p[0] - c[0]) * z, c[1] + (p[1] - c[1]) * z]));
+            }
+        } else {
+            // About the frame's centre: the offset from it and the size both grow.
+            anim.position.set(src, [tr.position[0] * z, tr.position[1] * z]);
+            anim.scale.set(src, [tr.scale[0] * z, tr.scale[1] * z]);
+        }
+    }
 }
 
 /// A mesh warp laying `target` over a mesh tracker's grid at every tracked
@@ -1674,6 +1765,49 @@ mod tests {
 
     fn keys<T: Copy>(c: &crate::anim::Curve<T>) -> Vec<(Time, T)> {
         c.0.iter().map(|k| (k.at, k.value)).collect()
+    }
+
+    #[test]
+    fn stabilising_can_zoom_to_hide_the_edges() {
+        let secs = Time::from_secs_f64;
+        let tracked = Clip::new(ClipId(1), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
+        // A point shaking about: 100 frames, big jolts in the first half, small in the second.
+        let fr = |k: i64| Time(k * Time::TICKS_PER_SECOND / 25);
+        let path = (0..100)
+            .map(|k| {
+                let amp = if k < 50 { 24.0 } else { 4.0 };
+                let x = 300.0 + amp * ((k as f32) * 1.7).sin();
+                let y = 150.0 + amp * ((k as f32) * 2.3).cos();
+                TrackSample { at: fr(k), pos: [x, y], score: 1.0 }
+            })
+            .collect();
+        let track = Tracker::from(PointTrack { path, ..Default::default() });
+        let (layer, frame) = ([640.0, 360.0], [640.0, 360.0]);
+        let covered = |anim: &TransformAnim| {
+            let c = Clip { anim: anim.clone(), ..tracked.clone() };
+            (0..100).map(|k| cover_zoom(&c.transform_at(fr(k)).corners(layer, frame), frame)).fold(1.0f32, f32::max)
+        };
+        let zoom_at = |anim: &TransformAnim, k: i64| Clip { anim: anim.clone(), ..tracked.clone() }.transform_at(fr(k)).scale[0];
+        // Without zoom the edges show.
+        let plain = follow_keys(&tracked, &track, layer, frame, &tracked, layer, ApplyOptions { stabilise: true, ..Default::default() }).unwrap();
+        assert!(covered(&plain) > 1.05);
+        // One zoom: every frame covered, the same zoom throughout.
+        let fixed = follow_keys(&tracked, &track, layer, frame, &tracked, layer, ApplyOptions { stabilise: true, zoom: StabZoom::Fixed, ..Default::default() }).unwrap();
+        assert!(covered(&fixed) < 1.0001, "{}", covered(&fixed));
+        assert!((zoom_at(&fixed, 10) - zoom_at(&fixed, 90)).abs() < 1e-5);
+        let z = zoom_at(&fixed, 10);
+        // Measured from the first frame (where the vertical shake is at its top),
+        // the picture moves up to 48 px down: 360 / (360 − 2·48) ≈ 1.364.
+        assert!((z - 360.0 / 264.0).abs() < 0.01, "{z}");
+        // Following: every frame covered, less zoom where the shake is small.
+        let follow = follow_keys(&tracked, &track, layer, frame, &tracked, layer, ApplyOptions { stabilise: true, zoom: StabZoom::Follow, ..Default::default() }).unwrap();
+        assert!(covered(&follow) < 1.0001, "{}", covered(&follow));
+        assert!(zoom_at(&follow, 95) < zoom_at(&follow, 10) - 0.05, "{} vs {}", zoom_at(&follow, 95), zoom_at(&follow, 10));
+        assert!(zoom_at(&follow, 10) <= z + 1e-4);
+        // The cover test itself: a picture shifted 10 px needs 1 + 20/360 vertically.
+        let shifted = [[0.0, 10.0], [640.0, 10.0], [640.0, 370.0], [0.0, 370.0]];
+        assert!((cover_zoom(&shifted, frame) - 360.0 / 340.0).abs() < 1e-3);
+        assert_eq!(cover_zoom(&[[0.0, 0.0], [640.0, 0.0], [640.0, 360.0], [0.0, 360.0]], frame), 1.0);
     }
 
     #[test]
