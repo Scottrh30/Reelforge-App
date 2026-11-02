@@ -30,7 +30,7 @@ struct Layer {
     // [1] its X axis, [2] its Y axis (world per layer pixel), [3] the camera's
     // position, then four per light: position + type, direction + falloff,
     // colour + falloff distance, cone cosines (outer, inner).
-    pts: array<vec4<f32>, 41>,
+    pts: array<vec4<f32>, 545>,
 };
 
 @group(0) @binding(0) var<uniform> layer: Layer;

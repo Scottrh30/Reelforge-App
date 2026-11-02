@@ -672,7 +672,7 @@
         {#each t.shown as c, i}
           {@const corner = i === 0 || i === gc || i === (gr + 1) * (gc + 1) - 1 || i === gr * (gc + 1)}
           {@const [cx, cy] = toBox(c)}
-          <circle cx={cx} cy={cy} r={corner ? 6 : 3.5} class="corner" class:inner={!corner} stroke={corner ? POINT_COLOURS[[0, gc, (gr + 1) * (gc + 1) - 1, gr * (gc + 1)].indexOf(i)] : "white"} onpointerdown={(e) => dragTracker(e, i)} role="presentation" />
+          <circle cx={cx} cy={cy} r={corner ? 6 : gc >= 32 || gr >= 32 ? 2 : gc >= 16 || gr >= 16 ? 2.5 : 3.5} class="corner" class:inner={!corner} stroke={corner ? POINT_COLOURS[[0, gc, (gr + 1) * (gc + 1) - 1, gr * (gc + 1)].indexOf(i)] : "white"} onpointerdown={(e) => dragTracker(e, i)} role="presentation" />
         {/each}
       {:else if t.mode === "Planar"}
         <!-- A planar tracker: the surface's outline, with a handle at each corner. -->

@@ -682,6 +682,34 @@ impl Tracker {
         self.points = m.points.iter().map(|&p| PointTrack { point: p, ..template.clone() }).collect();
     }
 
+    /// Before tracking: move mesh corner `point` to `pos` at source time `t`,
+    /// carrying the rest of the grid along with the four-sided shape its
+    /// corners make, so inner points placed by hand keep their places in it
+    /// (and clicking a corner without moving it changes nothing).
+    pub fn move_mesh_corner(&mut self, point: usize, pos: [f32; 2], t: Time) {
+        let corners = self.mesh_corners();
+        let Some(k) = corners.iter().position(|&i| i == point) else { return };
+        let shown = self.shown_at(t);
+        if shown.len() != self.points.len() || corners.iter().any(|&i| i >= shown.len()) {
+            return;
+        }
+        let old = corners.map(|i| shown[i]);
+        let mut new = old;
+        new[k] = pos;
+        let cols = self.grid[0].max(1) as usize;
+        let rows = self.grid[1].max(1) as usize;
+        for (n, p) in self.points.iter_mut().enumerate() {
+            let guess = [(n % (cols + 1)) as f32 / cols as f32, (n / (cols + 1)) as f32 / rows as f32];
+            let to = match inverse_bilinear(old, shown[n], guess) {
+                Some(uv) => bilinear(new, uv),
+                // A folded shape: put it where an even grid would.
+                None => bilinear(new, guess),
+            };
+            p.point = to;
+            p.start = t;
+        }
+    }
+
     /// Change a mesh's grid (cells across and down), keeping its outer corners at `t`.
     pub fn set_grid(&mut self, cols: u8, rows: u8, t: Time) {
         if self.mode != TrackMode::Mesh {
@@ -1406,6 +1434,41 @@ pub fn mask_from_region(clip: &Clip, mask: &crate::mask::Mask, corners: &[Vec<Tr
     Some(m)
 }
 
+/// The point at `uv` (0–1 each way) of the four-sided `q` (top left, top
+/// right, bottom right, bottom left), stretched bilinearly.
+fn bilinear(q: [[f32; 2]; 4], uv: [f32; 2]) -> [f32; 2] {
+    let [u, v] = uv;
+    let w = [(1.0 - u) * (1.0 - v), u * (1.0 - v), u * v, (1.0 - u) * v];
+    [0, 1].map(|c| w[0] * q[0][c] + w[1] * q[1][c] + w[2] * q[2][c] + w[3] * q[3][c])
+}
+
+/// Where `p` is in the four-sided `q` (the `uv` that [`bilinear`] maps to
+/// it), found by Newton's method from `guess`; `None` if the shape is folded there.
+fn inverse_bilinear(q: [[f32; 2]; 4], p: [f32; 2], guess: [f32; 2]) -> Option<[f32; 2]> {
+    let [mut u, mut v] = guess.map(|x| x as f64);
+    let q = q.map(|a| a.map(|x| x as f64));
+    let (px, py) = (p[0] as f64, p[1] as f64);
+    for _ in 0..30 {
+        let w = [(1.0 - u) * (1.0 - v), u * (1.0 - v), u * v, (1.0 - u) * v];
+        let f = [0, 1].map(|c| w[0] * q[0][c] + w[1] * q[1][c] + w[2] * q[2][c] + w[3] * q[3][c]);
+        let (rx, ry) = (f[0] - px, f[1] - py);
+        let du = [0, 1].map(|c| (1.0 - v) * (q[1][c] - q[0][c]) + v * (q[2][c] - q[3][c]));
+        let dv = [0, 1].map(|c| (1.0 - u) * (q[3][c] - q[0][c]) + u * (q[2][c] - q[1][c]));
+        let det = du[0] * dv[1] - du[1] * dv[0];
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let su = (rx * dv[1] - ry * dv[0]) / det;
+        let sv = (du[0] * ry - du[1] * rx) / det;
+        u -= su;
+        v -= sv;
+        if su.abs() + sv.abs() < 1e-10 {
+            break;
+        }
+    }
+    (u.is_finite() && v.is_finite()).then_some([u as f32, v as f32])
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1457,6 +1520,34 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn moving_a_mesh_corner_keeps_the_grids_shape() {
+        let mut t = Tracker { mode: TrackMode::Mesh, points: vec![PointTrack::default()], grid: [4, 4], smooth: 0.0 };
+        t.fill_mesh([[0.0, 0.0], [400.0, 0.0], [400.0, 400.0], [0.0, 400.0]], Time::ZERO);
+        // An inner point dragged by hand off the even grid.
+        t.points[6].point = [130.0, 80.0];
+        let before = t.shown_at(Time::ZERO);
+        // Clicking a corner without moving it changes nothing.
+        let c = t.mesh_corners()[2];
+        t.move_mesh_corner(c, before[c], Time::ZERO);
+        let same = t.shown_at(Time::ZERO);
+        for (a, b) in before.iter().zip(&same) {
+            assert!((a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3, "{a:?} became {b:?}");
+        }
+        // Moving it carries the grid along, the hand-placed point included.
+        t.move_mesh_corner(c, [600.0, 400.0], Time::ZERO);
+        let after = t.shown_at(Time::ZERO);
+        assert_eq!(after[c], [600.0, 400.0]);
+        assert_eq!(after[0], [0.0, 0.0]);
+        // At the same place in the stretched square: (0.325, 0.2) of the way across and down.
+        assert!((after[6][0] - 143.0).abs() < 0.01 && (after[6][1] - 80.0).abs() < 0.01, "{:?}", after[6]);
+        // An untouched inner point follows the stretch as an even grid would.
+        assert!((after[12][0] - 250.0).abs() < 0.01 && (after[12][1] - 200.0).abs() < 0.01, "{:?}", after[12]);
+        // A different number of cells.
+        t.set_grid(32, 32, Time::ZERO);
+        assert_eq!(t.points.len(), 33 * 33);
+    }
     use crate::project::{ClipId, MediaId};
 
     /// A smooth blob (a "feature") at `c` on a gently varying background.

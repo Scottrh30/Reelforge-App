@@ -94,7 +94,7 @@ impl MeshTracker {
             height,
             size,
             search: search.max(4.0),
-            target: (cells * 8).clamp(120, 320),
+            target: (cells * 8).clamp(120, 640),
             tol: (width as f32 / 700.0).max(1.5),
             rng: 0x2545_f491_4f6c_dd1d,
             rejected: Vec::new(),
@@ -299,6 +299,30 @@ fn local_map(reference: &MeshShape, now: &MeshShape, at: MeshCoord) -> Option<[[
 /// starting from `start`, re-weighting with Tukey's biweight at each cut-off
 /// in turn. Returns the grid and each pair's final weight.
 fn solve_robust(start: &MeshShape, pairs: &[(MeshCoord, [f32; 2], f64)], cutoffs: &[f32]) -> (MeshShape, Vec<f64>) {
+    let (cols, rows) = (start.cols, start.rows);
+    // Coarse enough that its cells have a handful of features each.
+    let (cc, cr) = coarse_size(cols, rows, pairs.len());
+    if (cc, cr) != (cols, rows) {
+        // A fine grid has cells with few features or none, and can bend to fit
+        // a bad match exactly (so it never looks wrong). Track a coarse grid
+        // first (which matches to trust, and the overall bend), then let the
+        // fine grid add detail to it where features say so.
+        let coarse_pairs: Vec<_> = pairs.iter().map(|(at, p, prior)| (regrid(*at, [cols, rows], [cc, cr]), *p, *prior)).collect();
+        let (coarse, cw) = solve_robust(&resample(start, cc, cr), &coarse_pairs, cutoffs);
+        let shape = resample(&coarse, cols, rows);
+        let w: Vec<f64> = cw.iter().zip(pairs).map(|(w, (_, _, prior))| w * prior).collect();
+        let mesh = if w.iter().filter(|&&x| x > 0.0).count() >= 4 { solve_mesh(&shape, &shape, pairs, &w).unwrap_or(shape) } else { shape };
+        let c = *cutoffs.last().unwrap_or(&2.0);
+        let w = pairs
+            .iter()
+            .map(|(at, p, _)| {
+                let q = mesh.apply(*at);
+                let r = (((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt() / c) as f64;
+                if r >= 1.0 { 0.0 } else { (1.0 - r * r).powi(2) }
+            })
+            .collect();
+        return (mesh, w);
+    }
     let mut mesh = start.clone();
     let mut w = vec![1.0f64; pairs.len()];
     for &c in cutoffs {
@@ -324,6 +348,44 @@ fn solve_robust(start: &MeshShape, pairs: &[(MeshCoord, [f32; 2], f64)], cutoffs
     (mesh, w)
 }
 
+/// Features a cell of the coarse grid should have (see [`solve_robust`]).
+const PER_CELL: usize = 5;
+
+/// The grid to track first for a `cols` × `rows` one with `features`
+/// features: for a grid finer than 8 × 8, halved until it has no more than
+/// one cell per [`PER_CELL`] features, but not below 4 × 4 (so it doesn't
+/// flip between sizes as features come and go); smaller grids as they are.
+fn coarse_size(cols: u8, rows: u8, features: usize) -> (u8, u8) {
+    let (mut c, mut r) = (cols, rows);
+    if c <= 8 && r <= 8 {
+        return (c, r);
+    }
+    while (c as usize * r as usize) * PER_CELL > features && (c > 4 || r > 4) {
+        c = c.div_ceil(2).max(4.min(cols));
+        r = r.div_ceil(2).max(4.min(rows));
+    }
+    (c, r)
+}
+
+/// A spot on a `from`-sized grid, as a spot on a `to`-sized one over the same surface.
+fn regrid(at: MeshCoord, from: [u8; 2], to: [u8; 2]) -> MeshCoord {
+    let g = [0, 1].map(|k| (at.cell[k] as f32 + at.f[k]) / from[k] as f32 * to[k] as f32);
+    let cell = [0, 1].map(|k| (g[k].floor().max(0.0) as u8).min(to[k] - 1));
+    MeshCoord { cell, f: [g[0] - cell[0] as f32, g[1] - cell[1] as f32] }
+}
+
+/// `m` as a `cols` × `rows` grid over the same surface.
+fn resample(m: &MeshShape, cols: u8, rows: u8) -> MeshShape {
+    let points = (0..=rows as usize)
+        .flat_map(|j| (0..=cols as usize).map(move |i| (i, j)))
+        .map(|(i, j)| {
+            let at = MeshCoord { cell: [(i.min(cols as usize - 1)) as u8, (j.min(rows as usize - 1)) as u8], f: [if i == cols as usize { 1.0 } else { 0.0 }, if j == rows as usize { 1.0 } else { 0.0 }] };
+            m.apply(regrid(at, [cols, rows], [m.cols, m.rows]))
+        })
+        .collect();
+    MeshShape { cols, rows, points }
+}
+
 /// One weighted least-squares solve for the grid's points: features pull
 /// their cells into place; each edge between neighbouring points is held to
 /// its vector in `shape` (smoothness); and every point is tied, very weakly,
@@ -332,7 +394,8 @@ fn solve_mesh(init: &MeshShape, shape: &MeshShape, pairs: &[(MeshCoord, [f32; 2]
     let (cols, rows) = (init.cols as usize, init.rows as usize);
     let n = (cols + 1) * (rows + 1);
     let idx = |i: usize, j: usize| j * (cols + 1) + i;
-    let mut a = vec![0.0f64; n * n];
+    // Points only ever pair with their own cell's: the system is banded.
+    let mut a = Band::new(n, cols + 2);
     let mut bx = vec![0.0f64; n];
     let mut by = vec![0.0f64; n];
     let mut total = 0.0;
@@ -350,7 +413,7 @@ fn solve_mesh(init: &MeshShape, shape: &MeshShape, pairs: &[(MeshCoord, [f32; 2]
             bx[verts[r]] += wk * bw[r] * p[0] as f64;
             by[verts[r]] += wk * bw[r] * p[1] as f64;
             for c in 0..4 {
-                a[verts[r] * n + verts[c]] += wk * bw[r] * bw[c];
+                a.add(verts[r], verts[c], wk * bw[r] * bw[c]);
             }
         }
         total += wk;
@@ -364,10 +427,10 @@ fn solve_mesh(init: &MeshShape, shape: &MeshShape, pairs: &[(MeshCoord, [f32; 2]
         let lambda = m * (0.1 + 0.6 * (-(data[p] + data[q]) / m).exp());
         let (sp, sq) = (shape.points[p], shape.points[q]);
         let (dx, dy) = ((sp[0] - sq[0]) as f64, (sp[1] - sq[1]) as f64);
-        a[p * n + p] += lambda;
-        a[q * n + q] += lambda;
-        a[p * n + q] -= lambda;
-        a[q * n + p] -= lambda;
+        a.add(p, p, lambda);
+        a.add(q, q, lambda);
+        a.add(p, q, -lambda);
+        a.add(q, p, -lambda);
         bx[p] += lambda * dx;
         bx[q] -= lambda * dx;
         by[p] += lambda * dy;
@@ -384,45 +447,69 @@ fn solve_mesh(init: &MeshShape, shape: &MeshShape, pairs: &[(MeshCoord, [f32; 2]
         }
     }
     for k in 0..n {
-        a[k * n + k] += mu;
+        a.add(k, k, mu);
         bx[k] += mu * shape.points[k][0] as f64;
         by[k] += mu * shape.points[k][1] as f64;
     }
-    let x = solve_dense(a.clone(), bx, n)?;
-    let y = solve_dense(a, by, n)?;
+    let [x, y] = a.solve([bx, by])?;
     Some(MeshShape { cols: init.cols, rows: init.rows, points: (0..n).map(|k| [x[k] as f32, y[k] as f32]).collect() })
 }
 
-/// Solve the n×n system `a x = b` (row-major), by elimination with partial pivoting.
-fn solve_dense(mut a: Vec<f64>, mut b: Vec<f64>, n: usize) -> Option<Vec<f64>> {
-    for col in 0..n {
-        let piv = (col..n).max_by(|&p, &q| a[p * n + col].abs().total_cmp(&a[q * n + col].abs()))?;
-        if a[piv * n + col].abs() < 1e-12 {
-            return None;
-        }
-        if piv != col {
-            for c in 0..n {
-                a.swap(col * n + c, piv * n + c);
-            }
-            b.swap(col, piv);
-        }
-        for r in col + 1..n {
-            let f = a[r * n + col] / a[col * n + col];
-            if f == 0.0 {
-                continue;
-            }
-            for c in col..n {
-                a[r * n + c] -= f * a[col * n + c];
-            }
-            b[r] -= f * b[col];
-        }
+/// A square matrix that's zero more than `b` places off its diagonal, kept
+/// as just that band (a 33 × 33-point grid's system is 1089 × 1089, but only
+/// 69 wide).
+struct Band {
+    n: usize,
+    b: usize,
+    v: Vec<f64>,
+}
+
+impl Band {
+    fn new(n: usize, b: usize) -> Self {
+        Band { n, b, v: vec![0.0; n * (2 * b + 1)] }
     }
-    let mut x = vec![0.0; n];
-    for r in (0..n).rev() {
-        let s: f64 = (r + 1..n).map(|c| a[r * n + c] * x[c]).sum();
-        x[r] = (b[r] - s) / a[r * n + r];
+
+    fn at(&self, r: usize, c: usize) -> usize {
+        r * (2 * self.b + 1) + c + self.b - r
     }
-    Some(x)
+
+    fn add(&mut self, r: usize, c: usize, x: f64) {
+        let i = self.at(r, c);
+        self.v[i] += x;
+    }
+
+    /// Solve `a x = rhs` for each right-hand side, by elimination inside the
+    /// band (no pivoting: the grid's system is symmetric positive definite).
+    fn solve<const K: usize>(mut self, mut rhs: [Vec<f64>; K]) -> Option<[Vec<f64>; K]> {
+        let (n, b) = (self.n, self.b);
+        for col in 0..n {
+            let d = self.v[self.at(col, col)];
+            if d.abs() < 1e-12 {
+                return None;
+            }
+            for r in col + 1..(col + b + 1).min(n) {
+                let f = self.v[self.at(r, col)] / d;
+                if f == 0.0 {
+                    continue;
+                }
+                for c in col..(col + b + 1).min(n) {
+                    let x = self.v[self.at(col, c)];
+                    let i = self.at(r, c);
+                    self.v[i] -= f * x;
+                }
+                for x in rhs.iter_mut() {
+                    x[r] -= f * x[col];
+                }
+            }
+        }
+        for x in rhs.iter_mut() {
+            for r in (0..n).rev() {
+                let s: f64 = (r + 1..(r + b + 1).min(n)).map(|c| self.v[self.at(r, c)] * x[c]).sum();
+                x[r] = (x[r] - s) / self.v[self.at(r, r)];
+            }
+        }
+        rhs.iter().all(|x| x.iter().all(|v| v.is_finite())).then_some(rhs)
+    }
 }
 
 #[cfg(test)]
@@ -554,6 +641,64 @@ mod tests {
             let ((worst, mean), (iworst, imean)) = ripple(c, r, 9.0);
             eprintln!("mesh {c}x{r}, ripple: worst {worst:.2} px, mean {mean:.2} px (best possible grid: {iworst:.2}, {imean:.2})");
             assert!(mean < imean + 0.6 && worst < iworst + 2.0, "{c}x{r}: worst {worst:.2} vs {iworst:.2}, mean {mean:.2} vs {imean:.2}");
+        }
+    }
+
+    /// Fine grids (16 × 16, 32 × 32) on the same small sheet: their cells are
+    /// smaller than a feature box, so most have no feature of their own; they
+    /// mustn't drift where nothing pulls them.
+    #[test]
+    fn fine_grids_follow_a_rippling_sheet() {
+        for n in [16u8, 32] {
+            let ((worst, mean), _) = ripple(n, n, 9.0);
+            eprintln!("mesh {n}x{n}, ripple: worst {worst:.2} px, mean {mean:.2} px");
+            assert!(mean < 0.6 && worst < 5.0, "{n}x{n}: worst {worst:.2}, mean {mean:.2}");
+        }
+    }
+
+    #[test]
+    fn coarse_grids_for_fine_ones() {
+        assert_eq!(coarse_size(8, 8, 10), (8, 8), "8 × 8 and below as they are");
+        assert_eq!(coarse_size(16, 16, 86), (4, 4));
+        assert_eq!(coarse_size(32, 32, 400), (8, 8));
+        assert_eq!(coarse_size(32, 32, 6000), (32, 32));
+        assert_eq!(coarse_size(16, 4, 10), (4, 4));
+        let at = MeshCoord { cell: [5, 3], f: [0.5, 0.25] };
+        let c = regrid(at, [16, 16], [4, 4]);
+        assert_eq!((c.cell, c.f), ([1, 0], [0.375, 0.8125]));
+        let m = MeshShape::filling([[0.0, 0.0], [160.0, 0.0], [160.0, 160.0], [0.0, 160.0]], 16, 16);
+        let r = resample(&m, 4, 4);
+        assert_eq!(r.points[6], [40.0, 40.0]);
+        assert_eq!(r.points[24], [160.0, 160.0]);
+    }
+
+    /// The banded solve gives what plain elimination does.
+    #[test]
+    fn banded_solve_matches_a_dense_one() {
+        let (n, b) = (40, 6);
+        let mut band = Band::new(n, b);
+        let mut dense = vec![0.0f64; n * n];
+        let mut seed = 7u64;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as f64 / (1u64 << 31) as f64 - 0.5
+        };
+        for r in 0..n {
+            for c in r..(r + b + 1).min(n) {
+                let x = if r == c { 4.0 + rnd() } else { rnd() * 0.3 };
+                band.add(r, c, x);
+                dense[r * n + c] += x;
+                if r != c {
+                    band.add(c, r, x);
+                    dense[c * n + r] += x;
+                }
+            }
+        }
+        let rhs: Vec<f64> = (0..n).map(|_| rnd()).collect();
+        let [x] = band.solve([rhs.clone()]).unwrap();
+        for r in 0..n {
+            let ax: f64 = (0..n).map(|c| dense[r * n + c] * x[c]).sum();
+            assert!((ax - rhs[r]).abs() < 1e-9, "row {r}: {ax} vs {}", rhs[r]);
         }
     }
 }

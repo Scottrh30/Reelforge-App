@@ -119,10 +119,16 @@ pub enum DeepCurve {
 }
 /// Draw calls per frame (a dissolve uses three).
 const MAX_DRAWS: usize = 128;
-const UNIFORM_SIZE: u64 = 128 + 16 + 32 + 41 * 16; // mat4 + vec2 + 2×f32 + 3×vec4, the effect map and margin, then a mesh header and 41 vec4 of points
+const UNIFORM_SIZE: u64 = 128 + 16 + 32 + MESH_VEC4S as u64 * 16; // mat4 + vec2 + 2×f32 + 3×vec4, the effect map and margin, then a mesh header and the points
+/// vec4s holding a mesh's points, two to each: enough for the biggest grid
+/// (33 × 33 points). Must match `pts` in composite.wgsl.
+const MESH_VEC4S: usize = 545;
 /// Little quads per mesh cell, across and down (a cell is bilinear; this many
-/// straight-edged pieces draw it smoothly).
-const MESH_SUBDIV: u32 = 6;
+/// straight-edged pieces draw it smoothly): six for small grids, fewer for
+/// fine ones, whose cells are small already.
+fn mesh_subdiv(m: &reelforge_core::meshwarp::MeshShape) -> u32 {
+    (48 / m.cols.max(m.rows).max(1) as u32).clamp(1, 6)
+}
 /// Effect passes per frame.
 const MAX_FX_PASSES: usize = 256;
 /// 9 × vec4: params 0–7, texel/direction, extra (aspect, time, layer size),
@@ -1449,9 +1455,9 @@ impl Compositor {
             floats.extend(grow);
             match mesh {
                 Some(m) => {
-                    floats.extend([m.cols as f32, m.rows as f32, 1.0, MESH_SUBDIV as f32]);
+                    floats.extend([m.cols as f32, m.rows as f32, 1.0, mesh_subdiv(m) as f32]);
                     let mut pts: Vec<f32> = m.points.iter().flatten().copied().collect();
-                    pts.resize(41 * 4, 0.0);
+                    pts.resize(MESH_VEC4S * 4, 0.0);
                     floats.extend(pts);
                 }
                 None => {
@@ -1549,7 +1555,7 @@ impl Compositor {
 
         let offset = |slot: usize| (slot as u64 * self.uniform_stride) as u32;
         // Vertices for a draw: the plain quad, or every little quad of a mesh.
-        let verts: Vec<u32> = uniforms.iter().map(|u| u.3.map_or(6, |m| m.cols as u32 * m.rows as u32 * MESH_SUBDIV * MESH_SUBDIV * 6)).collect();
+        let verts: Vec<u32> = uniforms.iter().map(|u| u.3.map_or(6, |m| m.cols as u32 * m.rows as u32 * mesh_subdiv(m) * mesh_subdiv(m) * 6)).collect();
         // The texture to sample for a draw: the processed result, or the plain upload.
         let source = |d: &Draw| -> Option<&wgpu::BindGroup> {
             match d.fx {

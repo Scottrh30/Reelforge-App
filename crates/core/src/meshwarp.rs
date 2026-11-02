@@ -11,7 +11,7 @@ use crate::time::Time;
 use serde::{Deserialize, Serialize};
 
 /// The most cells across or down a mesh can have.
-pub const MAX_CELLS: u8 = 8;
+pub const MAX_CELLS: u8 = 32;
 
 /// A grid of points (frame pixels), row by row from the top left.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -38,7 +38,7 @@
     Planar: "A whole flat surface, in perspective",
     Mesh: "A surface that bends",
   };
-  const grids: [number, number][] = [[2, 2], [3, 3], [4, 3], [4, 4], [6, 4], [6, 6], [8, 6], [8, 8]];
+  const grids: [number, number][] = [[2, 2], [3, 3], [4, 3], [4, 4], [6, 4], [6, 6], [8, 6], [8, 8], [16, 16], [32, 32]];
   const hints: Record<TrackMode, string> = {
     Position: "Drag the box in the Viewer onto a sharp detail (a corner, a mark, a light), then track. The outer box is how far it may move per frame.",
     Transform: "Put the two boxes on sharp details of the same object, as far apart as you can: the line between them gives the rotation and scale.",

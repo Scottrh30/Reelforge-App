@@ -1338,3 +1338,24 @@ fn a_lower_output_scale_draws_the_same_picture_smaller() {
     assert_eq!(c.output_size(), Some([64, 32]));
     assert!(near(px(&c.read_output().unwrap(), 64, 42, 16), [188, 0, 188]));
 }
+
+/// A 32 × 32 mesh warp (the finest grid): drawn where its points put it.
+#[test]
+fn a_fine_mesh_warp_draws_where_its_points_are() {
+    let Some(mut c) = setup() else { return };
+    let green = solid(4, 4, [0, 255, 0, 255]);
+    // The layer squeezed into the left half of a 64 × 32 frame, with the
+    // grid's middle column (x 16) pulled right by 8 px: a thin spike to x 24
+    // (only a fine grid's points can be this close together).
+    let mut m = reelforge_core::meshwarp::MeshShape::filling([[0.0, 0.0], [32.0, 0.0], [32.0, 32.0], [0.0, 32.0]], 32, 32);
+    for j in 0..=32 {
+        m.points[j * 33 + 16][0] += 8.0;
+    }
+    let mut l = layer(1, &green, [4, 4], [64.0, 32.0], Transform::default(), BlendMode::Normal);
+    l.mesh = Some(m);
+    c.render([64, 32], &[l]);
+    let img = c.read_output().unwrap();
+    assert!(near(px(&img, 64, 4, 16), [0, 255, 0]), "inside the grid");
+    assert!(near(px(&img, 64, 22, 16), [0, 255, 0]), "in the spike (x 17 → 24)");
+    assert!(near(px(&img, 64, 40, 16), [0, 0, 0]), "past the grid: nothing");
+}

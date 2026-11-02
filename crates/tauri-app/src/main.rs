@@ -917,11 +917,8 @@ fn tracker_move(id: u64, point: usize, pos: [f32; 2]) -> Res<()> {
         let pos = [pos[0].clamp(lo[0], hi[0]), pos[1].clamp(lo[1], hi[1])];
         let corners = t.mesh_corners();
         if t.mode == TrackMode::Mesh && !t.is_tracked() && corners.contains(&point) {
-            // Before tracking, the grid fills its four corners.
-            let shown = t.shown_at(src);
-            let mut quad = corners.map(|i| shown[i]);
-            quad[corners.iter().position(|&i| i == point).unwrap_or(0)] = pos;
-            t.fill_mesh(quad, src);
+            // Before tracking, the grid follows its four corners (keeping its shape).
+            t.move_mesh_corner(point, pos, src);
         } else {
             let Some(p) = t.points.get_mut(point) else { return };
             p.move_to(src, pos);
