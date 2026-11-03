@@ -557,3 +557,125 @@ fn a_bending_mask_follows_a_rippling_sheet() {
     assert!(mean < imean + 0.4 && worst < 3.0, "bending mask off by {mean:.2} on average, {worst:.2} at worst");
     assert!(worst < pworst, "bending beats one perspective map");
 }
+
+// ---- 3D camera tracking on rendered footage -----------------------------------------
+
+/// Encodes a camera moving past a textured floor and wall (known path and
+/// lens), then follows and solves it: the lens and the path come back.
+#[test]
+fn solves_the_camera_of_encoded_footage() {
+    use reelforge_core::camtrack::{fov_of, solve, SolveOptions};
+    let (w, h) = (1440usize, 810usize);
+    let frames = 30;
+    let fov = 45.0f64;
+    let f = h as f64 * 0.5 / (fov.to_radians() * 0.5).tan();
+    let hash = |x: i64, y: i64| -> f64 {
+        let mut v = (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        v ^= v >> 29;
+        v = v.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        v ^= v >> 32;
+        (v >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let noise = |x: f64, y: f64| -> f64 {
+        let (mut s, mut amp, mut k) = (0.0, 1.0, 1.0 / 40.0);
+        for _ in 0..4 {
+            let (fx, fy) = (x * k, y * k);
+            let (ix, iy) = (fx.floor(), fy.floor());
+            let (tx, ty) = (fx - ix, fy - iy);
+            let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+            let (ix, iy) = (ix as i64, iy as i64);
+            let a = hash(ix, iy) * (1.0 - sx) + hash(ix + 1, iy) * sx;
+            let b = hash(ix, iy + 1) * (1.0 - sx) + hash(ix + 1, iy + 1) * sx;
+            s += amp * (a * (1.0 - sy) + b * sy);
+            amp *= 0.5;
+            k *= 2.0;
+        }
+        s / 1.875
+    };
+    // Camera centre and the right, down and forward axes for frame k.
+    let pose = |k: usize| -> ([f64; 3], [[f64; 3]; 3]) {
+        let s = k as f64 / (frames - 1) as f64;
+        let c = [-250.0 + 500.0 * s, -150.0, -100.0 + 100.0 * s];
+        let t = [60.0 * s, 0.0, 1500.0];
+        let n = |v: [f64; 3]| {
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            [v[0] / l, v[1] / l, v[2] / l]
+        };
+        let fw = n([t[0] - c[0], t[1] - c[1], t[2] - c[2]]);
+        let r = n([fw[2], 0.0, -fw[0]]);
+        let d = [fw[1] * r[2] - fw[2] * r[1], fw[2] * r[0] - fw[0] * r[2], fw[0] * r[1] - fw[1] * r[0]];
+        (c, [r, d, fw])
+    };
+    let path = std::env::temp_dir().join("rf_camtrack_scene.mp4");
+    let child = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", &format!("{w}x{h}"), "-r", "25", "-i", "-", "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p"])
+        .arg(&path)
+        .stdin(std::process::Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    };
+    let mut stdin = child.stdin.take().unwrap();
+    for k in 0..frames {
+        let (c, [r, d, fw]) = pose(k);
+        let mut img = vec![0u8; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let (u, v) = ((x as f64 + 0.5 - w as f64 / 2.0) / f, (y as f64 + 0.5 - h as f64 / 2.0) / f);
+                let dir = [r[0] * u + d[0] * v + fw[0], r[1] * u + d[1] * v + fw[1], r[2] * u + d[2] * v + fw[2]];
+                let mut best = f64::INFINITY;
+                let mut g = 0.5;
+                if dir[1] > 1e-9 {
+                    let t = (200.0 - c[1]) / dir[1];
+                    let z = c[2] + dir[2] * t;
+                    if t > 0.0 && z < 2500.0 {
+                        best = t;
+                        g = noise(c[0] + dir[0] * t, z);
+                    }
+                }
+                if dir[2] > 1e-9 {
+                    let t = (2500.0 - c[2]) / dir[2];
+                    if t > 0.0 && t < best {
+                        g = noise(c[0] + dir[0] * t + 5000.0, c[1] + dir[1] * t);
+                    }
+                }
+                img[y * w + x] = (g * 255.0) as u8;
+            }
+        }
+        stdin.write_all(&img).unwrap();
+    }
+    drop(stdin);
+    if !child.wait().is_ok_and(|s| s.success()) {
+        eprintln!("ffmpeg failed; skipping");
+        return;
+    }
+    let info = probe(&path).unwrap();
+    let mut last = 0.0;
+    let until = Time::from_secs_f64((frames - 1) as f64 / 25.0);
+    let (tracks, times) = reelforge_media::track_scene(&path, &info, Time::ZERO, until, &AtomicBool::new(false), |p| last = p).unwrap().unwrap();
+    assert_eq!(times.len(), frames);
+    assert!(last > 0.99);
+    assert!(tracks.len() > 100, "{}", tracks.len());
+    // Full-size pixels: the features cover the whole frame.
+    // Followed at half size, given back at full size (beyond the half-size frame).
+    let max = |k: usize| tracks.iter().map(|t| t.pos[0][k]).fold(0.0f32, f32::max);
+    assert!(max(0) > 1100.0 && max(1) > 500.0, "{} {}", max(0), max(1));
+    let turn = |a: [[f64; 3]; 3], b: [[f64; 3]; 3]| (a[2][0] * b[2][0] + a[2][1] * b[2][1] + a[2][2] * b[2][2]).clamp(-1.0, 1.0).acos().to_degrees();
+    let truth = turn(pose(0).1, pose(frames - 1).1);
+    let sol = solve(&tracks, frames, [w as f32, h as f32], SolveOptions::default(), &AtomicBool::new(false), &mut |_| {}).unwrap();
+    let got = fov_of(sol.focal, h as f64);
+    assert!(sol.error < 0.6, "error {}", sol.error);
+    // A short sideways move only roughly fixes the lens (nearby lenses with
+    // the camera a little nearer or further fit almost as well)…
+    assert!((got - fov).abs() < 4.0, "lens {got}° (truth {fov}°)");
+    let solved = turn(sol.poses[0].unwrap().r, sol.poses[frames - 1].unwrap().r);
+    assert!((truth - solved).abs() < 1.5, "turned {solved}° (truth {truth}°)");
+    // …and given the lens, the camera's turn through the shot is exact.
+    let known = solve(&tracks, frames, [w as f32, h as f32], SolveOptions { fov: Some(fov as f32), tripod: false }, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    let solved = turn(known.poses[0].unwrap().r, known.poses[frames - 1].unwrap().r);
+    assert!(known.error < 0.6 && (truth - solved).abs() < 0.2, "known lens: error {}, turned {solved}° (truth {truth}°)", known.error);
+    // Cancelling stops early.
+    let stop = AtomicBool::new(true);
+    assert!(reelforge_media::track_scene(&path, &info, Time::ZERO, until, &stop, |_| {}).unwrap().is_none());
+}

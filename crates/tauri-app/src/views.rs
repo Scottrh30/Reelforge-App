@@ -189,10 +189,58 @@ pub struct Inspector {
     /// A line in the Viewer from the clip to the point it's parented to (frame
     /// pixels), when both show at the playhead.
     pub parent_link: Option<[[f32; 2]; 2]>,
+    /// The footage's solved 3D camera, if it has one.
+    pub cam_track: Option<CamTrackView>,
+    /// The tracking run on this clip is solving its 3D camera.
+    pub cam_tracking: bool,
     /// Progress (0–1) of a tracking run on this clip.
     pub tracking: Option<f32>,
     /// A tracking run is going on for another clip.
     pub tracking_elsewhere: bool,
+}
+
+/// A solved 3D camera, as the Track panel and the Viewer show it.
+#[derive(Serialize)]
+pub struct CamTrackView {
+    /// Lens: vertical field of view, degrees.
+    pub fov: f32,
+    /// Root mean square error, pixels.
+    pub error: f32,
+    pub frames: usize,
+    /// Frames placed from the features (the rest filled in).
+    pub placed: u32,
+    pub tripod: bool,
+    pub point_count: usize,
+    /// The solved points seen at the playhead: index, where (frame pixels), how well each fits (pixels).
+    pub points: Vec<(usize, [f32; 2], f32)>,
+    /// A camera made from it is still in the sequence.
+    pub camera: bool,
+}
+
+fn cam_track_view(e: &Editor, c: &Clip) -> Option<CamTrackView> {
+    let ct = c.camera_track.as_ref()?;
+    let i = e.camera_track_frame(c).unwrap_or(0);
+    let [w, h] = ct.frame;
+    let points = ct
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| (p.first as usize) <= i && i <= p.last as usize)
+        .filter_map(|(k, p)| {
+            let q = ct.project(i, p.pos)?;
+            (q[0] >= 0.0 && q[1] >= 0.0 && q[0] <= w && q[1] <= h).then_some((k, q, p.error))
+        })
+        .collect();
+    Some(CamTrackView {
+        fov: ct.fov,
+        error: ct.error,
+        frames: ct.cameras.len(),
+        placed: ct.placed,
+        tripod: ct.tripod,
+        point_count: ct.points.len(),
+        points,
+        camera: ct.camera.is_some_and(|id| e.seq().find_clip(id).is_some()),
+    })
 }
 
 #[derive(Serialize)]
@@ -541,6 +589,7 @@ pub fn state(e: &Editor) -> State {
             .collect();
         let footage = c.title.is_none() && c.nested.is_none() && p.media(c.media).is_some_and(|m| m.info.video.is_some() && m.info.duration > Time::ZERO);
         let job = e.tracking.as_ref().map(|j| (j.clip, j.progress));
+        let cam_job = e.tracking.as_ref().is_some_and(|j| j.camera && j.clip == c.id);
         Inspector {
             layer_map: map.as_ref().map(matrix),
             layer_inv: map.and_then(|m| m.inverse()).as_ref().map(matrix),
@@ -554,6 +603,8 @@ pub fn state(e: &Editor) -> State {
             parent: c.parent.map(|p| p.0),
             parent_link: crate::scene::parent_link(e, c),
             parents: if tr.kind == TrackKind::Video { e.parent_choices(c.id).into_iter().map(|(id, n)| (id.0, n)).collect() } else { Vec::new() },
+            cam_track: if video && footage { cam_track_view(e, c) } else { None },
+            cam_tracking: cam_job,
             tracking: job.filter(|(id, _)| *id == c.id).map(|(_, p)| p),
             tracking_elsewhere: job.is_some_and(|(id, _)| id != c.id),
             id: c.id.0,

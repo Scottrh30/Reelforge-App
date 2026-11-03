@@ -122,6 +122,9 @@ pub struct Clip {
     /// A motion tracker on this clip (see `track`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracker: Option<crate::track::Tracker>,
+    /// The footage's camera, solved by the 3D camera tracker (see `camtrack`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_track: Option<Box<crate::camtrack::CameraTrack>>,
     /// The layer stretched over a bending grid (from a mesh tracker): while
     /// set, it replaces position, scale, rotation and corner pin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,6 +186,7 @@ impl Clip {
             anchor: Time::ZERO,
             masks: Vec::new(),
             tracker: None,
+            camera_track: None,
             mesh: None,
             scene: None,
             plane: None,

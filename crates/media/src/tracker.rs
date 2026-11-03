@@ -316,3 +316,57 @@ fn follow_grid(
         progress((n / total).min(1.0));
     }
 }
+
+/// Follow features through `path` from media time `from` to `until` (later),
+/// for 3D camera solving (see [`reelforge_core::camtrack`]). Returns the
+/// tracks (media pixels) and each frame's media time. Large frames are
+/// followed at half size (positions are given back at full size).
+pub fn track_scene(
+    path: &Path,
+    info: &MediaInfo,
+    from: Time,
+    until: Time,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(f32),
+) -> Result<Option<(Vec<reelforge_core::camtrack::Track2d>, Vec<Time>)>> {
+    let v = info.video.as_ref().ok_or_else(|| anyhow!("this clip has no video to track"))?;
+    let step = v.frame_rate.frame_duration();
+    let mut src = FrameSource::open(path, None)?;
+    let wait = Duration::from_secs(20);
+    let total = ((until - from).0 / step.0.max(1)).max(1) as f32 + 1.0;
+    let mut follower: Option<(reelforge_core::camtrack::SceneFollower, usize, usize, usize)> = None;
+    let mut times = Vec::new();
+    let mut t = from;
+    while t <= until {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let f = src.frame_at_blocking(t, wait).ok_or_else(|| anyhow!("no frame at {t}"))?;
+        let (w, h) = (f.width as usize, f.height as usize);
+        let half = if w > 1400 { 2 } else { 1 };
+        let luma = f.luma();
+        let (fw, fh) = (w / half, h / half);
+        let data = if half == 1 {
+            luma
+        } else {
+            let mut d = vec![0.0f32; fw * fh];
+            for y in 0..fh {
+                for x in 0..fw {
+                    let i = 2 * y * w + 2 * x;
+                    d[y * fw + x] = (luma[i] + luma[i + 1] + luma[i + w] + luma[i + w + 1]) * 0.25;
+                }
+            }
+            d
+        };
+        // Working pixels → media pixels.
+        let k = half as f32 * v.width as f32 / w as f32;
+        let (fol, ..) = follower.get_or_insert_with(|| (reelforge_core::camtrack::SceneFollower::new(fw, fh, k), fw, fh, half));
+        let pyr = Pyramid::new(data, fw, fh, fol.levels());
+        fol.add_frame(&pyr);
+        times.push(t);
+        progress((times.len() as f32 / total).min(1.0));
+        t = t + step;
+    }
+    let (fol, ..) = follower.ok_or_else(|| anyhow!("no frames to track"))?;
+    Ok(Some((fol.tracks(), times)))
+}

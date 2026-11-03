@@ -354,6 +354,56 @@
     el.addEventListener("pointerup", up);
   }
 
+  // ---- 3D camera tracker: the solved points at the playhead (frame pixels) ----
+  const cam = $derived(ins?.cam_track && (app.cam3d || !ins.tracker) ? ins.cam_track : null);
+  const camPicked = $derived(app.camSel && ins && app.camSel.clip === ins.id ? app.camSel.points : []);
+  // Forget picks that are no longer points of this clip's solve.
+  $effect(() => {
+    if (app.camSel && (!ins || app.camSel.clip !== ins.id || !ins.cam_track || app.camSel.points.some((p) => p >= ins.cam_track!.point_count))) app.camSel = null;
+  });
+  const fbox = (p: Pt): Pt => [fit.x + p[0] * fit.k, fit.y + p[1] * fit.k];
+  /// Green fits well, yellow fairly, orange poorly.
+  const fitColour = (e: number) => (e < 0.6 ? "#5ef08a" : e < 1.5 ? "#ffd246" : "#ff8a3d");
+  function camPick(e: PointerEvent, k: number) {
+    if (!ins || e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = ins.id;
+    if (e.shiftKey) app.camSel = { clip: id, points: camPicked.includes(k) ? camPicked.filter((p) => p !== k) : [...camPicked, k] };
+    else app.camSel = { clip: id, points: [k] };
+  }
+  // Shift held: a layer over the picture takes Shift+drags as a box to pick points in.
+  let shiftHeld = $state(false);
+  let camBox = $state<{ a: Pt; b: Pt } | null>(null);
+  function camBoxDown(e: PointerEvent) {
+    if (!e.shiftKey || e.button !== 0 || !ins || !cam) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = ins.id;
+    const pts = cam.points;
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const a = toBoxPt(e);
+    camBox = { a, b: a };
+    const move = (ev: PointerEvent) => camBox && (camBox = { a, b: toBoxPt(ev) });
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      if (!camBox) return;
+      const [x0, x1] = [Math.min(camBox.a[0], camBox.b[0]), Math.max(camBox.a[0], camBox.b[0])];
+      const [y0, y1] = [Math.min(camBox.a[1], camBox.b[1]), Math.max(camBox.a[1], camBox.b[1])];
+      const inBox = pts.flatMap(([k, p]) => {
+        const [x, y] = fbox(p);
+        return x >= x0 && x <= x1 && y >= y0 && y <= y1 ? [k] : [];
+      });
+      const had = app.camSel?.clip === id ? app.camSel.points : [];
+      app.camSel = { clip: id, points: [...new Set([...had, ...inBox])] };
+      camBox = null;
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
   // Energy blades of the selected clip: hilt and tip handles (% of the layer).
   type Blade = { index: number; hilt: Pt; tip: Pt; colour: string };
   const blades = $derived.by((): Blade[] => {
@@ -580,7 +630,39 @@
 
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && app.meshSel && !e.defaultPrevented && (app.meshSel = null)} />
+<svelte:window
+  onkeydown={(e) => {
+    shiftHeld = e.shiftKey;
+    if (e.key === "Escape" && !e.defaultPrevented) {
+      if (app.meshSel) app.meshSel = null;
+      else if (app.camSel) app.camSel = null;
+    }
+  }}
+  onkeyup={(e) => (shiftHeld = e.shiftKey)}
+  onblur={() => (shiftHeld = false)}
+/>
+
+{#if cam && ins}
+  <!-- The 3D camera tracker's solved points: click to pick; Shift+click or Shift+drag for more. -->
+  <svg class="overlay" aria-hidden="true">
+    {#if shiftHeld || camBox}
+      {@const [x0, y0] = fbox([0, 0])}
+      {@const [x1, y1] = fbox([app.s?.seq.width ?? 1920, app.s?.seq.height ?? 1080])}
+      <rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} class="cambox-catch" onpointerdown={camBoxDown} role="presentation" />
+    {/if}
+    {#each cam.points as [k, p, err] (k)}
+      {@const [x, y] = fbox(p)}
+      {@const on = camPicked.includes(k)}
+      <g class="campt" class:on>
+        <line x1={x - (on ? 6 : 4)} y1={y - (on ? 6 : 4)} x2={x + (on ? 6 : 4)} y2={y + (on ? 6 : 4)} stroke={on ? "#fff" : fitColour(err)} />
+        <line x1={x - (on ? 6 : 4)} y1={y + (on ? 6 : 4)} x2={x + (on ? 6 : 4)} y2={y - (on ? 6 : 4)} stroke={on ? "#fff" : fitColour(err)} />
+        {#if on}<circle cx={x} cy={y} r="8" class="campick" />{/if}
+        <circle cx={x} cy={y} r="7" class="camhit" onpointerdown={(e) => camPick(e, k)} role="presentation"><title>A tracked point ({err.toFixed(2)} px): click to pick it, Shift+click to add it</title></circle>
+      </g>
+    {/each}
+    {#if camBox}<rect x={Math.min(camBox.a[0], camBox.b[0])} y={Math.min(camBox.a[1], camBox.b[1])} width={Math.abs(camBox.b[0] - camBox.a[0])} height={Math.abs(camBox.b[1] - camBox.a[1])} class="meshbox" />{/if}
+  </svg>
+{/if}
 
 {#if ins?.parent_link}
   <!-- The selected layer's link to the point it follows. -->
@@ -849,6 +931,31 @@
     pointer-events: none;
     overflow: visible;
     z-index: 2;
+  }
+  .campt line {
+    stroke-width: 1.6;
+    pointer-events: none;
+    filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9));
+  }
+  .campt.on line {
+    stroke-width: 2;
+  }
+  .campick {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2;
+    pointer-events: none;
+  }
+  .camhit {
+    fill: transparent;
+    stroke: none;
+    pointer-events: all;
+    cursor: pointer;
+  }
+  .cambox-catch {
+    fill: transparent;
+    pointer-events: all;
+    cursor: crosshair;
   }
   .overlay.drawing {
     cursor: crosshair;

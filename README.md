@@ -788,6 +788,29 @@ What works now:
     One-point tracks move it; two-point tracks also turn and scale it; four-point, planar and
     mesh tracks give it the surface's best-fitting move, turn and scale (a point has no
     perspective). Tick X, Y, rotation and scale to choose which parts are keyed
+- **3D camera tracker** (Track panel → **3D camera**): works out how the camera moved through
+  the whole clip, its lens, and where the details in the shot are in 3D, so 3D layers, titles,
+  3D text, points and lights can be put into the scene and stay put as the camera moves (as
+  After Effects' 3D Camera Tracker does). Select a footage clip and press **Analyse**: a few
+  hundred details are followed through the shot (new ones taken up as others leave the
+  picture), then the camera is solved. If you know the lens, tick **I know the lens** and give
+  its **Focal length** (full-frame equivalent, 36 mm across; the field of view it makes is
+  shown): short shots, or ones moving mostly sideways past one flat surface, can't always pin
+  the lens down by themselves (lenses a few degrees apart fit equally well), though what you
+  put in the shot still stays put. For a camera that only turns (on a tripod), tick **Camera
+  only turns**; without it, a shot with too little parallax is found to be one anyway. The
+  panel then shows how well it fits (error in pixels: under 0.5 very good, under 1 good), the
+  lens, and how many frames had to be filled in. The solved points show in the Viewer as small
+  crosses (green fits well, yellow fairly, orange poorly); click one to pick it, **Shift+click**
+  or **Shift+drag** a box to pick more (Escape drops them). **Create**: **Camera** makes a
+  camera clip keyed every frame to move like the real one; **Solid**, **Title**, **3D text**
+  and **Point** put one on the picked points (lying on their surface when three or more are
+  picked, else facing the camera), and make the camera too if there isn't one yet. **Set ground
+  plane** turns the scene so the picked points' surface is the floor (its middle the origin),
+  for lights and text that stand on it. Everything made is ordinary clips and keyframes, all
+  undoable. On rendered test footage of a camera moving past a textured floor and wall, it
+  fits to 0.1–0.3 px and the camera's path comes within 1° and 2 % of the truth (within 0.1°
+  and 0.5 % given the lens)
 - **3D layers, camera and lights**:
   - **3D layer** (Transform section of the Controls panel): the layer becomes a flat plane in
     3D space with a **Position Z** (positive is further away) and **Rotation X / Y** (Rotation
@@ -1504,6 +1527,30 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   for `TRUST_FRAMES` frames running join in (holding the outer points); each point and handle
   end keeps its `MeshCoord` on the grid. The run uses the same `TrackJob` as point
   tracking (`mask: Some(..)`), finishing in `Editor::finish_mask_tracking` as one undo step.
+- **3D camera tracking** (`core/src/camtrack.rs`, `track_scene` in `media/src/tracker.rs`,
+  `engine/src/editor/camtrack.rs`): `SceneFollower` keeps about 260 `FeatureTracker`s going
+  (Shi–Tomasi features, topped up as they're lost), ending a track when the feature no longer
+  matches its first look (it has turned or foreshortened too far to follow without drift);
+  frames wider than 1400 px are followed at half size. Positions are put out with pixel
+  centres at halves, as the frame and camera have them. `solve` picks keyframes (neighbours
+  sharing 70 % of features, at most about 40), ranks pairs by parallax (the twelfth largest
+  residual from a robust homography fit, so a scene that's mostly one wall still shows its
+  depth) and features off that plane, and decides between a moving and a turning (tripod)
+  camera, trying both when it's unclear. Each start (the best two pairs) and each lens guess
+  (seven fields of view) is solved: relative pose from the essential matrix (eight-point in
+  RANSAC, Sampson distance), triangulation, then resection of further keyframes from their
+  neighbours with robust Levenberg–Marquardt, new points triangulated with at least 1° between
+  views, and bundle adjustment (Levenberg–Marquardt with a Schur complement over point
+  blocks, Huber weights, one camera held) every few keyframes over the dozen nearest the new
+  one, then over all of them. Candidates are compared
+  by a capped error over every observation, dropped tracks and unplaced frames counting the
+  cap, so a solve can't look better by throwing data away; the best three refine the lens
+  (re-triangulating what was dropped) and the best wins. Every other frame is then placed,
+  points refined from all frames, and frames placed again. `into_track` puts the first
+  frame's camera where the default camera is, scaled so the features at middle depth sit at
+  Z = 0, and turns each pose into camera settings (position, point of interest, roll measured
+  as `space3d::Camera::basis` builds it). Making layers uses `CameraTrack::plane` (PCA of the
+  picked points, facing the camera) and `orientation_facing`
 - **Plugins** (`core/src/plugin.rs`, `render/src/plugin.rs`, `engine/src/plugins.rs`): the
   manifest is parsed into a `PluginDef` (parameter specs interned as `&'static`, like the
   built-in effects' tables, so reloading the same manifest leaks nothing) and published in a

@@ -312,11 +312,32 @@ export interface Inspector {
   parents: [number, string][];
   /// Viewer line from the clip to its parent point (frame pixels), when both show.
   parent_link: [[number, number], [number, number]] | null;
+  /// The footage's solved 3D camera.
+  cam_track: CamTrackView | null;
+  /// The tracking run on this clip is solving its 3D camera.
+  cam_tracking: boolean;
   tracking: number | null;
   tracking_elsewhere: boolean;
 }
 
 export type Pt = [number, number];
+
+/// A solved 3D camera (see the Track panel's 3D camera method).
+export interface CamTrackView {
+  /// Lens: vertical field of view, degrees.
+  fov: number;
+  /// Root mean square error, pixels.
+  error: number;
+  frames: number;
+  placed: number;
+  tripod: boolean;
+  point_count: number;
+  /// Points seen at the playhead: [index, frame pixels, error px].
+  points: [number, Pt, number][];
+  /// A camera made from it is still in the sequence.
+  camera: boolean;
+}
+export type CamMake = "Camera" | "Point" | "Solid" | "Title" | "Text3d";
 
 export interface Mask {
   name: string;
@@ -866,6 +887,10 @@ export const api = {
   trackerOp: (id: number, op: "clear" | "remove") => invoke("tracker_op", { id, op }),
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
   trackCancel: () => invoke("track_cancel"),
+  camtrackStart: (id: number, fov: number | null, tripod: boolean) => invoke("camtrack_start", { id, fov, tripod }),
+  camtrackMake: (id: number, what: CamMake, picked: number[]) => invoke("camtrack_make", { id, what, picked }),
+  camtrackGround: (id: number, picked: number[]) => invoke("camtrack_ground", { id, picked }),
+  camtrackRemove: (id: number) => invoke("camtrack_remove", { id }),
   maskTrack: (id: number, index: number, forward: boolean, motion: MaskMotion) => invoke("mask_track", { id, index, forward, motion }),
   trackApply: (id: number, target: number, mask: number | null, blade: number | null, smoothing: number, axes?: TrackAxes, zoom: StabZoom = "Off") => invoke("track_apply", { id, target, mask, blade, smoothing, axes, zoom }),
   exportOptions: () => invoke<ExportOptions>("export_options"),

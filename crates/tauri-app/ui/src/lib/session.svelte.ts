@@ -59,6 +59,10 @@ export const app = $state({
   activeMask: null as null | { clip: number; index: number },
   /// Mesh tracker points picked in the Viewer (Shift+click, Shift+drag a box), to move together.
   meshSel: null as null | { clip: number; points: number[] },
+  /// Solved 3D camera points picked in the Viewer (indices into the solve's points).
+  camSel: null as null | { clip: number; points: number[] },
+  /// The Track panel is on its 3D camera method (the Viewer shows the solved points).
+  cam3d: false,
   /// A correction to a tracked frame eases into this many tracked frames on each side (0: that frame only).
   trackBlend: (() => {
     try {

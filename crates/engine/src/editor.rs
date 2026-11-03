@@ -182,7 +182,12 @@ impl Editor {
 enum TrackMsg {
     Progress(f32),
     Done(Result<(Vec<Vec<reelforge_core::track::TrackSample>>, reelforge_media::TrackEnd), String>),
+    /// A 3D camera solve (`None`: stopped).
+    CameraDone(Result<Option<reelforge_core::camtrack::CameraTrack>, String>),
 }
+
+mod camtrack;
+pub use camtrack::CamMake;
 
 /// A motion-tracking run going on in the background.
 pub struct TrackJob {
@@ -196,6 +201,8 @@ pub struct TrackJob {
     pub mask: Option<(usize, reelforge_core::track::MaskMotion)>,
     /// …through another clip's footage (below an adjustment layer or a solid).
     pub through: Option<ClipId>,
+    /// Solving the 3D camera (not 2D tracking).
+    pub camera: bool,
 }
 
 /// An interactive edit in progress: what's being changed and its value before the gesture.
@@ -2634,7 +2641,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false });
         self.status = "Tracking…".into();
     }
 
@@ -2706,7 +2713,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("mask tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id) });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id), camera: false });
         self.status = if own { format!("Tracking {name}…") } else { format!("Tracking {name} through the footage below ({src_name})…") };
     }
 
@@ -2760,11 +2767,18 @@ impl Editor {
     fn poll_tracking(&mut self) {
         let Some(job) = &mut self.tracking else { return };
         let mut done = None;
+        let mut camera = None;
         while let Ok(m) = job.rx.try_recv() {
             match m {
                 TrackMsg::Progress(p) => job.progress = p,
                 TrackMsg::Done(r) => done = Some(r),
+                TrackMsg::CameraDone(r) => camera = Some(r),
             }
+        }
+        if let Some(r) = camera {
+            let job = self.tracking.take().unwrap();
+            self.finish_camera_tracking(&job, r);
+            return;
         }
         let Some(result) = done else { return };
         let job = self.tracking.take().unwrap();
@@ -3275,6 +3289,82 @@ mod tests {
 
     fn editor() -> Editor {
         Editor::new(None, None)
+    }
+
+    #[test]
+    fn a_solved_camera_makes_a_camera_and_layers_that_sit_in_the_shot() {
+        use reelforge_core::camtrack::{CamPose, CameraTrack, ScenePoint};
+        let mut e = editor();
+        e.new_project_with(1920, 1080, reelforge_core::FrameRate::new(25, 1));
+        e.add_plane([40, 40, 40, 255]);
+        let id = e.selection.unwrap();
+        // A camera sliding right and down a little, looking at the origin; a
+        // floor (y = 300) and a few points off it.
+        let n = 50;
+        let times: Vec<Time> = (0..n).map(|k| Time::from_secs_f64(k as f64 / 25.0)).collect();
+        let cameras: Vec<CamPose> = (0..n).map(|k| CamPose { position: [-200.0 + 8.0 * k as f32, -100.0 - 2.0 * k as f32, -1400.0], target: [0.0, 0.0, 0.0], roll: 0.5 * k as f32 }).collect();
+        let mut points: Vec<ScenePoint> = [[-200.0, 300.0, 0.0], [200.0, 300.0, 0.0], [-200.0, 300.0, 400.0], [200.0, 300.0, 400.0], [0.0, 300.0, 200.0]]
+            .iter()
+            .map(|&p| ScenePoint { pos: p, error: 0.2, first: 0, last: (n - 1) as u32 })
+            .collect();
+        points.push(ScenePoint { pos: [50.0, -200.0, 600.0], error: 0.3, first: 10, last: 40 });
+        let ct = CameraTrack { times: times.clone(), cameras: cameras.clone(), fov: 40.0, frame: [1920.0, 1080.0], points, error: 0.25, tripod: false, placed: n as u32, camera: None };
+        e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = Some(Box::new(ct.clone()));
+        let floor = [0usize, 1, 2, 3, 4];
+        // A solid on the floor, and with it the camera.
+        e.create_from_camera_track(id, CamMake::Solid, &floor);
+        let solid = e.selection.unwrap();
+        let cams = |e: &Editor| e.seq().tracks.iter().flat_map(|t| &t.clips).filter(|c| c.scene == Some(reelforge_core::space3d::SceneObject::Camera)).count();
+        assert_eq!(cams(&e), 1);
+        let cam_id = e.seq().find_clip(id).unwrap().1.camera_track.as_ref().unwrap().camera.unwrap();
+        assert!(e.seq().find_clip(cam_id).is_some());
+        // The sequence's camera is the solved one, frame by frame.
+        for k in [0usize, 13, 37, 49] {
+            let t = times[k];
+            let sc = e.project.scene3d_at(0, t);
+            let want = ct.camera(k);
+            for j in 0..3 {
+                assert!((sc.camera.position[j] - want.position[j]).abs() < 1e-2 && (sc.camera.target[j] - want.target[j]).abs() < 1e-2, "{k}: {:?} {:?}", sc.camera, want);
+            }
+            assert!((sc.camera.roll - want.roll).abs() < 1e-3 && (sc.camera.fov - 40.0).abs() < 1e-4);
+            // The solid's middle stays on the floor points' middle, seen from that camera.
+            let c = e.seq().find_clip(solid).unwrap().1;
+            let tr = e.project.world_transform(0, c, t);
+            assert!(tr.three_d);
+            let ls = reelforge_core::space3d::layer_space(&tr, e.layer_size(c), &sc);
+            let a = sc.camera.project(ls.plane[0]).unwrap();
+            let b = ct.project(k, [0.0, 300.0, 200.0]).unwrap();
+            assert!((a[0] - b[0]).abs() < 0.05 && (a[1] - b[1]).abs() < 0.05, "{a:?} {b:?}");
+            // Lying flat: its face points up.
+            let [_, u, v] = ls.plane;
+            let nrm = [v[1] * u[2] - v[2] * u[1], v[2] * u[0] - v[0] * u[2], v[0] * u[1] - v[1] * u[0]];
+            let l = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+            assert!(nrm[1] / l < -0.999, "{nrm:?}");
+        }
+        // More layers use the same camera.
+        e.create_from_camera_track(id, CamMake::Text3d, &[5]);
+        e.create_from_camera_track(id, CamMake::Point, &[5]);
+        assert_eq!(cams(&e), 1);
+        let p = e.selection.unwrap();
+        let pc = e.seq().find_clip(p).unwrap().1;
+        assert_eq!(pc.scene, Some(reelforge_core::space3d::SceneObject::Point));
+        assert_eq!(pc.effects[0].params[reelforge_core::effects::point::Z].value, 600.0);
+        // Undo takes the point away; undoing the first create removes the camera and forgets it.
+        e.undo();
+        e.undo();
+        e.undo();
+        assert_eq!(cams(&e), 0);
+        assert!(e.seq().find_clip(id).unwrap().1.camera_track.as_ref().unwrap().camera.is_none());
+        // Ground plane from the floor: the floor is level at the origin.
+        e.set_camera_ground(id, &floor);
+        let g = e.seq().find_clip(id).unwrap().1.camera_track.clone().unwrap();
+        let (c, nrm) = g.plane(&floor, 0).unwrap();
+        assert!(nrm[1] < -0.999 && c.iter().all(|v| v.abs() < 1e-2), "{c:?} {nrm:?}");
+        // Too few points: nothing happens.
+        e.set_camera_ground(id, &[0, 1]);
+        assert_eq!(e.seq().find_clip(id).unwrap().1.camera_track.as_deref(), Some(&*g));
+        e.remove_camera_track(id);
+        assert!(e.seq().find_clip(id).unwrap().1.camera_track.is_none());
     }
 
     #[test]

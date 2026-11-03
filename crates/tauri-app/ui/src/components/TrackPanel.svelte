@@ -4,7 +4,7 @@
   // then put the motion on any layer, a mask, or the clip itself (stabilise),
   // choosing which parts of the motion to use.
   import { app, run, timecode } from "../lib/session.svelte";
-  import { api, type StabZoom, type TrackAxes, type TrackMode, type TrackerView } from "../lib/api";
+  import { api, type CamMake, type StabZoom, type TrackAxes, type TrackMode, type TrackerView } from "../lib/api";
   import { livePump } from "../lib/live";
   import NumberField from "./NumberField.svelte";
 
@@ -96,6 +96,7 @@
 
   function pick(m: TrackMode) {
     if (!ins) return;
+    app.cam3d = false;
     if (!t) run(api.trackerAdd(ins.id, m));
     else if (t.mode !== m) run(api.trackerMode(ins.id, m));
   }
@@ -120,6 +121,29 @@
     await commit();
     smoothDraft = null;
   }
+  // ---- The 3D camera tracker ----
+  // Its data comes with the selected clip (the inspector).
+  const cam = $derived(sel && ins && sel.id === ins.id ? sel.cam_track : null);
+  const show3d = $derived(app.cam3d || (!t && !!cam));
+  const camBusy = $derived(!!sel && sel.id === ins?.id && sel.cam_tracking && progress !== null);
+  const camPicked = $derived(app.camSel && ins && app.camSel.clip === ins.id ? app.camSel.points : []);
+  let knownLens = $state(false);
+  let focalMm = $state(35);
+  let tripod = $state(false);
+  // 35 mm-equivalent focal length (36 mm across) ↔ vertical field of view, for this frame's shape.
+  const aspect = $derived((app.s?.seq.width ?? 16) / (app.s?.seq.height ?? 9));
+  const fovOf = (mm: number) => (2 * Math.atan(36 / aspect / 2 / mm) * 180) / Math.PI;
+  const mmOf = (fov: number) => 36 / aspect / 2 / Math.tan((fov * Math.PI) / 360);
+  function analyse() {
+    if (!ins) return;
+    app.camSel = null;
+    run(api.camtrackStart(ins.id, knownLens ? fovOf(focalMm) : null, tripod));
+  }
+  function make(what: CamMake) {
+    if (ins) run(api.camtrackMake(ins.id, what, camPicked));
+  }
+  const fit = (e: number) => (e < 0.5 ? "very good" : e < 1 ? "good" : e < 2 ? "fair" : "poor");
+
   function apply() {
     if (!ins || !chosen) return;
     run(api.trackApply(ins.id, chosen.clip, chosen.mask, chosen.blade, smoothing, { ...axes }, stabilising ? stabZoom : "Off"));
@@ -154,22 +178,93 @@
         {#each methods as [m, label, icon]}
           <button
             role="radio"
-            aria-checked={t?.mode === m}
-            class:on={t?.mode === m}
+            aria-checked={!show3d && t?.mode === m}
+            class:on={!show3d && t?.mode === m}
             title={methodTip[m]}
             disabled={progress !== null}
             onclick={() => pick(m)}><span class="ico">{icon}</span>{label}</button
           >
         {/each}
+        <button role="radio" aria-checked={show3d} class:on={show3d} title="Solve the camera that filmed the shot, to put 3D layers, text and points into it" disabled={progress !== null && !camBusy} onclick={() => (app.cam3d = true)}><span class="ico">3D</span>3D camera</button>
       </div>
-      {#if !t}
+      {#if show3d}
+        <p class="note">Works out how the camera moved through the whole clip, its lens, and where the details in the shot are in 3D. Then add a camera that moves the same way, and layers that stay put in the scene.</p>
+      {:else if !t}
         <p class="note">Pick a method to place a tracker on this clip.</p>
       {:else}
         <p class="note">{hints[t.mode]}</p>
       {/if}
     </div>
 
-    {#if t}
+    {#if show3d}
+      {#if !sel || sel.id !== ins.id}
+        <p class="note">Select the clip in the timeline to solve its camera.</p>
+      {:else}
+        <div class="sect">
+          <h4>Analyse</h4>
+          <div class="checks">
+            <label title="If you know the lens, give it: a short shot can't always pin it down by itself"><input type="checkbox" bind:checked={knownLens} disabled={camBusy} /> I know the lens</label>
+            <label title="The camera turned in place without moving (on a tripod): solve it as turning only"><input type="checkbox" bind:checked={tripod} disabled={camBusy} /> Camera only turns (tripod)</label>
+          </div>
+          {#if knownLens}
+            <div class="grid">
+              <span class="lbl" title="Focal length as on a full-frame (35 mm) camera, 36 mm across">Focal length</span>
+              <div class="ctl">
+                <NumberField label="Focal length" value={focalMm} min={6} max={600} step={0.1} digits={1} suffix=" mm" oninput={(v) => (focalMm = v)} oncommit={() => {}} />
+                <span class="muted nowrap">{fovOf(focalMm).toFixed(1)}° high</span>
+              </div>
+            </div>
+          {/if}
+          {#if camBusy}
+            <div class="row">
+              <div class="bar"><div style="width:{(progress ?? 0) * 100}%"></div></div>
+              <span class="tc">{Math.round((progress ?? 0) * 100)}%</span>
+              <button onclick={() => run(api.trackCancel())}>Stop</button>
+            </div>
+            <p class="note">{(progress ?? 0) < 0.6 ? "Following details through the shot…" : "Solving the camera…"}</p>
+          {:else}
+            <div class="row">
+              <button class="primary wide" disabled={elsewhere} onclick={analyse} title="Analyses the whole clip">{cam ? "Analyse again" : "Analyse"}</button>
+            </div>
+            {#if elsewhere}<p class="note">Another clip is being tracked.</p>{/if}
+          {/if}
+        </div>
+
+        {#if cam}
+          <div class="sect">
+            <h4>Solved</h4>
+            <p class="muted">
+              {cam.frames} frames, {cam.point_count} points · error {cam.error.toFixed(2)} px ({fit(cam.error)}) · lens {cam.fov.toFixed(1)}° high (about {mmOf(cam.fov).toFixed(0)} mm){cam.tripod ? " · turning in place" : ""}
+            </p>
+            {#if cam.placed < cam.frames}<p class="note">{cam.frames - cam.placed} frames had too little to go on and were filled in from their neighbours.</p>{/if}
+            <p class="note">The points in the Viewer are details found in 3D. Click one to pick it; Shift+click or Shift+drag a box to pick more. Pick points on the surface where something should go.</p>
+            <div class="row away">
+              <span class="muted">{camPicked.length ? `${camPicked.length} picked` : "None picked"}</span>
+              {#if camPicked.length}<button class="ghost small" onclick={() => (app.camSel = null)} title="Drop the picked points (Escape)">Clear</button>{/if}
+            </div>
+          </div>
+
+          <div class="sect">
+            <h4>Create</h4>
+            <div class="makes">
+              <button onclick={() => make("Camera")} title="A camera clip keyed to move like the real one (3D layers then stay put in the shot)">{cam.camera ? "Camera again" : "Camera"}</button>
+              <button disabled={!camPicked.length} onclick={() => make("Solid")} title="A solid lying on the picked points' surface">Solid</button>
+              <button disabled={!camPicked.length} onclick={() => make("Title")} title="A title on the picked points' surface">Title</button>
+              <button disabled={!camPicked.length} onclick={() => make("Text3d")} title="3D text on the picked points' surface">3D text</button>
+              <button disabled={!camPicked.length} onclick={() => make("Point")} title="An invisible point at the picked points: parent anything to it">Point</button>
+            </div>
+            <p class="note">{cam.camera ? "Layers made here use the camera already made." : "The first thing made also makes the camera."} Three or more points set the surface's tilt; with fewer, it faces the camera.</p>
+            <div class="row">
+              <button class="wide" disabled={camPicked.length < 3} onclick={() => ins && run(api.camtrackGround(ins.id, camPicked))} title="Turn the scene so the picked points' surface is the floor, its middle the origin (for lights and 3D text that stand on it)">Set ground plane</button>
+            </div>
+          </div>
+
+          <div class="row">
+            <button class="wide" onclick={() => ins && run(api.camtrackRemove(ins.id))}>Remove camera track</button>
+          </div>
+        {/if}
+      {/if}
+    {:else if t}
       <div class="sect">
         <h4>Track</h4>
         <div class="grid">
@@ -482,6 +577,11 @@
   .small {
     min-height: 22px;
     padding: 0 8px;
+  }
+  .makes {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+    gap: 4px;
   }
   .nowrap {
     white-space: nowrap;

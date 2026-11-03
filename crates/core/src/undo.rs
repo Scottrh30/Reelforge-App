@@ -279,6 +279,7 @@ impl Command for SplitClip {
             anchor: clip.anchor,
             masks: clip.masks.clone(),
             tracker: clip.tracker.clone(),
+            camera_track: clip.camera_track.clone(),
             // Mesh keys are at source times, so both halves keep them.
             mesh: clip.mesh.clone(),
             scene: clip.scene,
@@ -1023,6 +1024,31 @@ impl Command for SetTracker {
     fn undo(&mut self, p: &mut Project) {
         if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
             c.tracker = self.old.clone();
+        }
+    }
+}
+
+/// Set, change or remove a clip's solved 3D camera track.
+pub struct SetCameraTrack {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: Option<Box<crate::camtrack::CameraTrack>>,
+    pub new: Option<Box<crate::camtrack::CameraTrack>>,
+    pub label: &'static str,
+}
+
+impl Command for SetCameraTrack {
+    fn name(&self) -> &str {
+        self.label
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.camera_track = self.new.clone();
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            c.camera_track = self.old.clone();
         }
     }
 }

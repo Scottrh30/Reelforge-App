@@ -1056,6 +1056,29 @@ fn mask_track(id: u64, index: usize, forward: bool, motion: reelforge_core::trac
     ed(|e| e.start_mask_tracking(clip(id), index, forward, motion))
 }
 
+/// The 3D camera tracker: analyse the clip's whole shot (lens `fov` degrees if known).
+#[tauri::command]
+fn camtrack_start(id: u64, fov: Option<f32>, tripod: bool) -> Res<()> {
+    ed(|e| e.start_camera_tracking(clip(id), fov, tripod))
+}
+
+/// Make a camera (and a point or 3D layer on the `picked` points) from the solve.
+#[tauri::command]
+fn camtrack_make(id: u64, what: reelforge_engine::editor::CamMake, picked: Vec<usize>) -> Res<()> {
+    ed(|e| e.create_from_camera_track(clip(id), what, &picked))
+}
+
+/// The `picked` points' surface becomes the ground.
+#[tauri::command]
+fn camtrack_ground(id: u64, picked: Vec<usize>) -> Res<()> {
+    ed(|e| e.set_camera_ground(clip(id), &picked))
+}
+
+#[tauri::command]
+fn camtrack_remove(id: u64) -> Res<()> {
+    ed(|e| e.remove_camera_track(clip(id)))
+}
+
 #[tauri::command]
 fn track_cancel() -> Res<()> {
     ed(|e| e.cancel_tracking())
@@ -1292,6 +1315,10 @@ fn main() {
             tracker_move,
             tracker_op,
             track_start,
+            camtrack_start,
+            camtrack_make,
+            camtrack_ground,
+            camtrack_remove,
             track_cancel,
             mask_track,
             track_apply,
