@@ -338,6 +338,7 @@ export interface CamTrackView {
   camera: boolean;
 }
 export type CamMake = "Camera" | "Point" | "Solid" | "Title" | "Text3d";
+export type CamFormat = "AfterEffects" | "Blender" | "Nuke" | "Chan" | "Json";
 
 export interface Mask {
   name: string;
@@ -891,6 +892,8 @@ export const api = {
   camtrackMake: (id: number, what: CamMake, picked: number[]) => invoke("camtrack_make", { id, what, picked }),
   camtrackGround: (id: number, picked: number[]) => invoke("camtrack_ground", { id, picked }),
   camtrackRemove: (id: number) => invoke("camtrack_remove", { id }),
+  camtrackExport: (id: number, format: CamFormat, picked: number[]) => invoke("camtrack_export", { id, format, picked }),
+  camtrackImport: () => invoke("camtrack_import"),
   maskTrack: (id: number, index: number, forward: boolean, motion: MaskMotion) => invoke("mask_track", { id, index, forward, motion }),
   trackApply: (id: number, target: number, mask: number | null, blade: number | null, smoothing: number, axes?: TrackAxes, zoom: StabZoom = "Off") => invoke("track_apply", { id, target, mask, blade, smoothing, axes, zoom }),
   exportOptions: () => invoke<ExportOptions>("export_options"),

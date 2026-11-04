@@ -1437,7 +1437,7 @@ fn to64(v: [f32; 3]) -> V3 {
 }
 
 /// Camera settings (position, point of interest at `dist`, roll) for a pose.
-fn cam_pose(p: &Pose, dist: f64) -> CamPose {
+pub(crate) fn cam_pose(p: &Pose, dist: f64) -> CamPose {
     let (right, fwd) = (p.r[0], p.r[2]);
     // The camera's right with no roll (see `space3d::Camera::basis`).
     let r0 = unit(cross([0.0, 1.0, 0.0], fwd)).or_else(|| unit(cross(fwd, [0.0, 0.0, 1.0]))).unwrap_or([1.0, 0.0, 0.0]);

@@ -811,6 +811,19 @@ What works now:
   undoable. On rendered test footage of a camera moving past a textured floor and wall, it
   fits to 0.1–0.3 px and the camera's path comes within 1° and 2 % of the truth (within 0.1°
   and 0.5 % given the lens)
+  - **Export** a solve for other applications: **After Effects** (a script: File → Scripts →
+    Run Script File… makes a comp with a camera keyed every frame and a 3D null per point),
+    **Blender** (a script to run in the Scripting workspace: the camera, render size and frame
+    rate, and the points as a cloud of vertices), **Nuke** (a script with a Camera2 node, and
+    the points as an `.obj` beside it read by a ReadGeo), **.chan** (the plain camera path that
+    Nuke, Blender, Maya and tracking apps read) or **Reelforge** (the whole solve, to load onto
+    a clip in another project). With points picked, only those go. Blender, Nuke and `.chan`
+    get 100 pixels to a unit (a metre in Blender), Y or Z up as each expects.
+  - **Import a camera…**: a `.chan` file (from Nuke, Blender, SynthEyes, 3DEqualizer,
+    PFTrack…) becomes a camera clip keyed every frame, from the selected clip's start at its
+    frame rate (or from the playhead), with the file's lens if it has one; a Reelforge solve
+    goes onto the selected footage clip, to pick points and create layers as if it had been
+    analysed here
 - **3D layers, camera and lights**:
   - **3D layer** (Transform section of the Controls panel): the layer becomes a flat plane in
     3D space with a **Position Z** (positive is further away) and **Rotation X / Y** (Rotation
@@ -1551,6 +1564,15 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   Z = 0, and turns each pose into camera settings (position, point of interest, roll measured
   as `space3d::Camera::basis` builds it). Making layers uses `CameraTrack::plane` (PCA of the
   picked points, facing the camera) and `orientation_facing`
+- **Camera solves in and out** (`core/src/camtrack_io.rs`): After Effects keeps the editor's
+  axes with the origin moved to the comp's corner (a two-node camera: position, point of
+  interest, Z rotation for the roll, zoom = focal length in pixels); Nuke and `.chan` turn the
+  world half a turn about X (Y up, cameras looking down −Z) with rotations in Nuke's default
+  ZXY order (R = Ry · Rx · Rz, kept continuous between frames), focal length for a 36 mm
+  aperture; Blender takes Z up and Y away and gets each frame's camera matrix to turn into
+  Euler angles itself (`to_euler` with the previous frame, so they don't flip). A test
+  rebuilds Nuke's camera from the exported numbers and checks every point lands on the same
+  pixel; `.chan` round-trips through import
 - **Plugins** (`core/src/plugin.rs`, `render/src/plugin.rs`, `engine/src/plugins.rs`): the
   manifest is parsed into a `PluginDef` (parameter specs interned as `&'static`, like the
   built-in effects' tables, so reloading the same manifest leaks nothing) and published in a

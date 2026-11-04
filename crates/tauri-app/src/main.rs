@@ -1074,6 +1074,27 @@ fn camtrack_ground(id: u64, picked: Vec<usize>) -> Res<()> {
     ed(|e| e.set_camera_ground(clip(id), &picked))
 }
 
+/// Export clip `id`'s solved camera (with its `picked` points, or all) for another application.
+#[tauri::command]
+fn camtrack_export(id: u64, format: reelforge_core::camtrack_io::CamFormat, picked: Vec<usize>) -> Res<()> {
+    let name = ed(|e| e.seq().find_clip(clip(id)).map(|(_, c)| c.display_name(&e.project).into_owned()))?.unwrap_or_else(|| "camera".into());
+    let stem: String = name.rsplit_once('.').map_or(name.as_str(), |(a, _)| a).chars().map(|c| if r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
+    let ext = format.extension();
+    let file = match format {
+        reelforge_core::camtrack_io::CamFormat::Json => format!("{stem} camera.json"),
+        _ => format!("{stem} camera.{ext}"),
+    };
+    let Some(path) = rfd::FileDialog::new().add_filter(format.label(), &[ext]).set_file_name(&file).save_file() else { return Ok(()) };
+    ed(|e| e.export_camera_track(clip(id), format, &path, &picked))
+}
+
+/// Import a camera: a `.chan` path becomes a camera clip; a Reelforge solve goes onto the selected clip.
+#[tauri::command]
+fn camtrack_import() -> Res<()> {
+    let Some(path) = rfd::FileDialog::new().add_filter("Camera files", &["chan", "json"]).add_filter("All files", &["*"]).pick_file() else { return Ok(()) };
+    ed(|e| e.import_camera_file(&path))
+}
+
 #[tauri::command]
 fn camtrack_remove(id: u64) -> Res<()> {
     ed(|e| e.remove_camera_track(clip(id)))
@@ -1319,6 +1340,8 @@ fn main() {
             camtrack_make,
             camtrack_ground,
             camtrack_remove,
+            camtrack_export,
+            camtrack_import,
             track_cancel,
             mask_track,
             track_apply,

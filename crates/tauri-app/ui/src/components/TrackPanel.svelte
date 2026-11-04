@@ -4,7 +4,7 @@
   // then put the motion on any layer, a mask, or the clip itself (stabilise),
   // choosing which parts of the motion to use.
   import { app, run, timecode } from "../lib/session.svelte";
-  import { api, type CamMake, type StabZoom, type TrackAxes, type TrackMode, type TrackerView } from "../lib/api";
+  import { api, type CamFormat, type CamMake, type StabZoom, type TrackAxes, type TrackMode, type TrackerView } from "../lib/api";
   import { livePump } from "../lib/live";
   import NumberField from "./NumberField.svelte";
 
@@ -142,6 +142,13 @@
   function make(what: CamMake) {
     if (ins) run(api.camtrackMake(ins.id, what, camPicked));
   }
+  const exports: [CamFormat, string, string][] = [
+    ["AfterEffects", "After Effects", "A script (.jsx): File → Scripts → Run Script File… makes a comp with the camera and a 3D null per point"],
+    ["Blender", "Blender", "A script (.py): run it in Blender's Scripting workspace for the camera and the points"],
+    ["Nuke", "Nuke", "A Nuke script (.nk) with a Camera2, and the points as an .obj beside it"],
+    ["Chan", ".chan", "The camera's path as a .chan file, which Nuke, Blender, Maya and tracking apps read"],
+    ["Json", "Reelforge", "The whole solve, points and all, to load onto a clip in another project"],
+  ];
   const fit = (e: number) => (e < 0.5 ? "very good" : e < 1 ? "good" : e < 2 ? "fair" : "poor");
 
   function apply() {
@@ -226,6 +233,9 @@
             <div class="row">
               <button class="primary wide" disabled={elsewhere} onclick={analyse} title="Analyses the whole clip">{cam ? "Analyse again" : "Analyse"}</button>
             </div>
+            <div class="row">
+              <button class="wide" onclick={() => run(api.camtrackImport())} title="A camera path (.chan) from Nuke, Blender, SynthEyes, 3DEqualizer or PFTrack becomes a camera clip from this clip's start; a Reelforge solve (.json) goes onto this clip">Import a camera…</button>
+            </div>
             {#if elsewhere}<p class="note">Another clip is being tracked.</p>{/if}
           {/if}
         </div>
@@ -257,6 +267,16 @@
             <div class="row">
               <button class="wide" disabled={camPicked.length < 3} onclick={() => ins && run(api.camtrackGround(ins.id, camPicked))} title="Turn the scene so the picked points' surface is the floor, its middle the origin (for lights and 3D text that stand on it)">Set ground plane</button>
             </div>
+          </div>
+
+          <div class="sect">
+            <h4>Export</h4>
+            <div class="makes">
+              {#each exports as [f, label, tip]}
+                <button onclick={() => ins && run(api.camtrackExport(ins.id, f, camPicked))} title={tip}>{label}</button>
+              {/each}
+            </div>
+            <p class="note">The camera, and {camPicked.length ? `the ${camPicked.length} picked points` : "all the points"}. For Blender, Nuke and .chan, 100 pixels become 1 unit (a metre in Blender).</p>
           </div>
 
           <div class="row">

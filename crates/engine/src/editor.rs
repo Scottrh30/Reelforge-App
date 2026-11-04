@@ -3368,6 +3368,58 @@ mod tests {
     }
 
     #[test]
+    fn camera_solves_export_and_come_back() {
+        use reelforge_core::camtrack::{CamPose, CameraTrack, ScenePoint};
+        use reelforge_core::camtrack_io::CamFormat;
+        let mut e = editor();
+        e.new_project_with(1920, 1080, reelforge_core::FrameRate::new(25, 1));
+        e.add_plane([40, 40, 40, 255]);
+        let id = e.selection.unwrap();
+        let n = 40;
+        let times: Vec<Time> = (0..n).map(|k| Time::from_secs_f64(k as f64 / 25.0)).collect();
+        let cameras: Vec<CamPose> = (0..n).map(|k| CamPose { position: [-200.0 + 9.0 * k as f32, -120.0, -1300.0 + 5.0 * k as f32], target: [30.0, 20.0, 400.0], roll: 3.0 - 0.2 * k as f32 }).collect();
+        let points = vec![ScenePoint { pos: [-150.0, 250.0, 300.0], error: 0.2, first: 0, last: 39 }, ScenePoint { pos: [200.0, -80.0, 700.0], error: 0.2, first: 0, last: 39 }];
+        let ct = CameraTrack { times: times.clone(), cameras, fov: 38.0, frame: [1920.0, 1080.0], points, error: 0.2, tripod: false, placed: n as u32, camera: None };
+        // Nothing to export yet.
+        let dir = std::env::temp_dir().join(format!("rf_camio_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        e.export_camera_track(id, CamFormat::Chan, &dir.join("none.chan"), &[]);
+        assert!(!dir.join("none.chan").exists() && e.status.contains("no solved camera"));
+        e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = Some(Box::new(ct.clone()));
+        for (fmt, file) in [(CamFormat::AfterEffects, "shot.jsx"), (CamFormat::Blender, "shot.py"), (CamFormat::Nuke, "shot.nk"), (CamFormat::Chan, "shot.chan"), (CamFormat::Json, "shot.json")] {
+            e.export_camera_track(id, fmt, &dir.join(file), &[]);
+            assert!(dir.join(file).exists(), "{file}: {}", e.status);
+            assert!(e.status.starts_with("Exported"), "{}", e.status);
+        }
+        assert!(std::fs::read_to_string(dir.join("shot.obj")).unwrap().lines().filter(|l| l.starts_with("v ")).count() == 2, "Nuke's points beside it");
+        // A .chan comes back as a camera clip from the selected clip's start, matching frame by frame.
+        e.import_camera_file(&dir.join("shot.chan"));
+        let cam = e.selection.unwrap();
+        let cc = e.seq().find_clip(cam).unwrap().1.clone();
+        assert_eq!(cc.scene, Some(reelforge_core::space3d::SceneObject::Camera));
+        assert_eq!(cc.timeline_start, Time::ZERO);
+        assert_eq!(cc.duration, Time::from_secs_f64(40.0 / 25.0).snap(reelforge_core::FrameRate::new(25, 1)));
+        for k in [0usize, 11, 39] {
+            let sc = e.project.scene3d_at(0, times[k]);
+            let want = ct.camera(k);
+            assert!((sc.camera.fov - 38.0).abs() < 1e-3);
+            for p in &ct.points {
+                let (a, b) = (sc.camera.project(p.pos).unwrap(), want.project(p.pos).unwrap());
+                assert!((a[0] - b[0]).abs() < 0.05 && (a[1] - b[1]).abs() < 0.05, "{k}: {a:?} {b:?}");
+            }
+        }
+        // The whole solve goes onto the selected footage clip (not onto a camera).
+        e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = None;
+        e.import_camera_file(&dir.join("shot.json"));
+        assert!(e.status.contains("Select the footage clip"), "{}", e.status);
+        // A broken file is refused with a reason.
+        std::fs::write(dir.join("bad.chan"), "1 2 3\n").unwrap();
+        e.import_camera_file(&dir.join("bad.chan"));
+        assert!(e.status.starts_with("Couldn't import bad.chan"), "{}", e.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn new_from_a_preset_recent_list_and_templates() {
         let dir = std::env::temp_dir().join(format!("rf_start_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

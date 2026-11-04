@@ -6,11 +6,13 @@
 use super::{Editor, TrackJob, TrackMsg, LOCKED};
 use crossbeam_channel::unbounded;
 use reelforge_core::anim::{Curve, Interp, Key};
-use reelforge_core::camtrack::{orientation_facing, CameraTrack, SolveOptions, Track2d};
+use reelforge_core::camtrack::{orientation_facing, CamPose, CameraTrack, SolveOptions, Track2d};
+use reelforge_core::camtrack_io::{self, CamFormat};
 use reelforge_core::effects::{camera as cam, point as pt};
 use reelforge_core::space3d::SceneObject;
 use reelforge_core::undo::{AddClip, Batch, Command, SetCameraTrack};
 use reelforge_core::*;
+use std::path::Path;
 use std::sync::Arc;
 
 /// What to make from a solved camera.
@@ -185,48 +187,8 @@ impl Editor {
                 cmds.push(Box::new(a));
             }
             let nid = ClipId(self.project.alloc_id());
-            let mut clip = Clip::new_scene(nid, start, dur, SceneObject::Camera, ct.frame);
-            clip.effects[0].params[cam::FOV].value = ct.fov;
-            let mut keys: [Vec<Key<f32>>; 7] = Default::default();
-            for (k, pose) in ct.cameras.iter().enumerate() {
-                let Some(t) = footage.timeline_of_media(ct.times[k]) else { continue };
-                if t < start || t >= start + dur {
-                    continue;
-                }
-                let at = clip.source_time(t.snap(rate));
-                let vals = [pose.position[0], pose.position[1], pose.position[2], pose.target[0], pose.target[1], pose.target[2], pose.roll];
-                for (j, v) in vals.into_iter().enumerate() {
-                    if keys[j].last().is_some_and(|l| l.at == at) {
-                        continue;
-                    }
-                    keys[j].push(Key::new(at, v, Interp::Linear));
-                }
-            }
-            for k in &mut keys {
-                k.sort_by_key(|x| x.at);
-            }
-            let fx = &mut clip.effects[0];
-            let params = [cam::X, cam::Y, cam::Z, cam::TARGET_X, cam::TARGET_Y, cam::TARGET_Z, cam::ROLL];
-            for (j, p) in params.into_iter().enumerate() {
-                let ks = std::mem::take(&mut keys[j]);
-                if let Some(first) = ks.first() {
-                    fx.params[p].value = first.value;
-                }
-                fx.params[p].keys = Curve(ks);
-            }
-            // The roll unwound, so it never spins the long way between frames.
-            let roll = &mut fx.params[cam::ROLL].keys.0;
-            for j in 1..roll.len() {
-                let mut v = roll[j].value;
-                while v - roll[j - 1].value > 180.0 {
-                    v -= 360.0;
-                }
-                while v - roll[j - 1].value < -180.0 {
-                    v += 360.0;
-                }
-                roll[j].value = v;
-            }
-            fx.params[cam::FOCUS].value = ct.camera(i).distance();
+            let keys = ct.cameras.iter().enumerate().filter_map(|(k, pose)| Some((footage.timeline_of_media(ct.times[k])?, *pose)));
+            let clip = keyed_camera(nid, start, dur, ct.frame, ct.fov, rate, keys, ct.camera(i).distance());
             cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
             cam_id = Some(nid);
             new_ct.camera = Some(nid);
@@ -326,4 +288,162 @@ impl Editor {
             CamMake::Text3d => format!("Made 3D text on the picked surface, {cam_note}: type its text in the Controls panel"),
         };
     }
+}
+
+impl Editor {
+    /// Write clip `id`'s solved camera (and its `picked` points, or all) to
+    /// `path` for another application. Nuke also gets the points as an
+    /// `.obj` beside it.
+    pub fn export_camera_track(&mut self, id: ClipId, fmt: CamFormat, path: &Path, picked: &[usize]) {
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let Some(ct) = c.camera_track.as_deref() else {
+            self.status = "This clip has no solved camera to export: analyse it first".into();
+            return;
+        };
+        let name = c.display_name(&self.project).into_owned();
+        let write = |p: &Path, text: String| std::fs::write(p, text).map_err(|e| format!("couldn't write {}: {e}", p.display()));
+        let r = match fmt {
+            CamFormat::AfterEffects => write(path, camtrack_io::after_effects(ct, &name, picked)),
+            CamFormat::Blender => write(path, camtrack_io::blender(ct, &name, picked)),
+            CamFormat::Chan => write(path, camtrack_io::chan(ct)),
+            CamFormat::Json => write(path, camtrack_io::json(ct)),
+            CamFormat::Nuke => {
+                let obj = path.with_extension("obj");
+                write(&obj, camtrack_io::obj(ct, picked)).and_then(|_| write(path, camtrack_io::nuke(ct, &name, &obj.to_string_lossy().replace('\\', "/"))))
+            }
+        };
+        let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let pts = if picked.is_empty() { ct.points.len() } else { picked.len() };
+        self.status = match r {
+            Err(e) => format!("Export failed: {e}"),
+            Ok(()) => match fmt {
+                CamFormat::AfterEffects => format!("Exported {file}: in After Effects, File → Scripts → Run Script File… makes a comp with the camera and {pts} points"),
+                CamFormat::Blender => format!("Exported {file}: in Blender's Scripting workspace, open it and press Run Script (the camera and {pts} points)"),
+                CamFormat::Nuke => format!("Exported {file} and its points (.obj beside it): open it in Nuke, or paste it into a script"),
+                CamFormat::Chan => format!("Exported {file}: import it on a camera in Nuke, Blender, Maya or a tracking app"),
+                CamFormat::Json => format!("Exported {file}: the whole solve, to load onto a clip in another project"),
+            },
+        };
+    }
+
+    /// Read a camera from `path`. A Reelforge solve (`.json`) goes onto the
+    /// selected footage clip, as if it had been analysed; a camera path
+    /// (`.chan`) becomes a camera clip, keyed every frame, from the selected
+    /// clip's start (at its frame rate) or the playhead.
+    pub fn import_camera_file(&mut self, path: &Path) {
+        self.commit_live_edit();
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status = format!("Couldn't read {}: {e}", path.display());
+                return;
+            }
+        };
+        let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let sel = self.selection.and_then(|id| self.seq().find_clip(id)).map(|(_, c)| c.clone());
+        let json = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) || text.trim_start().starts_with('{');
+        if json {
+            let ct = match camtrack_io::read_json(&text) {
+                Ok(ct) => ct,
+                Err(e) => {
+                    self.status = format!("Couldn't import {file}: {e}");
+                    return;
+                }
+            };
+            let footage = sel.as_ref().filter(|c| c.title.is_none() && c.nested.is_none() && c.scene.is_none() && self.project.media(c.media).is_some_and(|m| m.info.video.is_some()));
+            let Some(c) = footage else {
+                self.status = "Select the footage clip the solve belongs to, then import it again".into();
+                return;
+            };
+            let px = self.frame_px();
+            let size_note = if (ct.frame[0] - px[0]).abs() > 0.5 || (ct.frame[1] - px[1]).abs() > 0.5 {
+                format!(" (it was solved for a {}×{} frame; this sequence is {}×{}, so things may not line up)", ct.frame[0], ct.frame[1], px[0], px[1])
+            } else {
+                String::new()
+            };
+            let (n, pts) = (ct.cameras.len(), ct.points.len());
+            let clip_name = c.display_name(&self.project).into_owned();
+            self.execute(Box::new(SetCameraTrack { seq: self.active, id: c.id, old: c.camera_track.clone(), new: Some(Box::new(ct)), label: "Import camera solve" }));
+            self.status = format!("Imported the camera solve ({n} frames, {pts} points) onto {clip_name}{size_note}");
+            return;
+        }
+        let px = self.frame_px();
+        let path_read = match camtrack_io::read_chan(&text, px, reelforge_core::space3d::Camera::default_for(px).fov) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = format!("Couldn't import {file}: {e}");
+                return;
+            }
+        };
+        let rate = self.seq().frame_rate;
+        // From the selected clip at its own frame rate, else from the playhead.
+        let (start, fps) = match &sel {
+            Some(c) => {
+                let fps = self.project.media(c.media).and_then(|m| m.info.video.as_ref()).map(|v| v.frame_rate.fps()).unwrap_or(rate.fps());
+                (c.timeline_start, fps * (c.speed.abs() as f64).max(1e-6))
+            }
+            None => (self.playback.playhead.snap(rate), rate.fps()),
+        };
+        let times = camtrack_io::chan_times(&path_read, start, fps);
+        let end = *times.last().unwrap() + Time::from_secs_f64(1.0 / fps);
+        let dur = (end - start).max(rate.frame_duration());
+        let (add, track) = self.layer_track(start, dur);
+        let nid = ClipId(self.project.alloc_id());
+        let focus = reelforge_core::space3d::Camera::default_for(px).focal();
+        let clip = keyed_camera(nid, start, dur, px, path_read.fov, rate, times.into_iter().zip(path_read.frames.iter().map(|f| f.1)), focus);
+        let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+        cmds.extend(add.map(|a| Box::new(a) as Box<dyn Command>));
+        cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
+        self.execute(Box::new(Batch { name: "Import camera".into(), cmds }));
+        self.follow_new_layer(track);
+        self.select_only(Some(nid));
+        self.status = format!("Imported the camera from {file}: {} frames, lens {:.1}°", path_read.frames.len(), path_read.fov);
+    }
+}
+
+/// A camera clip from `start` for `dur`, keyed every frame to `poses`
+/// (timeline time, camera), with lens `fov` and focus distance `focus`.
+fn keyed_camera(nid: ClipId, start: Time, dur: Time, frame: [f32; 2], fov: f32, rate: FrameRate, poses: impl Iterator<Item = (Time, CamPose)>, focus: f32) -> Clip {
+    let mut clip = Clip::new_scene(nid, start, dur, SceneObject::Camera, frame);
+    clip.effects[0].params[cam::FOV].value = fov;
+    let mut keys: [Vec<Key<f32>>; 7] = Default::default();
+    for (t, pose) in poses {
+        if t < start || t >= start + dur {
+            continue;
+        }
+        let at = clip.source_time(t.snap(rate));
+        let vals = [pose.position[0], pose.position[1], pose.position[2], pose.target[0], pose.target[1], pose.target[2], pose.roll];
+        for (j, v) in vals.into_iter().enumerate() {
+            if keys[j].last().is_some_and(|l| l.at == at) {
+                continue;
+            }
+            keys[j].push(Key::new(at, v, Interp::Linear));
+        }
+    }
+    for k in &mut keys {
+        k.sort_by_key(|x| x.at);
+    }
+    let fx = &mut clip.effects[0];
+    let params = [cam::X, cam::Y, cam::Z, cam::TARGET_X, cam::TARGET_Y, cam::TARGET_Z, cam::ROLL];
+    for (j, p) in params.into_iter().enumerate() {
+        let ks = std::mem::take(&mut keys[j]);
+        if let Some(first) = ks.first() {
+            fx.params[p].value = first.value;
+        }
+        fx.params[p].keys = Curve(ks);
+    }
+    // The roll unwound, so it never spins the long way between frames.
+    let roll = &mut fx.params[cam::ROLL].keys.0;
+    for j in 1..roll.len() {
+        let mut v = roll[j].value;
+        while v - roll[j - 1].value > 180.0 {
+            v -= 360.0;
+        }
+        while v - roll[j - 1].value < -180.0 {
+            v += 360.0;
+        }
+        roll[j].value = v;
+    }
+    fx.params[cam::FOCUS].value = focus;
+    clip
 }

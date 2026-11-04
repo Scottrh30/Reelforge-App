@@ -8,6 +8,7 @@ pub mod attrs;
 pub mod audio;
 pub mod audiofx;
 pub mod camtrack;
+pub mod camtrack_io;
 pub mod duck;
 pub mod channels;
 pub mod clipboard;
