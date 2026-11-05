@@ -3,7 +3,7 @@
   // colours and fonts. Changes show at once; Cancel puts back what was there.
   import { untrack } from "svelte";
   import { api } from "../lib/api";
-  import { look, DEFAULTS, UI_SCHEMES, LABEL_SETS, prefsDialog, save, snapshot, restore, type Look } from "../lib/prefs.svelte";
+  import { look, DEFAULTS, UI_SCHEMES, LABEL_SETS, PLAYHEAD_SWATCHES, prefsDialog, save, snapshot, restore, type Look } from "../lib/prefs.svelte";
   import ColorRow from "./ColorRow.svelte";
 
   const pages: [typeof prefsDialog.page, string][] = [
@@ -26,7 +26,9 @@
   }
   function resetPage() {
     const p = prefsDialog.page;
-    restore({ ...snapshot(), [p]: structuredClone(DEFAULTS[p]) });
+    // (The Label colours page has the playhead's colour too.)
+    const extra = p === "labels" ? { timeline: structuredClone(DEFAULTS.timeline) } : {};
+    restore({ ...snapshot(), [p]: structuredClone(DEFAULTS[p]), ...extra });
   }
   function resetAll() {
     restore(structuredClone(DEFAULTS));
@@ -91,6 +93,12 @@
               <span style="background:var(--clip-title)">Opening title</span>
               <span style="background:var(--clip-comp)">Comp · sign</span>
               <span style="background:var(--clip-audio)">music.wav</span>
+            </div>
+            <ColorRow label="Playhead" hint="Its head and line on the timeline" bind:value={look.timeline.playhead} />
+            <div class="swatches" role="group" aria-label="Playhead colours">
+              {#each PLAYHEAD_SWATCHES as [name, c]}
+                <button class="swatch" class:on={look.timeline.playhead.toLowerCase() === c} style="background:{c}" title={name} aria-label="Playhead {name.toLowerCase()}" onclick={() => (look.timeline.playhead = c)}></button>
+              {/each}
             </div>
           {:else if prefsDialog.page === "ui"}
             <p class="lead">The colours of the panels, text and highlights.</p>
@@ -267,6 +275,23 @@
   }
   .slider input {
     flex: 1;
+  }
+  .swatches {
+    display: flex;
+    gap: 6px;
+    margin: 2px 0 10px;
+  }
+  .swatch {
+    width: 22px;
+    height: 22px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 50%;
+    border: 2px solid var(--line);
+  }
+  .swatch.on {
+    border-color: var(--text);
+    box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px var(--text);
   }
   .sample {
     margin-top: 14px;

@@ -31,6 +31,10 @@ export interface Look {
     primaryText: string;
     radius: number;
   };
+  timeline: {
+    /// The playhead's head and line.
+    playhead: string;
+  };
   fonts: {
     /// A family name, or "" for the built-in IBM Plex Sans.
     ui: string;
@@ -45,8 +49,19 @@ export const DEFAULTS: Look = {
   labels: { video: "#3d6a96", image: "#4a7d8c", audio: "#3e7a55", title: "#6c55a8", comp: "#9a7330", text: "#ffffff" },
   ui: { base: "#1e1f22", panel: "#26282c", raised: "#2f3237", well: "#17181b", line: "#3a3d43", text: "#d9dbdf", muted: "#8b9099", accent: "#f2a93b" },
   buttons: { bg: "#2f3237", text: "#d9dbdf", hover: "#383b41", border: "#3a3d43", primary: "#f2a93b", primaryText: "#1e1f22", radius: 4 },
+  timeline: { playhead: "#2d8ef2" },
   fonts: { ui: "", numbers: "", scale: 1 },
 };
+
+/// Quick choices for the playhead's colour (Label colours page).
+export const PLAYHEAD_SWATCHES: [string, string][] = [
+  ["Blue", "#2d8ef2"],
+  ["Red", "#e5484d"],
+  ["Orange", "#f2a93b"],
+  ["Green", "#3fb950"],
+  ["Purple", "#a371f7"],
+  ["White", "#f0f0f0"],
+];
 
 /// Ready-made interface colour schemes (Interface page).
 export const UI_SCHEMES: { name: string; ui: Look["ui"] }[] = [
@@ -105,6 +120,9 @@ export function apply(l: Look = look) {
   set("--clip-title", l.labels.title);
   set("--clip-comp", l.labels.comp);
   set("--clip-text", l.labels.text);
+  set("--playhead", l.timeline.playhead);
+  // Its time readout's text: dark on a light playhead colour.
+  set("--playhead-text", luminance(l.timeline.playhead) > 0.6 ? "#151515" : "#ffffff");
   set("--base", l.ui.base);
   set("--panel", l.ui.panel);
   set("--raised", l.ui.raised);

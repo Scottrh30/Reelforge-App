@@ -1066,7 +1066,7 @@
   </select>
 {/snippet}
 
-<div class="timeline" style="--hw:{view.headerW}px; --playhead: #2d8ef2">
+<div class="timeline" style="--hw:{view.headerW}px">
   <div class="top">
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected={app.timelineTab === "edit"} class:active={app.timelineTab === "edit"} onclick={() => showTab("edit")}>Editor Timeline</button>
@@ -1166,6 +1166,11 @@
         <span class="head" style="left:{playX}px" aria-hidden="true">
           <svg viewBox="0 0 15 20" width="15" height="20"><path d="M2.5 0H12.5Q15 0 15 2.5V12.5L7.5 20L0 12.5V2.5Q0 0 2.5 0Z" /></svg>
         </span>
+        {#if gesture?.kind === "scrub"}
+          <!-- The time beside the head while dragging it (on the left near the end). -->
+          {@const flip = playX > (rulerEl?.clientWidth ?? 0) - 110}
+          <span class="phtime" class:flip style="left:{playX}px">{timecode(app.live?.playhead ?? 0)}</span>
+        {/if}
       </div>
 
       <div class="headers">
@@ -1653,6 +1658,27 @@
     display: block;
     fill: var(--playhead);
     filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
+  }
+  .phtime {
+    position: absolute;
+    top: 4px;
+    margin-left: 12px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--playhead);
+    color: var(--playhead-text, #fff);
+    font-family: var(--font-tc);
+    font-size: calc(11px * var(--text-scale));
+    font-variant-numeric: tabular-nums;
+    line-height: 16px;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 3;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  }
+  .phtime.flip {
+    margin-left: 0;
+    transform: translateX(calc(-100% - 12px));
   }
   .head::after {
     content: "";

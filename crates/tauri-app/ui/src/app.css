@@ -13,6 +13,8 @@
   --muted: #8b9099;
   --faint: #60656e;
   --accent: #f2a93b;
+  --playhead: #2d8ef2;
+  --playhead-text: #ffffff;
   --accent-ink: var(--base);
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
   --red: #ff5d4f;

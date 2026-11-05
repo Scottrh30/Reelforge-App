@@ -955,7 +955,8 @@ applied to another layer (follow it, or corner-pin into the points), to one of t
 masks, or to the clip itself (stabilise, with smoothing).
 
 Edit → Preferences: label colours (clips on the timeline by kind, and their names, with
-ready-made sets), interface colours (panels, wells, lines, text, highlight; five schemes),
+ready-made sets, and the playhead's colour: any colour, or blue, red, orange, green, purple
+or white with one click), interface colours (panels, wells, lines, text, highlight; five schemes),
 button colours (ordinary and main buttons, corner roundness) and fonts (any installed
 family for the interface and for figures, text size 80–140%). Changes show at once;
 Cancel puts back what was there, Save keeps them for next time.
@@ -1043,6 +1044,9 @@ key for Linear, Ease in and out, Hold or **Bézier**. A Bézier key (drawn round
 handles when selected: drag a handle further out to hold the speed longer, or up and down to
 speed up or overshoot (Shift keeps it level, a pure ease). Handles shape the timing, so on
 position and scale X and Y share them. Bézier is also in the Controls panel's interpolation list.
+
+The playhead: click or drag in the ruler to move it (it snaps to markers and edits; Alt:
+free); while dragging, its time shows beside its head (HH:MM:SS:FF).
 
 Markers: **M** adds one at the playhead; drag it along the ruler (it snaps), double-click
 it to name and colour it, right-click for more. **↑ / ↓** jump between cuts and markers,
