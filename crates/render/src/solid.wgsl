@@ -20,6 +20,87 @@ struct Solid {
 
 @group(0) @binding(0) var<uniform> u: Solid;
 
+// Shadows other layers (and the text itself) cast on it: the shadow casters,
+// six vec4s each as in composite.wgsl (centre + half width, X axis + half
+// height, Y axis + opacity, crop, effect map, atlas tile), and their outlines.
+const MAX_OCC = 8u;
+struct Shadows {
+    // How many casters in x.
+    head: vec4<f32>,
+    occ: array<vec4<f32>, 48>,
+};
+@group(1) @binding(0) var<uniform> sh: Shadows;
+@group(1) @binding(1) var shadow_atlas: texture_2d<f32>;
+@group(1) @binding(2) var shadow_sampler: sampler;
+
+// How much of caster `j` covers world point `q` on its plane (see composite.wgsl).
+fn occluder_alpha(j: u32, q: vec3<f32>) -> f32 {
+    let b = j * 6u;
+    let o = sh.occ[b].xyz;
+    let hw = sh.occ[b].w;
+    let u = sh.occ[b + 1u].xyz;
+    let hh = sh.occ[b + 1u].w;
+    let v = sh.occ[b + 2u].xyz;
+    let crop = sh.occ[b + 3u];
+    let fx = sh.occ[b + 4u];
+    let tile = sh.occ[b + 5u];
+    let d = q - o;
+    let local = vec2(dot(d, u) / dot(u, u), dot(d, v) / dot(v, v));
+    let uv = local / vec2(2.0 * hw, 2.0 * hh) + 0.5;
+    if (any(uv < crop.xy) || any(uv > crop.zw)) {
+        return 0.0;
+    }
+    let tex = (uv - fx.zw) / fx.xy;
+    if (any(tex < vec2(0.0)) || any(tex > vec2(1.0))) {
+        return 0.0;
+    }
+    let texel = 0.5 / f32(textureDimensions(shadow_atlas).x);
+    let at = tile.xy + clamp(tex * tile.z, vec2(texel), vec2(tile.z - texel));
+    return textureSampleLevel(shadow_atlas, shadow_sampler, at, 0.0).r;
+}
+
+const SOFT_TAPS = 24u;
+
+// How much the casters block the light's way from `p` (see composite.wgsl).
+fn occlusion(p: vec3<f32>, l: vec3<f32>, dist: f32, directional: bool, soft: f32, grain: f32) -> f32 {
+    let count = min(u32(sh.head.x), MAX_OCC);
+    var through = 1.0;
+    for (var j = 0u; j < count; j = j + 1u) {
+        let b = j * 6u;
+        let o = sh.occ[b].xyz;
+        let u = sh.occ[b + 1u].xyz;
+        let v = sh.occ[b + 2u].xyz;
+        let opacity = sh.occ[b + 2u].w;
+        let n = cross(u, v);
+        let den = dot(n, l);
+        if (abs(den) < 1e-9) {
+            continue;
+        }
+        let t = dot(n, o - p) / den;
+        if (t <= 0.5 || (!directional && t >= dist - 0.5)) {
+            continue;
+        }
+        let hit = p + l * t;
+        var a = 0.0;
+        let r = t * tan(soft);
+        if (soft <= 0.0 || r < 0.5) {
+            a = occluder_alpha(j, hit);
+        } else {
+            let eu = normalize(u);
+            let ev = normalize(v - eu * dot(v, eu));
+            for (var k = 0u; k < SOFT_TAPS; k = k + 1u) {
+                let f = (f32(k) + 0.5) / f32(SOFT_TAPS);
+                let ang = f32(k) * 2.39996323 + grain * 6.2831853;
+                let off = sqrt(f) * r * vec2(cos(ang), sin(ang));
+                a = a + occluder_alpha(j, hit + eu * off.x + ev * off.y);
+            }
+            a = a / f32(SOFT_TAPS);
+        }
+        through = through * (1.0 - a * opacity);
+    }
+    return 1.0 - through;
+}
+
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) world: vec3<f32>,
@@ -39,7 +120,7 @@ fn vs_solid(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) p
 
 // The scene's lights on world point `p` facing `n` (same maths as
 // `reelforge_core::space3d::Light::reach` and the 3D layers in composite.wgsl).
-fn scene_light(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+fn scene_light(p: vec3<f32>, n: vec3<f32>, grain: f32) -> vec3<f32> {
     var sum = vec3(0.0);
     let count = u32(u.camera.w);
     for (var i = 0u; i < count; i = i + 1u) {
@@ -73,7 +154,12 @@ fn scene_light(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         if (kind > 0.5 && kind < 1.5) {
             spot = smoothstep(cone.x, max(cone.y, cone.x + 1e-4), dot(-l, dir));
         }
-        sum = sum + color * max(dot(n, l), 0.0) * atten * spot;
+        var shade = 1.0;
+        let darkness = u.lights[b + 3u].z;
+        if (darkness > 0.0 && sh.head.x > 0.5) {
+            shade = 1.0 - darkness * occlusion(p, l, dist, kind > 1.5, u.lights[b + 3u].w, grain);
+        }
+        sum = sum + color * max(dot(n, l), 0.0) * atten * spot * shade;
     }
     return sum;
 }
@@ -91,7 +177,9 @@ fn fs_solid(in: VsOut) -> @location(0) vec4<f32> {
     }
     var light = vec3(0.0);
     if (u.camera.w > 0.5) {
-        light = scene_light(in.world, n);
+        // A fixed scramble of where this is, for the soft shadows' taps.
+        let grain = fract(sin(dot(in.world.xy + in.world.zz * 0.37, vec2(12.9898, 78.233))) * 43758.5453);
+        light = scene_light(in.world, n, grain);
     } else {
         let a = u.studio.w;
         light = vec3(min(a + (1.0 - a) * max(dot(n, u.studio.xyz), 0.0), 1.0));

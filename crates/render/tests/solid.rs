@@ -216,3 +216,45 @@ fn it_cuts_through_3d_layers() {
     let behind = count(&draw(&mut c, Transform { three_d: true, ..Default::default() }, near));
     assert!(behind[0] + behind[1] < 20, "behind: {behind:?}");
 }
+
+/// 3D text takes shadows: a card between a light and the letters darkens the
+/// part of the face behind it (the rest stays lit), and with the light's
+/// shadow off the face is evenly lit.
+#[test]
+fn it_takes_shadows_from_3d_layers() {
+    use reelforge_core::space3d::{layer_space, Light};
+    let Some((d, q)) = headless_device() else { return };
+    let mut c = Compositor::new(&d, &q);
+    let white: Vec<u8> = [255u8; 4].iter().copied().cycle().take(16 * 4).collect();
+    let s = spec(30.0);
+    let mesh = text_mesh(&s, [W, H]);
+    let text = Transform { three_d: true, ..Default::default() };
+    // A card halfway between the light (off to the right, in front) and the text.
+    let card = Transform { three_d: true, position: [200.0, 0.0], depth: -200.0, ..Default::default() };
+    let draw = |c: &mut Compositor, shadow: f32| {
+        let light = Light { kind: 0, color: [1.0; 3], position: [400.0, 0.0, -400.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 2000.0, shadow, softness: 0.0 };
+        let sc = Scene3d { camera: Camera::default_for([W as f32, H as f32]), lights: vec![light] };
+        let input = SolidInput { mesh: mesh.clone(), space: solid_space(&text, &sc), face: s.color, side: s.side_color.unwrap() };
+        let cs = layer_space(&card, [24.0, 24.0], &sc);
+        let card_layer = LayerInput { key: 2, content_id: 1, pixels: PixelData::Rgba(&white), pixel_size: [4, 4], layer_size: [24.0, 24.0], transform: card, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: Some(&cs) };
+        let text_layer = LayerInput { key: 1, content_id: input.content_id(), pixels: PixelData::Solid(&input), pixel_size: [W, H], layer_size: [W as f32, H as f32], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: None };
+        c.render([W, H], &[text_layer, card_layer]);
+        c.read_output().unwrap()
+    };
+    let lit = draw(&mut c, 0.0);
+    let shadowed = draw(&mut c, 1.0);
+    let (mut face, mut dark) = (0, 0);
+    for i in (0..(W * H) as usize).map(|i| i * 4) {
+        if classify(&lit[i..]) == 1 {
+            face += 1;
+            if (shadowed[i] as i32) < lit[i] as i32 - 40 {
+                dark += 1;
+            }
+        }
+    }
+    assert!(face > 1000, "the face shows: {face}");
+    assert!(dark > 150 && dark < face * 3 / 4, "part of the face in shadow: {dark} of {face}");
+    // Lit again: no shadow left over from the frame before.
+    let again = draw(&mut c, 0.0);
+    assert_eq!(again, lit);
+}

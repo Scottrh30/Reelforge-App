@@ -32,7 +32,7 @@ impl SolidInput {
             v.to_bits().hash(&mut h);
         }
         for l in &s.lights {
-            for v in l.position.iter().chain(&l.direction).chain(&l.color).chain(&l.cone).chain([&l.radius]) {
+            for v in l.position.iter().chain(&l.direction).chain(&l.color).chain(&l.cone).chain([&l.radius, &l.shadow, &l.softness]) {
                 v.to_bits().hash(&mut h);
             }
             (l.kind, l.falloff).hash(&mut h);
@@ -46,6 +46,9 @@ const SAMPLES: u32 = 4;
 const FLAT_STRIDE: u64 = 256;
 const FLAT_SLOTS: u64 = 16;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// Shadow casters the text's shader takes (as `MAX_OCC` in solid.wgsl), six vec4 each, after a vec4 head.
+pub(crate) const MAX_SHADOW_CASTERS: usize = 8;
+const SHADOW_SIZE: u64 = 16 + MAX_SHADOW_CASTERS as u64 * 6 * 16;
 /// mat4, 4 + 3 vec4 of axes and normals, camera, studio, two colours, 32 vec4 of lights.
 const UNIFORM_SIZE: usize = 64 + 7 * 16 + 4 * 16 + 32 * 16;
 
@@ -86,6 +89,19 @@ pub(crate) struct SolidRenderer {
     depth_pipeline: wgpu::RenderPipeline,
     depths: HashMap<u64, DepthPicture>,
     format: wgpu::TextureFormat,
+    /// Shadows on the text: their layout, the casters' buffer, a sampler, and "no shadows".
+    shadow_layout: wgpu::BindGroupLayout,
+    shadow_buffer: wgpu::Buffer,
+    shadow_sampler: wgpu::Sampler,
+    no_shadows: wgpu::BindGroup,
+}
+
+/// Shadows to draw text with: the casters (as the compositor lays them out,
+/// six vec4s each) and the atlas of their outlines.
+pub(crate) struct Shadows<'a> {
+    pub casters: &'a [f32],
+    pub count: usize,
+    pub atlas: &'a wgpu::TextureView,
 }
 
 fn srgb_to_linear(c: u8) -> f32 {
@@ -112,7 +128,49 @@ impl SolidRenderer {
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("solid"), size: UNIFORM_SIZE as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("solid"), layout: &layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() }] });
         let shader = device.create_shader_module(wgpu::include_wgsl!("solid.wgsl"));
-        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("solid shadows"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(SHADOW_SIZE) },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        let shadow_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("solid shadows"), size: SHADOW_SIZE, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let none_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("solid no shadows"), size: SHADOW_SIZE, usage: wgpu::BufferUsages::UNIFORM, mapped_at_creation: false });
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("solid shadows"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        let blank = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("solid no shadows"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let no_shadows = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("solid no shadows"),
+            layout: &shadow_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: none_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&blank) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&shadow_sampler) },
+            ],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid"), bind_group_layouts: &[Some(&layout), Some(&shadow_layout)], immediate_size: 0 });
         let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solid"),
@@ -210,7 +268,7 @@ impl SolidRenderer {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), depth_pipeline, depths: HashMap::new(), format }
+        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), depth_pipeline, depths: HashMap::new(), format, shadow_layout, shadow_buffer, shadow_sampler, no_shadows }
     }
 
     /// Get layer `key`'s outline ready for shadow-atlas tile `slot`: false if
@@ -236,6 +294,60 @@ impl SolidRenderer {
         pass.set_vertex_buffer(0, m.vertices.slice(..));
         pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..m.count, 0, 0..1);
+    }
+
+    /// The text's picture into `target`, lit with `shadows` (a group-1 bind group).
+    fn colour_pass(&self, enc: &mut wgpu::CommandEncoder, key: u64, s: &SolidInput, target: &wgpu::TextureView, shadows: &wgpu::BindGroup) {
+        let face = linear(s.face);
+        let (Some(t), Some(m)) = (self.targets.as_ref(), self.meshes.get(&key)) else { return };
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("solid"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &t.color,
+                    depth_slice: None,
+                    resolve_target: Some(target),
+                    // Transparent, but in the text's colour, so the soft edges
+                    // (averaged with the background) keep the right colour.
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: face[0] as f64, g: face[1] as f64, b: face[2] as f64, a: 0.0 }), store: wgpu::StoreOp::Discard },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &t.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }), stencil_ops: None }),
+                ..Default::default()
+            });
+            if m.count > 0 {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind, &[]);
+                pass.set_bind_group(1, shadows, &[]);
+                pass.set_vertex_buffer(0, m.vertices.slice(..));
+                pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..m.count, 0, 0..1);
+            }
+        }
+    }
+
+    /// Draw layer `key`'s picture again (after `draw` this frame), now with
+    /// the shadows other layers and the text itself cast on it.
+    pub fn draw_shadowed(&self, device: &wgpu::Device, queue: &wgpu::Queue, key: u64, s: &SolidInput, target: &wgpu::TextureView, sh: &Shadows) {
+        if !self.meshes.contains_key(&key) || self.targets.is_none() {
+            return;
+        }
+        let mut head = vec![sh.count.min(MAX_SHADOW_CASTERS) as f32, 0.0, 0.0, 0.0];
+        head.extend(sh.casters.iter().take(MAX_SHADOW_CASTERS * 24));
+        head.resize(SHADOW_SIZE as usize / 4, 0.0);
+        queue.write_buffer(&self.shadow_buffer, 0, &head.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>());
+        queue.write_buffer(&self.uniforms, 0, &uniform_bytes(s));
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("solid shadows"),
+            layout: &self.shadow_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.shadow_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(sh.atlas) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.shadow_sampler) },
+            ],
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("solid shadowed") });
+        self.colour_pass(&mut enc, key, s, target, &bind);
+        queue.submit([enc.finish()]);
     }
 
     /// Forget the meshes of layers that are gone.
@@ -299,32 +411,10 @@ impl SolidRenderer {
             self.meshes.insert(key, MeshBuffers { id: mesh.id, vertices, indices, count: mesh.indices.len() as u32 });
         }
         queue.write_buffer(&self.uniforms, 0, &uniform_bytes(s));
-        let face = linear(s.face);
         let t = self.targets.as_ref().unwrap();
         let m = &self.meshes[&key];
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("solid") });
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("solid"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &t.color,
-                    depth_slice: None,
-                    resolve_target: Some(target),
-                    // Transparent, but in the text's colour, so the soft edges
-                    // (averaged with the background) keep the right colour.
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: face[0] as f64, g: face[1] as f64, b: face[2] as f64, a: 0.0 }), store: wgpu::StoreOp::Discard },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &t.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }), stencil_ops: None }),
-                ..Default::default()
-            });
-            if m.count > 0 {
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind, &[]);
-                pass.set_vertex_buffer(0, m.vertices.slice(..));
-                pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..m.count, 0, 0..1);
-            }
-        }
+        self.colour_pass(&mut enc, key, s, target, &self.no_shadows);
         // The depth picture. Where there's no face it holds the depth of the
         // text's middle, so a glow or blur spilling past the letters sits there too.
         let mid = {
@@ -351,6 +441,7 @@ impl SolidRenderer {
             if m.count > 0 {
                 pass.set_pipeline(&self.depth_pipeline);
                 pass.set_bind_group(0, &self.bind, &[]);
+                pass.set_bind_group(1, &self.no_shadows, &[]);
                 pass.set_vertex_buffer(0, m.vertices.slice(..));
                 pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..m.count, 0, 0..1);
@@ -379,7 +470,7 @@ fn uniform_bytes(s: &SolidInput) -> Vec<u8> {
         f.extend([l.position[0], l.position[1], l.position[2], l.kind as f32]);
         f.extend([l.direction[0], l.direction[1], l.direction[2], l.falloff as f32]);
         f.extend([l.color[0], l.color[1], l.color[2], l.radius]);
-        f.extend([l.cone[0], l.cone[1], 0.0, 0.0]);
+        f.extend([l.cone[0], l.cone[1], l.shadow, l.softness]);
     }
     f.resize(UNIFORM_SIZE / 4, 0.0);
     f.iter().flat_map(|v| v.to_le_bytes()).collect()

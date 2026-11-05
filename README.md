@@ -887,6 +887,11 @@ What works now:
     from what casts it (sharp where it touches, blurrier further away), sampled with a turned
     disk of 24 taps so it reads as fine grain rather than steps. Extruded **3D text** casts
     shadows too: its letters' outline (not their box), from the plane halfway through its depth
+    — and **takes** them: 3D layers and other 3D text between a light and the letters darken
+    their faces and sides (soft shadows too), and the letters shade themselves where light
+    falls through the back half of an extrusion. The text is drawn again after the shadow
+    atlas each frame it's in shadow (its effects wait for that), so a shadow moving across it
+    stays in step
   - **Layers that cut through each other** do: consecutive 3D layers are drawn with a depth
     buffer, so where two cross, each shows on the side where it's nearer. They're still drawn
     back to front by their middles (for see-through parts), and nearly transparent pixels

@@ -1536,7 +1536,8 @@ impl Compositor {
         // Shadows: when a light casts them, the 3D layers being drawn (up to
         // MAX_OCCLUDERS) each get a tile of the shadow atlas with their outline,
         // and lit layers trace their light past them (see composite.wgsl).
-        let casts = uniforms.iter().any(|u| u.4.and_then(|s| s.lighting.as_ref()).is_some_and(|l| l.lights.iter().any(|g| g.shadow > 0.0 && g.kind != 3)));
+        let shadowing = |l: &reelforge_core::space3d::Light| l.shadow > 0.0 && l.kind != 3;
+        let layers_cast = uniforms.iter().any(|u| u.4.and_then(|s| s.lighting.as_ref()).is_some_and(|l| l.lights.iter().any(shadowing)));
         // 3D text casts too: its letters' outline, on the plane halfway through its depth.
         // (and 3D runs take it in: it has a depth picture).
         let mut solids: HashMap<u64, &SolidInput> = HashMap::new();
@@ -1553,6 +1554,8 @@ impl Compositor {
                 }
             }
         }
+        // (and is lit by the same lights, so it takes shadows as well.)
+        let casts = layers_cast || solids.values().any(|s| s.space.lights.iter().any(shadowing));
         let mut occluders: Vec<(usize, u64, Option<usize>)> = Vec::new();
         if casts {
             let mut add = |d: &Draw| {
@@ -1736,8 +1739,11 @@ impl Compositor {
         };
         // Adjustment layers' passes wait for the frame below them to be drawn.
         let adjust: std::collections::HashSet<u64> = ops.iter().filter_map(|o| if let Op::Adjust { draw, .. } = o { Some(draw.key) } else { None }).collect();
+        // 3D text in shadow is drawn again once the atlas is ready (below), so
+        // its effects wait for that too.
+        let shaded: Vec<u64> = if occluders.is_empty() { Vec::new() } else { solids.iter().filter(|(_, s)| s.space.lights.iter().any(shadowing)).map(|(k, _)| *k).collect() };
         for (i, p) in fx_passes.iter().enumerate() {
-            if !adjust.contains(&p.key) {
+            if !adjust.contains(&p.key) && !shaded.contains(&p.key) {
                 encode_fx(&mut enc, i, p);
             }
         }
@@ -1762,6 +1768,24 @@ impl Compositor {
                 pass.set_viewport(x as f32, y as f32, ATLAS_TILE as f32, ATLAS_TILE as f32, 0.0, 1.0);
                 pass.set_bind_group(0, bind, &[]);
                 pass.draw(0..3, 0..1);
+            }
+        }
+        if !shaded.is_empty() {
+            // The atlas has to be drawn before the text is shaded with it.
+            let done = std::mem::replace(&mut enc, self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("composite") }));
+            self.queue.submit([done.finish()]);
+            let sh = solid::Shadows { casters: &occluder_floats, count: occluders.len(), atlas: &self.shadow_atlas_view };
+            for key in &shaded {
+                if let (Some(s), Some(t)) = (solids.get(key), self.layers.get(key)) {
+                    let view = t.texture.create_view(&Default::default());
+                    self.solid.draw_shadowed(&self.device, &self.queue, *key, s, &view, &sh);
+                }
+            }
+
+            for (i, p) in fx_passes.iter().enumerate() {
+                if !adjust.contains(&p.key) && shaded.contains(&p.key) {
+                    encode_fx(&mut enc, i, p);
+                }
             }
         }
 
@@ -1909,6 +1933,12 @@ impl Compositor {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
+        // Shaded text's picture depends on the other layers: draw it afresh next time.
+        for key in shaded {
+            if let Some(t) = self.layers.get_mut(&key) {
+                t.content_id = u64::MAX;
+            }
+        }
     }
 
     /// Drop cached textures for layers not in `keep`.
