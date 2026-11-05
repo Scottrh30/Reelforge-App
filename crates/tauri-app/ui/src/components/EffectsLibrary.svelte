@@ -6,6 +6,7 @@
   import { app, run } from "../lib/session.svelte";
   import { api, type CatalogGroup, type CatalogItem, type FxPreset, type TransitionKind } from "../lib/api";
   import { favourites, isFav, toggleFav } from "../lib/favourites.svelte";
+  import { effectThumb } from "../lib/thumbs";
 
   let groups = $state<CatalogGroup[]>([]);
   let transitions = $state<TransitionKind[]>([]);
@@ -78,8 +79,48 @@
     }
   }
 
+  // Hovering an effect: a card beside the panel with what it does, and the
+  // selected clip's frame at the playhead with it added (as in the browser,
+  // and off with the browser's Pictures switch).
+  type Peek = { it: CatalogItem; x: number; y: number; left: boolean; url: string | null };
+  let peek = $state<Peek | null>(null);
+  let peekTimer: ReturnType<typeof setTimeout> | undefined;
+  const stamp = $derived(`${app.live?.rev ?? 0}:${app.live?.playhead ?? 0}`);
+  const picturesOn = () => {
+    try {
+      return localStorage.getItem("fxPictures") !== "0";
+    } catch {
+      return true;
+    }
+  };
+  function enter(ev: PointerEvent, e: Entry) {
+    leave();
+    const it = e.effect;
+    if (!it || app.dragEffect) return;
+    const el = ev.currentTarget as HTMLElement;
+    peekTimer = setTimeout(() => {
+      const r = el.getBoundingClientRect();
+      const panel = el.closest(".lib")?.getBoundingClientRect() ?? r;
+      // Beside the panel, on whichever side has room for the card.
+      const left = panel.right + 236 > window.innerWidth;
+      const y = Math.max(8, Math.min(r.top - 8, window.innerHeight - 220));
+      const p: Peek = { it, x: left ? panel.left - 8 : panel.right + 8, y, left, url: null };
+      peek = p;
+      if (target && picturesOn()) {
+        effectThumb(target.id, it.kind, it.plugin, stamp).then((u) => {
+          if (peek && peek.it === it) peek = { ...peek, url: u };
+        });
+      }
+    }, 350);
+  }
+  function leave() {
+    clearTimeout(peekTimer);
+    peek = null;
+  }
+
   // Dragging onto the timeline (the Timeline picks the clip under the pointer).
   function down(ev: PointerEvent, e: Entry) {
+    leave();
     if (ev.button !== 0) return;
     const x0 = ev.clientX;
     const y0 = ev.clientY;
@@ -109,7 +150,7 @@
       </button>
       {#if isOpen(g.label)}
         {#each g.items as e (e.label + (e.effect?.plugin ?? "") + (e.preset ? "p" : ""))}
-          <div class="item" class:fav={!!e.effect && isFav(e.effect)} role="treeitem" aria-selected="false" tabindex="0" onpointerdown={(ev) => down(ev, e)} ondblclick={() => apply(e, null)} onkeydown={(ev) => ev.key === "Enter" && apply(e, null)}>
+          <div class="item" class:fav={!!e.effect && isFav(e.effect)} role="treeitem" aria-selected="false" tabindex="0" onpointerdown={(ev) => down(ev, e)} onpointerenter={(ev) => enter(ev, e)} onpointerleave={leave} ondblclick={() => apply(e, null)} onkeydown={(ev) => ev.key === "Enter" && apply(e, null)}>
             <span class="label">{e.label}</span>
             {#if e.effect}
               {@const it = e.effect}
@@ -123,6 +164,19 @@
     {/each}
   </div>
 </div>
+
+{#if peek}
+  <div class="peek" class:left={peek.left} style="{peek.left ? `right:${window.innerWidth - peek.x}px` : `left:${peek.x}px`}; top:{peek.y}px" role="tooltip">
+    {#if target && picturesOn()}
+      <div class="pic">
+        {#if peek.url}<img src={peek.url} alt="" />{:else}<span class="wait">…</span>{/if}
+      </div>
+    {/if}
+    <div class="name">{peek.it.label}</div>
+    {#if peek.it.description}<div class="desc">{peek.it.description}</div>{/if}
+    {#if !target}<div class="hint">Select a clip to see it on your footage.</div>{/if}
+  </div>
+{/if}
 
 {#if app.dragEffect}
   <div class="ghost" style="left:{app.dragEffect.x + 12}px; top:{app.dragEffect.y + 8}px">{app.dragEffect.name}</div>
@@ -229,6 +283,43 @@
     padding: 2px 8px;
     pointer-events: none;
     font-size: calc(12px * var(--text-scale));
+  }
+  .peek {
+    position: fixed;
+    z-index: 70;
+    width: 220px;
+    background: var(--raised);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+  }
+  .pic {
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: 4px;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    margin-bottom: 6px;
+  }
+  .pic img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  .wait {
+    color: var(--faint);
+  }
+  .peek .name {
+    font-weight: 500;
+  }
+  .peek .desc,
+  .peek .hint {
+    color: var(--muted);
+    font-size: calc(11px * var(--text-scale));
+    margin-top: 2px;
   }
   .none {
     color: var(--faint);

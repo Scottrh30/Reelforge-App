@@ -1011,7 +1011,9 @@ Add in the browser) stars it, and starred effects are listed first in both, in a
 Favourites group, kept with the app's settings. **Pictures** (on by default, a tick box at the
 browser's foot): each effect is shown on the selected clip's frame at the playhead, at its
 defaults, drawn small as it scrolls into view (and again when the clip or playhead changes;
-nothing in the project changes). Switch effects off, reorder, duplicate,
+nothing in the project changes). In the **Effects panel**, hovering an effect for a moment shows a card
+beside the panel with the same picture, its name and what it does (the description alone with
+no clip selected, or with Pictures off). Switch effects off, reorder, duplicate,
 reset and remove them, fold them shut, and edit every setting (drag or type the numbers; menus and tick boxes for plugin
 choices). The ◆ beside a setting keyframes it at the playhead; once a setting has keys,
 changing it sets the key there. Curves has its own curve editor (Master, Red, Green,
