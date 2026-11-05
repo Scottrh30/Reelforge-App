@@ -1529,10 +1529,26 @@ impl Compositor {
         // MAX_OCCLUDERS) each get a tile of the shadow atlas with their outline,
         // and lit layers trace their light past them (see composite.wgsl).
         let casts = uniforms.iter().any(|u| u.4.and_then(|s| s.lighting.as_ref()).is_some_and(|l| l.lights.iter().any(|g| g.shadow > 0.0 && g.kind != 3)));
+        // 3D text casts too: its letters' outline, on the plane halfway through its depth.
+        let mut solids: HashMap<u64, &SolidInput> = HashMap::new();
+        if casts {
+            for item in items {
+                let ls: Vec<&LayerInput> = match item {
+                    DrawItem::Layer(l) => vec![l],
+                    DrawItem::Dissolve { from, to, .. } => vec![from, to],
+                };
+                for l in ls {
+                    if let PixelData::Solid(s) = &l.pixels {
+                        solids.insert(l.key, s);
+                    }
+                }
+            }
+        }
         let mut occluders: Vec<(usize, u64, Option<usize>)> = Vec::new();
         if casts {
             let mut add = |d: &Draw| {
-                if occluders.len() < MAX_OCCLUDERS && uniforms[d.slot].4.is_some() && uniforms[d.slot].0.opacity > 0.0 {
+                let solid = occluders.len() < MAX_OCCLUDERS && solids.get(&d.key).is_some_and(|s| self.solid.prepare_outline(&self.queue, d.key, s, occluders.len()));
+                if occluders.len() < MAX_OCCLUDERS && (uniforms[d.slot].4.is_some() || solid) && uniforms[d.slot].0.opacity > 0.0 {
                     occluders.push((d.slot, d.key, d.fx));
                 }
             };
@@ -1551,8 +1567,26 @@ impl Compositor {
         let occluder_floats: Vec<f32> = occluders
             .iter()
             .enumerate()
-            .flat_map(|(k, &(slot, _, _))| {
+            .flat_map(|(k, &(slot, key, _))| {
                 let (t, size, _, _, space, fxmap) = &uniforms[slot];
+                if let Some(s) = solids.get(&key) {
+                    let b = s.mesh.bounds;
+                    let sp = &s.space;
+                    let o = sp.world([(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, s.mesh.depth * 0.5]);
+                    let (u, v) = (sp.axes[0], sp.axes[1]);
+                    let tile = [(k % 4) as f32 * 0.25, (k / 4) as f32 * 0.25, 0.25, 0.0];
+                    return [
+                        [o[0], o[1], o[2], (b[2] - b[0]) * 0.5],
+                        [u[0], u[1], u[2], (b[3] - b[1]) * 0.5],
+                        [v[0], v[1], v[2], t.opacity.clamp(0.0, 1.0)],
+                        [0.0, 0.0, 1.0, 1.0],
+                        [1.0, 1.0, 0.0, 0.0],
+                        tile,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<f32>>();
+                }
                 let [o, u, v] = space.map_or([[0.0; 3]; 3], |s| s.plane);
                 let tile = [(k % 4) as f32 * 0.25, (k / 4) as f32 * 0.25, 0.25, 0.0];
                 [
@@ -1615,7 +1649,7 @@ impl Compositor {
                             floats.extend([g.position[0], g.position[1], g.position[2], g.kind as f32]);
                             floats.extend([g.direction[0], g.direction[1], g.direction[2], g.falloff as f32]);
                             floats.extend([g.color[0], g.color[1], g.color[2], g.radius]);
-                            floats.extend([g.cone[0], g.cone[1], g.shadow, 0.0]);
+                            floats.extend([g.cone[0], g.cone[1], g.shadow, g.softness]);
                         }
                         if !occluders.is_empty() {
                             floats.resize(pts0 + OCCLUDER_BASE * 4, 0.0);
@@ -1703,6 +1737,13 @@ impl Compositor {
             let mut pass = pass_on(&mut enc, &self.shadow_atlas_view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
             pass.set_pipeline(&self.occluder_pipeline);
             for (k, &(_, key, fx)) in occluders.iter().enumerate() {
+                if solids.contains_key(&key) {
+                    let (x, y) = ((k % 4) as u32 * ATLAS_TILE, (k / 4) as u32 * ATLAS_TILE);
+                    pass.set_viewport(x as f32, y as f32, ATLAS_TILE as f32, ATLAS_TILE as f32, 0.0, 1.0);
+                    self.solid.draw_outline(&mut pass, key, k);
+                    pass.set_pipeline(&self.occluder_pipeline);
+                    continue;
+                }
                 let bind = match fx {
                     Some(i) => self.fx_targets.get(&key).map(|f| &f.binds[i]),
                     None => self.layers.get(&key).map(|t| &t.bind_group),

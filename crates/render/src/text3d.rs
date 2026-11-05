@@ -40,6 +40,10 @@ pub struct TextMesh {
     pub indices: Vec<u32>,
     /// Identifies the mesh (the title's content hash).
     pub id: u64,
+    /// The letters' extent across: min X, min Y, max X, max Y (0 if none).
+    pub bounds: [f32; 4],
+    /// How deep the extrusion goes (Z from 0 to this).
+    pub depth: f32,
 }
 
 /// Curves are cut into straight pieces at most this far (canvas pixels) from the curve.
@@ -233,7 +237,12 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
             }
         }
     }
-    TextMesh { vertices, indices, id }
+    let bounds = if vertices.is_empty() {
+        [0.0; 4]
+    } else {
+        vertices.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, v| [b[0].min(v.pos[0]), b[1].min(v.pos[1]), b[2].max(v.pos[0]), b[3].max(v.pos[1])])
+    };
+    TextMesh { vertices, indices, id, bounds, depth }
 }
 
 #[cfg(test)]

@@ -126,22 +126,53 @@ fn wipe_factor(p: vec2<f32>) -> f32 {
 // opacity, the crop (uv), the effect target's map, and its atlas tile.
 const OCCLUDER_BASE = 36u;
 
+// How much of occluder `j` (its slot in `pts`) covers world point `q` on its
+// plane, 0–1 (0 off it, or outside its crop or picture).
+fn occluder_alpha(j: u32, q: vec3<f32>) -> f32 {
+    let b = OCCLUDER_BASE + j * 6u;
+    let o = layer.pts[b].xyz;
+    let hw = layer.pts[b].w;
+    let u = layer.pts[b + 1u].xyz;
+    let hh = layer.pts[b + 1u].w;
+    let v = layer.pts[b + 2u].xyz;
+    let crop = layer.pts[b + 3u];
+    let fx = layer.pts[b + 4u];
+    let tile = layer.pts[b + 5u];
+    let d = q - o;
+    let local = vec2(dot(d, u) / dot(u, u), dot(d, v) / dot(v, v));
+    let uv = local / vec2(2.0 * hw, 2.0 * hh) + 0.5;
+    if (any(uv < crop.xy) || any(uv > crop.zw)) {
+        return 0.0;
+    }
+    let tex = (uv - fx.zw) / fx.xy;
+    if (any(tex < vec2(0.0)) || any(tex > vec2(1.0))) {
+        return 0.0;
+    }
+    // Inside the tile (half a texel in), from the layer's picture.
+    let texel = 0.5 / 1024.0;
+    let at = tile.xy + clamp(tex * tile.z, vec2(texel), vec2(tile.z - texel));
+    return textureSampleLevel(shadow_atlas, layer_sampler, at, 0.0).r;
+}
+
+// Taps for soft shadows: a Vogel (sunflower) disk, turned per pixel so the
+// steps blend into fine grain instead of rings.
+const SOFT_TAPS = 24u;
+
 // How much of a light's way from world point `p` (direction `l`, `dist` away;
 // any distance for a directional light) the other 3D layers block, 0–1.
-fn occlusion(p: vec3<f32>, l: vec3<f32>, dist: f32, directional: bool) -> f32 {
+// With `soft` (the angle, radians, the light's radius covers), each occluder
+// is averaged over the disk of its plane that the light's spread passes
+// through: wider the further the shadow falls from what casts it, so
+// contact shadows stay crisp and long ones soften, as under a big light.
+fn occlusion(p: vec3<f32>, l: vec3<f32>, dist: f32, directional: bool, soft: f32, grain: f32) -> f32 {
     let count = u32(layer.pts[3].w);
     var through = 1.0;
     for (var j = 0u; j < count; j = j + 1u) {
         let b = OCCLUDER_BASE + j * 6u;
         let o = layer.pts[b].xyz;
-        let hw = layer.pts[b].w;
         let u = layer.pts[b + 1u].xyz;
-        let hh = layer.pts[b + 1u].w;
         let v = layer.pts[b + 2u].xyz;
         let opacity = layer.pts[b + 2u].w;
-        let crop = layer.pts[b + 3u];
-        let fx = layer.pts[b + 4u];
-        let tile = layer.pts[b + 5u];
         let n = cross(u, v);
         let den = dot(n, l);
         if (abs(den) < 1e-9) {
@@ -152,21 +183,24 @@ fn occlusion(p: vec3<f32>, l: vec3<f32>, dist: f32, directional: bool) -> f32 {
         if (t <= 0.5 || (!directional && t >= dist - 0.5)) {
             continue;
         }
-        let d = p + l * t - o;
-        let local = vec2(dot(d, u) / dot(u, u), dot(d, v) / dot(v, v));
-        let uv = local / vec2(2.0 * hw, 2.0 * hh) + 0.5;
-        if (any(uv < crop.xy) || any(uv > crop.zw)) {
-            continue;
+        let hit = p + l * t;
+        var a = 0.0;
+        let r = t * tan(soft);
+        if (soft <= 0.0 || r < 0.5) {
+            a = occluder_alpha(j, hit);
+        } else {
+            // Across the occluder's plane, in world units.
+            let eu = normalize(u);
+            let ev = normalize(v - eu * dot(v, eu));
+            for (var k = 0u; k < SOFT_TAPS; k = k + 1u) {
+                let f = (f32(k) + 0.5) / f32(SOFT_TAPS);
+                let ang = f32(k) * 2.39996323 + grain * 6.2831853;
+                let off = sqrt(f) * r * vec2(cos(ang), sin(ang));
+                a = a + occluder_alpha(j, hit + eu * off.x + ev * off.y);
+            }
+            a = a / f32(SOFT_TAPS);
         }
-        let tex = (uv - fx.zw) / fx.xy;
-        if (any(tex < vec2(0.0)) || any(tex > vec2(1.0))) {
-            continue;
-        }
-        // Inside the tile (half a texel in), from the layer's picture.
-        let texel = 0.5 / 1024.0;
-        let at = tile.xy + clamp(tex * tile.z, vec2(texel), vec2(tile.z - texel));
-        let a = textureSampleLevel(shadow_atlas, layer_sampler, at, 0.0).r * opacity;
-        through = through * (1.0 - a);
+        through = through * (1.0 - a * opacity);
     }
     return 1.0 - through;
 }
@@ -219,7 +253,9 @@ fn lighting(local: vec2<f32>) -> vec3<f32> {
         var shade = 1.0;
         let darkness = layer.pts[b + 3u].z;
         if (darkness > 0.0) {
-            shade = 1.0 - darkness * occlusion(p, l, dist, kind > 1.5);
+            // A fixed scramble of where on the layer this is, for the soft taps' turn.
+            let grain = fract(sin(dot(local, vec2(12.9898, 78.233))) * 43758.5453);
+            shade = 1.0 - darkness * occlusion(p, l, dist, kind > 1.5, layer.pts[b + 3u].w, grain);
         }
         sum = sum + color * max(dot(n, l), 0.0) * atten * spot * shade;
     }

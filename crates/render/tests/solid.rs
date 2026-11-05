@@ -104,3 +104,67 @@ fn turned_it_shows_its_sides_shaded() {
     let other = render(&mut c, &spec(80.0), Transform { orientation: [-25.0, 35.0], ..turned }, &scene());
     assert_ne!(other, deep);
 }
+
+/// 3D text casts shadows: extruded letters between a point light and a lit
+/// wall darken the wall in their shape (not their box), and with the light's
+/// shadow off the wall stays fully lit.
+#[test]
+fn it_casts_shadows_on_3d_layers() {
+    use reelforge_core::space3d::{layer_space, Light};
+    let Some((d, q)) = headless_device() else { return };
+    let mut c = Compositor::new(&d, &q);
+    let white: Vec<u8> = [255u8; 4].iter().copied().cycle().take(16 * 4).collect();
+    let wall = Transform { three_d: true, ..Default::default() };
+    let text = Transform { three_d: true, depth: -300.0, ..Default::default() };
+    let s = spec(30.0);
+    let mesh = text_mesh(&s, [W, H]);
+    let draw = |c: &mut Compositor, shadow: f32, with_wall: bool| {
+        let light = Light { kind: 0, color: [1.0; 3], position: [0.0, 0.0, -600.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 2000.0, shadow, softness: 0.0 };
+        let sc = Scene3d { camera: Camera::default_for([W as f32, H as f32]), lights: vec![light] };
+        let input = SolidInput { mesh: mesh.clone(), space: solid_space(&text, &sc), face: s.color, side: s.side_color.unwrap() };
+        let ws = layer_space(&wall, [W as f32, H as f32], &sc);
+        let wall_layer = LayerInput { key: 2, content_id: 1, pixels: PixelData::Rgba(&white), pixel_size: [4, 4], layer_size: [W as f32, H as f32], transform: wall, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: Some(&ws) };
+        let text_layer = LayerInput { key: 1, content_id: input.content_id(), pixels: PixelData::Solid(&input), pixel_size: [W, H], layer_size: [W as f32, H as f32], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: None };
+        if with_wall {
+            c.render([W, H], &[wall_layer, text_layer]);
+        } else {
+            c.render([W, H], &[text_layer]);
+        }
+        c.read_output().unwrap()
+    };
+    let alone = draw(&mut c, 0.8, false);
+    let lit = draw(&mut c, 0.0, true);
+    let shadowed = draw(&mut c, 0.8, true);
+    // Away from the letters (and a little margin round them), how the wall changed.
+    let covered = |x: u32, y: u32| {
+        (x.saturating_sub(3)..(x + 4).min(W)).any(|x| (y.saturating_sub(3)..(y + 4).min(H)).any(|y| { let i = ((y * W + x) * 4) as usize; alone[i] as u32 + alone[i + 1] as u32 + alone[i + 2] as u32 > 6 }))
+    };
+    let (mut dark, mut wall_px) = (0, 0);
+    let (mut x0, mut x1, mut y0, mut y1) = (W, 0, H, 0);
+    for y in 0..H {
+        for x in 0..W {
+            if covered(x, y) {
+                continue;
+            }
+            let i = ((y * W + x) * 4) as usize;
+            assert!(lit[i] > 200, "no shadow: lit at {x},{y}: {}", lit[i]);
+            wall_px += 1;
+            if (shadowed[i] as i32) < lit[i] as i32 - 60 {
+                dark += 1;
+                (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
+            }
+        }
+    }
+    assert!(dark > 400, "the letters' shadow shows round them: {dark} of {wall_px}");
+    // Letter-shaped: plenty of the shadow's box (between the letters) stays lit.
+    let mut lit_inside = 0;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let i = ((y * W + x) * 4) as usize;
+            if !covered(x, y) && (shadowed[i] as i32) >= lit[i] as i32 - 20 {
+                lit_inside += 1;
+            }
+        }
+    }
+    assert!(lit_inside > 200, "not a box: {lit_inside} lit inside {x0}..{x1} × {y0}..{y1}");
+}

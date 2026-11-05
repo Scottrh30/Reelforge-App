@@ -358,6 +358,8 @@ pub mod light {
     /// 3D layers between the light and another layer shade it (1) or not (0).
     pub const SHADOWS: usize = 13;
     pub const SHADOW_DARKNESS: usize = 14;
+    /// How soft the shadows are (the light's size), 0–100 %.
+    pub const SHADOW_SOFTNESS: usize = 15;
     /// What the light kinds are called (the Type menu).
     pub const KINDS: [&str; 4] = ["Point", "Spot", "Directional", "Ambient"];
 }
@@ -393,7 +395,7 @@ const CAMERA: [ParamSpec; 11] = [
     spec("Blur", 25.0, 0.0, 250.0, " px", 0.25),
 ];
 
-const LIGHT: [ParamSpec; 15] = [
+const LIGHT: [ParamSpec; 16] = [
     choice("Type", &light::KINDS),
     color("Colour", 0xffffff),
     spec("Intensity", 100.0, 0.0, 1000.0, " %", 0.5),
@@ -409,6 +411,7 @@ const LIGHT: [ParamSpec; 15] = [
     spec("Falloff distance", 1500.0, 1.0, 100000.0, " px", 1.0),
     ParamSpec { name: "Casts shadows", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
     spec("Shadow darkness", 80.0, 0.0, 100.0, " %", 0.5),
+    spec("Shadow softness", 0.0, 0.0, 100.0, " %", 0.5),
 ];
 
 /// Energy blade parameter indices.

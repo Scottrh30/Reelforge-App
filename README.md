@@ -854,7 +854,11 @@ What works now:
     darkens what 3D layers block of it on the lit 3D layers behind them. The blocker's own
     picture counts, so a cut-out or text casts its shape and its opacity how dark; each pixel
     traces its way to the light past the other layers' planes. Up to 8 layers cast shadows at a
-    time, their outlines drawn into a 1024-pixel atlas each frame
+    time, their outlines drawn into a 1024-pixel atlas each frame. **Shadow softness** (0–100%)
+    gives the light a size: a shadow's edge fades over a width that grows with how far it falls
+    from what casts it (sharp where it touches, blurrier further away), sampled with a turned
+    disk of 24 taps so it reads as fine grain rather than steps. Extruded **3D text** casts
+    shadows too: its letters' outline (not their box), from the plane halfway through its depth
   - **Layers that cut through each other** do: consecutive 3D layers are drawn with a depth
     buffer, so where two cross, each shows on the side where it's nearer. They're still drawn
     back to front by their middles (for see-through parts), and nearly transparent pixels

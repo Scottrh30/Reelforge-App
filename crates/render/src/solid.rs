@@ -42,6 +42,9 @@ impl SolidInput {
 }
 
 const SAMPLES: u32 = 4;
+/// Outline uniforms: a slot per shadow-atlas tile (256-byte aligned for dynamic offsets).
+const FLAT_STRIDE: u64 = 256;
+const FLAT_SLOTS: u64 = 16;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// mat4, 4 + 3 vec4 of axes and normals, camera, studio, two colours, 32 vec4 of lights.
 const UNIFORM_SIZE: usize = 64 + 7 * 16 + 4 * 16 + 32 * 16;
@@ -63,6 +66,10 @@ pub(crate) struct SolidRenderer {
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind: wgpu::BindGroup,
+    /// Outlines into the shadow atlas: the pipeline, and a uniform slot per tile.
+    flat_pipeline: wgpu::RenderPipeline,
+    flat_uniforms: wgpu::Buffer,
+    flat_bind: wgpu::BindGroup,
     targets: Option<Targets>,
     /// Per layer key.
     meshes: HashMap<u64, MeshBuffers>,
@@ -123,7 +130,72 @@ impl SolidRenderer {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline, uniforms, bind, targets: None, meshes: HashMap::new(), format }
+        // The outline (for shadows): flat, into the R8 shadow atlas, one uniform slot per tile.
+        let flat_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("solid outline"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: wgpu::BufferSize::new(16) },
+                count: None,
+            }],
+        });
+        let flat_uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("solid outline"), size: FLAT_STRIDE * FLAT_SLOTS, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let flat_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("solid outline"),
+            layout: &flat_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &flat_uniforms, offset: 0, size: wgpu::BufferSize::new(16) }) }],
+        });
+        let flat_shader = device.create_shader_module(wgpu::include_wgsl!("solid_flat.wgsl"));
+        let flat_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid outline"), bind_group_layouts: &[Some(&flat_layout)], immediate_size: 0 });
+        let flat_attrs = wgpu::vertex_attr_array![0 => Float32x3];
+        let flat_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("solid outline"),
+            layout: Some(&flat_pl),
+            vertex: wgpu::VertexState {
+                module: &flat_shader,
+                entry_point: Some("vs_flat"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &flat_attrs })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &flat_shader,
+                entry_point: Some("fs_flat"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), format }
+    }
+
+    /// Get layer `key`'s outline ready for shadow-atlas tile `slot`: false if
+    /// it has no mesh yet (draw it first) or nothing to cast.
+    pub fn prepare_outline(&self, queue: &wgpu::Queue, key: u64, s: &SolidInput, slot: usize) -> bool {
+        let Some(m) = self.meshes.get(&key) else { return false };
+        let b = s.mesh.bounds;
+        if m.count == 0 || m.id != s.mesh.id || slot as u64 >= FLAT_SLOTS || b[2] <= b[0] || b[3] <= b[1] {
+            return false;
+        }
+        let v = [b[0], b[1], b[2] - b[0], b[3] - b[1]];
+        let bytes: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
+        queue.write_buffer(&self.flat_uniforms, slot as u64 * FLAT_STRIDE, &bytes);
+        true
+    }
+
+    /// Draw layer `key`'s outline (prepared for `slot`) into `pass`, whose
+    /// viewport is already the tile.
+    pub fn draw_outline<'p>(&'p self, pass: &mut wgpu::RenderPass<'p>, key: u64, slot: usize) {
+        let Some(m) = self.meshes.get(&key) else { return };
+        pass.set_pipeline(&self.flat_pipeline);
+        pass.set_bind_group(0, &self.flat_bind, &[(slot as u64 * FLAT_STRIDE) as u32]);
+        pass.set_vertex_buffer(0, m.vertices.slice(..));
+        pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..m.count, 0, 0..1);
     }
 
     /// Forget the meshes of layers that are gone.
