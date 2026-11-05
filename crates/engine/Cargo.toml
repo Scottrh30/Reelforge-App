@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Reading SVG logos for 3D shapes (no text, no raster images).
+usvg = { version = "0.45", default-features = false }
 reelforge-core.workspace = true
 reelforge-media.workspace = true
 reelforge-render.workspace = true

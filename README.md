@@ -466,6 +466,15 @@ What works now:
   a camera move around it, and it keeps its depth of field, opacity, blend mode and effects. At
   Z 0, not turned, its front face is exactly where the flat title's letters would be. Outline,
   shadow and box aren't drawn on 3D text (a Drop shadow effect still works), nor are masks
+- **3D shapes and logos**: **Timeline → Add 3D logo (SVG)…** turns an SVG file into a shape
+  title extruded like 3D text (depth, bevel, side colour, lit, shadows, cutting through 3D
+  layers): every visible filled path with its own fill rule (non-zero or even-odd, so holes
+  stay holes), strokes as the area they cover, transforms applied, curves cut into short
+  straight pieces. Text in the SVG has to be converted to outlines first, and gradients and
+  images aren't used (the shape takes the title colour). A mask's **3D shape** button (Masks)
+  makes one from the mask's outline as seen at the playhead, as high as the mask and placed
+  where it is (on a layer that isn't rotated), facing the camera. **Size** is the shape's
+  height; **3D depth** 0 makes it a flat filled shape (outline, shadow and box work then)
 - **Proxies**: heavy footage (above 1080p, or 720p and up in HEVC/AV1/VP9/ProRes/DNxHD/CineForm) gets a
   small editing copy automatically, made in the background, with a progress bar in the Media
   panel; **Make proxy** does it for any clip. Proxies are 960×540 with every frame a keyframe,

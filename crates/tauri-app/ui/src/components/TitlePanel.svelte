@@ -94,7 +94,11 @@
 
 <div class="group">
   <div class="phead"><h4>Title</h4><button class="ghost small" onclick={() => (app.savePreset = { clip: ins.id })} title="Save this title's style (font, size, colours, outline, shadow, background) as a preset for other titles">Save as preset…</button></div>
-  <textarea rows="3" value={t.text} aria-label="Title text" placeholder="Type the title…" oninput={(e) => set((s) => (s.text = e.currentTarget.value))} onblur={commit}></textarea>
+  {#if t.shape}
+    <p class="note">A shape instead of text: <b>{(t.shape as { name: string }).name}</b> (from an SVG logo or a mask). Size is its height; font, alignment and spacing don't apply. 3D depth 0 makes it flat.</p>
+  {:else}
+    <textarea rows="3" value={t.text} aria-label="Title text" placeholder="Type the title…" oninput={(e) => set((s) => (s.text = e.currentTarget.value))} onblur={commit}></textarea>
+  {/if}
   <div class="grid">
     <span class="lbl">Font</span>
     <div class="fontpick">
@@ -118,7 +122,7 @@
 
     <span class="lbl">Size</span>
     <div class="row">
-      <NumberField label="Text size" value={t.size} min={4} max={2000} step={1} digits={0} suffix=" px" oninput={(v) => set((s) => (s.size = v))} oncommit={commit} />
+      <NumberField label={t.shape ? "Shape height" : "Text size"} value={t.size} min={4} max={2000} step={1} digits={0} suffix=" px" oninput={(v) => set((s) => (s.size = v))} oncommit={commit} />
       <input type="color" value={hex(t.color)} aria-label="Text colour" title="Text colour" oninput={(e) => set((s) => (s.color = rgba(e.currentTarget.value, s.color[3])))} onchange={commit} />
     </div>
 

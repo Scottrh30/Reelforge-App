@@ -1489,12 +1489,57 @@ impl Editor {
     }
 
     fn add_title_kind(&mut self, solid: bool) {
+        self.add_title_full(solid, None);
+    }
+
+    /// A 3D shape: `shape` extruded like 3D text, `height` pixels high
+    /// (default: 40% of the frame) at `position` (from the frame's centre).
+    pub fn add_3d_shape(&mut self, shape: reelforge_core::Shape, place: Option<([f32; 2], f32)>) {
+        self.add_title_full(true, Some((std::sync::Arc::new(shape), place)));
+    }
+
+    /// An SVG logo as a 3D shape.
+    pub fn import_svg_shape(&mut self, path: &Path) {
+        match crate::svg::shape_from_svg(path) {
+            Ok(shape) => {
+                let name = shape.name.clone();
+                self.add_3d_shape(shape, None);
+                self.status = format!("{name}: a 3D shape (set its depth, bevel and colours in Title; 0 depth makes it flat)");
+            }
+            Err(e) => self.status = format!("Couldn't use {}: {e}", path.display()),
+        }
+    }
+
+    /// Mask `index` of clip `id`, as seen at the playhead, as a new 3D shape
+    /// where the mask is (on an unturned layer), the same size.
+    pub fn shape_from_mask(&mut self, id: ClipId, index: usize) {
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let Some(m) = c.masks.get(index) else { return };
+        let t = self.mask_time(c);
+        let outline = m.outline(t);
+        let name = format!("{} shape", if m.name.is_empty() { format!("Mask {}", index + 1) } else { m.name.clone() });
+        let Some(shape) = reelforge_core::Shape::new(&name, vec![reelforge_core::ShapePath { contours: vec![outline.clone()], even_odd: false }]) else {
+            self.status = "That mask has no area to make a shape from".into();
+            return;
+        };
+        let layer = self.layer_size(c);
+        let tr = c.transform;
+        let (lo, hi) = outline.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(l, h), q| ([l[0].min(q[0]), l[1].min(q[1])], [h[0].max(q[0]), h[1].max(q[1])]));
+        let centre = [(lo[0] + hi[0]) * 0.5 - layer[0] * 0.5, (lo[1] + hi[1]) * 0.5 - layer[1] * 0.5];
+        let at = [tr.position[0] + centre[0] * tr.scale[0], tr.position[1] + centre[1] * tr.scale[1]];
+        let height = ((hi[1] - lo[1]) * tr.scale[1].abs()).max(1.0);
+        self.add_3d_shape(shape, Some((at, height)));
+        self.status = format!("{name}: a 3D shape from the mask (set its depth, bevel and colours in Title)");
+    }
+
+    fn add_title_full(&mut self, solid: bool, shape: Option<(std::sync::Arc<reelforge_core::Shape>, Option<([f32; 2], f32)>)>) {
         self.commit_live_edit();
         let s = self.seq();
         let rate = s.frame_rate;
         let start = self.playback.playhead.snap(rate);
         let dur = Time::from_secs_f64(5.0).snap(rate);
         let mut spec = TitleSpec::for_frame(s.height);
+        let frame_h = s.height as f32;
         if let Some(fonts) = self.fonts() {
             spec.font = reelforge_render::text::default_title_font(&fonts);
         }
@@ -1516,7 +1561,17 @@ impl Editor {
             }
         };
         let id = ClipId(self.project.alloc_id());
-        if solid {
+        let mut place = None;
+        if let Some((sh, at)) = &shape {
+            spec.text = sh.name.clone();
+            spec.shape = Some(sh.clone());
+            spec.size = at.map_or((frame_h * 0.4).round(), |a| a.1.round());
+            spec.extrude = (spec.size * 0.25).round().max(1.0);
+            spec.bevel = (spec.size * 0.02).round();
+            spec.shadow = false;
+            spec.side_color = Some([spec.color[0] / 2, spec.color[1] / 2, spec.color[2] / 2, spec.color[3]]);
+            place = at.map(|a| a.0);
+        } else if solid {
             spec.text = "3D Text".into();
             spec.size = (spec.size * 2.0).round();
             spec.extrude = (spec.size * 0.4).round();
@@ -1529,8 +1584,13 @@ impl Editor {
             clip.transform.three_d = true;
             clip.transform.orientation = [-15.0, 25.0];
         }
+        if let Some(p) = place {
+            // Where the mask was, facing the camera like it.
+            clip.transform.position = p;
+            clip.transform.orientation = [0.0, 0.0];
+        }
         cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
-        self.execute(Box::new(Batch { name: if solid { "Add 3D text" } else { "Add title" }.into(), cmds }));
+        self.execute(Box::new(Batch { name: if shape.is_some() { "Add 3D shape" } else if solid { "Add 3D text" } else { "Add title" }.into(), cmds }));
         self.follow_new_layer(track);
         self.select_only(Some(id));
         self.status = if solid { "Added 3D text: type its text and set its depth in the Controls panel" } else { "Added a title: type its text in the Controls panel" }.into();
@@ -3891,6 +3951,51 @@ mod tests {
         // One undo step takes it away again.
         e.undo();
         assert!(e.seq().find_clip(id).is_none());
+    }
+
+/// 3D shapes: an SVG logo becomes an extruded, bevelled shape title (one
+    /// undo step), a bad file says why, and a mask's outline becomes a shape
+    /// the mask's height, where the mask is, facing the camera.
+    #[test]
+    fn logos_and_masks_become_3d_shapes() {
+        let mut e = editor();
+        let dir = std::env::temp_dir().join(format!("rf_logo_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let svg = dir.join("Acme.svg");
+        std::fs::write(&svg, r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><path d="M0 0 H100 V50 H0 Z"/></svg>"#).unwrap();
+        e.import_svg_shape(&svg);
+        let id = e.selection.unwrap();
+        let (_, c) = e.seq().find_clip(id).unwrap();
+        let spec = c.title.as_ref().unwrap();
+        let shape = spec.shape.as_ref().unwrap();
+        assert_eq!((shape.name.as_str(), spec.label().as_str()), ("Acme", "Acme"));
+        assert!((shape.aspect - 2.0).abs() < 1e-4);
+        assert!(spec.is_3d() && spec.bevel > 0.0 && c.transform.three_d);
+        assert!(e.status.contains("3D shape"), "{}", e.status);
+        e.undo();
+        assert!(e.seq().find_clip(id).is_none());
+        std::fs::write(&svg, "not an svg").unwrap();
+        e.import_svg_shape(&svg);
+        assert!(e.status.starts_with("Couldn't use"), "{}", e.status);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // From a mask: a rectangle 40 px high, right of the middle of a full-frame plane.
+        e.add_plane([20, 20, 20, 255]);
+        let plane = e.selection.unwrap();
+        let layer = e.layer_size(e.seq().find_clip(plane).unwrap().1);
+        let (cx, cy) = (layer[0] / 2.0, layer[1] / 2.0);
+        let rect = Mask::freehand(vec![[cx + 100.0, cy - 20.0], [cx + 180.0, cy - 20.0], [cx + 180.0, cy + 20.0], [cx + 100.0, cy + 20.0]]);
+        let i = e.add_mask(plane, rect).unwrap();
+        e.shape_from_mask(plane, i);
+        let id = e.selection.unwrap();
+        assert_ne!(id, plane);
+        let (_, c) = e.seq().find_clip(id).unwrap();
+        let spec = c.title.as_ref().unwrap();
+        assert_eq!(spec.size, 40.0);
+        assert!((spec.shape.as_ref().unwrap().aspect - 2.0).abs() < 1e-4);
+        assert_eq!(c.transform.position, [140.0, 0.0]);
+        assert_eq!(c.transform.orientation, [0.0, 0.0]);
+        assert!(c.transform.three_d);
     }
 
     #[test]

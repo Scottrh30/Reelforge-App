@@ -19,7 +19,7 @@ reelforge-ofx = { path = "crates/ofx" }
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 crossbeam-channel = "0.5"
 ffmpeg-next = "9"
 rfd = "0.17"

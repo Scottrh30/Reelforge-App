@@ -851,6 +851,8 @@ export const api = {
   openSequence: (index: number) => invoke("open_sequence", { index }),
   addTitle: () => invoke("add_title"),
   add3dText: () => invoke("add_3d_text"),
+  add3dLogo: () => invoke("add_3d_logo"),
+  shapeFromMask: (id: number, index: number) => invoke("shape_from_mask", { id, index }),
   addBladeLayer: () => invoke("add_blade_layer"),
   addParticlesLayer: () => invoke("add_particles_layer"),
   /// A camera, or a light (0 point, 1 spot, 2 directional, 3 ambient).

@@ -319,6 +319,13 @@ pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layou
 pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
     let (w, h) = (frame[0].max(1), frame[1].max(1));
     let (font, missing_font) = load_font(&spec.font);
+    if let Some(shape) = &spec.shape {
+        // A shape instead of text: centred, `size` high.
+        let placed = shape.placed([w as f32 / 2.0, h as f32 / 2.0], spec.size.max(1.0));
+        let (hw, hh) = (spec.size.max(1.0) * shape.aspect * 0.5, spec.size.max(1.0) * 0.5);
+        let b = [w as f32 / 2.0 - hw, h as f32 / 2.0 - hh, w as f32 / 2.0 + hw, h as f32 / 2.0 + hh];
+        return draw_with(spec, &font, &[], &placed, b, spec.background, [w, h], false);
+    }
     let lay = layout(spec, &font, [w, h]);
     draw(spec, &font, &lay.glyphs, lay.text_box, spec.background, [w, h], missing_font)
 }
@@ -327,7 +334,7 @@ pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
 /// letters, words or lines each where and as visible as the animation has
 /// them then (the box behind stays put). Without one, [`render_title`].
 pub fn render_title_at(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32) -> RenderedTitle {
-    let Some(states) = spec.glyph_states(t, dur) else { return render_title(spec, frame) };
+    let Some(states) = spec.glyph_states(t, dur).filter(|_| spec.shape.is_none()) else { return render_title(spec, frame) };
     let (w, h) = (frame[0].max(1), frame[1].max(1));
     let (font, missing_font) = load_font(&spec.font);
     let lay = layout(spec, &font, [w, h]);
@@ -402,10 +409,61 @@ fn draw_bounds(spec: &TitleSpec, font: &FontArc, lay: &Layout) -> Option<[f32; 4
 /// Draw `glyphs` (laid out in a block `text_box`) as `spec` styles them,
 /// with its box behind them when `background`, on a transparent canvas.
 fn draw(spec: &TitleSpec, font: &FontArc, glyphs: &[ab_glyph::Glyph], text_box: [f32; 4], background: bool, frame: [u32; 2], missing_font: bool) -> RenderedTitle {
+    draw_with(spec, font, glyphs, &[], text_box, background, frame, missing_font)
+}
+
+/// Coverage of filled paths (canvas pixels) added to `plane`: each row
+/// sampled at 4 heights, with exact coverage across.
+fn fill_paths(plane: &mut Plane, paths: &[reelforge_core::ShapePath]) {
+    const SUB: usize = 4;
+    let (w, h) = (plane.w, plane.h);
+    let mut acc = vec![0.0f32; w * h];
+    for p in paths {
+        let edges: Vec<([f32; 2], [f32; 2])> = p.contours.iter().flat_map(|c| (0..c.len()).map(move |i| (c[i], c[(i + 1) % c.len()]))).collect();
+        let mut xs: Vec<(f32, i32)> = Vec::new();
+        for row in 0..h {
+            for k in 0..SUB {
+                let y = (plane.y0 + row as i32) as f32 + (k as f32 + 0.5) / SUB as f32;
+                xs.clear();
+                for (a, b) in &edges {
+                    if (a[1] <= y) != (b[1] <= y) {
+                        let x = a[0] + (y - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+                        xs.push((x - plane.x0 as f32, if b[1] > a[1] { 1 } else { -1 }));
+                    }
+                }
+                xs.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let mut wind = 0;
+                for i in 0..xs.len() {
+                    wind += xs[i].1;
+                    let filled = if p.even_odd { wind % 2 != 0 } else { wind != 0 };
+                    if filled && i + 1 < xs.len() {
+                        // Span from xs[i] to xs[i + 1]: exact coverage across the pixels it touches.
+                        let (x0, x1) = (xs[i].0.max(0.0), xs[i + 1].0.min(w as f32));
+                        if x1 <= x0 {
+                            continue;
+                        }
+                        let line = &mut acc[row * w..(row + 1) * w];
+                        let (a, b) = (x0.floor() as usize, (x1.ceil() as usize).min(w));
+                        for (px, v) in line.iter_mut().enumerate().take(b).skip(a) {
+                            let cov = (x1.min(px as f32 + 1.0) - x0.max(px as f32)).max(0.0);
+                            *v += cov / SUB as f32;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (v, a) in plane.v.iter_mut().zip(acc) {
+        *v = v.max(a.min(1.0));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_with(spec: &TitleSpec, font: &FontArc, glyphs: &[ab_glyph::Glyph], shapes: &[reelforge_core::ShapePath], text_box: [f32; 4], background: bool, frame: [u32; 2], missing_font: bool) -> RenderedTitle {
     let [w, h] = frame;
     let mut rgba = vec![0u8; (w * h * 4) as usize];
     let font = font.clone();
-    let has_text = glyphs.iter().any(|g| font.outline_glyph(g.clone()).is_some());
+    let has_text = !shapes.is_empty() || glyphs.iter().any(|g| font.outline_glyph(g.clone()).is_some());
     if !has_text && !background {
         return RenderedTitle { width: w, height: h, rgba: rgba.into(), bounds: None, missing_font };
     }
@@ -449,6 +507,11 @@ fn draw(spec: &TitleSpec, font: &FontArc, glyphs: &[ab_glyph::Glyph], text_box: 
                 }
             });
         }
+    }
+
+    if !shapes.is_empty() {
+        fill_paths(&mut fill, shapes);
+        ink = Some(text_box);
     }
 
     // ---- Outline: everything within `outline` px of the glyphs ----

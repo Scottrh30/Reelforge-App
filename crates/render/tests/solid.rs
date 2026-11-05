@@ -258,3 +258,40 @@ fn it_takes_shadows_from_3d_layers() {
     let again = draw(&mut c, 0.0);
     assert_eq!(again, lit);
 }
+
+/// A shape instead of text: a square frame (an outer square with a square
+/// hole, even-odd) shows its frame and not its hole, flat and extruded, and
+/// with non-zero filling and the hole wound the same way, no hole.
+#[test]
+fn shapes_fill_by_their_rule_flat_and_extruded() {
+    use reelforge_core::{Shape, ShapePath};
+    use std::sync::Arc;
+    let sq = |a: f32, b: f32| vec![[a, a], [b, a], [b, b], [a, b]];
+    let frame = |even_odd| Arc::new(Shape::new("frame", vec![ShapePath { contours: vec![sq(0.0, 100.0), sq(30.0, 70.0)], even_odd }]).unwrap());
+    let spec = |shape, extrude| TitleSpec { size: 120.0, color: [230, 40, 30, 255], shadow: false, extrude, side_color: Some([40, 90, 230, 255]), shape: Some(shape), ..TitleSpec::default() };
+    let at = |img: &[u8], x: u32, y: u32| classify(&img[((y * W + x) * 4) as usize..]);
+    let (cx, cy) = (W / 2, H / 2);
+    // Flat: 120 px high, centred. The hole is 36 px across, the frame 42 px wide each side.
+    let flat = reelforge_render::text::render_title(&spec(frame(true), 0.0), [W, H]);
+    let px = |x: u32, y: u32| flat.rgba[((y * W + x) * 4 + 3) as usize];
+    assert_eq!(px(cx, cy), 0, "the hole");
+    assert_eq!(px(cx - 45, cy), 255, "the frame");
+    assert_eq!(px(cx - 65, cy), 0, "outside");
+    let b = flat.bounds.unwrap();
+    assert!((b[2] - b[0] - 120.0).abs() < 1.5 && (b[3] - b[1] - 120.0).abs() < 1.5, "{b:?}");
+    let solid_flat = reelforge_render::text::render_title(&spec(frame(false), 0.0), [W, H]);
+    assert_eq!(solid_flat.rgba[((cy * W + cx) * 4 + 3) as usize], 255, "non-zero, same winding: filled");
+    // Extruded, front on: the face colour round a hole.
+    let Some((d, q)) = headless_device() else { return };
+    let mut c = Compositor::new(&d, &q);
+    let sc = scene();
+    let t = Transform { three_d: true, ..Default::default() };
+    let img = render(&mut c, &spec(frame(true), 30.0), t, &sc);
+    assert_eq!(at(&img, cx, cy), 0, "the hole");
+    assert_eq!(at(&img, cx - 45, cy), 1, "the frame's face");
+    // Turned: its sides show, inside the hole too.
+    let mut turned = t;
+    turned.orientation = [0.0, 40.0];
+    let img = render(&mut c, &spec(frame(true), 30.0), turned, &sc);
+    assert!((0..W).any(|x| at(&img, x, cy) == 2), "sides");
+}

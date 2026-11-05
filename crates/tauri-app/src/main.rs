@@ -549,6 +549,19 @@ fn add_3d_text() -> Res<()> {
     ed(|e| e.add_3d_text())
 }
 
+/// Pick an SVG logo and add it as a 3D shape.
+#[tauri::command]
+fn add_3d_logo() -> Res<()> {
+    let Some(path) = rfd::FileDialog::new().add_filter("SVG logos", &["svg", "svgz"]).pick_file() else { return Ok(()) };
+    ed(|e| e.import_svg_shape(&path))
+}
+
+/// Mask `index` of clip `id` as a new 3D shape.
+#[tauri::command]
+fn shape_from_mask(id: u64, index: usize) -> Res<()> {
+    ed(|e| e.shape_from_mask(clip(id), index))
+}
+
 /// An energy blade on its own transparent layer, over the selected clip.
 #[tauri::command]
 fn add_blade_layer() -> Res<()> {
@@ -1324,6 +1337,8 @@ fn main() {
             open_sequence,
             add_title,
             add_3d_text,
+            add_3d_logo,
+            shape_from_mask,
             add_blade_layer,
             add_particles_layer,
             scene::add_scene,

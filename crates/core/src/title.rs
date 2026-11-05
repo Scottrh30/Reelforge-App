@@ -120,9 +120,72 @@ pub struct TitleSpec {
     /// The shape of the bevel.
     #[serde(default, skip_serializing_if = "BevelStyle::is_default")]
     pub bevel_style: BevelStyle,
+    /// A filled shape (an SVG logo, or a mask's outline) instead of the text:
+    /// centred, `size` pixels high, in the text colour; extruded like 3D text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<std::sync::Arc<Shape>>,
     /// Letters, words or lines coming in (and going out) one after another.
     #[serde(default, skip_serializing_if = "TextAnim::is_none")]
     pub anim: TextAnim,
+}
+
+/// A filled outline used in place of a title's text: one or more paths, each
+/// closed contours filled by its own rule. Kept centred on 0 and 1 high (Y
+/// down), so the title's size scales it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Shape {
+    /// What it's called (the SVG's file name, or the mask's).
+    pub name: String,
+    pub paths: Vec<ShapePath>,
+    /// Width over height.
+    pub aspect: f32,
+    /// Identifies the outline (a hash of its points).
+    pub id: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ShapePath {
+    pub contours: Vec<Vec<[f32; 2]>>,
+    /// Filled by the even-odd rule (otherwise non-zero).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub even_odd: bool,
+}
+
+impl Shape {
+    /// From paths in any units (Y down): centred and scaled to 1 high.
+    /// `None` without at least one contour of three points with some area.
+    pub fn new(name: &str, paths: Vec<ShapePath>) -> Option<Shape> {
+        let paths: Vec<ShapePath> = paths
+            .into_iter()
+            .map(|p| ShapePath { contours: p.contours.into_iter().filter(|c| c.len() >= 3).collect(), even_odd: p.even_odd })
+            .filter(|p| !p.contours.is_empty())
+            .collect();
+        let pts = paths.iter().flat_map(|p| p.contours.iter().flatten());
+        let (lo, hi) = pts.fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), q| ([lo[0].min(q[0]), lo[1].min(q[1])], [hi[0].max(q[0]), hi[1].max(q[1])]));
+        let (w, h) = (hi[0] - lo[0], hi[1] - lo[1]);
+        if !(w > 1e-6 && h > 1e-6 && w.is_finite() && h.is_finite()) {
+            return None;
+        }
+        let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+        let paths: Vec<ShapePath> = paths.into_iter().map(|p| ShapePath { contours: p.contours.into_iter().map(|k| k.into_iter().map(|q| [(q[0] - c[0]) / h, (q[1] - c[1]) / h]).collect()).collect(), even_odd: p.even_odd }).collect();
+        use std::hash::{Hash, Hasher};
+        let mut hs = std::collections::hash_map::DefaultHasher::new();
+        for p in &paths {
+            p.even_odd.hash(&mut hs);
+            for k in &p.contours {
+                k.len().hash(&mut hs);
+                for q in k {
+                    (q[0].to_bits(), q[1].to_bits()).hash(&mut hs);
+                }
+            }
+        }
+        Some(Shape { name: name.into(), paths, aspect: w / h, id: hs.finish() })
+    }
+
+    /// Its paths placed `height` pixels high, centred on `centre`.
+    pub fn placed(&self, centre: [f32; 2], height: f32) -> Vec<ShapePath> {
+        self.paths.iter().map(|p| ShapePath { contours: p.contours.iter().map(|k| k.iter().map(|q| [centre[0] + q[0] * height, centre[1] + q[1] * height]).collect()).collect(), even_odd: p.even_odd }).collect()
+    }
 }
 
 /// The shape of 3D text's bevelled edges.
@@ -276,6 +339,7 @@ impl Default for TitleSpec {
             side_color: None,
             bevel: 0.0,
             bevel_style: BevelStyle::Round,
+            shape: None,
             anim: TextAnim::default(),
         }
     }
@@ -302,6 +366,9 @@ impl TitleSpec {
     /// First line of the text, for labels.
     pub fn label(&self) -> String {
         let first = self.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        if let Some(s) = &self.shape {
+            return s.name.clone();
+        }
         if first.is_empty() { "(empty title)".into() } else { first.to_string() }
     }
 
@@ -438,6 +505,7 @@ impl TitleSpec {
         }
         (self.color, self.outline_color, self.shadow_color, self.background_color).hash(&mut h);
         (self.align, self.shadow, self.background, self.side_color, self.bevel_style).hash(&mut h);
+        self.shape.as_ref().map(|s| s.id).hash(&mut h);
         if !self.anim.is_none() {
             // (Its state at a moment is in `content_hash_at`.)
             (self.anim.kind, self.anim.stagger.to_bits(), self.anim.length.to_bits(), self.anim.delay.to_bits(), self.anim.out).hash(&mut h);

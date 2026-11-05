@@ -174,6 +174,7 @@
           {/if}
         {/if}
         <span class="grow"></span>
+        <button class="small" onclick={() => run(api.shapeFromMask(ins.id, i))} title="A new 3D shape (like 3D text) in this mask's outline as seen at the playhead, placed where the mask is: extrude it, bevel it, light it">3D shape</button>
         <button class="small" onclick={() => remove(i)}>Remove</button>
       </div>
       {#if m.keys.length >= 3}

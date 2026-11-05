@@ -69,6 +69,7 @@ export const actions = {
   act: (name: string) => run(api.action(name)),
   addTitle: () => run(api.addTitle()),
   add3dText: () => run(api.add3dText()),
+  add3dLogo: () => run(api.add3dLogo()),
   exportOpen() {
     app.exportOpen = true;
   },

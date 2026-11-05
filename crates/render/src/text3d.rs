@@ -76,8 +76,13 @@ pub fn text_mesh(spec: &TitleSpec, frame: [u32; 2]) -> Arc<TextMesh> {
 
 type P2 = [f32; 2];
 
-/// Each glyph's outline as closed polygons in canvas pixels.
-fn glyph_polygons(spec: &TitleSpec, frame: [u32; 2]) -> Vec<Vec<Vec<P2>>> {
+/// Each glyph's outline (or each path of a shape) as closed polygons in
+/// canvas pixels, and whether it's filled by the even-odd rule.
+fn glyph_polygons(spec: &TitleSpec, frame: [u32; 2]) -> Vec<(Vec<Vec<P2>>, bool)> {
+    if let Some(shape) = &spec.shape {
+        let c = [frame[0].max(1) as f32 / 2.0, frame[1].max(1) as f32 / 2.0];
+        return shape.placed(c, spec.size.max(1.0)).into_iter().map(|p| (p.contours.into_iter().map(clean).filter(|c| c.len() >= 3).collect::<Vec<_>>(), p.even_odd)).filter(|p| !p.0.is_empty()).collect();
+    }
     let (font, _) = load_font(&spec.font);
     let lay = layout(spec, &font, frame);
     let mut out = Vec::new();
@@ -117,7 +122,7 @@ fn glyph_polygons(spec: &TitleSpec, frame: [u32; 2]) -> Vec<Vec<Vec<P2>>> {
         }
         let polys: Vec<Vec<P2>> = contours.into_iter().map(clean).filter(|c| c.len() >= 3).collect();
         if !polys.is_empty() {
-            out.push(polys);
+            out.push((polys, false));
         }
     }
     out
@@ -148,6 +153,12 @@ fn clean(c: Vec<P2>) -> Vec<P2> {
         out.pop();
     }
     out
+}
+
+/// Whether `p` is inside `polys` by the fill rule.
+fn inside(polys: &[Vec<P2>], p: P2, even_odd: bool) -> bool {
+    let w = winding(polys, p);
+    if even_odd { w % 2 != 0 } else { w != 0 }
 }
 
 /// Non-zero winding number of `p` against closed polygons `polys`.
@@ -199,7 +210,7 @@ struct Contour {
     miter: Vec<P2>,
 }
 
-fn contours_of(polys: &[Vec<P2>], size: f32) -> Vec<Contour> {
+fn contours_of(polys: &[Vec<P2>], size: f32, even_odd: bool) -> Vec<Contour> {
     let cos_smooth = SMOOTH_ANGLE_DEG.to_radians().cos();
     polys
             .iter()
@@ -214,7 +225,7 @@ fn contours_of(polys: &[Vec<P2>], size: f32) -> Vec<Contour> {
                 let eps = size * 1e-3;
                 let probe = [(a[0] + bb[0]) * 0.5 + left[0] * eps, (a[1] + bb[1]) * 0.5 + left[1] * eps];
                 // Inside to the left: out is to the right.
-                let sign = if winding(&polys, probe) != 0 { -1.0 } else { 1.0 };
+                let sign = if inside(polys, probe, even_odd) { -1.0 } else { 1.0 };
                 let normals: Vec<P2> = (0..n)
                     .map(|i| {
                         let e = [c[(i + 1) % n][0] - c[i][0], c[(i + 1) % n][1] - c[i][1]];
@@ -249,7 +260,7 @@ fn contours_of(polys: &[Vec<P2>], size: f32) -> Vec<Contour> {
 
 /// The thinnest part of the letters: the shortest way across, from each
 /// corner straight inwards to the far side (within its glyph).
-fn thinnest(glyphs: &[(Vec<Vec<P2>>, Vec<Contour>)]) -> f32 {
+fn thinnest(glyphs: &[(bool, Vec<Contour>)]) -> f32 {
     let mut best = f32::MAX;
     for (_, cs) in glyphs {
         for c in cs {
@@ -285,7 +296,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
     let (cx, cy) = (frame[0].max(1) as f32 / 2.0, frame[1].max(1) as f32 / 2.0);
     let depth = spec.extrude.max(0.0);
     let size = spec.size.max(1.0);
-    let glyphs: Vec<(Vec<Vec<P2>>, Vec<Contour>)> = glyph_polygons(spec, frame).into_iter().map(|p| { let c = contours_of(&p, size); (p, c) }).collect();
+    let glyphs: Vec<(bool, Vec<Contour>)> = glyph_polygons(spec, frame).into_iter().map(|(p, eo)| (eo, contours_of(&p, size, eo))).collect();
     // Within half the depth, and not crossing over in the thinnest strokes.
     let bevel = if depth > 0.0 && spec.bevel > 0.0 {
         let thin = thinnest(&glyphs);
@@ -297,7 +308,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
     let mut vertices = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut tess = FillTessellator::new();
-    for (_polys, contours) in &glyphs {
+    for (even_odd, contours) in &glyphs {
         // The outline moved in by `d`.
         let inset = |c: &Contour, i: usize, d: f32| -> P2 { [c.pts[i][0] - c.miter[i][0] * d, c.pts[i][1] - c.miter[i][1] * d] };
 
@@ -313,7 +324,8 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
         }
         let path = b.build();
         let mut buf: VertexBuffers<P2, u32> = VertexBuffers::new();
-        let ok = tess.tessellate_path(&path, &FillOptions::non_zero().with_tolerance(TOLERANCE), &mut BuffersBuilder::new(&mut buf, |v: FillVertex| v.position().to_array()));
+        let rule = if *even_odd { FillOptions::even_odd() } else { FillOptions::non_zero() };
+        let ok = tess.tessellate_path(&path, &rule.with_tolerance(TOLERANCE), &mut BuffersBuilder::new(&mut buf, |v: FillVertex| v.position().to_array()));
         if ok.is_ok() {
             for (z, normal, part) in [(0.0, [0.0, 0.0, -1.0], PART_FRONT), (depth, [0.0, 0.0, 1.0], PART_BACK)] {
                 let base = vertices.len() as u32;

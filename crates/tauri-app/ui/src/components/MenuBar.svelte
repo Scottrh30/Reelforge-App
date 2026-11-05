@@ -187,6 +187,7 @@
     { label: "Freeze frame at playhead", hint: "Shift+F", run: () => actions.act("freeze_frame") },
     { label: "Add title", hint: "Ctrl+T", run: actions.addTitle },
     { label: "Add 3D text", run: actions.add3dText },
+    { label: "Add 3D logo (SVG)…", run: actions.add3dLogo },
     { label: "Add energy blade layer", run: () => run(api.addBladeLayer()) },
     { label: "Add particles layer", run: () => run(api.addParticlesLayer()) },
     { label: "Add plane (new layer)", run: () => run(api.addNew("layer")) },
