@@ -1470,6 +1470,10 @@ pub struct SolveSource {
     pub ids: Vec<u32>,
     /// The lens was given (keep it when solving again).
     pub known_lens: bool,
+    /// The ground set on it: the details (indices in `tracks`) its points
+    /// were on, and the frame it was set from, to set it again after solving again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ground: Option<(Vec<u32>, u32)>,
 }
 
 impl CameraTrack {
@@ -1477,6 +1481,11 @@ impl CameraTrack {
     /// into `self.points`) and of points fitting worse than `max_error`
     /// pixels; and how many points that deletes. `None` without a source.
     pub fn tracks_without(&self, points: &[usize], max_error: Option<f32>) -> Option<(Vec<Track2d>, usize)> {
+        self.without(points, max_error).map(|(t, n, _)| (t, n))
+    }
+
+    /// The same, and the ground's details renumbered among those kept.
+    pub fn without(&self, points: &[usize], max_error: Option<f32>) -> Option<(Vec<Track2d>, usize, Option<(Vec<u32>, u32)>)> {
         let src = self.source.as_ref()?;
         let mut drop = vec![false; src.tracks.len()];
         let mut n = 0;
@@ -1488,7 +1497,33 @@ impl CameraTrack {
                 }
             }
         }
-        Some((src.tracks.iter().zip(&drop).filter(|(_, d)| !**d).map(|(t, _)| t.clone()).collect(), n))
+        // Old index → new, for what's kept.
+        let mut new = vec![None; drop.len()];
+        let mut k = 0u32;
+        for (i, d) in drop.iter().enumerate() {
+            if !d {
+                new[i] = Some(k);
+                k += 1;
+            }
+        }
+        let ground = src.ground.as_ref().map(|(ids, frame)| (ids.iter().filter_map(|&i| new.get(i as usize).copied().flatten()).collect(), *frame));
+        Some((src.tracks.iter().zip(&drop).filter(|(_, d)| !**d).map(|(t, _)| t.clone()).collect(), n, ground))
+    }
+
+    /// Set the ground again on a new solve of the same details: through the
+    /// points of the details in `ground` (as `without` gives it). Unchanged
+    /// if fewer than three of them were solved or they make no surface.
+    pub fn with_ground_of(self, ground: &(Vec<u32>, u32)) -> (CameraTrack, bool) {
+        let Some(src) = self.source.as_ref() else { return (self, false) };
+        let picked: Vec<usize> = src.ids.iter().enumerate().filter(|(_, id)| ground.0.contains(id)).map(|(k, _)| k).collect();
+        let frame = (ground.1 as usize).min(self.cameras.len().saturating_sub(1));
+        if picked.len() < 3 {
+            return (self, false);
+        }
+        match self.with_ground(&picked, frame) {
+            Some(g) => (g, true),
+            None => (self, false),
+        }
     }
 }
 
@@ -1572,7 +1607,7 @@ impl Solution {
             })
             .collect();
         let ids = self.points.iter().map(|(id, ..)| *id as u32).collect();
-        let source = Some(Box::new(SolveSource { tracks: tracks.to_vec(), ids, known_lens: false }));
+        let source = Some(Box::new(SolveSource { tracks: tracks.to_vec(), ids, known_lens: false, ground: None }));
         Some(CameraTrack { times, cameras, fov: fov_of(focal, frame[1] as f64) as f32, frame, points, error: self.error, tripod: self.tripod, placed: placed.len() as u32, camera: None, source })
     }
 }
@@ -1801,6 +1836,10 @@ impl CameraTrack {
         }
         for p in &mut out.points {
             p.pos = map(p.pos);
+        }
+        // Remember it, to set again if the camera is solved again.
+        if let Some(src) = out.source.as_mut() {
+            src.ground = Some((picked.iter().filter_map(|&k| src.ids.get(k).copied()).collect(), reference as u32));
         }
         Some(out)
     }

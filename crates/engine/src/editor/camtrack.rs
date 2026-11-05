@@ -159,7 +159,7 @@ impl Editor {
             return;
         }
         let Some(ct) = c.camera_track.clone() else { return };
-        let Some((tracks, gone)) = ct.tracks_without(points, max_error) else {
+        let Some((tracks, gone, ground)) = ct.without(points, max_error) else {
             self.status = "This solve doesn't have the details it was solved from (it was imported, or made by an older version): press Analyse again".into();
             return;
         };
@@ -192,6 +192,10 @@ impl Editor {
                                 src.known_lens = known_lens;
                             }
                             ct.camera = camera;
+                            // The ground set before, set again through the same details.
+                            if let Some(g) = &ground {
+                                ct = ct.with_ground_of(g).0;
+                            }
                             Some(ct)
                         })
                         .ok_or_else(|| "the camera's motion couldn't be worked out without those points".into()),

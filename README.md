@@ -855,7 +855,7 @@ What works now:
     many) and delete all of those at once. The camera is solved again from the rest of the
     details it followed, in the background, without following the shot again; a lens you gave
     is kept, as is the camera clip already made (press **Camera again** to update its moves).
-    Undoable. Re-solving resets the ground plane. A solve imported from a file, or made by an
+    Undoable. A **ground plane** you set is set again through the same details (when at least three of its points are kept). A solve imported from a file, or made by an
     older version, doesn't keep its details: press **Analyse** again instead
   - **Export** a solve for other applications: **After Effects** (a script: File → Scripts →
     Run Script File… makes a comp with a camera keyed every frame and a 3D null per point),

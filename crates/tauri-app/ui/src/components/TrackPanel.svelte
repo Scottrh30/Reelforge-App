@@ -281,7 +281,7 @@
               <div class="row">
                 <button class="wide" disabled={!worse || progress !== null} onclick={() => ins && run(api.camtrackResolve(ins.id, [], camMaxErr)).then(() => (app.camSel = null))} title="Delete every point fitting worse than this and solve the camera again (undoable)">Delete {worse} point{worse === 1 ? "" : "s"} and re-solve</button>
               </div>
-              {#if cam.camera}<p class="note">A camera already made keeps the old moves: press Camera again afterwards. Re-solving also resets the ground plane.</p>{/if}
+              {#if cam.camera}<p class="note">A camera already made keeps the old moves: press Camera again afterwards. A ground plane you set is set again through the same points (if at least three are kept).</p>{/if}
             {:else}
               <p class="note">This solve was imported or made by an older version, so it can't be solved again without some points: press Analyse again to clean it up.</p>
             {/if}

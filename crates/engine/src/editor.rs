@@ -3457,7 +3457,7 @@ mod tests {
             seed ^= seed << 17;
             (seed >> 11) as f32 / (1u64 << 53) as f32
         };
-        let (mut tracks, mut ids) = (Vec::new(), Vec::new());
+        let (mut tracks, mut ids, mut floor) = (Vec::new(), Vec::new(), Vec::new());
         for k in 0..160 {
             let p = if k % 2 == 0 { [uni() * 1600.0 - 800.0, 250.0, uni() * 900.0] } else { [uni() * 1600.0 - 800.0, 250.0 - uni() * 700.0, 900.0] };
             let bad = k >= 150;
@@ -3467,14 +3467,22 @@ mod tests {
             }
             ids.push(tracks.len() as u32);
             tracks.push(Track2d { start: 0, pos });
+            if k % 2 == 0 && !bad {
+                floor.push(ct.points.len());
+            }
             ct.points.push(ScenePoint { pos: p, error: if bad { 6.0 } else { 0.2 }, first: 0, last: (n - 1) as u32 });
         }
         let total = ct.points.len();
         assert!(total > 100, "{total}");
         let without = ct.clone();
-        ct.source = Some(Box::new(SolveSource { tracks, ids, known_lens: true }));
+        ct.source = Some(Box::new(SolveSource { tracks, ids, known_lens: true, ground: None }));
         ct.camera = Some(ClipId(424242));
         e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = Some(Box::new(ct.clone()));
+        // A ground plane on the floor's points.
+        e.set_camera_ground(id, &floor[..12]);
+        let ct = *e.seq().find_clip(id).unwrap().1.camera_track.clone().unwrap();
+        assert!(ct.source.as_ref().unwrap().ground.as_ref().is_some_and(|g| g.0.len() == 12));
+        assert!(floor[..12].iter().all(|&k| ct.points[k].pos[1].abs() < 1.0), "the floor is the ground");
         // Nothing worse than 10 px: nothing to do.
         e.resolve_camera(id, &[], Some(10.0));
         assert!(e.tracking.is_none() && e.status.contains("No points"), "{}", e.status);
@@ -3493,6 +3501,14 @@ mod tests {
         let src = new.source.as_ref().unwrap();
         assert_eq!(src.tracks.len(), total - 10);
         assert!(src.known_lens);
+        // The ground set again, through the same details: the floor's points are on it.
+        let g = src.ground.clone().expect("ground kept");
+        assert_eq!(g.0.len(), 12);
+        let on: Vec<f32> = new.points.iter().zip(&src.ids).filter(|(_, i)| g.0.contains(i)).map(|(p, _)| p.pos[1]).collect();
+        assert_eq!(on.len(), 12);
+        assert!(on.iter().all(|y| y.abs() < 2.0), "{on:?}");
+        // So are the rest of the floor's (the camera's height kept, give or take).
+        assert!(new.points.iter().filter(|p| p.pos[1].abs() < 3.0).count() > 50);
         // The fit per frame (worked out once), and going to a frame.
         let fit = e.camera_fit(id).unwrap();
         assert_eq!(fit.len(), 40);
