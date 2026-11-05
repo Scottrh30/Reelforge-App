@@ -979,17 +979,31 @@ impl Editor {
     /// effect would look, for the effects browser. Nothing changes in the
     /// project. Kept until what makes that picture changes.
     pub fn effect_thumbnail(&mut self, id: ClipId, fx: reelforge_core::effects::Effect, width: u32) -> Option<Vec<u8>> {
+        self.effect_thumbnail_at(id, fx, width, 0)
+    }
+
+    /// The same, `step` frames after the playhead (wrapping round to the
+    /// clip's start past its end): the frames of a moving preview, so effects
+    /// that change over time (Glitch, flicker, noise) show what they do.
+    pub fn effect_thumbnail_at(&mut self, id: ClipId, fx: reelforge_core::effects::Effect, width: u32, step: u32) -> Option<Vec<u8>> {
         let (_, c) = self.seq().find_clip(id)?;
         if c.scene.is_some() {
             return None;
         }
         let ph = self.playback.playhead;
-        let t = if ph >= c.timeline_start && ph < c.timeline_end() { ph } else { c.timeline_start + Time(c.duration.0 / 2) };
+        let t0 = if ph >= c.timeline_start && ph < c.timeline_end() { ph } else { c.timeline_start + Time(c.duration.0 / 2) };
+        let frame = self.seq().frame_rate.frame_duration();
+        let t = if step == 0 || c.duration.0 <= 0 {
+            t0
+        } else {
+            let along = (t0 - c.timeline_start).0 + frame.0 * step as i64;
+            c.timeline_start + Time(along.rem_euclid(c.duration.0.max(1)))
+        };
         let mut project = self.project.clone();
         project.sequences[self.active].find_clip_mut(id)?.1.effects.push(fx.clone());
         let sources = self.decode_paths();
         let recipe = reelforge_export::frame_recipe(&project, self.active, t, &sources);
-        let key = (id, format!("{:?}{}", fx.kind, fx.plugin.as_ref().map_or("", |p| p.id.as_str())), width);
+        let key = (id, format!("{:?}{}@{step}", fx.kind, fx.plugin.as_ref().map_or("", |p| p.id.as_str())), width);
         if let Some((r, jpg)) = self.fx_thumbs.get(&key) {
             if *r == recipe {
                 return Some(jpg.clone());
@@ -1000,7 +1014,7 @@ impl Editor {
         let scale = (2.0 * width as f32 / self.seq().width.max(1) as f32).min(1.0);
         let (rgba, [w, h]) = self.preview.render_scaled(&project, self.active, t, &sources, scale)?;
         let jpg = small_jpeg(&rgba, w, h, width)?;
-        if self.fx_thumbs.len() > 300 {
+        if self.fx_thumbs.len() > 600 {
             self.fx_thumbs.clear();
         }
         self.fx_thumbs.insert(key, (recipe, jpg.clone()));
@@ -4257,6 +4271,13 @@ mod tests {
         // The clip changes: a new picture.
         e.project.sequences[e.active].find_clip_mut(id).unwrap().1.effects.push(Effect::new(EffectKind::Vignette));
         assert_ne!(e.effect_thumbnail(id, Effect::new(EffectKind::Halftone), 160).unwrap(), dots);
+        // Frames of a moving preview: later frames of an effect that changes over time differ.
+        let g0 = e.effect_thumbnail_at(id, Effect::new(EffectKind::Glitch), 160, 0).unwrap();
+        let later: Vec<Vec<u8>> = (1..6).map(|k| e.effect_thumbnail_at(id, Effect::new(EffectKind::Glitch), 160, k).unwrap()).collect();
+        assert!(later.iter().any(|f| *f != g0), "Glitch moves");
+        assert_eq!(e.effect_thumbnail_at(id, Effect::new(EffectKind::Glitch), 160, 3).unwrap(), later[2], "cached per frame");
+        // Past the clip's end it wraps round (no failure).
+        assert!(e.effect_thumbnail_at(id, Effect::new(EffectKind::Glitch), 160, 100_000).is_some());
         // Cameras have no picture to show it on.
         e.add_scene_object(reelforge_core::space3d::SceneObject::Camera, 0);
         let cam = e.selection.unwrap();

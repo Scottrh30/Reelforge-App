@@ -821,7 +821,7 @@ export const api = {
   setFullWhenPaused: (on: boolean) => invoke("set_full_when_paused", { on }),
   audioFxKinds: () => invoke<AudioFxInfo[]>("audio_fx_kinds"),
   compThumbnail: (seq: number, at: Ticks) => invoke<ArrayBuffer>("comp_thumbnail", { seq, at }),
-  effectThumb: (id: number, kind: EffectKind, plugin: string | null) => invoke<ArrayBuffer>("effect_thumb", { id, kind, plugin }),
+  effectThumb: (id: number, kind: EffectKind, plugin: string | null, step = 0) => invoke<ArrayBuffer>("effect_thumb", { id, kind, plugin, step }),
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),
   openPath: (path: string) => invoke("open_path", { path }),

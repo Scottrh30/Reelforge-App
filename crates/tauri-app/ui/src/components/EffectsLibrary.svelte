@@ -6,7 +6,7 @@
   import { app, run } from "../lib/session.svelte";
   import { api, type CatalogGroup, type CatalogItem, type FxPreset, type TransitionKind } from "../lib/api";
   import { favourites, isFav, toggleFav } from "../lib/favourites.svelte";
-  import { effectThumb } from "../lib/thumbs";
+  import { effectThumb, playEffect } from "../lib/thumbs";
 
   let groups = $state<CatalogGroup[]>([]);
   let transitions = $state<TransitionKind[]>([]);
@@ -117,6 +117,12 @@
     clearTimeout(peekTimer);
     peek = null;
   }
+  /// The card's picture plays a few frames once it's in.
+  function moving(img: HTMLImageElement, p: Peek) {
+    if (!target) return;
+    const stop = playEffect(img, target.id, p.it.kind, p.it.plugin, stamp);
+    return { destroy: stop };
+  }
 
   // Dragging onto the timeline (the Timeline picks the clip under the pointer).
   function down(ev: PointerEvent, e: Entry) {
@@ -169,7 +175,7 @@
   <div class="peek" class:left={peek.left} style="{peek.left ? `right:${window.innerWidth - peek.x}px` : `left:${peek.x}px`}; top:{peek.y}px" role="tooltip">
     {#if target && picturesOn()}
       <div class="pic">
-        {#if peek.url}<img src={peek.url} alt="" />{:else}<span class="wait">…</span>{/if}
+        {#if peek.url}{#key peek.url}<img src={peek.url} alt="" use:moving={peek} />{/key}{:else}<span class="wait">…</span>{/if}
       </div>
     {/if}
     <div class="name">{peek.it.label}</div>

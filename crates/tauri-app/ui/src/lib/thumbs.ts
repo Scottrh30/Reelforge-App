@@ -57,13 +57,13 @@ const fxs = new Map<string, { stamp: string; p: Promise<string | null> }>();
 
 /// An object URL for a JPEG of clip `id` with effect `kind` (or plugin) added,
 /// as of `stamp` (the project revision and playhead: a new stamp asks again).
-export function effectThumb(id: number, kind: EffectKind, plugin: string | null, stamp: string): Promise<string | null> {
-  const key = `${id}|${kind}|${plugin ?? ""}`;
+export function effectThumb(id: number, kind: EffectKind, plugin: string | null, stamp: string, step = 0): Promise<string | null> {
+  const key = `${id}|${kind}|${plugin ?? ""}|${step}`;
   const had = fxs.get(key);
   if (had && had.stamp === stamp) return had.p;
   const p = queue.then(async () => {
     try {
-      const buf = await api.effectThumb(id, kind, plugin);
+      const buf = await api.effectThumb(id, kind, plugin, step);
       return URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
     } catch {
       return null;
@@ -73,4 +73,36 @@ export function effectThumb(id: number, kind: EffectKind, plugin: string | null,
   fxs.set(key, { stamp, p });
   if (had) p.then(() => had.p.then((u) => u && setTimeout(() => URL.revokeObjectURL(u), 2000)));
   return p;
+}
+
+/// Frames in a moving effect preview, and how long each shows (ms).
+const MOVING_FRAMES = 12;
+const MOVING_MS = 90;
+
+/// Play a moving preview of an effect in `img` (whose picture is the first
+/// frame): the next frames are made one after another and the picture loops
+/// through those ready so far. Returns a function that stops it and puts the
+/// first frame back.
+export function playEffect(img: HTMLImageElement, id: number, kind: EffectKind, plugin: string | null, stamp: string): () => void {
+  const first = img.src;
+  const frames: string[] = [first];
+  let alive = true;
+  let at = 0;
+  (async () => {
+    for (let k = 1; k < MOVING_FRAMES && alive; k++) {
+      const u = await effectThumb(id, kind, plugin, stamp, k);
+      if (!u) break;
+      frames.push(u);
+    }
+  })();
+  const timer = setInterval(() => {
+    if (frames.length < 2) return;
+    at = (at + 1) % frames.length;
+    img.src = frames[at];
+  }, MOVING_MS);
+  return () => {
+    alive = false;
+    clearInterval(timer);
+    if (first) img.src = first;
+  };
 }

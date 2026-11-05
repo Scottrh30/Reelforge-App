@@ -7,7 +7,7 @@
   import { ask } from "../lib/actions.svelte";
   import PresetList from "./PresetList.svelte";
   import { favourites, isFav, toggleFav } from "../lib/favourites.svelte";
-  import { effectThumb } from "../lib/thumbs";
+  import { effectThumb, playEffect } from "../lib/thumbs";
   import { menu } from "../lib/menu.svelte";
 
   let groups = $state<CatalogGroup[]>([]);
@@ -95,6 +95,18 @@
       }
     });
     io.observe(node);
+    // Hovering the effect plays a few frames of it (animated effects show their motion).
+    let stop: (() => void) | null = null;
+    const item = node.parentElement;
+    const enter = () => {
+      if (!stop && node.src) stop = playEffect(node, cur.id, cur.it.kind, cur.it.plugin, cur.stamp);
+    };
+    const leave = () => {
+      stop?.();
+      stop = null;
+    };
+    item?.addEventListener("pointerenter", enter);
+    item?.addEventListener("pointerleave", leave);
     return {
       update(next: { id: number; it: CatalogItem; stamp: string }) {
         const changed = next.id !== cur.id || next.stamp !== cur.stamp || next.it.kind !== cur.it.kind || next.it.plugin !== cur.it.plugin;
@@ -104,6 +116,9 @@
       destroy() {
         alive = false;
         io.disconnect();
+        leave();
+        item?.removeEventListener("pointerenter", enter);
+        item?.removeEventListener("pointerleave", leave);
       },
     };
   }

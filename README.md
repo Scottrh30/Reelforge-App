@@ -1013,7 +1013,11 @@ browser's foot): each effect is shown on the selected clip's frame at the playhe
 defaults, drawn small as it scrolls into view (and again when the clip or playhead changes;
 nothing in the project changes). In the **Effects panel**, hovering an effect for a moment shows a card
 beside the panel with the same picture, its name and what it does (the description alone with
-no clip selected, or with Pictures off). Switch effects off, reorder, duplicate,
+no clip selected, or with Pictures off). **Moving previews**: hover an effect's picture in the browser, or keep the
+pointer on one in the Effects panel, and it plays the next 12 frames from the playhead over and
+over (made one after another, about 11 a second; wrapping round at the clip's end), so effects
+that change over time (Glitch, flicker, noise, CRT) show their motion. Frames are kept, so a
+second hover plays at once. Switch effects off, reorder, duplicate,
 reset and remove them, fold them shut, and edit every setting (drag or type the numbers; menus and tick boxes for plugin
 choices). The ◆ beside a setting keyframes it at the playhead; once a setting has keys,
 changing it sets the key there. Curves has its own curve editor (Master, Red, Green,
