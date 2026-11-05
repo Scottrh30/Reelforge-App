@@ -98,3 +98,10 @@ fn fs_solid(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4(c.rgb * light, c.a);
 }
+
+// The depth picture (R32Float): how far each pixel's nearest face is, in the
+// same 0–1 depth as 3D layers, so the compositor can cut them through each other.
+@fragment
+fn fs_depth(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4(in.pos.z, 0.0, 0.0, 1.0);
+}

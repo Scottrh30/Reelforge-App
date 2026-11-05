@@ -863,7 +863,10 @@ What works now:
     buffer, so where two cross, each shows on the side where it's nearer. They're still drawn
     back to front by their middles (for see-through parts), and nearly transparent pixels
     (under 2%) don't hide what's behind them. A 2D layer, an adjustment layer or a blend mode
-    that reads the frame below starts a new run
+    that reads the frame below starts a new run. Extruded **3D text** joins the run: it's
+    drawn with a depth picture of its letters (their nearest faces, and the text's middle where
+    a glow or blur spills past them), so text turned through a 3D layer shows where it's in
+    front and is hidden where it's behind
   - Everything about cameras and lights keyframes like effect settings
 - **Corner pin** (Transform section of the Controls panel): tick it to stretch a layer in
   perspective by its four corners. Drag the pink corner handles in the Viewer (**Shift**: straight

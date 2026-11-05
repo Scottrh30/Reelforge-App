@@ -168,3 +168,51 @@ fn it_casts_shadows_on_3d_layers() {
     }
     assert!(lit_inside > 200, "not a box: {lit_inside} lit inside {x0}..{x1} × {y0}..{y1}");
 }
+
+/// 3D text and 3D layers cut through each other: text turned 45° through a
+/// white wall facing the camera (drawn after it) shows on the side where it's
+/// in front of the wall and is hidden on the other; and a layer simply behind
+/// the text doesn't cover it.
+#[test]
+fn it_cuts_through_3d_layers() {
+    use reelforge_core::space3d::layer_space;
+    let Some((d, q)) = headless_device() else { return };
+    let mut c = Compositor::new(&d, &q);
+    let white: Vec<u8> = [255u8; 4].iter().copied().cycle().take(16 * 4).collect();
+    let s = spec(30.0);
+    let sc = scene();
+    let draw = |c: &mut Compositor, text: Transform, wall: Transform| {
+        let input = SolidInput { mesh: text_mesh(&s, [W, H]), space: solid_space(&text, &sc), face: s.color, side: s.side_color.unwrap() };
+        let ws = layer_space(&wall, [W as f32, H as f32], &sc);
+        let wall_layer = LayerInput { key: 2, content_id: 1, pixels: PixelData::Rgba(&white), pixel_size: [4, 4], layer_size: [W as f32, H as f32], transform: wall, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: Some(&ws) };
+        let text_layer = LayerInput { key: 1, content_id: input.content_id(), pixels: PixelData::Solid(&input), pixel_size: [W, H], layer_size: [W as f32, H as f32], transform: Transform::default(), blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: None };
+        c.render([W, H], &[text_layer, wall_layer]);
+        c.read_output().unwrap()
+    };
+    // Coloured (the text's red or blue) pixels in the left and right halves.
+    let count = |img: &[u8]| {
+        let mut n = [0u32; 2];
+        for y in 0..H {
+            for x in 0..W {
+                let k = classify(&img[((y * W + x) * 4) as usize..]);
+                if k == 1 || k == 2 {
+                    n[(x >= W / 2) as usize] += 1;
+                }
+            }
+        }
+        n
+    };
+    let wall = Transform { three_d: true, ..Default::default() };
+    let mut turned = Transform { three_d: true, ..Default::default() };
+    turned.orientation = [0.0, 45.0];
+    let [l, r] = count(&draw(&mut c, turned, wall));
+    assert!((l > 1500 && r < 50) || (r > 1500 && l < 50), "one side in front: left {l}, right {r}");
+    // Text in front of a wall that's further away: all of it shows, though the wall is drawn later.
+    let far = Transform { three_d: true, depth: 200.0, ..Default::default() };
+    let front = count(&draw(&mut c, Transform { three_d: true, ..Default::default() }, far));
+    assert!(front[0] > 800 && front[1] > 800, "in front: {front:?}");
+    // And behind a nearer wall: none of it.
+    let near = Transform { three_d: true, depth: -100.0, ..Default::default() };
+    let behind = count(&draw(&mut c, Transform { three_d: true, ..Default::default() }, near));
+    assert!(behind[0] + behind[1] < 20, "behind: {behind:?}");
+}

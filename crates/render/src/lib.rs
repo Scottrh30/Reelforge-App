@@ -285,6 +285,9 @@ pub struct Compositor {
     /// The same, depth-tested, for runs of 3D layers.
     layer_pipelines_3d: HashMap<BlendMode, wgpu::RenderPipeline>,
     group_pipelines_3d: HashMap<BlendMode, wgpu::RenderPipeline>,
+    /// 3D text in a 3D run: its depth comes from its depth picture.
+    solid_pipelines_3d: HashMap<BlendMode, wgpu::RenderPipeline>,
+    solid_group_pipelines_3d: HashMap<BlendMode, wgpu::RenderPipeline>,
     /// Adds layers into a group target (colour and alpha both summed).
     sum_pipeline: wgpu::RenderPipeline,
     /// Same, for a layer whose effects already made it premultiplied.
@@ -447,11 +450,11 @@ impl Compositor {
             bind_group_layouts: &[Some(&uniform_layout), Some(&texture_layout), Some(&output_layout)],
             immediate_size: 0,
         });
-        let make_full = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>, depth: bool| {
+        let make_full = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>, depth: bool, third: bool| {
             let constants: Vec<(&str, f64)> = mode.map(|m| ("MODE", m as f64)).into_iter().chain(depth.then_some(("DEPTH_CUT", DEPTH_CUT))).collect();
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(if mode.is_some() { &blend_pl } else { &layer_pl }),
+                layout: Some(if mode.is_some() || third { &blend_pl } else { &layer_pl }),
                 vertex: wgpu::VertexState {
                     module: &layer_shader,
                     entry_point: Some("vs_layer"),
@@ -477,11 +480,12 @@ impl Compositor {
                 cache: None,
             })
         };
-        let make_with = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>| make_full(label, entry, blend, mode, false);
+        let make_with = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>| make_full(label, entry, blend, mode, false, false);
         let make = |label: &str, entry: &str, blend: wgpu::BlendState| make_with(label, entry, blend, None);
         // 3D runs: depth-tested, for every blend mode that doesn't read the frame under it.
-        let per_mode_3d = |entry: &str| -> HashMap<BlendMode, wgpu::RenderPipeline> {
-            BlendMode::ALL.into_iter().filter(|m| !m.reads_backdrop()).map(|m| (m, make_full(m.label(), entry, blend_state(m), None, true))).collect()
+        // (3D text brings its own depth picture as the third texture.)
+        let per_mode_3d = |entry: &str, third: bool| -> HashMap<BlendMode, wgpu::RenderPipeline> {
+            BlendMode::ALL.into_iter().filter(|m| !m.reads_backdrop()).map(|m| (m, make_full(m.label(), entry, blend_state(m), None, true, third))).collect()
         };
         let per_mode = |plain: &str, blend_entry: &str| -> HashMap<BlendMode, wgpu::RenderPipeline> {
             BlendMode::ALL
@@ -492,8 +496,10 @@ impl Compositor {
         };
         let layer_pipelines = per_mode("fs_layer", "fs_blend");
         let group_pipelines = per_mode("fs_layer_premul", "fs_blend_premul");
-        let layer_pipelines_3d = per_mode_3d("fs_layer");
-        let group_pipelines_3d = per_mode_3d("fs_layer_premul");
+        let layer_pipelines_3d = per_mode_3d("fs_layer", false);
+        let group_pipelines_3d = per_mode_3d("fs_layer_premul", false);
+        let solid_pipelines_3d = per_mode_3d("fs_solid", true);
+        let solid_group_pipelines_3d = per_mode_3d("fs_solid_premul", true);
         let sum = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
         let sum_pipeline = make("dissolve sum", "fs_layer", wgpu::BlendState { color: sum, alpha: sum });
         let sum_premul_pipeline = make("dissolve sum (premultiplied)", "fs_layer_premul", wgpu::BlendState { color: sum, alpha: sum });
@@ -677,6 +683,8 @@ impl Compositor {
             group_pipelines,
             layer_pipelines_3d,
             group_pipelines_3d,
+            solid_pipelines_3d,
+            solid_group_pipelines_3d,
             sum_pipeline,
             sum_premul_pipeline,
             fx_pipelines,
@@ -900,7 +908,7 @@ impl Compositor {
             }
             PixelData::Solid(s) => {
                 let view = t.texture.create_view(&Default::default());
-                self.solid.draw(&self.device, &self.queue, l.key, s, &view, l.pixel_size);
+                self.solid.draw(&self.device, &self.queue, l.key, s, &view, l.pixel_size, &self.output_layout);
             }
         }
         if let Some(t) = self.layers.get_mut(&l.key) {
@@ -1530,8 +1538,9 @@ impl Compositor {
         // and lit layers trace their light past them (see composite.wgsl).
         let casts = uniforms.iter().any(|u| u.4.and_then(|s| s.lighting.as_ref()).is_some_and(|l| l.lights.iter().any(|g| g.shadow > 0.0 && g.kind != 3)));
         // 3D text casts too: its letters' outline, on the plane halfway through its depth.
+        // (and 3D runs take it in: it has a depth picture).
         let mut solids: HashMap<u64, &SolidInput> = HashMap::new();
-        if casts {
+        {
             for item in items {
                 let ls: Vec<&LayerInput> = match item {
                     DrawItem::Layer(l) => vec![l],
@@ -1757,6 +1766,7 @@ impl Compositor {
         }
 
         let offset = |slot: usize| (slot as u64 * self.uniform_stride) as u32;
+        let is_solid = |key: u64| solids.contains_key(&key);
         // Vertices for a draw: the plain quad, or every little quad of a mesh.
         let verts: Vec<u32> = uniforms.iter().map(|u| u.3.map_or(6, |m| m.cols as u32 * m.rows as u32 * mesh_subdiv(m) * mesh_subdiv(m) * 6)).collect();
         // The texture to sample for a draw: the processed result, or the plain upload.
@@ -1813,15 +1823,22 @@ impl Compositor {
                 depth_run = false;
             }
             match op {
-                Op::Frame { draw, blend } if uniforms[draw.slot].4.is_some() && !blend.reads_backdrop() => {
+                Op::Frame { draw, blend } if (uniforms[draw.slot].4.is_some() || self.solid.depth_bind(draw.key).is_some() && is_solid(draw.key)) && !blend.reads_backdrop() => {
                     let Some(bind) = source(draw) else { continue };
+                    let solid_depth = if uniforms[draw.slot].4.is_none() { self.solid.depth_bind(draw.key) } else { None };
                     if !depth_run {
                         drop(frame_pass.take());
                         frame_pass = Some(depth_pass(&mut enc));
                         depth_run = true;
                     }
                     let Some(pass) = frame_pass.as_mut() else { continue };
-                    pass.set_pipeline(if draw.fx.is_some() || premul(draw) { &self.group_pipelines_3d[blend] } else { &self.layer_pipelines_3d[blend] });
+                    let pre = draw.fx.is_some() || premul(draw);
+                    if let Some(d) = solid_depth {
+                        pass.set_pipeline(if pre { &self.solid_group_pipelines_3d[blend] } else { &self.solid_pipelines_3d[blend] });
+                        pass.set_bind_group(2, d, &[]);
+                    } else {
+                        pass.set_pipeline(if pre { &self.group_pipelines_3d[blend] } else { &self.layer_pipelines_3d[blend] });
+                    }
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
                     pass.set_bind_group(1, bind, &[]);
                     pass.draw(0..verts[draw.slot], 0..1);

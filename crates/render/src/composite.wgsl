@@ -439,3 +439,36 @@ fn fs_blend(in: VsOut) -> @location(0) vec4<f32> {
 fn fs_blend_premul(in: VsOut) -> @location(0) vec4<f32> {
     return blend_with_backdrop(layer_color_premul(in), in.pos.xy);
 }
+
+// 3D text in a run of 3D layers: drawn like any layer, but at the depth its
+// depth picture (bound in the backdrop's slot; frame-sized like the layer)
+// gives, so it and the layers cut through each other.
+struct SolidOut {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
+fn solid_depth(in: VsOut) -> f32 {
+    let dims = vec2<i32>(textureDimensions(backdrop));
+    let uv = in.local / layer.size + 0.5;
+    let p = clamp(vec2<i32>(floor(uv * vec2<f32>(dims))), vec2(0), dims - vec2(1));
+    return textureLoad(backdrop, p, 0).r;
+}
+
+@fragment
+fn fs_solid(in: VsOut) -> SolidOut {
+    let c = layer_color(in);
+    if (c.a < DEPTH_CUT) {
+        discard;
+    }
+    return SolidOut(c, solid_depth(in));
+}
+
+@fragment
+fn fs_solid_premul(in: VsOut) -> SolidOut {
+    let c = layer_color_premul(in);
+    if (c.a < DEPTH_CUT) {
+        discard;
+    }
+    return SolidOut(c, solid_depth(in));
+}

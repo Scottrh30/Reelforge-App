@@ -53,6 +53,16 @@ struct Targets {
     size: [u32; 2],
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
+    /// Single-sampled, for the depth picture.
+    depth1: wgpu::TextureView,
+}
+
+/// A layer's depth picture (R32Float, the layer's size) and its bind group
+/// for the compositor (its "frame below" slot, group 2).
+struct DepthPicture {
+    size: [u32; 2],
+    view: wgpu::TextureView,
+    bind: wgpu::BindGroup,
 }
 
 struct MeshBuffers {
@@ -73,6 +83,8 @@ pub(crate) struct SolidRenderer {
     targets: Option<Targets>,
     /// Per layer key.
     meshes: HashMap<u64, MeshBuffers>,
+    depth_pipeline: wgpu::RenderPipeline,
+    depths: HashMap<u64, DepthPicture>,
     format: wgpu::TextureFormat,
 }
 
@@ -130,6 +142,34 @@ impl SolidRenderer {
             multiview_mask: None,
             cache: None,
         });
+        // The depth picture: same mesh and transform, nearest face's depth into R32Float.
+        let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("solid depth"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_solid"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_depth"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         // The outline (for shadows): flat, into the R8 shadow atlas, one uniform slot per tile.
         let flat_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("solid outline"),
@@ -170,7 +210,7 @@ impl SolidRenderer {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), format }
+        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), depth_pipeline, depths: HashMap::new(), format }
     }
 
     /// Get layer `key`'s outline ready for shadow-atlas tile `slot`: false if
@@ -204,15 +244,38 @@ impl SolidRenderer {
     }
 
     /// Draw `s` (layer `key`) into `target`, a `size` texture, replacing what's there.
-    pub fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: u64, s: &SolidInput, target: &wgpu::TextureView, size: [u32; 2]) {
+    /// Layer `key`'s depth picture, bound for the compositor (if it's been drawn).
+    pub fn depth_bind(&self, key: u64) -> Option<&wgpu::BindGroup> {
+        self.depths.get(&key).map(|d| &d.bind)
+    }
+
+    /// Draw layer `key`'s picture into `target`, and its depth picture (bound
+    /// with `depth_layout`, a single non-filterable float texture).
+    pub fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: u64, s: &SolidInput, target: &wgpu::TextureView, size: [u32; 2], depth_layout: &wgpu::BindGroupLayout) {
+        if self.depths.get(&key).is_none_or(|d| d.size != size) {
+            let view = device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("solid depth picture"),
+                    size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R32Float,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default());
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("solid depth picture"), layout: depth_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }] });
+            self.depths.insert(key, DepthPicture { size, view, bind });
+        }
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
-            let tex = |label, format| {
+            let tex = |label, format, samples| {
                 device
                     .create_texture(&wgpu::TextureDescriptor {
                         label: Some(label),
                         size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
                         mip_level_count: 1,
-                        sample_count: SAMPLES,
+                        sample_count: samples,
                         dimension: wgpu::TextureDimension::D2,
                         format,
                         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -220,7 +283,7 @@ impl SolidRenderer {
                     })
                     .create_view(&Default::default())
             };
-            self.targets = Some(Targets { size, color: tex("solid colour", self.format), depth: tex("solid depth", DEPTH_FORMAT) });
+            self.targets = Some(Targets { size, color: tex("solid colour", self.format, SAMPLES), depth: tex("solid depth", DEPTH_FORMAT, SAMPLES), depth1: tex("solid depth (single)", DEPTH_FORMAT, 1) });
         }
         let mesh = &s.mesh;
         if self.meshes.get(&key).is_none_or(|m| m.id != mesh.id) {
@@ -256,6 +319,37 @@ impl SolidRenderer {
             });
             if m.count > 0 {
                 pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind, &[]);
+                pass.set_vertex_buffer(0, m.vertices.slice(..));
+                pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..m.count, 0, 0..1);
+            }
+        }
+        // The depth picture. Where there's no face it holds the depth of the
+        // text's middle, so a glow or blur spilling past the letters sits there too.
+        let mid = {
+            let b = mesh.bounds;
+            let p = [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, mesh.depth * 0.5, 1.0];
+            let m = &s.space.mvp;
+            let c = |i: usize| (0..4).map(|j| m[j][i] * p[j]).sum::<f32>();
+            let (z, w) = (c(2), c(3));
+            if w > 1e-6 { (z / w).clamp(0.0, 1.0) } else { 1.0 }
+        };
+        {
+            let d = &self.depths[&key];
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("solid depth picture"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &d.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: mid as f64, g: 0.0, b: 0.0, a: 1.0 }), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &t.depth1, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }), stencil_ops: None }),
+                ..Default::default()
+            });
+            if m.count > 0 {
+                pass.set_pipeline(&self.depth_pipeline);
                 pass.set_bind_group(0, &self.bind, &[]);
                 pass.set_vertex_buffer(0, m.vertices.slice(..));
                 pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
