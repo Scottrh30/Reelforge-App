@@ -113,9 +113,34 @@ pub struct TitleSpec {
     /// The colour of 3D text's sides (`None`: the text colour).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side_color: Option<[u8; 4]>,
+    /// 3D text's edges, front and back, cut back by this much (pixels; 0 =
+    /// sharp edges), so they catch the light. At most half the depth.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bevel: f32,
+    /// The shape of the bevel.
+    #[serde(default, skip_serializing_if = "BevelStyle::is_default")]
+    pub bevel_style: BevelStyle,
     /// Letters, words or lines coming in (and going out) one after another.
     #[serde(default, skip_serializing_if = "TextAnim::is_none")]
     pub anim: TextAnim,
+}
+
+/// The shape of 3D text's bevelled edges.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BevelStyle {
+    /// A quarter circle: smooth, rounded edges.
+    #[default]
+    Round,
+    /// A straight 45° cut.
+    Flat,
+    /// A concave quarter circle, like a cove moulding.
+    Cove,
+}
+
+impl BevelStyle {
+    pub fn is_default(&self) -> bool {
+        *self == Self::Round
+    }
 }
 
 /// How a title's text comes in, piece by piece.
@@ -249,6 +274,8 @@ impl Default for TitleSpec {
             background_padding: 24.0,
             extrude: 0.0,
             side_color: None,
+            bevel: 0.0,
+            bevel_style: BevelStyle::Round,
             anim: TextAnim::default(),
         }
     }
@@ -405,11 +432,12 @@ impl TitleSpec {
             self.shadow_softness,
             self.background_padding,
             self.extrude,
+            self.bevel,
         ] {
             f.to_bits().hash(&mut h);
         }
         (self.color, self.outline_color, self.shadow_color, self.background_color).hash(&mut h);
-        (self.align, self.shadow, self.background, self.side_color).hash(&mut h);
+        (self.align, self.shadow, self.background, self.side_color, self.bevel_style).hash(&mut h);
         if !self.anim.is_none() {
             // (Its state at a moment is in `content_hash_at`.)
             (self.anim.kind, self.anim.stagger.to_bits(), self.anim.length.to_bits(), self.anim.delay.to_bits(), self.anim.out).hash(&mut h);

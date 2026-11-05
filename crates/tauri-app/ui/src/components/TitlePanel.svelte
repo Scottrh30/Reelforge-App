@@ -141,6 +141,15 @@
       <div class="row" class:off={!t.side_color}>
         <input type="color" value={hex((t.side_color ?? t.color) as Rgba)} disabled={!t.side_color} aria-label="Side colour" title={t.side_color ? "Side colour" : "The sides are the text colour: tick Sides to choose another"} oninput={(e) => set((s) => (s.side_color = rgba(e.currentTarget.value, (s.side_color ?? s.color)[3])))} onchange={commit} />
       </div>
+      <span class="lbl sub" title="Cut back the letters' edges, front and back, so they catch the light">Bevel</span>
+      <div class="row">
+        <NumberField label="Bevel: how far the letters' edges are cut back (0 = sharp edges; held to half the depth, and to 0.4 of the thinnest stroke)" value={t.bevel ?? 0} min={0} max={500} step={0.1} digits={1} suffix=" px" oninput={(v) => set((s) => (s.bevel = v))} oncommit={commit} />
+        <select value={t.bevel_style ?? "Round"} disabled={!t.bevel} aria-label="Bevel shape" title="Round: smooth bulging edges. Flat: a straight 45° cut. Cove: hollowed in, like a moulding." onchange={(e) => once((s) => (s.bevel_style = e.currentTarget.value))}>
+          <option value="Round">Round</option>
+          <option value="Flat">Flat</option>
+          <option value="Cove">Cove</option>
+        </select>
+      </div>
       <span></span>
       <p class="note">
         Lit by the lights in the sequence (Timeline → Add light), or a soft light from above left when there are none. Outline, shadow and box aren't drawn on 3D text.

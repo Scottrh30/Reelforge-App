@@ -16,7 +16,7 @@ use ab_glyph::{Font, OutlineCurve, ScaleFont};
 use lyon_tessellation::geom::point;
 use lyon_tessellation::path::Path;
 use lyon_tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers};
-use reelforge_core::TitleSpec;
+use reelforge_core::{BevelStyle, TitleSpec};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -50,6 +50,11 @@ pub struct TextMesh {
 const TOLERANCE: f32 = 0.1;
 /// Neighbouring side faces meeting at less than this angle are shaded as one smooth surface.
 const SMOOTH_ANGLE_DEG: f32 = 40.0;
+/// The deepest bevel, as a fraction of the letters' thinnest stroke (each side
+/// is cut back, so more would cross over).
+pub const MAX_BEVEL: f32 = 0.4;
+/// A corner moved in by a bevel goes at most this many times as far (sharp spikes).
+const MITER_LIMIT: f32 = 3.0;
 
 /// The mesh for `spec` on a `frame`-sized canvas (cached).
 pub fn text_mesh(spec: &TitleSpec, frame: [u32; 2]) -> Arc<TextMesh> {
@@ -164,18 +169,144 @@ fn winding(polys: &[Vec<P2>], p: P2) -> i32 {
     w
 }
 
+/// The bevel's profile from the front face to the side: (how far in from the
+/// outline, how far back, and the normal's (outward, along Z) parts), for a
+/// bevel `b` deep.
+fn bevel_profile(style: BevelStyle, b: f32) -> Vec<(f32, f32, [f32; 2])> {
+    const STEPS: usize = 5;
+    let quarter = |f: &dyn Fn(f32) -> (f32, f32, [f32; 2])| (0..=STEPS).map(|k| f(std::f32::consts::FRAC_PI_2 * k as f32 / STEPS as f32)).collect();
+    match style {
+        // A straight cut at 45°: one band, its normal halfway.
+        BevelStyle::Flat => {
+            let n = [std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2];
+            vec![(b, 0.0, n), (0.0, b, n)]
+        }
+        // Bulging out: from facing front to facing out.
+        BevelStyle::Round => quarter(&|t| (b * (1.0 - t.sin()), b * (1.0 - t.cos()), [t.sin(), -t.cos()])),
+        // Hollowed in: a quarter circle round the old corner.
+        BevelStyle::Cove => quarter(&|t| (b * t.cos(), b * t.sin(), [t.cos(), -t.sin()])),
+    }
+}
+
+/// A glyph contour with its outward edge normals and how its corners move
+/// when the outline is moved in.
+struct Contour {
+    pts: Vec<P2>,
+    normals: Vec<P2>,
+    /// Per corner: the shared normal if its edges meet smoothly.
+    shared: Vec<Option<P2>>,
+    /// Per corner: how a point moves for each pixel the outline moves outwards.
+    miter: Vec<P2>,
+}
+
+fn contours_of(polys: &[Vec<P2>], size: f32) -> Vec<Contour> {
+    let cos_smooth = SMOOTH_ANGLE_DEG.to_radians().cos();
+    polys
+            .iter()
+            .map(|c| {
+                let n = c.len();
+                // Which way is out: test a point just to the left of the longest edge.
+                let (i, _) = (0..n).map(|i| (i, len([c[(i + 1) % n][0] - c[i][0], c[(i + 1) % n][1] - c[i][1]]))).fold((0, -1.0), |m, e| if e.1 > m.1 { e } else { m });
+                let (a, bb) = (c[i], c[(i + 1) % n]);
+                let e = [bb[0] - a[0], bb[1] - a[1]];
+                let l = len(e).max(1e-6);
+                let left = [e[1] / l, -e[0] / l];
+                let eps = size * 1e-3;
+                let probe = [(a[0] + bb[0]) * 0.5 + left[0] * eps, (a[1] + bb[1]) * 0.5 + left[1] * eps];
+                // Inside to the left: out is to the right.
+                let sign = if winding(&polys, probe) != 0 { -1.0 } else { 1.0 };
+                let normals: Vec<P2> = (0..n)
+                    .map(|i| {
+                        let e = [c[(i + 1) % n][0] - c[i][0], c[(i + 1) % n][1] - c[i][1]];
+                        let l = len(e).max(1e-9);
+                        [sign * e[1] / l, -sign * e[0] / l]
+                    })
+                    .collect();
+                let shared = (0..n)
+                    .map(|i| {
+                        let (p, q) = (normals[(i + n - 1) % n], normals[i]);
+                        (p[0] * q[0] + p[1] * q[1] > cos_smooth).then(|| {
+                            let s = [p[0] + q[0], p[1] + q[1]];
+                            let l = len(s).max(1e-9);
+                            [s[0] / l, s[1] / l]
+                        })
+                    })
+                    .collect();
+                let miter = (0..n)
+                    .map(|i| {
+                        let (p, q) = (normals[(i + n - 1) % n], normals[i]);
+                        let d = 1.0 + p[0] * q[0] + p[1] * q[1];
+                        let m = [(p[0] + q[0]) / d.max(1e-3), (p[1] + q[1]) / d.max(1e-3)];
+                        // Very sharp corners: no further than this many times the distance.
+                        let l = len(m);
+                        if l > MITER_LIMIT { [m[0] / l * MITER_LIMIT, m[1] / l * MITER_LIMIT] } else { m }
+                    })
+                    .collect();
+                Contour { pts: c.clone(), normals, shared, miter }
+            })
+            .collect()
+}
+
+/// The thinnest part of the letters: the shortest way across, from each
+/// corner straight inwards to the far side (within its glyph).
+fn thinnest(glyphs: &[(Vec<Vec<P2>>, Vec<Contour>)]) -> f32 {
+    let mut best = f32::MAX;
+    for (_, cs) in glyphs {
+        for c in cs {
+            let n = c.pts.len();
+            for i in 0..n {
+                let m = c.shared[i].unwrap_or(c.normals[i]);
+                let (o, d) = (c.pts[i], [-m[0], -m[1]]);
+                for e in cs {
+                    let k = e.pts.len();
+                    for a in 0..k {
+                        let (p, q) = (e.pts[a], e.pts[(a + 1) % k]);
+                        // o + d t = p + (q − p) u
+                        let r = [q[0] - p[0], q[1] - p[1]];
+                        let den = d[0] * r[1] - d[1] * r[0];
+                        if den.abs() < 1e-9 {
+                            continue;
+                        }
+                        let w = [p[0] - o[0], p[1] - o[1]];
+                        let t = (w[0] * r[1] - w[1] * r[0]) / den;
+                        let u = (w[0] * d[1] - w[1] * d[0]) / den;
+                        if t > 1e-2 && (0.0..=1.0).contains(&u) {
+                            best = best.min(t);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
 fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
     let (cx, cy) = (frame[0].max(1) as f32 / 2.0, frame[1].max(1) as f32 / 2.0);
     let depth = spec.extrude.max(0.0);
+    let size = spec.size.max(1.0);
+    let glyphs: Vec<(Vec<Vec<P2>>, Vec<Contour>)> = glyph_polygons(spec, frame).into_iter().map(|p| { let c = contours_of(&p, size); (p, c) }).collect();
+    // Within half the depth, and not crossing over in the thinnest strokes.
+    let bevel = if depth > 0.0 && spec.bevel > 0.0 {
+        let thin = thinnest(&glyphs);
+        spec.bevel.clamp(0.0, (depth * 0.5).min(thin * MAX_BEVEL))
+    } else {
+        0.0
+    };
+    let profile = if bevel > 0.0 { bevel_profile(spec.bevel_style, bevel) } else { Vec::new() };
     let mut vertices = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut tess = FillTessellator::new();
-    for polys in glyph_polygons(spec, frame) {
-        // ---- Front and back faces ----
+    for (_polys, contours) in &glyphs {
+        // The outline moved in by `d`.
+        let inset = |c: &Contour, i: usize, d: f32| -> P2 { [c.pts[i][0] - c.miter[i][0] * d, c.pts[i][1] - c.miter[i][1] * d] };
+
+        // ---- Front and back faces (inside the bevel) ----
         let mut b = Path::builder();
-        for c in &polys {
-            b.begin(point(c[0][0], c[0][1]));
-            for p in &c[1..] {
+        for c in contours {
+            b.begin(point(inset(c, 0, bevel)[0], inset(c, 0, bevel)[1]));
+            for i in 1..c.pts.len() {
+                let p = inset(c, i, bevel);
                 b.line_to(point(p[0], p[1]));
             }
             b.end(true);
@@ -193,47 +324,33 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
         if depth <= 0.0 {
             continue;
         }
-        // ---- Sides ----
-        let size = spec.size.max(1.0);
-        let cos_smooth = SMOOTH_ANGLE_DEG.to_radians().cos();
-        for c in &polys {
-            let n = c.len();
-            // Which way is out: test a point just to the left of the longest edge.
-            let (i, _) = (0..n).map(|i| (i, len([c[(i + 1) % n][0] - c[i][0], c[(i + 1) % n][1] - c[i][1]]))).fold((0, -1.0), |m, e| if e.1 > m.1 { e } else { m });
-            let (a, bb) = (c[i], c[(i + 1) % n]);
-            let e = [bb[0] - a[0], bb[1] - a[1]];
-            let l = len(e).max(1e-6);
-            let left = [e[1] / l, -e[0] / l];
-            let eps = size * 1e-3;
-            let probe = [(a[0] + bb[0]) * 0.5 + left[0] * eps, (a[1] + bb[1]) * 0.5 + left[1] * eps];
-            // Inside to the left: out is to the right.
-            let sign = if winding(&polys, probe) != 0 { -1.0 } else { 1.0 };
-            let normals: Vec<P2> = (0..n)
-                .map(|i| {
-                    let e = [c[(i + 1) % n][0] - c[i][0], c[(i + 1) % n][1] - c[i][1]];
-                    let l = len(e).max(1e-9);
-                    [sign * e[1] / l, -sign * e[0] / l]
-                })
-                .collect();
-            // A vertex's shared normal, if the edges either side meet smoothly.
-            let smooth = |i: usize| -> Option<P2> {
-                let (p, q) = (normals[(i + n - 1) % n], normals[i]);
-                (p[0] * q[0] + p[1] * q[1] > cos_smooth).then(|| {
-                    let s = [p[0] + q[0], p[1] + q[1]];
-                    let l = len(s).max(1e-9);
-                    [s[0] / l, s[1] / l]
-                })
-            };
-            let shared: Vec<Option<P2>> = (0..n).map(smooth).collect();
+        // ---- Sides, and the bevels front and back ----
+        for c in contours {
+            let n = c.pts.len();
             for i in 0..n {
                 let j = (i + 1) % n;
-                let ne = normals[i];
-                let na = shared[i].unwrap_or(ne);
-                let nb = shared[j].unwrap_or(ne);
-                let base = vertices.len() as u32;
-                let v = |p: P2, z: f32, nn: P2| Vertex { pos: [p[0] - cx, p[1] - cy, z], normal: [nn[0], nn[1], 0.0], part: PART_SIDE };
-                vertices.extend([v(c[i], 0.0, na), v(c[j], 0.0, nb), v(c[j], depth, nb), v(c[i], depth, na)]);
-                indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                let ne = c.normals[i];
+                let na = c.shared[i].unwrap_or(ne);
+                let nb = c.shared[j].unwrap_or(ne);
+                // A strip of quads along this edge through `rings`: (inset, z, normal (out, along Z)).
+                let mut strip = |rings: &[(f32, f32, [f32; 2])], part: f32| {
+                    for w in rings.windows(2) {
+                        let base = vertices.len() as u32;
+                        let v = |k: usize, r: &(f32, f32, [f32; 2]), nn: P2| {
+                            let p = inset(c, k, r.0);
+                            Vertex { pos: [p[0] - cx, p[1] - cy, r.1], normal: [nn[0] * r.2[0], nn[1] * r.2[0], r.2[1]], part }
+                        };
+                        vertices.extend([v(i, &w[0], na), v(j, &w[0], nb), v(j, &w[1], nb), v(i, &w[1], na)]);
+                        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                    }
+                };
+                strip(&[(0.0, bevel, [1.0, 0.0]), (0.0, depth - bevel, [1.0, 0.0])], PART_SIDE);
+                if bevel > 0.0 {
+                    // In front (facing forward at the face), and its mirror at the back.
+                    strip(&profile, PART_FRONT);
+                    let back: Vec<(f32, f32, [f32; 2])> = profile.iter().rev().map(|&(d, z, nz)| (d, depth - z, [nz[0], -nz[1]])).collect();
+                    strip(&back, PART_BACK);
+                }
             }
         }
     }
@@ -278,6 +395,49 @@ mod tests {
         let flat = crate::text::render_title(&spec("OH", 0.0), [640, 360]).bounds.unwrap();
         assert!((lo[0] + 320.0 - flat[0]).abs() < 2.0 && (hi[0] + 320.0 - flat[2]).abs() < 2.0, "{lo:?} {hi:?} {flat:?}");
         assert!((lo[1] + 180.0 - flat[1]).abs() < 2.0 && (hi[1] + 180.0 - flat[3]).abs() < 2.0, "{lo:?} {hi:?} {flat:?}");
+    }
+
+/// Bevels: the faces shrink in by the bevel, the band between turns from
+    /// facing front to facing out (back likewise), the letters' extent stays
+    /// the same, and a bevel too deep for the strokes is held back.
+    #[test]
+    fn bevels_cut_back_the_edges() {
+        let plain = text_mesh(&spec("OH", 40.0), [640, 360]);
+        let x_extent = |m: &TextMesh, part: f32| {
+            m.vertices.iter().filter(|v| v.part == part && v.pos[2] == 0.0 && v.normal == [0.0, 0.0, -1.0]).fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v.pos[0]), hi.max(v.pos[0])))
+        };
+        let (plo, phi) = x_extent(&plain, PART_FRONT);
+        for style in [BevelStyle::Round, BevelStyle::Flat, BevelStyle::Cove] {
+            let m = text_mesh(&TitleSpec { bevel: 2.0, bevel_style: style, ..spec("OH", 40.0) }, [640, 360]);
+            for v in &m.vertices {
+                assert!((len([v.normal[0], v.normal[1]]).hypot(v.normal[2]) - 1.0).abs() < 1e-3, "{style:?}: unit normals");
+                assert!((0.0..=40.0).contains(&v.pos[2]));
+            }
+            // The face is 2 px in from the outline each side.
+            let (lo, hi) = x_extent(&m, PART_FRONT);
+            assert!((lo - plo - 2.0).abs() < 0.3 && (phi - hi - 2.0).abs() < 0.3, "{style:?}: face {lo}..{hi} vs {plo}..{phi}");
+            // The bevel: front-coloured faces between z 0 and 2 turning outwards, and their mirror at the back.
+            let front: Vec<&Vertex> = m.vertices.iter().filter(|v| v.part == PART_FRONT && v.normal[2] > -0.999).collect();
+            let back: Vec<&Vertex> = m.vertices.iter().filter(|v| v.part == PART_BACK && v.normal[2] < 0.999).collect();
+            assert!(!front.is_empty() && front.len() == back.len(), "{style:?}");
+            assert!(front.iter().all(|v| v.pos[2] <= 2.0 + 1e-4 && v.normal[2] < 1e-4), "{style:?}: front bevel faces forward-ish");
+            assert!(back.iter().all(|v| v.pos[2] >= 38.0 - 1e-4 && v.normal[2] > -1e-4), "{style:?}: back bevel faces back-ish");
+            // Sides only between the bevels.
+            assert!(m.vertices.iter().filter(|v| v.part == PART_SIDE).all(|v| (2.0 - 1e-4..=38.0 + 1e-4).contains(&v.pos[2])));
+            // Same extent overall.
+            assert_eq!(m.bounds.map(|b| b.round()), plain.bounds.map(|b| b.round()), "{style:?}");
+        }
+        // Round: from facing front to facing out; a 45° band when flat.
+        let round = text_mesh(&TitleSpec { bevel: 2.0, ..spec("OH", 40.0) }, [640, 360]);
+        assert!(round.vertices.iter().any(|v| v.part == PART_FRONT && v.pos[2] > 0.1 && v.pos[2] < 1.9 && v.normal[2] < -0.1 && v.normal[2] > -0.99), "curving");
+        let flat = text_mesh(&TitleSpec { bevel: 2.0, bevel_style: BevelStyle::Flat, ..spec("OH", 40.0) }, [640, 360]);
+        assert!(flat.vertices.iter().filter(|v| v.part == PART_FRONT && v.normal[2] > -0.999).all(|v| (v.normal[2] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4));
+        // Too deep for these strokes (about 6.4 px across): held to 0.4 of them.
+        let deep = text_mesh(&TitleSpec { bevel: 30.0, ..spec("OH", 40.0) }, [640, 360]);
+        let zmax = deep.vertices.iter().filter(|v| v.part == PART_FRONT).map(|v| v.pos[2]).fold(0.0, f32::max);
+        assert!(zmax > 2.0 && zmax < 2.7, "{zmax}");
+        // Flat text has no bevel.
+        assert_eq!(text_mesh(&TitleSpec { bevel: 2.0, ..spec("OH", 0.0) }, [640, 360]).vertices.len(), text_mesh(&spec("OH", 0.0), [640, 360]).vertices.len());
     }
 
     #[test]

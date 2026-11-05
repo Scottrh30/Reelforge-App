@@ -457,7 +457,11 @@ What works now:
   extruded into solid 3D objects, as deep as **3D depth** (pixels), seen through the camera and
   lit by the scene's lights, or by a soft light from above left when there are none. **Sides**
   gives the sides their own colour (otherwise they're the text colour; Add 3D text makes them a
-  shade darker). It's always a 3D layer: move it in Z and turn it about X and Y in the Transform
+  shade darker). **Bevel** (pixels) cuts back the letters' edges front and back so they catch
+  the light, as **Round** (a smooth bulge), **Flat** (a straight 45° cut) or **Cove** (hollowed
+  in); the bevel takes the face colour, and it's held to half the depth and to 0.4 of the
+  letters' thinnest stroke (measured across the glyphs), so thin fonts can't cross over
+  themselves. It's always a 3D layer: move it in Z and turn it about X and Y in the Transform
   section (**Turn it in 3D…** in the title settings shows those), animate it with keyframes, put
   a camera move around it, and it keeps its depth of field, opacity, blend mode and effects. At
   Z 0, not turned, its front face is exactly where the flat title's letters would be. Outline,
