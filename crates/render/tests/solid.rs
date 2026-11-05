@@ -295,3 +295,49 @@ fn shapes_fill_by_their_rule_flat_and_extruded() {
     let img = render(&mut c, &spec(frame(true), 30.0), turned, &sc);
     assert!((0..W).any(|x| at(&img, x, cy) == 2), "sides");
 }
+
+/// A 3D model (an OBJ cube with a green material) drawn like 3D text: in its
+/// own colour, as high as `size`, turned to show three lit faces of different
+/// brightness; in the title colour with its own colours off; nothing for a
+/// file that isn't there.
+#[test]
+fn models_draw_in_their_own_colours() {
+    use reelforge_core::ModelSource;
+    let d = std::env::temp_dir().join(format!("rf_model_render_{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("cube.obj"),
+        "mtllib cube.mtl\nusemtl g\nv -1 -1 -1\nv 1 -1 -1\nv 1 1 -1\nv -1 1 -1\nv -1 -1 1\nv 1 -1 1\nv 1 1 1\nv -1 1 1\nf 1 4 3 2\nf 5 6 7 8\nf 1 2 6 5\nf 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("cube.mtl"), "newmtl g\nKd 0.1 0.8 0.1\n").unwrap();
+    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0 };
+    let spec = |own: bool| TitleSpec { size: 100.0, color: [230, 40, 30, 255], shadow: false, model: Some(ModelSource { own_colours: own, ..src.clone() }), ..TitleSpec::default() };
+    // The mesh: its largest side 100 px, centred every way.
+    let m = text_mesh(&spec(true), [W, H]);
+    assert_eq!(m.indices.len(), 36);
+    assert!((m.bounds[3] - m.bounds[1] - 100.0).abs() < 1e-3 && (m.bounds[0] + m.bounds[2]).abs() < 1e-3, "{:?}", m.bounds);
+    assert!((m.depth - 100.0).abs() < 1e-3 && m.mid_z == 0.0);
+    assert!(m.vertices.iter().all(|v| v.pos[2].abs() <= 50.0 + 1e-3));
+    let Some((dev, q)) = headless_device() else { return };
+    let mut c = Compositor::new(&dev, &q);
+    let sc = scene();
+    let mut t = Transform { three_d: true, ..Default::default() };
+    t.orientation = [-20.0, 30.0];
+    let img = render(&mut c, &spec(true), t, &sc);
+    let greens: Vec<u8> = (0..(W * H) as usize).map(|i| &img[i * 4..i * 4 + 4]).filter(|p| p[1] as i32 > p[0] as i32 + 30 && p[1] as i32 > p[2] as i32 + 30).map(|p| p[1]).collect();
+    assert!(greens.len() > 3000, "green cube: {}", greens.len());
+    // Three faces lit differently.
+    let mut levels: Vec<u8> = greens.iter().map(|g| g / 16).collect();
+    levels.sort();
+    levels.dedup();
+    assert!(levels.len() >= 3, "{levels:?}");
+    // One colour: the title's red.
+    let img = render(&mut c, &spec(false), t, &sc);
+    let reds = (0..(W * H) as usize).filter(|i| classify(&img[i * 4..]) == 1).count();
+    assert!(reds > 3000, "{reds}");
+    // Not there: nothing drawn.
+    let gone = TitleSpec { model: Some(ModelSource { path: d.join("nope.obj"), ..src.clone() }), ..spec(true) };
+    assert!(text_mesh(&gone, [W, H]).indices.is_empty());
+    let _ = std::fs::remove_dir_all(&d);
+}

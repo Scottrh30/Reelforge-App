@@ -171,7 +171,7 @@ impl SolidRenderer {
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid"), bind_group_layouts: &[Some(&layout), Some(&shadow_layout)], immediate_size: 0 });
-        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32];
+        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x4];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solid"),
             layout: Some(&pl),
@@ -401,10 +401,10 @@ impl SolidRenderer {
         if self.meshes.get(&key).is_none_or(|m| m.id != mesh.id) {
             use wgpu::util::DeviceExt;
             let bytes = |v: &[f32]| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
-            let flat: Vec<f32> = mesh.vertices.iter().flat_map(|v| [v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2], v.part]).collect();
+            let flat: Vec<f32> = mesh.vertices.iter().flat_map(|v| [v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2], v.part, v.color[0], v.color[1], v.color[2], v.color[3]]).collect();
             let idx: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
             // Buffers can't be empty.
-            let vdata = if flat.is_empty() { vec![0u8; 28] } else { bytes(&flat) };
+            let vdata = if flat.is_empty() { vec![0u8; std::mem::size_of::<Vertex>()] } else { bytes(&flat) };
             let idata = if idx.is_empty() { vec![0u8; 4] } else { idx };
             let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("solid vertices"), contents: &vdata, usage: wgpu::BufferUsages::VERTEX });
             let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("solid indices"), contents: &idata, usage: wgpu::BufferUsages::INDEX });
@@ -419,7 +419,7 @@ impl SolidRenderer {
         // text's middle, so a glow or blur spilling past the letters sits there too.
         let mid = {
             let b = mesh.bounds;
-            let p = [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, mesh.depth * 0.5, 1.0];
+            let p = [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, mesh.mid_z, 1.0];
             let m = &s.space.mvp;
             let c = |i: usize| (0..4).map(|j| m[j][i] * p[j]).sum::<f32>();
             let (z, w) = (c(2), c(3));

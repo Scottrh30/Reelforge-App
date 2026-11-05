@@ -8,6 +8,7 @@
   import { setPanel } from "../lib/session.svelte";
   import EffectsPanel from "./EffectsPanel.svelte";
   import AudioPanel from "./AudioPanel.svelte";
+  import ModelPanel from "./ModelPanel.svelte";
   import TitlePanel from "./TitlePanel.svelte";
   import { tps } from "../lib/session.svelte";
   import { livePump } from "../lib/live";
@@ -307,7 +308,9 @@
       </div>
     {/if}
 
-    {#if ins.title}
+    {#if ins.title?.model}
+      <ModelPanel {ins} />
+    {:else if ins.title}
       <TitlePanel {ins} />
     {/if}
 

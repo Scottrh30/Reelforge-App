@@ -150,6 +150,8 @@ pub struct Inspector {
     pub title: Option<TitleSpec>,
     /// The title's font file couldn't be found (the built-in one is used).
     pub title_missing_font: bool,
+    /// A 3D model title: how many triangles, or why it can't be shown.
+    pub model: Option<ModelInfo>,
     /// The transform gizmo in the viewer (frame pixels), when the layer shows at the playhead.
     pub gizmo: Option<reelforge_engine::gizmo::Geometry>,
     pub audio: Option<ClipAudio>,
@@ -197,6 +199,14 @@ pub struct Inspector {
     pub tracking: Option<f32>,
     /// A tracking run is going on for another clip.
     pub tracking_elsewhere: bool,
+}
+
+/// A 3D model layer's file, as its settings show it.
+#[derive(Serialize)]
+pub struct ModelInfo {
+    pub path: String,
+    pub triangles: usize,
+    pub error: Option<String>,
 }
 
 /// A solved 3D camera, as the Track panel and the Viewer show it.
@@ -629,6 +639,10 @@ pub fn state(e: &Editor) -> State {
             visual,
             title: c.title.clone(),
             title_missing_font: c.title.is_some() && e.preview.title_missing_font(c.id),
+            model: c.title.as_ref().and_then(|t| t.model.as_ref()).map(|m| match reelforge_render::model3d::cached(m) {
+                Ok(md) => ModelInfo { triangles: md.indices.len() / 3, error: None, path: m.path.display().to_string() },
+                Err(err) => ModelInfo { triangles: 0, error: Some(err), path: m.path.display().to_string() },
+            }),
             gizmo: if video { crate::viewer::geometry(e) } else { None },
             audio: (tr.kind == TrackKind::Audio).then(|| c.audio.clone()),
             speed: c.speed,

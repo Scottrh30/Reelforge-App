@@ -26,13 +26,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct Vertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
-    /// 0 front, 1 side, 2 back.
+    /// 0 front, 1 side, 2 back, 3 its own colour (a 3D model's).
     pub part: f32,
+    /// Linear colour, for part 3.
+    pub color: [f32; 4],
 }
 
 pub const PART_FRONT: f32 = 0.0;
 pub const PART_SIDE: f32 = 1.0;
 pub const PART_BACK: f32 = 2.0;
+pub const PART_OWN: f32 = 3.0;
 
 /// Extruded text, ready to draw as a triangle list.
 pub struct TextMesh {
@@ -42,8 +45,10 @@ pub struct TextMesh {
     pub id: u64,
     /// The letters' extent across: min X, min Y, max X, max Y (0 if none).
     pub bounds: [f32; 4],
-    /// How deep the extrusion goes (Z from 0 to this).
+    /// How deep the extrusion goes (Z from 0 to this; a model's from −depth/2 to depth/2).
     pub depth: f32,
+    /// The Z halfway through it (where it casts its shadow from, and where glows sit).
+    pub mid_z: f32,
 }
 
 /// Curves are cut into straight pieces at most this far (canvas pixels) from the curve.
@@ -292,7 +297,46 @@ fn thinnest(glyphs: &[(bool, Vec<Contour>)]) -> f32 {
     best
 }
 
+/// A 3D model as a mesh like 3D text's: its largest side `size` pixels,
+/// centred every way (so it turns about its middle) (the file's +Y up, or +Z, and
+/// facing the viewer along its +Z, or −Y), in its own colours or the face colour.
+fn model_mesh(spec: &TitleSpec, src: &reelforge_core::ModelSource, id: u64) -> TextMesh {
+    let empty = TextMesh { vertices: Vec::new(), indices: Vec::new(), id, bounds: [0.0; 4], depth: 0.0, mid_z: 0.0 };
+    let Ok(m) = crate::model3d::cached(src) else { return empty };
+    // File axes (right-handed, Y up, facing +Z; or Z up, facing −Y) → ours
+    // (X right, Y down, Z away): turns, never mirrors.
+    let axes = |p: [f32; 3]| -> [f32; 3] { if src.z_up { [p[0], -p[2], p[1]] } else { [p[0], -p[1], -p[2]] } };
+    let pts: Vec<[f32; 3]> = m.positions.iter().map(|&p| axes(p)).collect();
+    let (lo, hi) = pts.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(l, h), p| ([l[0].min(p[0]), l[1].min(p[1]), l[2].min(p[2])], [h[0].max(p[0]), h[1].max(p[1]), h[2].max(p[2])]));
+    let ext = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    // `size` is its largest side (so it fits in a box that big).
+    let tall = ext[0].max(ext[1]).max(ext[2]);
+    if !(tall > 0.0 && tall.is_finite()) {
+        return empty;
+    }
+    let k = spec.size.max(1.0) / tall;
+    // Centred every way, so it turns about its middle.
+    let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+    let own = src.own_colours;
+    let vertices: Vec<Vertex> = pts
+        .iter()
+        .zip(&m.normals)
+        .zip(&m.colors)
+        .map(|((p, n), col)| Vertex {
+            pos: [(p[0] - c[0]) * k, (p[1] - c[1]) * k, (p[2] - c[2]) * k],
+            normal: axes(*n),
+            part: if own { PART_OWN } else { PART_FRONT },
+            color: *col,
+        })
+        .collect();
+    let bounds = [(lo[0] - c[0]) * k, (lo[1] - c[1]) * k, (hi[0] - c[0]) * k, (hi[1] - c[1]) * k];
+    TextMesh { vertices, indices: m.indices.clone(), id, bounds, depth: ext[2] * k, mid_z: 0.0 }
+}
+
 fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
+    if let Some(src) = &spec.model {
+        return model_mesh(spec, src, id);
+    }
     let (cx, cy) = (frame[0].max(1) as f32 / 2.0, frame[1].max(1) as f32 / 2.0);
     let depth = spec.extrude.max(0.0);
     let size = spec.size.max(1.0);
@@ -329,7 +373,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
         if ok.is_ok() {
             for (z, normal, part) in [(0.0, [0.0, 0.0, -1.0], PART_FRONT), (depth, [0.0, 0.0, 1.0], PART_BACK)] {
                 let base = vertices.len() as u32;
-                vertices.extend(buf.vertices.iter().map(|p| Vertex { pos: [p[0] - cx, p[1] - cy, z], normal, part }));
+                vertices.extend(buf.vertices.iter().map(|p| Vertex { pos: [p[0] - cx, p[1] - cy, z], normal, part, color: [0.0; 4] }));
                 indices.extend(buf.indices.iter().map(|i| base + i));
             }
         }
@@ -350,7 +394,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
                         let base = vertices.len() as u32;
                         let v = |k: usize, r: &(f32, f32, [f32; 2]), nn: P2| {
                             let p = inset(c, k, r.0);
-                            Vertex { pos: [p[0] - cx, p[1] - cy, r.1], normal: [nn[0] * r.2[0], nn[1] * r.2[0], r.2[1]], part }
+                            Vertex { pos: [p[0] - cx, p[1] - cy, r.1], normal: [nn[0] * r.2[0], nn[1] * r.2[0], r.2[1]], part, color: [0.0; 4] }
                         };
                         vertices.extend([v(i, &w[0], na), v(j, &w[0], nb), v(j, &w[1], nb), v(i, &w[1], na)]);
                         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -371,7 +415,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
     } else {
         vertices.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, v| [b[0].min(v.pos[0]), b[1].min(v.pos[1]), b[2].max(v.pos[0]), b[3].max(v.pos[1])])
     };
-    TextMesh { vertices, indices, id, bounds, depth }
+    TextMesh { vertices, indices, id, bounds, depth, mid_z: depth * 0.5 }
 }
 
 #[cfg(test)]

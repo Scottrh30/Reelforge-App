@@ -362,7 +362,11 @@ fn save(save_as: bool) -> Res<bool> {
 
 #[tauri::command]
 fn import_dialog() -> Res<()> {
-    let Some(paths) = rfd::FileDialog::new().add_filter("Media", &MEDIA_EXTENSIONS).add_filter("All files", &["*"]).pick_files() else { return Ok(()) };
+    let Some(paths) = rfd::FileDialog::new()
+        .add_filter("Media and 3D models", &[&MEDIA_EXTENSIONS[..], &reelforge_core::MODEL_EXTENSIONS[..]].concat())
+        .add_filter("3D models", &reelforge_core::MODEL_EXTENSIONS)
+        .add_filter("All files", &["*"])
+        .pick_files() else { return Ok(()) };
     ed(|e| e.import(&paths))
 }
 
@@ -607,6 +611,13 @@ fn add_title() -> Res<()> {
 #[tauri::command]
 fn add_3d_text() -> Res<()> {
     ed(|e| e.add_3d_text())
+}
+
+/// Pick a 3D model file and add it as a 3D layer at the playhead.
+#[tauri::command]
+fn add_3d_model() -> Res<()> {
+    let Some(path) = rfd::FileDialog::new().add_filter("3D models", &reelforge_core::MODEL_EXTENSIONS).pick_file() else { return Ok(()) };
+    ed(|e| e.add_3d_model(&path))
 }
 
 /// Pick an SVG logo and add it as a 3D shape.
@@ -1405,6 +1416,7 @@ fn main() {
             add_title,
             add_3d_text,
             add_3d_logo,
+            add_3d_model,
             shape_from_mask,
             add_blade_layer,
             add_particles_layer,

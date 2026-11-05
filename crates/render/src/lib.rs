@@ -96,6 +96,7 @@ pub mod plugin;
 pub mod solid;
 pub mod text;
 pub mod text3d;
+pub mod model3d;
 pub use solid::SolidInput;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -1619,7 +1620,7 @@ impl Compositor {
                 if let Some(s) = solids.get(&key) {
                     let b = s.mesh.bounds;
                     let sp = &s.space;
-                    let o = sp.world([(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, s.mesh.depth * 0.5]);
+                    let o = sp.world([(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, s.mesh.mid_z]);
                     let (u, v) = (sp.axes[0], sp.axes[1]);
                     let g = 1.0 / ATLAS_GRID as f32;
                     let tile = [(k as u32 % ATLAS_GRID) as f32 * g, (k as u32 / ATLAS_GRID) as f32 * g, g, 0.0];

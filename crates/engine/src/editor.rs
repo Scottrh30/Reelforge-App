@@ -619,6 +619,14 @@ impl Editor {
 
     /// Import media files (each becomes one undo step).
     pub fn import(&mut self, paths: &[PathBuf]) {
+        // 3D models become 3D model layers at the playhead.
+        let (models, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.iter().cloned().partition(|p| reelforge_core::is_model_file(p));
+        for m in &models {
+            self.add_3d_model(m);
+        }
+        if paths.is_empty() {
+            return;
+        }
         let mut ok = 0;
         // Store full paths, so the project works wherever it's opened from.
         let paths: Vec<PathBuf> = paths.iter().map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone())).collect();
@@ -1531,13 +1539,30 @@ impl Editor {
     }
 
     fn add_title_kind(&mut self, solid: bool) {
-        self.add_title_full(solid, None);
+        self.add_title_full(solid, None, None);
     }
 
     /// A 3D shape: `shape` extruded like 3D text, `height` pixels high
     /// (default: 40% of the frame) at `position` (from the frame's centre).
     pub fn add_3d_shape(&mut self, shape: reelforge_core::Shape, place: Option<([f32; 2], f32)>) {
-        self.add_title_full(true, Some((std::sync::Arc::new(shape), place)));
+        self.add_title_full(true, Some((std::sync::Arc::new(shape), place)), None);
+    }
+
+    /// A 3D model file (OBJ, glTF, FBX, USD, STL, PLY…) as a 3D layer at
+    /// the playhead, half the frame high, turned a little so its depth shows.
+    pub fn add_3d_model(&mut self, path: &Path) {
+        let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+        let mut src = reelforge_core::ModelSource { path: path.clone(), z_up: false, own_colours: true, rev: 0 };
+        let name = path.file_name().map_or("model".into(), |n| n.to_string_lossy().into_owned());
+        match reelforge_render::model3d::cached(&src) {
+            Ok(m) => {
+                src.z_up = m.z_up;
+                let tris = m.indices.len() / 3;
+                self.add_title_full(true, None, Some(src));
+                self.status = format!("{name}: a 3D model ({tris} triangles). Move and turn it in Transform; light it with lights; size and colours in its settings");
+            }
+            Err(e) => self.status = format!("Couldn't use {name}: {e}"),
+        }
     }
 
     /// An SVG logo as a 3D shape.
@@ -1574,7 +1599,7 @@ impl Editor {
         self.status = format!("{name}: a 3D shape from the mask (set its depth, bevel and colours in Title)");
     }
 
-    fn add_title_full(&mut self, solid: bool, shape: Option<(std::sync::Arc<reelforge_core::Shape>, Option<([f32; 2], f32)>)>) {
+    fn add_title_full(&mut self, solid: bool, shape: Option<(std::sync::Arc<reelforge_core::Shape>, Option<([f32; 2], f32)>)>, model: Option<reelforge_core::ModelSource>) {
         self.commit_live_edit();
         let s = self.seq();
         let rate = s.frame_rate;
@@ -1604,7 +1629,15 @@ impl Editor {
         };
         let id = ClipId(self.project.alloc_id());
         let mut place = None;
-        if let Some((sh, at)) = &shape {
+        let is_model = model.is_some();
+        if let Some(m) = model {
+            spec.text = m.path.file_stem().map_or("3D model".into(), |n| n.to_string_lossy().into_owned());
+            spec.model = Some(m);
+            spec.size = (frame_h * 0.5).round();
+            spec.shadow = false;
+            // (Used when its own colours are off.)
+            spec.color = [200, 200, 200, 255];
+        } else if let Some((sh, at)) = &shape {
             spec.text = sh.name.clone();
             spec.shape = Some(sh.clone());
             spec.size = at.map_or((frame_h * 0.4).round(), |a| a.1.round());
@@ -1624,7 +1657,7 @@ impl Editor {
         let mut clip = Clip::new_title(id, start, dur, spec);
         if solid {
             clip.transform.three_d = true;
-            clip.transform.orientation = [-15.0, 25.0];
+            clip.transform.orientation = if is_model { [-10.0, 30.0] } else { [-15.0, 25.0] };
         }
         if let Some(p) = place {
             // Where the mask was, facing the camera like it.
@@ -1632,7 +1665,7 @@ impl Editor {
             clip.transform.orientation = [0.0, 0.0];
         }
         cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
-        self.execute(Box::new(Batch { name: if shape.is_some() { "Add 3D shape" } else if solid { "Add 3D text" } else { "Add title" }.into(), cmds }));
+        self.execute(Box::new(Batch { name: if is_model { "Add 3D model" } else if shape.is_some() { "Add 3D shape" } else if solid { "Add 3D text" } else { "Add title" }.into(), cmds }));
         self.follow_new_layer(track);
         self.select_only(Some(id));
         self.status = if solid { "Added 3D text: type its text and set its depth in the Controls panel" } else { "Added a title: type its text in the Controls panel" }.into();
@@ -4083,6 +4116,38 @@ mod tests {
         // Older settings without it read fine.
         let old: Prefs = serde_json::from_str("{}").unwrap();
         assert!(old.fx_recent.is_empty());
+    }
+
+/// 3D models: importing a model file makes a turned 3D model layer (one
+    /// undo step) with the file's up axis, alongside ordinary media; a bad
+    /// file says why and adds nothing.
+    #[test]
+    fn model_files_become_3d_model_layers() {
+        let mut e = editor();
+        let dir = std::env::temp_dir().join(format!("rf_model_import_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("Part.stl");
+        std::fs::write(&stl, "solid p\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid p\n").unwrap();
+        let clips = |e: &Editor| e.seq().tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+        let before = clips(&e);
+        e.import(&[stl.clone()]);
+        let id = e.selection.unwrap();
+        let (_, c) = e.seq().find_clip(id).unwrap();
+        let spec = c.title.as_ref().unwrap();
+        let m = spec.model.as_ref().unwrap();
+        assert!(m.z_up && m.own_colours && m.path.is_absolute(), "{m:?}");
+        assert_eq!(spec.label(), "Part.stl");
+        assert!(spec.is_3d() && c.transform.three_d && c.transform.orientation != [0.0, 0.0]);
+        assert!(e.status.contains("1 triangles") || e.status.contains("triangles"), "{}", e.status);
+        assert_eq!(clips(&e), before + 1);
+        assert!(e.project.media.is_empty(), "not put in the media bin");
+        e.undo();
+        assert_eq!(clips(&e), before);
+        std::fs::write(&stl, "nonsense").unwrap();
+        e.add_3d_model(&stl);
+        assert!(e.status.starts_with("Couldn't use Part.stl"), "{}", e.status);
+        assert_eq!(clips(&e), before);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

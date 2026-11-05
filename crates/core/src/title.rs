@@ -124,6 +124,10 @@ pub struct TitleSpec {
     /// centred, `size` pixels high, in the text colour; extruded like 3D text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<std::sync::Arc<Shape>>,
+    /// A 3D model (OBJ, glTF, FBX, USD, STL, PLY…) instead of the text:
+    /// always 3D, `size` pixels high, lit and shadowed like 3D text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelSource>,
     /// Letters, words or lines coming in (and going out) one after another.
     #[serde(default, skip_serializing_if = "TextAnim::is_none")]
     pub anim: TextAnim,
@@ -186,6 +190,37 @@ impl Shape {
     pub fn placed(&self, centre: [f32; 2], height: f32) -> Vec<ShapePath> {
         self.paths.iter().map(|p| ShapePath { contours: p.contours.iter().map(|k| k.iter().map(|q| [centre[0] + q[0] * height, centre[1] + q[1] * height]).collect()).collect(), even_odd: p.even_odd }).collect()
     }
+}
+
+/// A 3D model file a title shows.
+#[derive(Clone, Debug, PartialEq, Hash, Serialize, Deserialize)]
+pub struct ModelSource {
+    pub path: std::path::PathBuf,
+    /// Up is the file's Z axis (CAD, 3D printing, Blender's own axes), not Y.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub z_up: bool,
+    /// Use the model's own colours (materials, vertex colours); otherwise the title colour.
+    #[serde(default = "yes")]
+    pub own_colours: bool,
+    /// Bumped to read the file again (after it changed on disk).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub rev: u32,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+/// File types read as 3D models.
+pub const MODEL_EXTENSIONS: [&str; 10] = ["obj", "gltf", "glb", "fbx", "usd", "usda", "usdc", "usdz", "stl", "ply"];
+
+/// Whether `path` is a 3D model file (by its extension).
+pub fn is_model_file(path: &std::path::Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| MODEL_EXTENSIONS.contains(&e.to_lowercase().as_str()))
 }
 
 /// The shape of 3D text's bevelled edges.
@@ -340,6 +375,7 @@ impl Default for TitleSpec {
             bevel: 0.0,
             bevel_style: BevelStyle::Round,
             shape: None,
+            model: None,
             anim: TextAnim::default(),
         }
     }
@@ -360,7 +396,7 @@ impl TitleSpec {
 
     /// Extruded into solid 3D letters.
     pub fn is_3d(&self) -> bool {
-        self.extrude > 0.0
+        self.extrude > 0.0 || self.model.is_some()
     }
 
     /// First line of the text, for labels.
@@ -368,6 +404,9 @@ impl TitleSpec {
         let first = self.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
         if let Some(s) = &self.shape {
             return s.name.clone();
+        }
+        if let Some(m) = &self.model {
+            return m.path.file_name().map_or("3D model".into(), |n| n.to_string_lossy().into_owned());
         }
         if first.is_empty() { "(empty title)".into() } else { first.to_string() }
     }
@@ -506,6 +545,7 @@ impl TitleSpec {
         (self.color, self.outline_color, self.shadow_color, self.background_color).hash(&mut h);
         (self.align, self.shadow, self.background, self.side_color, self.bevel_style).hash(&mut h);
         self.shape.as_ref().map(|s| s.id).hash(&mut h);
+        self.model.hash(&mut h);
         if !self.anim.is_none() {
             // (Its state at a moment is in `content_hash_at`.)
             (self.anim.kind, self.anim.stagger.to_bits(), self.anim.length.to_bits(), self.anim.delay.to_bits(), self.anim.out).hash(&mut h);

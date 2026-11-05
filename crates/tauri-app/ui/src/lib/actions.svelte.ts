@@ -70,6 +70,7 @@ export const actions = {
   addTitle: () => run(api.addTitle()),
   add3dText: () => run(api.add3dText()),
   add3dLogo: () => run(api.add3dLogo()),
+  add3dModel: () => run(api.add3dModel()),
   exportOpen() {
     app.exportOpen = true;
   },

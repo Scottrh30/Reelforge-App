@@ -279,6 +279,7 @@ export interface Inspector {
   name: string;
   kind: ClipKind;
   title_missing_font: boolean;
+  model: { path: string; triangles: number; error: string | null } | null;
   gizmo: Gizmo | null;
   track: string;
   start: Ticks;
@@ -869,6 +870,7 @@ export const api = {
   addTitle: () => invoke("add_title"),
   add3dText: () => invoke("add_3d_text"),
   add3dLogo: () => invoke("add_3d_logo"),
+  add3dModel: () => invoke("add_3d_model"),
   shapeFromMask: (id: number, index: number) => invoke("shape_from_mask", { id, index }),
   addBladeLayer: () => invoke("add_blade_layer"),
   addParticlesLayer: () => invoke("add_particles_layer"),
