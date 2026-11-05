@@ -196,6 +196,30 @@ fn find_crashed(dir: &Path) -> Vec<Recovery> {
 }
 
 /// Keep only the newest `keep` autosave files.
+/// The autosaves kept: how many, and their size (bytes).
+pub fn autosave_usage() -> (usize, u64) {
+    usage_in(&autosave_dir())
+}
+
+fn usage_in(dir: &Path) -> (usize, u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return (0, 0) };
+    rd.flatten().filter_map(|e| e.metadata().ok().filter(|m| m.is_file())).fold((0, 0), |(n, b), m| (n + 1, b + m.len()))
+}
+
+/// Delete every autosave but `keep` (this session's): (files, bytes) deleted.
+pub fn delete_old_autosaves(keep: Option<&Path>) -> (usize, u64) {
+    delete_old_in(&autosave_dir(), keep)
+}
+
+fn delete_old_in(dir: &Path, keep: Option<&Path>) -> (usize, u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return (0, 0) };
+    rd.flatten()
+        .filter(|e| keep.is_none_or(|k| e.path() != k))
+        .filter_map(|e| Some((e.path(), e.metadata().ok().filter(|m| m.is_file())?.len())))
+        .filter(|(p, _)| std::fs::remove_file(p).is_ok())
+        .fold((0, 0), |(n, b), (_, len)| (n + 1, b + len))
+}
+
 fn prune_autosaves(keep: usize) {
     let Ok(rd) = std::fs::read_dir(autosave_dir()) else { return };
     let mut files: Vec<(SystemTime, PathBuf)> = rd
@@ -251,6 +275,19 @@ pub fn find_by_name(dir: &Path, missing: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn old_autosaves_can_be_deleted_but_this_sessions() {
+        let dir = std::env::temp_dir().join(format!("rf_autosaves_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, len) in [("a.rfproj", 10), ("b.rfproj", 20), ("mine.rfproj", 40)] {
+            std::fs::write(dir.join(n), vec![0u8; len]).unwrap();
+        }
+        assert_eq!(usage_in(&dir), (3, 70));
+        assert_eq!(delete_old_in(&dir, Some(&dir.join("mine.rfproj"))), (2, 30));
+        assert_eq!(usage_in(&dir), (1, 40));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     #[test]

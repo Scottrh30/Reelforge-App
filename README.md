@@ -547,7 +547,7 @@ What works now:
   in Settings) empties both
 - **Low disk space warning**: every 15 seconds Reelforge looks at how much space is free where
   it writes by itself (rendered previews, proxies, autosaves, the project's folder). Under
-  2 GB, a red strip under the menu bar says so, with buttons to **Clear rendered previews**
+  2 GB (**Warn below** in Settings → Disk; 0 never warns), a red strip under the menu bar says so, with buttons to **Clear rendered previews**
   (with their size on disk) and **Delete unused proxies** (proxies of footage not in this
   project, with how many and their size); ✕ hides it until space runs short again. While it's
   short, rendered previews aren't kept on disk (they still are in memory) and proxies aren't
@@ -557,6 +557,10 @@ What works now:
   256 MB to spare isn't started; the message says how much it needs and how much is free.
   A running export whose drive gets within 64 MB of full stops cleanly and says so (Retry
   once there's room), rather than failing part-way with a cryptic error
+- **Disk** (Settings): how much is free on the drive Reelforge keeps its files on, and what
+  its rendered previews, proxies and autosaves take, each with a button: **Clear** the rendered
+  previews, **Delete unused** proxies (those of footage not in this project; how many is shown)
+  and **Delete old** autosaves (all but this session's)
 - **Autosave and crash recovery**: the project is autosaved every 2 minutes (when it has
   changed). If Reelforge doesn't close properly, it offers to recover that work the next time
   it starts; **File > Open an autosave…** opens older ones. Saving always writes a new file and

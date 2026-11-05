@@ -82,6 +82,8 @@ pub struct Prefs {
     /// Effects starred as favourites (an effect's kind, or `plugin:` and the
     /// plugin's id), listed first in the Effects panel and browser.
     pub fx_favourites: Vec<String>,
+    /// Warn when the drive Reelforge saves to has less than this many GB free (0: never).
+    pub disk_warn_gb: f32,
     /// Effects added lately, newest first (as `fx_favourites` names them), at most `RECENT_FX`.
     pub fx_recent: Vec<String>,
 }
@@ -142,6 +144,7 @@ impl Default for Prefs {
             start_screen: true,
             fx_favourites: Vec::new(),
             fx_recent: Vec::new(),
+            disk_warn_gb: 2.0,
         }
     }
 }
@@ -167,6 +170,11 @@ impl Editor {
         self.apply_render_disk();
         self.playback.scrub_audio = self.prefs.scrub_audio;
         reelforge_render::set_shadow_quality(self.prefs.shadow_quality as usize);
+        // (Tests don't depend on the machine's free space; the disk test sets it.)
+        if !cfg!(test) {
+            self.disk_low_at = (self.prefs.disk_warn_gb.max(0.0) as f64 * (1u64 << 30) as f64) as u64;
+            self.disk_checked = None;
+        }
         reelforge_media::hw::set_enabled(self.prefs.hw_decode);
         reelforge_media::codecs::set_enabled(self.prefs.native_decoders);
         reelforge_core::frame::zero_copy::set_enabled(self.prefs.zero_copy);

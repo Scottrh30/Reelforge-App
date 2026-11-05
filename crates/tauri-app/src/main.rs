@@ -416,6 +416,12 @@ struct SettingsInfo {
     proxy_bytes: u64,
     proxy_dir: String,
     autosave_dir: String,
+    /// Disk: free space where the app saves, and what could be cleared.
+    free_bytes: u64,
+    unused_proxies: usize,
+    unused_proxy_bytes: u64,
+    autosaves: usize,
+    autosave_bytes: u64,
     /// The codecs Reelforge decodes itself.
     native: Vec<&'static str>,
 }
@@ -426,6 +432,8 @@ fn settings_info() -> Res<SettingsInfo> {
         let (used, frames, hits) = reelforge_media::FrameCache::global().stats();
         let (rused, rframes) = e.render_cache.stats();
         let (dused, dframes) = e.render_cache.disk.as_ref().map_or((0, 0), |d| d.stats());
+        let unused = reelforge_engine::disk::unused_proxies(&e.project);
+        let (autosaves, autosave_bytes) = reelforge_engine::safety::autosave_usage();
         let dir = reelforge_media::proxy::cache_dir().join("proxies");
         let (proxy_bytes, proxies) = std::fs::read_dir(&dir)
             .map(|rd| rd.flatten().filter_map(|f| f.metadata().ok()).filter(|m| m.is_file()).fold((0, 0), |(b, n), m| (b + m.len(), n + 1)))
@@ -445,6 +453,11 @@ fn settings_info() -> Res<SettingsInfo> {
             proxy_bytes,
             proxy_dir: dir.display().to_string(),
             autosave_dir: reelforge_engine::safety::autosave_dir().display().to_string(),
+            free_bytes: reelforge_engine::disk::free_bytes(&reelforge_media::proxy::cache_dir()).unwrap_or(0),
+            unused_proxies: unused.len(),
+            unused_proxy_bytes: unused.iter().map(|u| u.1).sum(),
+            autosaves,
+            autosave_bytes,
             native: reelforge_media::codecs::Codec::ALL.into_iter().filter(|c| c.available()).map(|c| c.label()).collect(),
         }
     })

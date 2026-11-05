@@ -35,6 +35,11 @@
       ask.resolve(null);
     } else if (app.settingsOpen) app.settingsOpen = false;
   }
+  const size = (b: number) => (b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `${Math.round(b / (1 << 20))} MB`);
+  async function freeDisk(what: "render" | "proxies" | "autosaves") {
+    await run(api.diskFree(what));
+    info = await api.settingsInfo();
+  }
 </script>
 
 <svelte:window onkeydown={key} />
@@ -129,6 +134,23 @@
       <div class="row">
         <button onclick={() => info && run(api.openFolder(info.autosave_dir))}>Open the autosave folder</button>
       </div>
+      <h3>Disk</h3>
+      {#if info}
+        <p class="info">{size(info.free_bytes)} free on the drive where Reelforge keeps its files</p>
+        <div class="disk">
+          <span>Rendered previews</span><span class="n">{info.render_disk_mb >= 1024 ? `${(info.render_disk_mb / 1024).toFixed(1)} GB` : `${info.render_disk_mb} MB`}</span>
+          <button class="tiny" disabled={!info.render_disk_frames && !info.render_frames} onclick={() => freeDisk("render")} title="Forget every rendered preview, in memory and on disk (made again when needed)">Clear</button>
+          <span>Proxies</span><span class="n">{size(info.proxy_bytes)}</span>
+          <button class="tiny" disabled={!info.unused_proxies} onclick={() => freeDisk("proxies")} title="Delete the proxies of footage that isn't in this project ({info.unused_proxies}, {size(info.unused_proxy_bytes)}); others' are made again if those projects are opened">Delete {info.unused_proxies} unused</button>
+          <span>Autosaves</span><span class="n">{info.autosaves} · {size(info.autosave_bytes)}</span>
+          <button class="tiny" disabled={info.autosaves <= 1} onclick={() => freeDisk("autosaves")} title="Delete every autosave but this session's (crash recovery for earlier sessions goes with them)">Delete old</button>
+        </div>
+      {/if}
+      <label class="field" title="When the drive Reelforge saves to (rendered previews, proxies, autosaves, the project) has less free than this, a warning offers to clear space, and previews and proxies stop filling it. 0 never warns.">
+        <span>Warn below</span>
+        <div class="row"><input type="number" min="0" max="1000" step="0.5" bind:value={prefs.disk_warn_gb} style="width:80px" /> GB free {prefs.disk_warn_gb === 0 ? "(never)" : ""}</div>
+      </label>
+
       <div class="buttons">
         <button onclick={() => (app.settingsOpen = false)}>Cancel</button>
         <button class="primary" onclick={async () => (await run(api.setPrefs(prefs!)), (app.settingsOpen = false))}>Save settings</button>
@@ -281,5 +303,18 @@
     padding: 0 6px;
     margin-left: 6px;
     font-size: calc(11px * var(--text-scale));
+  }
+  .disk {
+    display: grid;
+    grid-template-columns: auto auto auto;
+    justify-content: start;
+    align-items: center;
+    gap: 4px 14px;
+    margin: 4px 0 8px;
+  }
+  .disk .n {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 </style>

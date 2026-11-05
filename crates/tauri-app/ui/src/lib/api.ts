@@ -416,6 +416,8 @@ export interface Prefs {
   render_cache_disk_mb: number;
   /// 3D shadows: 0 Low, 1 Standard, 2 High.
   shadow_quality: number;
+  /// Warn below this many GB free (0: never).
+  disk_warn_gb: number;
   export_presets: UserPreset[];
   scrub_audio: boolean;
   timeline_thumbnails: boolean;
@@ -453,6 +455,11 @@ export interface SettingsInfo {
   proxy_bytes: number;
   proxy_dir: string;
   autosave_dir: string;
+  free_bytes: number;
+  unused_proxies: number;
+  unused_proxy_bytes: number;
+  autosaves: number;
+  autosave_bytes: number;
   native: string[];
 }
 
@@ -827,7 +834,7 @@ export interface AttrSet {
 
 export const api = {
   tick: () => invoke<Live>("tick"),
-  diskFree: (what: "render" | "proxies") => invoke("disk_free", { what }),
+  diskFree: (what: "render" | "proxies" | "autosaves") => invoke("disk_free", { what }),
   diskDismiss: () => invoke("disk_dismiss"),
   state: () => invoke<State>("get_state"),
   frame: (max_w: number, max_h: number, have: number, jpeg: boolean) => invoke<ArrayBuffer>("frame", { maxW: max_w, maxH: max_h, have, jpeg }),
