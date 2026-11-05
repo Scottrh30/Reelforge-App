@@ -303,6 +303,14 @@ What works now:
     (its biggest area) into a new freehand mask, with as few points as the outline needs. Edit
     it, track it (Track shape), or set its Use to a garbage matte to protect a subject the key
     eats into
+  - **Key cleaner** (Keying): put it after a key to tidy what's left. **Spill removal** takes
+    the screen's colour out of hair, edges and anything lit by the screen, set by **Screen hue**
+    (green 120°, blue 240°, with a swatch): a colour leaning towards the screen is pulled back
+    to the hues either side of it, so a green-tinged grey goes grey while yellow and cyan stay as
+    they are, and its brightness is kept. **Spill tolerance** leaves faint tints alone. **Fill
+    holes** closes pinholes in the matte up to that size (grow, then shrink back) and **Remove
+    specks** wipes out stray dots of leftover screen (shrink, then grow back); neither moves the
+    subject's edge. **View → Matte** shows the cleaned matte
   - **Garbage mattes**: set a mask's **Use** to **Garbage matte: keys keep what's inside**
     and every key on the clip keeps the layer inside it, however much it looks like the screen
     (a green shirt, a dark logo on a luma key); it doesn't cut the layer, and shows dashed in

@@ -31,6 +31,9 @@ pub enum EffectKind {
     /// Makes transparent whatever matches a clean plate (a picture of the
     /// background alone, in `Effect::data`).
     DifferenceKey,
+    /// Tidies a keyed layer: takes the screen's colour out of what's left
+    /// (spill), fills small holes in the matte and removes specks.
+    KeyCleaner,
     /// Darkens the edges of the layer.
     Vignette,
     /// Input and output black/white points and gamma.
@@ -295,6 +298,14 @@ const CHROMA_KEY: [ParamSpec; 9] = [
     MATTE[3],
     MATTE[4],
 ];
+const KEY_CLEANER: [ParamSpec; 6] = [
+    spec("Screen hue", 120.0, 0.0, 360.0, "°", 0.5),
+    spec("Spill removal", 80.0, 0.0, 100.0, " %", 0.5),
+    spec("Spill tolerance", 2.0, 0.0, 50.0, " %", 0.1),
+    spec("Fill holes", 0.0, 0.0, 20.0, " px", 0.05),
+    spec("Remove specks", 0.0, 0.0, 20.0, " px", 0.05),
+    choice("View", &["Result", "Matte (black and white)"]),
+];
 const LEVELS: [ParamSpec; 5] = [
     spec("Input black", 0.0, 0.0, 254.0, "", 0.5),
     spec("Input white", 255.0, 1.0, 255.0, "", 0.5),
@@ -545,6 +556,17 @@ pub mod neon {
     /// Where the edges come from (the Edges menu).
     pub const SOURCES: [&str; 2] = ["Shape (transparency)", "Picture (brightness)"];
 }
+/// Key cleaner parameter indices.
+pub mod cleaner {
+    /// The screen's hue (green 120°, blue 240°).
+    pub const HUE: usize = 0;
+    pub const SPILL: usize = 1;
+    /// Spill weaker than this is left alone (protects greys and skin).
+    pub const TOLERANCE: usize = 2;
+    pub const HOLES: usize = 3;
+    pub const SPECKS: usize = 4;
+    pub const VIEW: usize = 5;
+}
 /// Halftone parameter indices.
 pub mod halftone {
     pub const STYLE: usize = 0;
@@ -690,7 +712,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 23] = [
+    pub const ALL: [EffectKind; 24] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -700,6 +722,7 @@ impl EffectKind {
         EffectKind::ChromaKey,
         EffectKind::LumaKey,
         EffectKind::DifferenceKey,
+        EffectKind::KeyCleaner,
         EffectKind::Glow,
         EffectKind::DropShadow,
         EffectKind::Vignette,
@@ -723,6 +746,7 @@ impl EffectKind {
             EffectKind::ChromaKey => "Chroma key",
             EffectKind::LumaKey => "Luma key",
             EffectKind::DifferenceKey => "Difference key",
+            EffectKind::KeyCleaner => "Key cleaner",
             EffectKind::Vignette => "Vignette",
             EffectKind::Levels => "Levels",
             EffectKind::Curves => "Curves",
@@ -753,7 +777,7 @@ impl EffectKind {
         match self {
             EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
-            EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey => EffectCategory::Keying,
+            EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
@@ -788,6 +812,7 @@ impl EffectKind {
             EffectKind::Glitch => "Digital glitches: slices and blocks jump sideways, colours split and scan lines flicker.",
             EffectKind::LightLeaks => "Soft blooms of warm coloured light drifting in from the edges, like light leaking into a film camera.",
             EffectKind::Crt => "An old TV or a worn tape: the bulging glass and scan lines of a CRT, a phosphor mask, VHS colour bleed, tracking wobble, a rolling tracking band and snow.",
+            EffectKind::KeyCleaner => "Tidies a keyed layer, after the key: takes the screen's green or blue out of hair and edges (spill), fills small holes in the matte and wipes out stray specks.",
             EffectKind::Halftone => "The picture printed as a screen of dots or lines, like a newspaper photo or a comic: black and white, four-colour CMYK, or dots of its own colour.",
             EffectKind::NeonEdges => "Glowing neon tubes along the edges of a title, logo or keyed subject (or the edges in the picture): a hot core, a coloured glow, and a flicker if you like.",
             EffectKind::Camera => "The 3D camera: where it is, what it looks at, its field of view and depth of field.",
@@ -803,6 +828,7 @@ impl EffectKind {
             EffectKind::ChromaKey => &CHROMA_KEY,
             EffectKind::LumaKey => &LUMA_KEY,
             EffectKind::DifferenceKey => &DIFFERENCE_KEY,
+            EffectKind::KeyCleaner => &KEY_CLEANER,
             EffectKind::Vignette => &VIGNETTE,
             EffectKind::Levels => &LEVELS,
             EffectKind::Curves => &CURVES,
@@ -847,6 +873,7 @@ impl EffectKind {
             EffectKind::ChromaKey => &[(0, "Key"), (4, "Matte")],
             EffectKind::LumaKey => &[(0, "Key"), (3, "Matte")],
             EffectKind::DifferenceKey => &[(0, "Key"), (2, "Matte")],
+            EffectKind::KeyCleaner => &[(0, "Spill"), (3, "Matte")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows")],
             _ => &[],
         }
@@ -923,6 +950,7 @@ impl EffectValues {
             EffectKind::Glitch => v[glitch::AMOUNT] == 0.0,
             EffectKind::LightLeaks => v[leaks::INTENSITY] == 0.0,
             EffectKind::Halftone => v[halftone::MIX] == 0.0,
+            EffectKind::KeyCleaner => v[cleaner::SPILL] == 0.0 && v[cleaner::HOLES] < 0.01 && v[cleaner::SPECKS] < 0.01 && v[cleaner::VIEW] == 0.0,
             EffectKind::Crt => {
                 v[crt::CURVATURE] == 0.0
                     && v[crt::SCANLINES] == 0.0

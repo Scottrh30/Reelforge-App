@@ -181,6 +181,8 @@ mod tests {
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("reelforge-testkit-{tag}-{}", std::process::id()));
+        // A leftover from an earlier run with the same process id would get in the way.
+        let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
     }

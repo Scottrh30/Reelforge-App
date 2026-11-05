@@ -241,6 +241,37 @@ fn fs_key_soft(in: VsOut) -> @location(0) vec4<f32> {
     return vec4(c.rgb, sum / total);
 }
 
+// Key cleaner, spill: p0 = (screen hue°, removal %, tolerance %, -), p1.y =
+// view (1 the matte), p1.z = 1 to output straight colour with the matte in
+// alpha (for the hole and speck passes that follow). On gamma-encoded colour,
+// as fs_key: a colour leaning towards the screen is pulled back, along the
+// screen's direction, to the hues about 53° either side of it (as far as
+// yellow and cyan are from green in this plane: so pure screen green
+// goes grey and yellow stays yellow), keeping its lightness.
+@fragment
+fn fs_key_clean(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let g = pow(max(unpremul(c), vec3(0.0)), vec3(1.0 / 2.2));
+    let y = dot(g, LUMA);
+    let k = normalize(chroma(hue_rgb(fx.p0.x)));
+    let cc = chroma(g);
+    let along = dot(cc, k);
+    let across = abs(cc.x * k.y - cc.y * k.x);
+    let spill = max(along - across * 0.75 - fx.p0.z / 100.0 * 0.5, 0.0);
+    let c2 = cc - k * spill * (fx.p0.y / 100.0);
+    let r = y + 1.5748 * c2.y;
+    let b = y + 1.8556 * c2.x;
+    let gg = (y - 0.2126 * r - 0.0722 * b) / 0.7152;
+    let lin = pow(max(vec3(r, gg, b), vec3(0.0)), vec3(2.2));
+    if (fx.p1.z > 0.5) {
+        return vec4(lin, c.a);
+    }
+    if (fx.p1.y > 0.5) {
+        return key_matte(c.a);
+    }
+    return vec4(lin * c.a, c.a);
+}
+
 // The keyed layer from straight colour and matte: p2.x = view (see fs_key).
 @fragment
 fn fs_key_out(in: VsOut) -> @location(0) vec4<f32> {

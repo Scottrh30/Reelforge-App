@@ -1199,6 +1199,54 @@ fn luma_key_removes_dark_or_light() {
     assert!(row[12] < 10 && row[13] > 245 && row[18] > 245 && row[19] < 10, "choke: {row:?}");
 }
 
+/// Key cleaner: green spill goes from a grey (yellow is left alone), a
+/// pinhole in the matte is filled and a lone speck removed, with the
+/// subject's edge where it was.
+#[test]
+fn key_cleaner_removes_spill_holes_and_specks() {
+    use reelforge_core::effects::cleaner;
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    // A 16×16 square at 8–23 (green-tinted grey on the left, yellow on the
+    // right) with a pinhole at 16,16, and a speck at 2,2, on nothing.
+    let mut img = Vec::new();
+    for y in 0..32 {
+        for x in 0..32 {
+            let square = (8..24).contains(&x) && (8..24).contains(&y) && (x, y) != (16, 16);
+            img.extend(if (x, y) == (2, 2) {
+                [200, 200, 200, 255]
+            } else if square && x < 16 {
+                [110, 170, 110, 255]
+            } else if square {
+                [220, 220, 30, 255]
+            } else {
+                [0, 0, 0, 0]
+            });
+        }
+    }
+    let mut n = 90;
+    let mut shot = |set: &[(usize, f32)]| {
+        n += 1;
+        let fg = layer(n, &img, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+        c.render([32, 32], &[full(1, &red, [32, 32]), with_fx(fg, vec![fx(EffectKind::KeyCleaner, set)])]);
+        c.read_output().unwrap()
+    };
+    let r = shot(&[]);
+    let grey = px(&r, 32, 11, 12);
+    assert!((grey[1] as i32 - grey[0] as i32) < 20 && (grey[1] as i32 - grey[2] as i32) < 20, "spill left: {grey:?}");
+    assert!(grey[1] > 110 && grey[1] < 170, "lightness kept: {grey:?}");
+    assert!(near(px(&r, 32, 20, 12), [220, 220, 30]), "yellow changed: {:?}", px(&r, 32, 20, 12));
+    // Nothing done to the matte by default.
+    assert!(near(px(&r, 32, 16, 16), [255, 0, 0]) && near(px(&r, 32, 2, 2), [200, 200, 200]));
+    let r = shot(&[(cleaner::HOLES, 2.0), (cleaner::SPECKS, 2.0)]);
+    assert!(px(&r, 32, 16, 16)[1] > 150, "hole filled: {:?}", px(&r, 32, 16, 16));
+    assert!(near(px(&r, 32, 2, 2), [255, 0, 0]), "speck left: {:?}", px(&r, 32, 2, 2));
+    assert!(near(px(&r, 32, 7, 12), [255, 0, 0]) && !near(px(&r, 32, 8, 12), [255, 0, 0]) && near(px(&r, 32, 24, 12), [255, 0, 0]), "edge moved");
+    let m = shot(&[(cleaner::HOLES, 2.0), (cleaner::VIEW, 1.0)]);
+    assert!(near(px(&m, 32, 16, 16), [255, 255, 255]) && near(px(&m, 32, 4, 4), [0, 0, 0]));
+    assert!(fx(EffectKind::KeyCleaner, &[(cleaner::SPILL, 0.0)]).is_identity());
+}
+
 /// Difference key: whatever matches the clean plate goes; what differs stays.
 #[test]
 fn difference_key_removes_what_matches_the_plate() {

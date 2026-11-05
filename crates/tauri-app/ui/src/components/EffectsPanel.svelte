@@ -211,7 +211,7 @@
                   </select>
                 {:else}
                   <NumberField label={p.name} value={value(i, pi, p)} min={p.min} max={p.max} step={p.step} digits={p.decimals} suffix={p.suffix} oninput={(v) => set(i, pi, v)} oncommit={commit} />
-                  {#if fx.kind === "ChromaKey" && pi === 0}
+                  {#if (fx.kind === "ChromaKey" || fx.kind === "KeyCleaner") && pi === 0}
                     <span class="swatch" style="background:hsl({value(i, pi, p)} 100% 50%)" title="The colour being keyed out"></span>
                   {/if}
                 {/if}
