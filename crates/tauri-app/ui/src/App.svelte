@@ -3,6 +3,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { app, start, run } from "./lib/session.svelte";
+  import DiskWarning from "./components/DiskWarning.svelte";
   import { api } from "./lib/api";
   import { onKey, question, checkUnsaved } from "./lib/actions.svelte";
   import { hitTrack } from "./lib/timeline.svelte";
@@ -103,6 +104,7 @@
 
 <div class="app">
   <MenuBar />
+  <DiskWarning />
   <div class="work">
     <div class="upper" style="flex: 1 1 0">
       {#if leftShown.length}

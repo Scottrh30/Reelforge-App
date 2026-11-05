@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod collect;
+pub mod disk;
 pub mod editor;
 pub mod fx_presets;
 pub mod gizmo;

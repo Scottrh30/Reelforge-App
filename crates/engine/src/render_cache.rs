@@ -38,6 +38,8 @@ pub struct DiskStore {
     /// Frames queued for the writer thread, and how many are still being written.
     queue: crossbeam_channel::Sender<(u64, [u32; 2], Arc<[u8]>)>,
     pending: Arc<AtomicU64>,
+    /// Keep no new frames (the drive is nearly full).
+    paused: std::sync::atomic::AtomicBool,
 }
 
 const MAGIC: &[u8; 4] = b"RFC1";
@@ -62,7 +64,7 @@ impl DiskStore {
         let index: HashMap<u64, (u64, u64)> = found.iter().enumerate().map(|(i, f)| (f.0, (f.1, i as u64 + 1))).collect();
         let (tx, rx) = crossbeam_channel::unbounded::<(u64, [u32; 2], Arc<[u8]>)>();
         let pending = Arc::new(AtomicU64::new(0));
-        let store = Arc::new(DiskStore { dir: dir.to_owned(), index: Mutex::new(index), budget: AtomicU64::new(budget), clock: AtomicU64::new(found.len() as u64 + 1), queue: tx, pending: pending.clone() });
+        let store = Arc::new(DiskStore { dir: dir.to_owned(), index: Mutex::new(index), budget: AtomicU64::new(budget), clock: AtomicU64::new(found.len() as u64 + 1), queue: tx, pending: pending.clone(), paused: Default::default() });
         let weak = Arc::downgrade(&store);
         let _ = std::thread::Builder::new().name("render cache writer".into()).spawn(move || {
             for (recipe, size, rgba) in rx {
@@ -73,6 +75,15 @@ impl DiskStore {
             }
         });
         store
+    }
+
+    /// Stop (or start again) keeping new frames, when the drive is nearly full.
+    pub fn set_paused(&self, on: bool) {
+        self.paused.store(on, Ordering::Relaxed);
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
     }
 
     pub fn dir(&self) -> &Path {
@@ -100,7 +111,7 @@ impl DiskStore {
 
     /// Keep a frame (written in the background).
     pub fn store(&self, recipe: u64, size: [u32; 2], rgba: Arc<[u8]>) {
-        if self.has(recipe) {
+        if self.has(recipe) || self.paused.load(Ordering::Relaxed) {
             return;
         }
         self.pending.fetch_add(1, Ordering::SeqCst);

@@ -89,6 +89,8 @@ struct Live {
     render_gen: u64,
     /// What the Viewer is working from, for its performance readout.
     viewer: ViewerInfo,
+    /// Disk space running short (until the warning is dismissed).
+    disk: Option<reelforge_engine::disk::DiskLow>,
 }
 
 #[derive(Serialize)]
@@ -175,6 +177,7 @@ fn tick() -> Res<Live> {
             render: e.render_progress(),
             render_gen: e.render_cache.generation,
             viewer: viewer_info(e),
+            disk: e.disk_low.clone().filter(|_| !e.disk_dismissed),
         }
     })
 }
@@ -445,6 +448,18 @@ fn settings_info() -> Res<SettingsInfo> {
             native: reelforge_media::codecs::Codec::ALL.into_iter().filter(|c| c.available()).map(|c| c.label()).collect(),
         }
     })
+}
+
+/// Make disk space: "render" (rendered previews) or "proxies" (those of media not in this project).
+#[tauri::command]
+fn disk_free(what: String) -> Res<()> {
+    ed(|e| e.free_disk_space(&what))
+}
+
+/// Hide the low disk space warning (until space runs short again after recovering).
+#[tauri::command]
+fn disk_dismiss() -> Res<()> {
+    ed(|e| e.disk_dismissed = true)
 }
 
 /// Forget every rendered frame, in memory and on disk.
@@ -1299,6 +1314,8 @@ fn main() {
             dismiss_recovery,
             set_prefs,
             clear_render_cache,
+            disk_free,
+            disk_dismiss,
             settings_info,
             add_to_timeline,
             new_composition_from_media,

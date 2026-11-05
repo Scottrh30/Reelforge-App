@@ -20,3 +20,6 @@ cpal.workspace = true
 crossbeam-channel.workspace = true
 # Installing plugins from .zip files.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

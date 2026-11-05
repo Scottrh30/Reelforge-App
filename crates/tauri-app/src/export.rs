@@ -233,6 +233,9 @@ struct Job {
 #[derive(Default)]
 struct Queue {
     jobs: Vec<Job>,
+    /// When the running job's drive was last looked at, and jobs stopped because it filled up.
+    disk_checked: Option<std::time::Instant>,
+    stopped_full: std::collections::HashSet<u64>,
     /// Start waiting jobs (off after "Pause").
     run: bool,
     next_id: u64,
@@ -295,6 +298,20 @@ pub fn export_add(spec: Spec, path: String, include_audio: bool, marked_only: bo
         if let Some(v) = spec.video.filter(|v| v.is_dnxhd()) {
             let fps = s.frame_rate.fps();
             reelforge_media::dnxhd_bitrate(w & !1, h & !1, fps, spec.quality, v == VideoCodec::Dnxhd10)?;
+        }
+        // Room for it, so it doesn't fail part-way with the drive full.
+        let need = reelforge_engine::disk::estimate_export_bytes(&settings, s.frame_rate.fps());
+        if let Some(free) = reelforge_engine::disk::free_bytes(&settings.path) {
+            if free < need + reelforge_engine::disk::EXPORT_SPARE {
+                e.check_disk();
+                e.disk_dismissed = false;
+                let tip = if e.disk_low.is_some() { " Free some space (the warning at the top offers to clear rendered previews and unused proxies)," } else { " Free some space on it," };
+                return Err(format!(
+                    "Not enough space for this export: it needs about {}, and only {} is free on that drive.{tip} export somewhere else, or pick a smaller format",
+                    reelforge_engine::disk::size_text(need),
+                    reelforge_engine::disk::size_text(free)
+                ));
+            }
         }
         Ok((e.project.clone(), settings))
     })??;
@@ -404,6 +421,13 @@ pub fn pump(e: &mut Editor) {
                     e.status = format!("Exported {} ({} frames, {}, {:.1} s)", r.path.display(), r.frames, if r.hardware { format!("{} on the GPU", r.video_codec) } else { r.video_codec.clone() }, r.elapsed.as_secs_f64());
                     JobState::Finished(r)
                 }
+                Err(m) if m == "cancelled" && q.stopped_full.remove(&job.id) => {
+                    let m = format!("Stopped: the drive {} is on is nearly full. Free some space and press Retry", job.settings.path.display());
+                    e.status = format!("Export of {} stopped: the drive is nearly full", job.title);
+                    e.check_disk();
+                    e.disk_dismissed = false;
+                    JobState::Failed(m)
+                }
                 Err(m) if m == "cancelled" => {
                     e.status = format!("Export of {} cancelled", job.title);
                     JobState::Cancelled
@@ -413,6 +437,17 @@ pub fn pump(e: &mut Editor) {
                     JobState::Failed(m)
                 }
             };
+        }
+        // A running job's drive filling up: stop it cleanly (saying why) rather than let it fail.
+        if q.disk_checked.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(3)) {
+            q.disk_checked = Some(std::time::Instant::now());
+            for job in &q.jobs {
+                let JobState::Running { cancel, .. } = &job.state else { continue };
+                if reelforge_engine::disk::free_bytes(&job.settings.path).is_some_and(|f| f < reelforge_engine::disk::EXPORT_STOP) && !cancel.load(Ordering::Relaxed) {
+                    cancel.store(true, Ordering::Relaxed);
+                    q.stopped_full.insert(job.id);
+                }
+            }
         }
         if !q.run || q.jobs.iter().any(|j| matches!(j.state, JobState::Running { .. })) {
             return;

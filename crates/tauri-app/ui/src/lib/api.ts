@@ -783,6 +783,15 @@ export interface Live {
   render_gen: number;
   /// What the Viewer works from, for its performance readout.
   viewer: { layers: number; proxied: number; proxies_on: boolean; decode: string; gpu: string | null; quality: number };
+  /// Disk space running short (until dismissed).
+  disk: DiskLow | null;
+}
+export interface DiskLow {
+  free: number;
+  place: string;
+  render_bytes: number;
+  old_proxies: number;
+  old_proxy_bytes: number;
 }
 
 export interface AttrOffers {
@@ -810,6 +819,8 @@ export interface AttrSet {
 
 export const api = {
   tick: () => invoke<Live>("tick"),
+  diskFree: (what: "render" | "proxies") => invoke("disk_free", { what }),
+  diskDismiss: () => invoke("disk_dismiss"),
   state: () => invoke<State>("get_state"),
   frame: (max_w: number, max_h: number, have: number, jpeg: boolean) => invoke<ArrayBuffer>("frame", { maxW: max_w, maxH: max_h, have, jpeg }),
   waveform: (media: number) => invoke<ArrayBuffer>("waveform", { media }),

@@ -219,6 +219,7 @@ enum TrackMsg {
 }
 
 mod camtrack;
+mod diskspace;
 pub use camtrack::CamMake;
 
 /// A motion-tracking run going on in the background.
@@ -315,6 +316,11 @@ pub struct Editor {
     pub prefs: Prefs,
     pub proxies: crate::proxies::Proxies,
     proxied_rev: u64,
+    /// Space running short where the app writes (shown until dismissed), when last looked, and below what it counts as low.
+    pub disk_low: Option<crate::disk::DiskLow>,
+    pub disk_dismissed: bool,
+    disk_checked: Option<std::time::Instant>,
+    pub disk_low_at: u64,
     /// This run's autosave/crash-detection session.
     pub session: Option<crate::safety::Session>,
     /// Crashed sessions found at startup, offered for recovery.
@@ -376,6 +382,11 @@ impl Editor {
             prefs,
             proxies: Default::default(),
             proxied_rev: 0,
+            disk_low: None,
+            disk_dismissed: false,
+            disk_checked: None,
+            // (Tests don't depend on the machine's free space; the disk test sets it.)
+            disk_low_at: if cfg!(test) { 0 } else { crate::disk::LOW },
             session: None,
             recoveries: Vec::new(),
             tracking: None,
@@ -3282,8 +3293,12 @@ impl Editor {
     /// moves the playhead, pushes edits to the audio engine, collects
     /// waveforms and proxies, autosaves, and renders the picture at the playhead.
     pub fn tick(&mut self) {
+        if self.disk_checked.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(15)) {
+            self.check_disk();
+        }
         if self.rev != self.proxied_rev {
-            self.proxies.refresh(&self.project, self.prefs.auto_proxies);
+            // (Not started by themselves while the drive is nearly full.)
+            self.proxies.refresh(&self.project, self.prefs.auto_proxies && self.disk_low.is_none());
             self.proxied_rev = self.rev;
         }
         if self.proxies.poll() {
@@ -4245,6 +4260,45 @@ mod tests {
         e.select_only(Some(id));
         e.delete_selection();
         assert_ne!(e.comp_thumbnail(comp, Time::ZERO, 200).unwrap(), first);
+    }
+
+/// Running short of disk space: a warning with what can be cleared, no
+    /// more rendered frames kept on disk and no proxies started by themselves;
+    /// back to normal when there's room again.
+    #[test]
+    fn low_disk_space_is_warned_about_and_stops_filling_the_drive() {
+        let mut e = editor();
+        e.new_project_with(320, 180, reelforge_core::FrameRate::new(25, 1));
+        // Never short.
+        e.disk_low_at = 0;
+        e.check_disk();
+        assert!(e.disk_low.is_none());
+        // Pretend every drive is short.
+        e.disk_low_at = u64::MAX;
+        e.check_disk();
+        let d = e.disk_low.clone().expect("low");
+        assert!(d.free > 0 && !d.place.is_empty());
+        assert!(e.status.contains("Running out of disk space"), "{}", e.status);
+        if let Some(store) = &e.render_cache.disk {
+            assert!(store.paused(), "no more frames kept on disk");
+        }
+        // Said once, not every check.
+        e.status.clear();
+        e.check_disk();
+        assert!(e.status.is_empty());
+        // Clearing previews looks again (still short here).
+        e.free_disk_space("render");
+        assert!(e.status.contains("Rendered previews cleared") && e.status.contains("Still short"), "{}", e.status);
+        // Dismissed: stays hidden while short, comes back after recovering and running short again.
+        e.disk_dismissed = true;
+        e.check_disk();
+        assert!(e.disk_dismissed);
+        e.disk_low_at = 0;
+        e.check_disk();
+        assert!(e.disk_low.is_none() && !e.disk_dismissed);
+        if let Some(store) = &e.render_cache.disk {
+            assert!(!store.paused(), "keeping frames again");
+        }
     }
 
     #[test]

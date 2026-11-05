@@ -3328,6 +3328,7 @@ dependencies = [
  "cpal",
  "crossbeam-channel",
  "jpeg-encoder",
+ "libc",
  "log",
  "miniz_oxide 0.9.1",
  "reelforge-core",
