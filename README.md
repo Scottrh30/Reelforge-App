@@ -811,6 +811,14 @@ What works now:
   undoable. On rendered test footage of a camera moving past a textured floor and wall, it
   fits to 0.1–0.3 px and the camera's path comes within 1° and 2 % of the truth (within 0.1°
   and 0.5 % given the lens)
+  - **Leave things out of the solve**: something moving on its own (a person walking
+    through, cars, water, a screen) drags the solve with it. Draw a mask over it and set its
+    **Use** to **Leave out of the 3D camera track** (animate or track the mask to follow it):
+    it doesn't change the picture (it shows dotted in the Viewer), and details followed into
+    it are cut off there, so only the scene's own details solve the camera. Several combine
+    with Add, Subtract and Intersect, and **Invert** solves from only what's inside. The panel
+    says when masked areas are being left out. In a test with 120 details on a blob sliding
+    across the shot, the solve still comes within 0.3° and 2 % of the true camera
   - **Export** a solve for other applications: **After Effects** (a script: File → Scripts →
     Run Script File… makes a comp with a camera keyed every frame and a 3D null per point),
     **Blender** (a script to run in the Scripting workspace: the camera, render size and frame

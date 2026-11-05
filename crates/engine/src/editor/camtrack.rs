@@ -59,6 +59,9 @@ impl Editor {
         let map = self.layer_frame_map(c, mid);
         let layer = self.layer_size(c);
         let px = self.frame_px();
+        // Masks set to "leave out of the camera track" (people, cars, water).
+        let masks: Vec<mask::Mask> = c.masks.iter().filter(|m| m.enabled && m.track_ignore).cloned().collect();
+        let left_out = !masks.is_empty();
         let (tx, rx) = unbounded();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = cancel.clone();
@@ -73,6 +76,17 @@ impl Editor {
                     })
                     .map_err(|e| format!("{e:#}"))?;
                     let Some((tracks, times)) = followed else { return Ok(None) };
+                    let tracks = if masks.is_empty() {
+                        tracks
+                    } else {
+                        let images: Vec<Option<mask::MaskImage>> = times.iter().map(|&t| mask::track_ignore_image(&masks, t, layer)).collect();
+                        let before = tracks.len();
+                        let kept = reelforge_core::camtrack::leave_out(tracks, 3, |f, p| images.get(f).and_then(|i| i.as_ref()).is_some_and(|i| i.at(p, layer) >= 128));
+                        if kept.len() < 8 {
+                            return Err(format!("only {} of {before} details are outside the masked areas: make the masks smaller", kept.len()));
+                        }
+                        kept
+                    };
                     let to_frame = |p: [f32; 2]| map.apply([p[0] - layer[0] / 2.0, p[1] - layer[1] / 2.0]);
                     let tracks: Vec<Track2d> = tracks.into_iter().map(|t| Track2d { start: t.start, pos: t.pos.into_iter().map(to_frame).collect() }).collect();
                     let opts = SolveOptions { fov, tripod };
@@ -90,7 +104,7 @@ impl Editor {
             })
             .expect("camera tracker thread");
         self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: true });
-        self.status = "Analysing the shot: following details, then solving the camera…".into();
+        self.status = if left_out { "Analysing the shot (leaving out the masked areas): following details, then solving the camera…" } else { "Analysing the shot: following details, then solving the camera…" }.into();
     }
 
     /// A camera solve finished (`None`: stopped).

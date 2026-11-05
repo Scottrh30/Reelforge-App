@@ -235,6 +235,11 @@
             <div class="row">
               <button class="primary wide" disabled={elsewhere} onclick={analyse} title="Analyses the whole clip">{cam ? "Analyse again" : "Analyse"}</button>
             </div>
+            {#if sel.masks.some((v) => v.mask.enabled && v.mask.track_ignore)}
+              <p class="note">Leaving out {sel.masks.filter((v) => v.mask.enabled && v.mask.track_ignore).length === 1 ? "the masked area" : "the masked areas"} (masks set to "Leave out of the 3D camera track").</p>
+            {:else}
+              <p class="note">Something moving on its own (people, cars, water)? Draw a mask over it and set it to "Leave out of the 3D camera track" in Masks.</p>
+            {/if}
             <div class="row">
               <button class="wide" onclick={() => run(api.camtrackImport())} title="A camera path (.chan) from Nuke, Blender, SynthEyes, 3DEqualizer or PFTrack becomes a camera clip from this clip's start; a Reelforge solve (.json) goes onto this clip">Import a camera…</button>
             </div>

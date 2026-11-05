@@ -104,12 +104,27 @@
         <label class="check"><input type="checkbox" checked={m.inverted} onchange={(e) => change(i, (n) => (n.inverted = e.currentTarget.checked), true)} /> Invert</label>
       </div>
       <div class="row">
-        <span class="lbl" title="What the mask does. A garbage matte for keys keeps the layer inside it whatever the chroma, luma or difference key says (a subject near the screen's colour, a dark logo on a luma key); it doesn't cut the layer. To keep something out of the shot, use an ordinary mask (it cuts the layer before the key).">Use</span>
-        <select value={m.key_keep ? "keep" : "cut"} aria-label="What this mask does" onchange={(e) => change(i, (n) => (n.key_keep = e.currentTarget.value === "keep"), true)}>
+        <span class="lbl" title="What the mask does. A garbage matte for keys keeps the layer inside it whatever the chroma, luma or difference key says (a subject near the screen's colour, a dark logo on a luma key); it doesn't cut the layer. To keep something out of the shot, use an ordinary mask (it cuts the layer before the key). Leave out of the 3D camera track marks something moving on its own, so the camera solve ignores it; it doesn't cut the layer either.">Use</span>
+        <select
+          value={m.key_keep ? "keep" : m.track_ignore ? "track" : "cut"}
+          aria-label="What this mask does"
+          onchange={(e) =>
+            change(
+              i,
+              (n) => {
+                const v = e.currentTarget.value;
+                n.key_keep = v === "keep";
+                n.track_ignore = v === "track";
+              },
+              true,
+            )}
+        >
           <option value="cut">Cut the layer (show only inside)</option>
           <option value="keep">Garbage matte: keys keep what's inside</option>
+          <option value="track">Leave out of the 3D camera track</option>
         </select>
       </div>
+      {#if m.track_ignore}<p class="note">Doesn't change the picture. Details inside aren't used to solve the camera: draw it over people, cars, water or anything else moving on its own (animate it to follow them), then track the camera again.</p>{/if}
       {#if m.key_keep && !hasKey}<p class="note">This clip has no chroma, luma or difference key yet: add one and it keeps what's inside this mask.</p>{/if}
       <div class="grid">
         <div class="field">

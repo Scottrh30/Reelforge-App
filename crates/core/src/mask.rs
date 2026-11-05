@@ -107,6 +107,11 @@ pub struct Mask {
     /// combine with their modes like ordinary masks.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub key_keep: bool,
+    /// An area for the 3D camera tracker to leave out (a person walking, cars,
+    /// water): it doesn't cut the layer, and details inside it aren't used to
+    /// solve the camera. Several of these combine with their modes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub track_ignore: bool,
 }
 
 impl Default for Mask {
@@ -125,6 +130,7 @@ impl Default for Mask {
             curves: Vec::new(),
             feathers: Vec::new(),
             key_keep: false,
+            track_ignore: false,
         }
     }
 }
@@ -525,7 +531,7 @@ pub fn mask_hash(masks: &[Mask], t: Time, layer: [f32; 2]) -> u64 {
     layer[0].to_bits().hash(&mut h);
     layer[1].to_bits().hash(&mut h);
     for m in masks.iter().filter(|m| m.enabled) {
-        (m.shape, m.mode, m.inverted, m.key_keep).hash(&mut h);
+        (m.shape, m.mode, m.inverted, m.key_keep, m.track_ignore).hash(&mut h);
         for f in [m.feather, m.expansion, m.opacity] {
             f.to_bits().hash(&mut h);
         }
@@ -552,7 +558,7 @@ pub fn rasterize(masks: &[Mask], t: Time, layer: [f32; 2], max_side: u32) -> Opt
     let (w, h) = (((layer[0] * k).ceil() as usize).max(1), ((layer[1] * k).ceil() as usize).max(1));
     let combine = |keep: bool| -> Option<Vec<f32>> {
         let mut acc: Option<Vec<f32>> = None;
-        for m in masks.iter().filter(|m| m.enabled && m.key_keep == keep) {
+        for m in masks.iter().filter(|m| m.enabled && !m.track_ignore && m.key_keep == keep) {
             let line = m.outline_feathered(t);
             let poly: Vec<[f32; 2]> = line.iter().map(|(p, _)| [p[0] * k, p[1] * k]).collect();
             if poly.len() < 3 {
@@ -578,6 +584,25 @@ pub fn rasterize(masks: &[Mask], t: Time, layer: [f32; 2], max_side: u32) -> Opt
         return None;
     }
     Some(MaskImage { width: w as u32, height: h as u32, data: layer_mask.map_or_else(|| vec![255; w * h], to8), keep: keep.map(to8).unwrap_or_default() })
+}
+
+/// Where the 3D camera tracker should leave the picture out at source time
+/// `t` ([`Mask::track_ignore`] masks, combined with their modes), as a coarse
+/// image over a `layer`-sized picture; `None` if there are none.
+pub fn track_ignore_image(masks: &[Mask], t: Time, layer: [f32; 2]) -> Option<MaskImage> {
+    let ignore: Vec<Mask> = masks.iter().filter(|m| m.enabled && m.track_ignore).map(|m| Mask { track_ignore: false, key_keep: false, ..m.clone() }).collect();
+    rasterize(&ignore, t, layer, 320)
+}
+
+impl MaskImage {
+    /// The value at layer pixel `p` of a `layer`-sized picture (0 outside it).
+    pub fn at(&self, p: [f32; 2], layer: [f32; 2]) -> u8 {
+        let (x, y) = (p[0] / layer[0].max(1.0) * self.width as f32, p[1] / layer[1].max(1.0) * self.height as f32);
+        if !(x >= 0.0 && y >= 0.0 && x < self.width as f32 && y < self.height as f32) {
+            return 0;
+        }
+        self.data[y as usize * self.width as usize + x as usize]
+    }
 }
 
 /// Coverage of one closed polygon on a `w`×`h` grid (pixel centres at +0.5),
@@ -880,6 +905,17 @@ mod tests {
         assert!((area / 10_000.0 - std::f32::consts::FRAC_PI_4).abs() < 0.01, "{area}");
         // Nothing enabled: no image.
         assert!(rasterize(&[Mask { enabled: false, ..rect(0.0, 0.0, 1.0, 1.0) }], Time::ZERO, layer, 4096).is_none());
+        // Left out of the camera track: doesn't cut the layer, but is its own image.
+        let ig = Mask { track_ignore: true, ..rect(0.0, 0.0, 50.0, 100.0) };
+        assert!(rasterize(&[ig.clone()], Time::ZERO, layer, 4096).is_none());
+        let both = rasterize(&[ig.clone(), rect(0.0, 0.0, 100.0, 50.0)], Time::ZERO, layer, 4096).unwrap();
+        assert_eq!(both.data[75 * 100 + 25], 0, "only the ordinary mask cuts");
+        let img = track_ignore_image(&[ig.clone(), rect(0.0, 0.0, 100.0, 50.0)], Time::ZERO, layer).unwrap();
+        assert_eq!((img.at([25.0, 75.0], layer), img.at([75.0, 25.0], layer), img.at([-5.0, 5.0], layer)), (255, 0, 0));
+        assert!(track_ignore_image(&[rect(0.0, 0.0, 1.0, 1.0)], Time::ZERO, layer).is_none());
+        // Inverted: everything but the area.
+        let inv = track_ignore_image(&[Mask { inverted: true, ..ig }], Time::ZERO, layer).unwrap();
+        assert_eq!((inv.at([25.0, 75.0], layer), inv.at([75.0, 25.0], layer)), (0, 255));
     }
 
     #[test]

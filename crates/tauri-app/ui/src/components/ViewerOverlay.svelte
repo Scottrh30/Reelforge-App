@@ -711,6 +711,7 @@
           points={pts(m.outline)}
           class="mask"
           class:keep={!!m.mask.key_keep}
+          class:ignore={!!m.mask.track_ignore}
           class:on={i === active}
           class:off={!m.mask.enabled}
           stroke={MASK}
@@ -974,6 +975,10 @@
   /* A key's garbage matte: dashed, so it's told apart from masks that cut. */
   .mask.keep {
     stroke-dasharray: 6 4;
+  }
+  /* Left out of the camera track: dotted. */
+  .mask.ignore {
+    stroke-dasharray: 2 4;
   }
   .mask.off {
     opacity: 0.35;

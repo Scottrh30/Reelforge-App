@@ -357,6 +357,7 @@ export interface Mask {
   feathers?: number[];
   /** A garbage matte for keys: inside it, keys keep the layer (it doesn't cut the layer). */
   key_keep?: boolean;
+  track_ignore?: boolean;
 }
 
 export type Curve4 = [number, number, number, number];

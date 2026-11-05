@@ -275,6 +275,34 @@ pub struct Track2d {
     pub pos: Vec<[f32; 2]>,
 }
 
+/// Leave out the parts of `tracks` where `ignored(frame, position)` says so:
+/// a track crossing an ignored area is cut there, into the pieces outside it
+/// (each its own track); pieces shorter than `min_len` frames are dropped.
+pub fn leave_out(tracks: Vec<Track2d>, min_len: usize, ignored: impl Fn(usize, [f32; 2]) -> bool) -> Vec<Track2d> {
+    let mut out = Vec::new();
+    for t in tracks {
+        let mut run: Option<Track2d> = None;
+        for (i, p) in t.pos.iter().enumerate() {
+            let f = t.start + i;
+            if ignored(f, *p) {
+                if let Some(r) = run.take() {
+                    if r.pos.len() >= min_len {
+                        out.push(r);
+                    }
+                }
+            } else {
+                run.get_or_insert_with(|| Track2d { start: f, pos: Vec::new() }).pos.push(*p);
+            }
+        }
+        if let Some(r) = run {
+            if r.pos.len() >= min_len {
+                out.push(r);
+            }
+        }
+    }
+    out
+}
+
 impl Track2d {
     /// One past its last frame.
     pub fn end(&self) -> usize {
@@ -1831,6 +1859,45 @@ mod tests {
         let n = tracks.len();
         assert!(sol.points.iter().all(|(id, ..)| *id < n - 12), "bad tracks dropped");
         assert!(sol.points.len() > 100);
+    }
+
+/// Leaving out a masked area: a track crossing it is cut into the pieces
+    /// outside (short ones dropped), and a crowd of details moving together
+    /// (a person walking through) is left out of the solve entirely.
+    #[test]
+    fn leaves_out_masked_areas() {
+        let t = Track2d { start: 2, pos: (0..10).map(|i| [i as f32 * 10.0, 0.0]).collect() };
+        // Ignored where x is 30..=50 (frames 5..=7): pieces of 3 and 4 frames.
+        let out = leave_out(vec![t.clone()], 3, |_, p| (30.0..=50.0).contains(&p[0]));
+        assert_eq!(out.len(), 2);
+        assert_eq!((out[0].start, out[0].pos.len()), (2, 3));
+        assert_eq!((out[1].start, out[1].pos.len(), out[1].pos[0][0]), (8, 4, 60.0));
+        // Pieces shorter than the minimum go.
+        assert_eq!(leave_out(vec![t.clone()], 4, |_, p| (30.0..=50.0).contains(&p[0])).len(), 1);
+        // By frame too.
+        assert!(leave_out(vec![t], 1, |f, _| f >= 2).is_empty());
+
+        // A solve with a walker: 120 details in a 200-pixel blob sliding right.
+        let (mut tracks, truth, _) = shot(60, 50.0, |s| ([-400.0 + 800.0 * s, -150.0, -200.0 + 150.0 * s], [100.0 * s, 0.0, 1500.0]), 0.3, 0);
+        let good = tracks.len();
+        let mut rng = Rng(777);
+        for _ in 0..120 {
+            let o = [(rng.next() % 200) as f32, (rng.next() % 200) as f32];
+            tracks.push(Track2d { start: 0, pos: (0..60).map(|i| [300.0 + o[0] + i as f32 * 6.0, 260.0 + o[1] + (i as f32 * 0.3).sin() * 20.0]).collect() });
+        }
+        let walker = |f: usize, p: [f32; 2]| {
+            let x0 = 290.0 + f as f32 * 6.0;
+            p[0] >= x0 && p[0] <= x0 + 220.0 && p[1] >= 230.0 && p[1] <= 490.0
+        };
+        let kept = leave_out(tracks, 3, walker);
+        // None of the walker's tracks are left; most of the scene's are.
+        assert!(kept.iter().all(|t| t.pos.iter().enumerate().all(|(i, p)| !walker(t.start + i, *p))));
+        assert!(kept.len() > good * 3 / 4, "{} of {good}", kept.len());
+        let stop = AtomicBool::new(false);
+        let sol = solve(&kept, 60, [1280.0, 720.0], SolveOptions::default(), &stop, &mut |_| {}).unwrap();
+        assert!(sol.error < 1.0, "error {}", sol.error);
+        let (ang, gap) = compare(&sol, &truth);
+        assert!(ang < 0.3 && gap < 0.02, "angle {ang}°, path {gap}");
     }
 
     #[test]
