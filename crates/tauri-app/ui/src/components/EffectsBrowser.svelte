@@ -6,6 +6,7 @@
   import { api, type CatalogGroup, type CatalogItem, type TransitionKind } from "../lib/api";
   import { ask } from "../lib/actions.svelte";
   import PresetList from "./PresetList.svelte";
+  import { favourites, isFav, toggleFav } from "../lib/favourites.svelte";
   import { menu } from "../lib/menu.svelte";
 
   let groups = $state<CatalogGroup[]>([]);
@@ -54,7 +55,12 @@
   const q = $derived(search.trim().toLowerCase());
   const hit = (g: CatalogGroup, it: CatalogItem) =>
     !q || [it.label, it.description, g.label, it.author, it.plugin ? "plugin" : ""].some((s) => s.toLowerCase().includes(q));
-  const shown = $derived(groups.map((g) => ({ ...g, items: g.items.filter((it) => hit(g, it)) })).filter((g) => g.items.length));
+  const shown = $derived.by(() => {
+    const list = groups.map((g) => ({ ...g, items: g.items.filter((it) => hit(g, it)) })).filter((g) => g.items.length);
+    // Starred ones first (as well as in their own group).
+    const favs = favourites(list.flatMap((g) => g.items));
+    return favs.length ? [{ label: "Favourites", items: favs }, ...list] : list;
+  });
   const plugins = $derived(groups.reduce((n, g) => n + g.items.filter((i) => i.plugin).length, 0));
 
   async function add(it: CatalogItem) {
@@ -124,6 +130,7 @@
                 <span class="name">{it.label}{#if it.plugin}<span class="tag">plugin</span>{/if}</span>
                 <span class="desc">{[it.description, it.author && `by ${it.author}`, it.version].filter(Boolean).join(" · ")}</span>
               </div>
+              <button class="star" class:on={isFav(it)} onclick={() => toggleFav(it)} aria-pressed={isFav(it)} aria-label={isFav(it) ? `Remove ${it.label} from favourites` : `Add ${it.label} to favourites`} title={isFav(it) ? "Remove from favourites" : "Add to favourites (listed first here and in the Effects panel)"}>{isFav(it) ? "★" : "☆"}</button>
               <button disabled={!target} onclick={() => add(it)}>{added === it.label ? "Added ✓" : "Add"}</button>
             </div>
           {/each}
@@ -153,6 +160,19 @@
   .tabs {
     display: flex;
     gap: 2px;
+  }
+  .star {
+    background: none;
+    border: 0;
+    padding: 0 6px;
+    font-size: calc(15px * var(--text-scale));
+    color: var(--faint);
+  }
+  .star.on {
+    color: var(--accent);
+  }
+  .star:hover {
+    color: var(--text);
   }
   .tabs button {
     background: none;

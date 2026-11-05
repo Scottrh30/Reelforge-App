@@ -421,6 +421,8 @@ export interface Prefs {
   native_decoders: boolean;
   zero_copy: boolean;
   start_screen: boolean;
+  /// Starred effects: an effect's kind, or "plugin:" and the plugin's id.
+  fx_favourites: string[];
 }
 
 export interface SettingsInfo {

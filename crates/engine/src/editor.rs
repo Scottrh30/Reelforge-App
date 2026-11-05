@@ -77,6 +77,9 @@ pub struct Prefs {
     pub zero_copy: bool,
     /// Show the start screen (presets, templates, recent projects) when Reelforge opens.
     pub start_screen: bool,
+    /// Effects starred as favourites (an effect's kind, or `plugin:` and the
+    /// plugin's id), listed first in the Effects panel and browser.
+    pub fx_favourites: Vec<String>,
 }
 
 impl Default for Prefs {
@@ -101,6 +104,7 @@ impl Default for Prefs {
             native_decoders: true,
             zero_copy: true,
             start_screen: true,
+            fx_favourites: Vec::new(),
         }
     }
 }
@@ -3466,6 +3470,20 @@ mod tests {
         e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = None;
         e.stabilise_with_camera(id, StabPath::Lock(0), StabZoom::Off);
         assert!(e.status.contains("Analyse"));
+    }
+
+    #[test]
+    fn effect_favourites_are_kept_with_the_settings() {
+        // Settings saved before favourites existed still load, with none.
+        let old: Prefs = serde_json::from_str(r#"{"use_proxies": false, "start_screen": true}"#).unwrap();
+        assert!(old.fx_favourites.is_empty() && !old.use_proxies);
+        let mut e = editor();
+        let mut p = e.prefs.clone();
+        p.fx_favourites = vec!["Halftone".into(), "plugin:com.example.swirl".into()];
+        e.set_prefs(p.clone());
+        assert_eq!(e.prefs.fx_favourites, p.fx_favourites);
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&e.prefs).unwrap()).unwrap();
+        assert_eq!(back.fx_favourites, p.fx_favourites);
     }
 
     #[test]

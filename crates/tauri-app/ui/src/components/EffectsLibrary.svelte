@@ -5,6 +5,7 @@
   // onto a clip on the timeline.
   import { app, run } from "../lib/session.svelte";
   import { api, type CatalogGroup, type CatalogItem, type FxPreset, type TransitionKind } from "../lib/api";
+  import { favourites, isFav, toggleFav } from "../lib/favourites.svelte";
 
   let groups = $state<CatalogGroup[]>([]);
   let transitions = $state<TransitionKind[]>([]);
@@ -41,11 +42,13 @@
   }
   const q = $derived(search.trim().toLowerCase());
   // While searching, every group with a match is open.
-  const isOpen = (label: string) => !!q || (open[label] ?? false);
+  const isOpen = (label: string) => !!q || (open[label] ?? label === "Favourites");
 
   type Entry = { label: string; effect?: CatalogItem; transition?: TransitionKind; preset?: FxPreset };
   const sortedPresets = $derived([...presets].sort((a, b) => Number(b.favourite) - Number(a.favourite)));
+  const favs = $derived(favourites(groups.flatMap((g) => g.items)));
   const all = $derived<{ label: string; items: Entry[] }[]>([
+    ...(favs.length ? [{ label: "Favourites", items: favs.map((it) => ({ label: it.label, effect: it })) }] : []),
     ...(presets.length ? [{ label: "Presets", items: sortedPresets.map((p) => ({ label: p.favourite ? `★ ${p.name}` : p.name, preset: p })) }] : []),
     ...groups.map((g) => ({ label: g.label, items: g.items.map((it) => ({ label: it.label, effect: it })) })),
     { label: "Transitions", items: transitions.map((k) => ({ label: k.label, transition: k })) },
@@ -106,7 +109,13 @@
       </button>
       {#if isOpen(g.label)}
         {#each g.items as e (e.label + (e.effect?.plugin ?? "") + (e.preset ? "p" : ""))}
-          <div class="item" role="treeitem" aria-selected="false" tabindex="0" onpointerdown={(ev) => down(ev, e)} ondblclick={() => apply(e, null)} onkeydown={(ev) => ev.key === "Enter" && apply(e, null)}>{e.label}</div>
+          <div class="item" class:fav={!!e.effect && isFav(e.effect)} role="treeitem" aria-selected="false" tabindex="0" onpointerdown={(ev) => down(ev, e)} ondblclick={() => apply(e, null)} onkeydown={(ev) => ev.key === "Enter" && apply(e, null)}>
+            <span class="label">{e.label}</span>
+            {#if e.effect}
+              {@const it = e.effect}
+              <button class="star" class:on={isFav(it)} onpointerdown={(ev) => ev.stopPropagation()} ondblclick={(ev) => ev.stopPropagation()} onclick={(ev) => { ev.stopPropagation(); toggleFav(it); }} aria-pressed={isFav(it)} aria-label={isFav(it) ? `Remove ${it.label} from favourites` : `Add ${it.label} to favourites`} title={isFav(it) ? "Remove from favourites" : "Add to favourites (listed first)"}>{isFav(it) ? "★" : "☆"}</button>
+            {/if}
+          </div>
         {/each}
       {/if}
     {:else}
@@ -169,13 +178,42 @@
     font-size: calc(11px * var(--text-scale));
   }
   .item {
-    padding: 3px 8px 3px 28px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 4px 3px 28px;
     border-radius: 4px;
     cursor: grab;
     user-select: none;
+  }
+  .item .label {
+    flex: 1;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* A star: shown on hover, or always once starred. */
+  .star {
+    background: none;
+    border: 0;
+    padding: 0 4px;
+    min-height: 0;
+    line-height: 1;
+    color: var(--faint);
+    cursor: pointer;
+    visibility: hidden;
+  }
+  .item:hover .star,
+  .item:focus-within .star,
+  .star.on {
+    visibility: visible;
+  }
+  .star.on {
+    color: var(--accent);
+  }
+  .star:hover {
+    color: var(--text);
   }
   .item:hover,
   .item:focus-visible {

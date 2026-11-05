@@ -982,8 +982,10 @@ everything back. The arrangement is remembered.
 
 Effects: the Effects section of the Controls panel holds the clip's stack (top applied
 first): add from its menu or from the effects browser (**E**, or Edit → Effects…, with a
-search box), switch effects off, reorder, duplicate, reset and remove them, fold them
-shut, and edit every setting (drag or type the numbers; menus and tick boxes for plugin
+search box). **Favourites**: the ☆ beside an effect (on hover in the Effects panel, beside
+Add in the browser) stars it, and starred effects are listed first in both, in a
+Favourites group, kept with the app's settings. Switch effects off, reorder, duplicate,
+reset and remove them, fold them shut, and edit every setting (drag or type the numbers; menus and tick boxes for plugin
 choices). The ◆ beside a setting keyframes it at the playhead; once a setting has keys,
 changing it sets the key there. Curves has its own curve editor (Master, Red, Green,
 Blue: drag points, click the line to add one, right-click to remove), and LUT a .cube
