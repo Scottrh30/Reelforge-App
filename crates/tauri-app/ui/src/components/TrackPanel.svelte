@@ -142,6 +142,8 @@
   function make(what: CamMake) {
     if (ins) run(api.camtrackMake(ins.id, what, camPicked));
   }
+  let camSmooth = $state(15);
+  let camZoom = $state<StabZoom>("Fixed");
   const exports: [CamFormat, string, string][] = [
     ["AfterEffects", "After Effects", "A script (.jsx): File → Scripts → Run Script File… makes a comp with the camera and a 3D null per point"],
     ["Blender", "Blender", "A script (.py): run it in Blender's Scripting workspace for the camera and the points"],
@@ -267,6 +269,24 @@
             <div class="row">
               <button class="wide" disabled={camPicked.length < 3} onclick={() => ins && run(api.camtrackGround(ins.id, camPicked))} title="Turn the scene so the picked points' surface is the floor, its middle the origin (for lights and 3D text that stand on it)">Set ground plane</button>
             </div>
+          </div>
+
+          <div class="sect">
+            <h4>Stabilise</h4>
+            <div class="grid">
+              <span class="lbl" title="Keep camera moves slower than this and take out the shake: 10 to 30 frames suits most handheld footage. 0 holds the camera still where it is at the playhead, so the shot looks locked off">Keep camera moves</span>
+              <NumberField label="Keep camera moves" value={camSmooth} min={0} max={120} step={0.25} digits={0} suffix=" frames" oninput={(v) => (camSmooth = v)} oncommit={() => {}} />
+              <span class="lbl" title="Steadying the picture uncovers its edges. Zoom in just enough that they never show: one zoom for the whole clip, or a zoom that eases with the motion">Hide edges</span>
+              <select bind:value={camZoom} aria-label="Hide edges">
+                <option value="Off">Off (edges show)</option>
+                <option value="Fixed">Zoom in once</option>
+                <option value="Follow">Zoom with the motion</option>
+              </select>
+            </div>
+            <div class="row">
+              <button class="wide" onclick={() => ins && run(api.camtrackStabilise(ins.id, camSmooth, camZoom))} title="Corner-pins the clip every frame (undoable)">{camSmooth > 0 ? "Stabilise" : "Hold the camera still"}</button>
+            </div>
+            <p class="note">Uses the solved camera, so turning shake goes completely and the picture moves as a steadier camera would have filmed it, in perspective.</p>
           </div>
 
           <div class="sect">

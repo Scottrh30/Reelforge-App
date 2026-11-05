@@ -1088,6 +1088,21 @@ fn camtrack_export(id: u64, format: reelforge_core::camtrack_io::CamFormat, pick
     ed(|e| e.export_camera_track(clip(id), format, &path, &picked))
 }
 
+/// Stabilise clip `id` with its solved camera: keep camera moves slower than
+/// `smoothing` frames, or (0) hold the camera still where it is at the playhead.
+#[tauri::command]
+fn camtrack_stabilise(id: u64, smoothing: f32, zoom: reelforge_core::track::StabZoom) -> Res<()> {
+    ed(|e| {
+        let path = if smoothing > 0.0 {
+            reelforge_core::camtrack::StabPath::Smooth(smoothing)
+        } else {
+            let frame = e.seq().find_clip(clip(id)).and_then(|(_, c)| e.camera_track_frame(c)).unwrap_or(0);
+            reelforge_core::camtrack::StabPath::Lock(frame)
+        };
+        e.stabilise_with_camera(clip(id), path, zoom)
+    })
+}
+
 /// Import a camera: a `.chan` path becomes a camera clip; a Reelforge solve goes onto the selected clip.
 #[tauri::command]
 fn camtrack_import() -> Res<()> {
@@ -1342,6 +1357,7 @@ fn main() {
             camtrack_remove,
             camtrack_export,
             camtrack_import,
+            camtrack_stabilise,
             track_cancel,
             mask_track,
             track_apply,

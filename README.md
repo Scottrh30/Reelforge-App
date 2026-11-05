@@ -819,6 +819,13 @@ What works now:
     Nuke, Blender, Maya and tracking apps read) or **Reelforge** (the whole solve, to load onto
     a clip in another project). With points picked, only those go. Blender, Nuke and `.chan`
     get 100 pixels to a unit (a metre in Blender), Y or Z up as each expects.
+  - **Stabilise** with the solved camera: **Keep camera moves** (frames) smooths the camera's
+    path and keeps moves slower than that (10–30 frames suits most handheld footage); 0 holds
+    the camera still where it is at the playhead, so the shot looks locked off. The clip is
+    corner-pinned every frame to the picture the steadier camera would have filmed, in
+    perspective: turning shake (most handheld shake) goes completely, and moving shake goes
+    for things on the surface the tracked points lie on (or at their middle depth). **Hide
+    edges** zooms in once, or with the motion, so the uncovered edges never show. Undoable
   - **Import a camera…**: a `.chan` file (from Nuke, Blender, SynthEyes, 3DEqualizer,
     PFTrack…) becomes a camera clip keyed every frame, from the selected clip's start at its
     frame rate (or from the playhead), with the file's lens if it has one; a Reelforge solve
@@ -1564,6 +1571,15 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   Z = 0, and turns each pose into camera settings (position, point of interest, roll measured
   as `space3d::Camera::basis` builds it). Making layers uses `CameraTrack::plane` (PCA of the
   picked points, facing the camera) and `orientation_facing`
+- **3D stabilising** (`CameraTrack::stabilising_maps`): the steady path is the solved one
+  smoothed with a Gaussian (positions averaged, rotation matrices averaged and made a
+  rotation again), with the window kept centred near the ends so it doesn't lag, or one
+  frame's camera held. Each frame's map is the homography the scene surface induces between
+  the real and the steady camera: the four frame corners' rays meet the plane fitted to the
+  points that frame sees (when they're near flat, else a plane facing the camera at their
+  middle depth), and are projected into the steady camera. It's applied as corner-pin keys,
+  with the trackers' zoom-to-cover. Tests: a shaky synthetic camera's jerk drops 27-fold with
+  the move kept; held still, points stay within their depth spread (3 px)
 - **Camera solves in and out** (`core/src/camtrack_io.rs`): After Effects keeps the editor's
   axes with the origin moved to the comp's corner (a two-node camera: position, point of
   interest, Z rotation for the roll, zoom = focal length in pixels); Nuke and `.chan` turn the

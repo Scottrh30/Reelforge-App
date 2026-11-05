@@ -1512,7 +1512,119 @@ impl Solution {
     }
 }
 
+/// How a 3D stabilise treats the camera's path.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum StabPath {
+    /// Smoothed over about this many frames either side (the shake goes, the move stays).
+    Smooth(f32),
+    /// Held where it is at this frame: the camera doesn't move at all.
+    Lock(usize),
+}
+
 impl CameraTrack {
+    /// The pose (world → camera: rows right, down, forward) and position in frame `i`.
+    fn pose(&self, i: usize) -> Pose {
+        let (r, d, f) = self.camera(i).basis();
+        let v = |a: [f32; 3]| [a[0] as f64, a[1] as f64, a[2] as f64];
+        Pose { r: [v(r), v(d), v(f)], c: v(self.cameras[i].position) }
+    }
+
+    /// The camera path a stabilise steers towards, frame by frame.
+    fn steady_path(&self, path: StabPath) -> Vec<Pose> {
+        let n = self.cameras.len();
+        let poses: Vec<Pose> = (0..n).map(|i| self.pose(i)).collect();
+        match path {
+            StabPath::Lock(k) => vec![poses[k.min(n - 1)]; n],
+            StabPath::Smooth(sigma) if sigma <= 0.0 => poses,
+            StabPath::Smooth(sigma) => {
+                let sigma = sigma as f64;
+                let reach = (sigma * 3.0).ceil() as usize;
+                (0..n)
+                    .map(|i| {
+                        let (lo, hi) = (i.saturating_sub(reach), (i + reach).min(n - 1));
+                        // Near the ends the window is lopsided: keep it centred on
+                        // this frame (as far as it can go both ways) so the path
+                        // doesn't lag at the start or run ahead at the end.
+                        let half = (i - lo).min(hi - i);
+                        let (lo, hi) = (i - half, i + half);
+                        let (mut wsum, mut c, mut r) = (0.0, [0.0; 3], [[0.0; 3]; 3]);
+                        for (j, p) in poses.iter().enumerate().take(hi + 1).skip(lo) {
+                            let w = (-((j as f64 - i as f64).powi(2)) / (2.0 * sigma * sigma)).exp();
+                            wsum += w;
+                            c = add(c, scale(p.c, w));
+                            for a in 0..3 {
+                                for b in 0..3 {
+                                    r[a][b] += w * p.r[a][b];
+                                }
+                            }
+                        }
+                        Pose { r: orthonormal(&r), c: scale(c, 1.0 / wsum) }
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// For stabilising the footage with its solved camera: in each frame, the
+    /// map (frame pixels → frame pixels) from the picture as filmed to the
+    /// picture the steadier camera of `path` would have filmed. The scene is
+    /// taken as the surface the points seen in that frame lie on, when
+    /// they're near flat, else a surface facing the camera at their middle
+    /// depth: turning shake goes completely, and moving shake goes for
+    /// things on that surface.
+    pub fn stabilising_maps(&self, path: StabPath) -> Vec<crate::transform::Homography> {
+        let n = self.cameras.len();
+        let steady = self.steady_path(path);
+        let [w, h] = [self.frame[0] as f64, self.frame[1] as f64];
+        let f = self.camera(0).focal() as f64;
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let corners = [[0.0f32, 0.0], [w as f32, 0.0], [w as f32, h as f32], [0.0, h as f32]];
+        (0..n)
+            .map(|i| {
+                let real = self.pose(i);
+                let seen: Vec<V3> = self.points.iter().filter(|p| p.first as usize <= i && i <= p.last as usize).map(|p| [p.pos[0] as f64, p.pos[1] as f64, p.pos[2] as f64]).collect();
+                let all: Vec<V3> = self.points.iter().map(|p| [p.pos[0] as f64, p.pos[1] as f64, p.pos[2] as f64]).collect();
+                let pts = if seen.len() >= 3 { &seen } else { &all };
+                // The typical depth (the middle of the points' depths).
+                let mut z: Vec<f64> = pts.iter().map(|x| real.view(*x)[2]).filter(|z| *z > 1e-6).collect();
+                z.sort_by(f64::total_cmp);
+                let d = z.get(z.len() / 2).copied().unwrap_or(f);
+                // The surface the points lie on, if they're near flat: its middle and facing.
+                let plane = (pts.len() >= 4)
+                    .then(|| {
+                        let c = scale(pts.iter().fold([0.0; 3], |a, x| add(a, *x)), 1.0 / pts.len() as f64);
+                        let mut cov = [0.0f64; 9];
+                        for x in pts {
+                            let q = sub(*x, c);
+                            for a in 0..3 {
+                                for b in 0..3 {
+                                    cov[a * 3 + b] += q[a] * q[b];
+                                }
+                            }
+                        }
+                        let (vals, vecs) = sym_eigen(&cov, 3);
+                        (vals[0] < 0.05 * vals[1]).then(|| (c, [vecs[0], vecs[3], vecs[6]]))
+                    })
+                    .flatten();
+                let to = corners.map(|u| {
+                    let dir = mv(&tr(&real.r), [(u[0] as f64 - cx) / f, (u[1] as f64 - cy) / f, 1.0]);
+                    // Where the corner's ray meets the surface (not behind the
+                    // camera, nor out at a grazing angle), else at the typical depth.
+                    let on_plane = plane.and_then(|(c, nrm)| {
+                        let den = dot(nrm, dir);
+                        let t = dot(nrm, sub(c, real.c)) / den;
+                        (den.abs() > 1e-6 && t > 0.05 * d && t < 20.0 * d).then(|| add(real.c, scale(dir, t)))
+                    });
+                    let x = on_plane.unwrap_or_else(|| add(real.c, scale(dir, d)));
+                    let q = steady[i].view(x);
+                    let z = q[2].max(1e-6);
+                    [(cx + f * q[0] / z) as f32, (cy + f * q[1] / z) as f32]
+                });
+                crate::transform::Homography::from_quads(&corners, &to).unwrap_or(crate::transform::Homography::IDENTITY)
+            })
+            .collect()
+    }
+
     /// The frame nearest media time `t`, if it's within the track (half a frame either side).
     pub fn frame_at(&self, t: Time) -> Option<usize> {
         let i = self.times.partition_point(|&x| x < t);
@@ -1933,5 +2045,58 @@ mod tests {
         let fixed = solve(&tracks, frames, [w as f32, h as f32], SolveOptions { fov: Some(fov as f32), tripod: false }, &stop, &mut |_| {}).unwrap();
         let (ang, gap) = compare(&fixed, &truth);
         assert!(fixed.error < 0.5 && ang < 0.2 && gap < 0.01, "known lens: error {}, angle {ang}°, path {gap}", fixed.error);
+    }
+
+    /// A camera drifting right with fast shake (turning and moving), and
+    /// points at about one depth: 3D stabilising keeps the drift, loses the shake.
+    #[test]
+    fn stabilising_with_the_solved_camera() {
+        let n = 80;
+        let size = [1280.0f32, 720.0];
+        let f = focal_of(45.0, size[1] as f64);
+        let mut rng = Rng(77);
+        let mut uni = move || (rng.next() >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
+        let shake: Vec<(V3, V3)> = (0..n).map(|_| ([uni() * 6.0, uni() * 6.0, 0.0], [uni() * 0.012, uni() * 0.012, uni() * 0.01])).collect();
+        let poses: Vec<Pose> = (0..n)
+            .map(|i| {
+                let s = i as f64 / (n - 1) as f64;
+                let base = look_at([-200.0 + 400.0 * s, -50.0, -1000.0], [-60.0 + 120.0 * s, 0.0, 800.0]);
+                let (dc, dw) = shake[i];
+                Pose { r: mm(&exp_so3(dw), &base.r), c: add(base.c, dc) }
+            })
+            .collect();
+        let cameras: Vec<CamPose> = poses.iter().map(|p| cam_pose(p, f)).collect();
+        let mut points = Vec::new();
+        let mut r2 = Rng(5);
+        let mut u2 = move || (r2.next() >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
+        for _ in 0..60 {
+            points.push(ScenePoint { pos: [(u2() * 1600.0) as f32, (u2() * 700.0) as f32, (800.0 + u2() * 60.0) as f32], error: 0.2, first: 0, last: (n - 1) as u32 });
+        }
+        let ct = CameraTrack { times: (0..n).map(|k| Time::from_secs_f64(k as f64 / 25.0)).collect(), cameras, fov: 45.0, frame: size, points, error: 0.2, tripod: false, placed: n as u32, camera: None };
+        // Where a point lands in the output: filmed, then mapped.
+        let track_of = |maps: &[crate::transform::Homography], p: [f32; 3]| -> Vec<[f32; 2]> { (0..n).map(|i| maps[i].apply(ct.project(i, p).unwrap())).collect() };
+        // Shake: the frame-to-frame jerk (second difference), averaged.
+        let jerk = |v: &[[f32; 2]]| (1..v.len() - 1).map(|i| ((v[i + 1][0] - 2.0 * v[i][0] + v[i - 1][0]).powi(2) + (v[i + 1][1] - 2.0 * v[i][1] + v[i - 1][1]).powi(2)).sqrt()).sum::<f32>() / (v.len() - 2) as f32;
+        let ident = vec![crate::transform::Homography::IDENTITY; n];
+        let smooth = ct.stabilising_maps(StabPath::Smooth(8.0));
+        let lock = ct.stabilising_maps(StabPath::Lock(0));
+        for k in [0usize, 17, 42] {
+            let p = ct.points[k].pos;
+            let (raw, st) = (track_of(&ident, p), track_of(&smooth, p));
+            let (jr, js) = (jerk(&raw), jerk(&st));
+            assert!(jr > 5.0 && js < jr / 15.0, "point {k}: shake {jr} → {js}");
+            // The drift stays: the point still crosses the frame.
+            let (a, b) = (st[0][0] - st[n - 1][0], raw[0][0] - raw[n - 1][0]);
+            assert!((a - b).abs() < 0.15 * b.abs(), "move kept: {a} vs {b}");
+            // Locked: it stays put (to within the scene's depth spread).
+            let lk = track_of(&lock, p);
+            let spread = lk.iter().map(|q| ((q[0] - lk[0][0]).powi(2) + (q[1] - lk[0][1]).powi(2)).sqrt()).fold(0.0f32, f32::max);
+            assert!(spread < 4.0, "locked point {k} wanders {spread} px");
+        }
+        // No smoothing: nothing changes.
+        for m in ct.stabilising_maps(StabPath::Smooth(0.0)) {
+            let q = m.apply([300.0, 200.0]);
+            assert!((q[0] - 300.0).abs() < 1e-2 && (q[1] - 200.0).abs() < 1e-2);
+        }
     }
 }

@@ -3420,6 +3420,55 @@ mod tests {
     }
 
     #[test]
+    fn stabilising_with_the_solved_camera() {
+        use reelforge_core::camtrack::{CamPose, CameraTrack, ScenePoint, StabPath};
+        use reelforge_core::track::StabZoom;
+        let mut e = editor();
+        e.new_project_with(1920, 1080, reelforge_core::FrameRate::new(25, 1));
+        e.add_plane([40, 40, 40, 255]);
+        let id = e.selection.unwrap();
+        let n = 50;
+        // A slow pan with shake in the aim and roll.
+        let wob = |k: usize, a: f32| (k as f32 * 2.3 + a).sin() * 0.5 + (k as f32 * 5.1 + a).cos() * 0.5;
+        let times: Vec<Time> = (0..n).map(|k| Time::from_secs_f64(k as f64 / 25.0)).collect();
+        let cameras: Vec<CamPose> = (0..n).map(|k| CamPose { position: [3.0 * k as f32, -60.0, -1300.0], target: [4.0 * k as f32 + 12.0 * wob(k, 0.0), 10.0 * wob(k, 1.0), 400.0], roll: 0.8 * wob(k, 2.0) }).collect();
+        let points: Vec<ScenePoint> = (0..20).map(|k| ScenePoint { pos: [-600.0 + 60.0 * k as f32, -200.0 + 20.0 * (k % 7) as f32, 400.0], error: 0.2, first: 0, last: (n - 1) as u32 }).collect();
+        let ct = CameraTrack { times: times.clone(), cameras, fov: 40.0, frame: [1920.0, 1080.0], points, error: 0.2, tripod: false, placed: n as u32, camera: None };
+        e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = Some(Box::new(ct.clone()));
+        let before = e.seq().find_clip(id).unwrap().1.anim.clone();
+        e.stabilise_with_camera(id, StabPath::Smooth(10.0), StabZoom::Fixed);
+        let c = e.seq().find_clip(id).unwrap().1.clone();
+        assert_eq!(c.anim.pin.0.len(), n, "{}", e.status);
+        let layer = e.layer_size(&c);
+        // Fixed zoom: the picture covers the frame every frame.
+        for &t in &times {
+            let q = c.transform_at(t).corners(layer, [1920.0, 1080.0]);
+            assert!(reelforge_core::track::cover_zoom(&q, [1920.0, 1080.0]) <= 1.001, "at {t:?}");
+        }
+        // A point seen through the stabilised picture moves smoothly.
+        let filmed = |k: usize| ct.project(k, ct.points[5].pos).unwrap();
+        let shown = |c: &Clip, k: usize| {
+            let tr = c.transform_at(times[k]);
+            tr.layer_map(layer, [1920.0, 1080.0]).apply([filmed(k)[0] - 960.0, filmed(k)[1] - 540.0])
+        };
+        let jerk = |f: &dyn Fn(usize) -> [f32; 2]| (1..n - 1).map(|k| { let (a, b, c) = (f(k - 1), f(k), f(k + 1)); ((a[0] - 2.0 * b[0] + c[0]).powi(2) + (a[1] - 2.0 * b[1] + c[1]).powi(2)).sqrt() }).sum::<f32>() / (n - 2) as f32;
+        let (raw, steady) = (jerk(&filmed), jerk(&|k| shown(&c, k)));
+        assert!(raw > 3.0 && steady < raw / 8.0, "shake {raw} → {steady}");
+        // Undo puts it back; Lock holds the point still.
+        e.undo();
+        assert_eq!(e.seq().find_clip(id).unwrap().1.anim, before);
+        e.stabilise_with_camera(id, StabPath::Lock(0), StabZoom::Off);
+        let c = e.seq().find_clip(id).unwrap().1.clone();
+        let p0 = shown(&c, 0);
+        let wander = (0..n).map(|k| { let p = shown(&c, k); ((p[0] - p0[0]).powi(2) + (p[1] - p0[1]).powi(2)).sqrt() }).fold(0.0f32, f32::max);
+        assert!(wander < 1.0, "locked point wanders {wander} px");
+        // A clip without a solve.
+        e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = None;
+        e.stabilise_with_camera(id, StabPath::Lock(0), StabZoom::Off);
+        assert!(e.status.contains("Analyse"));
+    }
+
+    #[test]
     fn new_from_a_preset_recent_list_and_templates() {
         let dir = std::env::temp_dir().join(format!("rf_start_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

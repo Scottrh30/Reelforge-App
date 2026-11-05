@@ -894,6 +894,7 @@ export const api = {
   camtrackRemove: (id: number) => invoke("camtrack_remove", { id }),
   camtrackExport: (id: number, format: CamFormat, picked: number[]) => invoke("camtrack_export", { id, format, picked }),
   camtrackImport: () => invoke("camtrack_import"),
+  camtrackStabilise: (id: number, smoothing: number, zoom: StabZoom) => invoke("camtrack_stabilise", { id, smoothing, zoom }),
   maskTrack: (id: number, index: number, forward: boolean, motion: MaskMotion) => invoke("mask_track", { id, index, forward, motion }),
   trackApply: (id: number, target: number, mask: number | null, blade: number | null, smoothing: number, axes?: TrackAxes, zoom: StabZoom = "Off") => invoke("track_apply", { id, target, mask, blade, smoothing, axes, zoom }),
   exportOptions: () => invoke<ExportOptions>("export_options"),

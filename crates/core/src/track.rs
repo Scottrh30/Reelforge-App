@@ -1277,7 +1277,7 @@ pub fn follow_keys(tracked: &Clip, tracker: &Tracker, layer: [f32; 2], frame: [f
 
 /// Zoom a stabilised clip's keys (about the frame's centre) so its picture
 /// covers the frame at every tracked moment `times` (see [`StabZoom`]).
-fn zoom_to_cover(anim: &mut TransformAnim, target: &Clip, layer: [f32; 2], frame: [f32; 2], times: &[Time], pinned: bool, opts: ApplyOptions) {
+pub fn zoom_to_cover(anim: &mut TransformAnim, target: &Clip, layer: [f32; 2], frame: [f32; 2], times: &[Time], pinned: bool, opts: ApplyOptions) {
     let moved = Clip { anim: anim.clone(), ..target.clone() };
     let at = |t: Time| moved.transform_at(t.max(target.timeline_start).min(target.timeline_end()));
     let need: Vec<f32> = times.iter().map(|&t| cover_zoom(&at(t).corners(layer, frame), frame)).collect();
