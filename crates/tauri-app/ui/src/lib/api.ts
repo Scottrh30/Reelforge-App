@@ -948,6 +948,8 @@ export const api = {
   exportPathDialog: (current: string, extension: string) => invoke<string | null>("export_path_dialog", { current, extension }),
   exportPresetSave: (name: string, spec: Spec, includeAudio: boolean) => invoke("export_preset_save", { name, spec, includeAudio }),
   exportPresetDelete: (name: string) => invoke("export_preset_delete", { name }),
+  exportEstimate: (spec: Spec, path: string, includeAudio: boolean, markedOnly: boolean) =>
+    invoke<{ need: number; free: number | null; fits: boolean }>("export_estimate", { spec, path, includeAudio, markedOnly }),
   exportAdd: (spec: Spec, path: string, includeAudio: boolean, markedOnly: boolean, preset: string | null, start: boolean) =>
     invoke("export_add", { spec, path, includeAudio, markedOnly, preset, start }),
   exportJob: (id: number, op: "cancel" | "remove" | "retry" | "up") => invoke("export_job", { id, op }),

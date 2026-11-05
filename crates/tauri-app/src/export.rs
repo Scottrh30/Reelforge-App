@@ -251,54 +251,91 @@ fn queue<R>(f: impl FnOnce(&mut Queue) -> R) -> R {
 
 /// Add an export of the sequence shown to the queue. `start`: run the queue
 /// now (Export) rather than just adding to it (Add to queue).
+/// The export settings for `spec` to `path` as the dialog has them (the
+/// sequence's size, the marked range, what the format can carry).
+fn build_settings(e: &Editor, spec: &Spec, path: &std::path::Path, include_audio: bool, marked_only: bool) -> Res<ExportSettings> {
+    let s = e.seq();
+    let (w, h) = spec.size.resolve(s.width, s.height);
+    let (start, end) = if marked_only { s.marked_range().unwrap_or((Time::ZERO, s.duration())) } else { (Time::ZERO, s.duration()) };
+    if end <= start {
+        return Err("There's nothing to export: the timeline is empty".into());
+    }
+    let has_audio = !reelforge_export::mix_clips(&e.project, e.active, 48_000).is_empty();
+    if spec.video.is_none() && !has_audio {
+        return Err("Nothing to export: the timeline has no sound".into());
+    }
+    let settings = ExportSettings {
+        path: path.to_path_buf(),
+        width: w,
+        height: h,
+        quality: spec.quality,
+        include_audio: (include_audio || spec.video.is_none()) && has_audio && !spec.video.is_some_and(|v| v.is_sequence()),
+        start,
+        end,
+        video: spec.video,
+        hardware: spec.hardware && spec.video.is_some_and(|v| v.has_hardware_encoders()),
+        fit: spec.fit,
+        sequence: e.active,
+        color: if spec.video.is_some_and(|v| v.supports_10bit() || v.supports_hdr()) { spec.color } else { ColorOut::Sdr8 },
+        bitrate_kbps: spec.bitrate_kbps.filter(|_| spec.video.is_some_and(|v| v.uses_bitrate())),
+        alpha: spec.alpha && spec.video.is_some_and(|v| v.supports_alpha()),
+    };
+    if let Some(v) = spec.video.filter(|v| v.is_dnxhd()) {
+        let fps = s.frame_rate.fps();
+        reelforge_media::dnxhd_bitrate(w & !1, h & !1, fps, spec.quality, v == VideoCodec::Dnxhd10)?;
+    }
+    Ok(settings)
+}
+
+/// `path` with the extension the format's container needs (kept if the format can go in it).
+fn with_extension(path: &str, video: Option<VideoCodec>) -> PathBuf {
+    let mut path = PathBuf::from(path.trim());
+    let allowed = video.map_or(&["wav"][..], |v| v.extensions());
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+    if !ext.is_some_and(|e| allowed.contains(&e.as_str())) {
+        path.set_extension(extension(video));
+    }
+    path
+}
+
+/// How big the export would be (bytes, roughly, on the big side) and how
+/// much is free where it goes, for the export dialog.
+#[derive(serde::Serialize)]
+pub struct Estimate {
+    need: u64,
+    free: Option<u64>,
+    /// Room for it (with the spare an export keeps).
+    fits: bool,
+}
+
+#[tauri::command]
+pub fn export_estimate(spec: Spec, path: String, include_audio: bool, marked_only: bool) -> Res<Estimate> {
+    // No file chosen yet: measured against the temporary folder.
+    let path = if path.trim().is_empty() { std::env::temp_dir().join("x").to_string_lossy().into_owned() } else { path };
+    let path = with_extension(&path, spec.video);
+    ed(|e| {
+        let settings = build_settings(e, &spec, &path, include_audio, marked_only)?;
+        let need = reelforge_engine::disk::estimate_export_bytes(&settings, e.seq().frame_rate.fps());
+        let free = reelforge_engine::disk::free_bytes(&settings.path);
+        Ok(Estimate { need, free, fits: free.is_none_or(|f| f >= need + reelforge_engine::disk::EXPORT_SPARE) })
+    })?
+}
+
 #[tauri::command]
 pub fn export_add(spec: Spec, path: String, include_audio: bool, marked_only: bool, preset: Option<String>, start: bool) -> Res<()> {
-    let mut path = PathBuf::from(path.trim());
-    if path.as_os_str().is_empty() {
+    if path.trim().is_empty() {
         return Err("Choose where to save the export".into());
     }
     // The extension picks the container: keep it if the format can go in it.
-    let allowed = spec.video.map_or(&["wav"][..], |v| v.extensions());
-    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase());
-    if !ext.is_some_and(|e| allowed.contains(&e.as_str())) {
-        path.set_extension(extension(spec.video));
-    }
+    let path = with_extension(&path, spec.video);
     let (project, settings) = ed(|e| -> Res<(Project, ExportSettings)> {
         e.commit_live_edit();
         let missing: Vec<String> = reelforge_core::undo::missing_media(&e.project).iter().filter_map(|id| e.project.media(*id).map(|m| m.name.clone())).collect();
         if !missing.is_empty() {
             return Err(format!("Can't export: missing media ({}). Relink it first.", missing.join(", ")));
         }
+        let settings = build_settings(e, &spec, &path, include_audio, marked_only)?;
         let s = e.seq();
-        let (w, h) = spec.size.resolve(s.width, s.height);
-        let (start, end) = if marked_only { s.marked_range().unwrap_or((Time::ZERO, s.duration())) } else { (Time::ZERO, s.duration()) };
-        if end <= start {
-            return Err("There's nothing to export: the timeline is empty".into());
-        }
-        let has_audio = !reelforge_export::mix_clips(&e.project, e.active, 48_000).is_empty();
-        if spec.video.is_none() && !has_audio {
-            return Err("Nothing to export: the timeline has no sound".into());
-        }
-        let settings = ExportSettings {
-            path: path.clone(),
-            width: w,
-            height: h,
-            quality: spec.quality,
-            include_audio: (include_audio || spec.video.is_none()) && has_audio && !spec.video.is_some_and(|v| v.is_sequence()),
-            start,
-            end,
-            video: spec.video,
-            hardware: spec.hardware && spec.video.is_some_and(|v| v.has_hardware_encoders()),
-            fit: spec.fit,
-            sequence: e.active,
-            color: if spec.video.is_some_and(|v| v.supports_10bit() || v.supports_hdr()) { spec.color } else { ColorOut::Sdr8 },
-            bitrate_kbps: spec.bitrate_kbps.filter(|_| spec.video.is_some_and(|v| v.uses_bitrate())),
-            alpha: spec.alpha && spec.video.is_some_and(|v| v.supports_alpha()),
-        };
-        if let Some(v) = spec.video.filter(|v| v.is_dnxhd()) {
-            let fps = s.frame_rate.fps();
-            reelforge_media::dnxhd_bitrate(w & !1, h & !1, fps, spec.quality, v == VideoCodec::Dnxhd10)?;
-        }
         // Room for it, so it doesn't fail part-way with the drive full.
         let need = reelforge_engine::disk::estimate_export_bytes(&settings, s.frame_rate.fps());
         if let Some(free) = reelforge_engine::disk::free_bytes(&settings.path) {

@@ -161,6 +161,21 @@
     return [0, seq.duration];
   });
   const secs = $derived(Math.max(0, range[1] - range[0]) / tps());
+  // The estimated file size and the free space where it goes (asked again,
+  // a moment after anything that changes them).
+  let estimate = $state<{ need: number; free: number | null; fits: boolean } | null>(null);
+  $effect(() => {
+    if (!app.exportOpen || !spec || secs === 0) {
+      estimate = null;
+      return;
+    }
+    const args = [$state.snapshot(spec) as Spec, path, includeAudio, markedOnly && hasMarks] as const;
+    const t = setTimeout(() => {
+      api.exportEstimate(...args).then((r) => (estimate = r), () => (estimate = null));
+    }, 200);
+    return () => clearTimeout(t);
+  });
+  const gb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
   const sizeMb = $derived(spec?.bitrate_kbps ? ((spec.bitrate_kbps * 1000) / 8 * secs + (includeAudio && hasAudio ? 24000 * secs : 0)) / 1e6 : 0);
   const frames = $derived(Math.round(secs * fps()));
 
@@ -412,6 +427,11 @@
       </div>
       <div class="buttons">
         {#if secs === 0}<span class="muted">The timeline is empty.</span>{/if}
+        {#if estimate}
+          <span class="est" class:short={!estimate.fits} title="An estimate from the format's usual data rate (or the bitrate set), on the big side, and the free space on the drive it's going to">
+            About {gb(estimate.need)}{#if estimate.free !== null} · {gb(estimate.free)} free{/if}{#if !estimate.fits} · not enough room: free some space, or export somewhere else{/if}
+          </span>
+        {/if}
         <span class="grow"></span>
         <button onclick={() => (app.exportOpen = false)}>Cancel</button>
         <button disabled={!canGo} onclick={() => go(false)} title="Queue it and set up another; start the queue from its window">Add to queue</button>
@@ -422,6 +442,13 @@
 {/if}
 
 <style>
+  .est {
+    color: var(--muted);
+    font-size: calc(12px * var(--text-scale));
+  }
+  .est.short {
+    color: var(--red);
+  }
   .scrim {
     position: fixed;
     inset: 0;

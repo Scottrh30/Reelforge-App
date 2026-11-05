@@ -555,6 +555,9 @@ What works now:
   back. **Exports** check first: each format's usual data rate (or the bitrate you set) gives
   an estimate of the file's size, on the big side, and an export that wouldn't fit with
   256 MB to spare isn't started; the message says how much it needs and how much is free.
+  The **export dialog** shows the same estimate and the free space on the destination drive
+  beside its buttons as you change the format, size, range or file ("About 1.4 GB · 37 GB
+  free"), in red when it won't fit.
   A running export whose drive gets within 64 MB of full stops cleanly and says so (Retry
   once there's room), rather than failing part-way with a cryptic error
 - **Disk** (Settings): how much is free on the drive Reelforge keeps its files on, and what

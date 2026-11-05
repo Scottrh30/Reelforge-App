@@ -1475,6 +1475,7 @@ fn main() {
             export::export_preset_save,
             export::export_preset_delete,
             export::export_add,
+            export::export_estimate,
             export::export_job,
             export::export_run,
             export::export_clear,
