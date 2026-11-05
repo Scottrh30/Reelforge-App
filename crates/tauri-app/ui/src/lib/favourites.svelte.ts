@@ -20,6 +20,13 @@ export function toggleFav(it: CatalogItem) {
   app.note = on ? `${it.label} is a favourite: it's listed first in Effects` : `${it.label} is no longer a favourite`;
 }
 
+/// The effects added lately among `items`, newest first (kept by the app
+/// whenever one is added to a clip).
+export function recent(items: CatalogItem[]): CatalogItem[] {
+  const order = app.s?.prefs?.fx_recent ?? [];
+  return order.flatMap((k) => items.filter((it) => favKey(it) === k).slice(0, 1));
+}
+
 /// The favourite effects among `items`, in the order they were starred.
 export function favourites(items: CatalogItem[]): CatalogItem[] {
   const order = app.s?.prefs?.fx_favourites ?? [];

@@ -1046,7 +1046,9 @@ Effects: the Effects section of the Controls panel holds the clip's stack (top a
 first): add from its menu or from the effects browser (**E**, or Edit → Effects…, with a
 search box). **Favourites**: the ☆ beside an effect (on hover in the Effects panel, beside
 Add in the browser) stars it, and starred effects are listed first in both, in a
-Favourites group, kept with the app's settings. **Pictures** (on by default, a tick box at the
+Favourites group, kept with the app's settings. **Recent**: the last 8 effects added to any
+clip (newest first, each once) are listed next, in a Recent group in both (left out of the
+browser while searching). **Pictures** (on by default, a tick box at the
 browser's foot): each effect is shown on the selected clip's frame at the playhead, at its
 defaults, drawn small as it scrolls into view (and again when the clip or playhead changes;
 nothing in the project changes). In the **Effects panel**, hovering an effect for a moment shows a card

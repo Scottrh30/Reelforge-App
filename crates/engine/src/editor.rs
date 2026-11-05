@@ -82,7 +82,12 @@ pub struct Prefs {
     /// Effects starred as favourites (an effect's kind, or `plugin:` and the
     /// plugin's id), listed first in the Effects panel and browser.
     pub fx_favourites: Vec<String>,
+    /// Effects added lately, newest first (as `fx_favourites` names them), at most `RECENT_FX`.
+    pub fx_recent: Vec<String>,
 }
+
+/// How many recently used effects are remembered.
+pub const RECENT_FX: usize = 8;
 
 /// RGBA pixels (`w` × `h`) shrunk by whole steps to about `width` wide
 /// (averaging blocks), as a JPEG.
@@ -136,12 +141,22 @@ impl Default for Prefs {
             zero_copy: true,
             start_screen: true,
             fx_favourites: Vec::new(),
+            fx_recent: Vec::new(),
         }
     }
 }
 
 impl Editor {
     /// Use new preferences: push them into the parts of the engine that use them.
+    /// Remember that effect `key` (a kind's name, or `plugin:` and its id)
+    /// was just added: first in Recent, once.
+    pub fn note_recent_effect(&mut self, key: &str) {
+        let r = &mut self.prefs.fx_recent;
+        r.retain(|k| k != key);
+        r.insert(0, key.to_string());
+        r.truncate(RECENT_FX);
+    }
+
     pub fn set_prefs(&mut self, prefs: Prefs) {
         self.prefs = prefs;
         self.apply_prefs();
@@ -4022,6 +4037,28 @@ mod tests {
         assert_eq!(c.transform.position, [140.0, 0.0]);
         assert_eq!(c.transform.orientation, [0.0, 0.0]);
         assert!(c.transform.three_d);
+    }
+
+/// Recently used effects: newest first, each once, at most eight; kept
+    /// with the settings.
+    #[test]
+    fn recent_effects_are_remembered() {
+        let mut e = editor();
+        for k in ["Glow", "Blur", "plugin:com.example.swirl", "Glow"] {
+            e.note_recent_effect(k);
+        }
+        assert_eq!(e.prefs.fx_recent, ["Glow", "plugin:com.example.swirl", "Blur"]);
+        for k in 0..10 {
+            e.note_recent_effect(&format!("Fx{k}"));
+        }
+        assert_eq!(e.prefs.fx_recent.len(), RECENT_FX);
+        assert_eq!(e.prefs.fx_recent[0], "Fx9");
+        let json = serde_json::to_string(&e.prefs).unwrap();
+        let back: Prefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.fx_recent, e.prefs.fx_recent);
+        // Older settings without it read fine.
+        let old: Prefs = serde_json::from_str("{}").unwrap();
+        assert!(old.fx_recent.is_empty());
     }
 
     #[test]

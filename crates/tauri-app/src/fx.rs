@@ -216,6 +216,11 @@ pub(crate) fn edit<R>(e: &mut Editor, id: u64, f: impl FnOnce(&mut Vec<Effect>, 
 /// end of the clip's stack: one undo step.
 #[tauri::command]
 pub fn effect_add(id: u64, kind: EffectKind, plugin: Option<String>) -> Res<()> {
+    // As favourites name it: the kind, or the plugin.
+    let key = match &plugin {
+        Some(p) => format!("plugin:{p}"),
+        None => serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
+    };
     let fx = match plugin {
         Some(pid) if kind == EffectKind::OpenFx => Effect::new_ofx(&*reelforge_core::ofx::find(&pid).ok_or_else(|| format!("The OpenFX plugin \"{pid}\" isn't installed"))?),
         Some(pid) => Effect::new_plugin(&*reelforge_core::plugin::find(&pid).ok_or_else(|| format!("The plugin \"{pid}\" isn't installed"))?),
@@ -239,6 +244,10 @@ pub fn effect_add(id: u64, kind: EffectKind, plugin: Option<String>) -> Res<()> 
         edit(e, id, |list, _, _| list.push(fx));
         e.commit_live_edit();
         e.status = format!("Added {name}");
+        if !key.is_empty() {
+            e.note_recent_effect(&key);
+            crate::save_settings(e);
+        }
     })
 }
 

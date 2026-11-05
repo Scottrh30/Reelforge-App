@@ -6,7 +6,7 @@
   import { api, type CatalogGroup, type CatalogItem, type TransitionKind } from "../lib/api";
   import { ask } from "../lib/actions.svelte";
   import PresetList from "./PresetList.svelte";
-  import { favourites, isFav, toggleFav } from "../lib/favourites.svelte";
+  import { favourites, isFav, recent, toggleFav } from "../lib/favourites.svelte";
   import { effectThumb, playEffect } from "../lib/thumbs";
   import { menu } from "../lib/menu.svelte";
 
@@ -58,9 +58,10 @@
     !q || [it.label, it.description, g.label, it.author, it.plugin ? "plugin" : ""].some((s) => s.toLowerCase().includes(q));
   const shown = $derived.by(() => {
     const list = groups.map((g) => ({ ...g, items: g.items.filter((it) => hit(g, it)) })).filter((g) => g.items.length);
-    // Starred ones first (as well as in their own group).
+    // Starred ones first, then those used lately (as well as in their own group).
     const favs = favourites(list.flatMap((g) => g.items));
-    return favs.length ? [{ label: "Favourites", items: favs }, ...list] : list;
+    const recents = q ? [] : recent(list.flatMap((g) => g.items));
+    return [...(favs.length ? [{ label: "Favourites", items: favs }] : []), ...(recents.length ? [{ label: "Recent", items: recents }] : []), ...list];
   });
   const plugins = $derived(groups.reduce((n, g) => n + g.items.filter((i) => i.plugin).length, 0));
 

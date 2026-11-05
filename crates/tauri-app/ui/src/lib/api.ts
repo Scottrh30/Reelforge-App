@@ -434,6 +434,8 @@ export interface Prefs {
   start_screen: boolean;
   /// Starred effects: an effect's kind, or "plugin:" and the plugin's id.
   fx_favourites: string[];
+  /// Effects added lately, newest first.
+  fx_recent?: string[];
 }
 
 export interface SettingsInfo {

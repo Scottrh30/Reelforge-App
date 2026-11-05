@@ -5,7 +5,7 @@
   // onto a clip on the timeline.
   import { app, run } from "../lib/session.svelte";
   import { api, type CatalogGroup, type CatalogItem, type FxPreset, type TransitionKind } from "../lib/api";
-  import { favourites, isFav, toggleFav } from "../lib/favourites.svelte";
+  import { favourites, isFav, recent, toggleFav } from "../lib/favourites.svelte";
   import { effectThumb, playEffect } from "../lib/thumbs";
 
   let groups = $state<CatalogGroup[]>([]);
@@ -43,13 +43,15 @@
   }
   const q = $derived(search.trim().toLowerCase());
   // While searching, every group with a match is open.
-  const isOpen = (label: string) => !!q || (open[label] ?? label === "Favourites");
+  const isOpen = (label: string) => !!q || (open[label] ?? (label === "Favourites" || label === "Recent"));
 
   type Entry = { label: string; effect?: CatalogItem; transition?: TransitionKind; preset?: FxPreset };
   const sortedPresets = $derived([...presets].sort((a, b) => Number(b.favourite) - Number(a.favourite)));
   const favs = $derived(favourites(groups.flatMap((g) => g.items)));
+  const recents = $derived(recent(groups.flatMap((g) => g.items)));
   const all = $derived<{ label: string; items: Entry[] }[]>([
     ...(favs.length ? [{ label: "Favourites", items: favs.map((it) => ({ label: it.label, effect: it })) }] : []),
+    ...(recents.length ? [{ label: "Recent", items: recents.map((it) => ({ label: it.label, effect: it })) }] : []),
     ...(presets.length ? [{ label: "Presets", items: sortedPresets.map((p) => ({ label: p.favourite ? `★ ${p.name}` : p.name, preset: p })) }] : []),
     ...groups.map((g) => ({ label: g.label, items: g.items.map((it) => ({ label: it.label, effect: it })) })),
     { label: "Transitions", items: transitions.map((k) => ({ label: k.label, transition: k })) },
