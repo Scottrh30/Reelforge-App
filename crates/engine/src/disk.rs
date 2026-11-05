@@ -78,7 +78,7 @@ pub struct DiskLow {
 /// Proxy files not belonging to any media in `project` (in any proxy format):
 /// left over from other projects, or from media since removed.
 pub fn unused_proxies(project: &Project) -> Vec<(PathBuf, u64)> {
-    unused_proxies_in(&reelforge_media::proxy::cache_dir().join("proxies"), project)
+    unused_proxies_in(&reelforge_media::proxy::media_cache_dir().join("proxies"), project)
 }
 
 /// The same, in proxy folder `dir`.
@@ -98,9 +98,43 @@ pub fn unused_proxies_in(dir: &Path, project: &Project) -> Vec<(PathBuf, u64)> {
         .collect()
 }
 
+/// Move the proxies and rendered previews kept in `from` to `to` (renamed
+/// where they can be, copied then deleted across drives): (files moved,
+/// bytes, files that couldn't be).
+pub fn move_media_cache(from: &Path, to: &Path) -> (usize, u64, usize) {
+    let (mut n, mut bytes, mut failed) = (0, 0, 0);
+    for sub in ["proxies", "render"] {
+        let (a, b) = (from.join(sub), to.join(sub));
+        let Ok(rd) = std::fs::read_dir(&a) else { continue };
+        if std::fs::create_dir_all(&b).is_err() {
+            failed += 1;
+            continue;
+        }
+        for f in rd.flatten() {
+            let Ok(m) = f.metadata() else { continue };
+            if !m.is_file() {
+                continue;
+            }
+            let dst = b.join(f.file_name());
+            let ok = std::fs::rename(f.path(), &dst).is_ok() || (std::fs::copy(f.path(), &dst).is_ok() && std::fs::remove_file(f.path()).is_ok());
+            if ok {
+                n += 1;
+                bytes += m.len();
+            } else {
+                // A half-made copy goes; the original stays where it was.
+                if f.path().exists() {
+                    let _ = std::fs::remove_file(&dst);
+                }
+                failed += 1;
+            }
+        }
+    }
+    (n, bytes, failed)
+}
+
 /// Delete the proxies of media not in `project`: (files, bytes) deleted.
 pub fn delete_unused_proxies(project: &Project) -> (usize, u64) {
-    delete_unused_proxies_in(&reelforge_media::proxy::cache_dir().join("proxies"), project)
+    delete_unused_proxies_in(&reelforge_media::proxy::media_cache_dir().join("proxies"), project)
 }
 
 /// The same, in proxy folder `dir`.
@@ -164,6 +198,23 @@ pub fn size_text(bytes: u64) -> String {
 mod tests {
     use super::*;
     use reelforge_core::Time;
+
+    #[test]
+    fn the_media_cache_moves_to_another_folder() {
+        let base = std::env::temp_dir().join(format!("rf_move_cache_{}", std::process::id()));
+        let (from, to) = (base.join("a"), base.join("b"));
+        for (sub, name, len) in [("proxies", "x-1.mp4", 100), ("render", "r1", 30), ("render", "r2", 20)] {
+            std::fs::create_dir_all(from.join(sub)).unwrap();
+            std::fs::write(from.join(sub).join(name), vec![1u8; len]).unwrap();
+        }
+        std::fs::write(from.join("keep.txt"), b"other things stay").unwrap();
+        assert_eq!(move_media_cache(&from, &to), (3, 150, 0));
+        assert_eq!(std::fs::read(to.join("proxies/x-1.mp4")).unwrap().len(), 100);
+        assert!(to.join("render/r2").exists() && !from.join("render/r1").exists() && from.join("keep.txt").exists());
+        // Nothing there: nothing to do.
+        assert_eq!(move_media_cache(&base.join("none"), &to), (0, 0, 0));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn free_space_is_found_for_paths_that_dont_exist_yet() {

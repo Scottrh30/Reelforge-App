@@ -137,7 +137,7 @@ pub fn proxies_use(on: bool) -> Res<()> {
 /// The proxy folder (to open it).
 #[tauri::command]
 pub fn proxy_folder() -> String {
-    reelforge_media::proxy::cache_dir().join("proxies").display().to_string()
+    reelforge_media::proxy::media_cache_dir().join("proxies").display().to_string()
 }
 
 // ---- Relinking --------------------------------------------------------------------

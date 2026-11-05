@@ -9,7 +9,7 @@ impl Editor {
     /// The folders the app writes to by itself: rendered previews, proxies,
     /// autosaves, and the project's own folder.
     fn written_places(&self) -> Vec<PathBuf> {
-        let mut v = vec![reelforge_media::proxy::cache_dir().join("proxies"), crate::safety::autosave_dir()];
+        let mut v = vec![reelforge_media::proxy::media_cache_dir().join("proxies"), crate::safety::autosave_dir()];
         if let Some(d) = &self.render_cache.disk {
             v.push(d.dir().to_owned());
         }

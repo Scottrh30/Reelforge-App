@@ -36,6 +36,12 @@
     } else if (app.settingsOpen) app.settingsOpen = false;
   }
   const size = (b: number) => (b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `${Math.round(b / (1 << 20))} MB`);
+  let moveFiles = $state(true);
+  async function moveCache(choose: boolean) {
+    const r = await run(api.cacheFolderSet(choose, moveFiles));
+    if (prefs && r !== undefined) prefs.cache_folder = r;
+    info = await api.settingsInfo();
+  }
   async function freeDisk(what: "render" | "proxies" | "autosaves") {
     await run(api.diskFree(what));
     info = await api.settingsInfo();
@@ -146,6 +152,17 @@
           <button class="tiny" disabled={info.autosaves <= 1} onclick={() => freeDisk("autosaves")} title="Delete every autosave but this session's (crash recovery for earlier sessions goes with them)">Delete old</button>
         </div>
       {/if}
+      <div class="field" title="Proxies and rendered previews can go on another drive: a fast SSD for smooth playback, or a bigger disk. Autosaves stay in the app's own folder.">
+        <span>Cache folder</span>
+        <div class="cachedir">
+          <span class="path" title={info?.media_cache_dir}>{info?.media_cache_dir ?? "…"}</span>
+          <div class="row">
+            <button class="tiny" onclick={() => moveCache(true)}>Choose…</button>
+            <button class="tiny" disabled={!prefs.cache_folder} onclick={() => moveCache(false)} title="Back to the app's own cache folder">Default</button>
+            <label class="check" title="Move the proxies and rendered previews there now to the new folder (in the background); otherwise they stay, and new ones are made in the new place"><input type="checkbox" bind:checked={moveFiles} /> Move what's there</label>
+          </div>
+        </div>
+      </div>
       <label class="field" title="When the drive Reelforge saves to (rendered previews, proxies, autosaves, the project) has less free than this, a warning offers to clear space, and previews and proxies stop filling it. 0 never warns.">
         <span>Warn below</span>
         <div class="row"><input type="number" min="0" max="1000" step="0.5" bind:value={prefs.disk_warn_gb} style="width:80px" /> GB free {prefs.disk_warn_gb === 0 ? "(never)" : ""}</div>
@@ -303,6 +320,18 @@
     padding: 0 6px;
     margin-left: 6px;
     font-size: calc(11px * var(--text-scale));
+  }
+  .cachedir {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .cachedir .path {
+    font-family: ui-monospace, monospace;
+    font-size: calc(11px * var(--text-scale));
+    color: var(--muted);
+    overflow-wrap: anywhere;
   }
   .disk {
     display: grid;

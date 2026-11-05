@@ -80,6 +80,20 @@ pub fn format() -> ProxyFormat {
     ProxyFormat::ALL[(FORMAT.load(Ordering::Relaxed) as usize).min(ProxyFormat::ALL.len() - 1)]
 }
 
+/// A folder chosen for proxies and rendered previews (Settings), if any.
+static MEDIA_CACHE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Keep proxies and rendered previews in `dir` (`None`: the cache folder).
+pub fn set_media_cache_dir(dir: Option<PathBuf>) {
+    *MEDIA_CACHE.write().unwrap() = dir.filter(|d| !d.as_os_str().is_empty());
+}
+
+/// Where proxies and rendered previews go: the folder chosen in Settings, or
+/// the cache folder. (Autosaves, sessions and logs stay in the cache folder.)
+pub fn media_cache_dir() -> PathBuf {
+    MEDIA_CACHE.read().unwrap().clone().unwrap_or_else(cache_dir)
+}
+
 /// Where proxies (and other caches) are kept.
 pub fn cache_dir() -> PathBuf {
     let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
@@ -111,7 +125,7 @@ pub fn proxy_path_as(src: &Path, f: ProxyFormat) -> PathBuf {
     }
     let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let stem: String = stem.chars().filter(|c| c.is_alphanumeric() || "-_ ".contains(*c)).take(40).collect();
-    cache_dir().join("proxies").join(format!("{stem}-{:016x}{}", h.finish(), f.suffix()))
+    media_cache_dir().join("proxies").join(format!("{stem}-{:016x}{}", h.finish(), f.suffix()))
 }
 
 /// Which format a proxy file is in (from its name).

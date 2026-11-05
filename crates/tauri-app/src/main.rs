@@ -422,6 +422,8 @@ struct SettingsInfo {
     unused_proxy_bytes: u64,
     autosaves: usize,
     autosave_bytes: u64,
+    /// Where proxies and rendered previews go now.
+    media_cache_dir: String,
     /// The codecs Reelforge decodes itself.
     native: Vec<&'static str>,
 }
@@ -434,7 +436,7 @@ fn settings_info() -> Res<SettingsInfo> {
         let (dused, dframes) = e.render_cache.disk.as_ref().map_or((0, 0), |d| d.stats());
         let unused = reelforge_engine::disk::unused_proxies(&e.project);
         let (autosaves, autosave_bytes) = reelforge_engine::safety::autosave_usage();
-        let dir = reelforge_media::proxy::cache_dir().join("proxies");
+        let dir = reelforge_media::proxy::media_cache_dir().join("proxies");
         let (proxy_bytes, proxies) = std::fs::read_dir(&dir)
             .map(|rd| rd.flatten().filter_map(|f| f.metadata().ok()).filter(|m| m.is_file()).fold((0, 0), |(b, n), m| (b + m.len(), n + 1)))
             .unwrap_or((0, 0));
@@ -453,11 +455,12 @@ fn settings_info() -> Res<SettingsInfo> {
             proxy_bytes,
             proxy_dir: dir.display().to_string(),
             autosave_dir: reelforge_engine::safety::autosave_dir().display().to_string(),
-            free_bytes: reelforge_engine::disk::free_bytes(&reelforge_media::proxy::cache_dir()).unwrap_or(0),
+            free_bytes: reelforge_engine::disk::free_bytes(&reelforge_media::proxy::media_cache_dir()).unwrap_or(0),
             unused_proxies: unused.len(),
             unused_proxy_bytes: unused.iter().map(|u| u.1).sum(),
             autosaves,
             autosave_bytes,
+            media_cache_dir: reelforge_media::proxy::media_cache_dir().display().to_string(),
             native: reelforge_media::codecs::Codec::ALL.into_iter().filter(|c| c.available()).map(|c| c.label()).collect(),
         }
     })
@@ -467,6 +470,50 @@ fn settings_info() -> Res<SettingsInfo> {
 #[tauri::command]
 fn disk_free(what: String) -> Res<()> {
     ed(|e| e.free_disk_space(&what))
+}
+
+/// Where proxies and rendered previews go: `choose` asks for a folder,
+/// otherwise back to the cache folder. With `move_files` what's there now is
+/// moved across in the background. Returns the folder now chosen (`None`:
+/// the cache folder), or the same as before if the choice was cancelled.
+#[tauri::command]
+fn cache_folder_set(choose: bool, move_files: bool) -> Res<Option<String>> {
+    let new = if choose {
+        match rfd::FileDialog::new().set_title("Keep proxies and rendered previews in").pick_folder() {
+            Some(p) => Some(p),
+            None => return ed(|e| e.prefs.cache_folder.as_ref().map(|p| p.display().to_string())),
+        }
+    } else {
+        None
+    };
+    let (from, to) = ed(|e| {
+        let from = reelforge_media::proxy::media_cache_dir();
+        e.prefs.cache_folder = new.clone();
+        e.apply_prefs();
+        save_settings(e);
+        let to = reelforge_media::proxy::media_cache_dir();
+        e.status = format!("Proxies and rendered previews now go in {}", to.display());
+        e.touch();
+        (from, to)
+    })?;
+    if move_files && from != to {
+        std::thread::spawn(move || {
+            let (n, bytes, failed) = reelforge_engine::disk::move_media_cache(&from, &to);
+            let _ = ed(|e| {
+                e.reopen_render_disk();
+                e.proxies.forget_ready();
+                e.status = format!(
+                    "Moved {n} file{} ({}) to {}{}",
+                    if n == 1 { "" } else { "s" },
+                    reelforge_engine::disk::size_text(bytes),
+                    to.display(),
+                    if failed > 0 { format!("; {failed} couldn't be moved (in use?) and stay where they were") } else { String::new() }
+                );
+                e.touch();
+            });
+        });
+    }
+    Ok(new.map(|p| p.display().to_string()))
 }
 
 /// Hide the low disk space warning (until space runs short again after recovering).
@@ -1348,6 +1395,7 @@ fn main() {
             clear_render_cache,
             disk_free,
             disk_dismiss,
+            cache_folder_set,
             settings_info,
             add_to_timeline,
             new_composition_from_media,

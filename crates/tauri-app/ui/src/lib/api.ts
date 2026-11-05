@@ -418,6 +418,8 @@ export interface Prefs {
   shadow_quality: number;
   /// Warn below this many GB free (0: never).
   disk_warn_gb: number;
+  /// Where proxies and rendered previews go (null: the cache folder).
+  cache_folder?: string | null;
   export_presets: UserPreset[];
   scrub_audio: boolean;
   timeline_thumbnails: boolean;
@@ -460,6 +462,7 @@ export interface SettingsInfo {
   unused_proxy_bytes: number;
   autosaves: number;
   autosave_bytes: number;
+  media_cache_dir: string;
   native: string[];
 }
 
@@ -836,6 +839,7 @@ export const api = {
   tick: () => invoke<Live>("tick"),
   diskFree: (what: "render" | "proxies" | "autosaves") => invoke("disk_free", { what }),
   diskDismiss: () => invoke("disk_dismiss"),
+  cacheFolderSet: (choose: boolean, moveFiles: boolean) => invoke<string | null>("cache_folder_set", { choose, moveFiles }),
   state: () => invoke<State>("get_state"),
   frame: (max_w: number, max_h: number, have: number, jpeg: boolean) => invoke<ArrayBuffer>("frame", { maxW: max_w, maxH: max_h, have, jpeg }),
   waveform: (media: number) => invoke<ArrayBuffer>("waveform", { media }),

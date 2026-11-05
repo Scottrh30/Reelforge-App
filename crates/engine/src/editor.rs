@@ -82,6 +82,9 @@ pub struct Prefs {
     /// Effects starred as favourites (an effect's kind, or `plugin:` and the
     /// plugin's id), listed first in the Effects panel and browser.
     pub fx_favourites: Vec<String>,
+    /// Where proxies and rendered previews go (`None`: the cache folder).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_folder: Option<PathBuf>,
     /// Warn when the drive Reelforge saves to has less than this many GB free (0: never).
     pub disk_warn_gb: f32,
     /// Effects added lately, newest first (as `fx_favourites` names them), at most `RECENT_FX`.
@@ -145,6 +148,7 @@ impl Default for Prefs {
             fx_favourites: Vec::new(),
             fx_recent: Vec::new(),
             disk_warn_gb: 2.0,
+            cache_folder: None,
         }
     }
 }
@@ -166,6 +170,12 @@ impl Editor {
     }
 
     pub fn apply_prefs(&mut self) {
+        let before = reelforge_media::proxy::media_cache_dir();
+        reelforge_media::proxy::set_media_cache_dir(self.prefs.cache_folder.clone());
+        if reelforge_media::proxy::media_cache_dir() != before {
+            // Proxies are looked for again in the new place (rendered previews reopen below).
+            self.proxies.forget_ready();
+        }
         self.render_cache.set_budget_mb(self.prefs.render_cache_mb);
         self.apply_render_disk();
         self.playback.scrub_audio = self.prefs.scrub_audio;
@@ -184,6 +194,12 @@ impl Editor {
         self.preview.full_when_paused = self.prefs.full_when_paused;
     }
 
+    /// Open the rendered previews kept on disk again (after files moved in).
+    pub fn reopen_render_disk(&mut self) {
+        self.render_cache.disk = None;
+        self.apply_render_disk();
+    }
+
     /// Keep rendered frames on disk as the settings say (the same store across projects).
     fn apply_render_disk(&mut self) {
         let mb = self.prefs.render_cache_disk_mb as u64;
@@ -191,7 +207,7 @@ impl Editor {
             self.render_cache.disk = None;
             return;
         }
-        let dir = self.render_disk_dir.clone().unwrap_or_else(|| reelforge_media::proxy::cache_dir().join("render"));
+        let dir = self.render_disk_dir.clone().unwrap_or_else(|| reelforge_media::proxy::media_cache_dir().join("render"));
         match &self.render_cache.disk {
             Some(d) if d.dir() == dir => d.set_budget(mb << 20),
             _ => self.render_cache.disk = Some(crate::render_cache::DiskStore::open(&dir, mb << 20)),

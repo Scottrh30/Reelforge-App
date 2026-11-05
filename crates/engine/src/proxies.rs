@@ -129,6 +129,12 @@ impl Proxies {
         self.states.values().any(|s| matches!(s, ProxyState::Queued | ProxyState::Building(_)))
     }
 
+    /// Forget which proxies are ready (they're looked for again), e.g. after
+    /// the proxy folder moved.
+    pub fn forget_ready(&mut self) {
+        self.states.retain(|_, s| !matches!(s, ProxyState::Ready(_)));
+    }
+
     /// Forget a file's state (e.g. to retry a failed proxy).
     pub fn forget(&mut self, src: &Path) {
         self.states.remove(src);
@@ -189,7 +195,7 @@ impl Proxies {
 
     /// Delete every proxy file (in use ones may stay until they're closed).
     pub fn delete_all(&mut self) {
-        let dir = proxy::cache_dir().join("proxies");
+        let dir = proxy::media_cache_dir().join("proxies");
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {
                 let _ = std::fs::remove_file(e.path());
