@@ -44,10 +44,10 @@ impl SolidInput {
 const SAMPLES: u32 = 4;
 /// Outline uniforms: a slot per shadow-atlas tile (256-byte aligned for dynamic offsets).
 const FLAT_STRIDE: u64 = 256;
-const FLAT_SLOTS: u64 = 16;
+const FLAT_SLOTS: u64 = crate::MAX_OCCLUDERS as u64;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Shadow casters the text's shader takes (as `MAX_OCC` in solid.wgsl), six vec4 each, after a vec4 head.
-pub(crate) const MAX_SHADOW_CASTERS: usize = 8;
+pub(crate) const MAX_SHADOW_CASTERS: usize = crate::MAX_OCCLUDERS;
 const SHADOW_SIZE: u64 = 16 + MAX_SHADOW_CASTERS as u64 * 6 * 16;
 /// mat4, 4 + 3 vec4 of axes and normals, camera, studio, two colours, 32 vec4 of lights.
 const UNIFORM_SIZE: usize = 64 + 7 * 16 + 4 * 16 + 32 * 16;

@@ -23,11 +23,11 @@ struct Solid {
 // Shadows other layers (and the text itself) cast on it: the shadow casters,
 // six vec4s each as in composite.wgsl (centre + half width, X axis + half
 // height, Y axis + opacity, crop, effect map, atlas tile), and their outlines.
-const MAX_OCC = 8u;
+const MAX_OCC = 25u;
 struct Shadows {
     // How many casters in x.
     head: vec4<f32>,
-    occ: array<vec4<f32>, 48>,
+    occ: array<vec4<f32>, 150>,
 };
 @group(1) @binding(0) var<uniform> sh: Shadows;
 @group(1) @binding(1) var shadow_atlas: texture_2d<f32>;

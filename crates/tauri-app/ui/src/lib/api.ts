@@ -410,6 +410,8 @@ export interface Prefs {
   render_cache_mb: number;
   /// Rendered frames kept on disk too, MB (0: not).
   render_cache_disk_mb: number;
+  /// 3D shadows: 0 Low, 1 Standard, 2 High.
+  shadow_quality: number;
   export_presets: UserPreset[];
   scrub_audio: boolean;
   timeline_thumbnails: boolean;

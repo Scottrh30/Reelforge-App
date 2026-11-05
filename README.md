@@ -881,8 +881,11 @@ What works now:
   - **Shadows**: a light with **Casts shadows** on (the default; **Shadow darkness**, 80%)
     darkens what 3D layers block of it on the lit 3D layers behind them. The blocker's own
     picture counts, so a cut-out or text casts its shape and its opacity how dark; each pixel
-    traces its way to the light past the other layers' planes. Up to 8 layers cast shadows at a
-    time, their outlines drawn into a 1024-pixel atlas each frame. **Shadow softness** (0–100%)
+    traces its way to the light past the other layers' planes. Up to 25 layers (and 3D text)
+    cast shadows at a time, their outlines drawn into an atlas of 5 × 5 tiles each frame. **3D
+    shadow quality** in Settings sets the tiles' size: Low 256 px, Standard 512 (the default) or
+    High 1024, sharper for big layers and long shadows (the atlas takes 1.6, 6.5 or 26 MB of
+    graphics memory); exports use it too. **Shadow softness** (0–100%)
     gives the light a size: a shadow's edge fades over a width that grows with how far it falls
     from what casts it (sharp where it touches, blurrier further away), sampled with a turned
     disk of 24 taps so it reads as fine grain rather than steps. Extruded **3D text** casts

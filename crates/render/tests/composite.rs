@@ -1668,3 +1668,49 @@ fn crt_curves_lines_and_snow() {
     let differ = a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| (x[0] as i32 - y[0] as i32).abs() > 10).count();
     assert!(differ > (w * h / 10) as usize, "{differ}");
 }
+
+/// More than 8 shadow casters: 24 small cards in front of a wall, under a
+/// slanting sun, each leave their own shadow (beside them, where nothing
+/// covers the wall); at High shadow quality too.
+#[test]
+fn two_dozen_layers_cast_shadows() {
+    use reelforge_core::space3d::{layer_space, Camera, Light, Scene3d};
+    let Some(mut c) = setup() else { return };
+    let (frame, f) = ([400u32, 200u32], [400.0f32, 200.0f32]);
+    let cam = Camera::default_for(f);
+    let white = solid(4, 4, [255, 255, 255, 255]);
+    let red = solid(4, 4, [255, 0, 0, 255]);
+    let wall = Transform { three_d: true, ..Default::default() };
+    let cards: Vec<Transform> = (0..24).map(|n| Transform { three_d: true, position: [-150.0 + 60.0 * (n % 6) as f32, -60.0 + 40.0 * (n / 6) as f32], depth: -20.0, ..Default::default() }).collect();
+    let render = |c: &mut reelforge_render::Compositor, shadow: f32| {
+        let sun = Light { kind: 2, color: [1.0; 3], position: [0.0; 3], direction: [0.0, 0.8, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 1000.0, shadow, softness: 0.0 };
+        let scene = Scene3d { camera: cam, lights: vec![sun] };
+        let ws = layer_space(&wall, [400.0, 200.0], &scene);
+        let cs: Vec<_> = cards.iter().map(|t| layer_space(t, [6.0, 6.0], &scene)).collect();
+        let mut layers = vec![LayerInput { space: Some(&ws), ..layer(1, &white, [4, 4], [400.0, 200.0], wall, BlendMode::Normal) }];
+        for (n, (t, s)) in cards.iter().zip(&cs).enumerate() {
+            layers.push(LayerInput { space: Some(s), ..layer(10 + n as u64, &red, [4, 4], [6.0, 6.0], *t, BlendMode::Normal) });
+        }
+        c.render(frame, &layers);
+        c.read_output().unwrap()
+    };
+    let lit = render(&mut c, 0.0);
+    let check = |img: &[u8]| {
+        let mut shaded = 0;
+        for n in 0..24 {
+            // Where the sun puts its shadow: 0.8 × 20 below it, on the wall.
+            let (x, y) = ((200.0 - 150.0 + 60.0 * (n % 6) as f32) as u32, (100.0 - 60.0 + 40.0 * (n / 6) as f32 + 16.0) as u32);
+            let (a, b) = (px(&lit, 400, x, y), px(img, 400, x, y));
+            assert!(a[1] > 150, "the wall is uncovered there: {a:?} at {x},{y}");
+            if (b[1] as i32) < a[1] as i32 - 60 {
+                shaded += 1;
+            }
+        }
+        shaded
+    };
+    assert_eq!(check(&render(&mut c, 1.0)), 24, "every card's shadow");
+    reelforge_render::set_shadow_quality(2);
+    let high = check(&render(&mut c, 1.0));
+    reelforge_render::set_shadow_quality(1);
+    assert_eq!(high, 24, "at High quality too");
+}

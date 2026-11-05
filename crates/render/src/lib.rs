@@ -128,10 +128,35 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// A 3D layer's pixels fainter than this don't hide what's behind them.
 const DEPTH_CUT: f64 = 0.02;
 
-/// 3D layers that can cast shadows in one frame (each gets a tile of the atlas).
-const MAX_OCCLUDERS: usize = 8;
-/// The shadow atlas: 4 × 4 tiles of this many pixels.
-const ATLAS_TILE: u32 = 256;
+/// 3D layers and text that can cast shadows in one frame (each gets a tile of the atlas).
+pub const MAX_OCCLUDERS: usize = (ATLAS_GRID * ATLAS_GRID) as usize;
+/// The shadow atlas: this many tiles across and down.
+const ATLAS_GRID: u32 = 5;
+/// Shadow quality: each caster's tile in the atlas, in pixels (sharper
+/// shadows from big layers the bigger it is). Set for the whole app.
+static SHADOW_TILE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(SHADOW_QUALITIES[1]);
+/// Low, Standard and High shadow quality (tile sizes).
+pub const SHADOW_QUALITIES: [u32; 3] = [256, 512, 1024];
+
+/// Set the shadow quality (0 Low, 1 Standard, 2 High) for every compositor.
+pub fn set_shadow_quality(q: usize) {
+    SHADOW_TILE.store(SHADOW_QUALITIES[q.min(2)], std::sync::atomic::Ordering::Relaxed);
+}
+
+fn atlas_texture(device: &wgpu::Device, tile: u32) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("shadow atlas"),
+            size: wgpu::Extent3d { width: tile * ATLAS_GRID, height: tile * ATLAS_GRID, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
 /// Where occluders start in a lit layer's point list (after the plane, the
 /// camera and room for every light), in vec4s.
 const OCCLUDER_BASE: usize = 4 + 4 * reelforge_core::space3d::MAX_LIGHTS;
@@ -316,6 +341,9 @@ pub struct Compositor {
     sampler: wgpu::Sampler,
     /// 3D layers' outlines, for the shadows they cast (see `occluder.wgsl`).
     shadow_atlas_view: wgpu::TextureView,
+    /// Its tile size, and what the layers' uniforms are bound with (to swap the atlas).
+    shadow_tile: u32,
+    uniform_layout: wgpu::BindGroupLayout,
     occluder_pipeline: wgpu::RenderPipeline,
     layers: HashMap<u64, LayerTex>,
     /// Mask textures, by layer key.
@@ -393,17 +421,8 @@ impl Compositor {
                 },
             ],
         });
-        let shadow_atlas = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("shadow atlas"),
-            size: wgpu::Extent3d { width: ATLAS_TILE * 4, height: ATLAS_TILE * 4, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let shadow_atlas_view = shadow_atlas.create_view(&Default::default());
+        let shadow_tile = SHADOW_TILE.load(std::sync::atomic::Ordering::Relaxed);
+        let shadow_atlas_view = atlas_texture(device, shadow_tile);
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("layer texture"),
             entries: &[
@@ -716,6 +735,8 @@ impl Compositor {
             uniform_stride,
             sampler,
             shadow_atlas_view,
+            shadow_tile,
+            uniform_layout,
             occluder_pipeline,
             layers: HashMap::new(),
             masks: HashMap::new(),
@@ -1094,6 +1115,20 @@ impl Compositor {
 
     /// Composite `items` (bottom first) into a `frame_size` frame and submit the GPU work.
     pub fn render_items(&mut self, frame_size: [u32; 2], items: &[DrawItem]) {
+        // The shadow quality changed: a new atlas, bound in its place.
+        let tile = SHADOW_TILE.load(std::sync::atomic::Ordering::Relaxed);
+        if tile != self.shadow_tile {
+            self.shadow_tile = tile;
+            self.shadow_atlas_view = atlas_texture(&self.device, tile);
+            self.uniform_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("layer uniforms"),
+                layout: &self.uniform_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.uniforms, offset: 0, size: wgpu::BufferSize::new(UNIFORM_SIZE) }) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.shadow_atlas_view) },
+                ],
+            });
+        }
         // The picture's pixels: the frame, or a fraction of it (playback quality).
         // Layers are placed in frame units, so only the targets shrink.
         let k = if self.output_scale > 0.0 && self.output_scale < 1.0 { self.output_scale } else { 1.0 };
@@ -1586,7 +1621,8 @@ impl Compositor {
                     let sp = &s.space;
                     let o = sp.world([(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5, s.mesh.depth * 0.5]);
                     let (u, v) = (sp.axes[0], sp.axes[1]);
-                    let tile = [(k % 4) as f32 * 0.25, (k / 4) as f32 * 0.25, 0.25, 0.0];
+                    let g = 1.0 / ATLAS_GRID as f32;
+                    let tile = [(k as u32 % ATLAS_GRID) as f32 * g, (k as u32 / ATLAS_GRID) as f32 * g, g, 0.0];
                     return [
                         [o[0], o[1], o[2], (b[2] - b[0]) * 0.5],
                         [u[0], u[1], u[2], (b[3] - b[1]) * 0.5],
@@ -1600,7 +1636,8 @@ impl Compositor {
                     .collect::<Vec<f32>>();
                 }
                 let [o, u, v] = space.map_or([[0.0; 3]; 3], |s| s.plane);
-                let tile = [(k % 4) as f32 * 0.25, (k / 4) as f32 * 0.25, 0.25, 0.0];
+                let g = 1.0 / ATLAS_GRID as f32;
+                    let tile = [(k as u32 % ATLAS_GRID) as f32 * g, (k as u32 / ATLAS_GRID) as f32 * g, g, 0.0];
                 [
                     [o[0], o[1], o[2], size[0] * 0.5],
                     [u[0], u[1], u[2], size[1] * 0.5],
@@ -1749,12 +1786,13 @@ impl Compositor {
         }
         // The shadow casters' outlines into the atlas (from what they'll be drawn with).
         if !occluders.is_empty() {
+            let tile_px = self.shadow_tile;
             let mut pass = pass_on(&mut enc, &self.shadow_atlas_view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
             pass.set_pipeline(&self.occluder_pipeline);
             for (k, &(_, key, fx)) in occluders.iter().enumerate() {
                 if solids.contains_key(&key) {
-                    let (x, y) = ((k % 4) as u32 * ATLAS_TILE, (k / 4) as u32 * ATLAS_TILE);
-                    pass.set_viewport(x as f32, y as f32, ATLAS_TILE as f32, ATLAS_TILE as f32, 0.0, 1.0);
+                    let (x, y) = ((k as u32 % ATLAS_GRID) * tile_px, (k as u32 / ATLAS_GRID) * tile_px);
+                    pass.set_viewport(x as f32, y as f32, tile_px as f32, tile_px as f32, 0.0, 1.0);
                     self.solid.draw_outline(&mut pass, key, k);
                     pass.set_pipeline(&self.occluder_pipeline);
                     continue;
@@ -1764,8 +1802,8 @@ impl Compositor {
                     None => self.layers.get(&key).map(|t| &t.bind_group),
                 };
                 let Some(bind) = bind else { continue };
-                let (x, y) = ((k % 4) as u32 * ATLAS_TILE, (k / 4) as u32 * ATLAS_TILE);
-                pass.set_viewport(x as f32, y as f32, ATLAS_TILE as f32, ATLAS_TILE as f32, 0.0, 1.0);
+                let (x, y) = ((k as u32 % ATLAS_GRID) * tile_px, (k as u32 / ATLAS_GRID) * tile_px);
+                pass.set_viewport(x as f32, y as f32, tile_px as f32, tile_px as f32, 0.0, 1.0);
                 pass.set_bind_group(0, bind, &[]);
                 pass.draw(0..3, 0..1);
             }

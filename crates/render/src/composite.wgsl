@@ -149,7 +149,7 @@ fn occluder_alpha(j: u32, q: vec3<f32>) -> f32 {
         return 0.0;
     }
     // Inside the tile (half a texel in), from the layer's picture.
-    let texel = 0.5 / 1024.0;
+    let texel = 0.5 / f32(textureDimensions(shadow_atlas).x);
     let at = tile.xy + clamp(tex * tile.z, vec2(texel), vec2(tile.z - texel));
     return textureSampleLevel(shadow_atlas, layer_sampler, at, 0.0).r;
 }

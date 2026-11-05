@@ -50,6 +50,8 @@ pub struct Prefs {
     pub render_cache_mb: usize,
     /// Rendered frames kept on disk too (in the cache folder), MB; 0: not at all.
     pub render_cache_disk_mb: usize,
+    /// 3D shadows: 0 Low, 1 Standard, 2 High (how sharp shadows from big layers can be).
+    pub shadow_quality: u8,
     /// Export settings saved under a name.
     pub export_presets: Vec<crate::presets::UserPreset>,
     /// Play the sound under the playhead while scrubbing.
@@ -117,6 +119,7 @@ impl Default for Prefs {
             auto_proxies: true,
             proxy_format: Default::default(),
             autosave_minutes: 2,
+            shadow_quality: 1,
             render_cache_mb: 2048,
             render_cache_disk_mb: 8192,
             export_presets: Vec::new(),
@@ -148,6 +151,7 @@ impl Editor {
         self.render_cache.set_budget_mb(self.prefs.render_cache_mb);
         self.apply_render_disk();
         self.playback.scrub_audio = self.prefs.scrub_audio;
+        reelforge_render::set_shadow_quality(self.prefs.shadow_quality as usize);
         reelforge_media::hw::set_enabled(self.prefs.hw_decode);
         reelforge_media::codecs::set_enabled(self.prefs.native_decoders);
         reelforge_core::frame::zero_copy::set_enabled(self.prefs.zero_copy);

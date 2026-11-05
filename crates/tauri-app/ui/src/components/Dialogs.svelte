@@ -88,6 +88,15 @@
         </p>
       {/if}
 
+      <label class="field" title="How sharp shadows from 3D layers and 3D text can be: each caster's outline is drawn into a tile of 256 (Low), 512 (Standard) or 1024 (High) pixels. Higher is crisper for big layers and long shadows, and takes more graphics memory (1.6, 6.5 or 26 MB). Up to 25 layers cast shadows in a frame. Exports use it too.">
+        <span>3D shadow quality</span>
+        <select bind:value={prefs.shadow_quality}>
+          <option value={0}>Low</option>
+          <option value={1}>Standard</option>
+          <option value={2}>High</option>
+        </select>
+      </label>
+
       <h3>Proxies</h3>
       <label class="check" title="Small all-keyframe copies of heavy footage. Export always uses the original files."><input type="checkbox" bind:checked={prefs.use_proxies} /> Play proxies in the viewer when they're ready</label>
       <label class="check" title="Above 1080p, and 720p or more in HEVC, AV1, VP9, ProRes, DNxHD or CineForm. You can make one for any clip from the Media panel."><input type="checkbox" bind:checked={prefs.auto_proxies} /> Make proxies for heavy footage by themselves</label>
