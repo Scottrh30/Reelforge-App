@@ -82,6 +82,34 @@ pub struct Prefs {
     pub fx_favourites: Vec<String>,
 }
 
+/// RGBA pixels (`w` × `h`) shrunk by whole steps to about `width` wide
+/// (averaging blocks), as a JPEG.
+fn small_jpeg(rgba: &[u8], w: u32, h: u32, width: u32) -> Option<Vec<u8>> {
+    let k = (w / width.max(16)).max(1);
+    let (sw, sh) = (w / k, h / k);
+    let mut small = vec![0u8; (sw * sh * 4) as usize];
+    for y in 0..sh {
+        for x in 0..sw {
+            let mut acc = [0u32; 4];
+            for dy in 0..k {
+                for dx in 0..k {
+                    let i = (((y * k + dy) * w + x * k + dx) * 4) as usize;
+                    for c in 0..4 {
+                        acc[c] += rgba[i + c] as u32;
+                    }
+                }
+            }
+            let o = ((y * sw + x) * 4) as usize;
+            for c in 0..4 {
+                small[o + c] = (acc[c] / (k * k)) as u8;
+            }
+        }
+    }
+    let mut jpg = Vec::new();
+    jpeg_encoder::Encoder::new(&mut jpg, 78).encode(&small, sw as u16, sh as u16, jpeg_encoder::ColorType::Rgba).ok()?;
+    Some(jpg)
+}
+
 impl Default for Prefs {
     fn default() -> Self {
         Self {
@@ -299,6 +327,8 @@ pub struct Editor {
     preset_preview: Option<(ClipId, ClipVisual, Option<TitleSpec>, bool)>,
     /// Composition clips' filmstrip pictures: (sequence, time, width) → (recipe, JPEG).
     comp_thumbs: HashMap<(usize, i64, u32), (u64, Vec<u8>)>,
+    /// Effects-browser pictures: (clip, effect, width) → (frame recipe, JPEG).
+    fx_thumbs: HashMap<(ClipId, String, u32), (u64, Vec<u8>)>,
 }
 
 impl Editor {
@@ -351,6 +381,7 @@ impl Editor {
             tracking: None,
             preset_preview: None,
             comp_thumbs: HashMap::new(),
+            fx_thumbs: HashMap::new(),
         }
     }
 
@@ -934,33 +965,45 @@ impl Editor {
             }
         }
         let (rgba, [w, h]) = self.preview.render_for_cache(&self.project, seq, t, &sources)?;
-        // Shrink by whole steps to about `width` (averaging blocks).
-        let k = (w / width.max(16)).max(1);
-        let (sw, sh) = (w / k, h / k);
-        let mut small = vec![0u8; (sw * sh * 4) as usize];
-        for y in 0..sh {
-            for x in 0..sw {
-                let mut acc = [0u32; 4];
-                for dy in 0..k {
-                    for dx in 0..k {
-                        let i = (((y * k + dy) * w + x * k + dx) * 4) as usize;
-                        for c in 0..4 {
-                            acc[c] += rgba[i + c] as u32;
-                        }
-                    }
-                }
-                let o = ((y * sw + x) * 4) as usize;
-                for c in 0..4 {
-                    small[o + c] = (acc[c] / (k * k)) as u8;
-                }
-            }
-        }
-        let mut jpg = Vec::new();
-        jpeg_encoder::Encoder::new(&mut jpg, 78).encode(&small, sw as u16, sh as u16, jpeg_encoder::ColorType::Rgba).ok()?;
+        let jpg = small_jpeg(&rgba, w, h, width)?;
         if self.comp_thumbs.len() > 400 {
             self.comp_thumbs.clear();
         }
         self.comp_thumbs.insert(key, (recipe, jpg.clone()));
+        Some(jpg)
+    }
+
+    /// A small JPEG (about `width` pixels wide) of the frame at the playhead
+    /// (or the middle of clip `id`, if the playhead is off it) with effect
+    /// `fx` added to the end of the clip's stack, at its defaults: how the
+    /// effect would look, for the effects browser. Nothing changes in the
+    /// project. Kept until what makes that picture changes.
+    pub fn effect_thumbnail(&mut self, id: ClipId, fx: reelforge_core::effects::Effect, width: u32) -> Option<Vec<u8>> {
+        let (_, c) = self.seq().find_clip(id)?;
+        if c.scene.is_some() {
+            return None;
+        }
+        let ph = self.playback.playhead;
+        let t = if ph >= c.timeline_start && ph < c.timeline_end() { ph } else { c.timeline_start + Time(c.duration.0 / 2) };
+        let mut project = self.project.clone();
+        project.sequences[self.active].find_clip_mut(id)?.1.effects.push(fx.clone());
+        let sources = self.decode_paths();
+        let recipe = reelforge_export::frame_recipe(&project, self.active, t, &sources);
+        let key = (id, format!("{:?}{}", fx.kind, fx.plugin.as_ref().map_or("", |p| p.id.as_str())), width);
+        if let Some((r, jpg)) = self.fx_thumbs.get(&key) {
+            if *r == recipe {
+                return Some(jpg.clone());
+            }
+        }
+        // Drawn at about twice the picture's size (then averaged down): much
+        // quicker than full size for big frames, and still sharp.
+        let scale = (2.0 * width as f32 / self.seq().width.max(1) as f32).min(1.0);
+        let (rgba, [w, h]) = self.preview.render_scaled(&project, self.active, t, &sources, scale)?;
+        let jpg = small_jpeg(&rgba, w, h, width)?;
+        if self.fx_thumbs.len() > 300 {
+            self.fx_thumbs.clear();
+        }
+        self.fx_thumbs.insert(key, (recipe, jpg.clone()));
         Some(jpg)
     }
 
@@ -4120,6 +4163,36 @@ mod tests {
         e.select_only(Some(id));
         e.delete_selection();
         assert_ne!(e.comp_thumbnail(comp, Time::ZERO, 200).unwrap(), first);
+    }
+
+    #[test]
+    fn effect_pictures_for_the_browser() {
+        use reelforge_core::effects::{Effect, EffectKind};
+        let Some(gpu) = reelforge_render::headless_device() else { return };
+        let mut e = Editor::new(Some(gpu), None);
+        e.new_project_with(640, 360, reelforge_core::FrameRate::new(25, 1));
+        e.add_plane([200, 60, 40, 255]);
+        let id = e.selection.unwrap();
+        let before = e.seq().find_clip(id).unwrap().1.effects.len();
+        // A do-nothing effect shows the clip as it is; Halftone changes it.
+        let plain = e.effect_thumbnail(id, Effect::new(EffectKind::ColorCorrect), 160).expect("a picture");
+        assert_eq!(&plain[..2], &[0xff, 0xd8], "a JPEG");
+        // Its size, from the JPEG's frame header (drawn at half size, then halved again).
+        let sof = plain.windows(2).position(|w| w == [0xff, 0xc0]).expect("a frame header");
+        let (h, w) = (u16::from_be_bytes([plain[sof + 5], plain[sof + 6]]), u16::from_be_bytes([plain[sof + 7], plain[sof + 8]]));
+        assert_eq!((w, h), (160, 90));
+        let dots = e.effect_thumbnail(id, Effect::new(EffectKind::Halftone), 160).unwrap();
+        assert_ne!(plain, dots);
+        // From the cache when nothing changed; the project itself is untouched.
+        assert_eq!(e.effect_thumbnail(id, Effect::new(EffectKind::Halftone), 160).unwrap(), dots);
+        assert_eq!(e.seq().find_clip(id).unwrap().1.effects.len(), before);
+        // The clip changes: a new picture.
+        e.project.sequences[e.active].find_clip_mut(id).unwrap().1.effects.push(Effect::new(EffectKind::Vignette));
+        assert_ne!(e.effect_thumbnail(id, Effect::new(EffectKind::Halftone), 160).unwrap(), dots);
+        // Cameras have no picture to show it on.
+        e.add_scene_object(reelforge_core::space3d::SceneObject::Camera, 0);
+        let cam = e.selection.unwrap();
+        assert!(e.effect_thumbnail(cam, Effect::new(EffectKind::Halftone), 160).is_none());
     }
 
     #[test]

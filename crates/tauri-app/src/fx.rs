@@ -242,6 +242,20 @@ pub fn effect_add(id: u64, kind: EffectKind, plugin: Option<String>) -> Res<()> 
     })
 }
 
+/// A small picture of the frame at the playhead with effect `kind` (or
+/// plugin `plugin`) added to clip `id` at its defaults, for the effects browser.
+#[tauri::command]
+pub fn effect_thumb(id: u64, kind: EffectKind, plugin: Option<String>) -> Res<tauri::ipc::Response> {
+    let fx = match plugin {
+        Some(pid) if kind == EffectKind::OpenFx => Effect::new_ofx(&*reelforge_core::ofx::find(&pid).ok_or("not installed")?),
+        Some(pid) => Effect::new_plugin(&*reelforge_core::plugin::find(&pid).ok_or("not installed")?),
+        None if matches!(kind, EffectKind::Plugin | EffectKind::OpenFx) => return Err("no plugin given".into()),
+        None => Effect::new(kind),
+    };
+    let jpg = ed(|e| e.effect_thumbnail(ClipId(id), fx, 192))?.ok_or("no picture")?;
+    Ok(tauri::ipc::Response::new(jpg))
+}
+
 /// One-step changes to effect `index`: "up", "down", "remove", "toggle",
 /// "duplicate" or "reset" (defaults, no keyframes).
 #[tauri::command]

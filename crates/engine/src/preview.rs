@@ -338,24 +338,40 @@ impl Preview {
     /// Render `seq` at `t` exactly (waiting for every decoder), off screen, and
     /// read it back as RGBA with its size: a frame for the render cache.
     pub fn render_for_cache(&mut self, project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId, PathBuf>) -> Option<(Vec<u8>, [u32; 2])> {
+        self.render_scaled(project, seq, t, sources, 1.0)
+    }
+
+    /// As [`Self::render_for_cache`], drawn at `scale` (0–1) of full
+    /// resolution (for small pictures: much quicker for big frames).
+    pub fn render_scaled(&mut self, project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId, PathBuf>, scale: f32) -> Option<(Vec<u8>, [u32; 2])> {
         let gpu = self.gpu.as_mut()?;
         let (compositor, scene) = gpu.cache_render.get_or_insert_with(|| (Compositor::new(&gpu.device, &gpu.queue), Scene::new(&gpu.device, &gpu.queue)));
-        let mut frames = PreviewFrames {
-            slots: &mut self.slots,
-            titles: &mut self.titles,
-            offline: &mut self.offline,
-            sources,
-            exact: true,
-            error: None,
-            blocking: true,
-            max: PREVIEW_MAX,
-        };
+        compositor.output_scale = scale.clamp(1.0 / 16.0, 1.0);
+        let out = Self::render_with(compositor, scene, &mut self.slots, &mut self.titles, &mut self.offline, &mut self.error, project, seq, t, sources);
+        compositor.output_scale = 1.0;
+        out
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_with(
+        compositor: &mut Compositor,
+        scene: &mut Scene,
+        slots: &mut HashMap<ClipId, Slot>,
+        titles: &mut HashMap<ClipId, TitleCache>,
+        offline: &mut HashMap<MediaId, VideoFrame>,
+        error: &mut Option<String>,
+        project: &Project,
+        seq: usize,
+        t: Time,
+        sources: &HashMap<MediaId, PathBuf>,
+    ) -> Option<(Vec<u8>, [u32; 2])> {
+        let mut frames = PreviewFrames { slots, titles, offline, sources, exact: true, error: None, blocking: true, max: PREVIEW_MAX };
         if let Err(e) = scene.render(project, seq, t, compositor, &mut frames, None) {
-            self.error = Some(format!("{e:#}"));
+            *error = Some(format!("{e:#}"));
             return None;
         }
         if let Some(e) = frames.error {
-            self.error = Some(e);
+            *error = Some(e);
             return None;
         }
         let size = compositor.output_size()?;

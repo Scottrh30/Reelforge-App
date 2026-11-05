@@ -1372,6 +1372,7 @@ fn main() {
             export::export_run,
             export::export_clear,
             fx::effect_add,
+            fx::effect_thumb,
             fx::effect_plate,
             fx::effect_key_pick,
             fx_presets::fx_preset_list,

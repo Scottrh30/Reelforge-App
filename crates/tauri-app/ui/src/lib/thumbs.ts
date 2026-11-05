@@ -1,6 +1,6 @@
 // Small pictures of media, decoded on the Rust side in the background and kept here.
 
-import { api, type Ticks } from "./api";
+import { api, type EffectKind, type Ticks } from "./api";
 
 const cache = new Map<string, Promise<string | null>>();
 let queue: Promise<unknown> = Promise.resolve();
@@ -47,6 +47,30 @@ export function compThumb(seq: number, at: Ticks, rev: number): Promise<string |
   queue = p;
   comps.set(key, { rev, p });
   // The older picture's URL is let go once the new one is in.
+  if (had) p.then(() => had.p.then((u) => u && setTimeout(() => URL.revokeObjectURL(u), 2000)));
+  return p;
+}
+
+// Effects-browser pictures: the frame at the playhead with an effect added to
+// the clip (rendered on the Rust side, which keeps them until they change).
+const fxs = new Map<string, { stamp: string; p: Promise<string | null> }>();
+
+/// An object URL for a JPEG of clip `id` with effect `kind` (or plugin) added,
+/// as of `stamp` (the project revision and playhead: a new stamp asks again).
+export function effectThumb(id: number, kind: EffectKind, plugin: string | null, stamp: string): Promise<string | null> {
+  const key = `${id}|${kind}|${plugin ?? ""}`;
+  const had = fxs.get(key);
+  if (had && had.stamp === stamp) return had.p;
+  const p = queue.then(async () => {
+    try {
+      const buf = await api.effectThumb(id, kind, plugin);
+      return URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
+    } catch {
+      return null;
+    }
+  });
+  queue = p;
+  fxs.set(key, { stamp, p });
   if (had) p.then(() => had.p.then((u) => u && setTimeout(() => URL.revokeObjectURL(u), 2000)));
   return p;
 }

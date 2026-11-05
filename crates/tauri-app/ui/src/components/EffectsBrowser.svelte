@@ -7,6 +7,7 @@
   import { ask } from "../lib/actions.svelte";
   import PresetList from "./PresetList.svelte";
   import { favourites, isFav, toggleFav } from "../lib/favourites.svelte";
+  import { effectThumb } from "../lib/thumbs";
   import { menu } from "../lib/menu.svelte";
 
   let groups = $state<CatalogGroup[]>([]);
@@ -62,6 +63,50 @@
     return favs.length ? [{ label: "Favourites", items: favs }, ...list] : list;
   });
   const plugins = $derived(groups.reduce((n, g) => n + g.items.filter((i) => i.plugin).length, 0));
+
+  // Pictures: each effect on the selected clip's frame at the playhead
+  // (remembered on or off).
+  let pictures = $state(true);
+  try {
+    pictures = localStorage.getItem("fxPictures") !== "0";
+  } catch {}
+  function setPictures(on: boolean) {
+    pictures = on;
+    try {
+      localStorage.setItem("fxPictures", on ? "1" : "0");
+    } catch {}
+  }
+  const stamp = $derived(`${app.live?.rev ?? 0}:${app.live?.playhead ?? 0}`);
+  /// Load an item's picture once it scrolls into view (and again when the clip or playhead changes).
+  function picture(node: HTMLImageElement, arg: { id: number; it: CatalogItem; stamp: string }) {
+    let cur = arg;
+    let seen = false;
+    let alive = true;
+    const load = () => {
+      const want = cur;
+      effectThumb(want.id, want.it.kind, want.it.plugin, want.stamp).then((u) => {
+        if (alive && u && want === cur) node.src = u;
+      });
+    };
+    const io = new IntersectionObserver((es) => {
+      if (es.some((e) => e.isIntersecting) && !seen) {
+        seen = true;
+        load();
+      }
+    });
+    io.observe(node);
+    return {
+      update(next: { id: number; it: CatalogItem; stamp: string }) {
+        const changed = next.id !== cur.id || next.stamp !== cur.stamp || next.it.kind !== cur.it.kind || next.it.plugin !== cur.it.plugin;
+        cur = next;
+        if (changed && seen) load();
+      },
+      destroy() {
+        alive = false;
+        io.disconnect();
+      },
+    };
+  }
 
   async function add(it: CatalogItem) {
     if (!target) return;
@@ -126,6 +171,9 @@
           <h3>{g.label}</h3>
           {#each g.items as it}
             <div class="item">
+              {#if pictures && target}
+                <img class="pic" alt="" use:picture={{ id: target.id, it, stamp }} />
+              {/if}
               <div class="text">
                 <span class="name">{it.label}{#if it.plugin}<span class="tag">plugin</span>{/if}</span>
                 <span class="desc">{[it.description, it.author && `by ${it.author}`, it.version].filter(Boolean).join(" · ")}</span>
@@ -141,6 +189,9 @@
       </div>
       <footer>
         <span class="muted">{plugins} plugin{plugins === 1 ? "" : "s"} installed</span>
+        {#if tab === "effects"}
+          <label class="check" title="Each effect shown on the selected clip's frame at the playhead"><input type="checkbox" checked={pictures} onchange={(e) => setPictures(e.currentTarget.checked)} /> Pictures</label>
+        {/if}
         <button onclick={() => (app.pluginsOpen = true)}>Manage plugins…</button>
         <span class="grow"></span>
         <button class="primary" onclick={() => (app.effectsOpen = false)}>Done</button>
@@ -160,6 +211,17 @@
   .tabs {
     display: flex;
     gap: 2px;
+  }
+  .pic {
+    width: 96px;
+    height: 54px;
+    flex: none;
+    object-fit: cover;
+    border-radius: 4px;
+    background: var(--well, #111);
+  }
+  .pic:not([src]) {
+    background: linear-gradient(90deg, var(--raised), var(--line-soft), var(--raised));
   }
   .star {
     background: none;
