@@ -95,7 +95,15 @@ impl Editor {
                         let _ = ptx.send(TrackMsg::Progress(0.6 + p * 0.4));
                     });
                     match sol {
-                        Ok(s) => s.into_track(&tracks, times, px, 0).map(Some).ok_or_else(|| "the camera's motion couldn't be worked out from this shot".into()),
+                        Ok(s) => s
+                            .into_track(&tracks, times, px, 0)
+                            .map(|mut ct| {
+                                if let Some(src) = ct.source.as_mut() {
+                                    src.known_lens = fov.is_some();
+                                }
+                                Some(ct)
+                            })
+                            .ok_or_else(|| "the camera's motion couldn't be worked out from this shot".into()),
                         Err(reelforge_core::camtrack::SolveError::Cancelled) => Ok(None),
                         Err(e) => Err(e.to_string()),
                     }
@@ -107,6 +115,66 @@ impl Editor {
         self.status = if left_out { "Analysing the shot (leaving out the masked areas): following details, then solving the camera…" } else { "Analysing the shot: following details, then solving the camera…" }.into();
     }
 
+    /// Delete clip `id`'s solved points `points` (indices) and any fitting
+    /// worse than `max_error` pixels, and solve the camera again from the
+    /// rest of the details it followed (in the background, like Analyse).
+    pub fn resolve_camera(&mut self, id: ClipId, points: &[usize], max_error: Option<f32>) {
+        self.commit_live_edit();
+        if self.tracking.is_some() {
+            return;
+        }
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        if self.seq().is_locked(id) {
+            self.status = LOCKED.into();
+            return;
+        }
+        let Some(ct) = c.camera_track.clone() else { return };
+        let Some((tracks, gone)) = ct.tracks_without(points, max_error) else {
+            self.status = "This solve doesn't have the details it was solved from (it was imported, or made by an older version): press Analyse again".into();
+            return;
+        };
+        if gone == 0 {
+            self.status = match max_error {
+                Some(m) if points.is_empty() => format!("No points fit worse than {m:.1} px"),
+                _ => "Pick the points to delete in the Viewer first".into(),
+            };
+            return;
+        }
+        let known_lens = ct.source.as_ref().is_some_and(|s| s.known_lens);
+        let opts = SolveOptions { fov: known_lens.then_some(ct.fov), tripod: ct.tripod };
+        let (times, px, camera) = (ct.times.clone(), ct.frame, ct.camera);
+        let (tx, rx) = unbounded();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = cancel.clone();
+        self.playback.pause();
+        std::thread::Builder::new()
+            .name("camera re-solve".into())
+            .spawn(move || {
+                let ptx = tx.clone();
+                let sol = reelforge_core::camtrack::solve(&tracks, times.len(), px, opts, &stop, &mut |p| {
+                    let _ = ptx.send(TrackMsg::Progress(0.6 + p * 0.4));
+                });
+                let r = match sol {
+                    Ok(s) => s
+                        .into_track(&tracks, times, px, 0)
+                        .map(|mut ct| {
+                            if let Some(src) = ct.source.as_mut() {
+                                src.known_lens = known_lens;
+                            }
+                            ct.camera = camera;
+                            Some(ct)
+                        })
+                        .ok_or_else(|| "the camera's motion couldn't be worked out without those points".into()),
+                    Err(reelforge_core::camtrack::SolveError::Cancelled) => Ok(None),
+                    Err(e) => Err(e.to_string()),
+                };
+                let _ = tx.send(TrackMsg::CameraDone(r));
+            })
+            .expect("camera re-solve thread");
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.6, mask: None, through: None, camera: true });
+        self.status = format!("Deleted {gone} point{}; solving the camera again…", if gone == 1 { "" } else { "s" });
+    }
+
     /// A camera solve finished (`None`: stopped).
     pub(super) fn finish_camera_tracking(&mut self, job: &TrackJob, r: Result<Option<CameraTrack>, String>) {
         match r {
@@ -115,6 +183,7 @@ impl Editor {
             Ok(Some(ct)) => {
                 let Some(old) = self.project.sequences.get(job.seq).and_then(|s| s.find_clip(job.clip)).map(|(_, c)| c.camera_track.clone()) else { return };
                 let (n, pts, err, fov, tripod) = (ct.cameras.len(), ct.points.len(), ct.error, ct.fov, ct.tripod);
+                let made = ct.camera.is_some_and(|c| self.project.sequences.get(job.seq).is_some_and(|s| s.find_clip(c).is_some()));
                 let filled = n.saturating_sub(ct.placed as usize);
                 self.execute(Box::new(SetCameraTrack { seq: job.seq, id: job.clip, old, new: Some(Box::new(ct)), label: "Track camera" }));
                 let quality = if err < 0.5 {
@@ -131,6 +200,9 @@ impl Editor {
                     if tripod { " (turning in place)" } else { "" },
                     if filled > 0 { format!(", {filled} frames filled in") } else { String::new() },
                 );
+                if made {
+                    self.status += " (press Camera again to update the camera clip already made)";
+                }
             }
         }
     }

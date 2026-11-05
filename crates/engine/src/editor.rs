@@ -3338,6 +3338,74 @@ mod tests {
         Editor::new(None, None)
     }
 
+/// Delete bad points and re-solve: points fitting worse than a limit go,
+    /// the camera is solved again from the rest of the followed details (in
+    /// the background), keeping the camera clip it made; undo brings the old
+    /// solve back. A solve without its details says to analyse again.
+    #[test]
+    fn deleting_bad_points_solves_the_camera_again() {
+        use reelforge_core::camtrack::{CamPose, CameraTrack, ScenePoint, SolveSource, Track2d};
+        let mut e = editor();
+        e.new_project_with(1280, 720, reelforge_core::FrameRate::new(25, 1));
+        e.add_plane([40, 40, 40, 255]);
+        let id = e.selection.unwrap();
+        let n = 40;
+        let times: Vec<Time> = (0..n).map(|k| Time::from_secs_f64(k as f64 / 25.0)).collect();
+        let cameras: Vec<CamPose> = (0..n).map(|k| CamPose { position: [-300.0 + 15.0 * k as f32, -80.0, -1200.0 + 4.0 * k as f32], target: [0.0, 0.0, 300.0], roll: 0.0 }).collect();
+        let mut ct = CameraTrack { times, cameras, fov: 45.0, frame: [1280.0, 720.0], points: Vec::new(), error: 0.9, tripod: false, placed: n as u32, camera: None, source: None };
+        // A floor and a back wall of details; the last 10 drift off their spot (on something moving).
+        let mut seed = 99u64;
+        let mut uni = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let (mut tracks, mut ids) = (Vec::new(), Vec::new());
+        for k in 0..160 {
+            let p = if k % 2 == 0 { [uni() * 1600.0 - 800.0, 250.0, uni() * 900.0] } else { [uni() * 1600.0 - 800.0, 250.0 - uni() * 700.0, 900.0] };
+            let bad = k >= 150;
+            let pos: Vec<[f32; 2]> = (0..n).map_while(|i| ct.project(i, p).map(|q| if bad { [q[0] + 1.5 * i as f32, q[1] - 0.8 * i as f32] } else { q })).collect();
+            if pos.len() < n {
+                continue;
+            }
+            ids.push(tracks.len() as u32);
+            tracks.push(Track2d { start: 0, pos });
+            ct.points.push(ScenePoint { pos: p, error: if bad { 6.0 } else { 0.2 }, first: 0, last: (n - 1) as u32 });
+        }
+        let total = ct.points.len();
+        assert!(total > 100, "{total}");
+        let without = ct.clone();
+        ct.source = Some(Box::new(SolveSource { tracks, ids, known_lens: true }));
+        ct.camera = Some(ClipId(424242));
+        e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = Some(Box::new(ct.clone()));
+        // Nothing worse than 10 px: nothing to do.
+        e.resolve_camera(id, &[], Some(10.0));
+        assert!(e.tracking.is_none() && e.status.contains("No points"), "{}", e.status);
+        e.resolve_camera(id, &[], Some(1.0));
+        assert!(e.status.contains("Deleted 10 points"), "{}", e.status);
+        let t0 = std::time::Instant::now();
+        while e.tracking.is_some() && t0.elapsed().as_secs() < 60 {
+            e.poll_tracking();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let new = e.seq().find_clip(id).unwrap().1.camera_track.clone().unwrap();
+        assert!(new.points.len() <= total - 10, "{} points", new.points.len());
+        assert!(new.error < 0.2, "error {}: {}", new.error, e.status);
+        assert!((new.fov - 45.0).abs() < 0.01, "kept the known lens: {}", new.fov);
+        assert_eq!(new.camera, Some(ClipId(424242)), "kept the camera it made");
+        let src = new.source.as_ref().unwrap();
+        assert_eq!(src.tracks.len(), total - 10);
+        assert!(src.known_lens);
+        // Undo: the old solve.
+        e.undo();
+        assert_eq!(e.seq().find_clip(id).unwrap().1.camera_track.as_deref(), Some(&ct));
+        // Without the details it came from.
+        e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = Some(Box::new(without));
+        e.resolve_camera(id, &[0], None);
+        assert!(e.tracking.is_none() && e.status.contains("Analyse again"), "{}", e.status);
+    }
+
     #[test]
     fn a_solved_camera_makes_a_camera_and_layers_that_sit_in_the_shot() {
         use reelforge_core::camtrack::{CamPose, CameraTrack, ScenePoint};
@@ -3355,7 +3423,7 @@ mod tests {
             .map(|&p| ScenePoint { pos: p, error: 0.2, first: 0, last: (n - 1) as u32 })
             .collect();
         points.push(ScenePoint { pos: [50.0, -200.0, 600.0], error: 0.3, first: 10, last: 40 });
-        let ct = CameraTrack { times: times.clone(), cameras: cameras.clone(), fov: 40.0, frame: [1920.0, 1080.0], points, error: 0.25, tripod: false, placed: n as u32, camera: None };
+        let ct = CameraTrack { times: times.clone(), cameras: cameras.clone(), fov: 40.0, frame: [1920.0, 1080.0], points, error: 0.25, tripod: false, placed: n as u32, camera: None, source: None };
         e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = Some(Box::new(ct.clone()));
         let floor = [0usize, 1, 2, 3, 4];
         // A solid on the floor, and with it the camera.
@@ -3426,7 +3494,7 @@ mod tests {
         let times: Vec<Time> = (0..n).map(|k| Time::from_secs_f64(k as f64 / 25.0)).collect();
         let cameras: Vec<CamPose> = (0..n).map(|k| CamPose { position: [-200.0 + 9.0 * k as f32, -120.0, -1300.0 + 5.0 * k as f32], target: [30.0, 20.0, 400.0], roll: 3.0 - 0.2 * k as f32 }).collect();
         let points = vec![ScenePoint { pos: [-150.0, 250.0, 300.0], error: 0.2, first: 0, last: 39 }, ScenePoint { pos: [200.0, -80.0, 700.0], error: 0.2, first: 0, last: 39 }];
-        let ct = CameraTrack { times: times.clone(), cameras, fov: 38.0, frame: [1920.0, 1080.0], points, error: 0.2, tripod: false, placed: n as u32, camera: None };
+        let ct = CameraTrack { times: times.clone(), cameras, fov: 38.0, frame: [1920.0, 1080.0], points, error: 0.2, tripod: false, placed: n as u32, camera: None, source: None };
         // Nothing to export yet.
         let dir = std::env::temp_dir().join(format!("rf_camio_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3480,7 +3548,7 @@ mod tests {
         let times: Vec<Time> = (0..n).map(|k| Time::from_secs_f64(k as f64 / 25.0)).collect();
         let cameras: Vec<CamPose> = (0..n).map(|k| CamPose { position: [3.0 * k as f32, -60.0, -1300.0], target: [4.0 * k as f32 + 12.0 * wob(k, 0.0), 10.0 * wob(k, 1.0), 400.0], roll: 0.8 * wob(k, 2.0) }).collect();
         let points: Vec<ScenePoint> = (0..20).map(|k| ScenePoint { pos: [-600.0 + 60.0 * k as f32, -200.0 + 20.0 * (k % 7) as f32, 400.0], error: 0.2, first: 0, last: (n - 1) as u32 }).collect();
-        let ct = CameraTrack { times: times.clone(), cameras, fov: 40.0, frame: [1920.0, 1080.0], points, error: 0.2, tripod: false, placed: n as u32, camera: None };
+        let ct = CameraTrack { times: times.clone(), cameras, fov: 40.0, frame: [1920.0, 1080.0], points, error: 0.2, tripod: false, placed: n as u32, camera: None, source: None };
         e.project.sequences[0].find_clip_mut(id).unwrap().1.camera_track = Some(Box::new(ct.clone()));
         let before = e.seq().find_clip(id).unwrap().1.anim.clone();
         e.stabilise_with_camera(id, StabPath::Smooth(10.0), StabZoom::Fixed);

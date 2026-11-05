@@ -819,6 +819,14 @@ What works now:
     with Add, Subtract and Intersect, and **Invert** solves from only what's inside. The panel
     says when masked areas are being left out. In a test with 120 details on a blob sliding
     across the shot, the solve still comes within 0.3° and 2 % of the true camera
+  - **Delete bad points and re-solve** (Track panel → **Clean up**): points that slide
+    (orange in the Viewer, or on something that moved on its own) pull the camera off. Pick
+    them and **Delete picked and re-solve**, or set **Fitting worse than** (px; it counts how
+    many) and delete all of those at once. The camera is solved again from the rest of the
+    details it followed, in the background, without following the shot again; a lens you gave
+    is kept, as is the camera clip already made (press **Camera again** to update its moves).
+    Undoable. Re-solving resets the ground plane. A solve imported from a file, or made by an
+    older version, doesn't keep its details: press **Analyse** again instead
   - **Export** a solve for other applications: **After Effects** (a script: File → Scripts →
     Run Script File… makes a comp with a camera keyed every frame and a 3D null per point),
     **Blender** (a script to run in the Scripting workspace: the camera, render size and frame

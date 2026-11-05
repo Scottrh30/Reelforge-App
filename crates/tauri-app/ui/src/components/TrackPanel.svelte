@@ -143,6 +143,8 @@
     if (ins) run(api.camtrackMake(ins.id, what, camPicked));
   }
   let camSmooth = $state(15);
+  let camMaxErr = $state(2);
+  const worse = $derived(cam ? cam.errors.filter((e) => e > camMaxErr).length : 0);
   let camZoom = $state<StabZoom>("Fixed");
   const exports: [CamFormat, string, string][] = [
     ["AfterEffects", "After Effects", "A script (.jsx): File → Scripts → Run Script File… makes a comp with the camera and a 3D null per point"],
@@ -259,6 +261,26 @@
               <span class="muted">{camPicked.length ? `${camPicked.length} picked` : "None picked"}</span>
               {#if camPicked.length}<button class="ghost small" onclick={() => (app.camSel = null)} title="Drop the picked points (Escape)">Clear</button>{/if}
             </div>
+          </div>
+
+          <div class="sect">
+            <h4>Clean up</h4>
+            {#if cam.can_resolve}
+              <p class="note">Points that slide (orange in the Viewer, or on something that moved on its own) pull the camera off. Delete them and the camera is solved again from the rest, without following the shot again.</p>
+              <div class="row">
+                <button class="wide" disabled={!camPicked.length || progress !== null} onclick={() => ins && run(api.camtrackResolve(ins.id, camPicked, null)).then(() => (app.camSel = null))} title="Delete the picked points and solve the camera again (undoable)">Delete picked ({camPicked.length}) and re-solve</button>
+              </div>
+              <div class="grid">
+                <span class="lbl" title="Points whose error is over this many pixels">Fitting worse than</span>
+                <NumberField label="Fitting worse than" value={camMaxErr} min={0.1} max={20} step={0.05} digits={1} suffix=" px" oninput={(v) => (camMaxErr = v)} oncommit={() => {}} />
+              </div>
+              <div class="row">
+                <button class="wide" disabled={!worse || progress !== null} onclick={() => ins && run(api.camtrackResolve(ins.id, [], camMaxErr)).then(() => (app.camSel = null))} title="Delete every point fitting worse than this and solve the camera again (undoable)">Delete {worse} point{worse === 1 ? "" : "s"} and re-solve</button>
+              </div>
+              {#if cam.camera}<p class="note">A camera already made keeps the old moves: press Camera again afterwards. Re-solving also resets the ground plane.</p>{/if}
+            {:else}
+              <p class="note">This solve was imported or made by an older version, so it can't be solved again without some points: press Analyse again to clean it up.</p>
+            {/if}
           </div>
 
           <div class="sect">

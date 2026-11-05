@@ -1110,6 +1110,12 @@ fn camtrack_import() -> Res<()> {
     ed(|e| e.import_camera_file(&path))
 }
 
+/// Delete solved points (`points`, and any fitting worse than `max_error` px) and solve again.
+#[tauri::command]
+fn camtrack_resolve(id: u64, points: Vec<usize>, max_error: Option<f32>) -> Res<()> {
+    ed(|e| e.resolve_camera(clip(id), &points, max_error))
+}
+
 #[tauri::command]
 fn camtrack_remove(id: u64) -> Res<()> {
     ed(|e| e.remove_camera_track(clip(id)))
@@ -1355,6 +1361,7 @@ fn main() {
             camtrack_make,
             camtrack_ground,
             camtrack_remove,
+            camtrack_resolve,
             camtrack_export,
             camtrack_import,
             camtrack_stabilise,

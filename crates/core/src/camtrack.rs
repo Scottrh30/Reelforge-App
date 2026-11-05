@@ -269,7 +269,7 @@ impl Rng {
 
 /// One feature followed through the shot: where it is (frame pixels) in
 /// frames `start`, `start + 1`, … in a row.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Track2d {
     pub start: usize,
     pub pos: Vec<[f32; 2]>,
@@ -1455,6 +1455,41 @@ pub struct CameraTrack {
     /// The camera clip made from it, so later layers use the same one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<crate::project::ClipId>,
+    /// What it was solved from, to solve again without some points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Box<SolveSource>>,
+}
+
+/// The followed details a camera was solved from (frame pixels), and which
+/// of them each solved point is, so bad points can be deleted and the camera
+/// solved again without following the shot again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolveSource {
+    pub tracks: Vec<Track2d>,
+    /// For each of the track's points, its index in `tracks`.
+    pub ids: Vec<u32>,
+    /// The lens was given (keep it when solving again).
+    pub known_lens: bool,
+}
+
+impl CameraTrack {
+    /// The details to solve from again, without those of `points` (indices
+    /// into `self.points`) and of points fitting worse than `max_error`
+    /// pixels; and how many points that deletes. `None` without a source.
+    pub fn tracks_without(&self, points: &[usize], max_error: Option<f32>) -> Option<(Vec<Track2d>, usize)> {
+        let src = self.source.as_ref()?;
+        let mut drop = vec![false; src.tracks.len()];
+        let mut n = 0;
+        for (i, p) in self.points.iter().enumerate() {
+            if points.contains(&i) || max_error.is_some_and(|m| p.error > m) {
+                if let Some(d) = src.ids.get(i).and_then(|&id| drop.get_mut(id as usize)) {
+                    *d = true;
+                    n += 1;
+                }
+            }
+        }
+        Some((src.tracks.iter().zip(&drop).filter(|(_, d)| !**d).map(|(t, _)| t.clone()).collect(), n))
+    }
 }
 
 fn to3(v: V3) -> [f32; 3] {
@@ -1536,7 +1571,9 @@ impl Solution {
                 ScenePoint { pos: to3(world(*x)), error: *e, first: t.start as u32, last: (t.end().min(n) - 1) as u32 }
             })
             .collect();
-        Some(CameraTrack { times, cameras, fov: fov_of(focal, frame[1] as f64) as f32, frame, points, error: self.error, tripod: self.tripod, placed: placed.len() as u32, camera: None })
+        let ids = self.points.iter().map(|(id, ..)| *id as u32).collect();
+        let source = Some(Box::new(SolveSource { tracks: tracks.to_vec(), ids, known_lens: false }));
+        Some(CameraTrack { times, cameras, fov: fov_of(focal, frame[1] as f64) as f32, frame, points, error: self.error, tripod: self.tripod, placed: placed.len() as u32, camera: None, source })
     }
 }
 
@@ -2139,7 +2176,7 @@ mod tests {
         for _ in 0..60 {
             points.push(ScenePoint { pos: [(u2() * 1600.0) as f32, (u2() * 700.0) as f32, (800.0 + u2() * 60.0) as f32], error: 0.2, first: 0, last: (n - 1) as u32 });
         }
-        let ct = CameraTrack { times: (0..n).map(|k| Time::from_secs_f64(k as f64 / 25.0)).collect(), cameras, fov: 45.0, frame: size, points, error: 0.2, tripod: false, placed: n as u32, camera: None };
+        let ct = CameraTrack { times: (0..n).map(|k| Time::from_secs_f64(k as f64 / 25.0)).collect(), cameras, fov: 45.0, frame: size, points, error: 0.2, tripod: false, placed: n as u32, camera: None, source: None };
         // Where a point lands in the output: filmed, then mapped.
         let track_of = |maps: &[crate::transform::Homography], p: [f32; 3]| -> Vec<[f32; 2]> { (0..n).map(|i| maps[i].apply(ct.project(i, p).unwrap())).collect() };
         // Shake: the frame-to-frame jerk (second difference), averaged.

@@ -215,6 +215,10 @@ pub struct CamTrackView {
     pub points: Vec<(usize, [f32; 2], f32)>,
     /// A camera made from it is still in the sequence.
     pub camera: bool,
+    /// Every point's error (pixels), in order.
+    pub errors: Vec<f32>,
+    /// It keeps the details it was solved from: points can be deleted and it solved again.
+    pub can_resolve: bool,
 }
 
 fn cam_track_view(e: &Editor, c: &Clip) -> Option<CamTrackView> {
@@ -240,6 +244,8 @@ fn cam_track_view(e: &Editor, c: &Clip) -> Option<CamTrackView> {
         point_count: ct.points.len(),
         points,
         camera: ct.camera.is_some_and(|id| e.seq().find_clip(id).is_some()),
+        errors: ct.points.iter().map(|p| p.error).collect(),
+        can_resolve: ct.source.is_some(),
     })
 }
 

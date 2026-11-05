@@ -417,6 +417,7 @@ mod tests {
             tripod: false,
             placed: 30,
             camera: None,
+            source: None,
         }
     }
 
