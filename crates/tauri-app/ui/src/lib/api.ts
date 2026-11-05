@@ -340,6 +340,10 @@ export interface CamTrackView {
   errors: number[];
   /// Points can be deleted and the camera solved again.
   can_resolve: boolean;
+  /// How well it fits each frame (px; null: no points then).
+  fit: (number | null)[];
+  /// The frame at the playhead.
+  frame: number;
 }
 export type CamMake = "Camera" | "Point" | "Solid" | "Title" | "Text3d";
 export type CamFormat = "AfterEffects" | "Blender" | "Nuke" | "Chan" | "Json";
@@ -915,6 +919,7 @@ export const api = {
   camtrackMake: (id: number, what: CamMake, picked: number[]) => invoke("camtrack_make", { id, what, picked }),
   camtrackGround: (id: number, picked: number[]) => invoke("camtrack_ground", { id, picked }),
   camtrackRemove: (id: number) => invoke("camtrack_remove", { id }),
+  camtrackSeek: (id: number, frame: number) => invoke("camtrack_seek", { id, frame }),
   camtrackResolve: (id: number, points: number[], maxError: number | null) => invoke("camtrack_resolve", { id, points, maxError }),
   camtrackExport: (id: number, format: CamFormat, picked: number[]) => invoke("camtrack_export", { id, format, picked }),
   camtrackImport: () => invoke("camtrack_import"),

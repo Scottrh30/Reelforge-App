@@ -325,6 +325,8 @@ pub struct Editor {
     pub disk_dismissed: bool,
     disk_checked: Option<std::time::Instant>,
     pub disk_low_at: u64,
+    /// Camera solves' fit per frame, by clip (and which solve it was for).
+    cam_fit: Mutex<HashMap<ClipId, (u64, Arc<Vec<Option<f32>>>)>>,
     /// This run's autosave/crash-detection session.
     pub session: Option<crate::safety::Session>,
     /// Crashed sessions found at startup, offered for recovery.
@@ -391,6 +393,7 @@ impl Editor {
             disk_checked: None,
             // (Tests don't depend on the machine's free space; the disk test sets it.)
             disk_low_at: if cfg!(test) { 0 } else { crate::disk::LOW },
+            cam_fit: Default::default(),
             session: None,
             recoveries: Vec::new(),
             tracking: None,
@@ -3490,6 +3493,13 @@ mod tests {
         let src = new.source.as_ref().unwrap();
         assert_eq!(src.tracks.len(), total - 10);
         assert!(src.known_lens);
+        // The fit per frame (worked out once), and going to a frame.
+        let fit = e.camera_fit(id).unwrap();
+        assert_eq!(fit.len(), 40);
+        assert!(fit.iter().all(|f| f.is_some_and(|f| f < 0.5)), "{fit:?}");
+        assert!(Arc::ptr_eq(&fit, &e.camera_fit(id).unwrap()), "cached");
+        e.seek_camera_frame(id, 10);
+        assert_eq!(e.playback.playhead, Time::from_secs_f64(10.0 / 25.0));
         // Undo: the old solve.
         e.undo();
         assert_eq!(e.seq().find_clip(id).unwrap().1.camera_track.as_deref(), Some(&ct));

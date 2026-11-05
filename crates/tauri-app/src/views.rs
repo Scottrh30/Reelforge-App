@@ -219,6 +219,10 @@ pub struct CamTrackView {
     pub errors: Vec<f32>,
     /// It keeps the details it was solved from: points can be deleted and it solved again.
     pub can_resolve: bool,
+    /// How well it fits each frame (average pixels; `None`: no points then). Empty without its details.
+    pub fit: Vec<Option<f32>>,
+    /// The frame at the playhead.
+    pub frame: usize,
 }
 
 fn cam_track_view(e: &Editor, c: &Clip) -> Option<CamTrackView> {
@@ -246,6 +250,8 @@ fn cam_track_view(e: &Editor, c: &Clip) -> Option<CamTrackView> {
         camera: ct.camera.is_some_and(|id| e.seq().find_clip(id).is_some()),
         errors: ct.points.iter().map(|p| p.error).collect(),
         can_resolve: ct.source.is_some(),
+        fit: e.camera_fit(c.id).map(|v| v.to_vec()).unwrap_or_default(),
+        frame: i,
     })
 }
 

@@ -115,6 +115,36 @@ impl Editor {
         self.status = if left_out { "Analysing the shot (leaving out the masked areas): following details, then solving the camera…" } else { "Analysing the shot: following details, then solving the camera…" }.into();
     }
 
+    /// How well clip `id`'s camera solve fits each frame (see
+    /// `CameraTrack::frame_errors`), worked out once per solve.
+    pub fn camera_fit(&self, id: ClipId) -> Option<Arc<Vec<Option<f32>>>> {
+        let (_, c) = self.seq().find_clip(id)?;
+        let ct = c.camera_track.as_ref()?;
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (ct.error.to_bits(), ct.points.len(), ct.cameras.len(), ct.source.as_ref().map(|s| s.tracks.len())).hash(&mut h);
+            ct.points.first().map(|p| p.pos.map(f32::to_bits)).hash(&mut h);
+            h.finish()
+        };
+        let mut cache = self.cam_fit.lock().unwrap();
+        if let Some((k, v)) = cache.get(&id) {
+            if *k == key {
+                return Some(v.clone());
+            }
+        }
+        let v = Arc::new(ct.frame_errors()?);
+        cache.insert(id, (key, v.clone()));
+        Some(v)
+    }
+
+    /// Move the playhead to frame `i` of clip `id`'s camera solve.
+    pub fn seek_camera_frame(&mut self, id: ClipId, i: usize) {
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let Some(t) = c.camera_track.as_ref().and_then(|ct| ct.times.get(i)).and_then(|&m| c.timeline_of_media(m)) else { return };
+        self.seek(t);
+    }
+
     /// Delete clip `id`'s solved points `points` (indices) and any fitting
     /// worse than `max_error` pixels, and solve the camera again from the
     /// rest of the details it followed (in the background, like Analyse).

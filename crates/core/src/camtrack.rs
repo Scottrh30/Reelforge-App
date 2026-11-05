@@ -1699,6 +1699,26 @@ impl CameraTrack {
         ((self.times[best] - t).0.abs() <= step / 2 + 1).then_some(best)
     }
 
+    /// How well the solve fits each frame: the average distance (pixels)
+    /// between each solved point seen then and where its detail was followed
+    /// to; `None` for a frame without any. `None` without the details.
+    pub fn frame_errors(&self) -> Option<Vec<Option<f32>>> {
+        let src = self.source.as_ref()?;
+        let mut sum = vec![(0.0f64, 0u32); self.cameras.len()];
+        for (k, p) in self.points.iter().enumerate() {
+            let Some(t) = src.ids.get(k).and_then(|&id| src.tracks.get(id as usize)) else { continue };
+            for (j, q) in t.pos.iter().enumerate() {
+                let i = t.start + j;
+                let Some(s) = sum.get_mut(i) else { continue };
+                if let Some(r) = self.project(i, p.pos) {
+                    s.0 += (((r[0] - q[0]) as f64).powi(2) + ((r[1] - q[1]) as f64).powi(2)).sqrt();
+                    s.1 += 1;
+                }
+            }
+        }
+        Some(sum.into_iter().map(|(e, n)| (n > 0).then(|| (e / n as f64) as f32)).collect())
+    }
+
     /// The camera at frame `i`.
     pub fn camera(&self, i: usize) -> Camera {
         let c = &self.cameras[i.min(self.cameras.len() - 1)];
@@ -1967,6 +1987,23 @@ mod tests {
         let sol = solve(&tracks, 40, [1280.0, 720.0], SolveOptions::default(), &stop, &mut |_| {}).unwrap();
         let times: Vec<Time> = (0..40).map(|i| Time::from_secs_f64(i as f64 / 25.0)).collect();
         let ct = sol.clone().into_track(&tracks, times.clone(), [1280.0, 720.0], 0).unwrap();
+        // Each frame's fit: small everywhere; a detail followed off its spot in frame 20 shows there.
+        let errs = ct.frame_errors().unwrap();
+        assert_eq!(errs.len(), 40);
+        assert!(errs.iter().all(|e| e.is_some_and(|e| e < 1.0)), "{errs:?}");
+        let mut off = ct.clone();
+        let src = off.source.as_mut().unwrap();
+        for k in 0..20 {
+            let id = src.ids[k] as usize;
+            if let Some(p) = (20usize).checked_sub(src.tracks[id].start).and_then(|j| src.tracks[id].pos.get_mut(j)) {
+                p[0] += 40.0;
+            }
+        }
+        let e2 = off.frame_errors().unwrap();
+        assert!(e2[20].unwrap() > errs[20].unwrap() + 3.0 && (e2[19].unwrap() - errs[19].unwrap()).abs() < 1e-4, "{:?} {:?}", e2[20], errs[20]);
+        let mut none = ct.clone();
+        none.source = None;
+        assert!(none.frame_errors().is_none());
         // Frame 0's camera is the default one.
         let d = Camera::default_for([1280.0, 720.0]);
         let c0 = ct.camera(0);

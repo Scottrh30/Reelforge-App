@@ -844,6 +844,11 @@ What works now:
     with Add, Subtract and Intersect, and **Invert** solves from only what's inside. The panel
     says when masked areas are being left out. In a test with 120 details on a blob sliding
     across the shot, the solve still comes within 0.3° and 2 % of the true camera
+  - **Solve error graph** (Track panel → **Clean up**): a bar per frame for how well the solve
+    fits it (the average distance, in pixels, between the solved points and the details they
+    were followed from), orange over the **Fitting worse than** limit (dashed), with the
+    playhead's frame marked. Hover for a frame's figure; click or drag to go there, so a bad
+    stretch (motion blur, something passing) is easy to find. Worked out once per solve
   - **Delete bad points and re-solve** (Track panel → **Clean up**): points that slide
     (orange in the Viewer, or on something that moved on its own) pull the camera off. Pick
     them and **Delete picked and re-solve**, or set **Fitting worse than** (px; it counts how

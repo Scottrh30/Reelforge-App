@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FitGraph from "./FitGraph.svelte";
   // The Track panel: track the selected clip with the method of your choice
   // (one point, two points, four points, a planar surface or a bending mesh),
   // then put the motion on any layer, a mask, or the clip itself (stabilise),
@@ -265,6 +266,9 @@
 
           <div class="sect">
             <h4>Clean up</h4>
+            {#if cam.fit.length}
+              <FitGraph fit={cam.fit} frame={cam.frame} limit={camMaxErr} onseek={(f) => ins && run(api.camtrackSeek(ins.id, f))} />
+            {/if}
             {#if cam.can_resolve}
               <p class="note">Points that slide (orange in the Viewer, or on something that moved on its own) pull the camera off. Delete them and the camera is solved again from the rest, without following the shot again.</p>
               <div class="row">
