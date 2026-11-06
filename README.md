@@ -311,6 +311,12 @@ What works now:
     holes** closes pinholes in the matte up to that size (grow, then shrink back) and **Remove
     specks** wipes out stray dots of leftover screen (shrink, then grow back); neither moves the
     subject's edge. **View → Matte** shows the cleaned matte
+  - **Matte choker** (Keying): works on any layer's transparency, after a key or on a cut-out
+    picture. **Choke** shrinks the edge inwards (negative grows it outwards, taking the colour
+    from inside), **Softness** blurs only the matte, and **Matte contrast** firms up what's half
+    see-through: towards solid above the **Midpoint** and towards gone below it (100% gives a
+    hard edge). Softness then contrast rounds off a ragged, noisy edge. **View → Matte** shows it
+    in black and white
   - **Garbage mattes**: set a mask's **Use** to **Garbage matte: keys keep what's inside**
     and every key on the clip keeps the layer inside it, however much it looks like the screen
     (a green shirt, a dark logo on a luma key); it doesn't cut the layer, and shows dashed in

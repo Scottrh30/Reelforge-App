@@ -1247,6 +1247,51 @@ fn key_cleaner_removes_spill_holes_and_specks() {
     assert!(fx(EffectKind::KeyCleaner, &[(cleaner::SPILL, 0.0)]).is_identity());
 }
 
+/// Matte choker: shrinks and grows a cut-out square's edge, softens it, and
+/// matte contrast turns a half see-through area solid (or gone).
+#[test]
+fn matte_choker_moves_softens_and_firms_the_edge() {
+    use reelforge_core::effects::choker;
+    let Some(mut c) = setup() else { return };
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    // A white 12×12 square at 10–21 on nothing, and a 60% strip at x 26–29.
+    let mut img = Vec::new();
+    for y in 0..32 {
+        for x in 0..32 {
+            img.extend(if (10..22).contains(&x) && (10..22).contains(&y) {
+                [255, 255, 255, 255]
+            } else if (26..30).contains(&x) {
+                [255, 255, 255, 153]
+            } else {
+                [0, 0, 0, 0]
+            });
+        }
+    }
+    let mut n = 110;
+    let mut shot = |set: &[(usize, f32)]| {
+        n += 1;
+        let fg = layer(n, &img, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+        c.render([32, 32], &[full(1, &black, [32, 32]), with_fx(fg, vec![fx(EffectKind::MatteChoker, set)])]);
+        let r = c.read_output().unwrap();
+        (0..32).map(|x| px(&r, 32, x, 16)[0]).collect::<Vec<u8>>()
+    };
+    let row = shot(&[(choker::CHOKE, 2.0), (choker::SOFTNESS, 0.0)]);
+    assert!(row[11] < 10 && row[12] > 245 && row[19] > 245 && row[20] < 10, "choke: {row:?}");
+    let row = shot(&[(choker::CHOKE, -2.0), (choker::SOFTNESS, 0.0)]);
+    // (The strip grows too, from 24, but stays 60%.)
+    assert!(row[7] < 10 && row[8] > 245 && row[23] > 245 && row[24] < 230, "grow: {row:?}");
+    let row = shot(&[(choker::CHOKE, 0.0), (choker::SOFTNESS, 4.0)]);
+    assert!(row[10] > 30 && row[10] < 225 && row[16] > 245 && row[6] < 40, "soft: {row:?}");
+    // The 60% strip: as it is, then solid with full contrast and a 50% midpoint,
+    // then gone with the midpoint above it.
+    let strip = |row: &[u8]| row[27];
+    let as_is = strip(&shot(&[(choker::CHOKE, 0.0), (choker::SOFTNESS, 0.0)]));
+    assert!(as_is > 150 && as_is < 230, "strip: {as_is}");
+    assert!(strip(&shot(&[(choker::CHOKE, 0.0), (choker::SOFTNESS, 0.0), (choker::CONTRAST, 100.0)])) > 250);
+    assert!(strip(&shot(&[(choker::CHOKE, 0.0), (choker::SOFTNESS, 0.0), (choker::CONTRAST, 100.0), (choker::MIDPOINT, 70.0)])) < 5);
+    assert!(fx(EffectKind::MatteChoker, &[(choker::CHOKE, 0.0), (choker::SOFTNESS, 0.0)]).is_identity());
+}
+
 /// Difference key: whatever matches the clean plate goes; what differs stays.
 #[test]
 fn difference_key_removes_what_matches_the_plate() {

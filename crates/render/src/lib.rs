@@ -573,7 +573,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1208,6 +1208,8 @@ impl Compositor {
                 EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey => 8,
                 // Spill, two passes each way for specks and for holes, putting it together.
                 EffectKind::KeyCleaner => 10,
+                // Straight colour, choke and softness each way, putting it together.
+                EffectKind::MatteChoker => 6,
                 EffectKind::Glow | EffectKind::DropShadow => 4,
                 EffectKind::Plugin => e.plugin.as_ref().map_or(0, |p| p.passes.len()),
                 _ => 1,
@@ -1424,6 +1426,32 @@ impl Compositor {
                         let mut out = [0.0; reelforge_core::effects::MAX_PARAMS];
                         out[8] = v[cleaner::VIEW];
                         push("fs_key_out", o1, Second::None, o2, uniform(&out, [0.0; 2]));
+                        cur = o2;
+                    }
+                    EffectKind::MatteChoker => {
+                        use reelforge_core::effects::choker;
+                        let v = e.values;
+                        let (choke, soft) = (v[choker::CHOKE], v[choker::SOFTNESS]);
+                        // Straight colour into `o1`, choked and softened (across and down
+                        // through `o2`), then the contrast and put together into `o2`.
+                        push("fs_straight", cur, Second::None, o1, [0.0; FX_FLOATS]);
+                        let mut pass = |entry: &'static str, reach: f32, sign: f32| {
+                            let mut vx = [0.0; reelforge_core::effects::MAX_PARAMS];
+                            (vx[0], vx[1]) = (reach * kx, sign);
+                            let mut vy = vx;
+                            vy[0] = reach * ky;
+                            push(entry, o1, Second::None, o2, uniform(&vx, [1.0, 0.0]));
+                            push(entry, o2, Second::None, o1, uniform(&vy, [0.0, 1.0]));
+                        };
+                        if choke.abs() >= 0.01 {
+                            pass("fs_key_choke", choke.abs(), choke.signum());
+                        }
+                        if soft >= 0.01 {
+                            pass("fs_key_soft", soft * 0.5, 0.0);
+                        }
+                        let mut out = [0.0; reelforge_core::effects::MAX_PARAMS];
+                        out[..3].copy_from_slice(&[v[choker::CONTRAST], v[choker::MIDPOINT], v[choker::VIEW]]);
+                        push("fs_matte_out", o1, Second::None, o2, uniform(&out, [0.0; 2]));
                         cur = o2;
                     }
                     EffectKind::Vignette => {

@@ -272,6 +272,28 @@ fn fs_key_clean(in: VsOut) -> @location(0) vec4<f32> {
     return vec4(lin * c.a, c.a);
 }
 
+// Straight colour with the alpha as it is (for passes that work on the matte).
+@fragment
+fn fs_straight(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    return vec4(unpremul(c), c.a);
+}
+
+// Matte choker, last step, from straight colour: p0 = (contrast %, midpoint
+// %, view). Contrast steepens the matte round the midpoint, so what's half
+// see-through goes towards solid or gone (100% is a hard edge).
+@fragment
+fn fs_matte_out(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let m = fx.p0.y / 100.0;
+    let gain = 1.0 / max(1.0 - fx.p0.x / 100.0, 0.002);
+    let a = select(clamp((c.a - m) * gain + m, 0.0, 1.0), c.a, fx.p0.x <= 0.0);
+    if (fx.p0.z > 0.5) {
+        return key_matte(a);
+    }
+    return vec4(c.rgb * a, a);
+}
+
 // The keyed layer from straight colour and matte: p2.x = view (see fs_key).
 @fragment
 fn fs_key_out(in: VsOut) -> @location(0) vec4<f32> {
