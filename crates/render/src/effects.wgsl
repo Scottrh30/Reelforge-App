@@ -279,6 +279,43 @@ fn fs_straight(in: VsOut) -> @location(0) vec4<f32> {
     return vec4(unpremul(c), c.a);
 }
 
+// Refine matte, smoothing: after the matte is blurred, steepen it again round
+// 50% so the jagged steps come back as a smooth edge. p0.x = steepness.
+// Straight colour in and out.
+@fragment
+fn fs_matte_steep(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    return vec4(c.rgb, clamp((c.a - 0.5) * fx.p0.x + 0.5, 0.0, 1.0));
+}
+
+// Refine matte, colour from within, one direction: an average of straight
+// colour weighted towards the solid (alpha⁴), so the edge can borrow colour
+// from inside. p0.x = reach in texels, p0.y = 1 for the second (down) pass.
+// The first pass writes (weighted colour, weight); the second divides.
+@fragment
+fn fs_decon_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let dir = fx.texel_dir.xy * fx.texel_dir.zw;
+    let reach = clamp(fx.p0.x, 1.0, 64.0);
+    let taps = ceil(reach);
+    let step = reach / taps;
+    let second = fx.p0.y > 0.5;
+    var sum = vec4(0.0);
+    for (var i = -taps; i <= taps; i = i + 1.0) {
+        let t = textureSample(src, src_sampler, to_tex(in.uv + dir * i * step));
+        if (second) {
+            sum = sum + t;
+        } else {
+            let w = t.a * t.a * t.a * t.a;
+            sum = sum + vec4(t.rgb * w, w);
+        }
+    }
+    let n = 2.0 * taps + 1.0;
+    if (second) {
+        return select(vec4(0.0), vec4(sum.rgb / sum.a, 1.0), sum.a > 1e-6);
+    }
+    return sum / n;
+}
+
 // Matte choker, last step, from straight colour: p0 = (contrast %, midpoint
 // %, view). Contrast steepens the matte round the midpoint, so what's half
 // see-through goes towards solid or gone (100% is a hard edge).

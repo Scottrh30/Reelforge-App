@@ -1292,6 +1292,64 @@ fn matte_choker_moves_softens_and_firms_the_edge() {
     assert!(fx(EffectKind::MatteChoker, &[(choker::CHOKE, 0.0), (choker::SOFTNESS, 0.0)]).is_identity());
 }
 
+/// Refine matte: a half see-through edge tinted by the screen takes its
+/// colour from the solid inside; smoothing wipes out a lone speck and keeps
+/// the body; the edge shifts and feathers.
+#[test]
+fn refine_matte_decontaminates_smooths_and_shifts() {
+    use reelforge_core::effects::refine;
+    let Some(mut c) = setup() else { return };
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    // A skin-coloured square at 8–23, a 50% green ring 2 px wide round it, and
+    // a speck at 2,2.
+    let mut img = Vec::new();
+    for y in 0..32i32 {
+        for x in 0..32i32 {
+            let inside = |lo: i32, hi: i32| (lo..hi).contains(&x) && (lo..hi).contains(&y);
+            img.extend(if (x, y) == (2, 2) {
+                [255, 255, 255, 255]
+            } else if inside(8, 24) {
+                [200, 120, 80, 255]
+            } else if inside(6, 26) {
+                [60, 200, 60, 128]
+            } else {
+                [0, 0, 0, 0]
+            });
+        }
+    }
+    let mut n = 130;
+    let mut shot = |set: &[(usize, f32)]| {
+        n += 1;
+        let fg = layer(n, &img, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+        c.render([32, 32], &[full(1, &black, [32, 32]), with_fx(fg, vec![fx(EffectKind::RefineMatte, set)])]);
+        c.read_output().unwrap()
+    };
+    let plain = [(refine::SMOOTH, 0.0), (refine::DECONTAMINATE, 0.0)];
+    let r = shot(&plain);
+    let edge = px(&r, 32, 7, 16);
+    assert!(edge[1] > edge[0], "green edge to start with: {edge:?}");
+    let r = shot(&[(refine::SMOOTH, 0.0), (refine::DECONTAMINATE, 100.0)]);
+    let edge = px(&r, 32, 7, 16);
+    assert!(edge[0] > edge[1] && edge[0] > 60, "edge takes the skin's colour: {edge:?}");
+    assert!(near(px(&r, 32, 16, 16), [200, 120, 80]), "inside unchanged");
+    let mut matte = |set: &[(usize, f32)]| {
+        let mut all = set.to_vec();
+        all.push((refine::VIEW, 1.0));
+        shot(&all)
+    };
+    let m = matte(&[(refine::SMOOTH, 2.0)]);
+    assert!(px(&m, 32, 2, 2)[0] < 20, "speck left: {:?}", px(&m, 32, 2, 2));
+    assert!(px(&m, 32, 12, 16)[0] > 245 && px(&m, 32, 2, 16)[0] < 10);
+    let m = matte(&[(refine::SMOOTH, 0.0), (refine::SHIFT, 3.0)]);
+    let v = px(&m, 32, 10, 16)[0];
+    // (The matte shows in sRGB: 50% is 188.)
+    assert!(v > 175 && v < 200, "shifted in to the ring: {v}");
+    let m = matte(&[(refine::SMOOTH, 0.0), (refine::FEATHER, 6.0)]);
+    let v = px(&m, 32, 5, 16)[0];
+    assert!(v > 30 && v < 188, "feathered: {v}");
+    assert!(fx(EffectKind::RefineMatte, &plain).is_identity());
+}
+
 /// Difference key: whatever matches the clean plate goes; what differs stays.
 #[test]
 fn difference_key_removes_what_matches_the_plate() {

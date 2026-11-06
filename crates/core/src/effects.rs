@@ -37,6 +37,9 @@ pub enum EffectKind {
     /// Shrinks or grows a layer's matte, softens it and firms up its
     /// half-transparent parts.
     MatteChoker,
+    /// Smooths a jagged matte, moves and feathers its edge, and takes the
+    /// screen's colour out of the see-through edge by borrowing it from inside.
+    RefineMatte,
     /// Darkens the edges of the layer.
     Vignette,
     /// Input and output black/white points and gamma.
@@ -316,6 +319,14 @@ const MATTE_CHOKER: [ParamSpec; 5] = [
     spec("Midpoint", 50.0, 1.0, 99.0, " %", 0.5),
     choice("View", &["Result", "Matte (black and white)"]),
 ];
+const REFINE_MATTE: [ParamSpec; 6] = [
+    spec("Smooth", 2.0, 0.0, 20.0, " px", 0.05),
+    spec("Shift edge", 0.0, -20.0, 20.0, " px", 0.05),
+    spec("Feather", 0.0, 0.0, 30.0, " px", 0.05),
+    spec("Decontaminate colours", 80.0, 0.0, 100.0, " %", 0.5),
+    spec("Colour from within", 6.0, 1.0, 30.0, " px", 0.05),
+    choice("View", &["Result", "Matte (black and white)"]),
+];
 const LEVELS: [ParamSpec; 5] = [
     spec("Input black", 0.0, 0.0, 254.0, "", 0.5),
     spec("Input white", 255.0, 1.0, 255.0, "", 0.5),
@@ -587,6 +598,18 @@ pub mod choker {
     pub const MIDPOINT: usize = 3;
     pub const VIEW: usize = 4;
 }
+/// Refine matte parameter indices.
+pub mod refine {
+    /// Blur-and-resharpen radius that rounds off jagged steps (px).
+    pub const SMOOTH: usize = 0;
+    /// + pulls the edge in, − pushes it out (px).
+    pub const SHIFT: usize = 1;
+    pub const FEATHER: usize = 2;
+    /// How much of a see-through edge's colour comes from the solid inside.
+    pub const DECONTAMINATE: usize = 3;
+    pub const RADIUS: usize = 4;
+    pub const VIEW: usize = 5;
+}
 /// Halftone parameter indices.
 pub mod halftone {
     pub const STYLE: usize = 0;
@@ -732,7 +755,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 25] = [
+    pub const ALL: [EffectKind; 26] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -744,6 +767,7 @@ impl EffectKind {
         EffectKind::DifferenceKey,
         EffectKind::KeyCleaner,
         EffectKind::MatteChoker,
+        EffectKind::RefineMatte,
         EffectKind::Glow,
         EffectKind::DropShadow,
         EffectKind::Vignette,
@@ -769,6 +793,7 @@ impl EffectKind {
             EffectKind::DifferenceKey => "Difference key",
             EffectKind::KeyCleaner => "Key cleaner",
             EffectKind::MatteChoker => "Matte choker",
+            EffectKind::RefineMatte => "Refine matte",
             EffectKind::Vignette => "Vignette",
             EffectKind::Levels => "Levels",
             EffectKind::Curves => "Curves",
@@ -799,7 +824,7 @@ impl EffectKind {
         match self {
             EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
-            EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner | EffectKind::MatteChoker => EffectCategory::Keying,
+            EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner | EffectKind::MatteChoker | EffectKind::RefineMatte => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
@@ -836,6 +861,7 @@ impl EffectKind {
             EffectKind::Crt => "An old TV or a worn tape: the bulging glass and scan lines of a CRT, a phosphor mask, VHS colour bleed, tracking wobble, a rolling tracking band and snow.",
             EffectKind::KeyCleaner => "Tidies a keyed layer, after the key: takes the screen's green or blue out of hair and edges (spill), fills small holes in the matte and wipes out stray specks.",
             EffectKind::MatteChoker => "Works on any layer's transparency (after a key, or a cut-out picture): shrinks or grows its edge, softens it, and firms up what's half see-through so a ragged matte holds together.",
+            EffectKind::RefineMatte => "For hair and soft edges after a key: smooths a jagged matte, moves and feathers its edge, and replaces the screen colour showing through see-through edges with colour from just inside.",
             EffectKind::Halftone => "The picture printed as a screen of dots or lines, like a newspaper photo or a comic: black and white, four-colour CMYK, or dots of its own colour.",
             EffectKind::NeonEdges => "Glowing neon tubes along the edges of a title, logo or keyed subject (or the edges in the picture): a hot core, a coloured glow, and a flicker if you like.",
             EffectKind::Camera => "The 3D camera: where it is, what it looks at, its field of view and depth of field.",
@@ -853,6 +879,7 @@ impl EffectKind {
             EffectKind::DifferenceKey => &DIFFERENCE_KEY,
             EffectKind::KeyCleaner => &KEY_CLEANER,
             EffectKind::MatteChoker => &MATTE_CHOKER,
+            EffectKind::RefineMatte => &REFINE_MATTE,
             EffectKind::Vignette => &VIGNETTE,
             EffectKind::Levels => &LEVELS,
             EffectKind::Curves => &CURVES,
@@ -898,6 +925,7 @@ impl EffectKind {
             EffectKind::LumaKey => &[(0, "Key"), (3, "Matte")],
             EffectKind::DifferenceKey => &[(0, "Key"), (2, "Matte")],
             EffectKind::KeyCleaner => &[(0, "Spill"), (3, "Matte")],
+            EffectKind::RefineMatte => &[(0, "Edge"), (3, "Colour")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows")],
             _ => &[],
         }
@@ -974,6 +1002,7 @@ impl EffectValues {
             EffectKind::Glitch => v[glitch::AMOUNT] == 0.0,
             EffectKind::LightLeaks => v[leaks::INTENSITY] == 0.0,
             EffectKind::Halftone => v[halftone::MIX] == 0.0,
+            EffectKind::RefineMatte => v[refine::SMOOTH] < 0.01 && v[refine::SHIFT].abs() < 0.01 && v[refine::FEATHER] < 0.01 && v[refine::DECONTAMINATE] == 0.0 && v[refine::VIEW] == 0.0,
             EffectKind::MatteChoker => v[choker::CHOKE].abs() < 0.01 && v[choker::SOFTNESS] < 0.01 && v[choker::CONTRAST] == 0.0 && v[choker::VIEW] == 0.0,
             EffectKind::KeyCleaner => v[cleaner::SPILL] == 0.0 && v[cleaner::HOLES] < 0.01 && v[cleaner::SPECKS] < 0.01 && v[cleaner::VIEW] == 0.0,
             EffectKind::Crt => {

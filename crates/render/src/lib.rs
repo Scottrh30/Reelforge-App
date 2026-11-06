@@ -551,7 +551,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -573,7 +573,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1210,6 +1210,9 @@ impl Compositor {
                 EffectKind::KeyCleaner => 10,
                 // Straight colour, choke and softness each way, putting it together.
                 EffectKind::MatteChoker => 6,
+                // Straight colour; smooth (blur each way, steepen), shift and feather
+                // each way; colour from within each way; putting it together.
+                EffectKind::RefineMatte => 11,
                 EffectKind::Glow | EffectKind::DropShadow => 4,
                 EffectKind::Plugin => e.plugin.as_ref().map_or(0, |p| p.passes.len()),
                 _ => 1,
@@ -1453,6 +1456,49 @@ impl Compositor {
                         out[..3].copy_from_slice(&[v[choker::CONTRAST], v[choker::MIDPOINT], v[choker::VIEW]]);
                         push("fs_matte_out", o1, Second::None, o2, uniform(&out, [0.0; 2]));
                         cur = o2;
+                    }
+                    EffectKind::RefineMatte => {
+                        use reelforge_core::effects::refine;
+                        let v = e.values;
+                        let (smooth, shift, feather) = (v[refine::SMOOTH], v[refine::SHIFT], v[refine::FEATHER]);
+                        // The matte, in straight colour, moves between `o1` and `o2`
+                        // (`a` holds it after each step); `cur` is free once read.
+                        let (mut a, mut b) = (o1, o2);
+                        push("fs_straight", cur, Second::None, a, [0.0; FX_FLOATS]);
+                        macro_rules! both {
+                            ($entry:expr, $reach:expr, $sign:expr) => {{
+                                let mut vx = [0.0; reelforge_core::effects::MAX_PARAMS];
+                                (vx[0], vx[1]) = ($reach * kx, $sign);
+                                let mut vy = vx;
+                                vy[0] = $reach * ky;
+                                push($entry, a, Second::None, b, uniform(&vx, [1.0, 0.0]));
+                                push($entry, b, Second::None, a, uniform(&vy, [0.0, 1.0]));
+                            }};
+                        }
+                        if smooth >= 0.01 {
+                            both!("fs_key_soft", smooth * 0.5, 0.0);
+                            // Steep enough to bring back an edge about a pixel wide.
+                            let mut st = [0.0; reelforge_core::effects::MAX_PARAMS];
+                            st[0] = (smooth * 1.2).max(2.0);
+                            push("fs_matte_steep", a, Second::None, b, uniform(&st, [0.0; 2]));
+                            std::mem::swap(&mut a, &mut b);
+                        }
+                        if shift.abs() >= 0.01 {
+                            both!("fs_key_choke", shift.abs(), shift.signum());
+                        }
+                        if feather >= 0.01 {
+                            both!("fs_key_soft", feather * 0.5, 0.0);
+                        }
+                        // Colour from within into `cur` (through `b`).
+                        let mut dv = [0.0; reelforge_core::effects::MAX_PARAMS];
+                        dv[0] = v[refine::RADIUS] * kx;
+                        push("fs_decon_blur", a, Second::None, b, uniform(&dv, [1.0, 0.0]));
+                        (dv[0], dv[1]) = (v[refine::RADIUS] * ky, 1.0);
+                        push("fs_decon_blur", b, Second::None, cur, uniform(&dv, [0.0, 1.0]));
+                        let mut out = [0.0; reelforge_core::effects::MAX_PARAMS];
+                        (out[0], out[1]) = (v[refine::DECONTAMINATE], v[refine::VIEW]);
+                        push("fs_decon_mix", a, Second::Scratch(cur), b, uniform(&out, [0.0; 2]));
+                        cur = b;
                     }
                     EffectKind::Vignette => {
                         push("fs_vignette", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));

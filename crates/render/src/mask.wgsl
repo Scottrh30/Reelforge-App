@@ -106,6 +106,21 @@ fn fs_glow_add(in: VsOut) -> @location(0) vec4<f32> {
     return vec4(base.rgb + g.rgb, min(base.a + g.a, 1.0));
 }
 
+// Refine matte, last step: the refined matte (straight colour) with its
+// see-through edge's colour swapped towards the colour from within (the second
+// texture; alpha 0 where there was none). p0 = (decontaminate %, view).
+@fragment
+fn fs_decon_mix(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let within = second_at(in.uv);
+    if (fx.p0.y > 0.5) {
+        return vec4(vec3(c.a), 1.0);
+    }
+    let f = fx.p0.x / 100.0 * clamp((1.0 - c.a) * 2.0, 0.0, 1.0) * within.a;
+    let rgb = mix(c.rgb, within.rgb, f);
+    return vec4(rgb * c.a, c.a);
+}
+
 // Drop shadow, last step: the shadow under the layer.
 @fragment
 fn fs_under(in: VsOut) -> @location(0) vec4<f32> {

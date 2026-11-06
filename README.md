@@ -317,6 +317,13 @@ What works now:
     see-through: towards solid above the **Midpoint** and towards gone below it (100% gives a
     hard edge). Softness then contrast rounds off a ragged, noisy edge. **View → Matte** shows it
     in black and white
+  - **Refine matte** (Keying): for hair and soft edges after a key. *Edge*: **Smooth** blurs
+    the matte and sharpens it again, so jagged steps and lone specks give way to a smooth
+    outline; **Shift edge** pulls it in (negative pushes it out); **Feather** softens it.
+    *Colour*: **Decontaminate colours** replaces the screen's colour showing through the
+    see-through edge with colour borrowed from the solid part just inside (within **Colour from
+    within** pixels), so wisps of hair stop glowing green over the new background. **View →
+    Matte** shows the refined matte
   - **Garbage mattes**: set a mask's **Use** to **Garbage matte: keys keep what's inside**
     and every key on the clip keeps the layer inside it, however much it looks like the screen
     (a green shirt, a dark logo on a luma key); it doesn't cut the layer, and shows dashed in
