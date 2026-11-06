@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 pub mod ofxhost;
 pub mod scene;
+pub mod zerocheck;
 pub use scene::{frame_recipe, FrameProvider, Picture, Scene};
 
 /// Audio is always exported at 48 kHz, the video standard.

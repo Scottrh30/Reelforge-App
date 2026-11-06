@@ -1383,6 +1383,13 @@ PC, where each clip used to get up to 16, far more.
   shows **Matches**, **Differs** (a worst frame below 50 dB from FFmpeg's) or **Skipped** (the
   installed FFmpeg can't encode that format). About 10–30 seconds; the results go into the
   diagnostics report.
+- **Check zero-copy** (on the Check decoders tab): makes short H.264 (8-bit) and HEVC (10-bit)
+  samples, decodes them with the hardware decoder keeping the frames on the graphics card, and
+  draws every frame both ways, straight from the graphics card and copied back to memory as
+  usual, comparing the two pictures pixel by pixel and timing each way. It shows **Works**,
+  **Differs** (zero-copy then switches itself off) or why it isn't available (no hardware
+  decoder, zero-copy switched off in Settings, or not Windows), and the results go into the
+  diagnostics report, so a run on your own graphics card can be sent over
 - **Third-party notices**, with a search box.
 
 The **log** goes to `%LOCALAPPDATA%\Reelforge\logs\reelforge.log` (the previous session's is

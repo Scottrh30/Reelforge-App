@@ -3651,6 +3651,7 @@ dependencies = [
  "reelforge-media",
  "reelforge-ofx",
  "reelforge-render",
+ "serde",
 ]
 
 [[package]]

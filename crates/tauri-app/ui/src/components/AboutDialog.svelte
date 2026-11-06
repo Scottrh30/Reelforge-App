@@ -2,7 +2,7 @@
   // Help → About & diagnostics: the diagnostics report (to copy into a
   // message), the decoder check, and the third-party licence notices.
   import { app, run, say } from "../lib/session.svelte";
-  import { api, type DecoderCheck } from "../lib/api";
+  import { api, type DecoderCheck, type ZeroCopyReport } from "../lib/api";
 
   let report = $state("");
   let notices = $state("");
@@ -38,6 +38,16 @@
     clearInterval(tick);
     checking = false;
     // The report mentions the check: refresh it for the Diagnostics tab.
+    report = (await get(api.diagnostics())) ?? report;
+  }
+
+  // Zero-copy: decode on the graphics card and compare with the usual copy.
+  let zc = $state<ZeroCopyReport | null>(null);
+  let zcBusy = $state(false);
+  async function checkZc() {
+    zcBusy = true;
+    zc = await get(api.checkZeroCopy());
+    zcBusy = false;
     report = (await get(api.diagnostics())) ?? report;
   }
 
@@ -128,6 +138,31 @@
           <span class="grow"></span>
           <button onclick={close}>Close</button>
           <button class="primary" disabled={checking} onclick={check}>{results ? "Check again" : "Check decoders"}</button>
+        </div>
+        <h3>Zero-copy video</h3>
+        <p class="muted">Decodes short H.264 (8-bit) and HEVC (10-bit) samples with the hardware decoder, keeps the frames on the graphics card, and draws each one both ways: straight from the graphics card, and copied back to memory as usual. They should look the same. A few seconds; the results go into the diagnostics report.</p>
+        {#if zc}
+          <p class:warn={zc.verdict === "mismatch"}><span class="badge {zc.verdict === 'works' ? 'ok' : zc.verdict === 'mismatch' ? 'mismatch' : 'skipped'}">{zc.verdict === "works" ? "Works" : zc.verdict === "mismatch" ? "Differs" : zc.verdict === "off" ? "Off" : "Not available"}</span> {zc.summary}</p>
+          {#if zc.formats.length}
+            <table>
+              <thead><tr><th>Format</th><th>Result</th><th>Details</th></tr></thead>
+              <tbody>
+                {#each zc.formats as f}
+                  <tr>
+                    <td>{f.format}</td>
+                    <td><span class="badge {f.status === 'ok' ? 'ok' : f.status === 'mismatch' || f.status === 'error' ? 'mismatch' : 'skipped'}">{f.status === "ok" ? "Matches" : f.status === "mismatch" ? "Differs" : f.status === "error" ? "Error" : f.status === "not used" ? "Not used" : "Skipped"}</span></td>
+                    <td class="detail">{f.detail}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        {:else if zcBusy}
+          <p>Checking…</p>
+        {/if}
+        <div class="buttons">
+          <span class="grow"></span>
+          <button class="primary" disabled={zcBusy} onclick={checkZc}>{zc ? "Check zero-copy again" : "Check zero-copy"}</button>
         </div>
       {:else}
         <p class="muted">Reelforge is built from the open-source software listed here; each part keeps its own licence. The same text is in THIRD-PARTY-NOTICES.txt beside the program.</p>
@@ -246,6 +281,11 @@
     border-radius: 9px;
     font-size: calc(11px * var(--text-scale));
     white-space: nowrap;
+  }
+  h3 {
+    margin: 10px 0 0;
+    font-size: 13px;
+    font-weight: 600;
   }
   .badge.ok {
     background: color-mix(in srgb, var(--green) 22%, transparent);

@@ -159,6 +159,15 @@ fn encode(s: &Sample, path: &Path) -> Result<&'static str, String> {
     Ok(name)
 }
 
+/// Make the sample of `format` (as named in the decoder check, e.g. "H.264")
+/// at `path`: the encoder used, or why it couldn't.
+pub fn make_sample(format: &str, path: &Path) -> Result<&'static str, String> {
+    crate::init();
+    let list = samples();
+    let s = list.iter().find(|s| s.format == format).ok_or_else(|| format!("no sample called {format}"))?;
+    encode(s, path)
+}
+
 /// Run the check on every format, calling `progress(done, total, format)` as it goes.
 pub fn check_decoders(mut progress: impl FnMut(usize, usize, &str)) -> Vec<DecoderCheck> {
     crate::init();

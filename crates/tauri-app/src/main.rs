@@ -1340,6 +1340,7 @@ fn diagnostics() -> Res<String> {
     #[cfg(all(windows, target_env = "gnu"))]
     extra.push(("WebView2", webview2_shim::runtime_version().unwrap_or_else(|| "not found".into())));
     extra.push(("Decoder check", reelforge_media::selfcheck::last_summary().unwrap_or_else(|| "not run this session".into())));
+    extra.push(("Zero-copy check", reelforge_export::zerocheck::last_summary().unwrap_or_else(|| "not run this session".into())));
     ed(|e| {
         let p = &e.prefs;
         extra.push((
@@ -1376,6 +1377,14 @@ fn open_log_folder() -> Res<()> {
 #[tauri::command]
 async fn check_decoders() -> Result<Vec<reelforge_media::selfcheck::DecoderCheck>, String> {
     tauri::async_runtime::spawn_blocking(|| reelforge_media::selfcheck::check_decoders(|_, _, _| {})).await.map_err(|e| e.to_string())
+}
+
+/// Help → Check decoders → Check zero-copy: decode samples on the graphics
+/// card and compare drawing them straight from there with the usual copy.
+#[tauri::command]
+async fn check_zero_copy() -> Result<reelforge_export::zerocheck::ZeroCopyReport, String> {
+    let gpu = ed(|e| e.preview.gpu())?.ok_or("there's no graphics device to check with")?;
+    tauri::async_runtime::spawn_blocking(move || reelforge_export::zerocheck::check_zero_copy(&gpu.0, &gpu.1)).await.map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -1435,6 +1444,7 @@ fn main() {
             notices,
             open_log_folder,
             check_decoders,
+            check_zero_copy,
             frame,
             waveform,
             waveform_rate,

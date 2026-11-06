@@ -12,5 +12,6 @@ reelforge-render.workspace = true
 reelforge-ofx.workspace = true
 anyhow.workspace = true
 log.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
