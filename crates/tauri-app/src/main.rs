@@ -61,6 +61,8 @@ fn clip(id: u64) -> ClipId {
 struct Live {
     rev: u64,
     picture_rev: u64,
+    /// Bumped when the Viewer's view changes.
+    view_rev: u64,
     playhead: i64,
     playing: bool,
     /// Playback speed from J/K/L (1 = normal, negative = backwards).
@@ -153,6 +155,7 @@ fn tick() -> Res<Live> {
         Live {
             rev: e.rev,
             picture_rev: e.preview.picture_rev,
+            view_rev: e.view_rev,
             playhead: e.playback.playhead.0,
             playing: e.playback.playing,
             shuttle: e.playback.shuttle,
@@ -1426,6 +1429,9 @@ fn main() {
             scene::set_clip_label,
             scene::set_parent,
             scene::scene_point_drag,
+            scene::view_set,
+            scene::camera_tool_drag,
+            scene::camera_tool_wheel,
             select,
             select_many,
             select_all,

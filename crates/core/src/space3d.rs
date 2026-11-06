@@ -178,6 +178,43 @@ impl Camera {
         (rotate(r, f, roll), rotate(d, f, roll), f)
     }
 
+    /// Turned about its point of interest: `yaw` degrees round the world's
+    /// up axis, `pitch` degrees up or down (kept short of straight over or
+    /// under it). For the Viewer's Orbit tool.
+    pub fn orbited(&self, yaw: f32, pitch: f32) -> Camera {
+        let v = sub(self.position, self.target);
+        let r = dot(v, v).sqrt();
+        if r < 1e-3 {
+            return *self;
+        }
+        let h = (v[0] * v[0] + v[2] * v[2]).sqrt();
+        let lim = 89.5f32.to_radians();
+        let el = ((-v[1]).atan2(h) + pitch.to_radians()).clamp(-lim, lim);
+        let az = v[0].atan2(v[2]) + yaw.to_radians();
+        Camera { position: add(self.target, [r * el.cos() * az.sin(), -r * el.sin(), r * el.cos() * az.cos()]), ..*self }
+    }
+
+    /// Moved across its own view, with its point of interest, so that what's
+    /// at that point follows a drag of `d` frame pixels. For the Pan tool.
+    pub fn panned(&self, d: [f32; 2]) -> Camera {
+        let (r, down, _) = self.basis();
+        let k = self.distance().max(NEAR) / self.focal();
+        let step = mul(add(mul(r, d[0]), mul(down, d[1])), -k);
+        Camera { position: add(self.position, step), target: add(self.target, step), ..*self }
+    }
+
+    /// Moved towards (`by` < 1) or away from (`by` > 1) its point of
+    /// interest, that many times as far. For the Dolly tool.
+    pub fn dollied(&self, by: f32) -> Camera {
+        let v = sub(self.position, self.target);
+        let r = dot(v, v).sqrt();
+        if r < 1e-3 {
+            return *self;
+        }
+        let to = (r * by).clamp(NEAR * 2.0, FAR * 0.5);
+        Camera { position: add(self.target, mul(v, to / r)), ..*self }
+    }
+
     /// Camera-space coordinates (right, down, forward) of world point `p`.
     pub fn view(&self, p: V3) -> V3 {
         let (r, d, f) = self.basis();
@@ -290,6 +327,24 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+thread_local! {
+    /// The Viewer's own view (see [`set_view`]).
+    static VIEW: std::cell::Cell<Option<(usize, Camera)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Look at sequence `seq` through `camera` instead of its own (the Viewer's
+/// Front, Top, Left and custom views), for [`Project::scene3d_at`] on this
+/// thread only: the editor's thread, so exports (on their own) are never
+/// affected. `None` goes back to the sequence's camera.
+pub fn set_view(view: Option<(usize, Camera)>) {
+    VIEW.with(|v| v.set(view));
+}
+
+/// The view set with [`set_view`] on this thread.
+pub fn view() -> Option<(usize, Camera)> {
+    VIEW.with(|v| v.get())
+}
+
 /// The camera and lights of a sequence at one moment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene3d {
@@ -329,7 +384,21 @@ impl Project {
                 SceneObject::Light | SceneObject::Point => {}
             }
         }
-        Scene3d { camera: camera.unwrap_or_else(|| Camera::default_for(frame)), lights }
+        let mut camera = camera.unwrap_or_else(|| Camera::default_for(frame));
+        if let Some((_, c)) = view().filter(|(v, _)| *v == seq) {
+            camera = Camera { frame, dof: None, ..c };
+        }
+        Scene3d { camera, lights }
+    }
+
+    /// The sequence's own camera (its topmost camera clip, else the default),
+    /// whatever the Viewer is looking through.
+    pub fn own_camera_at(&self, seq: usize, t: Time) -> Camera {
+        let saved = view();
+        set_view(None);
+        let c = self.scene3d_at(seq, t).camera;
+        set_view(saved);
+        c
     }
 }
 
@@ -702,5 +771,53 @@ pub fn reparent(clip: &mut crate::project::Clip, fix: &Null, frame: [f32; 2]) {
                 k.value *= fix.scale;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    /// The camera tools: orbiting keeps the distance and the point of
+    /// interest, panning moves both with the drag, dollying only the distance.
+    #[test]
+    fn orbit_pan_and_dolly() {
+        const FRAME: [f32; 2] = [1920.0, 1080.0];
+        let c = Camera { position: [0.0, 0.0, -1000.0], target: [0.0, 0.0, 0.0], roll: 0.0, fov: 40.0, dof: None, frame: FRAME };
+        let o = c.orbited(90.0, 0.0);
+        assert!((o.distance() - 1000.0).abs() < 1e-2 && o.target == c.target);
+        assert!((o.position[0] + 1000.0).abs() < 1e-2 && o.position[2].abs() < 1e-2, "{:?}", o.position);
+        // Pitched down 30°: above the target (up is −Y).
+        let p = c.orbited(0.0, 30.0);
+        assert!((p.position[1] + 500.0).abs() < 1e-1, "{:?}", p.position);
+        assert!(c.orbited(0.0, 200.0).position[1] > -1000.0, "kept short of straight above");
+        // A drag right moves the point of interest's picture right with it.
+        let q = c.panned([100.0, 0.0]);
+        let seen = q.project(c.target).unwrap();
+        assert!((seen[0] - (FRAME[0] / 2.0 + 100.0)).abs() < 0.5 && (seen[1] - FRAME[1] / 2.0).abs() < 0.5, "{seen:?}");
+        assert!((q.distance() - 1000.0).abs() < 1e-2);
+        let d = c.dollied(0.5);
+        assert!((d.position[2] + 500.0).abs() < 1e-2 && d.target == c.target);
+        assert!(c.dollied(0.0).distance() >= NEAR * 2.0);
+    }
+
+    /// A view set for the Viewer replaces that sequence's camera on this
+    /// thread only, and the sequence's own camera is still to be had.
+    #[test]
+    fn viewer_view_overrides_the_camera_on_this_thread() {
+        let mut p = Project::default();
+        p.sequences.push(crate::project::Sequence::new("S", 1920, 1080, crate::time::FrameRate::new(25, 1)));
+        let seq = p.sequences.len() - 1;
+        let own = p.scene3d_at(seq, Time::ZERO).camera;
+        let top = Camera { position: [0.0, -5000.0, 0.0], target: [0.0; 3], roll: 0.0, fov: 20.0, dof: Some((1.0, 1.0)), frame: [10.0, 10.0] };
+        set_view(Some((seq, top)));
+        let seen = p.scene3d_at(seq, Time::ZERO).camera;
+        assert_eq!(seen.position, top.position);
+        assert_eq!((seen.frame, seen.dof), ([1920.0, 1080.0], None));
+        assert_eq!(p.own_camera_at(seq, Time::ZERO), own);
+        let other = std::thread::scope(|s| s.spawn(|| p.scene3d_at(seq, Time::ZERO).camera).join().unwrap());
+        assert_eq!(other, own);
+        set_view(None);
+        assert_eq!(p.scene3d_at(seq, Time::ZERO).camera, own);
     }
 }

@@ -35,6 +35,8 @@ pub struct State {
     pub trackers: Vec<TrackSource>,
     pub recoveries: Vec<String>,
     pub prefs: reelforge_engine::editor::Prefs,
+    /// The Viewer's view: "Active" (through the sequence's camera), "Front", "Top", "Left" or "Custom".
+    pub view: reelforge_engine::editor::ViewMode,
 }
 
 #[derive(Serialize)]
@@ -691,6 +693,7 @@ pub fn state(e: &Editor) -> State {
         trackers,
         recoveries: e.recoveries.iter().map(|r| r.describe()).collect(),
         prefs: e.prefs.clone(),
+        view: e.view_mode(),
     }
 }
 

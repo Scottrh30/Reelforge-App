@@ -263,6 +263,8 @@ enum TrackMsg {
 
 mod camtrack;
 mod diskspace;
+mod viewcam;
+pub use viewcam::ViewMode;
 pub use camtrack::CamMake;
 
 /// A motion-tracking run going on in the background.
@@ -347,6 +349,11 @@ pub struct Editor {
     playheads: HashMap<usize, Time>,
     /// Bumped on every project change.
     pub rev: u64,
+    /// The Viewer looking from somewhere other than the sequence's camera
+    /// (see `viewcam`); `None` through the camera.
+    pub view: Option<(viewcam::ViewMode, reelforge_core::space3d::Camera)>,
+    /// Bumped when the view changes (it isn't a project change).
+    pub view_rev: u64,
     mixed_rev: u64,
     /// Project revision at the last save (or open): anything newer is unsaved.
     pub saved_rev: u64,
@@ -417,6 +424,8 @@ impl Editor {
             comp_open: 0,
             playheads: HashMap::new(),
             rev: 1,
+            view: None,
+            view_rev: 0,
             target: None,
             mixed_rev: 0,
             saved_rev: 1,
@@ -3468,6 +3477,7 @@ impl Editor {
         self.meters.poll(self.playback.audio.as_ref());
         let sources = self.decode_paths();
         self.step_render_job(&sources);
+        self.apply_view();
         self.preview.update(&self.project, self.active, self.playback.playhead, self.playback.playing, &sources, &mut self.render_cache);
         if let Some(e) = self.preview.error.take() {
             self.status = e;

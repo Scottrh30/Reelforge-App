@@ -15,6 +15,19 @@
     { id: "resize", name: "Resize mask", hint: "Drag a mask in the Viewer to make it bigger or smaller (Shift: width or height only)" },
   ];
 
+  type CamTool = "orbit" | "pan" | "dolly";
+  const camTools: { id: CamTool; name: string; hint: string }[] = [
+    { id: "orbit", name: "Orbit camera", hint: "Drag in the Viewer to circle the camera round its point of interest (from Front, Top or Left: the view)" },
+    { id: "pan", name: "Pan camera", hint: "Drag in the Viewer to slide the camera and its point of interest across the view" },
+    { id: "dolly", name: "Dolly camera", hint: "Drag up or down in the Viewer (or turn the wheel) to move the camera closer or further" },
+  ];
+  function useCam(t: CamTool) {
+    app.maskTool = null;
+    app.drawing = null;
+    app.camTool = app.camTool === t ? null : t;
+    if (app.camTool) say(`${camTools.find((c) => c.id === t)!.name}: drag in the Viewer (Esc leaves the tool)`);
+  }
+
   const ins = $derived(app.s?.inspector ?? null);
   /// Masks go on video layers.
   const canMask = $derived(!!ins?.visual && !!ins.layer_map);
@@ -66,13 +79,13 @@
   // The name popup: shown after a short pause, next to the tool.
   let tip = $state<{ name: string; hint: string; y: number } | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  function enter(e: PointerEvent | FocusEvent, t: (typeof tools)[number]) {
+  function enter(e: PointerEvent | FocusEvent, t: { id: string; name: string; hint: string }) {
     const el = e.currentTarget as HTMLElement;
     clearTimeout(timer);
     const show = () => {
       const r = el.getBoundingClientRect();
       const parent = el.closest(".tools")!.getBoundingClientRect();
-      const extra = why(t.id);
+      const extra = t.id === "orbit" || t.id === "pan" || t.id === "dolly" ? "" : why(t.id as Tool);
       tip = { name: t.name, hint: extra || t.hint, y: r.top - parent.top + r.height / 2 };
     };
     if (tip) show();
@@ -115,6 +128,36 @@
         {:else}
           <rect x="3" y="7" width="10" height="10" stroke-dasharray="2 1.6" />
           <path d="M9.5 10.5 17 3M12.5 3H17v4.5" stroke-linecap="round" stroke-linejoin="round" />
+        {/if}
+      </svg>
+    </button>
+  {/each}
+  <span class="sep" aria-hidden="true"></span>
+  {#each camTools as t (t.id)}
+    <button
+      class="tool cam"
+      class:on={app.camTool === t.id}
+      aria-label={t.name}
+      aria-pressed={app.camTool === t.id}
+      onclick={() => useCam(t.id)}
+      onpointerenter={(e) => enter(e, t)}
+      onpointerleave={leave}
+      onfocus={(e) => enter(e, t)}
+      onblur={leave}
+    >
+      <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+        {#if t.id === "orbit"}
+          <ellipse cx="10" cy="10" rx="7.5" ry="3.2" />
+          <circle cx="10" cy="10" r="1.6" class="dot" />
+          <path d="M15.2 4.2 17.5 6.7l-3.2.6" stroke-linecap="round" stroke-linejoin="round" />
+        {:else if t.id === "pan"}
+          <rect x="4" y="6" width="9" height="8" rx="1" />
+          <path d="M13 8.5 17 6.5v7l-4-2" stroke-linejoin="round" />
+          <path d="M2 17.5h16M15.5 15.5l2.5 2-2.5 2" stroke-linecap="round" stroke-linejoin="round" />
+        {:else}
+          <rect x="4" y="6" width="9" height="8" rx="1" />
+          <path d="M13 8.5 17 6.5v7l-4-2" stroke-linejoin="round" />
+          <path d="M8.5 1.5v3M7 3l1.5-1.5L10 3M8.5 18.5v-3M7 17l1.5 1.5L10 17" stroke-linecap="round" stroke-linejoin="round" />
         {/if}
       </svg>
     </button>

@@ -123,6 +123,11 @@ export function onKey(e: KeyboardEvent) {
     app.note = "";
     return;
   }
+  if (app.camTool && e.key === "Escape") {
+    e.preventDefault();
+    app.camTool = null;
+    return;
+  }
   if (app.maskTool && e.key === "Escape" && !app.drawing) {
     e.preventDefault();
     app.maskTool = null;

@@ -108,6 +108,10 @@
 
   function wheel(e: WheelEvent) {
     e.preventDefault();
+    if (app.camTool && !e.ctrlKey) {
+      camWheel(e);
+      return;
+    }
     const r = box!.getBoundingClientRect();
     if (e.shiftKey && !e.ctrlKey) {
       // Shift+wheel: move sideways.
@@ -119,8 +123,71 @@
     zoomTo(fit.k * Math.exp(-d * 0.0012), e.clientX - r.left, e.clientY - r.top);
   }
 
+  // ---- Camera views and tools ----
+  const VIEWS: { mode: "active" | "front" | "top" | "left" | "custom"; label: string; short: string }[] = [
+    { mode: "active", label: "Active camera (what's exported)", short: "Active camera" },
+    { mode: "front", label: "Front", short: "Front" },
+    { mode: "top", label: "Top", short: "Top" },
+    { mode: "left", label: "Left", short: "Left" },
+    { mode: "custom", label: "Custom view (where the camera tools left it)", short: "Custom view" },
+  ];
+  const viewName = $derived(VIEWS.find((v) => v.mode === (app.s?.view ?? "Active").toLowerCase())?.short ?? "Active camera");
+  function viewMenu(e: MouseEvent) {
+    const now = (app.s?.view ?? "Active").toLowerCase();
+    openMenu(e, [
+      { heading: true, label: "Look through" },
+      ...VIEWS.map((v) => ({ label: v.label, checked: v.mode === now, run: () => run(api.viewSet(v.mode)) })),
+    ]);
+  }
+  /// A camera tool: dragging with the left button orbits, pans or dollies.
+  function camDown(e: PointerEvent): boolean {
+    const tool = app.camTool;
+    if (!tool || e.button !== 0) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    const el = box!;
+    el.setPointerCapture(e.pointerId);
+    const [x0, y0] = [e.clientX, e.clientY];
+    const pump = livePump();
+    let first = true;
+    let failed = false;
+    const move = (ev: PointerEvent) => {
+      if (failed) return;
+      // Orbit and dolly by screen distance; pan so the picture follows the pointer.
+      const k = tool === "pan" ? fit.k : 1;
+      const d: Pt = [(ev.clientX - x0) / k, (ev.clientY - y0) / k];
+      const start = first;
+      first = false;
+      pump.push(() =>
+        api.cameraToolDrag(tool, d, start).catch((err) => {
+          failed = true;
+          app.note = String(err);
+        }),
+      );
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      await pump.done();
+      await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+    return true;
+  }
+  let wheelCommit: ReturnType<typeof setTimeout> | undefined;
+  function camWheel(e: WheelEvent) {
+    const d = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+    api.cameraToolWheel(Math.exp(d * 0.0012)).catch((err) => (app.note = String(err)));
+    clearTimeout(wheelCommit);
+    wheelCommit = setTimeout(() => run(api.commit()), 400);
+  }
+
   /// Middle button anywhere, or the left with the Hand tool: drag the picture around.
   function panDown(e: PointerEvent) {
+    if (camDown(e)) return;
     if (!(e.button === 1 || (e.button === 0 && hand))) return;
     e.preventDefault();
     e.stopPropagation();
@@ -339,6 +406,13 @@
       title="Playback quality: draw the Viewer's picture at full, half or quarter resolution (footage is decoded that much smaller too), so heavy projects play smoothly; Automatic steps down by itself when playing falls behind and back up when it can. Export and Render preview always use full resolution."
       onclick={qualityMenu}>{quality}{#if app.s?.prefs.full_when_paused && (app.s?.prefs.playback_quality ?? 1) !== 1}<span class="paused-full" title="Full resolution when paused"> ⏸ full</span>{/if} ▾</button
     >
+    <button
+      class="chip"
+      class:viewing={(app.s?.view ?? "Active") !== "Active"}
+      aria-haspopup="menu"
+      title="Look through the sequence's camera (Active camera, what's exported), or at the 3D scene from the front, top or left, or from where the camera tools left the view (Custom). The other views are only for the Viewer"
+      onclick={viewMenu}>{viewName} ▾</button
+    >
     <div class="zoom" role="group" aria-label="Viewer zoom">
       <button class="chip" class:on={hand} onclick={() => (hand = !hand)} title="Hand: drag the picture around (or drag with the middle mouse button anywhere)" aria-pressed={hand}>
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M5.5 8V3.2a1 1 0 0 1 2 0V7.5M7.5 7V2.3a1 1 0 0 1 2 0V7M9.5 7V3a1 1 0 0 1 2 0v5.2M11.5 6.5a1 1 0 0 1 2 0V10c0 2.8-2 4.5-4.5 4.5S5 13.5 3.6 11.4L2.4 9.6a1 1 0 0 1 1.6-1.2L5.5 10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" /></svg>
@@ -353,7 +427,7 @@
     class="stage"
     bind:this={box}
     role="presentation"
-    style="cursor:{panning ? 'grabbing' : hand ? 'grab' : cursor}"
+    style="cursor:{panning ? 'grabbing' : hand ? 'grab' : app.camTool === 'dolly' ? 'ns-resize' : app.camTool ? 'move' : cursor}"
     title={tip}
     onpointerdowncapture={panDown}
     onpointerdown={press}
@@ -703,5 +777,9 @@
   }
   .quality.low {
     color: var(--accent);
+  }
+  .chip.viewing {
+    color: var(--accent);
+    border-color: var(--accent);
   }
 </style>

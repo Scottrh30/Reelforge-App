@@ -495,6 +495,8 @@ export interface ViewerFeedback {
 
 // ---- Effects ----
 
+export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
+export type CameraTool = "orbit" | "pan" | "dolly";
 export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval";
 
 export interface Curves {
@@ -776,12 +778,15 @@ export interface State {
   inspector: Inspector | null;
   trackers: TrackSource[];
   recoveries: string[];
+  /// The Viewer's view (see viewSet).
+  view: ViewMode;
   prefs: Prefs;
 }
 
 export interface Live {
   rev: number;
   picture_rev: number;
+  view_rev: number;
   playhead: Ticks;
   playing: boolean;
   shuttle: number;
@@ -883,6 +888,9 @@ export const api = {
   setParent: (id: number, parent: number | null) => invoke("set_parent", { id, parent }),
   /// Drag a camera's or light's point by `d` frame pixels (live; `start` on the first call).
   scenePointDrag: (id: number, which: string, d: Pt, start: boolean) => invoke("scene_point_drag", { id, which, d, start }),
+  viewSet: (mode: "active" | "front" | "top" | "left" | "custom") => invoke("view_set", { mode }),
+  cameraToolDrag: (tool: CameraTool, d: Pt, start: boolean) => invoke("camera_tool_drag", { tool, d, start }),
+  cameraToolWheel: (by: number) => invoke("camera_tool_wheel", { by }),
   select: (id: number | null, mode: "only" | "toggle" | "none") => invoke("select", { id, mode }),
   selectMany: (ids: number[], add: boolean) => invoke("select_many", { ids, add }),
   moveClips: (lead: number, track: number, start: Ticks) => invoke("move_clips", { lead, track, start }),

@@ -945,6 +945,18 @@ What works now:
     of field** (focus distance and how much things out of focus blur). The topmost camera clip
     at a moment is the one used; without one, a default camera that leaves 2D-looking layers
     unchanged. Its point of interest can be dragged in the Viewer
+  - **Camera tools** (the bottom three buttons down the Viewer's left side): **Orbit** circles
+    the camera round its point of interest as you drag, **Pan** slides the camera and its point
+    of interest across the view (what's there follows the pointer), and **Dolly** moves it closer
+    or further as you drag up or down, or with the wheel. They move the camera clip at the
+    playhead (keyed where its position is animated; one undo step per drag); Esc leaves the
+    tool
+  - **Look through** (the menu in the Viewer's top bar): **Active camera** is the sequence's
+    camera, what's exported. **Front**, **Top** and **Left** look at the 3D scene from those
+    sides with a long lens, far enough off to take in the camera and what it looks at; there the
+    camera shows as a handle you can drag, with a line to its point of interest. The camera tools
+    move these views instead of the camera, and orbiting one turns it into a **Custom view**.
+    Only the Viewer uses them; exports always go through the active camera
   - **Timeline → Add light**: point, spot, directional or ambient, with colour, intensity,
     position, point of interest (spot and directional), cone angle and feather (spot), and
     falloff (none, smooth or inverse square, over a distance). With any lights in the scene, 3D

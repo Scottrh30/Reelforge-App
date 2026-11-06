@@ -88,6 +88,8 @@ export const app = $state({
   keyPick: null as null | { clip: number; index: number },
   /// The Viewer's mask tool: dragging a mask moves it, or resizes it about its centre.
   maskTool: null as null | "move" | "resize",
+  /// A camera tool in the Viewer: dragging there orbits, pans or dollies the camera (or the view).
+  camTool: null as null | import("./api").CameraTool,
 });
 
 export function setPanel(name: string, on: boolean) {
@@ -110,6 +112,7 @@ export const viewer = {
 let busy = false;
 let lastRev = -1;
 let lastPlugins = -1;
+let lastView = -1;
 let lastProxies = -1;
 let lastPlayhead = -1;
 let lastPlayheadFetch = 0;
@@ -149,10 +152,11 @@ export async function refresh(force = false) {
   // A title's outline is known once it has been drawn: fetch it then.
   const outline = !!ins?.visual && !ins.gizmo && !live.playing && live.picture_rev !== lastPicture;
   lastPicture = live.picture_rev;
-  if (force || moved || outline || live.rev !== lastRev || live.plugins_rev !== lastPlugins || live.proxies !== lastProxies || !app.s) {
+  if (force || moved || outline || live.rev !== lastRev || live.plugins_rev !== lastPlugins || live.view_rev !== lastView || live.proxies !== lastProxies || !app.s) {
     lastProxies = live.proxies;
     lastRev = live.rev;
     lastPlugins = live.plugins_rev;
+    lastView = live.view_rev;
     lastPlayhead = live.playhead;
     lastPlayheadFetch = now;
     app.s = await api.state();

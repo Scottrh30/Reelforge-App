@@ -4,6 +4,7 @@
 use crate::{ed, Res};
 use reelforge_core::effects::{camera as cam, light as li, point as pt};
 use reelforge_core::space3d::{Camera, SceneObject};
+use reelforge_engine::editor::ViewMode;
 use reelforge_core::ClipId;
 use reelforge_engine::editor::Editor;
 use serde::Serialize;
@@ -42,6 +43,9 @@ pub fn points(e: &Editor) -> Vec<ScenePoint> {
     let parent = e.project.parent_of(e.active, c, t);
     let which: &[&'static str] = match what {
         SceneObject::Point => &["position"],
+        // Through the camera itself only its point of interest shows; from
+        // another view, the camera too.
+        SceneObject::Camera if e.view.is_some() => &["position", "target"],
         SceneObject::Camera => &["target"],
         SceneObject::Light => match fx.value_at(li::KIND, src) as usize {
             0 => &["position"],
@@ -128,6 +132,111 @@ pub fn scene_point_drag(id: u64, which: String, d: [f32; 2], start: bool) -> Res
         let moved = [0, 1, 2].map(|a| p[a] + step[a]);
         crate::fx::set_params(e, id, 0, &[(ix[0], moved[0]), (ix[1], moved[1]), (ix[2], moved[2])]);
     })
+}
+
+/// The Viewer's view: "active" (through the sequence's camera), "front",
+/// "top", "left" or "custom".
+#[tauri::command]
+pub fn view_set(mode: String) -> Res<()> {
+    ed(|e| {
+        if let Some(m) = ViewMode::parse(&mode) {
+            e.set_view_mode(m);
+        }
+    })
+}
+
+/// The camera clip the sequence looks through at the playhead (the topmost one).
+fn active_camera(e: &Editor) -> Option<ClipId> {
+    let t = e.playback.playhead;
+    let mut found = None;
+    for tr in e.seq().tracks.iter().filter(|tr| tr.kind == reelforge_core::TrackKind::Video && !tr.muted) {
+        if let Some(c) = tr.clip_at(t) {
+            if c.scene == Some(SceneObject::Camera) && c.effects.first().is_some_and(|f| f.enabled) {
+                found = Some(c.id);
+            }
+        }
+    }
+    found
+}
+
+/// What a camera tool moves: the Viewer's own view, or a camera clip (with
+/// what it's parented to).
+#[derive(Clone, Copy)]
+enum Moving {
+    View(ViewMode, Camera),
+    Clip(ClipId, Camera, Option<reelforge_core::space3d::Null>),
+}
+
+/// The camera tools work on the Viewer's view when it has one of its own,
+/// else on the sequence's camera clip.
+fn moving(e: &Editor) -> Result<Moving, String> {
+    if let Some((m, c)) = e.view {
+        return Ok(Moving::View(m, c));
+    }
+    let id = active_camera(e).ok_or("There's no camera at the playhead to move: Timeline → Add camera, or look from Front, Top or Left to move around the scene")?;
+    let t = e.playback.playhead;
+    let (_, c) = e.seq().find_clip(id).ok_or("no camera")?;
+    let parent = e.project.parent_of(e.active, c, t);
+    Ok(Moving::Clip(id, e.project.own_camera_at(e.active, t), parent))
+}
+
+/// Put a moved camera back: the view, or the camera clip's position and
+/// point of interest (in its parent's space; keyed where they're animated).
+fn place(e: &mut Editor, what: Moving, cam: Camera, orbit: bool) {
+    match what {
+        Moving::View(m, _) => {
+            // Orbiting turns the front, top or left view into a view of its own.
+            let m = if orbit && m != ViewMode::Custom { ViewMode::Custom } else { m };
+            e.set_view(Some((m, cam)));
+        }
+        Moving::Clip(id, _, parent) => {
+            let back = |p: [f32; 3]| parent.map_or(p, |n| n.inverse().apply(p));
+            let (p, t) = (back(cam.position), back(cam.target));
+            crate::fx::set_params(e, id.0, 0, &[(cam::X, p[0]), (cam::Y, p[1]), (cam::Z, p[2]), (cam::TARGET_X, t[0]), (cam::TARGET_Y, t[1]), (cam::TARGET_Z, t[2])]);
+        }
+    }
+}
+
+thread_local! {
+    /// The camera-tool drag under way: what it moves, as it was at the start.
+    static TOOL: RefCell<Option<Moving>> = const { RefCell::new(None) };
+}
+
+/// Drag with a camera tool ("orbit", "pan" or "dolly") by `d` screen-scaled
+/// frame pixels from where it started (`start`: true on the first call).
+/// Live; finish with `commit`.
+#[tauri::command]
+pub fn camera_tool_drag(tool: String, d: [f32; 2], start: bool) -> Res<()> {
+    ed(|e| {
+        if start {
+            let m = moving(e)?;
+            TOOL.with(|s| *s.borrow_mut() = Some(m));
+        }
+        let Some(what) = TOOL.with(|s| *s.borrow()) else { return Ok(()) };
+        let from = match what {
+            Moving::View(_, c) | Moving::Clip(_, c, _) => c,
+        };
+        let cam = match tool.as_str() {
+            "orbit" => from.orbited(d[0] * 0.3, d[1] * 0.3),
+            "pan" => from.panned(d),
+            _ => from.dollied((d[1] * 0.004).exp()),
+        };
+        place(e, what, cam, tool == "orbit");
+        Ok(())
+    })?
+}
+
+/// The wheel with a camera tool: closer (`by` < 1) or further (> 1). Live; finish with `commit`.
+#[tauri::command]
+pub fn camera_tool_wheel(by: f32) -> Res<()> {
+    ed(|e| {
+        let what = moving(e)?;
+        let from = match what {
+            Moving::View(_, c) | Moving::Clip(_, c, _) => c,
+        };
+        place(e, what, from.dollied(by.clamp(0.2, 5.0)), false);
+        Ok(())
+    })?
 }
 
 /// Add a camera, or a light of `light` type (0 point, 1 spot, 2 directional, 3 ambient).
