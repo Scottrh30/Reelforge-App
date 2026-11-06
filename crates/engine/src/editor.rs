@@ -1732,7 +1732,7 @@ impl Editor {
         let id = ClipId(self.project.alloc_id());
         let mut clip = Clip::new_scene(id, start, dur, what, frame);
         if what == SceneObject::Light {
-            clip.effects[0].params[reelforge_core::effects::light::KIND].value = light.min(3) as f32;
+            clip.effects[0].params[reelforge_core::effects::light::KIND].value = light.min(reelforge_core::effects::light::ENVIRONMENT as usize) as f32;
         }
         let name = clip.display_name(&self.project).into_owned();
         let mut cmds: Vec<Box<dyn Command>> = add.into_iter().map(|a| Box::new(a) as Box<dyn Command>).collect();

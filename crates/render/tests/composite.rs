@@ -517,7 +517,7 @@ fn layers_in_3d_perspective_and_light() {
     assert!(near(px(&out, 200, 100, 50), [0, 0, 0]) && near(px(&out, 200, 10, 10), [0, 0, 0]));
 
     // A red spot light aimed at the middle: the middle is red, the edge of the square dark.
-    let spot = Light { kind: 1, color: [1.0, 0.0, 0.0], position: [0.0, 0.0, -200.0], direction: [0.0, 0.0, 1.0], cone: [(8f32).to_radians().cos(), (4f32).to_radians().cos()], falloff: 0, radius: 1000.0, shadow: 0.0, softness: 0.0 };
+    let spot = Light { kind: 1, color: [1.0, 0.0, 0.0], position: [0.0, 0.0, -200.0], direction: [0.0, 0.0, 1.0], cone: [(8f32).to_radians().cos(), (4f32).to_radians().cos()], falloff: 0, radius: 1000.0, shadow: 0.0, softness: 0.0, env: None };
     let lit = Scene3d { camera: cam, lights: vec![spot] };
     let out = draw(&mut c, t, &layer_space(&t, [64.0, 64.0], &lit));
     let mid = px(&out, 200, 100, 50);
@@ -1614,7 +1614,7 @@ fn three_d_layers_cast_shadows_on_each_other() {
     let wall = Transform { three_d: true, ..Default::default() };
     let blocker = Transform { three_d: true, depth: -300.0, ..Default::default() };
     // A point light straight in front, so the shadow lands right behind the blocker, a little bigger.
-    let light = |shadow: f32| Light { kind: 0, color: [1.0; 3], position: [0.0, 0.0, -600.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 1000.0, shadow, softness: 0.0 };
+    let light = |shadow: f32| Light { kind: 0, color: [1.0; 3], position: [0.0, 0.0, -600.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 1000.0, shadow, softness: 0.0, env: None };
     let render = |c: &mut reelforge_render::Compositor, shadow: f32, blocker_pixels: &[u8], blocker_px: [u32; 2]| {
         let scene = Scene3d { camera: cam, lights: vec![light(shadow)] };
         let (ws, bs) = (layer_space(&wall, [360.0, 180.0], &scene), layer_space(&blocker, [40.0, 40.0], &scene));
@@ -1657,7 +1657,7 @@ fn soft_shadows_fade_at_the_edges() {
     let wall = Transform { three_d: true, ..Default::default() };
     let blocker = Transform { three_d: true, depth: -300.0, ..Default::default() };
     let render = |c: &mut reelforge_render::Compositor, softness: f32| {
-        let light = Light { kind: 0, color: [1.0; 3], position: [0.0, 0.0, -600.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 1000.0, shadow: 0.8, softness };
+        let light = Light { kind: 0, color: [1.0; 3], position: [0.0, 0.0, -600.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 1000.0, shadow: 0.8, softness, env: None };
         let scene = Scene3d { camera: cam, lights: vec![light] };
         let (ws, bs) = (layer_space(&wall, [360.0, 180.0], &scene), layer_space(&blocker, [40.0, 40.0], &scene));
         let b = LayerInput { space: Some(&bs), ..layer(3, &white, [4, 4], [40.0, 40.0], blocker, BlendMode::Normal) };
@@ -1870,7 +1870,7 @@ fn two_dozen_layers_cast_shadows() {
     let wall = Transform { three_d: true, ..Default::default() };
     let cards: Vec<Transform> = (0..24).map(|n| Transform { three_d: true, position: [-150.0 + 60.0 * (n % 6) as f32, -60.0 + 40.0 * (n / 6) as f32], depth: -20.0, ..Default::default() }).collect();
     let render = |c: &mut reelforge_render::Compositor, shadow: f32| {
-        let sun = Light { kind: 2, color: [1.0; 3], position: [0.0; 3], direction: [0.0, 0.8, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 1000.0, shadow, softness: 0.0 };
+        let sun = Light { kind: 2, color: [1.0; 3], position: [0.0; 3], direction: [0.0, 0.8, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 1000.0, shadow, softness: 0.0, env: None };
         let scene = Scene3d { camera: cam, lights: vec![sun] };
         let ws = layer_space(&wall, [400.0, 200.0], &scene);
         let cs: Vec<_> = cards.iter().map(|t| layer_space(t, [6.0, 6.0], &scene)).collect();

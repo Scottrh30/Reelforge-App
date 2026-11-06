@@ -68,6 +68,9 @@ pub struct EffectView {
     /// A difference key's clean plate: (file, where in it), or why it can't be read.
     pub plate: Option<(String, String)>,
     pub plate_error: Option<String>,
+    /// An environment light's picture, and why it can't be read, if it can't.
+    pub environment: Option<String>,
+    pub environment_error: Option<String>,
     pub animated: bool,
     /// Positions to drag in the Viewer (an OpenFX plugin's): the first of
     /// each one's two parameters (x, y in % of the layer, y down) and its name.
@@ -177,6 +180,19 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 ),
                 _ => (None, None),
             };
+            let (environment, environment_error) = match &fx.data {
+                Some(EffectData::Environment(path)) => (
+                    Some(path.display().to_string()),
+                    if !path.exists() {
+                        Some("The environment picture is missing: choose it again".to_string())
+                    } else if reelforge_core::environment::load(path).is_none() {
+                        Some("That picture couldn't be read (use an .hdr, .exr, .png or .jpg panorama)".to_string())
+                    } else {
+                        None
+                    },
+                ),
+                _ => (None, None),
+            };
             EffectView {
                 label: fx.label(),
                 kind: fx.kind,
@@ -190,6 +206,8 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 lut_error,
                 plate,
                 plate_error,
+                environment,
+                environment_error,
                 points: if fx.kind == EffectKind::WireRemoval {
                     vec![PointView { param: 0, label: "Start".into() }, PointView { param: 2, label: "End".into() }]
                 } else {
@@ -304,7 +322,7 @@ pub fn effect_op(id: u64, index: usize, op: String) -> Res<()> {
                             (_, Some(d)) => Effect::new_ofx(&d),
                             _ => Effect::new(fx.kind),
                         };
-                        let data = if fx.kind == EffectKind::Lut { fx.data.take() } else { fresh.data.clone() };
+                        let data = if matches!(fx.kind, EffectKind::Lut | EffectKind::Light) { fx.data.take() } else { fresh.data.clone() };
                         let light_kind = fx.value_at(reelforge_core::effects::light::KIND, Time::ZERO);
                         *fx = Effect { enabled: fx.enabled, data, ..fresh };
                         // A camera back to where 2D layers look unchanged; a light keeps its type.
@@ -655,6 +673,51 @@ pub fn effect_plate(id: u64, index: usize, file: bool) -> Res<()> {
         e.commit_live_edit();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         e.status = if ok { format!("Clean plate: {name} at {}", at.timecode(rate)) } else { format!("Couldn't read a frame from {name}") };
+    })
+}
+
+/// Ask for an environment light's panorama.
+fn pick_environment() -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("An environment: a panorama picture (equirectangular, 2:1), best an HDR")
+        .add_filter("Panoramas", &["hdr", "exr", "png", "jpg", "jpeg", "tif", "tiff", "webp"])
+        .pick_file()
+}
+
+/// Choose the picture of light clip `id`'s environment (and make it an environment light).
+#[tauri::command]
+pub fn light_environment(id: u64, index: usize) -> Res<()> {
+    let Some(path) = pick_environment() else { return Ok(()) };
+    ed(|e| set_environment(e, id, index, path))
+}
+
+fn set_environment(e: &mut Editor, id: u64, index: usize, path: std::path::PathBuf) {
+    e.commit_live_edit();
+    edit(e, id, |list, _, _| {
+        if let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::Light) {
+            fx.normalize();
+            fx.data = Some(EffectData::Environment(path.clone()));
+            fx.params[reelforge_core::effects::light::KIND].value = reelforge_core::effects::light::ENVIRONMENT as f32;
+        }
+    });
+    e.commit_live_edit();
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    e.status = if reelforge_core::environment::load(&path).is_some() {
+        format!("Lit by {name}: 3D layers take its light, and shiny 3D text, shapes and models reflect it (Reflections)")
+    } else {
+        format!("Couldn't read {name} as a panorama")
+    };
+}
+
+/// Timeline → Add environment light: choose a panorama, then a light clip lit by it.
+#[tauri::command]
+pub fn add_environment_light() -> Res<()> {
+    let Some(path) = pick_environment() else { return Ok(()) };
+    ed(|e| {
+        e.add_scene_object(reelforge_core::space3d::SceneObject::Light, reelforge_core::effects::light::ENVIRONMENT as usize);
+        if let Some(id) = e.selection {
+            set_environment(e, id.0, 0, path);
+        }
     })
 }
 

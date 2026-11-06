@@ -47,6 +47,8 @@ impl Project {
                             Some(EffectData::Lut(p)) => f(FileKind::Lut, p),
                             // A clean plate is a picture or video file (often the clip's own).
                             Some(EffectData::Plate { path, .. }) => f(FileKind::Media, path),
+                            // An environment light's panorama.
+                            Some(EffectData::Environment(path)) => f(FileKind::Media, path),
                             _ => {}
                         }
                     }

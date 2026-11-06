@@ -1430,6 +1430,8 @@ fn main() {
             scene::set_parent,
             scene::scene_point_drag,
             scene::view_set,
+            fx::light_environment,
+            fx::add_environment_light,
             scene::camera_tool_drag,
             scene::camera_tool_wheel,
             select,

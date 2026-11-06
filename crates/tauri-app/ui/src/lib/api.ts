@@ -536,6 +536,8 @@ export interface EffectView {
   /// A difference key's clean plate: [file, timecode in it].
   plate: [string, string] | null;
   plate_error: string | null;
+  environment: string | null;
+  environment_error: string | null;
   animated: boolean;
   /// Positions to drag in the Viewer (an OpenFX plugin's): x at `param`, y at `param + 1`.
   points: { param: number; label: string }[];
@@ -976,6 +978,8 @@ export const api = {
   effectLut: (id: number, index: number) => invoke("effect_lut", { id, index }),
   effectKeyPick: (id: number, index: number, a: Pt, b: Pt) => invoke<string>("effect_key_pick", { id, index, a, b }),
   effectPlate: (id: number, index: number, file: boolean) => invoke("effect_plate", { id, index, file }),
+  lightEnvironment: (id: number, index: number) => invoke("light_environment", { id, index }),
+  addEnvironmentLight: () => invoke("add_environment_light"),
   effectCatalog: () => invoke<CatalogGroup[]>("effect_catalog"),
   fxPresetList: () => invoke<FxPreset[]>("fx_preset_list"),
   fxPresetSave: (id: number, name: string, opts: PresetSaveOptions | null = null) => invoke<string>("fx_preset_save", { id, name, opts }),

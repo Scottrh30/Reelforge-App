@@ -1820,10 +1820,7 @@ impl Compositor {
                         floats.extend([l.v[0], l.v[1], l.v[2], 0.0]);
                         floats.extend([l.camera[0], l.camera[1], l.camera[2], occluders.len() as f32]);
                         for g in &l.lights[..n] {
-                            floats.extend([g.position[0], g.position[1], g.position[2], g.kind as f32]);
-                            floats.extend([g.direction[0], g.direction[1], g.direction[2], g.falloff as f32]);
-                            floats.extend([g.color[0], g.color[1], g.color[2], g.radius]);
-                            floats.extend([g.cone[0], g.cone[1], g.shadow, g.softness]);
+                            floats.extend(g.gpu().iter().flatten());
                         }
                         if !occluders.is_empty() {
                             floats.resize(pts0 + OCCLUDER_BASE * 4, 0.0);

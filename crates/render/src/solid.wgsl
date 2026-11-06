@@ -16,6 +16,9 @@ struct Solid {
     side: vec4<f32>,
     // Four per light: position + type, direction + falloff, colour + radius, cone.
     lights: array<vec4<f32>, 32>,
+    // The environment reflected (see `env_tex`): turn (radians), reflections
+    // 0–1, blur 0–1, and its brightness.
+    env: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Solid;
@@ -32,6 +35,21 @@ struct Shadows {
 @group(1) @binding(0) var<uniform> sh: Shadows;
 @group(1) @binding(1) var shadow_atlas: texture_2d<f32>;
 @group(1) @binding(2) var shadow_sampler: sampler;
+
+// The environment light's picture (equirectangular, linear, with mipmaps for
+// blurred reflections); 1 × 1 black without one.
+@group(2) @binding(0) var env_tex: texture_2d<f32>;
+@group(2) @binding(1) var env_sampler: sampler;
+
+// What the environment shows along direction `d` (unit), `blur` 0–1.
+fn env_at(d: vec3<f32>, blur: f32) -> vec3<f32> {
+    let pi = 3.14159265;
+    let phi = atan2(d.x, d.z) - u.env.x;
+    let theta = acos(clamp(-d.y, -1.0, 1.0));
+    let uv = vec2(fract(phi / (2.0 * pi) + 0.5), theta / pi);
+    let levels = f32(textureNumLevels(env_tex));
+    return textureSampleLevel(env_tex, env_sampler, uv, blur * max(levels - 2.0, 0.0)).rgb;
+}
 
 // How much of caster `j` covers world point `q` on its plane (see composite.wgsl).
 fn occluder_alpha(j: u32, q: vec3<f32>) -> f32 {
@@ -134,6 +152,12 @@ fn scene_light(p: vec3<f32>, n: vec3<f32>, grain: f32) -> vec3<f32> {
         let color = u.lights[b + 2u].xyz;
         let radius = u.lights[b + 2u].w;
         let cone = u.lights[b + 3u].xy;
+        if (kind > 3.5) {
+            // An environment: its picture's diffuse light, by direction.
+            let kz = u.lights[b + 3u].xyz;
+            sum = sum + max(pos + dir * n.x + color * n.y + kz * n.z, vec3(0.0));
+            continue;
+        }
         if (kind > 2.5) {
             sum = sum + color; // ambient
             continue;
@@ -189,7 +213,15 @@ fn fs_solid(in: VsOut) -> @location(0) vec4<f32> {
         let a = u.studio.w;
         light = vec3(min(a + (1.0 - a) * max(dot(n, u.studio.xyz), 0.0), 1.0));
     }
-    return vec4(c.rgb * light, c.a);
+    var rgb = c.rgb * light;
+    if (u.env.y > 0.0) {
+        // Shiny: the environment reflected, more so at grazing angles.
+        let v = normalize(u.camera.xyz - in.world);
+        let r = reflect(-v, n);
+        let k = u.env.y + (1.0 - u.env.y) * u.env.y * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+        rgb = mix(rgb, env_at(r, u.env.z) * u.env.w, k);
+    }
+    return vec4(rgb, c.a);
 }
 
 // The depth picture (R32Float): how far each pixel's nearest face is, in the

@@ -90,7 +90,7 @@ impl Null {
     }
 }
 
-type V3 = [f32; 3];
+pub type V3 = [f32; 3];
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -252,6 +252,23 @@ pub struct Light {
     /// How soft its shadows are: the light's apparent size, as the angle
     /// (radians) its radius covers seen from what it lights (0: sharp).
     pub softness: f32,
+    /// An environment light's picture (kind 4).
+    pub env: Option<EnvLight>,
+}
+
+/// What an environment light lights with: its picture's diffuse light
+/// (turned and tinted, see `crate::environment`) and how shiny things reflect it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvLight {
+    /// The picture (`crate::environment::get`).
+    pub id: u64,
+    /// Diffuse light by direction: constant, then X, Y and Z terms, times the light's colour.
+    pub sh: [V3; 4],
+    /// The picture turned about the up axis (radians).
+    pub turn: f32,
+    /// Reflections 0–1, and their blur 0–1.
+    pub reflect: f32,
+    pub blur: f32,
 }
 
 /// A light's Shadow softness setting (0–100 %) as the angle (radians) its
@@ -281,7 +298,7 @@ impl Light {
         let half = (v(li::CONE).clamp(1.0, 179.0) * 0.5).to_radians();
         let feather = (v(li::FEATHER) / 100.0).clamp(0.0, 1.0);
         Light {
-            kind: (v(li::KIND) as u32).min(3),
+            kind: (v(li::KIND) as u32).min(li::ENVIRONMENT),
             color: mul(rgb, k),
             position,
             direction: norm(sub(target, position)).unwrap_or([0.0, 0.0, 1.0]),
@@ -290,12 +307,52 @@ impl Light {
             radius: v(li::RADIUS).max(1.0),
             shadow: if v(li::SHADOWS) >= 0.5 { (v(li::SHADOW_DARKNESS) / 100.0).clamp(0.0, 1.0) } else { 0.0 },
             softness: shadow_softness(v(li::SHADOW_SOFTNESS)),
+            env: None,
         }
+        .with_environment(fx, t)
+    }
+
+    /// An environment light's picture, loaded (once) from the clip's file.
+    fn with_environment(mut self, fx: &Effect, t: Time) -> Self {
+        if self.kind != li::ENVIRONMENT {
+            return self;
+        }
+        self.shadow = 0.0;
+        let Some(crate::effects::EffectData::Environment(path)) = &fx.data else { return self };
+        let Some(e) = crate::environment::load(path) else { return self };
+        let turn = fx.value_at(li::ENV_TURN, t).to_radians();
+        let tint = self.color;
+        let sh = e.turned_sh(turn).map(|k| [0, 1, 2].map(|c| k[c] * tint[c]));
+        self.env = Some(EnvLight { id: e.id, sh, turn, reflect: (fx.value_at(li::REFLECTIONS, t) / 100.0).clamp(0.0, 1.0), blur: (fx.value_at(li::REFLECTION_BLUR, t) / 100.0).clamp(0.0, 1.0) });
+        self
+    }
+
+    /// The four vec4s a light takes in the shaders (composite.wgsl,
+    /// solid.wgsl). An environment light holds its diffuse terms there, with
+    /// turn, reflections and blur in the spare places.
+    pub fn gpu(&self) -> [[f32; 4]; 4] {
+        if let (li::ENVIRONMENT, Some(e)) = (self.kind, &self.env) {
+            let [k0, kx, ky, kz] = e.sh;
+            return [[k0[0], k0[1], k0[2], 4.0], [kx[0], kx[1], kx[2], e.turn], [ky[0], ky[1], ky[2], e.reflect], [kz[0], kz[1], kz[2], e.blur]];
+        }
+        if self.kind == li::ENVIRONMENT {
+            // No picture (yet): it adds nothing.
+            return [[0.0, 0.0, 0.0, 4.0], [0.0; 4], [0.0; 4], [0.0; 4]];
+        }
+        [
+            [self.position[0], self.position[1], self.position[2], self.kind as f32],
+            [self.direction[0], self.direction[1], self.direction[2], self.falloff as f32],
+            [self.color[0], self.color[1], self.color[2], self.radius],
+            [self.cone[0], self.cone[1], self.shadow, self.softness],
+        ]
     }
 
     /// How much of the light reaches world point `p` facing `normal` (the CPU
     /// reference for the shader in `composite.wgsl`), per channel.
     pub fn reach(&self, p: V3, normal: V3) -> V3 {
+        if self.kind == li::ENVIRONMENT {
+            return self.env.map_or([0.0; 3], |e| crate::environment::Environment::diffuse(&e.sh, normal));
+        }
         if self.kind == 3 {
             return self.color;
         }
@@ -636,7 +693,7 @@ mod tests {
     #[test]
     fn lights_point_spot_directional_ambient() {
         let up: V3 = [0.0, 0.0, -1.0]; // a layer facing the default camera
-        let mk = |kind, falloff| Light { kind, color: [1.0, 1.0, 1.0], position: [0.0, 0.0, -500.0], direction: [0.0, 0.0, 1.0], cone: [(30f32).to_radians().cos(), (15f32).to_radians().cos()], falloff, radius: 1000.0, shadow: 0.0, softness: 0.0 };
+        let mk = |kind, falloff| Light { kind, color: [1.0, 1.0, 1.0], position: [0.0, 0.0, -500.0], direction: [0.0, 0.0, 1.0], cone: [(30f32).to_radians().cos(), (15f32).to_radians().cos()], falloff, radius: 1000.0, shadow: 0.0, softness: 0.0, env: None };
         // Point light straight in front: full; off to the side: less.
         let p = mk(0, 0);
         assert!((p.reach([0.0, 0.0, 0.0], up)[0] - 1.0).abs() < 1e-4);

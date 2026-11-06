@@ -228,6 +228,12 @@ fn lighting(local: vec2<f32>) -> vec3<f32> {
         let color = layer.pts[b + 2u].xyz;
         let radius = layer.pts[b + 2u].w;
         let cone = layer.pts[b + 3u].xy;
+        if (kind > 3.5) {
+            // An environment: its picture's diffuse light, by direction.
+            let kz = layer.pts[b + 3u].xyz;
+            sum = sum + max(pos + dir * n.x + color * n.y + kz * n.z, vec3(0.0));
+            continue;
+        }
         if (kind > 2.5) {
             sum = sum + color; // ambient
             continue;

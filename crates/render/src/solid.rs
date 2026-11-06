@@ -35,7 +35,10 @@ impl SolidInput {
             for v in l.position.iter().chain(&l.direction).chain(&l.color).chain(&l.cone).chain([&l.radius, &l.shadow, &l.softness]) {
                 v.to_bits().hash(&mut h);
             }
-            (l.kind, l.falloff).hash(&mut h);
+            (l.kind, l.falloff, l.env.map(|e| e.id)).hash(&mut h);
+            for v in l.gpu().iter().flatten() {
+                v.to_bits().hash(&mut h);
+            }
         }
         h.finish()
     }
@@ -50,7 +53,9 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 pub(crate) const MAX_SHADOW_CASTERS: usize = crate::MAX_OCCLUDERS;
 const SHADOW_SIZE: u64 = 16 + MAX_SHADOW_CASTERS as u64 * 6 * 16;
 /// mat4, 4 + 3 vec4 of axes and normals, camera, studio, two colours, 32 vec4 of lights.
-const UNIFORM_SIZE: usize = 64 + 7 * 16 + 4 * 16 + 32 * 16;
+const LIGHTS_END: usize = 64 + 7 * 16 + 4 * 16 + 32 * 16;
+/// …then the environment's reflection settings.
+const UNIFORM_SIZE: usize = LIGHTS_END + 16;
 
 struct Targets {
     size: [u32; 2],
@@ -94,6 +99,11 @@ pub(crate) struct SolidRenderer {
     shadow_buffer: wgpu::Buffer,
     shadow_sampler: wgpu::Sampler,
     no_shadows: wgpu::BindGroup,
+    /// The environment light's picture (group 2), and which one it is (0: none, black).
+    env_layout: wgpu::BindGroupLayout,
+    env_sampler: wgpu::Sampler,
+    env_bind: wgpu::BindGroup,
+    env_id: u64,
 }
 
 /// Shadows to draw text with: the casters (as the compositor lays them out,
@@ -170,7 +180,30 @@ impl SolidRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&shadow_sampler) },
             ],
         });
-        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid"), bind_group_layouts: &[Some(&layout), Some(&shadow_layout)], immediate_size: 0 });
+        let env_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("solid environment"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        // Round and round across the picture, clamped at the poles.
+        let env_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("solid environment"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let env_bind = env_bind_group(device, black_picture(device), &env_layout, &env_sampler);
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid"), bind_group_layouts: &[Some(&layout), Some(&shadow_layout), Some(&env_layout)], immediate_size: 0 });
         let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x4];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solid"),
@@ -268,7 +301,21 @@ impl SolidRenderer {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), depth_pipeline, depths: HashMap::new(), format, shadow_layout, shadow_buffer, shadow_sampler, no_shadows }
+        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), depth_pipeline, depths: HashMap::new(), format, shadow_layout, shadow_buffer, shadow_sampler, no_shadows, env_layout, env_sampler, env_bind, env_id: 0 }
+    }
+
+    /// Bind the environment `id` (`crate::environment`; 0 or unknown: black)
+    /// for reflections, uploading its picture with mipmaps when it changes.
+    fn use_environment(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: u64) {
+        if id == self.env_id {
+            return;
+        }
+        let view = match reelforge_core::environment::get(id) {
+            Some(e) if e.width > 0 && e.height > 0 => env_texture(device, queue, &e),
+            _ => black_picture(device),
+        };
+        self.env_bind = env_bind_group(device, view, &self.env_layout, &self.env_sampler);
+        self.env_id = id;
     }
 
     /// Get layer `key`'s outline ready for shadow-atlas tile `slot`: false if
@@ -318,6 +365,7 @@ impl SolidRenderer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &self.bind, &[]);
                 pass.set_bind_group(1, shadows, &[]);
+                pass.set_bind_group(2, &self.env_bind, &[]);
                 pass.set_vertex_buffer(0, m.vertices.slice(..));
                 pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..m.count, 0, 0..1);
@@ -410,6 +458,7 @@ impl SolidRenderer {
             let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("solid indices"), contents: &idata, usage: wgpu::BufferUsages::INDEX });
             self.meshes.insert(key, MeshBuffers { id: mesh.id, vertices, indices, count: mesh.indices.len() as u32 });
         }
+        self.use_environment(device, queue, environment_of(s).map_or(0, |e| e.id));
         queue.write_buffer(&self.uniforms, 0, &uniform_bytes(s));
         let t = self.targets.as_ref().unwrap();
         let m = &self.meshes[&key];
@@ -442,6 +491,7 @@ impl SolidRenderer {
                 pass.set_pipeline(&self.depth_pipeline);
                 pass.set_bind_group(0, &self.bind, &[]);
                 pass.set_bind_group(1, &self.no_shadows, &[]);
+                pass.set_bind_group(2, &self.env_bind, &[]);
                 pass.set_vertex_buffer(0, m.vertices.slice(..));
                 pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..m.count, 0, 0..1);
@@ -467,11 +517,85 @@ fn uniform_bytes(s: &SolidInput) -> Vec<u8> {
     f.extend(linear(s.face));
     f.extend(linear(s.side));
     for l in lights {
-        f.extend([l.position[0], l.position[1], l.position[2], l.kind as f32]);
-        f.extend([l.direction[0], l.direction[1], l.direction[2], l.falloff as f32]);
-        f.extend([l.color[0], l.color[1], l.color[2], l.radius]);
-        f.extend([l.cone[0], l.cone[1], l.shadow, l.softness]);
+        f.extend(l.gpu().iter().flatten());
+    }
+    f.resize(LIGHTS_END / 4, 0.0);
+    match environment_of(s) {
+        Some(e) => {
+            let l = lights.iter().find(|l| l.env.is_some()).unwrap();
+            f.extend([e.turn, e.reflect, e.blur, l.color.iter().sum::<f32>() / 3.0]);
+        }
+        None => f.extend([0.0; 4]),
     }
     f.resize(UNIFORM_SIZE / 4, 0.0);
     f.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// The first environment light shining on `s` (what its reflections show).
+fn environment_of(s: &SolidInput) -> Option<reelforge_core::space3d::EnvLight> {
+    s.space.lights.iter().take(MAX_LIGHTS).find_map(|l| l.env)
+}
+
+/// A 1 × 1 black picture (no environment).
+fn black_picture(device: &wgpu::Device) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("solid no environment"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
+
+fn env_bind_group(device: &wgpu::Device, view: wgpu::TextureView, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("solid environment"),
+        layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) }],
+    })
+}
+
+/// The environment's picture as half-float RGBA with mipmaps (each level
+/// the 2 × 2 average of the one before), for sharp to blurred reflections.
+fn env_texture(device: &wgpu::Device, queue: &wgpu::Queue, e: &reelforge_core::environment::Environment) -> wgpu::TextureView {
+    use reelforge_core::frame::f32_to_f16;
+    let (w, h) = (e.width, e.height);
+    let levels = 32 - w.max(h).leading_zeros();
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("solid environment"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let (mut lw, mut lh, mut rgb) = (w as usize, h as usize, e.rgb.clone());
+    for level in 0..levels {
+        let bytes: Vec<u8> = rgb.chunks_exact(3).flat_map(|p| [f32_to_f16(p[0]), f32_to_f16(p[1]), f32_to_f16(p[2]), f32_to_f16(1.0)]).flat_map(|v| v.to_le_bytes()).collect();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(lw as u32 * 8), rows_per_image: Some(lh as u32) },
+            wgpu::Extent3d { width: lw as u32, height: lh as u32, depth_or_array_layers: 1 },
+        );
+        let (nw, nh) = ((lw / 2).max(1), (lh / 2).max(1));
+        let mut next = vec![0.0f32; nw * nh * 3];
+        for y in 0..nh {
+            for x in 0..nw {
+                for c in 0..3 {
+                    let at = |xx: usize, yy: usize| rgb[(yy.min(lh - 1) * lw + xx.min(lw - 1)) * 3 + c];
+                    next[(y * nw + x) * 3 + c] = (at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1)) * 0.25;
+                }
+            }
+        }
+        (lw, lh, rgb) = (nw, nh, next);
+    }
+    tex.create_view(&Default::default())
 }

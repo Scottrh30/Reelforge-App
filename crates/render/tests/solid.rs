@@ -119,7 +119,7 @@ fn it_casts_shadows_on_3d_layers() {
     let s = spec(30.0);
     let mesh = text_mesh(&s, [W, H]);
     let draw = |c: &mut Compositor, shadow: f32, with_wall: bool| {
-        let light = Light { kind: 0, color: [1.0; 3], position: [0.0, 0.0, -600.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 2000.0, shadow, softness: 0.0 };
+        let light = Light { kind: 0, color: [1.0; 3], position: [0.0, 0.0, -600.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 2000.0, shadow, softness: 0.0, env: None };
         let sc = Scene3d { camera: Camera::default_for([W as f32, H as f32]), lights: vec![light] };
         let input = SolidInput { mesh: mesh.clone(), space: solid_space(&text, &sc), face: s.color, side: s.side_color.unwrap() };
         let ws = layer_space(&wall, [W as f32, H as f32], &sc);
@@ -232,7 +232,7 @@ fn it_takes_shadows_from_3d_layers() {
     // A card halfway between the light (off to the right, in front) and the text.
     let card = Transform { three_d: true, position: [200.0, 0.0], depth: -200.0, ..Default::default() };
     let draw = |c: &mut Compositor, shadow: f32| {
-        let light = Light { kind: 0, color: [1.0; 3], position: [400.0, 0.0, -400.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 2000.0, shadow, softness: 0.0 };
+        let light = Light { kind: 0, color: [1.0; 3], position: [400.0, 0.0, -400.0], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 2000.0, shadow, softness: 0.0, env: None };
         let sc = Scene3d { camera: Camera::default_for([W as f32, H as f32]), lights: vec![light] };
         let input = SolidInput { mesh: mesh.clone(), space: solid_space(&text, &sc), face: s.color, side: s.side_color.unwrap() };
         let cs = layer_space(&card, [24.0, 24.0], &sc);
@@ -340,4 +340,59 @@ fn models_draw_in_their_own_colours() {
     let gone = TitleSpec { model: Some(ModelSource { path: d.join("nope.obj"), ..src.clone() }), ..spec(true) };
     assert!(text_mesh(&gone, [W, H]).indices.is_empty());
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// An environment light: a panorama green behind the camera and red in
+/// front. A white 3D layer facing the camera takes its green light; 3D text
+/// in red, matte, is dark in it (red lit by green), and with Reflections up
+/// it mirrors the green behind the camera.
+#[test]
+fn environment_light_lights_layers_and_is_reflected() {
+    use reelforge_core::environment::{load, uv_of};
+    use reelforge_core::space3d::{layer_space, EnvLight, Light};
+    let Some((d, q)) = headless_device() else { return };
+    let mut c = Compositor::new(&d, &q);
+    // A flat (not run-length) Radiance file, 32 × 16.
+    let (w, h) = (32usize, 16usize);
+    let mut file = format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {h} +X {w}\n").into_bytes();
+    for _y in 0..h {
+        for x in 0..w {
+            let u = (x as f32 + 0.5) / w as f32;
+            file.extend(if (u - 0.5).abs() < 0.25 { [128, 0, 0, 129] } else { [0, 128, 0, 129] });
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("rf_envlight_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("probe.hdr");
+    std::fs::write(&path, &file).unwrap();
+    let env = load(&path).unwrap();
+    assert!((uv_of([0.0, 0.0, -1.0])[0] - 0.5).abs() > 0.49, "behind the camera is the picture's edge");
+    let light = |reflect: f32| Light { kind: 4, color: [1.0; 3], position: [0.0; 3], direction: [0.0, 0.0, 1.0], cone: [0.5, 0.6], falloff: 0, radius: 1000.0, shadow: 0.0, softness: 0.0, env: Some(EnvLight { id: env.id, sh: env.turned_sh(0.0), turn: 0.0, reflect, blur: 0.0 }) };
+    let cam = Camera::default_for([W as f32, H as f32]);
+
+    let white: Vec<u8> = [255u8; 4].iter().copied().cycle().take(16 * 4).collect();
+    let card = Transform { three_d: true, ..Default::default() };
+    let sc = Scene3d { camera: cam, lights: vec![light(0.0)] };
+    let ws = layer_space(&card, [200.0, 100.0], &sc);
+    let layer = LayerInput { key: 2, content_id: 1, pixels: PixelData::Rgba(&white), pixel_size: [4, 4], layer_size: [200.0, 100.0], transform: card, blend: BlendMode::Normal, effects: Vec::new(), mask: None, wipe: None, mesh: None, space: Some(&ws) };
+    c.render([W, H], &[layer]);
+    let out = c.read_output().unwrap();
+    let mid = &out[((H / 2 * W + W / 2) * 4) as usize..][..3];
+    assert!(mid[1] > 230 && mid[0] < 40, "the card is lit green: {mid:?}");
+
+    let s = spec(30.0);
+    let shot = |c: &mut Compositor, reflect: f32| {
+        let sc = Scene3d { camera: cam, lights: vec![light(reflect)] };
+        render(c, &s, Transform { three_d: true, ..Default::default() }, &sc)
+    };
+    let face = |img: &[u8]| {
+        // The average of the text's pixels.
+        let lit: Vec<&[u8]> = img.chunks_exact(4).filter(|p| p[3] > 250 && (p[0] as u32 + p[1] as u32 + p[2] as u32) > 0).collect();
+        let n = lit.len().max(1) as u32;
+        [0, 1, 2].map(|k| lit.iter().map(|p| p[k] as u32).sum::<u32>() / n)
+    };
+    let matte = face(&shot(&mut c, 0.0));
+    let mirror = face(&shot(&mut c, 1.0));
+    assert!(mirror[1] > 180 && mirror[1] > matte[1] + 80 && mirror[0] < 100, "matte {matte:?}, mirror {mirror:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

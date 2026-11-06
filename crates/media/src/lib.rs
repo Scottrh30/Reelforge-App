@@ -58,6 +58,7 @@ pub fn init() {
         let _ = rayon::ThreadPoolBuilder::new().thread_name(|i| format!("decode-{i}")).build_global();
         ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Error);
         reelforge_core::lut::set_plate_loader(load_plate);
+        reelforge_core::environment::set_env_loader(load_environment);
     });
 }
 
@@ -66,6 +67,32 @@ fn load_plate(path: &Path, at: reelforge_core::Time) -> Option<(u32, u32, Vec<u8
     let mut src = source::FrameSource::open(path, None).ok()?;
     let f = src.frame_at_blocking(at, std::time::Duration::from_secs(20))?;
     Some((f.width, f.height, f.pixels.to_rgba().to_vec()))
+}
+
+/// An environment light's picture (OpenEXR, or an ordinary picture) as linear-light RGB.
+fn load_environment(path: &Path) -> Option<(u32, u32, Vec<f32>)> {
+    use reelforge_core::frame::{f16_to_f32, Pixels};
+    let mut src = source::FrameSource::open(path, None).ok()?;
+    let f = src.frame_at_blocking(reelforge_core::Time::ZERO, std::time::Duration::from_secs(30))?;
+    let rgb = match &f.pixels {
+        Pixels::Float(p) => p
+            .rgba
+            .chunks_exact(4)
+            .flat_map(|q| {
+                let a = f16_to_f32(q[3]);
+                let un = |v: u16| if a > 1e-6 && a < 1.0 { f16_to_f32(v) / a } else { f16_to_f32(v) };
+                [un(q[0]), un(q[1]), un(q[2])]
+            })
+            .collect(),
+        other => {
+            let lin = |c: u8| {
+                let c = c as f32 / 255.0;
+                if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            };
+            other.to_rgba().chunks_exact(4).flat_map(|q| [lin(q[0]), lin(q[1]), lin(q[2])]).collect()
+        }
+    };
+    Some((f.width, f.height, rgb))
 }
 
 /// FFmpeg's version and licence, as the loaded libraries report them.

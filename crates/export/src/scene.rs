@@ -570,7 +570,8 @@ fn hash_space(s: Option<&reelforge_core::space3d::LayerSpace>, h: &mut DefaultHa
                 for v in g.position.iter().chain(&g.direction).chain(&g.color).chain(&g.cone).chain([&g.radius]) {
                     v.to_bits().hash(h);
                 }
-                (g.kind, g.falloff).hash(h);
+                (g.kind, g.falloff, g.env.map(|e| e.id)).hash(h);
+                g.gpu().iter().flatten().for_each(|v| v.to_bits().hash(h));
             }
         }
     }
@@ -584,7 +585,8 @@ fn hash_solid(s: &reelforge_core::space3d::SolidSpace, h: &mut DefaultHasher) {
         for v in g.position.iter().chain(&g.direction).chain(&g.color).chain(&g.cone).chain([&g.radius]) {
             v.to_bits().hash(h);
         }
-        (g.kind, g.falloff).hash(h);
+        (g.kind, g.falloff, g.env.map(|e| e.id)).hash(h);
+        g.gpu().iter().flatten().for_each(|v| v.to_bits().hash(h));
     }
 }
 

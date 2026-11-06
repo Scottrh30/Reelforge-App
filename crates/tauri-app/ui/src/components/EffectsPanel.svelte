@@ -281,6 +281,13 @@
             }} title="Trace what this key keeps at the playhead (its biggest area) into a new mask to edit, track, or use as a garbage matte">Mask from this key</button>
           </div>
         {/if}
+        {#if ins.kind === "light" && i === 0 && Math.round(fx.params[0]?.value ?? 0) === 4}
+          <div class="row lut">
+            <span class="file" title={fx.environment ?? ""}>{fx.environment ? `Panorama: ${fileName(fx.environment)}` : "No panorama yet"}</span>
+            <button class="small" onclick={() => run(api.lightEnvironment(ins.id, i))} title="An equirectangular (2:1) panorama, best an HDR (.hdr or .exr) from a light probe or an HDRI site">Choose…</button>
+          </div>
+          {#if fx.environment_error}<p class="warn">{fx.environment_error}</p>{:else if !fx.environment}<p class="note">An environment light lights 3D layers from a panorama all round the scene, and shiny 3D text, shapes and models reflect it (Reflections, under Environment). Choose an .hdr or .exr panorama.</p>{/if}
+        {/if}
         {#if fx.kind === "DifferenceKey"}
           <div class="row lut">
             <span class="file" title={fx.plate ? `${fx.plate[0]} at ${fx.plate[1]}` : ""}>{fx.plate ? `Plate: ${fileName(fx.plate[0])} · ${fx.plate[1]}` : "No clean plate yet"}</span>

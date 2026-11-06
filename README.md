@@ -963,6 +963,17 @@ What works now:
     layers are shaded by them (both sides, per pixel), unless **Lit by the scene's lights** is
     unticked (for a screen or a sign that glows by itself); with none, 3D layers show as they are.
     Up to 8 lights at once. A light's position and point of interest can be dragged in the Viewer
+  - **Environment light** (Timeline → Add light → Environment light, or a light's Type →
+    Environment, then **Choose…** for its panorama): lights the scene from a panorama all round
+    it, an equirectangular (2:1) picture, best an HDR (`.hdr` or `.exr`) from a light probe or an
+    HDRI site (`.png`, `.jpg` and `.tif` work too). The middle of the picture is what the default
+    camera looks at and its top is the sky. 3D layers take its light from whichever way they face
+    (so a sunny sky lights what faces up, and a coloured wall tints what faces it); 3D text,
+    shapes and models also *reflect* it: **Reflections** (0% matte, 100% a mirror, and more at
+    grazing angles) and **Reflection blur** (sharp chrome to brushed metal), under
+    *Environment*. **Environment turn** spins the panorama about the up axis; **Colour** and
+    **Intensity** tint and brighten it. It casts no shadows; add a directional light for a
+    sun's. The picture is read once, shrunk to 1024 × 512, and collected with the project's media
   - **Shadows**: a light with **Casts shadows** on (the default; **Shadow darkness**, 80%)
     darkens what 3D layers block of it on the lit 3D layers behind them. The blocker's own
     picture counts, so a cut-out or text casts its shape and its opacity how dark; each pixel

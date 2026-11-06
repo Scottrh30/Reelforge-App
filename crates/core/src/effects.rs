@@ -140,6 +140,8 @@ pub enum EffectData {
     /// A difference key's clean plate: the frame of a picture or video file
     /// at media time `at`.
     Plate { path: PathBuf, at: crate::Time },
+    /// An environment light's panorama (see `crate::environment`).
+    Environment(PathBuf),
 }
 
 /// How a parameter is shown and edited.
@@ -408,8 +410,16 @@ pub mod light {
     pub const SHADOW_DARKNESS: usize = 14;
     /// How soft the shadows are (the light's size), 0–100 %.
     pub const SHADOW_SOFTNESS: usize = 15;
+    /// An environment light: its picture turned about the up axis (degrees).
+    pub const ENV_TURN: usize = 16;
+    /// How much shiny 3D text, shapes and models reflect it, 0–100 %.
+    pub const REFLECTIONS: usize = 17;
+    /// How blurred those reflections are, 0–100 %.
+    pub const REFLECTION_BLUR: usize = 18;
+    /// The environment type (lit by a panorama picture, see `crate::environment`).
+    pub const ENVIRONMENT: u32 = 4;
     /// What the light kinds are called (the Type menu).
-    pub const KINDS: [&str; 4] = ["Point", "Spot", "Directional", "Ambient"];
+    pub const KINDS: [&str; 5] = ["Point", "Spot", "Directional", "Ambient", "Environment"];
 }
 
 /// Point parameter indices.
@@ -443,7 +453,7 @@ const CAMERA: [ParamSpec; 11] = [
     spec("Blur", 25.0, 0.0, 250.0, " px", 0.25),
 ];
 
-const LIGHT: [ParamSpec; 16] = [
+const LIGHT: [ParamSpec; 19] = [
     choice("Type", &light::KINDS),
     color("Colour", 0xffffff),
     spec("Intensity", 100.0, 0.0, 1000.0, " %", 0.5),
@@ -460,6 +470,9 @@ const LIGHT: [ParamSpec; 16] = [
     ParamSpec { name: "Casts shadows", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
     spec("Shadow darkness", 80.0, 0.0, 100.0, " %", 0.5),
     spec("Shadow softness", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Environment turn", 0.0, -360.0, 360.0, "°", 0.5),
+    spec("Reflections", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Reflection blur", 20.0, 0.0, 100.0, " %", 0.5),
 ];
 
 /// Energy blade parameter indices.
@@ -961,7 +974,7 @@ impl EffectKind {
             EffectKind::KeyCleaner => &[(0, "Spill"), (3, "Matte")],
             EffectKind::RefineMatte => &[(0, "Edge"), (3, "Colour")],
             EffectKind::WireRemoval => &[(0, "Wire"), (4, "Fill")],
-            EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows")],
+            EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
         }
     }

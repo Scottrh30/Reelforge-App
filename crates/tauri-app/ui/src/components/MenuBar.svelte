@@ -202,6 +202,7 @@
         { label: "Spot light", run: () => run(api.addScene(false, 1)) },
         { label: "Directional light", run: () => run(api.addScene(false, 2)) },
         { label: "Ambient light", run: () => run(api.addScene(false, 3)) },
+        { label: "Environment light (HDR panorama)…", run: () => run(api.addEnvironmentLight()) },
       ],
     },
     { label: "Nudge selected clips earlier", hint: ",", run: () => actions.act("nudge_left") },
