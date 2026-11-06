@@ -86,6 +86,9 @@ pub enum EffectKind {
     /// An old screen or tape: the curved glass of a CRT, scan lines, a
     /// phosphor mask, VHS colour bleed, tracking wobble and snow.
     Crt,
+    /// Paints out a thin straight line (a wire or rig) by filling it from
+    /// the picture either side.
+    WireRemoval,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -104,6 +107,8 @@ pub enum EffectCategory {
     Stylize,
     /// Camera shake, chromatic aberration, glitch, and plugins that say so.
     Distort,
+    /// Wire removal and other clean-up.
+    Repair,
     /// Plugins that didn't name a category.
     Plugins,
     /// OpenFX plugins (Sapphire, Neat Video, BorisFX, the OpenFX Misc set…).
@@ -111,7 +116,7 @@ pub enum EffectCategory {
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 7] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Distort, EffectCategory::Plugins, EffectCategory::OpenFx];
+    pub const ALL: [EffectCategory; 8] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
@@ -119,6 +124,7 @@ impl EffectCategory {
             EffectCategory::Keying => "Keying",
             EffectCategory::Stylize => "Light & stylize",
             EffectCategory::Distort => "Distort",
+            EffectCategory::Repair => "Repair",
             EffectCategory::Plugins => "Other plugins",
             EffectCategory::OpenFx => "OpenFX",
         }
@@ -326,6 +332,16 @@ const REFINE_MATTE: [ParamSpec; 6] = [
     spec("Decontaminate colours", 80.0, 0.0, 100.0, " %", 0.5),
     spec("Colour from within", 6.0, 1.0, 30.0, " px", 0.05),
     choice("View", &["Result", "Matte (black and white)"]),
+];
+const WIRE_REMOVAL: [ParamSpec; 8] = [
+    spec("Start X", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("Start Y", 10.0, -50.0, 150.0, " %", 0.1),
+    spec("End X", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("End Y", 90.0, -50.0, 150.0, " %", 0.1),
+    spec("Width", 6.0, 0.5, 200.0, " px", 0.05),
+    spec("Edge softness", 2.0, 0.0, 50.0, " px", 0.05),
+    spec("Fill from", 1.0, 0.0, 50.0, " px past the edge", 0.05),
+    choice("Show area", &["Off", "On (red)"]),
 ];
 const LEVELS: [ParamSpec; 5] = [
     spec("Input black", 0.0, 0.0, 254.0, "", 0.5),
@@ -610,6 +626,19 @@ pub mod refine {
     pub const RADIUS: usize = 4;
     pub const VIEW: usize = 5;
 }
+/// Wire removal parameter indices.
+pub mod wire {
+    /// The wire's two ends, in % of the layer.
+    pub const START_X: usize = 0;
+    pub const START_Y: usize = 1;
+    pub const END_X: usize = 2;
+    pub const END_Y: usize = 3;
+    pub const WIDTH: usize = 4;
+    pub const SOFTNESS: usize = 5;
+    /// How far past the wire's edge the fill is taken from (px).
+    pub const GAP: usize = 6;
+    pub const SHOW: usize = 7;
+}
 /// Halftone parameter indices.
 pub mod halftone {
     pub const STYLE: usize = 0;
@@ -755,7 +784,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 26] = [
+    pub const ALL: [EffectKind; 27] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -778,6 +807,7 @@ impl EffectKind {
         EffectKind::NeonEdges,
         EffectKind::Halftone,
         EffectKind::Crt,
+        EffectKind::WireRemoval,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -814,6 +844,7 @@ impl EffectKind {
             EffectKind::NeonEdges => "Neon edges",
             EffectKind::Halftone => "Halftone",
             EffectKind::Crt => "CRT / VHS",
+            EffectKind::WireRemoval => "Wire removal",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -827,6 +858,7 @@ impl EffectKind {
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner | EffectKind::MatteChoker | EffectKind::RefineMatte => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
+            EffectKind::WireRemoval => EffectCategory::Repair,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
@@ -858,6 +890,7 @@ impl EffectKind {
             EffectKind::FilmGrain => "Film grain that changes every frame: fine or coarse, mono or colour, kept out of the highlights.",
             EffectKind::Glitch => "Digital glitches: slices and blocks jump sideways, colours split and scan lines flicker.",
             EffectKind::LightLeaks => "Soft blooms of warm coloured light drifting in from the edges, like light leaking into a film camera.",
+            EffectKind::WireRemoval => "Paints out a wire, a rig or a scratch: drag its two ends in the Viewer and set the width, and it's filled from the picture either side. Keyframe the ends to follow a moving wire.",
             EffectKind::Crt => "An old TV or a worn tape: the bulging glass and scan lines of a CRT, a phosphor mask, VHS colour bleed, tracking wobble, a rolling tracking band and snow.",
             EffectKind::KeyCleaner => "Tidies a keyed layer, after the key: takes the screen's green or blue out of hair and edges (spill), fills small holes in the matte and wipes out stray specks.",
             EffectKind::MatteChoker => "Works on any layer's transparency (after a key, or a cut-out picture): shrinks or grows its edge, softens it, and firms up what's half see-through so a ragged matte holds together.",
@@ -898,6 +931,7 @@ impl EffectKind {
             EffectKind::NeonEdges => &NEON,
             EffectKind::Halftone => &HALFTONE,
             EffectKind::Crt => &CRT,
+            EffectKind::WireRemoval => &WIRE_REMOVAL,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -926,6 +960,7 @@ impl EffectKind {
             EffectKind::DifferenceKey => &[(0, "Key"), (2, "Matte")],
             EffectKind::KeyCleaner => &[(0, "Spill"), (3, "Matte")],
             EffectKind::RefineMatte => &[(0, "Edge"), (3, "Colour")],
+            EffectKind::WireRemoval => &[(0, "Wire"), (4, "Fill")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows")],
             _ => &[],
         }
@@ -1002,6 +1037,7 @@ impl EffectValues {
             EffectKind::Glitch => v[glitch::AMOUNT] == 0.0,
             EffectKind::LightLeaks => v[leaks::INTENSITY] == 0.0,
             EffectKind::Halftone => v[halftone::MIX] == 0.0,
+            EffectKind::WireRemoval => false,
             EffectKind::RefineMatte => v[refine::SMOOTH] < 0.01 && v[refine::SHIFT].abs() < 0.01 && v[refine::FEATHER] < 0.01 && v[refine::DECONTAMINATE] == 0.0 && v[refine::VIEW] == 0.0,
             EffectKind::MatteChoker => v[choker::CHOKE].abs() < 0.01 && v[choker::SOFTNESS] < 0.01 && v[choker::CONTRAST] == 0.0 && v[choker::VIEW] == 0.0,
             EffectKind::KeyCleaner => v[cleaner::SPILL] == 0.0 && v[cleaner::HOLES] < 0.01 && v[cleaner::SPECKS] < 0.01 && v[cleaner::VIEW] == 0.0,

@@ -330,6 +330,12 @@ What works now:
     the Viewer. Several combine with Add, Subtract and Intersect like ordinary masks. To keep
     something *out* (a light stand, the screen's edge), draw an ordinary mask: it cuts the
     layer before the key. Both can be tracked and animated like any mask
+  - **Wire removal** (Repair): paints out a wire, a rig, a boom pole's edge or a scratch. Drag
+    its **Start** and **End** handles in the Viewer onto the two ends of the wire (a dashed line
+    joins them), set **Width** to just cover it and **Edge softness** to blend it in; inside, the
+    picture is filled from just past each edge (**Fill from** sets how far past), blended across
+    the width so a gradient or a sky carries on through. **Show area** tints what it covers red
+    while you line it up. Keyframe the ends to follow a moving wire
   - **Glow**: threshold, radius, intensity and softness; bright areas bloom outwards
   - **Drop shadow**: distance, angle, softness and opacity, from the layer's alpha
   - **Vignette**: amount, size and softness

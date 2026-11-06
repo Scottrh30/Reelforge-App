@@ -1350,6 +1350,42 @@ fn refine_matte_decontaminates_smooths_and_shifts() {
     assert!(fx(EffectKind::RefineMatte, &plain).is_identity());
 }
 
+/// Wire removal: a black vertical wire across a left-to-right ramp is filled
+/// from either side, close to what the ramp would have been; the rest is untouched.
+#[test]
+fn wire_removal_fills_the_wire_from_either_side() {
+    use reelforge_core::effects::wire;
+    let Some(mut c) = setup() else { return };
+    let mut img = Vec::new();
+    for _y in 0..32 {
+        for x in 0..32u8 {
+            img.extend(if x == 15 || x == 16 { [0, 0, 0, 255] } else { [x * 8, 100, 50, 255] });
+        }
+    }
+    let mut n = 150;
+    let mut shot = |set: &[(usize, f32)]| {
+        n += 1;
+        let l = layer(n, &img, [32, 32], [32.0, 32.0], Transform::default(), BlendMode::Normal);
+        c.render([32, 32], &[with_fx(l, vec![fx(EffectKind::WireRemoval, set)])]);
+        c.read_output().unwrap()
+    };
+    let on = [(wire::START_X, 50.0), (wire::START_Y, -10.0), (wire::END_X, 50.0), (wire::END_Y, 110.0), (wire::WIDTH, 2.0)];
+    let r = shot(&on);
+    for (x, want) in [(15u32, 120i32), (16, 128)] {
+        let p = px(&r, 32, x, 16);
+        assert!((p[0] as i32 - want).abs() < 25 && (p[1] as i32 - 100).abs() < 10, "wire at {x}: {p:?}");
+    }
+    assert!(near(px(&r, 32, 25, 16), [200, 100, 50]) && near(px(&r, 32, 5, 3), [40, 100, 50]), "outside changed");
+    // Away from the wire (moved to the right edge), it stays black.
+    let r = shot(&[(wire::START_X, 90.0), (wire::START_Y, -10.0), (wire::END_X, 90.0), (wire::END_Y, 110.0), (wire::WIDTH, 2.0)]);
+    assert!(near(px(&r, 32, 15, 16), [0, 0, 0]));
+    let mut show = on.to_vec();
+    show.push((wire::SHOW, 1.0));
+    let r = shot(&show);
+    let p = px(&r, 32, 16, 16);
+    assert!(p[0] > p[1] + 60, "area shown red: {p:?}");
+}
+
 /// Difference key: whatever matches the clean plate goes; what differs stays.
 #[test]
 fn difference_key_removes_what_matches_the_plate() {

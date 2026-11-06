@@ -316,6 +316,52 @@ fn fs_decon_blur(in: VsOut) -> @location(0) vec4<f32> {
     return sum / n;
 }
 
+// Wire removal: p0 = the wire's ends (start x, y, end x, y, % of the layer),
+// p1 = (width, edge softness, fill gap, all in texels; show area). Inside the
+// wire (a capsule round the line) the picture is filled from either side:
+// samples just past each edge, at the same point along the wire (averaged
+// over a few texels along it), blended across the width.
+@fragment
+fn fs_wire(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let t = fx.texel_dir.xy;
+    let p = in.uv / t;
+    let a = fx.p0.xy / 100.0 / t;
+    let b = fx.p0.zw / 100.0 / t;
+    let d = b - a;
+    let len = length(d);
+    if (len < 0.5) {
+        return c;
+    }
+    let u = d / len;
+    let n = vec2(-u.y, u.x);
+    let rel = p - a;
+    let along = dot(rel, u);
+    let across = dot(rel, n);
+    let half_w = fx.p1.x * 0.5;
+    let soft = max(fx.p1.y, 0.0);
+    let dist = length(rel - u * clamp(along, 0.0, len));
+    let mask = 1.0 - smoothstep(half_w, half_w + max(soft, 0.001), dist);
+    if (mask <= 0.0) {
+        return c;
+    }
+    let outer = half_w + soft + fx.p1.z + 0.5;
+    let foot = a + u * along;
+    var s1 = vec4(0.0);
+    var s2 = vec4(0.0);
+    for (var i = -2.0; i <= 2.0; i = i + 1.0) {
+        let q = foot + u * i;
+        s1 = s1 + textureSample(src, src_sampler, to_tex((q + n * outer) * t));
+        s2 = s2 + textureSample(src, src_sampler, to_tex((q - n * outer) * t));
+    }
+    let f = clamp((across + outer) / (2.0 * outer), 0.0, 1.0);
+    var out = mix(c, mix(s2, s1, f) / 5.0, mask);
+    if (fx.p1.w > 0.5) {
+        out = mix(out, vec4(out.a, 0.0, 0.0, out.a), 0.6 * mask);
+    }
+    return out;
+}
+
 // Matte choker, last step, from straight colour: p0 = (contrast %, midpoint
 // %, view). Contrast steepens the matte round the midpoint, so what's half
 // see-through goes towards solid or gone (100% is a hard edge).

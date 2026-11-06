@@ -190,7 +190,11 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 lut_error,
                 plate,
                 plate_error,
-                points: ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label }).collect()),
+                points: if fx.kind == EffectKind::WireRemoval {
+                    vec![PointView { param: 0, label: "Start".into() }, PointView { param: 2, label: "End".into() }]
+                } else {
+                    ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label }).collect())
+                },
                 error: ofx.as_ref().and_then(|_| reelforge_export::ofxhost::error(c.id, index)).filter(|_| fx.enabled),
                 temporal: ofx.as_ref().is_some_and(|d| d.temporal),
                 gpu: ofx.as_ref().map_or_else(Vec::new, |d| d.gpu.clone()),

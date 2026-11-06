@@ -489,6 +489,16 @@
         : fx.points.filter((p) => fx.params.length > p.param + 1).map((p) => ({ index, param: p.param, label: `${fx.label}: ${p.label}`, at: [(fx.params[p.param].value / 100) * size[0], (fx.params[p.param + 1].value / 100) * size[1]] as Pt })),
     );
   });
+  // Wire removals: a line between their two ends (the ends are fxPoints).
+  const wires = $derived.by((): [Pt, Pt][] => {
+    if (!ins) return [];
+    return ins.effects.flatMap((fx) => {
+      if (fx.kind !== "WireRemoval" || !fx.enabled || fx.params.length < 4) return [];
+      const v = (k: number) => fx.params[k].value;
+      const at = (x: number, y: number): Pt => [(x / 100) * size[0], (y / 100) * size[1]];
+      return [[at(v(0), v(1)), at(v(2), v(3))] as [Pt, Pt]];
+    });
+  });
   /// Drag a plugin's position.
   function dragFxPoint(e: PointerEvent, m: FxPoint) {
     if (e.button !== 0 || !ins || !inv || app.live?.playing || busyTracking) return;
@@ -810,6 +820,11 @@
 
     <!-- OpenFX plugins' positions: drag them. -->
     {#if !drawing}
+      {#each wires as [w0, w1]}
+        {@const [ax, ay] = toBox(w0)}
+        {@const [bx, by] = toBox(w1)}
+        <line x1={ax} y1={ay} x2={bx} y2={by} class="bladeaxis" />
+      {/each}
       {#each fxPoints as m (m.index + ":" + m.param)}
         {@const [cx, cy] = toBox(m.at)}
         <g class="fxpoint">
