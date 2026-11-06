@@ -6,7 +6,8 @@
 //! when reversed, and 0 for a freeze frame. Normal clips have rate 1 and
 //! anchor 0, so clip time *is* media time for them.
 
-use crate::project::{scale, Clip, ClipId, Project};
+use crate::anim::{Curve, Interp, Key};
+use crate::project::{scale, Clip, ClipId, FrameBlend, Project};
 use crate::time::Time;
 use crate::undo::{split_group, AddClip, Batch, Command, MoveClip, SplitClip};
 
@@ -48,12 +49,69 @@ impl Command for SetRetime {
     }
 }
 
+/// A clip's time remap (and its frame blending), for undo.
+pub struct SetRemap {
+    pub seq: usize,
+    pub id: ClipId,
+    pub old: (Option<Curve<f32>>, FrameBlend),
+    pub new: (Option<Curve<f32>>, FrameBlend),
+}
+
+impl Command for SetRemap {
+    fn name(&self) -> &str {
+        "Time remap"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            (c.remap, c.frame_blend) = self.new.clone();
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
+            (c.remap, c.frame_blend) = self.old.clone();
+        }
+    }
+}
+
+/// A time remap that shows what the clip shows now: a key at its start and
+/// one at its end (so it starts out unchanged, at its present speed).
+pub fn remap_from_speed(c: &Clip) -> Curve<f32> {
+    let end = c.source_in + c.duration;
+    let key = |t: Time| Key::new(t, c.media_time(t).as_secs_f64() as f32, Interp::Linear);
+    Curve(vec![key(c.source_in), key(end)])
+}
+
+/// Give clip `id` (and the clips linked to it) time remap `remap` and frame
+/// blending `blend` (`None` for the remap: back to its speed).
+pub fn set_remap(p: &Project, seq: usize, id: ClipId, remap: Option<Curve<f32>>, blend: FrameBlend) -> Result<Box<dyn Command>, &'static str> {
+    let s = &p.sequences[seq];
+    if s.is_locked(id) {
+        return Err("the clip is on a locked track");
+    }
+    let group = s.link_group(id);
+    if group.iter().all(|(_, c)| p.is_still(c.media) || c.title.is_some()) {
+        return Err("still images and titles have no time to remap");
+    }
+    let cmds: Vec<Box<dyn Command>> = group
+        .iter()
+        .filter(|(_, c)| !p.is_still(c.media))
+        .map(|(_, c)| Box::new(SetRemap { seq, id: c.id, old: (c.remap.clone(), c.frame_blend), new: (remap.clone(), blend) }) as Box<dyn Command>)
+        .collect();
+    Ok(Box::new(Batch { name: "Time remap".into(), cmds }))
+}
+
 /// The smallest step of time, used to keep a reversed clip's first frame
 /// inside its media (spans are end-exclusive).
 const TICK: Time = Time(1);
 
 /// The media range `[lo, hi)` a clip plays (lo == hi for a freeze frame).
 pub fn media_span(c: &Clip) -> (Time, Time) {
+    if c.remap.is_some() {
+        // Remapped: the earliest and latest moments it shows.
+        let n = 200;
+        let (lo, hi) = (0..=n).map(|i| c.media_time(c.source_in + Time(c.duration.0 * i / n))).fold((Time(i64::MAX), Time(i64::MIN)), |(lo, hi), m| (lo.min(m), hi.max(m)));
+        return (lo, hi + TICK);
+    }
     let (a, b) = (c.media_time(c.source_in), c.media_time(c.source_in + c.duration));
     match c.rate() {
         r if r > 0.0 => (a, b),
@@ -264,6 +322,39 @@ mod tests {
 
     fn close(a: Time, b: Time) -> bool {
         (a.0 - b.0).abs() <= 2
+    }
+
+    /// A time remap starts out showing what the clip did; a key in the
+    /// middle holding an earlier moment makes it slow, then race; it goes on
+    /// the linked audio too, and comes off again, all undoably.
+    #[test]
+    fn time_remap() {
+        let close = |a: Time, b: Time| (a - b).as_secs_f64().abs() < 1e-3;
+        let mut p = project();
+        let mut u = UndoStack::default();
+        let a = p.sequences[0].find_clip(ClipId(1)).unwrap().1.clone();
+        let mut curve = remap_from_speed(&a);
+        let fresh = Clip { remap: Some(curve.clone()), ..a.clone() };
+        for t in [0.0, 1.5, 3.9] {
+            assert!(close(fresh.media_at(s(t)), a.media_at(s(t))), "unchanged at {t}");
+        }
+        // At 2 s into the clip show 2.5 s into the media (it started at 2 s):
+        // a quarter speed, then 1.75×.
+        curve.set(a.source_in + s(2.0), 2.5);
+        let cmd = set_remap(&p, 0, ClipId(1), Some(curve.clone()), FrameBlend::Flow).unwrap();
+        u.execute(&mut p, cmd);
+        let r = p.sequences[0].find_clip(ClipId(1)).unwrap().1.clone();
+        assert!(r.is_retimed() && r.frame_blend == FrameBlend::Flow);
+        assert!(close(r.media_at(s(1.0)), s(2.25)) && close(r.media_at(s(2.0)), s(2.5)) && close(r.media_at(s(3.0)), s(4.25)), "{}", r.media_at(s(3.0)));
+        assert!((r.rate_at(r.source_in + s(1.0)) - 0.25).abs() < 1e-3 && (r.rate_at(r.source_in + s(3.0)) - 1.75).abs() < 1e-3);
+        assert!(close(r.timeline_of_media(s(4.25)).unwrap(), s(3.0)), "{:?}", r.timeline_of_media(s(4.25)));
+        assert!(r.timeline_of_media(s(9.0)).is_none());
+        assert!(close(media_span(&r).0, s(2.0)));
+        assert!(p.sequences[0].find_clip(ClipId(2)).unwrap().1.remap.is_some(), "the linked audio too");
+        u.undo(&mut p);
+        let a = p.sequences[0].find_clip(ClipId(1)).unwrap().1;
+        assert!(a.remap.is_none() && !a.is_retimed() && a.frame_blend == FrameBlend::Nearest);
+        assert!(set_remap(&p, 0, ClipId(1), None, FrameBlend::Blend).is_ok());
     }
 
     #[test]

@@ -287,6 +287,9 @@ impl Command for SplitClip {
             adjustment: clip.adjustment,
             parent: clip.parent,
             label: clip.label,
+            // Remap keys are at clip times too: both halves keep them.
+            remap: clip.remap.clone(),
+            frame_blend: clip.frame_blend,
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;

@@ -892,6 +892,53 @@ fn set_speed(id: u64, speed: f32, reverse: bool) -> Res<()> {
     ed(|e| e.set_speed(clip(id), speed, reverse))
 }
 
+/// Time remapping on or off.
+#[tauri::command]
+fn time_remap(id: u64, on: bool) -> Res<()> {
+    ed(|e| e.time_remap(clip(id), on))
+}
+
+/// Show media time `secs` at the playhead.
+#[tauri::command]
+fn time_remap_value(id: u64, secs: f32) -> Res<()> {
+    ed(|e| e.time_remap_value(clip(id), secs))
+}
+
+/// Add or remove a time remap key at the playhead.
+#[tauri::command]
+fn time_remap_key(id: u64) -> Res<()> {
+    ed(|e| e.time_remap_key(clip(id)))
+}
+
+#[tauri::command]
+fn time_remap_move_key(id: u64, index: usize, secs: f32) -> Res<()> {
+    ed(|e| e.time_remap_move_key(clip(id), index, secs))
+}
+
+/// "Linear", "Ease" or "Hold" between all the keys.
+#[tauri::command]
+fn time_remap_interp(id: u64, interp: String) -> Res<()> {
+    use reelforge_core::anim::Interp;
+    let i = match interp.as_str() {
+        "Ease" => Interp::Ease,
+        "Hold" => Interp::Hold,
+        _ => Interp::Linear,
+    };
+    ed(|e| e.time_remap_interp(clip(id), i))
+}
+
+/// "Nearest", "Blend" or "Flow".
+#[tauri::command]
+fn set_frame_blend(id: u64, blend: String) -> Res<()> {
+    use reelforge_core::FrameBlend;
+    let b = match blend.as_str() {
+        "Blend" => FrameBlend::Blend,
+        "Flow" => FrameBlend::Flow,
+        _ => FrameBlend::Nearest,
+    };
+    ed(|e| e.set_frame_blend(clip(id), b))
+}
+
 // ---- Masks ---------------------------------------------------------------------
 
 /// Add a rectangle or ellipse mask in the middle of the clip. Returns its index.
@@ -1452,6 +1499,12 @@ fn main() {
             place_title,
             set_clip_audio,
             set_speed,
+            time_remap,
+            time_remap_value,
+            time_remap_key,
+            time_remap_move_key,
+            time_remap_interp,
+            set_frame_blend,
             add_mask,
             add_freehand_mask,
             set_masks,

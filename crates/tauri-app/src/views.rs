@@ -159,6 +159,10 @@ pub struct Inspector {
     pub audio: Option<ClipAudio>,
     pub speed: f32,
     pub reverse: bool,
+    /// Time remapping, if it's on.
+    pub remap: Option<RemapView>,
+    /// What retimed footage shows between its frames: "Nearest", "Blend" or "Flow".
+    pub frame_blend: reelforge_core::FrameBlend,
     pub effects: Vec<crate::fx::EffectView>,
     /// Transform properties with keyframes.
     pub animated: Vec<&'static str>,
@@ -649,6 +653,8 @@ pub fn state(e: &Editor) -> State {
             audio: (tr.kind == TrackKind::Audio).then(|| c.audio.clone()),
             speed: c.speed,
             reverse: c.reverse,
+            remap: remap_view(e, c),
+            frame_blend: c.frame_blend,
             effects: crate::fx::views(e, c),
             animated,
             keys: (video && c.scene.is_none()).then(|| crate::keys::view(e, c)),
@@ -701,4 +707,38 @@ pub fn state(e: &Editor) -> State {
 pub fn format_duration(t: Time) -> String {
     let s = t.as_secs_f64();
     format!("{}:{:04.1}", (s / 60.0).floor() as i64, s % 60.0)
+}
+
+/// A clip's time remap for the Speed section.
+#[derive(Serialize)]
+pub struct RemapView {
+    /// Keys: (seconds into the clip, media seconds shown).
+    pub keys: Vec<[f64; 2]>,
+    /// "Linear", "Ease" or "Hold" (the first key's).
+    pub interp: reelforge_core::anim::Interp,
+    /// The clip's length (s), and the media time and speed (%) at the playhead.
+    pub length: f64,
+    pub here: f64,
+    pub speed_here: f64,
+    /// The playhead's place in the clip (s), and whether there's a key there.
+    pub at: f64,
+    pub key_here: bool,
+    /// How long the media is (s), for the graph.
+    pub media_length: f64,
+}
+
+fn remap_view(e: &Editor, c: &reelforge_core::Clip) -> Option<RemapView> {
+    let r = c.remap.as_ref()?;
+    let t = e.playback.playhead.max(c.timeline_start).min(c.timeline_end() - reelforge_core::Time(1));
+    let ct = c.source_time(t);
+    Some(RemapView {
+        keys: r.0.iter().map(|k| [(k.at - c.source_in).as_secs_f64(), k.value as f64]).collect(),
+        interp: r.0.first().map_or(reelforge_core::anim::Interp::Linear, |k| k.interp),
+        length: c.duration.as_secs_f64(),
+        here: c.media_time(ct).as_secs_f64(),
+        speed_here: c.rate_at(ct) * 100.0,
+        at: (ct - c.source_in).as_secs_f64(),
+        key_here: r.index_at(ct).is_some(),
+        media_length: e.project.media(c.media).map_or(0.0, |m| m.info.duration.as_secs_f64()),
+    })
 }

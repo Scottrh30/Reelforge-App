@@ -57,6 +57,75 @@
     speedDraft = null;
     await run(api.setSpeed(ins.id, v / 100, ins.reverse));
   }
+  // Time remap graph: media time (up) against clip time (across); keys drag up and down.
+  const RG = { w: 220, h: 90 };
+  const remapScale = $derived.by(() => {
+    const r = ins?.remap;
+    if (!r) return null;
+    const top = Math.max(r.media_length, ...r.keys.map((k) => k[1]), 0.04);
+    return { x: (s: number) => (s / Math.max(r.length, 1e-3)) * RG.w, y: (m: number) => RG.h - (m / top) * RG.h, top };
+  });
+  const remapPath = $derived.by(() => {
+    const r = ins?.remap;
+    const sc = remapScale;
+    if (!r || !sc) return "";
+    const ease = (u: number) => (r.interp === "Ease" ? u * u * (3 - 2 * u) : u);
+    let d = "";
+    for (let i = 0; i < r.keys.length; i++) {
+      const [x, y] = r.keys[i];
+      if (i === 0) {
+        d += `M0,${sc.y(y)}H${sc.x(x)}`;
+        continue;
+      }
+      const [px, py] = r.keys[i - 1];
+      if (r.interp === "Hold") {
+        d += `H${sc.x(x)}V${sc.y(y)}`;
+      } else {
+        for (let k = 1; k <= 12; k++) {
+          const u = k / 12;
+          d += `L${sc.x(px + (x - px) * u)},${sc.y(py + (y - py) * ease(u))}`;
+        }
+      }
+    }
+    if (r.keys.length) d += `H${RG.w}`;
+    return d;
+  });
+  let remapDrag = $state<{ index: number; secs: number } | null>(null);
+  let remapDraft = $state<number | null>(null);
+  async function applyRemapValue() {
+    if (!ins || remapDraft == null) return;
+    const v = remapDraft;
+    remapDraft = null;
+    await run(api.timeRemapValue(ins.id, v));
+  }
+  function dragRemapKey(e: PointerEvent, index: number) {
+    if (!ins?.remap || !remapScale || e.button !== 0) return;
+    e.preventDefault();
+    const el = e.currentTarget as SVGElement;
+    const svg = el.ownerSVGElement!;
+    el.setPointerCapture(e.pointerId);
+    const id = ins.id;
+    const top = remapScale.top;
+    const move = (ev: PointerEvent) => {
+      const r = svg.getBoundingClientRect();
+      const y = ((ev.clientY - r.top) / r.height) * RG.h;
+      remapDrag = { index, secs: Math.max(0, ((RG.h - y) / RG.h) * top) };
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      const d = remapDrag;
+      remapDrag = null;
+      if (d) await run(api.timeRemapMoveKey(id, d.index, d.secs));
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+  const blendTips: Record<string, string> = {
+    Nearest: "Each frame is held until the next: crisp, but slow motion steps",
+    Blend: "The frames either side are cross-faded: smoother, a little ghosted",
+    Flow: "The frames either side are moved along the motion between them, then cross-faded: the smoothest slow motion (slower to work out, and things crossing each other can smear)",
+  };
   let rampOpen = $state(false);
   let ramp = $state({ from: 100, to: 25, steps: 8, smooth: true });
   const rampPath = $derived.by(() => {
@@ -240,6 +309,39 @@
     {#if ins.kind === "video" || ins.kind === "audio" || ins.kind === "comp"}
       <div class="group">
         <h4>Speed</h4>
+        {#if ins.footage && ins.kind !== "audio"}
+          <label class="check" title="Keyframe which moment of the footage shows when: slow it, speed it up, hold it or play it backwards anywhere along the clip (the clip's sound is silent while it's on)"><input type="checkbox" checked={!!ins.remap} onchange={(e) => run(api.timeRemap(ins.id, e.currentTarget.checked))} /> Time remapping</label>
+        {/if}
+        {#if ins.remap}
+          {@const r = ins.remap}
+          <div class="grid2">
+            <span class="lbl">Shows</span>
+            <div class="row">
+              <NumberField label="Footage time at the playhead" value={remapDraft ?? r.here} min={0} max={Math.max(r.media_length, r.here)} step={0.04} digits={2} suffix=" s" oninput={(v) => (remapDraft = v)} oncommit={applyRemapValue} />
+              <button class="small" class:on={r.key_here} onclick={() => run(api.timeRemapKey(ins.id))} title={r.key_here ? "Remove the key at the playhead" : "Add a key at the playhead (keeps what shows there now)"}>◆</button>
+            </div>
+            <span class="lbl">Speed here</span>
+            <span class="muted">{r.speed_here.toFixed(0)}%{Math.abs(r.speed_here) < 0.5 ? " (held)" : r.speed_here < 0 ? " (backwards)" : ""}</span>
+            <span class="lbl">Ramps</span>
+            <select aria-label="Speed changes between keys" title="How the speed changes between keys: steadily, easing in and out, or holding each key's frame until the next" value={r.interp === "Bezier" ? "Ease" : r.interp} onchange={(e) => run(api.timeRemapInterp(ins.id, e.currentTarget.value as "Linear" | "Ease" | "Hold"))}>
+              <option value="Linear">Steady speed</option>
+              <option value="Ease">Ease in and out</option>
+              <option value="Hold">Hold frames</option>
+            </select>
+          </div>
+          {#if remapScale}
+            {@const sc = remapScale}
+            <svg class="remapgraph" viewBox="-6 -6 {RG.w + 12} {RG.h + 12}" preserveAspectRatio="none" aria-label="Time remap: footage time (up) along the clip (across); drag a key up or down">
+              <path d={remapPath} />
+              <line x1={sc.x(r.at)} y1="0" x2={sc.x(r.at)} y2={RG.h} class="now" />
+              {#each r.keys as k, i}
+                {@const y = remapDrag?.index === i ? remapDrag.secs : k[1]}
+                <circle cx={sc.x(k[0])} cy={sc.y(y)} r="4" class="key" role="presentation" onpointerdown={(e) => dragRemapKey(e, i)}><title>{k[0].toFixed(2)} s into the clip shows {y.toFixed(2)} s of the footage: drag up or down</title></circle>
+              {/each}
+            </svg>
+            <p class="note">Up the graph is later in the footage. Flat is a held frame, steeper is faster, falling is backwards.</p>
+          {/if}
+        {:else}
         <div class="row wrap">
           {#each speeds as sp}
             <button class:on={!ins.reverse && Math.abs(ins.speed - sp) < 1e-3} onclick={() => run(api.setSpeed(ins.id, sp, false))}>{sp * 100}%</button>
@@ -276,6 +378,17 @@
               <button class="small primary" onclick={applyRamp}>Make the ramp</button>
               <button class="small" onclick={() => (rampOpen = false)}>Cancel</button>
             </div>
+          </div>
+        {/if}
+        {/if}
+        {#if ins.footage && ins.kind === "video" && (ins.remap || ins.speed !== 1 || ins.reverse)}
+          <div class="grid2">
+            <span class="lbl">Between frames</span>
+            <select aria-label="Between frames" value={ins.frame_blend} title={blendTips[ins.frame_blend]} onchange={(e) => run(api.setFrameBlend(ins.id, e.currentTarget.value as "Nearest" | "Blend" | "Flow"))}>
+              <option value="Nearest">Nearest frame</option>
+              <option value="Blend">Frame blending</option>
+              <option value="Flow">Optical flow</option>
+            </select>
           </div>
         {/if}
       </div>
@@ -617,6 +730,31 @@
   }
   .ramp .grid2 {
     margin-top: 0;
+  }
+  .remapgraph {
+    width: 100%;
+    height: 90px;
+    background: var(--well);
+    border-radius: 4px;
+    touch-action: none;
+  }
+  .remapgraph path {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+  }
+  .remapgraph .now {
+    stroke: var(--faint);
+    stroke-dasharray: 3 3;
+    vector-effect: non-scaling-stroke;
+  }
+  .remapgraph .key {
+    fill: var(--accent);
+    stroke: var(--base);
+    stroke-width: 1;
+    cursor: ns-resize;
+    vector-effect: non-scaling-stroke;
   }
   .rampgraph {
     width: 100%;

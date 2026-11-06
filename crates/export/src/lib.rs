@@ -142,6 +142,10 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
     let mut out = Vec::new();
     for (ti, t) in sequence.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio && !t.muted) {
         for c in &t.clips {
+            // Time-remapped sound is silent (it would play at every speed at once).
+            if c.remap.is_some() {
+                continue;
+            }
             let [cl, cr] = balance(c.audio.pan);
             let [tl, tr] = balance(t.audio.pan);
             let track_gain = db_to_gain(t.audio.volume_db);

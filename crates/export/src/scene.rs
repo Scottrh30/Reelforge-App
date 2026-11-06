@@ -91,11 +91,21 @@ pub struct Scene {
     generation: u64,
     /// Runs clips' OpenFX effects.
     ofx: crate::ofxhost::OfxRunner,
+    /// Optical flow between a clip's frame and the next (for retiming), by
+    /// clip and frame number, with the tick it was last used.
+    flows: HashMap<(ClipId, i64), (Arc<Vec<[f32; 2]>>, u64)>,
 }
+
+/// The grid optical flow is measured on, and the frames either side are pushed along.
+const FLOW_COLS: u8 = 24;
+/// Flows kept for reuse.
+const FLOW_KEEP: usize = 48;
+/// The second frame of a blend has a key of its own (it's another layer for the compositor).
+const NEXT_FRAME_KEY: u64 = 1 << 62;
 
 impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default() }
+        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flows: HashMap::new() }
     }
 
     /// Forget composition renders (e.g. a different project was opened).
@@ -103,6 +113,7 @@ impl Scene {
         self.nested.clear();
         self.masks.clear();
         self.ofx.clear();
+        self.flows.clear();
     }
 
     /// Render sequence `seq` at time `t` into `compositor`. Returns a
@@ -146,7 +157,7 @@ impl Scene {
         let mut items = Vec::new();
         for item in project.video_layers_at(seq, t) {
             match item {
-                VideoItem::Single(l) => items.extend(self.gather(project, &l, t, frame_size, fps, &scene3d, provider, depth)?.map(Item::Single)),
+                VideoItem::Single(l) => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
                 VideoItem::Dissolve { from, to, mix, kind } => {
                     match (self.gather(project, &from, t, frame_size, fps, &scene3d, provider, depth)?, self.gather(project, &to, t, frame_size, fps, &scene3d, provider, depth)?) {
                         (Some(mut a), Some(mut b)) => {
@@ -202,6 +213,82 @@ impl Scene {
             .collect();
         compositor.retain_layers(|k| keys.contains(&k));
         Ok(signature)
+    }
+
+    /// A layer, and for retimed footage between two of its frames, those two
+    /// frames cross-faded (frame blending), each first pushed along the
+    /// motion between them (optical flow) if the clip asks for that.
+    #[allow(clippy::too_many_arguments)]
+    fn gather_retimed(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], fps: f64, scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Item>> {
+        use reelforge_core::FrameBlend;
+        let c = l.clip;
+        let rate = (c.frame_blend != FrameBlend::Nearest && c.is_retimed() && c.nested.is_none() && c.title.is_none() && c.plane.is_none() && !c.adjustment)
+            .then(|| project.media(c.media))
+            .flatten()
+            .filter(|m| !project.is_still(m.id))
+            .and_then(|m| m.info.video.as_ref())
+            .map(|v| v.frame_rate.fps())
+            .filter(|r| *r > 0.0);
+        let Some(media_fps) = rate else { return Ok(self.gather(project, l, t, frame_size, fps, scene3d, provider, depth)?.map(Item::Single)) };
+        // Which two frames, and how far from the first to the second.
+        let f = l.source_time.as_secs_f64() * media_fps;
+        let f0 = (f + 1e-3).floor();
+        let mix = (f - f0) as f32;
+        if !(0.02..=0.98).contains(&mix) {
+            let near = Layer { source_time: Time::from_secs_f64((f.round() + 0.25) / media_fps), ..l.clone() };
+            return Ok(self.gather(project, &near, t, frame_size, fps, scene3d, provider, depth)?.map(Item::Single));
+        }
+        let first = Layer { source_time: Time::from_secs_f64((f0 + 0.25) / media_fps), ..l.clone() };
+        // The next frame through a decoder of its own (another clip id), so each reads forwards.
+        let next_clip = reelforge_core::Clip { id: ClipId(c.id.0 ^ NEXT_FRAME_KEY), ..c.clone() };
+        let second = Layer { clip: &next_clip, source_time: Time::from_secs_f64((f0 + 1.25) / media_fps), ..l.clone() };
+        let (Some(mut a), Some(mut b)) = (self.gather(project, &first, t, frame_size, fps, scene3d, provider, depth)?, self.gather(project, &second, t, frame_size, fps, scene3d, provider, depth)?) else {
+            return Ok(self.gather(project, l, t, frame_size, fps, scene3d, provider, depth)?.map(Item::Single));
+        };
+        b.key = c.id.0 ^ NEXT_FRAME_KEY;
+        if c.frame_blend == FrameBlend::Flow && a.mesh.is_none() && a.space.is_none() && !l.transform.three_d {
+            let (fa, fb) = (&a.picture.frame, &b.picture.frame);
+            if fa.width == fb.width && fa.height == fb.height && fa.width >= 8 && fa.height >= 8 {
+                let rows = ((FLOW_COLS as f32 * fa.height as f32 / fa.width as f32).round() as u8).clamp(4, reelforge_core::meshwarp::MAX_CELLS);
+                let key = (c.id, f0 as i64);
+                let tick = self.tick;
+                let flow = match self.flows.get_mut(&key) {
+                    Some((v, used)) => {
+                        *used = tick;
+                        v.clone()
+                    }
+                    None => {
+                        let v = Arc::new(reelforge_core::flow::grid_flow(&fa.rgba(), &fb.rgba(), fa.width, fa.height, FLOW_COLS, rows));
+                        if self.flows.len() >= FLOW_KEEP {
+                            if let Some(old) = self.flows.iter().min_by_key(|(_, (_, u))| *u).map(|(k, _)| *k) {
+                                self.flows.remove(&old);
+                            }
+                        }
+                        self.flows.insert(key, (v.clone(), tick));
+                        v
+                    }
+                };
+                let full = [frame_size[0] as f32, frame_size[1] as f32];
+                let size = a.picture.size;
+                let map = l.transform.layer_map(size, full);
+                let (fw, fh) = (fa.width as f32, fa.height as f32);
+                let warp = |k: f32| {
+                    let mut points = Vec::with_capacity(flow.len());
+                    for j in 0..=rows as usize {
+                        for i in 0..=FLOW_COLS as usize {
+                            let m = flow[j * (FLOW_COLS as usize + 1) + i];
+                            let p = [i as f32 / FLOW_COLS as f32 * size[0] - size[0] * 0.5, j as f32 / rows as f32 * size[1] - size[1] * 0.5];
+                            points.push(map.apply([p[0] + k * m[0] * size[0] / fw, p[1] + k * m[1] * size[1] / fh]));
+                        }
+                    }
+                    reelforge_core::meshwarp::MeshShape { cols: FLOW_COLS, rows, points }
+                };
+                // The first frame moves on towards the second, the second back towards the first.
+                a.mesh = Some(warp(mix));
+                b.mesh = Some(warp(mix - 1.0));
+            }
+        }
+        Ok(Some(Item::Dissolve(a, b, mix, None)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -394,6 +481,10 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
     let layer = |l: &Layer, h: &mut DefaultHasher| {
         let clip = l.clip;
         clip.id.hash(h);
+        // Retimed footage blended between frames looks different for the same time.
+        if clip.is_retimed() {
+            clip.frame_blend.hash(h);
+        }
         let layer_size = match (clip.nested, &clip.title) {
             _ if clip.adjustment => {
                 4u8.hash(h);

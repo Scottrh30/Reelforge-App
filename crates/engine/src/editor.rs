@@ -264,6 +264,7 @@ enum TrackMsg {
 mod camtrack;
 mod diskspace;
 mod viewcam;
+mod remap;
 pub use viewcam::ViewMode;
 pub use camtrack::CamMake;
 

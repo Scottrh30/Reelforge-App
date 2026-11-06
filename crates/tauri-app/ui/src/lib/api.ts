@@ -290,6 +290,8 @@ export interface Inspector {
   audio: ClipAudio | null;
   speed: number;
   reverse: boolean;
+  remap: RemapView | null;
+  frame_blend: "Nearest" | "Blend" | "Flow";
   effects: EffectView[];
   animated: string[];
   keys: KeysView | null;
@@ -495,6 +497,18 @@ export interface ViewerFeedback {
 
 // ---- Effects ----
 
+/// A clip's time remap (see Inspector.remap).
+export type RemapView = {
+  /// [seconds into the clip, media seconds shown].
+  keys: [number, number][];
+  interp: "Linear" | "Ease" | "Hold" | "Bezier";
+  length: number;
+  here: number;
+  speed_here: number;
+  at: number;
+  key_here: boolean;
+  media_length: number;
+};
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
 export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval";
@@ -914,6 +928,12 @@ export const api = {
   setTitle: (id: number, spec: TitleSpec) => invoke("set_title", { id, spec }),
   setClipAudio: (id: number, audio: ClipAudio) => invoke("set_clip_audio", { id, audio }),
   setSpeed: (id: number, speed: number, reverse: boolean) => invoke("set_speed", { id, speed, reverse }),
+  timeRemap: (id: number, on: boolean) => invoke("time_remap", { id, on }),
+  timeRemapValue: (id: number, secs: number) => invoke("time_remap_value", { id, secs }),
+  timeRemapKey: (id: number) => invoke("time_remap_key", { id }),
+  timeRemapMoveKey: (id: number, index: number, secs: number) => invoke("time_remap_move_key", { id, index, secs }),
+  timeRemapInterp: (id: number, interp: "Linear" | "Ease" | "Hold") => invoke("time_remap_interp", { id, interp }),
+  setFrameBlend: (id: number, blend: "Nearest" | "Blend" | "Flow") => invoke("set_frame_blend", { id, blend }),
   addMask: (id: number, shape: "rectangle" | "ellipse") => invoke<number | null>("add_mask", { id, shape }),
   addFreehandMask: (id: number, points: Pt[]) => invoke<number | null>("add_freehand_mask", { id, points }),
   setMasks: (id: number, masks: Mask[], done: boolean) => invoke("set_masks", { id, masks, done }),

@@ -149,6 +149,32 @@ pub struct Clip {
     /// colour. Only a label: the picture doesn't change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<[u8; 3]>,
+    /// Time remapping: which moment of the media (seconds) shows at each
+    /// clip time, keyframed. Replaces the speed while it's set (see
+    /// [`Clip::media_time`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remap: Option<crate::anim::Curve<f32>>,
+    /// What's shown when the media time falls between two of its frames
+    /// (slowed down or remapped footage).
+    #[serde(default, skip_serializing_if = "is_default_blend")]
+    pub frame_blend: FrameBlend,
+}
+
+/// How retimed footage fills the moments between its frames.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FrameBlend {
+    /// The nearest frame (each frame held, as it is).
+    #[default]
+    Nearest,
+    /// A cross-fade of the frames either side.
+    Blend,
+    /// The frames either side moved towards each other along the motion
+    /// between them (optical flow), then cross-faded.
+    Flow,
+}
+
+fn is_default_blend(b: &FrameBlend) -> bool {
+    *b == FrameBlend::Nearest
 }
 
 /// Everything about how a video clip looks, edited and undone as one unit.
@@ -193,6 +219,8 @@ impl Clip {
             adjustment: false,
             parent: None,
             label: None,
+            remap: None,
+            frame_blend: FrameBlend::Nearest,
         }
     }
 
@@ -330,15 +358,30 @@ impl Clip {
 
     /// Does the clip play at anything other than normal speed, forwards?
     pub fn is_retimed(&self) -> bool {
-        self.speed != 1.0 || self.reverse
+        self.speed != 1.0 || self.reverse || self.remap.is_some()
     }
 
     /// The media time shown at clip time `ct`.
     pub fn media_time(&self, ct: Time) -> Time {
+        if let Some(r) = &self.remap {
+            // Seconds as f32 can fall a hair short of a frame's start: a tenth
+            // of a millisecond on keeps it in the frame meant.
+            return Time::from_secs_f64(r.value_at(ct, ct.as_secs_f64() as f32).max(0.0) as f64 + 1e-4);
+        }
         if !self.is_retimed() {
             return ct;
         }
         self.anchor + scale(ct, self.rate())
+    }
+
+    /// How fast the media plays at clip time `ct` (media seconds per second;
+    /// negative backwards): the speed, or a time remap's slope there.
+    pub fn rate_at(&self, ct: Time) -> f64 {
+        if self.remap.is_none() {
+            return self.rate();
+        }
+        let h = Time::from_secs_f64(0.005);
+        (self.media_time(ct + h) - self.media_time(ct - h)).as_secs_f64() / (2.0 * h.as_secs_f64())
     }
 
     /// The media time shown at sequence time `t`.
@@ -348,11 +391,46 @@ impl Clip {
 
     /// The clip time at which media time `m` is shown (none for a freeze frame).
     pub fn clip_time_of_media(&self, m: Time) -> Option<Time> {
+        if self.remap.is_some() {
+            return self.remap_inverse(m);
+        }
         if !self.is_retimed() {
             return Some(m);
         }
         let r = self.rate();
         (r != 0.0).then(|| scale(m - self.anchor, 1.0 / r))
+    }
+
+    /// The first clip time (within the clip) a time remap shows media time
+    /// `m` at, to the nearest millisecond or so (`None` if it never does).
+    fn remap_inverse(&self, m: Time) -> Option<Time> {
+        let (a, b) = (self.source_in, self.source_in + self.duration);
+        let n = 400;
+        let at = |i: i64| a + Time((b - a).0 * i / n);
+        let f = |t: Time| (self.media_time(t) - m).0;
+        let mut prev = (at(0), f(at(0)));
+        if prev.1 == 0 {
+            return Some(prev.0);
+        }
+        for i in 1..=n {
+            let t = at(i);
+            let v = f(t);
+            if v == 0 || (v > 0) != (prev.1 > 0) {
+                // Narrow it down between the two.
+                let (mut lo, mut hi) = (prev.0, t);
+                for _ in 0..40 {
+                    let mid = Time((lo.0 + hi.0) / 2);
+                    if (f(mid) > 0) == (prev.1 > 0) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                return Some(hi);
+            }
+            prev = (t, v);
+        }
+        None
     }
 
     /// The sequence time at which media time `m` is shown (if it ever is).
@@ -364,6 +442,10 @@ impl Clip {
     /// can be trimmed out or slipped. Unbounded for a freeze frame.
     pub fn clip_time_limits(&self, media_len: Time) -> (Time, Time) {
         let big = Time(i64::MAX / 4);
+        // Remapped: beyond its keys it holds their frames, so any length will do.
+        if self.remap.is_some() {
+            return (-big, big);
+        }
         let r = self.rate();
         if !self.is_retimed() {
             return (Time::ZERO, media_len);

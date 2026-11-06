@@ -628,6 +628,22 @@ What works now:
   motion makes it longer (clips after it on its tracks move along) and fast motion shorter;
   linked audio changes speed with it, pitch and all, like tape. Keyframes stay where they are on
   the timeline. Trimming, slipping, splitting and tracking all follow the speed
+  - **Time remapping** (tick it in the Speed section): keyframe *which moment of the footage
+    shows when*, so one clip can slow down, speed up, stop and even play backwards. It starts with
+    a key at each end showing what the clip showed. Move the playhead and type the footage time to
+    show there (**Shows**, in seconds) to put a key there, or press ◆ to add one holding what's
+    there now (◆ again removes it). The graph shows footage time going up along the clip: drag a
+    key up or down; flat is a held frame, steeper is faster, falling is backwards. **Ramps** sets
+    how the speed changes between keys: steadily, easing in and out, or holding each key's frame.
+    **Speed here** reads the speed at the playhead. The clip's length doesn't change (trim it as
+    usual; past the first and last keys their frames hold), it goes on the linked sound too, and
+    that sound is silent while remapping is on. Untick to go back to the clip's speed
+  - **Between frames** (slowed, sped up, reversed or remapped footage): **Nearest frame** holds
+    each frame; **Frame blending** cross-fades the two frames either side of the moment shown;
+    **Optical flow** works out how the picture moves from one frame to the next (on a 24-point
+    grid, coarse to fine) and moves both frames along that motion before cross-fading, for the
+    smoothest slow motion (slower to work out; things crossing each other can smear). Export and
+    Render preview use it too
   - **Freeze frame** (`Shift+F`, the Edit menu, or the Speed section): holds the frame at the
     playhead for 2 s (trim it to taste), splitting the clip there and pushing the rest of it
     (and its audio) later. A freeze frame's **Play from here** turns it back into motion

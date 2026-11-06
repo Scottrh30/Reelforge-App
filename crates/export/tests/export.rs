@@ -1280,3 +1280,40 @@ fn adjustment_layer_masks_limit_the_effect() {
     let img = render(vec![full, hole], "hole");
     assert!(is_red(at(&img, 320, 180)) && is_grey(at(&img, 60, 60)));
 }
+
+/// Slowed-down footage between two of its frames: the nearest frame, the two
+/// cross-faded (frame blending), or the square moved half way (optical flow).
+#[test]
+fn slow_motion_frame_blending_and_optical_flow() {
+    use reelforge_core::FrameBlend;
+    // A white 40 px square moving 16 px a frame to the right, on black.
+    let Some(src) = ffmpeg("rf_moving_square2.mp4", &["-f", "lavfi", "-i", "color=c=black:s=320x180:r=25:d=1", "-f", "lavfi", "-i", "color=c=white:s=40x40:r=25:d=1", "-filter_complex", "[0][1]overlay=x='10+t*400':y=70", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "12"]) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let shot = |blend: FrameBlend| {
+        let mut p = Project::new();
+        p.media.push(asset(1, &src));
+        let mut seq = Sequence::new("T", 320, 180, FrameRate::new(25, 1));
+        // Half speed: timeline frame 1 shows media frame 0.5.
+        let mut c = Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(2.0), None);
+        c.speed = 0.5;
+        c.frame_blend = blend;
+        seq.tracks[0].clips = vec![c];
+        p.sequences = vec![seq];
+        let out = std::env::temp_dir().join(format!("rf_export_blend_{blend:?}.mp4"));
+        let mut st = settings(out.clone());
+        (st.width, st.height, st.end, st.include_audio) = (320, 180, s(0.2), false);
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        let f = FrameSource::open(&out, None).unwrap().frame_at_blocking(Time::from_frame(1, FrameRate::new(25, 1)), Duration::from_secs(5)).unwrap();
+        let rgba = f.rgba();
+        move |x: u32| rgba[((90 * 320 + x) * 4) as usize] as i32
+    };
+    let nearest = shot(FrameBlend::Nearest);
+    let blend = shot(FrameBlend::Blend);
+    let flow = shot(FrameBlend::Flow);
+    // x = 14: only in the first frame's square; x = 55: only in the second's.
+    assert!(nearest(14) > 230 && nearest(55) < 25 || nearest(14) < 25 && nearest(55) > 230, "one frame: {} {}", nearest(14), nearest(55));
+    assert!((120..215).contains(&blend(14)) && (120..215).contains(&blend(55)), "both, half each: {} {}", blend(14), blend(55));
+    assert!(blend(35) > 230, "where they overlap, white");
+    assert!(flow(14) < 60 && flow(52) > 200 && flow(30) > 230, "moved half way (18–58): {} {} {}", flow(14), flow(52), flow(30));
+}
