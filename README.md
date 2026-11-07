@@ -111,6 +111,14 @@ What works now:
   A readout next to the pointer shows the value while you drag, and each gesture is one undo
   step (keyed at the playhead when the property is animated)
 
+- **Snapshot** (the camera button at the right end of the bar under the Viewer, or
+  `Ctrl+Shift+E`): saves the frame at the playhead as a PNG, drawn exactly and at the sequence's
+  full size (as export would draw it, whatever the Viewer's playback quality or zoom), named by
+  project, sequence and timecode (`My film 00-01-23-12.png`; never overwriting one). Snapshots go
+  into a **Snapshots** folder beside the project (in Pictures/Reelforge snapshots before it's
+  saved). Right-click the button for **Save snapshot as…** (PNG or JPEG, anywhere), **Open** or
+  **Choose snapshots folder…**, and **Add snapshots to the Media panel** to bring each one into
+  the project as a still
 - **Export** (**File → Export…**, `Ctrl+M`): renders the timeline (or the in/out range) in the
   background; you can keep editing meanwhile. Export waits for every exact frame at full
   resolution and uses the same compositor and mixer as playback, so the file matches what you
@@ -1522,6 +1530,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | Ctrl+I | Import media |
 | Ctrl+S | Save project |
 | Ctrl+M | Export |
+| Ctrl+Shift+E | Snapshot: save the frame at the playhead as a picture |
 | Ctrl+Shift+D | Add/remove audio crossfade at the nearest cut |
 | Ctrl+click volume line | Add a volume keyframe |
 | Double-click / Alt+click keyframe | Delete it |

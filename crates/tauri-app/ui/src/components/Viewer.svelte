@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, run, viewer, timecode } from "../lib/session.svelte";
+  import { app, run, say, viewer, timecode } from "../lib/session.svelte";
   import { api, type Pt } from "../lib/api";
   import { livePump } from "../lib/live";
   import { actions } from "../lib/actions.svelte";
@@ -123,6 +123,39 @@
     zoomTo(fit.k * Math.exp(-d * 0.0012), e.clientX - r.left, e.clientY - r.top);
   }
 
+  // ---- Snapshots ----
+  let snapping = $state(false);
+  let snapFlash = $state(false);
+  async function takeSnapshot(saveAs: boolean) {
+    if (snapping) return;
+    snapping = true;
+    try {
+      const path = await api.snapshot(saveAs);
+      if (path) {
+        snapFlash = true;
+        setTimeout(() => (snapFlash = false), 350);
+      }
+      await run(Promise.resolve());
+    } catch (e) {
+      say(String(e));
+    } finally {
+      snapping = false;
+    }
+  }
+  function snapshotMenu(e: MouseEvent) {
+    e.preventDefault();
+    const p = app.s?.prefs;
+    openMenu(e, [
+      { heading: true, label: "Snapshot" },
+      { label: "Take snapshot", hint: "Ctrl+Shift+E", run: () => takeSnapshot(false) },
+      { label: "Save snapshot as…", run: () => takeSnapshot(true) },
+      { separator: true },
+      { label: "Add snapshots to the Media panel", checked: !!p?.snapshot_import, run: () => run(api.snapshotImport(!p?.snapshot_import)) },
+      { label: "Open snapshots folder", run: () => run(api.snapshotFolder(false, true)) },
+      { label: "Choose snapshots folder…", run: () => run(api.snapshotFolder(true, false)) },
+      ...(p?.snapshot_folder ? [{ label: "Back to the folder beside the project", run: () => run(api.snapshotFolder(false, false)) }] : []),
+    ]);
+  }
   // ---- Camera views and tools ----
   const VIEWS: { mode: "active" | "front" | "top" | "left" | "custom"; label: string; short: string }[] = [
     { mode: "active", label: "Active camera (what's exported)", short: "Active camera" },
@@ -518,6 +551,20 @@
     {/if}
     <span class="grow"></span>
     <span class="muted clock" title="What drives playback">{app.live?.clock ?? ""}</span>
+    <button
+      class="ghost snap"
+      class:flash={snapFlash}
+      onclick={() => takeSnapshot(false)}
+      oncontextmenu={snapshotMenu}
+      disabled={snapping}
+      aria-label="Snapshot"
+      title="Snapshot: save the frame at the playhead as a picture, full size (Ctrl+Shift+E). Right-click for Save as, the folder, and adding snapshots to the Media panel"
+    >
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <path d="M2.5 5.5h2.2l1.1-1.8h4.4l1.1 1.8h2.2a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+        <circle cx="8" cy="9.3" r="2.4" fill="none" stroke="currentColor" stroke-width="1.3" />
+      </svg>
+    </button>
   </div>
 </div>
 
@@ -777,6 +824,13 @@
   }
   .quality.low {
     color: var(--accent);
+  }
+  .transport .snap {
+    margin-left: 6px;
+  }
+  .transport .snap.flash {
+    color: var(--accent);
+    background: var(--well);
   }
   .chip.viewing {
     color: var(--accent);

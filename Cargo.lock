@@ -3631,6 +3631,7 @@ dependencies = [
  "libc",
  "log",
  "miniz_oxide 0.9.1",
+ "png 0.18.1",
  "reelforge-core",
  "reelforge-export",
  "reelforge-media",

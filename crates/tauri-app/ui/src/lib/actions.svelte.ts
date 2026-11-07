@@ -167,6 +167,7 @@ export function onKey(e: KeyboardEvent) {
     if (k === "a") return go(() => actions.act("select_all"));
     if (k === "t") return go(actions.addTitle);
     if (k === "d") return go(() => actions.act(e.shiftKey ? "crossfade" : "dissolve"));
+    if (k === "e" && e.shiftKey) return go(() => run(api.snapshot(false)));
     return;
   }
   // Alt+Shift+1…9: switch workspace.

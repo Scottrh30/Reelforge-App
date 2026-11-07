@@ -85,6 +85,12 @@ pub struct Prefs {
     /// Where proxies and rendered previews go (`None`: the cache folder).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_folder: Option<PathBuf>,
+    /// Where Viewer snapshots go (`None`: a Snapshots folder beside the
+    /// project, or in Pictures before it's saved).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_folder: Option<PathBuf>,
+    /// Add each snapshot to the Media panel as well.
+    pub snapshot_import: bool,
     /// Warn when the drive Reelforge saves to has less than this many GB free (0: never).
     pub disk_warn_gb: f32,
     /// Effects added lately, newest first (as `fx_favourites` names them), at most `RECENT_FX`.
@@ -149,6 +155,8 @@ impl Default for Prefs {
             fx_recent: Vec::new(),
             disk_warn_gb: 2.0,
             cache_folder: None,
+            snapshot_folder: None,
+            snapshot_import: false,
         }
     }
 }
@@ -266,6 +274,7 @@ mod diskspace;
 mod viewcam;
 mod remap;
 mod replace;
+mod snapshot;
 pub use viewcam::ViewMode;
 pub use camtrack::CamMake;
 

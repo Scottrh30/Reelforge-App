@@ -67,6 +67,8 @@
     { separator: true },
     { label: "Import media…", hint: "Ctrl+I", run: actions.importMedia },
     { label: "Export…", hint: "Ctrl+M", run: actions.exportOpen },
+    { label: "Snapshot of the frame", hint: "Ctrl+Shift+E", run: () => run(api.snapshot(false)) },
+    { label: "Save snapshot as…", run: () => run(api.snapshot(true)) },
     { label: "Export queue", checked: app.queueOpen, run: () => (app.queueOpen = !app.queueOpen) },
     { label: "Collect project…", run: () => (app.collectOpen = true) },
     { separator: true },

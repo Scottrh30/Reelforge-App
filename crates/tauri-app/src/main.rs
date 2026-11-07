@@ -1360,6 +1360,76 @@ fn notices() -> &'static str {
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../THIRD-PARTY-NOTICES.txt"))
 }
 
+/// Open a folder in the system's file browser (made first if need be).
+fn open_folder(dir: &std::path::Path) -> Res<()> {
+    let _ = std::fs::create_dir_all(dir);
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer").arg(dir).spawn();
+    #[cfg(not(windows))]
+    let r = std::process::Command::new("xdg-open").arg(dir).spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The Viewer's snapshot button: save the frame at the playhead, full size,
+/// in the snapshots folder (`save_as`: ask where, PNG or JPEG). Returns where it went.
+#[tauri::command]
+fn snapshot(save_as: bool) -> Res<Option<String>> {
+    let to = if save_as {
+        let (dir, name) = ed(|e| (e.snapshot_folder(), format!("{}.png", e.seq().name)))?;
+        let mut dlg = rfd::FileDialog::new().set_title("Save the frame as").add_filter("PNG", &["png"]).add_filter("JPEG", &["jpg", "jpeg"]).set_file_name(name);
+        if dir.is_dir() {
+            dlg = dlg.set_directory(dir);
+        }
+        match dlg.save_file() {
+            Some(p) => Some(if p.extension().is_none() { p.with_extension("png") } else { p }),
+            None => return Ok(None),
+        }
+    } else {
+        None
+    };
+    ed(|e| match e.snapshot(to) {
+        Ok(p) => Ok(Some(p.display().to_string())),
+        Err(err) => {
+            e.status = format!("Couldn't take the snapshot: {err}");
+            Ok(None)
+        }
+    })?
+}
+
+/// Snapshot settings: choose their folder (`choose`; else back to the
+/// default), or open it.
+#[tauri::command]
+fn snapshot_folder(choose: bool, open: bool) -> Res<()> {
+    if open {
+        let dir = ed(|e| e.snapshot_folder())?;
+        return open_folder(&dir);
+    }
+    let picked = if choose {
+        match rfd::FileDialog::new().set_title("Folder for snapshots").pick_folder() {
+            Some(d) => Some(d),
+            None => return Ok(()),
+        }
+    } else {
+        None
+    };
+    ed(|e| {
+        e.prefs.snapshot_folder = picked;
+        e.status = format!("Snapshots go to {}", e.snapshot_folder().display());
+        e.touch();
+        save_settings(e);
+    })
+}
+
+/// Add snapshots to the Media panel too.
+#[tauri::command]
+fn snapshot_import(on: bool) -> Res<()> {
+    ed(|e| {
+        e.prefs.snapshot_import = on;
+        e.touch();
+        save_settings(e);
+    })
+}
+
 /// Open the folder with the log files.
 #[tauri::command]
 fn open_log_folder() -> Res<()> {
@@ -1445,6 +1515,9 @@ fn main() {
             open_log_folder,
             check_decoders,
             check_zero_copy,
+            snapshot,
+            snapshot_folder,
+            snapshot_import,
             frame,
             waveform,
             waveform_rate,

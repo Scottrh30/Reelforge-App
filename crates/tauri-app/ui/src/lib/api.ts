@@ -423,6 +423,8 @@ export interface Prefs {
   disk_warn_gb: number;
   /// Where proxies and rendered previews go (null: the cache folder).
   cache_folder?: string | null;
+  snapshot_folder?: string | null;
+  snapshot_import: boolean;
   export_presets: UserPreset[];
   scrub_audio: boolean;
   timeline_thumbnails: boolean;
@@ -889,6 +891,9 @@ export const api = {
   recover: (index: number) => invoke("recover", { index }),
   dismissRecovery: (index: number) => invoke("dismiss_recovery", { index }),
   setPrefs: (prefs: Prefs) => invoke("set_prefs", { prefs }),
+  snapshot: (saveAs: boolean) => invoke<string | null>("snapshot", { saveAs }),
+  snapshotFolder: (choose: boolean, open: boolean) => invoke("snapshot_folder", { choose, open }),
+  snapshotImport: (on: boolean) => invoke("snapshot_import", { on }),
   addToTimeline: (media: number, track: number | null, at: Ticks | null) => invoke("add_to_timeline", { media, track, at }),
   newCompositionFromMedia: (media: number) => invoke("new_composition_from_media", { media }),
   newComposite: () => invoke("new_composite"),

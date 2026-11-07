@@ -285,6 +285,18 @@ pub fn title_clock(l: &Layer) -> (f32, f32) {
     ((l.source_time - l.clip.source_in).as_secs_f64().max(0.0) as f32, l.clip.duration.as_secs_f64() as f32)
 }
 
+/// One exact, full-size frame of sequence `seq` at `t` (as export would
+/// draw it), as RGBA8 with its size: for snapshots of the Viewer.
+pub fn render_still(project: &Project, seq: usize, t: Time, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(Vec<u8>, [u32; 2])> {
+    let mut compositor = Compositor::new(device, queue);
+    let mut scene = Scene::new(device, queue);
+    let mut frames = ExactFrames { sources: HashMap::new(), titles: HashMap::new(), tick: 1 };
+    scene.render(project, seq, t, &mut compositor, &mut frames, None)?;
+    let size = compositor.output_size().ok_or_else(|| anyhow!("nothing was drawn"))?;
+    let rgba = compositor.read_output().ok_or_else(|| anyhow!("GPU readback failed"))?;
+    Ok((rgba, size))
+}
+
 /// Exact, full-size frames for export: one blocking decoder per clip, and titles.
 struct ExactFrames {
     sources: HashMap<ClipId, (FrameSource, u64)>,
