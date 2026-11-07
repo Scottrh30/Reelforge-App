@@ -270,7 +270,7 @@ mod tests {
         }
         std::fs::write(dir.join("old-0000000000000001.mp4"), vec![0u8; 300]).unwrap();
         let info = reelforge_core::project::MediaInfo { duration: Time::ZERO, video: None, audio: None, container: String::new() };
-        p.media.push(reelforge_core::project::MediaAsset { id: reelforge_core::MediaId(1), path: src.into(), name: "a.mov".into(), info });
+        p.media.push(reelforge_core::project::MediaAsset { id: reelforge_core::MediaId(1), path: src.into(), name: "a.mov".into(), info, conform: None });
         let old = unused_proxies_in(&dir, &p);
         assert_eq!(old.len(), 1);
         assert_eq!(old[0].1, 300);

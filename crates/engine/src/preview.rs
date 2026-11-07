@@ -472,7 +472,8 @@ impl FrameProvider for PreviewFrames<'_> {
         }
         let Some(media) = project.media(l.clip.media) else { return Ok(None) };
         let Some(v) = media.info.video.as_ref() else { return Ok(None) };
-        let size = [v.width as f32, v.height as f32];
+        let laid = media.layer_size().unwrap_or([v.width, v.height]);
+        let size = [laid[0] as f32, laid[1] as f32];
         let path = self.sources.get(&media.id).unwrap_or(&media.path);
         if !reelforge_core::imageseq::media_exists(path) {
             let frame = self.offline.entry(media.id).or_insert_with(|| offline_frame(&media.name, [v.width, v.height])).clone();

@@ -63,7 +63,7 @@ fn ten_bit_footage_exports_with_ten_bit_precision() {
     let Some(src) = ramp() else { eprintln!("ffmpeg CLI not found; skipping"); return };
     let Some((device, queue)) = headless_device() else { return };
     let s = Time::from_secs_f64;
-    let asset = MediaAsset { id: MediaId(1), path: src.clone(), name: "ramp".into(), info: probe(&src).unwrap() };
+    let asset = MediaAsset { id: MediaId(1), path: src.clone(), name: "ramp".into(), info: probe(&src).unwrap(), conform: None };
     let out = std::env::temp_dir().join(format!("rf-deep-out-{}.mov", std::process::id()));
     let rate = FrameRate::new(24, 1);
 

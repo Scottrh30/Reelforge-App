@@ -34,6 +34,14 @@
             ]
           : []),
       { label: "Show in folder", disabled: m.missing, run: () => run(api.showInFolder(m.path)) },
+      { separator: true },
+      {
+        label: "Replace footage",
+        submenu: [
+          { label: "With another file…", hint: "keeps every edit", run: () => run(api.replaceFootage(m.id, true)) },
+          { label: "With another file, at its own size…", run: () => run(api.replaceFootage(m.id, false)) },
+        ],
+      },
     ]);
   }
 

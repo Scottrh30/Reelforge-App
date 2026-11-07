@@ -598,6 +598,33 @@ impl Command for RelinkMedia {
     }
 }
 
+/// Point clips at other media (Replace footage for one clip).
+pub struct SetClipMedia {
+    pub seq: usize,
+    /// Each clip, the media it had and the media it gets.
+    pub clips: Vec<(ClipId, MediaId, MediaId)>,
+}
+
+impl Command for SetClipMedia {
+    fn name(&self) -> &str {
+        "Replace footage"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        for (id, _, new) in &self.clips {
+            if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(*id) {
+                c.media = *new;
+            }
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        for (id, old, _) in &self.clips {
+            if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(*id) {
+                c.media = *old;
+            }
+        }
+    }
+}
+
 /// Media whose file isn't where the project says (moved, renamed, or on a drive that isn't connected).
 pub fn missing_media(p: &Project) -> Vec<MediaId> {
     p.media.iter().filter(|m| !crate::imageseq::media_exists(&m.path)).map(|m| m.id).collect()
@@ -1594,6 +1621,7 @@ mod tests {
                 audio: None,
                 container: String::new(),
             },
+            conform: None,
         }
     }
 
@@ -1925,6 +1953,7 @@ mod composite_tests {
                 audio: audio.then(|| AudioStreamInfo { sample_rate: 48000, channels: 2, codec: "aac".into() }),
                 container: String::new(),
             },
+            conform: None,
         }
     }
 

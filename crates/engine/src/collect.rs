@@ -121,7 +121,7 @@ mod tests {
         std::fs::write(src.join("big.mov"), &data).unwrap();
         let mut p = Project::new();
         let info = MediaInfo { duration: Time::ZERO, video: None, audio: None, container: String::new() };
-        p.media = vec![MediaAsset { id: MediaId(1), path: src.join("big.mov"), name: "big.mov".into(), info }];
+        p.media = vec![MediaAsset { id: MediaId(1), path: src.join("big.mov"), name: "big.mov".into(), info, conform: None }];
         let mut seq = Sequence::new("S", 640, 360, reelforge_core::FrameRate::new(25, 1));
         seq.tracks[0].clips.push(Clip::new(ClipId(5), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.0), None));
         p.sequences = vec![seq];

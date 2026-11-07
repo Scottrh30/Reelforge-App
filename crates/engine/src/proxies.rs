@@ -236,7 +236,7 @@ mod tests {
             audio: None,
             container: String::new(),
         };
-        p.media.push(MediaAsset { id: MediaId(1), path: src.clone(), name: "clip.mov".into(), info });
+        p.media.push(MediaAsset { id: MediaId(1), path: src.clone(), name: "clip.mov".into(), info, conform: None });
         let mut px = Proxies::new();
         px.refresh(&p, false);
         assert!(matches!(px.state(&src), Some(ProxyState::Ready(f)) if *f == old), "the old proxy is used");

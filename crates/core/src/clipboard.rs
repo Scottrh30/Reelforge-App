@@ -173,6 +173,7 @@ mod tests {
             path: "a.mp4".into(),
             name: "a".into(),
             info: crate::project::MediaInfo { duration: s(100.0), video: None, audio: None, container: String::new() },
+            conform: None,
         });
         let q = &mut p.sequences[0];
         // a: V1 0-2 linked to its audio on A1; b: V2 1-3.

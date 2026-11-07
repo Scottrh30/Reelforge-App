@@ -265,6 +265,7 @@ mod camtrack;
 mod diskspace;
 mod viewcam;
 mod remap;
+mod replace;
 pub use viewcam::ViewMode;
 pub use camtrack::CamMake;
 
@@ -666,7 +667,7 @@ impl Editor {
             match reelforge_media::probe(path) {
                 Ok(info) => {
                     let id = MediaId(self.project.alloc_id());
-                    let asset = MediaAsset { id, path: path.clone(), name, info };
+                    let asset = MediaAsset { id, path: path.clone(), name, info, conform: None };
                     self.compute_waveform(&asset);
                     self.execute(Box::new(ImportMedia(asset)));
                     ok += 1;
@@ -2309,7 +2310,7 @@ impl Editor {
                         problems.push(format!("{} has different streams from the original", new_path.display()));
                     }
                     let name = seq_name.unwrap_or_else(|| new_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-                    let new = MediaAsset { id: old.id, path: new_path, name, info };
+                    let new = MediaAsset { id: old.id, path: new_path, name, info, conform: None };
                     cmds.push(Box::new(reelforge_core::undo::RelinkMedia { id: old.id, old, new }));
                 }
                 Err(e) => problems.push(format!("{}: {e:#}", new_path.display())),
@@ -3963,7 +3964,7 @@ mod tests {
         let mut e = editor();
         let info = reelforge_media::probe(&a).unwrap();
         for (id, name) in [(1, "a.mp4"), (2, "b.mp4")] {
-            e.project.media.push(MediaAsset { id: MediaId(id), path: dir.join("old").join(name), name: name.into(), info: info.clone() });
+            e.project.media.push(MediaAsset { id: MediaId(id), path: dir.join("old").join(name), name: name.into(), info: info.clone(), conform: None });
         }
         assert_eq!(reelforge_core::undo::missing_media(&e.project).len(), 2);
         // Relinking one file finds the other in the same folder tree by name.
@@ -3987,7 +3988,7 @@ mod tests {
         let Some(f) = clip_file(&dir, "a.mp4") else { return };
         let mut e = editor();
         let info = reelforge_media::probe(&f).unwrap();
-        e.project.media.push(MediaAsset { id: MediaId(1), path: f, name: "a.mp4".into(), info });
+        e.project.media.push(MediaAsset { id: MediaId(1), path: f, name: "a.mp4".into(), info, conform: None });
         (e.project.sequences[0].width, e.project.sequences[0].height) = (160, 90);
         let id = ClipId(e.project.alloc_id());
         let mut c = Clip::new(id, MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.0), None);
@@ -4290,7 +4291,7 @@ mod tests {
         let Some(f) = clip_file(&dir, "a.mp4") else { return };
         let mut e = editor();
         let info = reelforge_media::probe(&f).unwrap();
-        e.project.media.push(MediaAsset { id: MediaId(1), path: f, name: "a.mp4".into(), info });
+        e.project.media.push(MediaAsset { id: MediaId(1), path: f, name: "a.mp4".into(), info, conform: None });
         (e.project.sequences[0].width, e.project.sequences[0].height) = (160, 90);
         let id = ClipId(e.project.alloc_id());
         let mut c = Clip::new(id, MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.0), None);
@@ -4346,8 +4347,8 @@ mod tests {
         }
         let mut e = editor();
         let info = reelforge_media::probe(&speech).unwrap();
-        e.project.media.push(MediaAsset { id: MediaId(1), path: speech, name: "speech.wav".into(), info: info.clone() });
-        e.project.media.push(MediaAsset { id: MediaId(2), path: dir.join("music.wav"), name: "music.wav".into(), info });
+        e.project.media.push(MediaAsset { id: MediaId(1), path: speech, name: "speech.wav".into(), info: info.clone(), conform: None });
+        e.project.media.push(MediaAsset { id: MediaId(2), path: dir.join("music.wav"), name: "music.wav".into(), info, conform: None });
         let audio: Vec<usize> = e.seq().tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Audio).map(|(i, _)| i).collect();
         let (dlg, mus) = if audio.len() >= 2 {
             (audio[0], audio[1])
@@ -4875,7 +4876,7 @@ mod tests {
         let mut e = editor();
         e.new_project_with(640, 360, FrameRate::new(25, 1));
         let info = reelforge_media::probe(&path).unwrap();
-        e.project.media.push(MediaAsset { id: MediaId(1), path: path.clone(), name: "block.mp4".into(), info });
+        e.project.media.push(MediaAsset { id: MediaId(1), path: path.clone(), name: "block.mp4".into(), info, conform: None });
         let secs = Time::from_secs_f64;
         let (f, a) = (ClipId(e.project.alloc_id()), ClipId(e.project.alloc_id()));
         let mut footage = Clip::new(f, MediaId(1), Time::ZERO, Time::ZERO, secs(0.8), None);
@@ -4982,7 +4983,7 @@ mod tests {
         }
         let mut e = editor();
         let info = reelforge_media::probe(&path).unwrap();
-        e.project.media.push(MediaAsset { id: MediaId(1), path: path.clone(), name: "screen.mp4".into(), info });
+        e.project.media.push(MediaAsset { id: MediaId(1), path: path.clone(), name: "screen.mp4".into(), info, conform: None });
         let id = ClipId(e.project.alloc_id());
         let mut c = Clip::new(id, MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.0), None);
         c.effects.push(reelforge_core::Effect::new(EffectKind::ColorCorrect));

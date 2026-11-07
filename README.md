@@ -621,6 +621,17 @@ What works now:
   "MEDIA OFFLINE" frame in the viewer. **Relink…** a file and Reelforge also looks for the
   other missing files in that folder (and its subfolders) by name; **Search a folder…** does
   it for all of them. Relinking can be undone. Export won't start while media is missing
+- **Replace footage** (right-click footage in the Media panel, or a clip in the timeline →
+  **Replace footage**): swap a file for another (a new grade, a re-render, the final VFX shot, a
+  higher resolution) and keep everything done with it: every cut, trim, speed change, effect,
+  mask, keyframe, track and transition stays as it was. From the Media panel (or **Everywhere
+  it's used** on a clip) every clip of that file changes; **In this clip only** changes just that
+  clip and the sound linked to it, bringing the new file into the Media panel. The new footage is
+  laid out at the old one's size (fitted to its shape), so a 4K version of an HD shot doesn't
+  come out twice as big and masks and tracking stay put; the **at its own size** entries use the
+  new file's own pixel size instead. A frame of a numbered image sequence brings in the whole
+  sequence. The status line says if clips run past the end of the new file (they hold its last
+  frame) or if it lacks sound or picture the clips use. One undo step
 - **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, render cache size,
   proxies, autosave interval, and the proxy/autosave folders
 - **Speed** (Controls panel, any footage or composition clip): 1–2000%, with one-click 25/50/

@@ -162,6 +162,35 @@ pub fn relink_search() -> Res<()> {
     ed(|e| e.find_missing_in(&dir))
 }
 
+// ---- Replace footage ----------------------------------------------------------------
+
+/// Ask for the footage to swap in for `name` (starting in `dir`).
+fn pick_replacement(name: &str, dir: Option<PathBuf>) -> Option<PathBuf> {
+    let mut dlg = rfd::FileDialog::new().set_title(format!("Replace {name} with…")).add_filter("All files", &["*"]);
+    if let Some(d) = dir.filter(|d| d.is_dir()) {
+        dlg = dlg.set_directory(d);
+    }
+    dlg.pick_file()
+}
+
+/// Swap media `media`'s file for another wherever it's used, keeping every
+/// edit; `keep_size`: lay the new footage out at the old size.
+#[tauri::command]
+pub fn replace_footage(media: u64, keep_size: bool) -> Res<()> {
+    let (name, dir) = ed(|e| e.project.media(MediaId(media)).map(|m| (m.name.clone(), m.path.parent().map(PathBuf::from))))?.ok_or("no such media")?;
+    let Some(path) = pick_replacement(&name, dir) else { return Ok(()) };
+    ed(|e| e.replace_footage(MediaId(media), &path, keep_size))
+}
+
+/// Swap the footage of clip `id` (and its linked clips) only.
+#[tauri::command]
+pub fn replace_clip_footage(id: u64, keep_size: bool) -> Res<()> {
+    let found = ed(|e| e.seq().find_clip(reelforge_core::ClipId(id)).and_then(|(_, c)| e.project.media(c.media)).map(|m| (m.name.clone(), m.path.parent().map(PathBuf::from))))?;
+    let Some((name, dir)) = found else { return Err("only footage clips can have their footage replaced".into()) };
+    let Some(path) = pick_replacement(&name, dir) else { return Ok(()) };
+    ed(|e| e.replace_clip_footage(reelforge_core::ClipId(id), &path, keep_size))
+}
+
 // ---- Collect project ----------------------------------------------------------------
 
 #[derive(Serialize)]

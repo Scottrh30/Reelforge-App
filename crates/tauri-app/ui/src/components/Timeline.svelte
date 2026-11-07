@@ -655,6 +655,19 @@
             },
           ]
         : []),
+      ...(c.kind === "video" || c.kind === "audio"
+        ? [
+            {
+              label: "Replace footage",
+              submenu: [
+                { label: "In this clip only…", run: () => run(api.replaceClipFootage(c.id, true)) },
+                { label: "Everywhere it's used…", run: () => run(api.replaceFootage(c.media, true)) },
+                { separator: true },
+                { label: "In this clip only, at its own size…", run: () => run(api.replaceClipFootage(c.id, false)) },
+              ],
+            },
+          ]
+        : []),
     ]);
   }
   /// Does another clip end exactly where this one starts on its track?

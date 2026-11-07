@@ -521,7 +521,7 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
                         }
                         // Missing media shows a stand-in picture.
                         reelforge_core::imageseq::media_exists(path).hash(h);
-                        m.info.video.as_ref().map_or([0.0; 2], |v| [v.width as f32, v.height as f32])
+                        m.layer_size().map_or([0.0; 2], |s| [s[0] as f32, s[1] as f32])
                     }
                     None => [0.0; 2],
                 }
@@ -755,6 +755,7 @@ mod recipe_tests {
                 audio: None,
                 container: String::new(),
             },
+            conform: None,
         });
         let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
         seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(10.0), None)];

@@ -34,7 +34,7 @@ fn clip_b() -> Option<PathBuf> {
 }
 
 fn asset(id: u64, path: &Path) -> MediaAsset {
-    MediaAsset { id: MediaId(id), path: path.to_owned(), name: path.file_name().unwrap().to_string_lossy().into(), info: probe(path).unwrap() }
+    MediaAsset { id: MediaId(id), path: path.to_owned(), name: path.file_name().unwrap().to_string_lossy().into(), info: probe(path).unwrap(), conform: None }
 }
 
 const B_TRANSFORM: Transform = Transform { position: [100.0, 0.0], scale: [1.0, 1.0], rotation: 0.0, opacity: 0.5, anchor: [0.0, 0.0], crop: [0.0; 4], pin: None, three_d: false, depth: 0.0, orientation: [0.0, 0.0], lit: true };
@@ -1088,7 +1088,7 @@ fn exports_an_exr_sequence_like_its_frames() {
     let path = seq.media_path();
     let info = reelforge_media::probe(&path).unwrap();
     let mut p = Project::new();
-    p.media = vec![reelforge_core::MediaAsset { id: reelforge_core::MediaId(1), path: path.clone(), name: seq.name(), info }];
+    p.media = vec![reelforge_core::MediaAsset { id: reelforge_core::MediaId(1), path: path.clone(), name: seq.name(), info, conform: None }];
     let mut sq = Sequence::new("E", 320, 180, FrameRate::new(25, 1));
     sq.tracks[0].clips = vec![Clip::new(ClipId(2), reelforge_core::MediaId(1), s(0.0), s(0.0), s(0.4), None)];
     p.sequences = vec![sq];
@@ -1131,7 +1131,7 @@ fn intermediate_codec_exports_keep_every_frame_in_order() {
     }
     let s = Time::from_secs_f64;
     let mut p = Project::new();
-    p.media = vec![MediaAsset { id: MediaId(1), path: src.clone(), name: "src".into(), info: probe(&src).unwrap() }];
+    p.media = vec![MediaAsset { id: MediaId(1), path: src.clone(), name: "src".into(), info: probe(&src).unwrap(), conform: None }];
     let mut sq = Sequence::new("O", 320, 180, FrameRate::new(25, 1));
     sq.tracks[0].clips = vec![Clip::new(ClipId(2), MediaId(1), s(0.0), s(0.0), s(0.4), None)];
     p.sequences = vec![sq];

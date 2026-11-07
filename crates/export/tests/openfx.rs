@@ -174,7 +174,7 @@ fn a_plugin_that_reads_other_frames_gets_its_neighbours() {
     let s = Time::from_secs_f64;
     let rate = FrameRate::new(24, 1);
     let mut p = Project::new();
-    p.media.push(reelforge_core::MediaAsset { id: reelforge_core::MediaId(1), path: src.clone(), name: "flicker".into(), info: reelforge_media::probe(&src).unwrap() });
+    p.media.push(reelforge_core::MediaAsset { id: reelforge_core::MediaId(1), path: src.clone(), name: "flicker".into(), info: reelforge_media::probe(&src).unwrap(), conform: None });
     let mut sq = Sequence::new("T", 160, 90, rate);
     let mut clip = Clip::new(ClipId(1), reelforge_core::MediaId(1), s(0.0), s(0.0), s(1.0), None);
     clip.effects.push(Effect::new_ofx(&avg));

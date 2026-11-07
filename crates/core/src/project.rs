@@ -56,6 +56,19 @@ pub struct MediaAsset {
     pub path: PathBuf,
     pub name: String,
     pub info: MediaInfo,
+    /// Footage swapped in for other footage (Replace footage) is laid out at
+    /// this size (the original's, fitted to the new picture's shape), so
+    /// clips keep their size, masks and tracking on screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conform: Option<[u32; 2]>,
+}
+
+impl MediaAsset {
+    /// The size its pictures are laid out at (pixels): see `conform`.
+    pub fn layer_size(&self) -> Option<[u32; 2]> {
+        let v = self.info.video.as_ref()?;
+        Some(self.conform.unwrap_or([v.width, v.height]))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -806,7 +819,7 @@ impl Project {
         }
         match c.nested {
             Some(s) => self.sequences.get(s).map(|s| [s.width, s.height]),
-            None => self.media(c.media)?.info.video.as_ref().map(|v| [v.width, v.height]),
+            None => self.media(c.media)?.layer_size(),
         }
     }
 
@@ -996,6 +1009,7 @@ mod crossfade_tests {
             path: format!("{id}.wav").into(),
             name: String::new(),
             info: MediaInfo { duration: secs(dur), video: None, audio: None, container: String::new() },
+            conform: None,
         }
     }
 

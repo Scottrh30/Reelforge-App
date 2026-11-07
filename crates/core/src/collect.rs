@@ -268,7 +268,7 @@ mod tests {
     }
 
     fn asset(id: u64, path: &Path) -> MediaAsset {
-        MediaAsset { id: MediaId(id), path: path.to_owned(), name: path.file_name().unwrap().to_string_lossy().into(), info: MediaInfo { duration: Time::ZERO, video: None, audio: None, container: String::new() } }
+        MediaAsset { id: MediaId(id), path: path.to_owned(), name: path.file_name().unwrap().to_string_lossy().into(), info: MediaInfo { duration: Time::ZERO, video: None, audio: None, container: String::new() }, conform: None }
     }
 
     /// Two files both called clip.mp4 in different folders, an unused one, a LUT,

@@ -1643,6 +1643,8 @@ fn main() {
             ops::proxy_folder,
             ops::relink_media,
             ops::relink_search,
+            ops::replace_footage,
+            ops::replace_clip_footage,
             ops::collect_plan,
             ops::collect_pick_folder,
             ops::collect_start,

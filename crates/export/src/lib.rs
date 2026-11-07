@@ -326,7 +326,8 @@ impl FrameProvider for ExactFrames {
         let frame = src
             .frame_at_blocking(l.source_time, FRAME_TIMEOUT)
             .ok_or_else(|| anyhow!("{} produced no frame at {}", media.name, l.source_time))?;
-        Ok(Some(Picture { frame, size: [v.width as f32, v.height as f32], media: media.id }))
+        let size = media.layer_size().unwrap_or([v.width, v.height]);
+        Ok(Some(Picture { frame, size: [size[0] as f32, size[1] as f32], media: media.id }))
     }
 }
 

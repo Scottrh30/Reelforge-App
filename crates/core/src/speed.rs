@@ -311,7 +311,7 @@ mod tests {
         for _ in 0..100 {
             p.alloc_id();
         }
-        p.media.push(MediaAsset { id: MediaId(1), path: "a.mp4".into(), name: "a".into(), info: MediaInfo { duration: s(20.0), video: None, audio: None, container: String::new() } });
+        p.media.push(MediaAsset { id: MediaId(1), path: "a.mp4".into(), name: "a".into(), info: MediaInfo { duration: s(20.0), video: None, audio: None, container: String::new() }, conform: None });
         let q = &mut p.sequences[0];
         // a: 0-4 s on V1 from 2 s into the media, linked to its audio; b: 4-6 s after it.
         q.tracks[0].clips.push(Clip::new(ClipId(1), MediaId(1), s(0.0), s(2.0), s(4.0), Some(9)));

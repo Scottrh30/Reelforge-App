@@ -429,6 +429,7 @@ mod tests {
                 audio: None,
                 container: String::new(),
             },
+            conform: None,
         }
     }
 
