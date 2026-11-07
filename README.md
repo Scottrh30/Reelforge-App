@@ -221,8 +221,13 @@ What works now:
   channel, a 1.5 s peak-hold line with its value, and clip lights that stay lit until you click
 - **Trimming**: drag either edge of a clip to shorten or lengthen it (linked audio/video trim
   together). It stops at the end of the media, at neighbouring clips, and at a one-frame
-  minimum; the viewer shows the frame at the edge while you drag. Still images can be stretched
-  to any length. Edges snap to other clips (Alt to disable)
+  minimum; the viewer shows the frame at the edge while you drag. A grip shows at each end of
+  a clip as you point at it. Pictures (`.jpg`, `.png`, `.tif`, `.webp`, single-frame GIFs and
+  the rest), titles and solids can be pulled out to any length, and pulling one's end out
+  when another clip starts right after it pushes the clips after it along (a ripple) rather
+  than stopping; shortening one leaves a gap as usual. A video clip stopped by its neighbour
+  says so, and the Ripple tool (**B**) pushes instead. Edges snap to other clips (Alt to
+  disable)
 - **Ripple and roll trims**: three trim tools in the corner of the timeline (or press **V**, **B**,
   **N**). The edge under the pointer lights up in the tool's colour.
   - **Select (V)**: a plain trim, as above.

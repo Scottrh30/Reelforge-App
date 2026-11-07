@@ -655,7 +655,7 @@
             },
           ]
         : []),
-      ...(c.kind === "video" || c.kind === "audio"
+      ...(c.kind === "video" || c.kind === "audio" || c.kind === "image"
         ? [
             {
               label: "Replace footage",
@@ -1297,6 +1297,11 @@
                     ondblclick={() => c.kind === "comp" && openCompFromClip(c)}
                   >
                     {#if c.label}<span class="tagbar"></span>{/if}
+                    {#if !tr.locked && (app.tool === "select" || app.tool === "ripple" || app.tool === "roll")}
+                      <!-- Drag an end to make the clip shorter or longer (a picture as long as you like). -->
+                      {#if w > 3 * EDGE_PX}<span class="grip l" aria-hidden="true"></span>{/if}
+                      <span class="grip r" aria-hidden="true" title={c.kind === "image" || c.kind === "title" ? "Drag to make it longer or shorter (clips after it move along)" : "Drag to trim"}></span>
+                    {/if}
                     {#if (c.kind === "video" || c.kind === "image") && w > 70 && !tr.collapsed && app.s?.prefs.timeline_thumbnails !== false && mediaById.get(c.media) && !mediaById.get(c.media)!.missing}
                       {@const m = mediaById.get(c.media)!}
                       {#if c.kind === "video" && app.s?.prefs.timeline_filmstrip !== false}
@@ -2020,6 +2025,38 @@
     border: 1px solid rgba(255, 255, 255, 0.12);
     display: flex;
     align-items: flex-start;
+  }
+  .clip .grip {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: ew-resize;
+    z-index: 3;
+  }
+  .clip .grip.l {
+    left: 0;
+  }
+  .clip .grip.r {
+    right: 0;
+  }
+  .clip:hover .grip::after {
+    content: "";
+    position: absolute;
+    top: 25%;
+    bottom: 25%;
+    width: 2px;
+    border-radius: 1px;
+    background: rgba(255, 255, 255, 0.55);
+  }
+  .clip .grip.l::after {
+    left: 2px;
+  }
+  .clip .grip.r::after {
+    right: 2px;
+  }
+  .clip .grip:hover::after {
+    background: var(--accent);
   }
   .clip.video {
     background: var(--clip-video);

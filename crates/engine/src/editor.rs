@@ -275,6 +275,7 @@ mod viewcam;
 mod remap;
 mod replace;
 mod snapshot;
+mod stilltrim_tests;
 pub use viewcam::ViewMode;
 pub use camtrack::CamMake;
 
@@ -2055,12 +2056,35 @@ impl Editor {
         }
         self.begin_live(LiveEdit::Timing(id, snapshot.clone(), mode));
         self.restore_timings(&snapshot);
-        let plan = plan_trim(&self.project, self.active, id, edge, mode, delta);
+        // Lengthening a still picture whose end touches the next clip: push
+        // the clips after it along (a ripple) instead of stopping dead.
+        let pushes = mode == TrimMode::Normal && edge == Edge::End && delta > Time::ZERO && self.still_touches_next(id);
+        let plan = plan_trim(&self.project, self.active, id, edge, if pushes { TrimMode::Ripple } else { mode }, delta);
+        if let Some(p) = &plan {
+            if p.limited && mode == TrimMode::Normal && !pushes && self.blocked_by_neighbour(id, edge) {
+                self.status = "Stopped by the next clip: use the Ripple tool (B) to push the clips after it along".into();
+            }
+        }
         if let Some(plan) = &plan {
             plan.apply(&mut self.project, self.active);
         }
         self.touch();
         plan
+    }
+
+    /// Is clip `id` a still picture (or a title, or a solid) with another clip
+    /// starting right where it ends?
+    fn still_touches_next(&self, id: ClipId) -> bool {
+        let s = self.seq();
+        let Some((ti, c)) = s.find_clip(id) else { return false };
+        (self.project.is_still(c.media) || c.title.is_some() || c.plane.is_some()) && s.tracks[ti].clips.iter().any(|o| o.id != id && o.timeline_start == c.timeline_end())
+    }
+
+    /// Does a neighbouring clip touch clip `id`'s `edge`?
+    fn blocked_by_neighbour(&self, id: ClipId, edge: Edge) -> bool {
+        let s = self.seq();
+        let Some((ti, c)) = s.find_clip(id) else { return false };
+        s.tracks[ti].clips.iter().any(|o| o.id != id && if edge == Edge::End { o.timeline_start == c.timeline_end() } else { o.timeline_end() == c.timeline_start })
     }
 
     /// Turn the pending live edit into one undoable command.
