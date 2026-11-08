@@ -70,9 +70,6 @@ fn error(a: &[u8], truth: &[u8], x0: usize, x1: usize) -> f32 {
     s / n
 }
 
-fn rgb(v: &[u8]) -> Vec<u8> {
-    v.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
-}
 
 /// The plain cross-fade of two frames, as rgb.
 fn blend(a: &[u8], b: &[u8]) -> Vec<u8> {

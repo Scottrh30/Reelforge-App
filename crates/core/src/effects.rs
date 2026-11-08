@@ -89,6 +89,18 @@ pub enum EffectKind {
     /// Paints out a thin straight line (a wire or rig) by filling it from
     /// the picture either side.
     WireRemoval,
+    /// A layer breaks into irregular pieces at a moment, thrown out from an
+    /// impact point and falling (see [`crate::shatter`]).
+    Shatter,
+    /// A gun's muzzle flash: a brief star of flame at the barrel, lighting
+    /// the scene round it, once or as a burst of shots.
+    MuzzleFlash,
+    /// A bullet hitting a surface: a flash, sparks and a puff of dust, and
+    /// the hole (or the cracks in glass) it leaves.
+    BulletHit,
+    /// Coloured smoke or ink poured into still air: a 2D fluid simulation
+    /// (see [`crate::fluid`]).
+    Fluid,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -109,6 +121,8 @@ pub enum EffectCategory {
     Distort,
     /// Wire removal and other clean-up.
     Repair,
+    /// Particles, fire, smoke, explosions, weather, gunfire and fluid.
+    Simulation,
     /// Plugins that didn't name a category.
     Plugins,
     /// OpenFX plugins (Sapphire, Neat Video, BorisFX, the OpenFX Misc set…).
@@ -116,7 +130,7 @@ pub enum EffectCategory {
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 8] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
+    pub const ALL: [EffectCategory; 9] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
@@ -125,6 +139,7 @@ impl EffectCategory {
             EffectCategory::Stylize => "Light & stylize",
             EffectCategory::Distort => "Distort",
             EffectCategory::Repair => "Repair",
+            EffectCategory::Simulation => "Particles & simulation",
             EffectCategory::Plugins => "Other plugins",
             EffectCategory::OpenFx => "OpenFX",
         }
@@ -345,6 +360,63 @@ const WIRE_REMOVAL: [ParamSpec; 8] = [
     spec("Fill from", 1.0, 0.0, 50.0, " px past the edge", 0.05),
     choice("Show area", &["Off", "On (red)"]),
 ];
+const SHATTER: [ParamSpec; 12] = [
+    spec("Impact X", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("Impact Y", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("Pieces across", 12.0, 2.0, 60.0, "", 0.05),
+    spec("Breaks at", 0.5, 0.0, 3600.0, " s", 0.01),
+    spec("Force", 900.0, 0.0, 8000.0, " px/s", 2.0),
+    spec("Reach", 60.0, 1.0, 400.0, " %", 0.2),
+    spec("Gravity", 1500.0, -5000.0, 5000.0, " px/s²", 2.0),
+    spec("Spin", 400.0, 0.0, 3000.0, "°/s", 1.0),
+    spec("Randomness", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Fade after", 1.5, 0.0, 30.0, " s", 0.01),
+    spec("Irregularity", 70.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const MUZZLE_FLASH: [ParamSpec; 12] = [
+    spec("Barrel X", 40.0, -50.0, 150.0, " %", 0.1),
+    spec("Barrel Y", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("Direction", 0.0, -360.0, 360.0, "°", 0.5),
+    spec("Size", 100.0, 1.0, 600.0, " %", 0.5),
+    choice("Gun", &muzzle::STYLES),
+    color("Colour", 0xffb54a),
+    spec("Brightness", 150.0, 0.0, 600.0, " %", 0.5),
+    spec("First shot at", 0.2, 0.0, 3600.0, " s", 0.01),
+    spec("Shots per second", 0.0, 0.0, 30.0, "", 0.05),
+    spec("Shots", 1.0, 1.0, 500.0, "", 0.1),
+    spec("Light on the scene", 60.0, 0.0, 300.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const BULLET_HIT: [ParamSpec; 10] = [
+    spec("Hit X", 60.0, -50.0, 150.0, " %", 0.1),
+    spec("Hit Y", 45.0, -50.0, 150.0, " %", 0.1),
+    spec("Hits at", 0.5, 0.0, 3600.0, " s", 0.01),
+    choice("Surface", &bullet::SURFACES),
+    spec("Size", 100.0, 5.0, 600.0, " %", 0.5),
+    spec("Sparks", 60.0, 0.0, 200.0, " %", 0.5),
+    spec("Dust", 70.0, 0.0, 200.0, " %", 0.5),
+    spec("Hole", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Flash", 100.0, 0.0, 300.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const FLUID: [ParamSpec; 15] = [
+    spec("Source X", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("Source Y", 85.0, -50.0, 150.0, " %", 0.1),
+    spec("Direction", 90.0, -360.0, 360.0, "°", 0.5),
+    spec("Force", 350.0, 0.0, 4000.0, " px/s", 1.0),
+    spec("Source size", 70.0, 2.0, 1000.0, " px", 0.5),
+    spec("Amount", 100.0, 0.0, 500.0, " %", 0.5),
+    color("Colour", 0x2a8cff),
+    color("Second colour", 0xff3c78),
+    spec("Colour change", 0.15, 0.0, 5.0, " /s", 0.01),
+    spec("Rise", 60.0, -500.0, 500.0, " %", 0.5),
+    spec("Swirl", 45.0, 0.0, 300.0, " %", 0.5),
+    spec("Fade", 8.0, 0.0, 100.0, " %/s", 0.1),
+    choice("Detail", &fluid_params::DETAILS),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
 const LEVELS: [ParamSpec; 5] = [
     spec("Input black", 0.0, 0.0, 254.0, "", 0.5),
     spec("Input white", 255.0, 1.0, 255.0, "", 0.5),
@@ -547,8 +619,8 @@ const PARTICLES: [ParamSpec; 20] = [
     spec("Gravity", 250.0, -5000.0, 5000.0, " px/s²", 1.0),
     spec("Wind", 0.0, -5000.0, 5000.0, " px/s²", 1.0),
     spec("Turbulence", 0.0, 0.0, 1000.0, " px", 0.5),
-    spec("Size at birth", 10.0, 0.0, 500.0, " px", 0.1),
-    spec("Size at death", 2.0, 0.0, 500.0, " px", 0.1),
+    spec("Size at birth", 10.0, 0.0, 2000.0, " px", 0.1),
+    spec("Size at death", 2.0, 0.0, 2000.0, " px", 0.1),
     color("Colour at birth", 0xffd27a),
     color("Colour at death", 0xff4a12),
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
@@ -638,6 +710,80 @@ pub mod refine {
     pub const DECONTAMINATE: usize = 3;
     pub const RADIUS: usize = 4;
     pub const VIEW: usize = 5;
+}
+/// Shatter parameter indices.
+pub mod shatter {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const PIECES: usize = 2;
+    pub const AT: usize = 3;
+    pub const FORCE: usize = 4;
+    /// How far from the impact pieces are thrown, % of the layer's width.
+    pub const REACH: usize = 5;
+    pub const GRAVITY: usize = 6;
+    pub const SPIN: usize = 7;
+    pub const RANDOMNESS: usize = 8;
+    /// Seconds after breaking that thrown pieces have faded out (0: never).
+    pub const FADE: usize = 9;
+    pub const IRREGULAR: usize = 10;
+    pub const SEED: usize = 11;
+}
+/// Muzzle flash parameter indices.
+pub mod muzzle {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const DIRECTION: usize = 2;
+    pub const SIZE: usize = 3;
+    pub const STYLE: usize = 4;
+    pub const COLOR: usize = 5;
+    pub const BRIGHTNESS: usize = 6;
+    pub const FIRST: usize = 7;
+    /// 0: a single shot.
+    pub const RATE: usize = 8;
+    pub const SHOTS: usize = 9;
+    pub const LIGHT: usize = 10;
+    pub const SEED: usize = 11;
+    pub const STYLES: [&str; 4] = ["Rifle", "Pistol", "Shotgun", "Side vents"];
+    /// How long one flash lasts (s): about a frame.
+    pub const LENGTH: f32 = 0.05;
+    /// When the shots are (s), given first-shot time, rate and count.
+    pub fn shot_times(first: f32, rate: f32, shots: f32) -> Vec<f32> {
+        let n = if rate <= 0.0 { 1 } else { shots.round().max(1.0) as usize };
+        (0..n).map(|k| first + if rate > 0.0 { k as f32 / rate } else { 0.0 }).collect()
+    }
+}
+/// Bullet hit parameter indices.
+pub mod bullet {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const AT: usize = 2;
+    pub const SURFACE: usize = 3;
+    pub const SIZE: usize = 4;
+    pub const SPARKS: usize = 5;
+    pub const DUST: usize = 6;
+    pub const HOLE: usize = 7;
+    pub const FLASH: usize = 8;
+    pub const SEED: usize = 9;
+    pub const SURFACES: [&str; 5] = ["Wall (plaster)", "Concrete", "Metal", "Glass", "Wood"];
+}
+/// Fluid parameter indices.
+pub mod fluid_params {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const DIRECTION: usize = 2;
+    pub const FORCE: usize = 3;
+    pub const SIZE: usize = 4;
+    pub const AMOUNT: usize = 5;
+    pub const COLOR_A: usize = 6;
+    pub const COLOR_B: usize = 7;
+    pub const CYCLE: usize = 8;
+    pub const RISE: usize = 9;
+    pub const SWIRL: usize = 10;
+    pub const FADE: usize = 11;
+    pub const DETAIL: usize = 12;
+    pub const OPACITY: usize = 13;
+    pub const SEED: usize = 14;
+    pub const DETAILS: [&str; 3] = ["Low (fast)", "Medium", "High"];
 }
 /// Wire removal parameter indices.
 pub mod wire {
@@ -797,7 +943,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 27] = [
+    pub const ALL: [EffectKind; 31] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -821,6 +967,10 @@ impl EffectKind {
         EffectKind::Halftone,
         EffectKind::Crt,
         EffectKind::WireRemoval,
+        EffectKind::Shatter,
+        EffectKind::MuzzleFlash,
+        EffectKind::BulletHit,
+        EffectKind::Fluid,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -858,6 +1008,10 @@ impl EffectKind {
             EffectKind::Halftone => "Halftone",
             EffectKind::Crt => "CRT / VHS",
             EffectKind::WireRemoval => "Wire removal",
+            EffectKind::Shatter => "Shatter",
+            EffectKind::MuzzleFlash => "Muzzle flash",
+            EffectKind::BulletHit => "Bullet hit",
+            EffectKind::Fluid => "Fluid",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -869,7 +1023,8 @@ impl EffectKind {
             EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner | EffectKind::MatteChoker | EffectKind::RefineMatte => EffectCategory::Keying,
-            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Particles | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
+            EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
+            EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid => EffectCategory::Simulation,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::WireRemoval => EffectCategory::Repair,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
@@ -896,7 +1051,11 @@ impl EffectKind {
             EffectKind::Plugin => "An installed plugin.",
             EffectKind::OpenFx => "An installed OpenFX plugin.",
             EffectKind::EnergyBlade => "A glowing light-sword blade with a hot core, flicker and motion blur. Drag its hilt and tip in the Viewer, or attach it to a track.",
-            EffectKind::Particles => "An emitter of sparks, embers, dust, snow or magic, drawn on the GPU. Drag the emitter in the Viewer; every setting can be keyframed.",
+            EffectKind::Particles => "An emitter of sparks, fire, smoke, rain, snow, fog, debris or magic, or of the layer's own pixels (atomic particles), drawn on the GPU. Drag the emitter in the Viewer; every setting can be keyframed.",
+            EffectKind::Shatter => "The layer breaks into irregular pieces at a moment you choose, thrown out from the impact point (drag it in the Viewer), tumbling and falling. Pieces beyond its reach stay put.",
+            EffectKind::MuzzleFlash => "A gun's flash at the barrel (drag it in the Viewer): rifle, pistol, shotgun or side vents, one shot or a burst, lighting the scene round it. Put it on an adjustment layer to light the footage.",
+            EffectKind::BulletHit => "A bullet striking a wall, concrete, metal, glass or wood: a flash, sparks and a puff of dust, and the hole or cracks it leaves. Put it on an adjustment layer over the footage.",
+            EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
             EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
             EffectKind::ChromaticAberration => "Colour fringes: red and blue pulled apart towards the edges, like a cheap lens, or one way for a glitchy look.",
@@ -945,6 +1104,10 @@ impl EffectKind {
             EffectKind::Halftone => &HALFTONE,
             EffectKind::Crt => &CRT,
             EffectKind::WireRemoval => &WIRE_REMOVAL,
+            EffectKind::Shatter => &SHATTER,
+            EffectKind::MuzzleFlash => &MUZZLE_FLASH,
+            EffectKind::BulletHit => &BULLET_HIT,
+            EffectKind::Fluid => &FLUID,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -958,7 +1121,7 @@ impl EffectKind {
     /// Does the picture change with time even when the settings don't
     /// (flicker, shake, grain…)? Then every frame has to be drawn.
     pub fn animates_with_time(self) -> bool {
-        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::OpenFx)
+        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::OpenFx | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid)
     }
 
     /// Headings to show above some parameters, as (first parameter, heading).
@@ -974,6 +1137,10 @@ impl EffectKind {
             EffectKind::KeyCleaner => &[(0, "Spill"), (3, "Matte")],
             EffectKind::RefineMatte => &[(0, "Edge"), (3, "Colour")],
             EffectKind::WireRemoval => &[(0, "Wire"), (4, "Fill")],
+            EffectKind::Shatter => &[(0, "Impact"), (2, "Pieces"), (4, "Motion")],
+            EffectKind::MuzzleFlash => &[(0, "Gun"), (5, "Flash"), (7, "Shots")],
+            EffectKind::BulletHit => &[(0, "Hit"), (5, "Look")],
+            EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
         }
@@ -1021,6 +1188,8 @@ pub struct EffectValues {
     pub prev: Option<[f32; 4]>,
     /// For a particle emitter: the particles alive now.
     pub particles: Option<Arc<crate::particles::Particles>>,
+    /// For a shatter: its pieces now.
+    pub pieces: Option<Arc<crate::shatter::Pieces>>,
 }
 
 impl EffectValues {
@@ -1051,6 +1220,10 @@ impl EffectValues {
             EffectKind::LightLeaks => v[leaks::INTENSITY] == 0.0,
             EffectKind::Halftone => v[halftone::MIX] == 0.0,
             EffectKind::WireRemoval => false,
+            EffectKind::Shatter => self.pieces.is_none(),
+            EffectKind::MuzzleFlash => v[muzzle::BRIGHTNESS] == 0.0 && v[muzzle::LIGHT] == 0.0,
+            EffectKind::BulletHit => false,
+            EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.table.is_none(),
             EffectKind::RefineMatte => v[refine::SMOOTH] < 0.01 && v[refine::SHIFT].abs() < 0.01 && v[refine::FEATHER] < 0.01 && v[refine::DECONTAMINATE] == 0.0 && v[refine::VIEW] == 0.0,
             EffectKind::MatteChoker => v[choker::CHOKE].abs() < 0.01 && v[choker::SOFTNESS] < 0.01 && v[choker::CONTRAST] == 0.0 && v[choker::VIEW] == 0.0,
             EffectKind::KeyCleaner => v[cleaner::SPILL] == 0.0 && v[cleaner::HOLES] < 0.01 && v[cleaner::SPECKS] < 0.01 && v[cleaner::VIEW] == 0.0,
@@ -1213,7 +1386,19 @@ impl Effect {
         }
         let plugin = if self.kind == EffectKind::Plugin { self.plugin_def() } else { None };
         let particles = (self.kind == EffectKind::Particles).then(|| Arc::new(crate::particles::simulate(self, t)));
-        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev, particles }
+        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None }
+    }
+
+    /// [`Self::eval_moving`] for a layer `size` pixels across: what needs
+    /// the layer's shape (a shatter's pieces, a fluid's grid) too.
+    pub fn eval_sized(&self, t: Time, prev: Option<Time>, size: [f32; 2]) -> EffectValues {
+        let mut v = self.eval_moving(t, prev);
+        match self.kind {
+            EffectKind::Shatter => v.pieces = Some(Arc::new(crate::shatter::simulate(self, t, size))),
+            EffectKind::Fluid => v.table = crate::fluid::simulate(self, t, size),
+            _ => {}
+        }
+        v
     }
 
     /// The lookup table this effect needs, if any (a curve, or a loaded .cube file).
@@ -1254,6 +1439,11 @@ pub fn eval_stack_moving(effects: &[Effect], t: Time, prev: Option<Time>) -> Vec
     effects.iter().filter(|e| e.enabled).map(|e| e.eval_moving(t, prev)).filter(|v| !v.is_identity()).collect()
 }
 
+/// [`eval_stack_moving`] for a layer `size` pixels across (see [`Effect::eval_sized`]).
+pub fn eval_stack_sized(effects: &[Effect], t: Time, prev: Option<Time>, size: [f32; 2]) -> Vec<EffectValues> {
+    effects.iter().filter(|e| e.enabled).map(|e| e.eval_sized(t, prev, size)).filter(|v| !v.is_identity()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1271,6 +1461,8 @@ mod tests {
                 EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut | EffectKind::DifferenceKey => assert!(v.is_identity(), "{kind:?}"),
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
+                // These need the layer's size (a shatter's pieces, a fluid's grid).
+                EffectKind::Shatter | EffectKind::Fluid => assert!(v.is_identity() && !e.eval_sized(Time::from_secs_f64(0.5), None, [640.0, 360.0]).is_identity(), "{kind:?}"),
                 _ => assert!(!v.is_identity(), "{kind:?} should do something by default"),
             }
         }

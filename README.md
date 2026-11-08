@@ -427,27 +427,63 @@ What works now:
     quicker jitter), and **Zoom** to hide the edges (or **Edges**: mirror, repeat or
     transparent). Keyframe Amount for an impact. Shake, grain, glitches and leaks change
     with time on their own, so every frame is drawn (and render-cached) separately
-  - **Particles** (Light & stylize): sparks, embers, fire, smoke, magic, snow, dust or confetti,
-    worked out and drawn on the graphics card (tens of thousands at once)
-    - **Timeline → Add particles layer** puts an emitter on its own transparent layer, like a
-      blade layer. Drag the emitter (✦) in the Viewer, and the tip of its arrow to aim it (Shift
-      snaps to 15°)
-    - The preset buttons (Sparks, Embers, Fire, Smoke, Magic, Snow, Dust, Confetti) set
-      everything but the emitter's position and seed
-    - **Emitter**: position, **Shape** (point, a line across the direction of travel, a disc, a
-      ring that throws outwards, or the whole layer) and size. **Birth**: rate per second,
-      lifetime and **Randomness** (varies life, speed and size). **Motion**: speed, direction,
-      spread, gravity, wind and turbulence. **Look**: size and colour at birth and at death,
-      opacity, and *Glow* or *Sparks* (light added, sparks streak along their motion) or
-      *Soft*/*Solid dots* (which cover what's under them)
-    - Every setting can be keyframed. Emitter settings are read at each particle's birth, so a
-      moving emitter leaves a trail, and keyframing **Birth rate** up and back down makes a burst;
-      gravity, wind, turbulence and the look apply to every particle alive
-    - Nothing is simulated frame by frame: every frame is worked out on its own from the clip's
-      start, so scrubbing, playing backwards and exporting all show exactly the same particles.
-      They start with the clip, so trim its start to begin with particles already in the air
+  - **Particles & simulation** (their own category in the browser, and **Timeline → Particles &
+    simulation** for ready-made layers):
+    - **Particles**: sparks, embers, fire, smoke, rain, snow, fog, dust, debris, confetti, magic
+      or a water spray, worked out and drawn on the graphics card (tens of thousands at once)
+      - **Timeline → Add particles layer** puts an emitter on its own transparent layer, like a
+        blade layer. Drag the emitter (✦) in the Viewer, and the tip of its arrow to aim it
+        (Shift snaps to 15°)
+      - The preset buttons (Sparks, Embers, Fire, Smoke, Magic, Snow, Dust, Confetti, Rain, Fog,
+        Debris, Atomic, Disintegrate, Water spray) set everything but the emitter's position and seed
+      - **Emitter**: position, **Shape** (point, a line across the direction of travel, a disc, a
+        ring that throws outwards, the whole layer, or **the layer's pixels**) and size.
+        **Birth**: rate per second, lifetime and **Randomness** (varies life, speed and size).
+        **Motion**: speed, direction, spread, gravity, wind and turbulence. **Look**: size and
+        colour at birth and at death, opacity, and the look: *Glow*, *Sparks* (streaks) and
+        *Flame* add light; *Soft*/*Solid dots*, *Smoke* (billowing, turning puffs), *Rain
+        streaks* and *Debris* (tumbling jagged chunks) cover what's under them. Flame is a
+        noise-torn teardrop, hottest low down and early in its life
+      - **Atomic particles**: with the shape **Layer's pixels**, particles are born only where the
+        layer's picture shows, each in the picture's colour there, turning to the colour at
+        death as they die (the Atomic preset: a picture giving off glowing dust). **Layer's
+        pixels, layer hidden** draws only the particles, so the picture is made of them (the
+        Disintegrate preset: it breaks up and blows away)
+      - Every setting can be keyframed. Emitter settings are read at each particle's birth, so a
+        moving emitter leaves a trail, and keyframing **Birth rate** up and back down makes a
+        burst; gravity, wind, turbulence and the look apply to every particle alive
+      - Nothing is simulated frame by frame: every frame is worked out on its own from the clip's
+        start, so scrubbing, playing backwards and exporting all show exactly the same
+        particles. They start with the clip, so trim its start to begin with particles already
+        in the air
+    - **Ready-made layers** (**Timeline → Particles & simulation**), all ordinary effects you can
+      change afterwards, sized for the sequence's frame: **Fire** (flames, embers and a little
+      smoke), **Smoke**, **Explosion** (a flash, a fireball, debris and sparks thrown out in a
+      burst at the layer's start, and smoke billowing after), **Rain**, **Snow** and **Fog** over
+      the whole frame, **Muzzle flash**, **Bullet hit** and **Gun shot** (a flash, then its hit a
+      moment later; these three are adjustment layers so they light and mark the footage below),
+      **Fluid**, and **Shatter** or **Atomic particles** for the selected layer
+    - **Shatter**: the layer breaks into irregular pieces at **Breaks at** (seconds into the
+      clip), thrown out from the **Impact** point (drag it in the Viewer) with **Force**, out to
+      its **Reach** (pieces further away stay put), falling with **Gravity**, tumbling with
+      **Spin**, fading after **Fade after** seconds. **Pieces across** and **Irregularity** shape
+      them; they fit together exactly until it breaks
+    - **Muzzle flash**: a brief, never-twice-the-same star of flame at the barrel (drag it there;
+      set **Direction** and **Size**) for a **Rifle**, **Pistol**, **Shotgun** or **Side vents**,
+      about a frame long, at **First shot at**, or a burst (**Shots per second**, **Shots**). **Light
+      on the scene** brightens what's round it in the flash's colour
+    - **Bullet hit**: at **Hits at**, a flash, sparks flying and falling (most off metal), a puff
+      of dust (or smoke off metal) blowing out and settling, and the mark it leaves on **Wall**,
+      **Concrete** (with cracks), **Metal** (a torn bright rim and scorch), **Glass** (a star of
+      cracks and rings) or **Wood**
+    - **Fluid**: coloured smoke or ink poured from a **Source** (drag it) in a **Direction** with
+      **Force**, swirling (**Swirl**), rising (**Rise**, negative sinks) and fading (**Fade**),
+      changing between two colours (**Colour change** times a second). A real fluid simulation
+      (stable fluids on a grid, **Detail** low, medium or high), worked out from the clip's start
+      and kept as it plays, so playing on is quick and seeking back returns to the nearest
+      second it kept
   - The **browser** (`E`, or **Edit → Effects & transitions…**) lists every effect by category
-    (Colour, Blur & sharpen, Keying, Light & stylize) and every transition, with a search box
+    (Colour, Blur & sharpen, Keying, Light & stylize, Particles & simulation…) and every transition, with a search box
     and a one-line description of each; **Add** puts an effect on the selected clip
   - Turn each effect on or off, reorder (applied top to bottom) or remove it. Every parameter
     has a keyframe button and works like the transform properties. The viewer and export use

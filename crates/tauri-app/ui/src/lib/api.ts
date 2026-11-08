@@ -537,7 +537,7 @@ export type ZeroCopyReport = {
 };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid";
 
 export interface Curves {
   master: Pt[];
@@ -952,6 +952,7 @@ export const api = {
   shapeFromMask: (id: number, index: number) => invoke("shape_from_mask", { id, index }),
   addBladeLayer: () => invoke("add_blade_layer"),
   addParticlesLayer: () => invoke("add_particles_layer"),
+  addSimulation: (what: string) => invoke("add_simulation", { what }),
   /// A camera, or a light (0 point, 1 spot, 2 directional, 3 ambient).
   addScene: (camera: boolean, light: number) => invoke("add_scene", { camera, light }),
   /// The New menu: a plane ("layer", of `color`), a light, a point, a camera or an adjustment layer.

@@ -119,7 +119,7 @@
 
   // Energy blade tools.
   /// The same order as core particles::PRESETS.
-  const PARTICLE_PRESETS = ["Sparks", "Embers", "Fire", "Smoke", "Magic", "Snow", "Dust", "Confetti"];
+  const PARTICLE_PRESETS = ["Sparks", "Embers", "Fire", "Smoke", "Magic", "Snow", "Dust", "Confetti", "Rain", "Fog", "Debris", "Atomic", "Disintegrate", "Water spray"];
   const BLADE_COLOURS: [string, string][] = [
     ["Blue", "#1f6bff"],
     ["Green", "#22e04a"],

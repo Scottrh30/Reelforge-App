@@ -35,29 +35,51 @@ pub const OPACITY: usize = 17;
 pub const LOOK: usize = 18;
 pub const SEED: usize = 19;
 
-pub const SHAPES: [&str; 5] = ["Point", "Line", "Disc", "Ring (outwards)", "Whole layer"];
+pub const SHAPES: [&str; 7] = ["Point", "Line", "Disc", "Ring (outwards)", "Whole layer", "Layer's pixels", "Layer's pixels, layer hidden"];
 pub const SHAPE_POINT: u32 = 0;
 pub const SHAPE_LINE: u32 = 1;
 pub const SHAPE_DISC: u32 = 2;
 pub const SHAPE_RING: u32 = 3;
 pub const SHAPE_LAYER: u32 = 4;
-/// The first two add light (drawn with additive blending); the others cover what's under them.
-pub const LOOKS: [&str; 4] = ["Glow (add)", "Sparks (add)", "Soft dots", "Solid dots"];
+/// Born anywhere the layer's picture shows, in its colour there ("atomic"
+/// particles: a picture made of particles, or breaking up into them).
+pub const SHAPE_PIXELS: u32 = 5;
+/// The same, with the layer itself not drawn (only its particles).
+pub const SHAPE_PIXELS_ONLY: u32 = 6;
+/// Glow, sparks and flame add light (drawn with additive blending); the
+/// others cover what's under them.
+pub const LOOKS: [&str; 8] = ["Glow (add)", "Sparks (add)", "Soft dots", "Solid dots", "Flame (add)", "Smoke", "Rain streaks", "Debris"];
 pub const LOOK_SPARKS: u32 = 1;
+pub const LOOK_FLAME: u32 = 4;
+pub const LOOK_SMOKE: u32 = 5;
+pub const LOOK_RAIN: u32 = 6;
+pub const LOOK_DEBRIS: u32 = 7;
+
+/// Does look `look` add light (rather than cover)?
+pub fn additive(look: f32) -> bool {
+    let l = look.round().max(0.0) as u32;
+    l <= 1 || l == LOOK_FLAME
+}
 
 /// Ready-made emitters: a name and the settings from Shape to Look (the
 /// emitter's position and seed are kept). Sizes and speeds suit a 1080p frame.
 #[rustfmt::skip]
-pub const PRESETS: [(&str, [f32; 17]); 8] = [
+pub const PRESETS: [(&str, [f32; 17]); 14] = [
     //            shape size    rate   life rand speed  dir  spread grav    wind turb birth death colour at birth/death    opacity look
     ("Sparks",   [0.0, 10.0,   300.0, 1.2, 50.0, 700.0, 70.0, 50.0, 900.0, 0.0, 0.0, 6.0, 1.5, 0xfff2c0 as f32, 0xff7a1a as f32, 100.0, 1.0]),
     ("Embers",   [1.0, 900.0,  40.0,  4.0, 60.0, 120.0, 90.0, 40.0, -40.0, 30.0, 60.0, 8.0, 2.0, 0xffb347 as f32, 0xff3000 as f32, 100.0, 0.0]),
-    ("Fire",     [1.0, 160.0,  400.0, 0.9, 50.0, 220.0, 90.0, 20.0, -150.0, 0.0, 25.0, 40.0, 6.0, 0xffd070 as f32, 0xff2000 as f32, 70.0, 0.0]),
-    ("Smoke",    [2.0, 80.0,   40.0,  4.0, 40.0, 90.0, 90.0, 25.0, -10.0, 15.0, 60.0, 30.0, 160.0, 0x9a9a9a as f32, 0x505050 as f32, 35.0, 2.0]),
+    ("Fire",     [1.0, 160.0,  220.0, 1.0, 45.0, 160.0, 90.0, 18.0, -220.0, 0.0, 22.0, 70.0, 22.0, 0xff8a28 as f32, 0x901000 as f32, 55.0, 4.0]),
+    ("Smoke",    [2.0, 80.0,   30.0,  5.0, 40.0, 90.0, 90.0, 25.0, -30.0, 15.0, 40.0, 60.0, 260.0, 0x8c8c8c as f32, 0x4a4a4a as f32, 45.0, 5.0]),
     ("Magic",    [2.0, 60.0,   200.0, 1.5, 60.0, 80.0, 90.0, 360.0, -60.0, 0.0, 50.0, 10.0, 0.0, 0xc8a0ff as f32, 0x40c0ff as f32, 100.0, 0.0]),
-    ("Snow",     [4.0, 0.0,    60.0,  6.0, 50.0, 60.0, -90.0, 30.0, 0.0, 20.0, 40.0, 8.0, 6.0, 0xffffff as f32, 0xe8f0ff as f32, 90.0, 2.0]),
+    ("Snow",     [1.0, 2600.0, 90.0,  7.0, 50.0, 70.0, -95.0, 25.0, 15.0, 20.0, 40.0, 8.0, 6.0, 0xffffff as f32, 0xe8f0ff as f32, 90.0, 2.0]),
     ("Dust",     [4.0, 0.0,    20.0,  6.0, 60.0, 10.0, 90.0, 360.0, 0.0, 0.0, 30.0, 4.0, 4.0, 0xfff0d8 as f32, 0xffe0b0 as f32, 60.0, 0.0]),
     ("Confetti", [1.0, 1600.0, 120.0, 5.0, 40.0, 120.0, -90.0, 30.0, 120.0, 0.0, 60.0, 12.0, 12.0, 0xff3d7f as f32, 0x3dc8ff as f32, 100.0, 3.0]),
+    ("Rain",     [1.0, 2800.0, 900.0, 1.1, 30.0, 1500.0, -100.0, 4.0, 900.0, 0.0, 0.0, 2.5, 2.5, 0xdbe6f0 as f32, 0xc8d4e0 as f32, 45.0, 6.0]),
+    ("Fog",      [4.0, 0.0,    3.0,   14.0, 50.0, 25.0, 0.0, 360.0, 0.0, 6.0, 30.0, 700.0, 1000.0, 0xd8dde2 as f32, 0xc8ced4 as f32, 16.0, 5.0]),
+    ("Debris",   [2.0, 60.0,   60.0,  2.5, 60.0, 650.0, 90.0, 120.0, 1400.0, 0.0, 0.0, 14.0, 10.0, 0x3a3530 as f32, 0x2a2622 as f32, 100.0, 7.0]),
+    ("Atomic",   [5.0, 0.0,    3000.0, 2.0, 60.0, 60.0, 90.0, 360.0, -40.0, 0.0, 40.0, 4.0, 1.0, 0xffffff as f32, 0x40c0ff as f32, 100.0, 0.0]),
+    ("Disintegrate", [6.0, 0.0, 5000.0, 3.0, 50.0, 60.0, 30.0, 60.0, -60.0, 120.0, 50.0, 6.0, 1.0, 0xffffff as f32, 0xffa040 as f32, 100.0, 3.0]),
+    ("Water spray", [0.0, 12.0, 500.0, 1.0, 40.0, 900.0, 75.0, 14.0, 1500.0, 0.0, 6.0, 5.0, 2.0, 0xe6f2ff as f32, 0xbcd8ff as f32, 70.0, 6.0]),
 ];
 
 /// At most this many particles are drawn (the newest are kept).
@@ -222,7 +244,7 @@ pub fn simulate(e: &Effect, t: Time) -> Particles {
                 // Outwards from the middle (the spread still scatters it).
                 angle = -a + spread * (r(3) - 0.5);
             }
-            SHAPE_LAYER => emit = [r(4) * 100.0, r(5) * 100.0],
+            SHAPE_LAYER | SHAPE_PIXELS | SHAPE_PIXELS_ONLY => emit = [r(4) * 100.0, r(5) * 100.0],
             _ => {}
         }
         list.push(Particle {

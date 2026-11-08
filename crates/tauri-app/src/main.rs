@@ -653,6 +653,14 @@ fn add_particles_layer() -> Res<()> {
     ed(|e| e.add_particles_layer())
 }
 
+/// Add a ready-made particles & simulation layer: fire, smoke, explosion,
+/// rain, snow, fog, muzzle, bullet, gunshot, fluid; or shatter / atomic on
+/// the selected layer.
+#[tauri::command]
+fn add_simulation(what: String) -> Res<()> {
+    ed(|e| e.add_simulation(&what))
+}
+
 // ---- Selection and edits --------------------------------------------------------
 
 /// `mode`: "only" (plain click), "toggle" (Ctrl+click) or "none" (click empty space).
@@ -1603,6 +1611,7 @@ fn main() {
             shape_from_mask,
             add_blade_layer,
             add_particles_layer,
+            add_simulation,
             scene::add_scene,
             scene::add_new,
             scene::set_plane_color,

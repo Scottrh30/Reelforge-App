@@ -643,7 +643,7 @@ fn plugin(id: &str, manifest_extra: &str, params: &str, source: &str) -> std::sy
 fn plugin_fx(def: &std::sync::Arc<reelforge_core::plugin::PluginDef>, values: &[f32], time: f32) -> EffectValues {
     let mut v = [0.0; reelforge_core::effects::MAX_PARAMS];
     v[..values.len()].copy_from_slice(values);
-    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None, particles: None }
+    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None, particles: None, pieces: None }
 }
 
 #[test]
@@ -1900,4 +1900,86 @@ fn two_dozen_layers_cast_shadows() {
     let high = check(&render(&mut c, 1.0));
     reelforge_render::set_shadow_quality(1);
     assert_eq!(high, 24, "at High quality too");
+}
+
+/// Particles & simulation: a shatter's pieces fly from the impact and leave
+/// holes; a muzzle flash shows only for its moment and lights the scene; a
+/// bullet hit leaves its hole; a fluid pours in; atomic particles take the
+/// layer's colours.
+#[test]
+fn simulations_draw_what_they_say() {
+    use reelforge_core::effects::{bullet as bh, muzzle as mz, shatter as sh};
+    use reelforge_core::particles as p;
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let grey = solid(w, h, [128, 128, 128, 255]);
+    let red = solid(w, h, [220, 20, 20, 255]);
+    let clear = solid(w, h, [0, 0, 0, 0]);
+    let mut key = 500u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, pixels: &[u8], kind: EffectKind, set: &[(usize, f32)], t: f64| {
+        let mut e = Effect::new(kind);
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        let v = e.eval_sized(Time::from_secs_f64(t), None, [w as f32, h as f32]);
+        key += 1;
+        let mut l = layer(1, pixels, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        let effects = if v.is_identity() { Vec::new() } else { vec![v] };
+        c.render([w, h], &[with_fx(l, effects)]);
+        c.read_output().unwrap()
+    };
+    let lum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    let dark = |img: &[u8]| (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| lum(px(img, w, x, y)) < 30).count();
+
+    // Shatter: whole before, holes (black background showing) after, more near the impact.
+    let set = [(sh::AT, 0.5), (sh::X, 50.0), (sh::Y, 50.0), (sh::FORCE, 300.0), (sh::REACH, 60.0), (sh::GRAVITY, 0.0), (sh::FADE, 0.0)];
+    let before = draw(&mut c, &grey, EffectKind::Shatter, &set, 0.2);
+    assert_eq!(dark(&before), 0, "whole");
+    let at_rest = draw(&mut c, &grey, EffectKind::Shatter, &set, 0.5001);
+    assert!(dark(&at_rest) < 20, "the pieces fit together: {}", dark(&at_rest));
+    let after = draw(&mut c, &grey, EffectKind::Shatter, &set, 0.8);
+    assert!(dark(&after) > 200, "gaps open: {}", dark(&after));
+    // The far corner (out of reach) is still in place.
+    assert!(lum(px(&after, w, 2, 2)) > 300);
+
+    // Muzzle flash: nothing before the shot, a bright flash at the barrel during it, gone after.
+    let set = [(mz::X, 30.0), (mz::Y, 50.0), (mz::FIRST, 0.5)];
+    let off = draw(&mut c, &grey, EffectKind::MuzzleFlash, &set, 0.3);
+    assert!(lum(px(&off, w, 52, 45)) < 400, "no flash yet");
+    let on = draw(&mut c, &grey, EffectKind::MuzzleFlash, &set, 0.51);
+    let barrel = px(&on, w, 52, 45);
+    assert!(lum(barrel) > 600, "{barrel:?}");
+    // Lit round it, more near than far.
+    assert!(lum(px(&on, w, 48, 70)) > lum(px(&off, w, 48, 70)) + 15);
+    assert!(lum(px(&draw(&mut c, &grey, EffectKind::MuzzleFlash, &set, 0.7), w, 52, 45)) < 400, "over");
+    // A burst: a flash for each shot.
+    let burst = [(mz::X, 30.0), (mz::Y, 50.0), (mz::FIRST, 0.5), (mz::RATE, 10.0), (mz::SHOTS, 3.0)];
+    assert!(lum(px(&draw(&mut c, &grey, EffectKind::MuzzleFlash, &burst, 0.71), w, 52, 45)) > 600, "third shot");
+    assert!(lum(px(&draw(&mut c, &grey, EffectKind::MuzzleFlash, &burst, 0.91), w, 52, 45)) < 400, "only three");
+
+    // Bullet hit: nothing before, a dark hole after (on every surface), long after too.
+    let at = |s: f32| [(bh::X, 50.0), (bh::Y, 50.0), (bh::AT, 0.5), (bh::SURFACE, s), (bh::SIZE, 300.0), (bh::DUST, 0.0)];
+    assert_eq!(dark(&draw(&mut c, &grey, EffectKind::BulletHit, &at(0.0), 0.2)), 0);
+    for s in [0.0, 1.0, 2.0, 4.0] {
+        let img = draw(&mut c, &grey, EffectKind::BulletHit, &at(s), 3.0);
+        assert!(lum(px(&img, w, 80, 45)) < 150, "surface {s}: {:?}", px(&img, w, 80, 45));
+    }
+    // Glass: cracks catch the light (brighter lines round the hole).
+    let glass = draw(&mut c, &grey, EffectKind::BulletHit, &at(3.0), 3.0);
+    assert!((0..h).flat_map(|y| (0..w).map(move |x| (x, y))).any(|(x, y)| lum(px(&glass, w, x, y)) > 500));
+
+    // Fluid: on a clear layer, colour appears above the source after a while.
+    let fl = draw(&mut c, &clear, EffectKind::Fluid, &[], 1.5);
+    let coloured = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| px(&fl, w, x, y)[2] > 60).count();
+    assert!(coloured > 40, "{coloured}");
+
+    // Atomic particles: born from a red layer's pixels, they're red; from a clear one, none.
+    let atomic = [(p::SHAPE, p::SHAPE_PIXELS_ONLY as f32), (p::RATE, 2000.0), (p::LIFETIME, 1.0), (p::SPEED, 0.0), (p::GRAVITY, 0.0), (p::SIZE_START, 4.0), (p::SIZE_END, 4.0), (p::LOOK, 3.0), (p::COLOR_END, 0xff0000 as f32)];
+    let img = draw(&mut c, &red, EffectKind::Particles, &atomic, 0.5);
+    let reds = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| { let q = px(&img, w, x, y); q[0] > 120 && q[1] < 60 }).count();
+    assert!(reds > 300, "{reds}");
+    let none = draw(&mut c, &clear, EffectKind::Particles, &atomic, 0.5);
+    assert!(none.chunks_exact(4).all(|q| q[0] < 8 && q[1] < 8 && q[2] < 8), "nothing from a clear layer");
 }

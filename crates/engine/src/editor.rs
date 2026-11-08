@@ -280,6 +280,7 @@ mod multicam;
 pub mod versions;
 mod interchange;
 pub mod magnetic;
+pub mod simulate;
 pub use multicam::MulticamAt;
 mod replace;
 mod snapshot;

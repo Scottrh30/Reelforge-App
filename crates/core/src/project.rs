@@ -368,6 +368,12 @@ impl Clip {
         crate::effects::eval_stack_moving(&self.effects, self.source_time(t), Some(prev))
     }
 
+    /// [`Self::effects_moving`] for a layer `size` pixels across.
+    pub fn effects_sized(&self, t: Time, frame: Time, size: [f32; 2]) -> Vec<EffectValues> {
+        let prev = self.source_time((t - frame).max(self.timeline_start));
+        crate::effects::eval_stack_sized(&self.effects, self.source_time(t), Some(prev), size)
+    }
+
     /// The (possibly animated) transform at sequence time `t`.
     pub fn transform_at(&self, t: Time) -> Transform {
         self.anim.eval(&self.transform, self.source_time(t))
@@ -972,7 +978,14 @@ impl Project {
             // (A title has no media, but its text animation runs on the clip's time.)
             let source_time = if p.is_still(c.media) && c.title.is_none() { Time::ZERO } else { c.media_at(t) };
             // Keys are anchored to source time (also for stills, like the transform's).
-            Layer { track, clip: c, source_time, transform: p.world_transform(seq, c, t), blend: c.blend, effects: c.effects_moving(t, frame) }
+            // The layer's size, for effects that work over its shape (shatter, fluid).
+            let frame_size = [p.sequences[seq].width as f32, p.sequences[seq].height as f32];
+            let size = match (c.nested, c.plane, c.adjustment, c.title.is_some()) {
+                (None, None, false, false) => p.media(c.media).and_then(|m| m.layer_size()).map_or(frame_size, |s| [s[0] as f32, s[1] as f32]),
+                (Some(s), ..) => p.sequences.get(s).map_or(frame_size, |s| [s.width as f32, s.height as f32]),
+                _ => frame_size,
+            };
+            Layer { track, clip: c, source_time, transform: p.world_transform(seq, c, t), blend: c.blend, effects: c.effects_sized(t, frame, size) }
         }
         let mut out = Vec::new();
         for (ti, tr) in s.tracks.iter().enumerate() {

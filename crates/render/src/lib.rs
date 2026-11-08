@@ -430,7 +430,8 @@ impl Compositor {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    // (Vertex: particles born from a layer's pixels.)
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -440,7 +441,7 @@ impl Compositor {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -552,7 +553,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -574,7 +575,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1193,7 +1194,7 @@ impl Compositor {
         // Each processed layer's map from its effect target's uv to its own.
         let mut margins: HashMap<u64, [f32; 4]> = HashMap::new();
         // Every emitter's particles this frame, and its look.
-        let mut particle_sets: Vec<(&reelforge_core::particles::Particles, f32)> = Vec::new();
+        let mut particle_sets: Vec<particles::Set> = Vec::new();
         for l in all_layers() {
             let masked = l.mask.is_some() && self.masks.contains_key(&l.key);
             // Keys keep the layer inside its garbage mattes.
@@ -1542,9 +1543,41 @@ impl Compositor {
                         u[14] = l.layer_size[0];
                         u[15] = l.layer_size[1];
                         u[28..32].copy_from_slice(&e.values[16..20]);
-                        let at = push("fs_copy", cur, Second::None, o1, u);
+                        // Only the particles, for those born from a hidden layer's pixels.
+                        let hidden = e.values[reelforge_core::particles::SHAPE].round() as u32 == reelforge_core::particles::SHAPE_PIXELS_ONLY;
+                        let at = push(if hidden { "fs_clear" } else { "fs_copy" }, cur, Second::None, o1, u);
                         particle_marks.push((at, particle_sets.len()));
-                        particle_sets.push((ps, e.values[reelforge_core::particles::LOOK]));
+                        particle_sets.push(particles::Set::Particles(ps, e.values[reelforge_core::particles::LOOK]));
+                        cur = o1;
+                    }
+                    EffectKind::Shatter => {
+                        let Some(pieces) = &e.pieces else { continue };
+                        let mut u = uniform(&e.values, [0.0; 2]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        if !pieces.broken {
+                            continue; // whole still
+                        }
+                        // The layer gone, then its pieces drawn where they are.
+                        let at = push("fs_clear", cur, Second::None, o1, u);
+                        particle_marks.push((at, particle_sets.len()));
+                        particle_sets.push(particles::Set::Pieces(pieces));
+                        cur = o1;
+                    }
+                    EffectKind::Fluid => {
+                        if !self.tables.contains_key(&(key, i)) {
+                            continue;
+                        }
+                        push("fs_fluid", cur, Second::Table(i), o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::MuzzleFlash | EffectKind::BulletHit => {
+                        let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        push(if e.kind == EffectKind::MuzzleFlash { "fs_muzzle" } else { "fs_bullet" }, cur, Second::None, o1, u);
                         cur = o1;
                     }
                     EffectKind::LensFlare | EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::Halftone | EffectKind::Crt => {

@@ -1120,3 +1120,234 @@ fn fs_crt(in: VsOut) -> @location(0) vec4<f32> {
     let shown = col * corner;
     return vec4(to_linear(max(shown, vec3(0.0))) * a, a);
 }
+
+// Nothing (a shatter's layer once it has broken: only its pieces are drawn).
+@fragment
+fn fs_clear(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4(0.0);
+}
+
+// Fractal value noise, 0..1.
+fn fbm2(seed: u32, p: vec2<f32>) -> f32 {
+    return vnoise(seed, p) * 0.55 + vnoise(seed + 1u, p * 2.03) * 0.3 + vnoise(seed + 2u, p * 4.1) * 0.15;
+}
+
+fn rot2(v: vec2<f32>, a: f32) -> vec2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
+}
+
+// A tongue of flame from the origin along +x: `len` long, `width` wide at
+// its root, torn by noise.
+fn tongue(q: vec2<f32>, len: f32, width: f32, seed: u32, shot: u32) -> f32 {
+    if (q.x < -width || q.x > len * 1.2) {
+        return 0.0;
+    }
+    let f = clamp(q.x / len, 0.0, 1.2);
+    let w = width * (1.0 - f * 0.85) * (0.8 + 0.4 * vnoise(seed ^ shot, vec2(q.x / width * 1.7, 3.0)));
+    let body = exp(-pow(q.y / max(w, 0.5), 2.0)) * smoothstep(1.15, 0.6, f) * smoothstep(-width, 0.0, q.x);
+    return body * (0.65 + 0.7 * vnoise(seed + shot * 7u, q / max(width, 1.0) * vec2(1.2, 2.5)));
+}
+
+// Muzzle flash: p0 = (barrel x %, y %, direction °, size %), p1 = (gun,
+// colour, brightness %, first shot s), p2 = (shots/s, shots, light %, seed).
+@fragment
+fn fs_muzzle(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = fx.extra.zw;
+    let t = fx.extra.y;
+    let first = fx.p1.w;
+    let rate = fx.p2.x;
+    let shots = max(round(fx.p2.y), 1.0);
+    // The latest shot fired.
+    var k = 0.0;
+    if (rate > 0.0) {
+        k = clamp(floor((t - first) * rate), 0.0, shots - 1.0);
+    }
+    let age = t - (first + select(0.0, k / max(rate, 1e-3), rate > 0.0));
+    let length_s = 0.05;
+    if (age < 0.0 || age > length_s) {
+        return c;
+    }
+    let env = pow(1.0 - age / length_s, 1.5);
+    let seed = seed_of(fx.p2.w);
+    let shot = u32(k);
+    let r1 = rnd3(seed, shot, 1u);
+    let r2 = rnd3(seed, shot, 2u);
+    let k_px = fx.p0.w / 100.0 * size.y / 1080.0;
+    let p = in.uv * size;
+    let barrel = fx.p0.xy / 100.0 * size;
+    // Into the gun's frame: x along the barrel, y across; in 1080p pixels at 100%.
+    let dir = -radians(fx.p0.z) + (r1 - 0.5) * 0.08;
+    let q = rot2(p - barrel, -dir) / k_px;
+    let style = u32(round(fx.p1.x));
+    var f = exp(-(q.x * q.x / 900.0 + q.y * q.y / 400.0)) * 1.6;
+    if (style == 0u) {
+        // Rifle: a long forward flame and a star of short side petals.
+        f += tongue(q, 150.0 * (0.8 + 0.4 * r2), 22.0, seed, shot);
+        for (var i = 0u; i < 4u; i++) {
+            let a = (f32(i) - 1.5) * 0.55 + (rnd3(seed, shot, 10u + i) - 0.5) * 0.3;
+            f += tongue(rot2(q, -a), 55.0 * (0.6 + 0.6 * rnd3(seed, shot, 20u + i)), 9.0, seed + i, shot) * 0.7;
+        }
+    } else if (style == 1u) {
+        // Pistol: short and round.
+        f += tongue(q, 75.0 * (0.8 + 0.4 * r2), 26.0, seed, shot);
+        for (var i = 0u; i < 3u; i++) {
+            let a = (f32(i) - 1.0) * 0.8;
+            f += tongue(rot2(q, -a), 35.0, 10.0, seed + i, shot) * 0.6;
+        }
+    } else if (style == 2u) {
+        // Shotgun: a wide, ragged burst.
+        f += tongue(q, 120.0 * (0.8 + 0.4 * r2), 48.0, seed, shot);
+        for (var i = 0u; i < 6u; i++) {
+            let a = (f32(i) - 2.5) * 0.3 + (rnd3(seed, shot, 30u + i) - 0.5) * 0.25;
+            f += tongue(rot2(q, -a), 100.0 * (0.5 + 0.6 * rnd3(seed, shot, 40u + i)), 12.0, seed + i, shot) * 0.6;
+        }
+    } else {
+        // Side vents (a compensator): two jets out sideways, a small one forward.
+        f += tongue(rot2(q, -1.5708), 90.0 * (0.8 + 0.4 * r2), 16.0, seed, shot);
+        f += tongue(rot2(q, 1.5708), 90.0 * (0.8 + 0.4 * r1), 16.0, seed + 5u, shot);
+        f += tongue(q, 40.0, 14.0, seed + 9u, shot) * 0.8;
+    }
+    let bright = fx.p1.z / 100.0 * env;
+    let tint = rgb_of(fx.p1.y);
+    // Whiter where it's hottest.
+    let hot = clamp(f - 1.0, 0.0, 1.0);
+    let flash = mix(tint, vec3(1.0, 0.97, 0.9), hot * 0.7) * f * bright * 1.6;
+    // The scene round it lit by the flash.
+    let d = length(p - barrel) / k_px;
+    let light = fx.p2.z / 100.0 * env * (exp(-d / 350.0) * 1.2 + exp(-d / 1200.0) * 0.3);
+    let lit = c.rgb * (vec3(1.0) + tint * light * 2.0);
+    return vec4(lit + flash, max(c.a, clamp(max3(flash), 0.0, 1.0)));
+}
+
+// Bullet hit: p0 = (x %, y %, hits at s, surface), p1 = (size %, sparks %,
+// dust %, hole %), p2 = (flash %, seed). Surfaces: plaster, concrete,
+// metal, glass, wood.
+@fragment
+fn fs_bullet(in: VsOut) -> @location(0) vec4<f32> {
+    var c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = fx.extra.zw;
+    let tau = fx.extra.y - fx.p0.z;
+    if (tau < 0.0) {
+        return c;
+    }
+    let seed = seed_of(fx.p2.y);
+    let surface = u32(round(fx.p0.w));
+    let k = fx.p1.x / 100.0 * size.y / 1080.0;
+    let p = in.uv * size;
+    let hit = fx.p0.xy / 100.0 * size;
+    let d = (p - hit) / k;
+    let r = length(d);
+    let ang = atan2(d.y, d.x);
+    let hole_amt = fx.p1.w / 100.0;
+
+    // The hole it leaves (stays).
+    var deco = vec4(0.0);
+    let rough = vnoise(seed, vec2(ang * 3.0, 1.0)) * 0.5 + vnoise(seed + 3u, vec2(ang * 9.0, 2.0)) * 0.5;
+    if (surface == 3u) {
+        // Glass: a small hole, a star of cracks and rings round it, catching the light.
+        var crack = 0.0;
+        for (var i = 0u; i < 14u; i++) {
+            let a = f32(i) / 14.0 * 6.2832 + (rnd3(seed, i, 1u) - 0.5) * 0.4;
+            let reach = 60.0 + 140.0 * rnd3(seed, i, 2u);
+            let along = dot(d, vec2(cos(a), sin(a)));
+            let across = abs(dot(d, vec2(-sin(a), cos(a))) + (vnoise(seed + i, vec2(along / 18.0, 0.0)) - 0.5) * 6.0);
+            crack = max(crack, exp(-across * across / 0.9) * step(0.0, along) * smoothstep(reach, reach * 0.5, along));
+        }
+        for (var i = 0u; i < 2u; i++) {
+            let rr = 22.0 + 30.0 * f32(i) + 10.0 * rnd3(seed, i, 7u);
+            let w = abs(r - rr * (0.9 + 0.2 * rough));
+            crack = max(crack, exp(-w * w / 1.2) * 0.7 * step(0.5, vnoise(seed + 11u + i, vec2(ang * 4.0, 0.0))));
+        }
+        let shatter = smoothstep(9.0, 3.0, r);
+        let hole = smoothstep(4.5, 2.5, r);
+        deco = vec4(vec3(0.85, 0.9, 0.95) * max(crack, shatter * 0.6) * (1.0 - hole) , max(crack, shatter) * 0.85);
+        deco = vec4(deco.rgb * (1.0 - hole * 0.95), max(deco.a, hole * 0.9));
+    } else {
+        let hr = select(6.0, 5.0, surface == 2u) * (0.85 + 0.3 * rough);
+        let rim = select(18.0, 10.0, surface == 2u) * (0.8 + 0.4 * rough);
+        let hole = smoothstep(hr, hr * 0.6, r);
+        let chip = smoothstep(rim, rim * 0.7, r) * (1.0 - hole);
+        var chip_col = vec3(0.82, 0.8, 0.76);
+        var scorch = 0.0;
+        if (surface == 1u) {
+            chip_col = vec3(0.55, 0.55, 0.53);
+        } else if (surface == 2u) {
+            // Metal: a bright ring of torn metal and a dark scorch round it.
+            chip_col = vec3(0.9, 0.88, 0.85);
+            scorch = smoothstep(28.0, 8.0, r) * 0.5;
+        } else if (surface == 4u) {
+            chip_col = vec3(0.78, 0.6, 0.38);
+        }
+        // Concrete and plaster chip into little cracks too.
+        var cracks = 0.0;
+        if (surface <= 1u) {
+            for (var i = 0u; i < 5u; i++) {
+                let a = rnd3(seed, i, 3u) * 6.2832;
+                let reach = 18.0 + 22.0 * rnd3(seed, i, 4u);
+                let along = dot(d, vec2(cos(a), sin(a)));
+                let across = abs(dot(d, vec2(-sin(a), cos(a))));
+                cracks = max(cracks, exp(-across * across / 0.6) * step(0.0, along) * smoothstep(reach, rim * 0.5, along));
+            }
+        }
+        let dark = vec3(0.02, 0.02, 0.02);
+        let col = mix(mix(chip_col * (0.75 + 0.5 * vnoise(seed + 5u, d * 0.4)), dark, hole), dark, cracks * 0.8);
+        let a = max(max(hole, chip * 0.9), max(scorch, cracks * 0.8));
+        deco = vec4(mix(col, vec3(0.05), scorch * (1.0 - chip) * (1.0 - hole)) * a, a);
+    }
+    deco *= hole_amt;
+    c = c * (1.0 - deco.a) + deco;
+
+    // A puff of dust (or smoke off metal) blowing out and settling.
+    let dust_amt = fx.p1.z / 100.0;
+    if (tau < 1.6 && dust_amt > 0.0) {
+        let grow = 20.0 + 150.0 * sqrt(tau);
+        let centre = vec2(0.0, 30.0 * tau * tau);
+        let dd = (d - centre) / grow;
+        let n = fbm2(seed + 20u, d / 35.0 + vec2(tau * 0.6, -tau * 0.4));
+        let fade = pow(1.0 - tau / 1.6, 1.6);
+        var dens = smoothstep(1.0, 0.1, length(dd) + (n - 0.5) * 0.6) * fade * dust_amt * select(0.75, 0.25, surface == 3u);
+        var dust_col = vec3(0.78, 0.76, 0.72);
+        if (surface == 1u) {
+            dust_col = vec3(0.6, 0.6, 0.58);
+        } else if (surface == 2u) {
+            dust_col = vec3(0.35, 0.35, 0.35);
+        } else if (surface == 4u) {
+            dust_col = vec3(0.55, 0.42, 0.28);
+        }
+        dens = clamp(dens * (0.6 + n * 0.8), 0.0, 0.95);
+        c = c * (1.0 - dens) + vec4(dust_col * dens, dens);
+    }
+
+    // The flash, and sparks flying (more off metal, few off wood and plaster).
+    var light = vec3(0.0);
+    let flash_amt = fx.p2.x / 100.0;
+    if (tau < 0.06) {
+        let env = 1.0 - tau / 0.06;
+        let rays = pow(abs(cos(ang * 3.0 + f32(seed % 7u))), 30.0);
+        light += vec3(1.0, 0.85, 0.55) * (exp(-r / 10.0) * 3.0 + exp(-r / 40.0) * 0.6 + rays * exp(-r / 60.0)) * env * flash_amt;
+    }
+    let spark_amt = fx.p1.y / 100.0;
+    let n_sparks = select(select(select(8u, 24u, surface == 2u), 10u, surface == 3u), 4u, surface == 4u);
+    if (tau < 0.45 && spark_amt > 0.0) {
+        for (var i = 0u; i < n_sparks; i++) {
+            let a = rnd3(seed, i, 11u) * 6.2832;
+            let speed = (300.0 + 700.0 * rnd3(seed, i, 12u));
+            let life = 0.15 + 0.3 * rnd3(seed, i, 13u);
+            if (tau > life) {
+                continue;
+            }
+            let vel = vec2(cos(a), sin(a) - 0.3) * speed;
+            let head = vel * tau + vec2(0.0, 900.0) * tau * tau * 0.5;
+            let v_now = vel + vec2(0.0, 900.0) * tau;
+            let tail = head - v_now * 0.02;
+            let ab = head - tail;
+            let h = clamp(dot(d - tail, ab) / max(dot(ab, ab), 1e-3), 0.0, 1.0);
+            let dist = length(d - tail - ab * h);
+            light += vec3(1.0, 0.7, 0.3) * exp(-dist * dist / 1.5) * (1.0 - tau / life) * 1.6 * spark_amt;
+        }
+    }
+    return vec4(c.rgb + light, max(c.a, clamp(max3(light), 0.0, 1.0)));
+}

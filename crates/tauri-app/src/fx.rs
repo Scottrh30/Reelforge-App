@@ -210,6 +210,14 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 environment_error,
                 points: if fx.kind == EffectKind::WireRemoval {
                     vec![PointView { param: 0, label: "Start".into() }, PointView { param: 2, label: "End".into() }]
+                } else if let Some(label) = match fx.kind {
+                    EffectKind::Shatter => Some("Impact"),
+                    EffectKind::MuzzleFlash => Some("Barrel"),
+                    EffectKind::BulletHit => Some("Hit"),
+                    EffectKind::Fluid => Some("Source"),
+                    _ => None,
+                } {
+                    vec![PointView { param: 0, label: label.into() }]
                 } else {
                     ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label }).collect())
                 },

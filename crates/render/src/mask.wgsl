@@ -236,3 +236,16 @@ fn fs_neon_mix(in: VsOut) -> @location(0) vec4<f32> {
     let a = clamp(base.a + tube.a + glow.a * (1.0 - base.a), 0.0, 1.0);
     return vec4(rgb, a);
 }
+
+// Fluid: the simulation's picture (second, straight sRGB colour and coverage,
+// stretched over the layer) poured over the layer. p3.y = opacity %.
+@fragment
+fn fs_fluid(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let inside = select(0.0, 1.0, all(in.uv >= vec2(0.0)) && all(in.uv <= vec2(1.0)));
+    let d = textureSample(second, second_sampler, in.uv);
+    let g = d.rgb;
+    let lin = select(pow((g + 0.055) / 1.055, vec3(2.4)), g / 12.92, g <= vec3(0.04045));
+    let a = clamp(d.a * fx.p3.y / 100.0, 0.0, 1.0) * inside;
+    return vec4(lin * a, a) + c * (1.0 - a);
+}
