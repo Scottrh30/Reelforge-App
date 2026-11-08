@@ -78,6 +78,8 @@ struct MeshBuffers {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     count: u32,
+    /// A model's texture atlas (group 3), or the plain white one.
+    texture: Option<wgpu::BindGroup>,
 }
 
 pub(crate) struct SolidRenderer {
@@ -104,6 +106,10 @@ pub(crate) struct SolidRenderer {
     env_sampler: wgpu::Sampler,
     env_bind: wgpu::BindGroup,
     env_id: u64,
+    /// A model's textures (group 3): the layout, a sampler, and a white one for everything else.
+    tex_layout: wgpu::BindGroupLayout,
+    tex_sampler: wgpu::Sampler,
+    white_tex: wgpu::BindGroup,
 }
 
 /// Shadows to draw text with: the casters (as the compositor lays them out,
@@ -125,7 +131,7 @@ fn linear(c: [u8; 4]) -> [f32; 4] {
 }
 
 impl SolidRenderer {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("solid"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -203,8 +209,22 @@ impl SolidRenderer {
             ..Default::default()
         });
         let env_bind = env_bind_group(device, black_picture(device), &env_layout, &env_sampler);
-        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid"), bind_group_layouts: &[Some(&layout), Some(&shadow_layout), Some(&env_layout)], immediate_size: 0 });
-        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x4];
+        let tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("solid texture"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        let tex_sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("solid texture"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        let white_tex = texture_bind_group(device, queue, &tex_layout, &tex_sampler, 1, 1, &[255; 4]);
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid"), bind_group_layouts: &[Some(&layout), Some(&shadow_layout), Some(&env_layout), Some(&tex_layout)], immediate_size: 0 });
+        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x4, 4 => Float32x2, 5 => Float32x4];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solid"),
             layout: Some(&pl),
@@ -301,7 +321,7 @@ impl SolidRenderer {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), depth_pipeline, depths: HashMap::new(), format, shadow_layout, shadow_buffer, shadow_sampler, no_shadows, env_layout, env_sampler, env_bind, env_id: 0 }
+        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), depth_pipeline, depths: HashMap::new(), format, shadow_layout, shadow_buffer, shadow_sampler, no_shadows, env_layout, env_sampler, env_bind, env_id: 0, tex_layout, tex_sampler, white_tex }
     }
 
     /// Bind the environment `id` (`crate::environment`; 0 or unknown: black)
@@ -366,6 +386,7 @@ impl SolidRenderer {
                 pass.set_bind_group(0, &self.bind, &[]);
                 pass.set_bind_group(1, shadows, &[]);
                 pass.set_bind_group(2, &self.env_bind, &[]);
+                pass.set_bind_group(3, m.texture.as_ref().unwrap_or(&self.white_tex), &[]);
                 pass.set_vertex_buffer(0, m.vertices.slice(..));
                 pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..m.count, 0, 0..1);
@@ -449,14 +470,19 @@ impl SolidRenderer {
         if self.meshes.get(&key).is_none_or(|m| m.id != mesh.id) {
             use wgpu::util::DeviceExt;
             let bytes = |v: &[f32]| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
-            let flat: Vec<f32> = mesh.vertices.iter().flat_map(|v| [v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2], v.part, v.color[0], v.color[1], v.color[2], v.color[3]]).collect();
+            let flat: Vec<f32> = mesh
+                .vertices
+                .iter()
+                .flat_map(|v| [v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2], v.part, v.color[0], v.color[1], v.color[2], v.color[3], v.uv[0], v.uv[1], v.rect[0], v.rect[1], v.rect[2], v.rect[3]])
+                .collect();
             let idx: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
             // Buffers can't be empty.
             let vdata = if flat.is_empty() { vec![0u8; std::mem::size_of::<Vertex>()] } else { bytes(&flat) };
             let idata = if idx.is_empty() { vec![0u8; 4] } else { idx };
             let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("solid vertices"), contents: &vdata, usage: wgpu::BufferUsages::VERTEX });
             let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("solid indices"), contents: &idata, usage: wgpu::BufferUsages::INDEX });
-            self.meshes.insert(key, MeshBuffers { id: mesh.id, vertices, indices, count: mesh.indices.len() as u32 });
+            let texture = mesh.atlas.as_ref().map(|a| texture_bind_group(device, queue, &self.tex_layout, &self.tex_sampler, a.width, a.height, &a.rgba));
+            self.meshes.insert(key, MeshBuffers { id: mesh.id, vertices, indices, count: mesh.indices.len() as u32, texture });
         }
         self.use_environment(device, queue, environment_of(s).map_or(0, |e| e.id));
         queue.write_buffer(&self.uniforms, 0, &uniform_bytes(s));
@@ -492,6 +518,7 @@ impl SolidRenderer {
                 pass.set_bind_group(0, &self.bind, &[]);
                 pass.set_bind_group(1, &self.no_shadows, &[]);
                 pass.set_bind_group(2, &self.env_bind, &[]);
+                pass.set_bind_group(3, m.texture.as_ref().unwrap_or(&self.white_tex), &[]);
                 pass.set_vertex_buffer(0, m.vertices.slice(..));
                 pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..m.count, 0, 0..1);
@@ -598,4 +625,30 @@ fn env_texture(device: &wgpu::Device, queue: &wgpu::Queue, e: &reelforge_core::e
         (lw, lh, rgb) = (nw, nh, next);
     }
     tex.create_view(&Default::default())
+}
+
+/// An RGBA8 (sRGB) picture as a group-3 texture.
+fn texture_bind_group(device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, w: u32, h: u32, rgba: &[u8]) -> wgpu::BindGroup {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("solid texture"),
+        size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        rgba,
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w.max(1) * 4), rows_per_image: Some(h.max(1)) },
+        wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+    );
+    let view = tex.create_view(&Default::default());
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("solid texture"),
+        layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) }],
+    })
 }

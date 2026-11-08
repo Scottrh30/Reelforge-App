@@ -311,7 +311,7 @@ fn models_draw_in_their_own_colours() {
     )
     .unwrap();
     std::fs::write(d.join("cube.mtl"), "newmtl g\nKd 0.1 0.8 0.1\n").unwrap();
-    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0 };
+    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new() };
     let spec = |own: bool| TitleSpec { size: 100.0, color: [230, 40, 30, 255], shadow: false, model: Some(ModelSource { own_colours: own, ..src.clone() }), ..TitleSpec::default() };
     // The mesh: its largest side 100 px, centred every way.
     let m = text_mesh(&spec(true), [W, H]);
@@ -339,6 +339,47 @@ fn models_draw_in_their_own_colours() {
     // Not there: nothing drawn.
     let gone = TitleSpec { model: Some(ModelSource { path: d.join("nope.obj"), ..src.clone() }), ..spec(true) };
     assert!(text_mesh(&gone, [W, H]).indices.is_empty());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A textured model: an OBJ cube whose material has a texture half red,
+/// half blue (map_Kd) shows both; giving its part a colour of its own shows
+/// that instead; the parts are listed by material name.
+#[test]
+fn models_show_their_textures_and_parts_can_be_recoloured() {
+    use reelforge_core::ModelSource;
+    let d = std::env::temp_dir().join(format!("rf_model_tex_{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    // 8 × 8: left half red, right half blue.
+    let px: Vec<u8> = (0..64).flat_map(|i| if i % 8 < 4 { [255, 0, 0, 255] } else { [0, 0, 255, 255] }).collect();
+    image::save_buffer(d.join("tex.png"), &px, 8, 8, image::ColorType::Rgba8).unwrap();
+    // Every face maps the whole texture.
+    std::fs::write(
+        d.join("cube.obj"),
+        "mtllib cube.mtl\nusemtl painted\nv -1 -1 -1\nv 1 -1 -1\nv 1 1 -1\nv -1 1 -1\nv -1 -1 1\nv 1 -1 1\nv 1 1 1\nv -1 1 1\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nf 1/1 4/4 3/3 2/2\nf 5/1 6/2 7/3 8/4\nf 1/1 2/2 6/3 5/4\nf 2/1 3/2 7/3 6/4\nf 3/1 4/2 8/3 7/4\nf 4/1 1/2 5/3 8/4\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("cube.mtl"), "newmtl painted\nKd 1 1 1\nmap_Kd tex.png\n").unwrap();
+    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new() };
+    let model = reelforge_render::model3d::cached(&src).unwrap();
+    assert_eq!(model.parts, vec!["painted".to_string()]);
+    assert!(model.atlas.is_some());
+    let spec = |s: &ModelSource| TitleSpec { size: 100.0, color: [230, 230, 230, 255], shadow: false, model: Some(s.clone()), ..TitleSpec::default() };
+    let Some((dev, q)) = headless_device() else { return };
+    let mut c = Compositor::new(&dev, &q);
+    let sc = scene();
+    let mut t = Transform { three_d: true, ..Default::default() };
+    t.orientation = [-20.0, 30.0];
+    let count = |img: &[u8], f: &dyn Fn(&[u8]) -> bool| (0..(W * H) as usize).filter(|i| f(&img[i * 4..i * 4 + 4])).count();
+    let img = render(&mut c, &spec(&src), t, &sc);
+    let red = count(&img, &|p| p[0] > 60 && p[0] as i32 > p[2] as i32 + 40 && p[1] < 40);
+    let blue = count(&img, &|p| p[2] > 60 && p[2] as i32 > p[0] as i32 + 40 && p[1] < 40);
+    assert!(red > 800 && blue > 800, "both halves of the texture: red {red}, blue {blue}");
+    let yellow = ModelSource { part_colours: vec![("painted".into(), [255, 220, 0])], ..src.clone() };
+    let img = render(&mut c, &spec(&yellow), t, &sc);
+    let y = count(&img, &|p| p[0] > 60 && p[1] > 50 && p[2] < 40);
+    let blue = count(&img, &|p| p[2] > 60 && p[2] as i32 > p[0] as i32 + 40);
+    assert!(y > 2000 && blue == 0, "recoloured: yellow {y}, blue {blue}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

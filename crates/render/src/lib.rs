@@ -716,7 +716,7 @@ impl Compositor {
             output_alpha_pipeline,
             deep_pipelines,
             yuv: yuv::YuvConverter::new(device, LAYER_FORMAT, FLOAT_LAYER_FORMAT),
-            solid: solid::SolidRenderer::new(device, LAYER_FORMAT),
+            solid: solid::SolidRenderer::new(device, queue, LAYER_FORMAT),
             particles: particles::ParticleRenderer::new(device, &fx_pl, ACCUM_FORMAT),
             #[cfg(windows)]
             interop: {

@@ -1573,7 +1573,7 @@ impl Editor {
     /// the playhead, half the frame high, turned a little so its depth shows.
     pub fn add_3d_model(&mut self, path: &Path) {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
-        let mut src = reelforge_core::ModelSource { path: path.clone(), z_up: false, own_colours: true, rev: 0 };
+        let mut src = reelforge_core::ModelSource { path: path.clone(), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new() };
         let name = path.file_name().map_or("model".into(), |n| n.to_string_lossy().into_owned());
         match reelforge_render::model3d::cached(&src) {
             Ok(m) => {

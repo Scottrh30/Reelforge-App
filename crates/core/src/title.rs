@@ -205,6 +205,10 @@ pub struct ModelSource {
     /// Bumped to read the file again (after it changed on disk).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub rev: u32,
+    /// Parts (by name) shown in a colour of their own instead of the file's
+    /// (and without their texture).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub part_colours: Vec<(String, [u8; 3])>,
 }
 
 fn yes() -> bool {

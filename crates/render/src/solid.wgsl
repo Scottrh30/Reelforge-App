@@ -125,16 +125,24 @@ struct VsOut {
     @location(1) normal: vec3<f32>,
     @location(2) part: f32,
     @location(3) color: vec4<f32>,
+    @location(4) uv: vec2<f32>,
+    @location(5) rect: vec4<f32>,
 };
 
+// A 3D model's textures, packed in one picture (white for everything else).
+@group(3) @binding(0) var model_tex: texture_2d<f32>;
+@group(3) @binding(1) var model_sampler: sampler;
+
 @vertex
-fn vs_solid(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) part: f32, @location(3) color: vec4<f32>) -> VsOut {
+fn vs_solid(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) part: f32, @location(3) color: vec4<f32>, @location(4) uv: vec2<f32>, @location(5) rect: vec4<f32>) -> VsOut {
     var o: VsOut;
     o.pos = u.mvp * vec4(p, 1.0);
     o.world = u.axes[3].xyz + u.axes[0].xyz * p.x + u.axes[1].xyz * p.y + u.axes[2].xyz * p.z;
     o.normal = u.normals[0].xyz * n.x + u.normals[1].xyz * n.y + u.normals[2].xyz * n.z;
     o.part = part;
     o.color = color;
+    o.uv = uv;
+    o.rect = rect;
     return o;
 }
 
@@ -203,6 +211,14 @@ fn fs_solid(in: VsOut) -> @location(0) vec4<f32> {
     } else if (in.part > 2.5) {
         // A model's own colour, faded by the layer's text colour alpha.
         c = vec4(in.color.rgb, in.color.a * u.face.a);
+        if (in.rect.z > 0.0) {
+            // Its texture: repeating within its place in the atlas (kept half a
+            // texel inside, so neighbours don't bleed in).
+            let size = vec2<f32>(textureDimensions(model_tex));
+            let half = 0.5 / (in.rect.zw * size);
+            let at = in.rect.xy + clamp(fract(in.uv), half, vec2(1.0) - half) * in.rect.zw;
+            c = c * textureSampleLevel(model_tex, model_sampler, at, 0.0);
+        }
     }
     var light = vec3(0.0);
     if (u.camera.w > 0.5) {

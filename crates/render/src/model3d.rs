@@ -1,7 +1,7 @@
 //! 3D model files read into one triangle mesh: positions, normals and
 //! colours, in the file's own units and axes (right-handed, +Y up unless the
-//! caller says Z). OBJ (with its MTL colours), glTF/GLB (node transforms,
-//! base colours, vertex colours, and textures as their average colour), FBX
+//! caller says Z). OBJ (with its MTL colours and diffuse textures), glTF/GLB
+//! (node transforms, base colours, vertex colours and base-colour textures), FBX
 //! (binary, 7.x: geometry, model transforms, material colours), USD
 //! (USDA/USDC/USDZ: meshes with their transforms and display colours), STL
 //! (binary and ASCII) and PLY (ASCII and binary, with vertex colours).
@@ -20,9 +20,56 @@ pub struct Model {
     /// Per vertex, linear RGBA.
     pub colors: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
+    /// Per vertex: texture coordinates, which texture, which part.
+    pub extra: Vec<VExtra>,
+    /// The parts it's made of (materials, or objects), by name, for colouring one alone.
+    pub parts: Vec<String>,
+    /// Its textures, packed into one picture (see `Atlas`).
+    pub atlas: Option<std::sync::Arc<Atlas>>,
     /// The file says its up axis is Z.
     pub z_up: bool,
 }
+
+/// What a vertex has besides its place, normal and colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VExtra {
+    /// Texture coordinates (0–1 across the texture, from its top left; repeating outside).
+    pub uv: [f32; 2],
+    /// Which texture (−1: none).
+    pub tex: i16,
+    /// Which part (an index into `Model::parts`).
+    pub part: u16,
+}
+
+impl VExtra {
+    const NONE: VExtra = VExtra { uv: [0.0; 2], tex: -1, part: 0 };
+}
+
+/// A texture as read: RGBA8, sRGB.
+#[derive(Clone, Debug)]
+pub struct Picture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// A model's textures packed side by side in one RGBA8 (sRGB) picture, each
+/// shrunk to at most `ATLAS_TEXTURE` across, and where each one went (x, y,
+/// width, height as fractions of the atlas).
+#[derive(Debug)]
+pub struct Atlas {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    pub rects: Vec<[f32; 4]>,
+    /// Changes with the pictures in it.
+    pub id: u64,
+}
+
+/// The largest side a texture keeps in the atlas.
+pub const ATLAS_TEXTURE: u32 = 1024;
+/// The atlas's widest and tallest.
+const ATLAS_MAX: u32 = 4096;
 
 /// Light grey for parts without a colour.
 const DEFAULT_COLOR: [f32; 4] = [0.6, 0.6, 0.6, 1.0];
@@ -51,10 +98,107 @@ pub fn load(path: &Path) -> Result<Model, String> {
     if m.colors.len() != n {
         m.colors = vec![DEFAULT_COLOR; n];
     }
+    if m.extra.len() != n {
+        m.extra = vec![VExtra::NONE; n];
+    }
+    if m.parts.is_empty() {
+        m.parts.push("Model".into());
+    }
     if m.normals.len() != n {
         m = with_normals(m);
     }
     Ok(m)
+}
+
+/// The index of the part called `name` (added if new).
+fn part_index(parts: &mut Vec<String>, name: &str) -> u16 {
+    let name = if name.trim().is_empty() { "Model" } else { name.trim() };
+    match parts.iter().position(|p| p == name) {
+        Some(i) => i as u16,
+        None => {
+            parts.push(name.to_string());
+            (parts.len() - 1).min(u16::MAX as usize) as u16
+        }
+    }
+}
+
+/// Pack `pics` into one atlas: shelves, tallest first, each texture shrunk
+/// to `ATLAS_TEXTURE` across (and all of them halved again until they fit),
+/// with a pixel of its own edge round each so filtering doesn't bleed.
+pub fn pack_atlas(pics: &[Picture]) -> Option<Atlas> {
+    if pics.is_empty() {
+        return None;
+    }
+    let mut limit = ATLAS_TEXTURE;
+    loop {
+        let sizes: Vec<(u32, u32)> = pics
+            .iter()
+            .map(|p| {
+                let k = (limit as f32 / p.width.max(p.height).max(1) as f32).min(1.0);
+                (((p.width as f32 * k).round() as u32).max(1), ((p.height as f32 * k).round() as u32).max(1))
+            })
+            .collect();
+        let mut order: Vec<usize> = (0..pics.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(sizes[i].1));
+        let width = ATLAS_MAX.min(sizes.iter().map(|s| s.0 + 2).sum::<u32>().max(sizes.iter().map(|s| s.0 + 2).max().unwrap_or(1)));
+        let (mut x, mut y, mut shelf) = (0u32, 0u32, 0u32);
+        let mut at = vec![(0u32, 0u32); pics.len()];
+        let mut fits = true;
+        for &i in &order {
+            let (w, h) = (sizes[i].0 + 2, sizes[i].1 + 2);
+            if w > width {
+                fits = false;
+                break;
+            }
+            if x + w > width {
+                (x, y, shelf) = (0, y + shelf, 0);
+            }
+            at[i] = (x, y);
+            x += w;
+            shelf = shelf.max(h);
+        }
+        let height = y + shelf;
+        if !fits || height > ATLAS_MAX {
+            if limit <= 16 {
+                return None;
+            }
+            limit /= 2;
+            continue;
+        }
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        let mut rects = Vec::with_capacity(pics.len());
+        for (i, p) in pics.iter().enumerate() {
+            let (w, h) = sizes[i];
+            let (ox, oy) = (at[i].0 + 1, at[i].1 + 1);
+            // Nearest-pixel shrink (box-filtered would be kinder; textures rarely need much).
+            for yy in 0..h + 2 {
+                for xx in 0..w + 2 {
+                    let sx = ((xx.saturating_sub(1).min(w - 1) as f32 + 0.5) / w as f32 * p.width as f32) as u32;
+                    let sy = ((yy.saturating_sub(1).min(h - 1) as f32 + 0.5) / h as f32 * p.height as f32) as u32;
+                    let si = ((sy.min(p.height - 1) * p.width + sx.min(p.width - 1)) * 4) as usize;
+                    let di = (((at[i].1 + yy) * width + at[i].0 + xx) * 4) as usize;
+                    if si + 4 <= p.rgba.len() {
+                        rgba[di..di + 4].copy_from_slice(&p.rgba[si..si + 4]);
+                    }
+                }
+            }
+            rects.push([ox as f32 / width as f32, oy as f32 / height as f32, w as f32 / width as f32, h as f32 / height as f32]);
+        }
+        let id = {
+            use std::hash::{Hash, Hasher};
+            let mut hh = std::collections::hash_map::DefaultHasher::new();
+            (width, height).hash(&mut hh);
+            rgba.iter().step_by(97).for_each(|b| b.hash(&mut hh));
+            hh.finish()
+        };
+        return Some(Atlas { width, height, rgba, rects, id });
+    }
+}
+
+/// A picture from any of the usual formats, as RGBA8.
+fn read_picture(path: &Path) -> Option<Picture> {
+    let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?.into_rgba8();
+    Some(Picture { width: img.width(), height: img.height(), rgba: img.into_raw() })
 }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -101,8 +245,11 @@ fn with_normals(m: Model) -> Model {
         out.positions.push(m.positions[i as usize]);
         out.normals.push(unit(if dot(n, n) > 0.0 { n } else { own }));
         out.colors.push(m.colors[i as usize]);
+        out.extra.push(m.extra.get(i as usize).copied().unwrap_or(VExtra::NONE));
         out.indices.push(k as u32);
     }
+    out.parts = m.parts;
+    out.atlas = m.atlas;
     out
 }
 
@@ -169,8 +316,9 @@ fn quat(q: [f32; 4]) -> M4 {
 }
 
 /// Adds a mesh's triangles under transform `m`.
-fn add_mesh(out: &mut Model, m: &M4, positions: &[[f32; 3]], normals: Option<&[[f32; 3]]>, colors: &[[f32; 4]], indices: &[u32]) {
+fn add_mesh(out: &mut Model, m: &M4, positions: &[[f32; 3]], normals: Option<&[[f32; 3]]>, colors: &[[f32; 4]], extra: &[VExtra], indices: &[u32]) {
     let base = out.positions.len() as u32;
+    out.extra.extend((0..positions.len()).map(|i| extra.get(i).or(extra.last()).copied().unwrap_or(VExtra::NONE)));
     let nm = normal_matrix(m);
     out.positions.extend(positions.iter().map(|&p| apply(m, p)));
     // Normals only if every mesh has them (otherwise all are worked out).
@@ -219,23 +367,46 @@ fn load_obj(path: &Path) -> Result<Model, String> {
     let materials = materials.unwrap_or_default();
     let mut out = Model::default();
     let mut all_normals = true;
+    // Diffuse textures (map_Kd), each read once, beside the file.
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut pics: Vec<Picture> = Vec::new();
+    let mut tex_of: std::collections::HashMap<String, i16> = Default::default();
     for m in &models {
         let mesh = &m.mesh;
         let n = mesh.positions.len() / 3;
         let pos: Vec<[f32; 3]> = (0..n).map(|i| [mesh.positions[i * 3] as f32, mesh.positions[i * 3 + 1] as f32, mesh.positions[i * 3 + 2] as f32]).collect();
         let normals: Option<Vec<[f32; 3]>> = (mesh.normals.len() == n * 3).then(|| (0..n).map(|i| [mesh.normals[i * 3] as f32, mesh.normals[i * 3 + 1] as f32, mesh.normals[i * 3 + 2] as f32]).collect());
         all_normals &= normals.is_some();
-        let mat = mesh.material_id.and_then(|i| materials.get(i)).and_then(|m| m.diffuse).map(|d| [d[0] as f32, d[1] as f32, d[2] as f32, 1.0]);
+        let material = mesh.material_id.and_then(|i| materials.get(i));
+        let mat = material.and_then(|m| m.diffuse).map(|d| [d[0] as f32, d[1] as f32, d[2] as f32, 1.0]);
+        let tex = material.and_then(|m| m.diffuse_texture.as_ref()).filter(|t| !t.trim().is_empty()).map_or(-1, |t| {
+            *tex_of.entry(t.clone()).or_insert_with(|| {
+                // The last word is the file (options like -bm 1 come first); backslashes from Windows.
+                let file = t.split_whitespace().last().unwrap_or(t).replace('\\', "/");
+                match read_picture(&dir.join(&file)) {
+                    Some(p) => {
+                        pics.push(p);
+                        (pics.len() - 1) as i16
+                    }
+                    None => -1,
+                }
+            })
+        });
+        let part = part_index(&mut out.parts, material.map_or(m.name.as_str(), |mm| mm.name.as_str()));
+        let uvs = mesh.texcoords.len() == n * 2;
+        let extra: Vec<VExtra> = (0..n).map(|i| VExtra { uv: if uvs { [mesh.texcoords[i * 2] as f32, 1.0 - mesh.texcoords[i * 2 + 1] as f32] } else { [0.0; 2] }, tex: if uvs { tex } else { -1 }, part }).collect();
+        // A textured material's colour is the texture's (times Kd, usually white).
         let colors: Vec<[f32; 4]> = if mesh.vertex_color.len() == n * 3 {
             (0..n).map(|i| [mesh.vertex_color[i * 3] as f32, mesh.vertex_color[i * 3 + 1] as f32, mesh.vertex_color[i * 3 + 2] as f32, 1.0]).collect()
         } else {
             vec![mat.unwrap_or(DEFAULT_COLOR); n]
         };
-        add_mesh(&mut out, &I4, &pos, normals.as_deref(), &colors, &mesh.indices);
+        add_mesh(&mut out, &I4, &pos, normals.as_deref(), &colors, &extra, &mesh.indices);
     }
     if !all_normals {
         out.normals.clear();
     }
+    out.atlas = pack_atlas(&pics).map(std::sync::Arc::new);
     Ok(out)
 }
 
@@ -243,8 +414,8 @@ fn load_obj(path: &Path) -> Result<Model, String> {
 
 fn load_gltf(path: &Path) -> Result<Model, String> {
     let (doc, buffers, images) = gltf::import(path).map_err(|e| format!("not a glTF file Reelforge can read ({e})"))?;
-    // Each image's average colour, standing in for the texture.
-    let avg: Vec<[f32; 4]> = images.iter().map(average_color).collect();
+    // The images, as RGBA8 (the atlas packs them).
+    let pics: Vec<Picture> = images.iter().map(to_picture).collect();
     let mut out = Model::default();
     let mut all_normals = true;
     let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("the file has no scene")?;
@@ -261,13 +432,19 @@ fn load_gltf(path: &Path) -> Result<Model, String> {
                 let pos: Vec<[f32; 3]> = pos.collect();
                 let normals: Option<Vec<[f32; 3]>> = r.read_normals().map(|n| n.collect());
                 all_normals &= normals.is_some();
-                let pbr = prim.material().pbr_metallic_roughness();
-                let mut base = pbr.base_color_factor();
-                if let Some(t) = pbr.base_color_texture() {
-                    if let Some(a) = avg.get(t.texture().source().index()) {
-                        base = [base[0] * a[0], base[1] * a[1], base[2] * a[2], base[3] * a[3]];
-                    }
-                }
+                let material = prim.material();
+                let pbr = material.pbr_metallic_roughness();
+                let base = pbr.base_color_factor();
+                let part = part_index(&mut out.parts, material.name().or(mesh.name()).or(node.name()).unwrap_or("Model"));
+                // The base-colour texture, read through its coordinates.
+                let tex = pbr.base_color_texture().and_then(|t| {
+                    let uv: Vec<[f32; 2]> = r.read_tex_coords(t.tex_coord())?.into_f32().collect();
+                    (uv.len() == pos.len()).then_some((t.texture().source().index() as i16, uv))
+                });
+                let extra: Vec<VExtra> = match &tex {
+                    Some((i, uv)) => uv.iter().map(|&uv| VExtra { uv, tex: *i, part }).collect(),
+                    None => vec![VExtra { part, ..VExtra::NONE }],
+                };
                 let colors: Vec<[f32; 4]> = match r.read_colors(0) {
                     Some(c) => c.into_rgba_f32().map(|c| [c[0] * base[0], c[1] * base[1], c[2] * base[2], c[3] * base[3]]).collect(),
                     None => vec![base; pos.len()],
@@ -276,7 +453,7 @@ fn load_gltf(path: &Path) -> Result<Model, String> {
                     Some(i) => i.into_u32().collect(),
                     None => (0..pos.len() as u32).collect(),
                 };
-                add_mesh(&mut out, &m, &pos, normals.as_deref(), &colors, &idx);
+                add_mesh(&mut out, &m, &pos, normals.as_deref(), &colors, &extra, &idx);
             }
         }
         stack.extend(node.children().map(|c| (c, m)));
@@ -284,37 +461,33 @@ fn load_gltf(path: &Path) -> Result<Model, String> {
     if !all_normals {
         out.normals.clear();
     }
+    out.atlas = pack_atlas(&pics).map(std::sync::Arc::new);
     Ok(out)
 }
 
-/// An image's average colour (linear; textures are sRGB).
-fn average_color(img: &gltf::image::Data) -> [f32; 4] {
+/// A glTF image as RGBA8 (grey and grey-alpha spread to colour; 16-bit and
+/// float images are rare in base colours and come out white).
+fn to_picture(img: &gltf::image::Data) -> Picture {
     use gltf::image::Format;
     let ch = match img.format {
         Format::R8 => 1,
         Format::R8G8 => 2,
         Format::R8G8B8 => 3,
         Format::R8G8B8A8 => 4,
-        _ => return [1.0; 4],
+        _ => return Picture { width: 1, height: 1, rgba: vec![255; 4] },
     };
-    let px = img.pixels.len() / ch;
-    if px == 0 {
-        return [1.0; 4];
+    let px = (img.width * img.height) as usize;
+    let mut rgba = Vec::with_capacity(px * 4);
+    for p in img.pixels.chunks_exact(ch).take(px) {
+        rgba.extend(match ch {
+            1 => [p[0], p[0], p[0], 255],
+            2 => [p[0], p[0], p[0], p[1]],
+            3 => [p[0], p[1], p[2], 255],
+            _ => [p[0], p[1], p[2], p[3]],
+        });
     }
-    // Every so many pixels is plenty for an average.
-    let step = (px / 65536).max(1);
-    let mut sum = [0.0f64; 4];
-    let mut n = 0.0;
-    for p in (0..px).step_by(step) {
-        let s = &img.pixels[p * ch..p * ch + ch];
-        let c = |k: usize| s.get(k.min(ch - 1)).copied().unwrap_or(255) as f64 / 255.0;
-        sum[0] += srgb_to_linear(c(0) as f32) as f64;
-        sum[1] += srgb_to_linear(if ch >= 3 { c(1) } else { c(0) } as f32) as f64;
-        sum[2] += srgb_to_linear(if ch >= 3 { c(2) } else { c(0) } as f32) as f64;
-        sum[3] += if ch == 4 { c(3) } else { 1.0 };
-        n += 1.0;
-    }
-    [(sum[0] / n) as f32, (sum[1] / n) as f32, (sum[2] / n) as f32, (sum[3] / n) as f32]
+    rgba.resize(px * 4, 255);
+    Picture { width: img.width.max(1), height: img.height.max(1), rgba }
 }
 
 // ---- STL ----
@@ -558,6 +731,7 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
     let mut geos: std::collections::HashMap<i64, Geo> = Default::default();
     let mut models: std::collections::HashMap<i64, M4> = Default::default();
     let mut mat_color: std::collections::HashMap<i64, [f32; 4]> = Default::default();
+    let mut mat_name: std::collections::HashMap<i64, String> = Default::default();
     for o in objects.children() {
         let Some(oid) = id(&o) else { continue };
         match o.name() {
@@ -587,6 +761,10 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
                 let c = p.get("DiffuseColor").or(p.get("Diffuse")).filter(|v| v.len() >= 3).map_or(DEFAULT_COLOR, |v| [v[0] as f32, v[1] as f32, v[2] as f32, 1.0]);
                 let k = p.get("DiffuseFactor").and_then(|v| v.first()).map_or(1.0, |v| *v as f32);
                 mat_color.insert(oid, [c[0] * k, c[1] * k, c[2] * k, 1.0]);
+                // Its name: "Name\0\x01Material".
+                if let Some(A::String(n)) = o.attributes().get(1) {
+                    mat_name.insert(oid, n.split('\0').next().unwrap_or("").to_string());
+                }
             }
             _ => {}
         }
@@ -641,23 +819,27 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
             }
         }
         let (tris, face_of) = fans(counts.into_iter(), &idx);
-        let mats: Vec<[f32; 4]> = model_mats.get(&m).map(|v| v.iter().map(|k| mat_color[k]).collect()).unwrap_or_default();
-        let color_of = |face: usize| -> [f32; 4] {
+        let mats: Vec<i64> = model_mats.get(&m).cloned().unwrap_or_default();
+        let mat_of = |face: usize| -> Option<i64> {
             let k = if geo.by_polygon { geo.mats.get(face).copied().unwrap_or(0) } else { geo.mats.first().copied().unwrap_or(0) };
-            mats.get(k.max(0) as usize).copied().unwrap_or(DEFAULT_COLOR)
+            mats.get(k.max(0) as usize).copied()
         };
         // Each triangle its own corners (colours can differ per face).
         let mut pos = Vec::with_capacity(tris.len());
         let mut colors = Vec::with_capacity(tris.len());
+        let mut extra = Vec::with_capacity(tris.len());
         for (t, tri) in tris.chunks_exact(3).enumerate() {
-            let c = color_of(face_of[t]);
+            let mat = mat_of(face_of[t]);
+            let c = mat.and_then(|k| mat_color.get(&k)).copied().unwrap_or(DEFAULT_COLOR);
+            let part = part_index(&mut out.parts, mat.and_then(|k| mat_name.get(&k)).map_or("Model", |s| s.as_str()));
             for &i in tri {
                 pos.push(geo.pos.get(i as usize).copied().unwrap_or([0.0; 3]));
                 colors.push(c);
+                extra.push(VExtra { part, ..VExtra::NONE });
             }
         }
         let seq: Vec<u32> = (0..pos.len() as u32).collect();
-        add_mesh(&mut out, &world(m), &pos, None, &colors, &seq);
+        add_mesh(&mut out, &world(m), &pos, None, &colors, &extra, &seq);
     }
     out.normals.clear();
     Ok(weld(out))
@@ -666,14 +848,16 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
 /// Merge corners at the same place with the same colour (so normals are
 /// shared across faces again).
 fn weld(m: Model) -> Model {
-    let mut map: std::collections::HashMap<([u32; 3], [u32; 4]), u32> = Default::default();
-    let mut out = Model { z_up: m.z_up, ..Default::default() };
+    let mut map: std::collections::HashMap<([u32; 3], [u32; 4], u16), u32> = Default::default();
+    let mut out = Model { z_up: m.z_up, parts: m.parts.clone(), atlas: m.atlas.clone(), ..Default::default() };
     for &i in &m.indices {
         let (p, c) = (m.positions[i as usize], m.colors[i as usize]);
-        let k = (p.map(f32::to_bits), c.map(f32::to_bits));
+        let x = m.extra.get(i as usize).copied().unwrap_or(VExtra::NONE);
+        let k = (p.map(f32::to_bits), c.map(f32::to_bits), x.part);
         let j = *map.entry(k).or_insert_with(|| {
             out.positions.push(p);
             out.colors.push(c);
+            out.extra.push(x);
             (out.positions.len() - 1) as u32
         });
         out.indices.push(j);
@@ -702,6 +886,8 @@ fn load_usd(path: &Path) -> Result<Model, String> {
         }
         let m = mul(&parent, &usd_local(&prim));
         if ty == "Mesh" {
+            let part = part_index(&mut out.parts, prim.path().name().unwrap_or("Model"));
+            let extra = [VExtra { part, ..VExtra::NONE }];
             let points: Vec<openusd::gf::Vec3f> = prim.attribute("points").get().ok().flatten().unwrap_or_default();
             let counts: Vec<i32> = prim.attribute("faceVertexCounts").get().ok().flatten().unwrap_or_default();
             let idx: Vec<i32> = prim.attribute("faceVertexIndices").get().ok().flatten().unwrap_or_default();
@@ -728,10 +914,10 @@ fn load_usd(path: &Path) -> Result<Model, String> {
                     }
                 }
                 let seq: Vec<u32> = (0..p2.len() as u32).collect();
-                add_mesh(&mut out, &m, &p2, None, &c2, &seq);
+                add_mesh(&mut out, &m, &p2, None, &c2, &extra, &seq);
             } else {
                 let colors: Vec<[f32; 4]> = if dc.len() == pos.len() { dc } else { vec![dc.first().copied().unwrap_or(DEFAULT_COLOR); pos.len()] };
-                add_mesh(&mut out, &m, &pos, None, &colors, &tris);
+                add_mesh(&mut out, &m, &pos, None, &colors, &extra, &tris);
             }
         }
         for c in prim.children().map_err(|e| e.to_string())? {

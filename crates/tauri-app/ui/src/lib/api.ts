@@ -279,7 +279,7 @@ export interface Inspector {
   name: string;
   kind: ClipKind;
   title_missing_font: boolean;
-  model: { path: string; triangles: number; error: string | null } | null;
+  model: { path: string; triangles: number; error: string | null; parts: string[]; textures: number } | null;
   gizmo: Gizmo | null;
   gizmo3d: Gizmo3d | null;
   track: string;

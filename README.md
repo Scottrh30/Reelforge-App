@@ -508,20 +508,24 @@ What works now:
   shadow and box aren't drawn on 3D text (a Drop shadow effect still works), nor are masks
 - **3D models**: **Timeline → Add 3D model…**, or import or drop a model file like any media,
   and it goes on the timeline at the playhead as a 3D layer, turned a little so its depth
-  shows. Reads **OBJ** (with its MTL colours), **glTF/GLB** (node transforms, base colours,
-  vertex colours; a texture counts as its average colour), **FBX** (binary 7.x: meshes, model
-  transforms, material colours; ASCII FBX needs saving as binary), **USD/USDA/USDC/USDZ**
+  shows. Reads **OBJ** (with its MTL colours and diffuse textures, `map_Kd`), **glTF/GLB**
+  (node transforms, base colours, vertex colours and base-colour textures), **FBX** (binary
+  7.x: meshes, model transforms, material colours; ASCII FBX needs saving as binary), **USD/USDA/USDC/USDZ**
   (meshes with their transforms, references and display colours), **STL** (ASCII and binary)
   and **PLY** (ASCII and binary, with vertex colours). Polygons are split into triangles, and
   normals the file doesn't give are worked out from the faces (shared where they meet at less
   than 40°, so curves are smooth and edges sharp). It's drawn by the 3D text renderer, so it's
   lit by the scene's lights, casts and takes shadows, cuts through other 3D layers, and moves,
   turns and animates in Transform like any 3D layer, about its middle. Its settings: **Size**
-  (its largest side, px), **Colours** (its own, or one colour you pick), **Up is** Y or Z (STL
+  (its largest side, px), **Colours** (its own, or one colour you pick), **Parts** (each
+  material or object by name, with its own colour picker: pick a colour to paint just that part,
+  texture and all, and ↺ to put the file's back), **Up is** Y or Z (STL
   and Z-up files are set to Z by themselves), **Reload** (after changing the file elsewhere;
   it's also read again when the file changes) and **Show file**. The file stays where it is
-  and is linked from the project (not copied, and not yet found again by Relink). Textures
-  as images, skinned or animated models and model cameras/lights aren't used yet
+  and is linked from the project (not copied, and not yet found again by Relink). Textures (PNG,
+  JPEG, TGA, BMP) are packed together, each kept at up to 1024 px, and repeat where the model
+  asks; skinned or animated models, normal and roughness maps, and model cameras/lights aren't
+  used yet
 - **3D shapes and logos**: **Timeline → Add 3D logo (SVG)…** turns an SVG file into a shape
   title extruded like 3D text (depth, bevel, side colour, lit, shadows, cutting through 3D
   layers): every visible filled path with its own fill rule (non-zero or even-odd, so holes

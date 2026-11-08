@@ -3707,6 +3707,7 @@ dependencies = [
  "epaint_default_fonts",
  "fbxcel",
  "gltf",
+ "image",
  "log",
  "lyon_tessellation",
  "naga",

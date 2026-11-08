@@ -8,7 +8,7 @@
 
   let { ins }: { ins: Inspector } = $props();
   type Rgba = [number, number, number, number];
-  type Model = { path: string; z_up?: boolean; own_colours?: boolean; rev?: number };
+  type Model = { path: string; z_up?: boolean; own_colours?: boolean; rev?: number; part_colours?: [string, [number, number, number]][] };
   let draft = $state<TitleSpec | null>(null);
   $effect(() => {
     void ins.id;
@@ -33,6 +33,16 @@
     set(f);
     await commit();
   }
+  const partColour = (name: string) => (m.part_colours ?? []).find((p) => p[0] === name)?.[1] ?? null;
+  function setPart(name: string, c: [number, number, number] | null, live: boolean) {
+    const f = (s: TitleSpec & Record<string, any>) => {
+      const list: [string, [number, number, number]][] = (s.model.part_colours ?? []).filter((p: [string, unknown]) => p[0] !== name);
+      if (c) list.push([name, c]);
+      s.model.part_colours = list;
+    };
+    if (live) set(f);
+    else once(f);
+  }
   const hex = (c: Rgba) => "#" + c.slice(0, 3).map((v) => v.toString(16).padStart(2, "0")).join("");
   const rgba = (h: string, a: number): Rgba => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16), a];
 </script>
@@ -43,7 +53,7 @@
   {#if info?.error}
     <p class="warn">Can't show it: {info.error}</p>
   {:else if info}
-    <p class="note">{info.triangles.toLocaleString()} triangles</p>
+    <p class="note">{info.triangles.toLocaleString()} triangles{info.textures ? `, ${info.textures} texture${info.textures === 1 ? "" : "s"}` : ""}{info.parts.length > 1 ? `, ${info.parts.length} parts` : ""}</p>
   {/if}
   <div class="grid">
     <span class="lbl" title="Its largest side, so it fits in a box this big">Size</span>
@@ -51,7 +61,7 @@
 
     <span class="lbl">Colours</span>
     <div class="row">
-      <label class="check" title="The colours in the file (materials, vertex colours; a texture counts as its average colour). Untick to colour the whole model one colour."><input type="checkbox" checked={m.own_colours !== false} onchange={(e) => once((s) => (s.model.own_colours = e.currentTarget.checked))} /> Its own</label>
+      <label class="check" title="The colours and textures in the file (materials, vertex colours, texture maps). Untick to colour the whole model one colour."><input type="checkbox" checked={m.own_colours !== false} onchange={(e) => once((s) => (s.model.own_colours = e.currentTarget.checked))} /> Its own</label>
       <input type="color" value={hex(t.color as Rgba)} disabled={m.own_colours !== false} aria-label="Model colour" title={m.own_colours !== false ? "Untick “Its own” to choose one colour" : "The model's colour"} oninput={(e) => set((s) => (s.color = rgba(e.currentTarget.value, s.color[3])))} onchange={commit} />
     </div>
 
@@ -61,6 +71,19 @@
       <button role="radio" aria-checked={!!m.z_up} class:on={!!m.z_up} onclick={() => once((s) => (s.model.z_up = true))} title="Z up: STL, CAD, 3D printing, Blender's own axes">Z</button>
     </div>
   </div>
+  {#if info && !info.error && m.own_colours !== false && info.parts.length}
+    <div class="parts">
+      <span class="lbl">Parts</span>
+      {#each info.parts as p (p)}
+        {@const c = partColour(p)}
+        <div class="part">
+          <span class="pname" title={p}>{p}</span>
+          <input type="color" value={c ? hex([...c, 255] as Rgba) : "#999999"} class:own={!c} aria-label="Colour of {p}" title={c ? `${p}: its own colour` : `${p}: as in the file (choose a colour to paint it)`} oninput={(e) => setPart(p, rgba(e.currentTarget.value, 255).slice(0, 3) as [number, number, number], true)} onchange={commit} />
+          {#if c}<button class="small ghost" onclick={() => setPart(p, null, false)} title="Back to the file's colour or texture">↺</button>{:else}<span class="as-file">as in file</span>{/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
   <div class="row btns">
     <button class="small" onclick={() => once((s) => (s.model.rev = (s.model.rev ?? 0) + 1))} title="Read the file again (after changing it in another program)">Reload</button>
     <button class="small" onclick={() => run(api.openFolder(m.path.replace(/[\\/][^\\/]*$/, "")))} title="Show the file's folder">Show file</button>
@@ -110,6 +133,29 @@
   }
   .btns {
     margin-top: 8px;
+  }
+  .parts {
+    margin-top: 8px;
+    display: grid;
+    gap: 4px;
+  }
+  .part {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 40px 44px;
+    gap: 6px;
+    align-items: center;
+  }
+  .pname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .as-file {
+    color: var(--faint);
+    font-size: calc(10.5px * var(--text-scale));
+  }
+  input[type="color"].own {
+    opacity: 0.45;
   }
   .check {
     display: flex;

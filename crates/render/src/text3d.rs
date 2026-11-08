@@ -30,6 +30,10 @@ pub struct Vertex {
     pub part: f32,
     /// Linear colour, for part 3.
     pub color: [f32; 4],
+    /// A model's texture coordinates, and where its texture is in the mesh's
+    /// atlas (x, y, width, height; width 0: no texture).
+    pub uv: [f32; 2],
+    pub rect: [f32; 4],
 }
 
 pub const PART_FRONT: f32 = 0.0;
@@ -49,6 +53,8 @@ pub struct TextMesh {
     pub depth: f32,
     /// The Z halfway through it (where it casts its shadow from, and where glows sit).
     pub mid_z: f32,
+    /// A model's textures (see `model3d::Atlas`).
+    pub atlas: Option<Arc<crate::model3d::Atlas>>,
 }
 
 /// Curves are cut into straight pieces at most this far (canvas pixels) from the curve.
@@ -301,7 +307,7 @@ fn thinnest(glyphs: &[(bool, Vec<Contour>)]) -> f32 {
 /// centred every way (so it turns about its middle) (the file's +Y up, or +Z, and
 /// facing the viewer along its +Z, or −Y), in its own colours or the face colour.
 fn model_mesh(spec: &TitleSpec, src: &reelforge_core::ModelSource, id: u64) -> TextMesh {
-    let empty = TextMesh { vertices: Vec::new(), indices: Vec::new(), id, bounds: [0.0; 4], depth: 0.0, mid_z: 0.0 };
+    let empty = TextMesh { vertices: Vec::new(), indices: Vec::new(), id, bounds: [0.0; 4], depth: 0.0, mid_z: 0.0, atlas: None };
     let Ok(m) = crate::model3d::cached(src) else { return empty };
     // File axes (right-handed, Y up, facing +Z; or Z up, facing −Y) → ours
     // (X right, Y down, Z away): turns, never mirrors.
@@ -318,19 +324,28 @@ fn model_mesh(spec: &TitleSpec, src: &reelforge_core::ModelSource, id: u64) -> T
     // Centred every way, so it turns about its middle.
     let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
     let own = src.own_colours;
+    // Parts given a colour of their own (linear), by part number.
+    let lin = |v: u8| {
+        let c = v as f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    let overrides: Vec<Option<[f32; 4]>> = m.parts.iter().map(|name| src.part_colours.iter().find(|(p, _)| p == name).map(|(_, c)| [lin(c[0]), lin(c[1]), lin(c[2]), 1.0])).collect();
+    let rects = m.atlas.as_ref().map(|a| a.rects.as_slice()).unwrap_or(&[]);
     let vertices: Vec<Vertex> = pts
         .iter()
+        .enumerate()
         .zip(&m.normals)
         .zip(&m.colors)
-        .map(|((p, n), col)| Vertex {
-            pos: [(p[0] - c[0]) * k, (p[1] - c[1]) * k, (p[2] - c[2]) * k],
-            normal: axes(*n),
-            part: if own { PART_OWN } else { PART_FRONT },
-            color: *col,
+        .map(|(((i, p), n), col)| {
+            let x = m.extra.get(i).copied().unwrap_or_default();
+            let over = overrides.get(x.part as usize).copied().flatten();
+            let rect = if over.is_none() && x.tex >= 0 { rects.get(x.tex as usize).copied().unwrap_or([0.0; 4]) } else { [0.0; 4] };
+            Vertex { pos: [(p[0] - c[0]) * k, (p[1] - c[1]) * k, (p[2] - c[2]) * k], normal: axes(*n), part: if own { PART_OWN } else { PART_FRONT }, color: over.unwrap_or(*col), uv: x.uv, rect }
         })
         .collect();
     let bounds = [(lo[0] - c[0]) * k, (lo[1] - c[1]) * k, (hi[0] - c[0]) * k, (hi[1] - c[1]) * k];
-    TextMesh { vertices, indices: m.indices.clone(), id, bounds, depth: ext[2] * k, mid_z: 0.0 }
+    let atlas = if own { m.atlas.clone() } else { None };
+    TextMesh { vertices, indices: m.indices.clone(), id, bounds, depth: ext[2] * k, mid_z: 0.0, atlas }
 }
 
 fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
@@ -373,7 +388,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
         if ok.is_ok() {
             for (z, normal, part) in [(0.0, [0.0, 0.0, -1.0], PART_FRONT), (depth, [0.0, 0.0, 1.0], PART_BACK)] {
                 let base = vertices.len() as u32;
-                vertices.extend(buf.vertices.iter().map(|p| Vertex { pos: [p[0] - cx, p[1] - cy, z], normal, part, color: [0.0; 4] }));
+                vertices.extend(buf.vertices.iter().map(|p| Vertex { pos: [p[0] - cx, p[1] - cy, z], normal, part, color: [0.0; 4], uv: [0.0; 2], rect: [0.0; 4] }));
                 indices.extend(buf.indices.iter().map(|i| base + i));
             }
         }
@@ -394,7 +409,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
                         let base = vertices.len() as u32;
                         let v = |k: usize, r: &(f32, f32, [f32; 2]), nn: P2| {
                             let p = inset(c, k, r.0);
-                            Vertex { pos: [p[0] - cx, p[1] - cy, r.1], normal: [nn[0] * r.2[0], nn[1] * r.2[0], r.2[1]], part, color: [0.0; 4] }
+                            Vertex { pos: [p[0] - cx, p[1] - cy, r.1], normal: [nn[0] * r.2[0], nn[1] * r.2[0], r.2[1]], part, color: [0.0; 4], uv: [0.0; 2], rect: [0.0; 4] }
                         };
                         vertices.extend([v(i, &w[0], na), v(j, &w[0], nb), v(j, &w[1], nb), v(i, &w[1], na)]);
                         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -415,7 +430,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
     } else {
         vertices.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, v| [b[0].min(v.pos[0]), b[1].min(v.pos[1]), b[2].max(v.pos[0]), b[3].max(v.pos[1])])
     };
-    TextMesh { vertices, indices, id, bounds, depth, mid_z: depth * 0.5 }
+    TextMesh { vertices, indices, id, bounds, depth, mid_z: depth * 0.5, atlas: None }
 }
 
 #[cfg(test)]
