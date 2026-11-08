@@ -32,3 +32,22 @@ The full licence texts are under "Licence texts" below (and in
 licenses/CineForm-SDK-LICENSE-MIT.txt and licenses/CineForm-SDK-LICENSE-APACHE.txt).
 GoPro and CineForm are trademarks of GoPro, Inc.; Reelforge is not affiliated
 with or endorsed by GoPro.
+
+MobileSAM (the roto brush's object model)
+-----------------------------------------
+
+The roto brush picks out objects with MobileSAM: its network
+(crates/sam/src/lib.rs, written from MobileSAM's model code) and its trained
+weights (crates/sam/mobilesam.bin, converted to half precision with the batch
+norms folded in). MobileSAM is Segment Anything's prompt encoder and mask
+decoder with a TinyViT image encoder:
+
+    MobileSAM: Copyright (c) 2023 Chaoning Zhang and the MobileSAM authors.
+    Segment Anything: Copyright (c) Meta Platforms, Inc. and affiliates.
+    Licensed under the Apache License, Version 2.0.
+
+    TinyViT: Copyright (c) 2022 Microsoft. Licensed under the MIT License.
+
+The Apache licence text is under "Licence texts" below (and in
+licenses/MobileSAM-LICENSE-APACHE.txt). Reelforge is not affiliated with or
+endorsed by the MobileSAM authors, Meta or Microsoft.

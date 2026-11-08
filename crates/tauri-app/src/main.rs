@@ -1115,6 +1115,12 @@ fn roto_stroke(id: u64, mask: Option<usize>, fg: bool, radius: f32, points: Vec<
     ed(|e| e.roto_stroke(clip(id), mask, reelforge_core::rotobrush::Stroke { fg, radius, points }))
 }
 
+/// Get the frame at the playhead of clip `id` ready for the roto brush, in the background.
+#[tauri::command]
+fn roto_prepare(id: u64) -> Res<()> {
+    ed(|e| e.roto_prepare(clip(id)))
+}
+
 /// Carry roto mask `mask` on from the playhead, forwards or backwards.
 #[tauri::command]
 fn roto_propagate(id: u64, mask: usize, forward: bool) -> Res<()> {
@@ -1758,6 +1764,7 @@ fn main() {
             mask_point_add_at,
             mask_from_key,
             roto_stroke,
+            roto_prepare,
             roto_propagate,
             mask_smooth,
             mask_point_delete,

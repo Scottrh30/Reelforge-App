@@ -1053,6 +1053,7 @@ export const api = {
   maskSmooth: (id: number, index: number, frames: number) => invoke("mask_smooth", { id, index, frames }),
   maskFromKey: (id: number, index: number) => invoke<number | null>("mask_from_key", { id, index }),
   rotoStroke: (id: number, mask: number | null, fg: boolean, radius: number, points: Pt[]) => invoke<number | null>("roto_stroke", { id, mask, fg, radius, points }),
+  rotoPrepare: (id: number) => invoke("roto_prepare", { id }),
   rotoPropagate: (id: number, mask: number, forward: boolean) => invoke("roto_propagate", { id, mask, forward }),
   maskPointAddAt: (id: number, index: number, at: Pt) => invoke<number | null>("mask_point_add_at", { id, index, at }),
   maskPointDelete: (id: number, index: number, point: number) => invoke<boolean>("mask_point_delete", { id, index, point }),

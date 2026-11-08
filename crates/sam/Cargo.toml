@@ -1,0 +1,13 @@
+[package]
+name = "reelforge-sam"
+description = "MobileSAM (Segment Anything) on the CPU: picks out objects for the roto brush."
+version.workspace = true
+edition.workspace = true
+# The network is written from MobileSAM's (Apache-2.0) and its weights are
+# MobileSAM's: see LICENSE-MobileSAM and THIRD-PARTY-NOTICES.txt.
+license = "Apache-2.0"
+
+[dependencies]
+rayon = "1"
+serde_json.workspace = true
+matrixmultiply = "0.3"

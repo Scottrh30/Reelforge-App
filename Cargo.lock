@@ -2595,6 +2595,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "matrixmultiply"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f607c237553f086e7043417a51df26b2eb899d3caff94e6a67592ff992fedc7"
+dependencies = [
+ "autocfg",
+ "rawpointer",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3539,6 +3549,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rawpointer"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
+
+[[package]]
 name = "rayon"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3636,6 +3652,7 @@ dependencies = [
  "reelforge-export",
  "reelforge-media",
  "reelforge-render",
+ "reelforge-sam",
  "serde",
  "serde_json",
  "usvg",
@@ -3720,6 +3737,15 @@ dependencies = [
  "ttf-parser",
  "wgpu",
  "windows",
+]
+
+[[package]]
+name = "reelforge-sam"
+version = "0.1.0"
+dependencies = [
+ "matrixmultiply",
+ "rayon",
+ "serde_json",
 ]
 
 [[package]]

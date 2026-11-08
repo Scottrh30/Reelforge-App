@@ -1010,15 +1010,26 @@ What works now:
     outline moves with what's in and round it (a perspective map from details followed into
     the next frame) and is cut again in a band round there, so it snaps back to the subject's
     edges, keying the shape every frame. Where it slips, **Paint** on that frame to correct it
-    and carry on from there; strokes painted on a frame count whenever it's cut again. The cut
-    is a graph cut, as GrabCut does: each pixel weighs how well its colour fits the subject's
-    colours against the background's (a few colour clusters each, learnt from the strokes and
-    refined from the cut) against keeping neighbours together except across edges, and the
-    cheapest split is found by max flow. It works on the colours and edges in the picture, not
-    a trained model, so a subject much like its background needs more strokes. It's an
-    ordinary freehand mask with keyframes: feather, expand, smooth its keys, or use it as an
-    object to remove or a garbage matte. On a test shot of a box sliding over noise, one stroke
-    outlines it within a pixel or two and carrying it on keeps it there for the whole second
+    and carry on from there; strokes painted on a frame count whenever it's cut again.
+    **It sees objects, not just colours**: the cut is made by **MobileSAM**, a trained
+    Segment Anything model built into the app (no download, no GPU, nothing sent anywhere).
+    Each frame is encoded once (a second or two on the CPU; turning the brush on starts on the
+    frame at the playhead, so the first stroke rarely waits), then every stroke cuts from it in
+    about a tenth of a second: points along the subject's strokes and the others tell it what
+    is and isn't the object, and when carrying on, a box round where the outline moved to and a
+    point deep inside it. So one stroke takes a whole object — outline, holes, parts in other
+    colours — even where it's much like what's behind it. Its edge (the model works at a
+    quarter of its input's size) is then fitted to the picture's colours in a narrow band.
+    Where the model finds nothing that agrees with the strokes (most of the subject's strokes
+    outside it, or most of the others inside), the cut falls back to colours and edges alone:
+    a graph cut, as GrabCut does, weighing how well each pixel's colour fits the subject's
+    colour clusters against the background's, and keeping neighbours together except across
+    edges, solved by max flow. It's an ordinary freehand mask with keyframes: feather, expand,
+    smooth its keys, or use it as an object to remove or a garbage matte. On a test picture of
+    a face drawn in the same grey as its ground, one stroke inside takes the face and its
+    outline (colours alone get only the inside); on a box sliding over noise, carrying it on
+    keeps the outline within a few pixels throughout. MobileSAM (Apache-2.0, with TinyViT,
+    MIT) is credited in THIRD-PARTY-NOTICES.txt
   - **Track shape** (rotoscoping; on an adjustment layer, solid, title or picture it follows
     the topmost footage below at the playhead): draw the mask around something, then ◀ or
     ▶ follows what's inside it from the playhead to the clip's start or end, keying the shape

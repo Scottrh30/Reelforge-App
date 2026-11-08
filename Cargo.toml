@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/codecs", "crates/bitstream", "crates/h264", "crates/hevc", "crates/vp9", "crates/av1", "crates/testkit", "crates/ofx", "crates/media", "crates/render", "crates/export", "crates/engine", "crates/tauri-app"]
+members = ["crates/core", "crates/codecs", "crates/bitstream", "crates/h264", "crates/hevc", "crates/vp9", "crates/av1", "crates/testkit", "crates/ofx", "crates/media", "crates/render", "crates/export", "crates/engine", "crates/sam", "crates/tauri-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,7 @@ reelforge-render = { path = "crates/render" }
 reelforge-export = { path = "crates/export" }
 reelforge-engine = { path = "crates/engine" }
 reelforge-ofx = { path = "crates/ofx" }
+reelforge-sam = { path = "crates/sam" }
 
 anyhow = "1"
 log = "0.4"
@@ -41,6 +42,10 @@ opt-level = 3
 
 # The video decoders are workspace members now, so "*" above no longer covers them:
 # their hot loops are far too slow unoptimized (even in tests).
+# The roto brush's object model: seconds a frame optimized, minutes not.
+[profile.dev.package.reelforge-sam]
+opt-level = 3
+
 [profile.dev.package.reelforge-codecs]
 opt-level = 3
 

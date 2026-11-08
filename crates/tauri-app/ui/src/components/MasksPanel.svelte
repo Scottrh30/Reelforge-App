@@ -58,6 +58,7 @@
     app.maskTool = null;
     app.activeMask = null;
     app.roto = { clip: ins.id, mask: null, size: app.roto?.size ?? 14 };
+    api.rotoPrepare(ins.id).catch(() => {});
     say("Paint over the subject in the Viewer; hold Alt to paint over what isn't it (Esc stops painting)");
   }
   function freehand() {
@@ -238,7 +239,7 @@
       {#if m.roto?.length && progress === null}
         <div class="row track">
           <span class="lbl" title="Carries the roto brush's cut on frame by frame from the playhead: the outline moves with what's in it and snaps to the subject's edges again. Where it slips, paint over that frame to correct it and carry on from there">Roto brush</span>
-          <button class="small" class:on={roto?.mask === i} onclick={() => (app.roto = { clip: ins.id, mask: i, size: app.roto?.size ?? 14 })} title="Paint on this mask (correct it at the playhead)">Paint</button>
+          <button class="small" class:on={roto?.mask === i} onclick={() => { app.roto = { clip: ins.id, mask: i, size: app.roto?.size ?? 14 }; api.rotoPrepare(ins.id).catch(() => {}); }} title="Paint on this mask (correct it at the playhead)">Paint</button>
           <button class="small" disabled={elsewhere} onclick={() => run(api.rotoPropagate(ins.id, i, false))} title="From the playhead back to the clip's start">◀ Carry back</button>
           <button class="small" disabled={elsewhere} onclick={() => run(api.rotoPropagate(ins.id, i, true))} title="From the playhead to the clip's end">Carry on ▶</button>
         </div>
