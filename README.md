@@ -962,6 +962,23 @@ What works now:
     work on every kind of layer: footage, pictures, titles, compositions and solid colours (a
     solid's mask and effects run at the layer's full size, so its edges are crisp)
   - With a tracker on the clip, **Apply to → Mask: …** makes the mask follow the tracked point
+  - **Roto brush** (Masks panel → **+ Roto brush**, on footage), like After Effects' Roto Brush:
+    paint over the subject in the Viewer and a mask is cut round it; paint again to add what was
+    missed, or hold **Alt** to paint over what isn't it, and the cut is redone from every
+    stroke on that frame (**Brush** sets the size; Esc stops painting). Under the mask, **Carry
+    on ▶** and **◀ Carry back** follow it through the shot in the background: each frame the
+    outline moves with what's in and round it (a perspective map from details followed into
+    the next frame) and is cut again in a band round there, so it snaps back to the subject's
+    edges, keying the shape every frame. Where it slips, **Paint** on that frame to correct it
+    and carry on from there; strokes painted on a frame count whenever it's cut again. The cut
+    is a graph cut, as GrabCut does: each pixel weighs how well its colour fits the subject's
+    colours against the background's (a few colour clusters each, learnt from the strokes and
+    refined from the cut) against keeping neighbours together except across edges, and the
+    cheapest split is found by max flow. It works on the colours and edges in the picture, not
+    a trained model, so a subject much like its background needs more strokes. It's an
+    ordinary freehand mask with keyframes: feather, expand, smooth its keys, or use it as an
+    object to remove or a garbage matte. On a test shot of a box sliding over noise, one stroke
+    outlines it within a pixel or two and carrying it on keeps it there for the whole second
   - **Track shape** (rotoscoping; on an adjustment layer, solid, title or picture it follows
     the topmost footage below at the playhead): draw the mask around something, then ◀ or
     ▶ follows what's inside it from the playhead to the clip's start or end, keying the shape

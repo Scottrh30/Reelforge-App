@@ -1051,6 +1051,19 @@ fn mask_from_key(id: u64, index: usize) -> Res<Option<usize>> {
     ed(|e| e.mask_from_key(clip(id), index))
 }
 
+/// Paint a roto brush stroke (layer pixels) on clip `id` at the playhead, into
+/// mask `mask` (a new one if none). Returns the mask's index.
+#[tauri::command]
+fn roto_stroke(id: u64, mask: Option<usize>, fg: bool, radius: f32, points: Vec<[f32; 2]>) -> Res<Option<usize>> {
+    ed(|e| e.roto_stroke(clip(id), mask, reelforge_core::rotobrush::Stroke { fg, radius, points }))
+}
+
+/// Carry roto mask `mask` on from the playhead, forwards or backwards.
+#[tauri::command]
+fn roto_propagate(id: u64, mask: usize, forward: bool) -> Res<()> {
+    ed(|e| e.start_roto_propagation(clip(id), mask, forward))
+}
+
 /// Add a mask point on its outline where it passes nearest `at` (layer pixels).
 #[tauri::command]
 fn mask_point_add_at(id: u64, index: usize, at: [f32; 2]) -> Res<Option<usize>> {
@@ -1681,6 +1694,8 @@ fn main() {
             mask_point_add,
             mask_point_add_at,
             mask_from_key,
+            roto_stroke,
+            roto_propagate,
             mask_smooth,
             mask_point_delete,
             mask_op,

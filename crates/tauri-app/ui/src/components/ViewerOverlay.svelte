@@ -627,6 +627,45 @@
     el.addEventListener("pointerup", up);
   }
 
+  // Roto brush: drag to paint (Alt: over what isn't the subject); each stroke cuts the mask again.
+  const roto = $derived(app.roto && ins && app.roto.clip === ins.id ? app.roto : null);
+  let stroke = $state<{ fg: boolean; points: Pt[] } | null>(null);
+  let brushAt = $state<Pt | null>(null);
+  /// Screen pixels per layer pixel.
+  function layerScale(): number {
+    const [a, b] = [toBox([0, 0]), toBox([100, 0])];
+    return Math.hypot(b[0] - a[0], b[1] - a[1]) / 100 || 1;
+  }
+  function rotoDown(e: PointerEvent) {
+    if (!roto || !inv || e.button !== 0 || busyTracking) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    stroke = { fg: !e.altKey, points: [toLayer(e)] };
+    const move = (ev: PointerEvent) => {
+      if (!stroke) return;
+      const p = toLayer(ev);
+      const last = stroke.points[stroke.points.length - 1];
+      // A point every few screen pixels.
+      if (Math.hypot(p[0] - last[0], p[1] - last[1]) * layerScale() >= 3) stroke = { fg: stroke.fg, points: [...stroke.points, p] };
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      const s = stroke;
+      if (!s || !app.roto || !ins) return;
+      const id = ins.id;
+      const radius = app.roto.size / layerScale();
+      say("Cutting round the subject…");
+      const r = await run(api.rotoStroke(id, app.roto.mask, s.fg, radius, s.points));
+      stroke = null;
+      if (typeof r === "number" && app.roto && app.roto.clip === id) app.roto = { ...app.roto, mask: r };
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
   // Freehand: each click adds a point; clicking the first one (or Enter, or a double-click) closes it.
   let hover = $state<Pt | null>(null);
   function drawClick(e: MouseEvent) {
@@ -652,7 +691,8 @@
   onkeydown={(e) => {
     shiftHeld = e.shiftKey;
     if (e.key === "Escape" && !e.defaultPrevented) {
-      if (app.meshSel) app.meshSel = null;
+      if (app.roto) app.roto = null;
+      else if (app.meshSel) app.meshSel = null;
       else if (app.camSel) app.camSel = null;
     }
   }}
@@ -915,6 +955,27 @@
       {#if pickBox}
         {@const [a, b] = pickBox}
         <polygon points={pts([a, [b[0], a[1]], b, [a[0], b[1]]])} class="pickbox" />
+      {/if}
+    {/if}
+
+    <!-- Roto brush painting. -->
+    {#if roto && !drawing}
+      <rect
+        x="0"
+        y="0"
+        width="100%"
+        height="100%"
+        class="catch roto"
+        onpointerdown={rotoDown}
+        onpointermove={(e) => (brushAt = toBoxPt(e))}
+        onpointerleave={() => (brushAt = null)}
+        role="presentation"
+      />
+      {#if stroke && stroke.points.length}
+        <polyline points={pts(stroke.points)} class="rotostroke" class:bg={!stroke.fg} stroke-width={roto.size * 2} />
+      {/if}
+      {#if brushAt}
+        <circle cx={brushAt[0]} cy={brushAt[1]} r={roto.size} class="brush" />
       {/if}
     {/if}
 
@@ -1202,5 +1263,25 @@
   }
   .draw.ghost {
     opacity: 0.6;
+  }
+  .catch.roto {
+    cursor: none;
+  }
+  .rotostroke {
+    fill: none;
+    stroke: rgba(80, 220, 120, 0.45);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+  }
+  .rotostroke.bg {
+    stroke: rgba(240, 80, 80, 0.45);
+  }
+  .brush {
+    fill: none;
+    stroke: white;
+    stroke-width: 1.2;
+    stroke-dasharray: 3 2;
+    pointer-events: none;
   }
 </style>

@@ -272,10 +272,13 @@ enum TrackMsg {
     CameraDone(Result<Option<reelforge_core::camtrack::CameraTrack>, String>),
     /// Object removal's frames, in this folder (`None`: stopped).
     FillDone(Result<Option<std::path::PathBuf>, String>),
+    /// A roto brush run (`None`: stopped).
+    RotoDone(Result<Option<roto::RotoRun>, String>),
 }
 
 mod camtrack;
 mod fill;
+pub mod roto;
 mod diskspace;
 mod viewcam;
 mod remap;
@@ -307,6 +310,8 @@ pub struct TrackJob {
     pub camera: bool,
     /// Working out object removal effect `.0` (not tracking).
     pub fill: Option<usize>,
+    /// Carrying roto brush mask `.0` on through the shot.
+    pub roto: Option<usize>,
 }
 
 /// An interactive edit in progress: what's being changed and its value before the gesture.
@@ -2935,7 +2940,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None });
         self.status = "Tracking…".into();
     }
 
@@ -3007,7 +3012,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("mask tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id), camera: false, fill: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id), camera: false, fill: None, roto: None });
         self.status = if own { format!("Tracking {name}…") } else { format!("Tracking {name} through the footage below ({src_name})…") };
     }
 
@@ -3063,13 +3068,20 @@ impl Editor {
         let mut done = None;
         let mut camera = None;
         let mut fill = None;
+        let mut roto = None;
         while let Ok(m) = job.rx.try_recv() {
             match m {
                 TrackMsg::Progress(p) => job.progress = p,
                 TrackMsg::Done(r) => done = Some(r),
                 TrackMsg::CameraDone(r) => camera = Some(r),
                 TrackMsg::FillDone(r) => fill = Some(r),
+                TrackMsg::RotoDone(r) => roto = Some(r),
             }
+        }
+        if let Some(r) = roto {
+            let job = self.tracking.take().unwrap();
+            self.finish_roto(&job, r);
+            return;
         }
         if let Some(r) = fill {
             let job = self.tracking.take().unwrap();

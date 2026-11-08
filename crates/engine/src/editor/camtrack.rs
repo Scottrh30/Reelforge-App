@@ -111,7 +111,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::CameraDone(r));
             })
             .expect("camera tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: true, fill: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: true, fill: None, roto: None });
         self.status = if left_out { "Analysing the shot (leaving out the masked areas): following details, then solving the camera…" } else { "Analysing the shot: following details, then solving the camera…" }.into();
     }
 
@@ -205,7 +205,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::CameraDone(r));
             })
             .expect("camera re-solve thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.6, mask: None, through: None, camera: true, fill: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.6, mask: None, through: None, camera: true, fill: None, roto: None });
         self.status = format!("Deleted {gone} point{}; solving the camera again…", if gone == 1 { "" } else { "s" });
     }
 

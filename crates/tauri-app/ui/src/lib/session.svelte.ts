@@ -87,6 +87,9 @@ export const app = $state({
   activeMaskPoint: null as null | number,
   /// Drawing a freehand mask: the clip and the points so far (layer pixels).
   drawing: null as null | { clip: number; points: [number, number][] },
+  /// The roto brush: painting in the Viewer cuts clip `clip`'s subject into
+  /// mask `mask` (a new one first). `size` is the brush radius in screen pixels.
+  roto: null as null | { clip: number; mask: number | null; size: number },
   /// The chroma key eyedropper: clicking or dragging in the Viewer picks the
   /// key colour of effect `index` of clip `clip`.
   keyPick: null as null | { clip: number; index: number },

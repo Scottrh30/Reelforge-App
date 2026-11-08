@@ -18,6 +18,7 @@ pub mod disintegrate;
 pub mod lightning;
 pub mod inpaint;
 pub mod fillstore;
+pub mod rotobrush;
 pub mod effects;
 pub mod environment;
 pub mod fluid;

@@ -117,6 +117,18 @@ pub struct Mask {
     /// these combine with their modes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fill_area: bool,
+    /// Roto brush strokes painted on it, at the source times they were
+    /// painted (see `crate::rotobrush`): its shape is cut from them there,
+    /// and they still count when it's carried on through those frames.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roto: Vec<RotoStroke>,
+}
+
+/// A roto brush stroke on a mask, at a moment.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RotoStroke {
+    pub at: Time,
+    pub stroke: crate::rotobrush::Stroke,
 }
 
 impl Default for Mask {
@@ -137,6 +149,7 @@ impl Default for Mask {
             key_keep: false,
             track_ignore: false,
             fill_area: false,
+            roto: Vec::new(),
         }
     }
 }

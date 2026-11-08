@@ -379,6 +379,7 @@ export interface Mask {
   key_keep?: boolean;
   track_ignore?: boolean;
   fill_area?: boolean;
+  roto?: { at: number; stroke: { fg: boolean; radius: number; points: Pt[] } }[];
 }
 
 export type Curve4 = [number, number, number, number];
@@ -1026,6 +1027,8 @@ export const api = {
   maskPointAdd: (id: number, index: number, point: number, before: boolean) => invoke<number | null>("mask_point_add", { id, index, point, before }),
   maskSmooth: (id: number, index: number, frames: number) => invoke("mask_smooth", { id, index, frames }),
   maskFromKey: (id: number, index: number) => invoke<number | null>("mask_from_key", { id, index }),
+  rotoStroke: (id: number, mask: number | null, fg: boolean, radius: number, points: Pt[]) => invoke<number | null>("roto_stroke", { id, mask, fg, radius, points }),
+  rotoPropagate: (id: number, mask: number, forward: boolean) => invoke("roto_propagate", { id, mask, forward }),
   maskPointAddAt: (id: number, index: number, at: Pt) => invoke<number | null>("mask_point_add_at", { id, index, at }),
   maskPointDelete: (id: number, index: number, point: number) => invoke<boolean>("mask_point_delete", { id, index, point }),
   maskOp: (id: number, index: number, op: "animate" | "still" | "key" | "unkey") => invoke("mask_op", { id, index, op }),

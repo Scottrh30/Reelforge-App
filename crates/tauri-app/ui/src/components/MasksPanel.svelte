@@ -48,6 +48,18 @@
     const i = await run(api.addMask(ins.id, shape));
     if (i != null) app.activeMask = { clip: ins.id, index: i };
   }
+  const roto = $derived(app.roto?.clip === ins.id ? app.roto : null);
+  function rotoBrush() {
+    if (roto) {
+      app.roto = null;
+      return;
+    }
+    app.drawing = null;
+    app.maskTool = null;
+    app.activeMask = null;
+    app.roto = { clip: ins.id, mask: null, size: app.roto?.size ?? 14 };
+    say("Paint over the subject in the Viewer; hold Alt to paint over what isn't it (Esc stops painting)");
+  }
   function freehand() {
     if (drawing) {
       app.drawing = null;
@@ -79,10 +91,19 @@
       <button class="small" onclick={() => add("rectangle")} title="A rectangle in the middle of the layer">+ Rectangle</button>
       <button class="small" onclick={() => add("ellipse")} title="An ellipse in the middle of the layer">+ Ellipse</button>
       <button class="small" class:on={drawing} onclick={freehand} title="Click points in the Viewer; click the first point or press Enter to close">+ Freehand</button>
+      <button class="small" class:on={!!roto} disabled={!trackable || ins.kind !== "video"} onclick={rotoBrush} title={ins.kind === "video" ? "Paint over a subject in the Viewer to cut a mask round it, then carry it through the shot" : "The roto brush works on footage"}>+ Roto brush</button>
     </div>
   </div>
   {#if drawing}
     <p class="note">Click in the Viewer to place points. Click the first point, double-click or press Enter to close; Esc cancels.</p>
+  {/if}
+  {#if roto}
+    <p class="note">Paint over the subject in the Viewer: its outline is found from the colours and edges. Paint again to add what was missed; hold <b>Alt</b> to paint over what isn't it. Then carry it on through the shot (below). Esc stops painting.</p>
+    <div class="row">
+      <span class="lbl">Brush</span>
+      <input type="range" min="3" max="60" value={roto.size} oninput={(e) => app.roto && (app.roto.size = Number(e.currentTarget.value))} aria-label="Brush size" />
+      <span class="lbl">{roto.size} px</span>
+    </div>
   {/if}
   {#if ins.masks.length === 0}
     <p class="note">Cut the layer down to a shape. Masks are applied before effects and move with the layer.</p>
@@ -187,6 +208,14 @@
             {#each [1, 2, 3, 5, 8] as f}<option value={f}>{f === 1 ? "Gently (1 frame)" : `${f} frames`}</option>{/each}
           </select>
           <button class="small" onclick={() => run(api.maskSmooth(ins.id, i, smoothFrames))}>Smooth</button>
+        </div>
+      {/if}
+      {#if m.roto?.length && progress === null}
+        <div class="row track">
+          <span class="lbl" title="Carries the roto brush's cut on frame by frame from the playhead: the outline moves with what's in it and snaps to the subject's edges again. Where it slips, paint over that frame to correct it and carry on from there">Roto brush</span>
+          <button class="small" class:on={roto?.mask === i} onclick={() => (app.roto = { clip: ins.id, mask: i, size: app.roto?.size ?? 14 })} title="Paint on this mask (correct it at the playhead)">Paint</button>
+          <button class="small" disabled={elsewhere} onclick={() => run(api.rotoPropagate(ins.id, i, false))} title="From the playhead back to the clip's start">◀ Carry back</button>
+          <button class="small" disabled={elsewhere} onclick={() => run(api.rotoPropagate(ins.id, i, true))} title="From the playhead to the clip's end">Carry on ▶</button>
         </div>
       {/if}
       {#if trackable}

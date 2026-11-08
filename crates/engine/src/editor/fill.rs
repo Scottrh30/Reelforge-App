@@ -266,7 +266,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::FillDone(r));
             })
             .expect("object removal thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: Some(index) });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: Some(index), roto: None });
         self.status = "Removing the object: filling every frame…".into();
     }
 
