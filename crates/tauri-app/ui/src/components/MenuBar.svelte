@@ -1,7 +1,7 @@
 <script lang="ts">
   import { PANEL_LABEL, showPanel, dock, type PanelId } from "../lib/dock.svelte";
   import { workspaces, allWorkspaces, find, isBuiltIn, isChanged, modified, switchTo, saveAs, remove, rename, resetLayout, sizes } from "../lib/workspace.svelte";
-  import { app, run, say, setPanel } from "../lib/session.svelte";
+  import { app, run, say, setPanel, setShowFps } from "../lib/session.svelte";
   import { actions, askText, checkUnsaved, question } from "../lib/actions.svelte";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
   import { api, type RecentView } from "../lib/api";
@@ -131,6 +131,8 @@
         if (on && k in PANEL_LABEL) showPanel(k as PanelId);
       },
     })),
+    { separator: true },
+    { label: "Viewer: frame rate while playing", checked: app.showFps, run: () => setShowFps(!app.showFps) },
     { separator: true },
     {
       label: "Show all windows",

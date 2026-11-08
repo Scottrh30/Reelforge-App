@@ -698,7 +698,10 @@ What works now:
   plays from (Proxies, Proxies 2/3, Originals) and, while playing, how many frames a second it
   keeps up with against the sequence's rate, with a dot (green: all of them; amber: most;
   red: falling behind) and the frames dropped each second; its tooltip adds hardware decoding
-  and the graphics card, and what to do when it can't keep up. The Viewer's **playback quality**
+  and the graphics card, and what to do when it can't keep up. To hide it, right-click it
+  (**Hide frame rate**) or untick **Show frame rate while playing** in the Viewer's quality menu
+  or **Viewer: frame rate while playing** in the Window menu; the choice is remembered on that
+  computer. The Viewer's **playback quality**
   (Full, ½ res, ¼ res) draws its picture at that fraction of full resolution and decodes footage
   that much smaller too, so heavy projects play smoothly; layers, effects and wipes keep their
   places, and export and Render preview stay full. **Automatic** steps down by itself (full → ½ →

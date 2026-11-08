@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, run, say, viewer, timecode } from "../lib/session.svelte";
+  import { app, run, say, setShowFps, viewer, timecode } from "../lib/session.svelte";
   import { api, type Pt } from "../lib/api";
   import { livePump } from "../lib/live";
   import { actions } from "../lib/actions.svelte";
@@ -28,6 +28,8 @@
       { label: "Quarter resolution", checked: q === 4, run: () => run(api.setPlaybackQuality(4)) },
       { separator: true },
       { label: "Full resolution when paused", checked: !!p.full_when_paused, run: () => run(api.setFullWhenPaused(!p.full_when_paused)) },
+      { separator: true },
+      { label: "Show frame rate while playing", checked: app.showFps, run: () => setShowFps(!app.showFps) },
     ]);
   }
 
@@ -433,7 +435,11 @@
     <span class="muted">{app.s ? `${app.s.seq.width}×${app.s.seq.height} · ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</span>
     <span class="grow"></span>
     {#if app.live?.from_cache}<span class="rendered" title="Shown from Render preview">Rendered</span>{/if}
-    {#if perf && (perf.label || playing)}<span class="perf {perf.level}" title={perf.tip}><span class="dot" aria-hidden="true"></span>{perf.label}{#if perf.dropped}<span class="drop"> · {perf.dropped} dropped/s</span>{/if}</span>{/if}
+    {#if app.showFps && perf && (perf.label || playing)}<span
+        class="perf {perf.level}"
+        role="status"
+        title={perf.tip + "\n(Right-click to hide; the Quality menu shows it again)"}
+        oncontextmenu={(e) => openMenu(e, [{ label: "Hide frame rate", run: () => setShowFps(false) }])}><span class="dot" aria-hidden="true"></span>{perf.label}{#if perf.dropped}<span class="drop"> · {perf.dropped} dropped/s</span>{/if}</span>{/if}
     {#if proxies > 0}
       <button
         class="chip"
