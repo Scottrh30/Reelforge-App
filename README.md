@@ -970,6 +970,14 @@ What works now:
     work on every kind of layer: footage, pictures, titles, compositions and solid colours (a
     solid's mask and effects run at the layer's full size, so its edges are crisp)
   - With a tracker on the clip, **Apply to → Mask: …** makes the mask follow the tracked point
+  - **Refine edge** (a mask's checkbox), like After Effects' Refine Edge: fits the mask's
+    edge to the picture. Within **Radius** each side of the edge, each pixel's coverage is
+    worked out from where its colour sits between the colours surely inside the mask and those
+    surely outside, round it (matting in a band, on the GPU), so hair, fur and motion blur
+    go soft, strands reaching past the mask come in, and background the mask took in goes.
+    **Softness** (0 crisp, 100 as soft as the picture is) and **Shift** (shrink or grow).
+    Inside and outside the band the mask is as it was. Best with the roto brush, a tracked
+    shape, or any mask drawn roughly round something
   - **Roto brush** (Masks panel → **+ Roto brush**, on footage), like After Effects' Roto Brush:
     paint over the subject in the Viewer and a mask is cut round it; paint again to add what was
     missed, or hold **Alt** to paint over what isn't it, and the cut is redone from every

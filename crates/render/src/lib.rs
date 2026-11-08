@@ -254,6 +254,8 @@ pub struct MaskInput<'a> {
     /// Where keys must keep the layer (garbage mattes), the same size as
     /// `pixels`; empty when there are none.
     pub keep: &'a [u8],
+    /// Refine edge: (radius in layer pixels, smoothness 0–100, shift −100 to 100).
+    pub refine: Option<[f32; 3]>,
 }
 
 /// Masks of a layer's key garbage mattes are kept under the layer's key with this bit flipped.
@@ -289,8 +291,9 @@ struct LayerTex {
 /// (two for ping-pong, one more to keep the layer while glow or a shadow is built).
 struct FxTargets {
     size: [u32; 2],
-    views: [wgpu::TextureView; 3],
-    binds: [wgpu::BindGroup; 3],
+    /// Three, or four for a mask's refined edge.
+    views: Vec<wgpu::TextureView>,
+    binds: Vec<wgpu::BindGroup>,
 }
 
 struct Targets {
@@ -573,7 +576,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1130,8 +1133,8 @@ impl Compositor {
         self.tables.insert(key, LayerTex { texture, bind_group, size: [t.width, t.height], content_id: t.id, float: false });
     }
 
-    fn ensure_fx_targets(&mut self, key: u64, size: [u32; 2]) {
-        if self.fx_targets.get(&key).is_some_and(|t| t.size == size) {
+    fn ensure_fx_targets(&mut self, key: u64, size: [u32; 2], count: usize) {
+        if self.fx_targets.get(&key).is_some_and(|t| t.size == size && t.views.len() >= count) {
             return;
         }
         let make = || {
@@ -1156,10 +1159,8 @@ impl Compositor {
             });
             (view, bind)
         };
-        let (va, ba) = make();
-        let (vb, bb) = make();
-        let (vc, bc) = make();
-        self.fx_targets.insert(key, FxTargets { size, views: [va, vb, vc], binds: [ba, bb, bc] });
+        let (views, binds) = (0..count.max(3)).map(|_| make()).unzip();
+        self.fx_targets.insert(key, FxTargets { size, views, binds });
     }
 
     /// Composite plain `layers` (bottom first). See [`Self::render_items`].
@@ -1273,7 +1274,8 @@ impl Compositor {
                 EffectKind::Plugin => e.plugin.as_ref().map_or(0, |p| p.passes.len()),
                 _ => 1,
             };
-            let needed = 1 + masked as usize + l.effects.iter().map(cost).sum::<usize>();
+            let refine = l.mask.and_then(|m| m.refine).filter(|r| r[0] > 0.0 && masked);
+            let needed = 1 + masked as usize + 8 * refine.is_some() as usize + l.effects.iter().map(cost).sum::<usize>();
             if fx_passes.len() + needed > MAX_FX_PASSES {
                 log::warn!("too many effect passes; skipping effects on some layers");
                 break;
@@ -1285,7 +1287,7 @@ impl Compositor {
             // Room round the layer for what glows and shadows spill past its edges.
             let margin = if below || l.mesh.is_some() { [0, 0] } else { effect_margin(&l.effects, fx_px, l.layer_size) };
             let padded = [fx_px[0] + 2 * margin[0], fx_px[1] + 2 * margin[1]];
-            self.ensure_fx_targets(l.key, padded);
+            self.ensure_fx_targets(l.key, padded, if refine.is_some() { 4 } else { 3 });
             let map = {
                 let (pw, ph) = (fx_px[0].max(1) as f32, fx_px[1].max(1) as f32);
                 [padded[0] as f32 / pw, padded[1] as f32 / ph, -(margin[0] as f32) / pw, -(margin[1] as f32) / ph]
@@ -1351,7 +1353,26 @@ impl Compositor {
                 push("fs_blur", from, Second::None, tmp, uniform(&vx, [1.0, 0.0]));
                 push("fs_blur", tmp, Second::None, into, uniform(&vy, [0.0, 1.0]));
             };
-            if masked {
+            if let Some(r) = refine {
+                // Matting in a band round the mask's edge (see mask.wgsl): the
+                // layer with where it's surely in or out (3); the colours
+                // surely in round each pixel (1) and surely out (2); the
+                // line between them (0); the layer's alpha from where each
+                // pixel sits on it (1).
+                let mut v = [0.0; reelforge_core::effects::MAX_PARAMS];
+                v[0] = r[0] / l.layer_size[0].max(1.0);
+                v[1] = r[0] / l.layer_size[1].max(1.0);
+                push("fs_refine_trimap", 0, Second::Mask, 3, uniform(&v, [0.0; 2]));
+                push("fs_refine_in", 3, Second::Scratch(3), 1, [0.0; FX_FLOATS]);
+                blur(&mut push, r[0] * 2.0, 1, 2, 1);
+                push("fs_refine_out", 3, Second::Scratch(3), 2, [0.0; FX_FLOATS]);
+                blur(&mut push, r[0] * 2.0, 2, 0, 2);
+                push("fs_refine_line", 1, Second::Scratch(2), 0, [0.0; FX_FLOATS]);
+                v[0] = r[1];
+                v[1] = r[2];
+                push("fs_refine_apply", 3, Second::Scratch(0), 1, uniform(&v, [0.0; 2]));
+                cur = 1;
+            } else if masked {
                 let (o, _) = others(cur);
                 push("fs_mask", cur, Second::Mask, o, [0.0; FX_FLOATS]);
                 cur = o;

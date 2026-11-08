@@ -122,6 +122,33 @@ pub struct Mask {
     /// and they still count when it's carried on through those frames.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roto: Vec<RotoStroke>,
+    /// Refine edge: the edge made soft where the picture is (hair, fur,
+    /// motion blur), fitted to it within `radius` (see the renderer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refine: Option<RefineEdge>,
+}
+
+/// A mask's refined edge.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RefineEdge {
+    /// How far round each pixel the picture is looked at (layer px).
+    pub radius: f32,
+    /// 0–100: higher keeps the edge smoother, less tied to fine detail.
+    pub smooth: f32,
+    /// −100 to 100: shrinks or grows the edge.
+    pub shift: f32,
+}
+
+impl Default for RefineEdge {
+    fn default() -> Self {
+        RefineEdge { radius: 8.0, smooth: 20.0, shift: 0.0 }
+    }
+}
+
+/// The refined edge for a layer's masks: the widest of the cutting masks
+/// that ask for one (`None` if none do).
+pub fn refine_of(masks: &[Mask]) -> Option<RefineEdge> {
+    masks.iter().filter(|m| m.enabled && !m.track_ignore && !m.fill_area && !m.key_keep).filter_map(|m| m.refine).max_by(|a, b| a.radius.total_cmp(&b.radius))
 }
 
 /// A roto brush stroke on a mask, at a moment.
@@ -150,6 +177,7 @@ impl Default for Mask {
             track_ignore: false,
             fill_area: false,
             roto: Vec::new(),
+            refine: None,
         }
     }
 }
@@ -554,6 +582,7 @@ pub fn mask_hash(masks: &[Mask], t: Time, layer: [f32; 2]) -> u64 {
         for f in [m.feather, m.expansion, m.opacity] {
             f.to_bits().hash(&mut h);
         }
+        m.refine.map(|r| [r.radius, r.smooth, r.shift].map(f32::to_bits)).hash(&mut h);
         for p in m.points_at(t) {
             p[0].to_bits().hash(&mut h);
             p[1].to_bits().hash(&mut h);

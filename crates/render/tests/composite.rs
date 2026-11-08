@@ -1481,7 +1481,7 @@ fn keys_keep_the_layer_inside_a_garbage_matte() {
     for choke in [0.0, 2.0] {
         n += 1;
         let mut fg = layer(n, &img, [16, 16], [16.0, 16.0], Transform::default(), BlendMode::Normal);
-        fg.mask = Some(MaskInput { content_id: 5, pixels: &all, size: [16, 16], keep: &keep });
+        fg.mask = Some(MaskInput { content_id: 5, pixels: &all, size: [16, 16], keep: &keep, refine: None });
         fg = with_fx(fg, vec![fx(EffectKind::ChromaKey, &[(key::CHOKE, choke)])]);
         c.render([16, 16], &[full(1, &red, [16, 16]), fg]);
         let out = c.read_output().unwrap();
@@ -1493,7 +1493,7 @@ fn keys_keep_the_layer_inside_a_garbage_matte() {
     n += 1;
     let full_mask = vec![255u8; 16 * 16];
     let mut fg = layer(n, &img, [16, 16], [16.0, 16.0], Transform::default(), BlendMode::Normal);
-    fg.mask = Some(MaskInput { content_id: 6, pixels: &full_mask, size: [16, 16], keep: &keep });
+    fg.mask = Some(MaskInput { content_id: 6, pixels: &full_mask, size: [16, 16], keep: &keep, refine: None });
     c.render([16, 16], &[full(1, &red, [16, 16]), with_fx(fg, vec![fx(EffectKind::ChromaKey, &[])])]);
     let out = c.read_output().unwrap();
     assert!(near(px(&out, 16, 3, 15), [50, 180, 80]) && near(px(&out, 16, 12, 15), [255, 0, 0]));
@@ -2192,4 +2192,32 @@ fn track_mattes_show_the_layer_through_the_one_above() {
     let l = px(&draw(&mut c, full(3, &grey, [16, 16]), 2), 16, 8, 8)[0] as i32;
     let li = px(&draw(&mut c, full(3, &grey, [16, 16]), 3), 16, 8, 8)[0] as i32;
     assert!((150..215).contains(&l) && (150..215).contains(&li), "{l} {li}");
+}
+
+/// Refine edge: a mask drawn a little past a subject's edge snaps to it
+/// (the dark background it took in goes), and stays put inside.
+#[test]
+fn refine_edge_fits_a_mask_to_the_picture() {
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (64u32, 32u32);
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    // A bright subject on the left (up to x = 32) on a dark background.
+    let img: Vec<u8> = (0..w * h).flat_map(|i| if i % w < 32 { [230u8, 230, 230, 255] } else { [20, 20, 20, 255] }).collect();
+    // The mask reaches 8 px too far, to x = 40.
+    let mask: Vec<u8> = (0..w * h).map(|i| if i % w < 40 { 255 } else { 0 }).collect();
+    let keep: Vec<u8> = Vec::new();
+    let mut n = 7300;
+    let mut draw = |c: &mut Compositor, refine: Option<[f32; 3]>| {
+        n += 1;
+        let mut fg = layer(n, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        fg.mask = Some(reelforge_render::MaskInput { content_id: n, pixels: &mask, size: [w, h], keep: &keep, refine });
+        c.render([w, h], &[full(1, &red, [w, h]), fg]);
+        c.read_output().unwrap()
+    };
+    let plain = draw(&mut c, None);
+    assert!(near(px(&plain, w, 36, 16), [20, 20, 20]), "the dark strip shows: {:?}", px(&plain, w, 36, 16));
+    let fine = draw(&mut c, Some([12.0, 10.0, 0.0]));
+    assert!(near(px(&fine, w, 36, 16), [255, 0, 0]), "refined, it's gone: {:?}", px(&fine, w, 36, 16));
+    assert!(near(px(&fine, w, 20, 16), [230, 230, 230]), "the subject stays: {:?}", px(&fine, w, 20, 16));
+    assert!(near(px(&fine, w, 50, 16), [255, 0, 0]));
 }

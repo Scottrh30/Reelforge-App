@@ -379,6 +379,7 @@ export interface Mask {
   key_keep?: boolean;
   track_ignore?: boolean;
   fill_area?: boolean;
+  refine?: { radius: number; smooth: number; shift: number };
   roto?: { at: number; stroke: { fg: boolean; radius: number; points: Pt[] } }[];
 }
 

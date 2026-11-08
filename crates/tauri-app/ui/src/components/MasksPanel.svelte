@@ -164,6 +164,31 @@
           <NumberField label="Mask opacity" value={m.opacity * 100} min={0} max={100} step={0.5} digits={0} suffix="%" oninput={(v) => change(i, (n) => (n.opacity = v / 100), false)} oncommit={commit} />
         </div>
       </div>
+      {#if !m.track_ignore && !m.fill_area && !m.key_keep}
+        <div class="row track">
+          <label class="lbl" title="Fits the edge to the picture: within the radius each side of the mask's edge, every pixel's coverage is worked out from where its colour sits between the colours surely inside and surely outside, so hair, fur and motion blur go soft and background the mask took in goes">
+            <input type="checkbox" checked={!!m.refine} onchange={(e) => change(i, (n) => (n.refine = e.currentTarget.checked ? { radius: 8, smooth: 20, shift: 0 } : undefined), true)} />
+            Refine edge
+          </label>
+        </div>
+        {#if m.refine}
+          {@const r = m.refine}
+          <div class="grid">
+            <div class="field">
+              <span class="lbl" title="How far each side of the mask's edge is worked out (and how far round each pixel is looked at)">Radius</span>
+              <NumberField label="Refine radius" value={r.radius} min={1} max={200} step={0.5} digits={0} suffix=" px" oninput={(v) => change(i, (n) => n.refine && (n.refine.radius = v), false)} oncommit={commit} />
+            </div>
+            <div class="field">
+              <span class="lbl" title="0: crisp edges; 100: as soft as the picture is">Softness</span>
+              <NumberField label="Refine softness" value={r.smooth} min={0} max={100} step={0.5} digits={0} suffix="%" oninput={(v) => change(i, (n) => n.refine && (n.refine.smooth = v), false)} oncommit={commit} />
+            </div>
+            <div class="field">
+              <span class="lbl" title="Shrinks (−) or grows (+) the refined edge">Shift</span>
+              <NumberField label="Refine shift" value={r.shift} min={-100} max={100} step={0.5} digits={0} suffix="%" oninput={(v) => change(i, (n) => n.refine && (n.refine.shift = v), false)} oncommit={commit} />
+            </div>
+          </div>
+        {/if}
+      {/if}
       {#if i === active && m.shape !== "Ellipse"}
         {@const pt = app.activeMaskPoint}
         {#if pt != null && pt < mv.handles.length}

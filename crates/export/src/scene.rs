@@ -46,6 +46,8 @@ struct Gathered {
     effects: Vec<EffectValues>,
     /// The layer's masks as an alpha image, and its hash.
     mask: Option<(u64, Arc<MaskImage>)>,
+    /// Its masks' refined edge (radius, smoothness, shift).
+    refine: Option<[f32; 3]>,
     /// Revealed by a wipe transition.
     wipe: Option<Wipe>,
     /// Stretched over a bending grid (a mesh warp).
@@ -347,7 +349,7 @@ impl Scene {
             // Covers the frame: only opacity and crop of its transform apply.
             let transform = Transform { opacity: l.transform.opacity, crop: l.transform.crop, ..Default::default() };
             let effects = l.effects.iter().filter(|e| !e.is_identity()).cloned().collect();
-            return Ok(Some(Gathered { key: l.clip.id.0, picture, transform, blend: l.blend, effects, mask, wipe: None, mesh: None, space: None, adjustment: true, solid: None, sort_depth: None }));
+            return Ok(Some(Gathered { key: l.clip.id.0, picture, transform, blend: l.blend, effects, mask, refine: mask::refine_of(&l.clip.masks).map(|r| [r.radius, r.smooth, r.shift]), wipe: None, mesh: None, space: None, adjustment: true, solid: None, sort_depth: None }));
         }
         let mesh = l.clip.mesh_at(t);
         let mut effects = l.effects.clone();
@@ -362,7 +364,7 @@ impl Scene {
                 effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None, particles: None, pieces: None, fluid: None, gpu: [0.0; 4] });
             }
         }
-        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, wipe: None, mesh, space, adjustment: false, solid: None, sort_depth: None }))
+        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, refine: mask::refine_of(&l.clip.masks).map(|r| [r.radius, r.smooth, r.shift]), wipe: None, mesh, space, adjustment: false, solid: None, sort_depth: None }))
     }
 
     /// The clip's masks at source time `src` as an image (made again only when they change).
@@ -453,6 +455,7 @@ fn solid_layer(l: &Layer, spec: &reelforge_core::TitleSpec, frame_size: [u32; 2]
         blend: l.blend,
         effects,
         mask: None,
+        refine: None,
         wipe: None,
         mesh: None,
         space: None,
@@ -619,7 +622,7 @@ fn input(g: &Gathered) -> LayerInput<'_> {
         transform: g.transform,
         blend: g.blend,
         effects: g.effects.clone(),
-        mask: g.mask.as_ref().map(|(hash, img)| MaskInput { content_id: *hash, pixels: &img.data, size: [img.width, img.height], keep: &img.keep }),
+        mask: g.mask.as_ref().map(|(hash, img)| MaskInput { content_id: *hash, pixels: &img.data, size: [img.width, img.height], keep: &img.keep, refine: g.refine }),
         wipe: g.wipe,
         mesh: g.mesh.clone(),
         space: g.space.as_ref(),

@@ -331,3 +331,113 @@ fn fs_fill(in: VsOut) -> @location(0) vec4<f32> {
     let a = mix(c.a, 1.0, k);
     return vec4(mix(c.rgb, to_linear(f.rgb), k), a);
 }
+
+// Refine edge: a mask's edge fitted to the picture by matting in a band
+// round it. Where the mask is solidly on or off within `radius` it stays;
+// in between, each pixel's alpha is where its colour sits on the line from
+// the colours surely outside to those surely inside, round it (so hair and
+// motion blur go soft, and background the mask took in goes).
+
+fn refine_straight(c: vec4<f32>) -> vec3<f32> {
+    return select(vec3(0.0), c.rgb / max(c.a, 1e-4), c.a > 1e-4);
+}
+
+// The layer, with in its alpha also which part it's in: + 4 × (0 surely
+// out, 1 in between, 2 surely in). p0.xy = radius in layer uv.
+@fragment
+fn fs_refine_trimap(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let inside = select(0.0, 1.0, all(in.uv >= vec2(0.0)) && all(in.uv <= vec2(1.0)));
+    let r = fx.p0.xy;
+    var lo = textureSampleLevel(second, second_sampler, in.uv, 0.0).r * inside;
+    var hi = lo;
+    for (var k = 0; k < 16; k = k + 1) {
+        let a = f32(k) * 0.392699;
+        for (var s = 1; s <= 2; s = s + 1) {
+            let m = textureSampleLevel(second, second_sampler, in.uv + vec2(cos(a), sin(a)) * r * f32(s) * 0.5, 0.0).r;
+            lo = min(lo, m);
+            hi = max(hi, m);
+        }
+    }
+    var zone = 1.0;
+    if (lo > 0.98) {
+        zone = 2.0;
+    } else if (hi < 0.02) {
+        zone = 0.0;
+    }
+    return vec4(c.rgb, clamp(c.a, 0.0, 1.0) + 4.0 * zone);
+}
+
+fn refine_zone(v: vec4<f32>) -> f32 {
+    return floor(v.a / 4.0 + 0.01);
+}
+
+// Straight colour where surely in (weight in alpha).
+@fragment
+fn fs_refine_in(in: VsOut) -> @location(0) vec4<f32> {
+    let v = textureSample(src, src_sampler, to_tex(in.uv));
+    let z = refine_zone(v);
+    let a = v.a - 4.0 * z;
+    let w = select(0.0, 1.0, z > 1.5 && a > 0.5);
+    return vec4(refine_straight(vec4(v.rgb, a)) * w, w);
+}
+
+// Straight colour where surely out.
+@fragment
+fn fs_refine_out(in: VsOut) -> @location(0) vec4<f32> {
+    let v = textureSample(src, src_sampler, to_tex(in.uv));
+    let z = refine_zone(v);
+    let a = v.a - 4.0 * z;
+    let w = select(0.0, 1.0, z < 0.5 && a > 0.5);
+    return vec4(refine_straight(vec4(v.rgb, a)) * w, w);
+}
+
+// The line from out (second) to in (src): (in − out, out · (in − out)); or
+// with nothing known on one side, a flag in alpha: 1e4 all in, −1e4 all out.
+@fragment
+fn fs_refine_line(in: VsOut) -> @location(0) vec4<f32> {
+    let f = textureSample(src, src_sampler, to_tex(in.uv));
+    let b = textureSample(second, second_sampler, to_tex(in.uv));
+    if (f.a < 1e-3 && b.a < 1e-3) {
+        return vec4(0.0, 0.0, 0.0, 0.0);
+    }
+    if (b.a < 1e-3) {
+        return vec4(0.0, 0.0, 0.0, 1e4);
+    }
+    if (f.a < 1e-3) {
+        return vec4(0.0, 0.0, 0.0, -1e4);
+    }
+    let fc = f.rgb / f.a;
+    let bc = b.rgb / b.a;
+    let d = fc - bc;
+    return vec4(d, dot(bc, d));
+}
+
+// The layer with its refined alpha. p0.x = softness 0–100, p0.y = shift −100–100.
+@fragment
+fn fs_refine_apply(in: VsOut) -> @location(0) vec4<f32> {
+    let v = textureSample(src, src_sampler, to_tex(in.uv));
+    let line = textureSample(second, second_sampler, to_tex(in.uv));
+    let z = refine_zone(v);
+    let a = clamp(v.a - 4.0 * z, 0.0, 1.0);
+    let c = vec4(v.rgb, a);
+    var m = 0.0;
+    if (z > 1.5) {
+        m = 1.0;
+    } else if (z > 0.5) {
+        let d2 = dot(line.rgb, line.rgb);
+        if (line.a > 5e3) {
+            m = 1.0;
+        } else if (line.a < -5e3) {
+            m = 0.0;
+        } else if (d2 > 1e-4) {
+            m = (dot(refine_straight(c), line.rgb) - line.a) / d2;
+            // Softness: 0 crisp, 100 as soft as found.
+            let k = mix(2.5, 1.0, clamp(fx.p0.x / 100.0, 0.0, 1.0));
+            m = (m - 0.5) * k + 0.5 + fx.p0.y / 200.0;
+        } else {
+            m = 0.5;
+        }
+    }
+    return c * clamp(m, 0.0, 1.0);
+}
