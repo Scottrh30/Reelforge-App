@@ -647,6 +647,22 @@ What works now:
   ends). Pieces in the same state are drawn together, outline and shadow included, so a fading
   letter keeps its edges; the box behind stays put. It's part of the title's style, so a title
   preset carries it to other titles
+- **The Text tab** (a dock tab beside Controls; **Window → Text** shows or hides it): **+ Add
+  text** puts 2D text at the playhead (as `Ctrl+T`), and picking any text clip on the timeline
+  shows all its settings: text, font, colour, size, alignment (**Left / Centre / Right**),
+  **Case** (**Aa** as typed, **AB** ALL CAPS, **Ab** Start Caps — the first letter of each word —
+  or **ab** lowercase; the text you typed is kept, so switching back restores it),
+  **Horizontal scale** and **Vertical scale** (the letters stretched across or up, 100% as the
+  font draws them), **Line spacing**, **Character spacing** (extra space between every pair, in
+  pixels) and the rest of the title settings. The **kerning tool** shows the text with a thin
+  marker in every gap between two characters: click a gap (or move between gaps with ← →), then
+  tighten or loosen just that pair with **− / +**, by typing or dragging the value, or with
+  **Alt+← / Alt+→** (Shift for ten times as much), as in After Effects. Kerning is in thousandths
+  of the font size (−1000 to 1000), so it holds when the size changes, and adds to the font's own
+  kerning and the character spacing; gaps you've kerned are marked, **Reset pair** and **Reset
+  all** put them back. Typing in the text keeps each pair's kerning with its letters. Case,
+  scale and kerning work on 3D text and with text animations too; scale and case are part of a
+  title preset, kerning stays with the text
 - **3D text** (**Timeline → Add 3D text**, or set **3D depth** on any title): the letters are
   extruded into solid 3D objects, as deep as **3D depth** (pixels), seen through the camera and
   lit by the scene's lights, or by a soft light from above left when there are none. **Sides**

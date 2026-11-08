@@ -31,6 +31,25 @@ impl TextAlign {
     }
 }
 
+/// How the letters' case is shown (the text itself is kept as typed).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TextCase {
+    #[default]
+    AsTyped,
+    /// ALL CAPS.
+    Upper,
+    /// Start Caps: The First Letter Of Each Word.
+    Start,
+    /// lowercase.
+    Lower,
+}
+
+impl TextCase {
+    pub fn is_default(&self) -> bool {
+        *self == TextCase::AsTyped
+    }
+}
+
 /// Which font file to use. `None` path = the built-in font.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FontChoice {
@@ -61,6 +80,9 @@ fn half_black() -> [u8; 4] {
 fn one() -> f32 {
     1.0
 }
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
 
 /// Everything about how a title looks. Colours are 8-bit sRGB with straight alpha.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -80,6 +102,20 @@ pub struct TitleSpec {
     /// Extra space between letters, in pixels.
     #[serde(default)]
     pub letter_spacing: f32,
+    /// The letters stretched across (1 = as the font draws them) and up.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale_x: f32,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale_y: f32,
+    /// ALL CAPS, Start Caps or lowercase, whatever was typed.
+    #[serde(default, skip_serializing_if = "TextCase::is_default")]
+    pub case: TextCase,
+    /// Kerning by hand: extra space (thousandths of the font size; negative
+    /// pulls them together) before the character at that position in the
+    /// text (counting every character, line breaks too), on top of the
+    /// font's own kerning and the letter spacing.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub kerning: std::collections::BTreeMap<u32, f32>,
     /// Outline width in pixels (0 = none).
     #[serde(default)]
     pub outline: f32,
@@ -364,6 +400,10 @@ impl Default for TitleSpec {
             align: TextAlign::Center,
             line_spacing: 1.0,
             letter_spacing: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            case: TextCase::AsTyped,
+            kerning: Default::default(),
             outline: 0.0,
             outline_color: black(),
             shadow: true,
@@ -398,6 +438,39 @@ impl TitleSpec {
         }
     }
 
+    /// The lines as shown (in the chosen case), each character with its
+    /// position in the text (for kerning).
+    pub fn shown_lines(&self) -> Vec<Vec<(u32, char)>> {
+        let mut out = vec![Vec::new()];
+        let mut word_start = true;
+        for (i, ch) in self.text.chars().enumerate() {
+            let i = i as u32;
+            if ch == '\n' {
+                out.push(Vec::new());
+                word_start = true;
+                continue;
+            }
+            if ch == '\r' {
+                continue;
+            }
+            let line = out.last_mut().unwrap();
+            let upper = match self.case {
+                TextCase::AsTyped => None,
+                TextCase::Upper => Some(true),
+                TextCase::Lower => Some(false),
+                TextCase::Start => Some(word_start),
+            };
+            match upper {
+                None => line.push((i, ch)),
+                Some(true) => line.extend(ch.to_uppercase().map(|c| (i, c))),
+                Some(false) => line.extend(ch.to_lowercase().map(|c| (i, c))),
+            }
+            // A word starts after a space or a dash.
+            word_start = ch.is_whitespace() || ch == '-' || ch == '/' || ch == '(' || ch == '"';
+        }
+        out
+    }
+
     /// Extruded into solid 3D letters.
     pub fn is_3d(&self) -> bool {
         self.extrude > 0.0 || self.model.is_some()
@@ -419,7 +492,7 @@ impl TitleSpec {
     /// left out, in order, as laid out) belongs to, and how many pieces there
     /// are. Spaces go with the piece after them.
     pub fn anim_pieces(&self) -> (Vec<usize>, usize) {
-        let lines: Vec<&str> = self.text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+        let lines: Vec<String> = self.shown_lines().into_iter().map(|l| l.into_iter().map(|(_, c)| c).collect()).collect();
         let mut out = Vec::new();
         let mut n = 0usize;
         match self.anim.kind {
@@ -536,6 +609,8 @@ impl TitleSpec {
             self.size,
             self.line_spacing,
             self.letter_spacing,
+            self.scale_x,
+            self.scale_y,
             self.outline,
             self.shadow_distance,
             self.shadow_angle,
@@ -550,6 +625,10 @@ impl TitleSpec {
         (self.align, self.shadow, self.background, self.side_color, self.bevel_style).hash(&mut h);
         self.shape.as_ref().map(|s| s.id).hash(&mut h);
         self.model.hash(&mut h);
+        self.case.hash(&mut h);
+        for (k, v) in &self.kerning {
+            (k, v.to_bits()).hash(&mut h);
+        }
         if !self.anim.is_none() {
             // (Its state at a moment is in `content_hash_at`.)
             (self.anim.kind, self.anim.stagger.to_bits(), self.anim.length.to_bits(), self.anim.delay.to_bits(), self.anim.out).hash(&mut h);
@@ -587,7 +666,27 @@ mod tests {
         assert_ne!(a.content_hash([1920, 1080]), deep.content_hash([1920, 1080]));
         let sides = TitleSpec { side_color: Some([255, 0, 0, 255]), ..deep.clone() };
         assert_ne!(sides.content_hash([1920, 1080]), deep.content_hash([1920, 1080]));
-        assert_eq!(TitleSpec { text: "\n  Hello world \nmore".into(), ..a }.label(), "Hello world");
+        assert_eq!(TitleSpec { text: "\n  Hello world \nmore".into(), ..a.clone() }.label(), "Hello world");
+        for b in [TitleSpec { scale_x: 1.2, ..a.clone() }, TitleSpec { case: TextCase::Upper, ..a.clone() }, TitleSpec { kerning: [(2, -40.0)].into(), ..a.clone() }] {
+            assert_ne!(a.content_hash([1920, 1080]), b.content_hash([1920, 1080]));
+        }
+    }
+
+    #[test]
+    fn case_is_shown_without_changing_the_text() {
+        let shown = |text: &str, case| TitleSpec { text: text.into(), case, ..TitleSpec::default() }.shown_lines().iter().map(|l| l.iter().map(|(_, c)| *c).collect::<String>()).collect::<Vec<_>>().join("|");
+        assert_eq!(shown("hello WORLD\nnew-line", TextCase::Upper), "HELLO WORLD|NEW-LINE");
+        assert_eq!(shown("hello WORLD\nnew-line", TextCase::Lower), "hello world|new-line");
+        assert_eq!(shown("hello WORLD\nnew-line", TextCase::Start), "Hello World|New-Line");
+        assert_eq!(shown("hello WORLD", TextCase::AsTyped), "hello WORLD");
+        // Positions count the line break; ß becomes SS, both at its place.
+        let t = TitleSpec { text: "ab\nße".into(), case: TextCase::Upper, ..TitleSpec::default() };
+        assert_eq!(t.shown_lines(), vec![vec![(0, 'A'), (1, 'B')], vec![(3, 'S'), (3, 'S'), (4, 'E')]]);
+        // Old files and the defaults leave the new settings out.
+        let json = serde_json::to_string(&TitleSpec::default()).unwrap();
+        assert!(!json.contains("scale_x") && !json.contains("kerning") && !json.contains("case"));
+        let back: TitleSpec = serde_json::from_str(&serde_json::to_string(&TitleSpec { kerning: [(3, 25.0)].into(), scale_y: 1.5, case: TextCase::Start, ..TitleSpec::default() }).unwrap()).unwrap();
+        assert_eq!((back.kerning[&3], back.scale_y, back.case), (25.0, 1.5, TextCase::Start));
     }
 }
 

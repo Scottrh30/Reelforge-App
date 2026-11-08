@@ -1,9 +1,9 @@
-// Docking: the tabbed panels (Media, Effects, History, Controls, Track) live in the
+// Docking: the tabbed panels (Media, Effects, History, Controls, Text, Track) live in the
 // left or right dock, in any order, or float as windows of their own. Tabs
 // are dragged between docks, or out into a floating window, and back. The
 // arrangement is remembered between sessions.
 
-export type PanelId = "media" | "effects" | "history" | "controls" | "track";
+export type PanelId = "media" | "effects" | "history" | "controls" | "text" | "track";
 export type DockSide = "left" | "right";
 
 export const PANEL_LABEL: Record<PanelId, string> = {
@@ -11,6 +11,7 @@ export const PANEL_LABEL: Record<PanelId, string> = {
   effects: "Effects",
   history: "History",
   controls: "Controls",
+  text: "Text",
   track: "Track",
 };
 
@@ -29,10 +30,10 @@ interface Layout {
   rects: Partial<Record<PanelId, FloatRect>>;
 }
 
-const ALL: PanelId[] = ["media", "effects", "history", "controls", "track"];
+const ALL: PanelId[] = ["media", "effects", "history", "controls", "text", "track"];
 
 function initial(): Layout {
-  return { left: ["media", "effects", "history"], right: ["controls", "track"], float: [], active: { left: "media", right: "controls" }, rects: {} };
+  return { left: ["media", "effects", "history"], right: ["controls", "text", "track"], float: [], active: { left: "media", right: "controls" }, rects: {} };
 }
 
 function load(): Layout {
@@ -45,7 +46,7 @@ function load(): Layout {
     const out: Layout = { left: keep(v.left), right: keep(v.right), float: keep(v.float), active: v.active ?? { left: null, right: null }, rects: v.rects ?? {} };
     for (const p of ALL) {
       if (seen.has(p)) continue;
-      if (p === "track") out.right.push(p);
+      if (p === "track" || p === "text") out.right.push(p);
       else out.left.splice(p === "effects" ? Math.min(1, out.left.length) : out.left.length, 0, p);
     }
     return out;

@@ -269,26 +269,32 @@ pub(crate) struct Layout {
 /// Lay out `spec`'s text with `font`: lines centred as a block in the frame,
 /// each aligned within it, with kerning, letter and line spacing.
 pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layout {
-    let scale = PxScale::from(spec.size.max(1.0));
+    let size = spec.size.max(1.0);
+    let scale = PxScale { x: size * spec.scale_x.clamp(0.05, 20.0), y: size * spec.scale_y.clamp(0.05, 20.0) };
     let sf = font.as_scaled(scale);
     let (ascent, descent) = (sf.ascent(), sf.descent());
     let line_h = (ascent - descent + sf.line_gap()) * spec.line_spacing.max(0.1);
+    // Kerning by hand is in thousandths of the (stretched) width of the font size.
+    let kern_unit = scale.x / 1000.0;
     // Glyphs per line at baseline 0, and each line's width.
     let lines: Vec<(Vec<ab_glyph::Glyph>, f32)> = spec
-        .text
-        .split('\n')
+        .shown_lines()
+        .into_iter()
         .map(|line| {
             let mut caret = 0.0f32;
-            let mut prev = None;
+            let mut prev: Option<(ab_glyph::GlyphId, u32)> = None;
             let mut glyphs = Vec::new();
-            for ch in line.trim_end_matches('\r').chars() {
+            for (at, ch) in line {
                 let id = font.glyph_id(ch);
-                if let Some(p) = prev {
+                if let Some((p, pat)) = prev {
                     caret += sf.kern(p, id);
+                    if pat != at {
+                        caret += spec.kerning.get(&at).copied().unwrap_or(0.0) * kern_unit;
+                    }
                 }
                 glyphs.push(id.with_scale_and_position(scale, point(caret, 0.0)));
                 caret += sf.h_advance(id) + spec.letter_spacing;
-                prev = Some(id);
+                prev = Some((id, at));
             }
             let width = if glyphs.is_empty() { 0.0 } else { caret - spec.letter_spacing };
             (glyphs, width)
@@ -610,6 +616,7 @@ fn draw_with(spec: &TitleSpec, font: &FontArc, glyphs: &[ab_glyph::Glyph], shape
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reelforge_core::TextCase;
 
     fn px(r: &RenderedTitle, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * r.width + x) * 4) as usize;
@@ -670,6 +677,29 @@ mod tests {
         let solid = (b[0] as u32..b[2] as u32).any(|x| px(&r, x, 100) == [255, 255, 255, 255]);
         assert!(solid);
         assert_eq!(px(&r, 5, 5)[3], 0, "transparent elsewhere");
+    }
+
+    #[test]
+    fn scale_case_and_kerning_change_the_layout() {
+        let font = builtin_font();
+        let wide = |spec: &TitleSpec| {
+            let l = layout(spec, &font, [800, 300]);
+            (l.text_box[2] - l.text_box[0], l.text_box[3] - l.text_box[1])
+        };
+        let base = plain("Type");
+        let (w0, h0) = wide(&base);
+        let (w, h) = wide(&TitleSpec { scale_x: 1.5, ..base.clone() });
+        assert!((w / w0 - 1.5).abs() < 0.02 && (h - h0).abs() < 0.01, "{w} {w0} {h} {h0}");
+        let (w, h) = wide(&TitleSpec { scale_y: 2.0, ..base.clone() });
+        assert!((w - w0).abs() < 0.01 && (h / h0 - 2.0).abs() < 0.02);
+        assert!(wide(&TitleSpec { case: TextCase::Upper, ..base.clone() }).0 > w0);
+        // Kerning before "y" (position 1): −100 thousandths of 60 px pulls "ype" 6 px left.
+        let kerned = TitleSpec { kerning: [(1, -100.0)].into(), ..base.clone() };
+        assert!((wide(&kerned).0 - (w0 - 6.0)).abs() < 0.01);
+        let (a, b) = (layout(&base, &font, [800, 300]), layout(&kerned, &font, [800, 300]));
+        let gap = |l: &Layout| l.glyphs[1].position.x - l.glyphs[0].position.x;
+        assert!((gap(&a) - gap(&b) - 6.0).abs() < 0.01);
+        assert!((a.glyphs[3].position.x - a.glyphs[2].position.x - (b.glyphs[3].position.x - b.glyphs[2].position.x)).abs() < 0.01);
     }
 
     #[test]

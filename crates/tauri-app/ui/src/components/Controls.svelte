@@ -450,7 +450,7 @@
     {#if ins.title?.model}
       <ModelPanel {ins} />
     {:else if ins.title}
-      <TitlePanel {ins} />
+      <TitlePanel {ins} kerningTool={false} />
     {/if}
 
     {#if t && ins.visual}

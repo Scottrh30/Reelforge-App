@@ -6,7 +6,8 @@
   import { api, type Inspector, type TitleSpec } from "../lib/api";
   import NumberField from "./NumberField.svelte";
 
-  let { ins }: { ins: Inspector } = $props();
+  // `kerningTool`: show the kerning tool (the Text panel does; Controls keeps it short).
+  let { ins, kerningTool = true }: { ins: Inspector; kerningTool?: boolean } = $props();
 
   type Font = { path: string | null; index: number; name: string };
   type Rgba = [number, number, number, number];
@@ -85,6 +86,94 @@
   };
   const anim = $derived(({ ...ANIM_PRESETS.None, ...((t.anim as Partial<Anim>) ?? {}) }) as Anim);
 
+  // Case: how the letters show, whatever was typed.
+  const cases = [
+    ["AsTyped", "Aa", "As typed"],
+    ["Upper", "AB", "ALL CAPS"],
+    ["Start", "Ab", "Start Caps: the first letter of each word"],
+    ["Lower", "ab", "lowercase"],
+  ];
+  // The characters as shown (in the chosen case), each with its place in the text, by line (as TitleSpec::shown_lines).
+  type Ch = { at: number; c: string };
+  const shownLines = $derived.by(() => {
+    const out: Ch[][] = [[]];
+    const kase = (t.case as string) ?? "AsTyped";
+    let start = true;
+    [...(t.text ?? "")].forEach((ch, i) => {
+      if (ch === "\n") {
+        out.push([]);
+        start = true;
+        return;
+      }
+      if (ch === "\r") return;
+      const up = kase === "Upper" || (kase === "Start" && start);
+      const shown = kase === "AsTyped" ? ch : up ? ch.toUpperCase() : ch.toLowerCase();
+      out[out.length - 1].push({ at: i, c: shown });
+      start = /\s/.test(ch) || "-/(\"".includes(ch);
+    });
+    return out;
+  });
+  const kerning = $derived((t.kerning ?? {}) as Record<string, number>);
+  // The kerning tool: the gap picked (the place of the character after it).
+  let gap = $state<number | null>(null);
+  $effect(() => {
+    void ins.id;
+    gap = null;
+  });
+  const gapOk = $derived(gap != null && shownLines.some((l) => l.some((c, i) => i > 0 && c.at === gap)));
+  function setKern(at: number, v: number) {
+    set((s) => {
+      const k = { ...((s.kerning ?? {}) as Record<string, number>) };
+      const r = Math.round(Math.max(-1000, Math.min(1000, v)));
+      if (r) k[at] = r;
+      else delete k[at];
+      s.kerning = k;
+    });
+  }
+  async function nudgeKern(d: number) {
+    if (gap == null || !gapOk) return;
+    setKern(gap, (kerning[gap] ?? 0) + d);
+    await commit();
+  }
+  // Every gap, in order (for moving through them with the arrow keys).
+  const gaps = $derived(shownLines.flatMap((l) => l.filter((c, i) => i > 0 && l[i - 1].at !== c.at).map((c) => c.at)));
+  function kernKeys(e: KeyboardEvent) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dir = e.key === "ArrowLeft" ? -1 : 1;
+    if (e.altKey) {
+      // Alt+arrows: tighter or looser by 10 (100 with Shift), as in After Effects.
+      nudgeKern(dir * (e.shiftKey ? 100 : 10));
+      return;
+    }
+    const i = gap == null ? -1 : gaps.indexOf(gap);
+    const n = i < 0 ? (dir > 0 ? 0 : gaps.length - 1) : Math.max(0, Math.min(gaps.length - 1, i + dir));
+    if (gaps.length) gap = gaps[n];
+  }
+  /// Typing changes where characters are: kerning stays with the characters it was set between.
+  function remapKerning(old: string, now: string, k: Record<string, number>): Record<string, number> {
+    const a = [...old];
+    const b = [...now];
+    let pre = 0;
+    while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+    let suf = 0;
+    while (suf < a.length - pre && suf < b.length - pre && a[a.length - 1 - suf] === b[b.length - 1 - suf]) suf++;
+    const out: Record<string, number> = {};
+    for (const [key, v] of Object.entries(k)) {
+      const i = Number(key);
+      if (i < pre || (i === pre && pre === a.length - suf)) out[i] = v;
+      else if (i >= a.length - suf) out[i + b.length - a.length] = v;
+    }
+    return out;
+  }
+  function setText(v: string) {
+    set((s) => {
+      if (s.kerning && Object.keys(s.kerning).length) s.kerning = remapKerning(s.text, v, s.kerning as Record<string, number>);
+      s.text = v;
+    });
+  }
+
   const aligns = [
     ["Left", "Left", "M2 3h10M2 6h7M2 9h10M2 12h6"],
     ["Center", "Centre", "M2 3h12M4 6h8M2 9h12M5 12h6"],
@@ -97,7 +186,7 @@
   {#if t.shape}
     <p class="note">A shape instead of text: <b>{(t.shape as { name: string }).name}</b> (from an SVG logo or a mask). Size is its height; font, alignment and spacing don't apply. 3D depth 0 makes it flat.</p>
   {:else}
-    <textarea rows="3" value={t.text} aria-label="Title text" placeholder="Type the title…" oninput={(e) => set((s) => (s.text = e.currentTarget.value))} onblur={commit}></textarea>
+    <textarea rows="3" value={t.text} aria-label="Title text" placeholder="Type the title…" oninput={(e) => setText(e.currentTarget.value)} onblur={commit}></textarea>
   {/if}
   <div class="grid">
     <span class="lbl">Font</span>
@@ -133,10 +222,64 @@
       {/each}
     </div>
 
+    {#if !t.shape}
+      <span class="lbl">Case</span>
+      <div class="seg" role="radiogroup" aria-label="Case">
+        {#each cases as [v, glyph, label]}
+          <button role="radio" aria-checked={(t.case ?? "AsTyped") === v} class:on={(t.case ?? "AsTyped") === v} onclick={() => once((s) => (s.case = v))} title={label} aria-label={label}><span class="glyph">{glyph}</span></button>
+        {/each}
+      </div>
+    {/if}
+
+    <span class="lbl" title="Stretch the letters across (100% = as the font draws them)">Horizontal scale</span>
+    <NumberField label="Horizontal scale" value={Math.round((t.scale_x ?? 1) * 1000) / 10} min={5} max={1000} step={0.5} digits={1} suffix="%" oninput={(v) => set((s) => (s.scale_x = v / 100))} oncommit={commit} />
+    <span class="lbl" title="Stretch the letters up (100% = as the font draws them)">Vertical scale</span>
+    <NumberField label="Vertical scale" value={Math.round((t.scale_y ?? 1) * 1000) / 10} min={5} max={1000} step={0.5} digits={1} suffix="%" oninput={(v) => set((s) => (s.scale_y = v / 100))} oncommit={commit} />
+
     <span class="lbl">Line spacing</span>
     <NumberField label="Line spacing" value={t.line_spacing ?? 1} min={0.5} max={4} step={0.01} digits={2} suffix="×" oninput={(v) => set((s) => (s.line_spacing = v))} oncommit={commit} />
-    <span class="lbl">Letter spacing</span>
-    <NumberField label="Letter spacing" value={t.letter_spacing ?? 0} min={-50} max={200} step={0.1} digits={1} suffix=" px" oninput={(v) => set((s) => (s.letter_spacing = v))} oncommit={commit} />
+    <span class="lbl" title="Extra space between every pair of characters (tracking)">Character spacing</span>
+    <NumberField label="Character spacing" value={t.letter_spacing ?? 0} min={-50} max={200} step={0.1} digits={1} suffix=" px" oninput={(v) => set((s) => (s.letter_spacing = v))} oncommit={commit} />
+
+    {#if !t.shape && kerningTool}
+      <span class="lbl top" title="The space between one pair of characters: pick the gap, then tighten or loosen it">Kerning</span>
+      <div class="kern">
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div class="strip" role="listbox" tabindex="0" aria-label="Gaps between characters: arrow keys move, Alt+arrows tighten or loosen" onkeydown={kernKeys}>
+          {#each shownLines as line}
+            <div class="kline">
+              {#each line as c, i}
+                {#if i > 0 && line[i - 1].at !== c.at}
+                  <button
+                    class="gap"
+                    class:on={gap === c.at}
+                    class:set={!!kerning[c.at]}
+                    role="option"
+                    aria-selected={gap === c.at}
+                    tabindex="-1"
+                    title={`Between “${line[i - 1].c}” and “${c.c}”${kerning[c.at] ? `: ${kerning[c.at] > 0 ? "+" : ""}${kerning[c.at]}` : ""}`}
+                    onclick={() => (gap = c.at)}
+                    style:margin-left={`${Math.max(-6, Math.min(12, (kerning[c.at] ?? 0) / 25))}px`}><span></span></button
+                  >
+                {/if}
+                <span class="ch">{c.c === " " ? "\u00a0" : c.c}</span>
+              {/each}
+              {#if !line.length}<span class="ch empty">&nbsp;</span>{/if}
+            </div>
+          {/each}
+        </div>
+        <div class="row">
+          <button class="small" disabled={!gapOk} onclick={(e) => nudgeKern(e.shiftKey ? -100 : -10)} title="Tighter (Alt+←; Shift for 100)" aria-label="Tighter">−</button>
+          <div class="kval" class:off={!gapOk} inert={!gapOk}><NumberField label="Kerning of the gap picked, in thousandths of the font size" value={gap != null && gapOk ? (kerning[gap] ?? 0) : 0} min={-1000} max={1000} step={1} digits={0} oninput={(v) => gap != null && gapOk && setKern(gap, v)} oncommit={commit} /></div>
+          <button class="small" disabled={!gapOk} onclick={(e) => nudgeKern(e.shiftKey ? 100 : 10)} title="Looser (Alt+→; Shift for 100)" aria-label="Looser">+</button>
+        </div>
+        <div class="row wrap">
+          <button class="small" disabled={!gapOk || !kerning[gap ?? -1]} onclick={() => gap != null && once((s) => { const k = { ...((s.kerning ?? {}) as Record<string, number>) }; delete k[gap!]; s.kerning = k; })}>Reset pair</button>
+          <button class="small" disabled={!Object.keys(kerning).length} onclick={() => once((s) => (s.kerning = {}))} title="Back to the font's own kerning everywhere">Reset all</button>
+          <span class="hint">{gapOk ? "" : "Click a gap between two letters"}</span>
+        </div>
+      </div>
+    {/if}
 
     <span class="lbl" title="Extrude the letters into solid 3D text, seen through the camera and lit by the lights">3D depth</span>
     <NumberField label="3D depth: how far the letters are extruded back (0 = flat text)" value={t.extrude ?? 0} min={0} max={5000} step={1} digits={0} suffix=" px" oninput={(v) => set((s) => (s.extrude = v))} oncommit={commit} />
@@ -323,6 +466,76 @@
     background: var(--accent-soft);
     border-color: var(--accent);
     position: relative;
+  }
+  .seg .glyph {
+    font-size: calc(12px * var(--text-scale));
+    font-weight: 600;
+    min-width: 16px;
+    display: inline-block;
+  }
+  .top {
+    align-self: start;
+    padding-top: 4px;
+  }
+  .kern {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .strip {
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 6px 8px;
+    max-height: 140px;
+    overflow: auto;
+    font-size: calc(17px * var(--text-scale));
+    line-height: 1.5;
+  }
+  .strip:focus-visible {
+    outline: 1px solid var(--accent);
+  }
+  .kline {
+    display: flex;
+    align-items: stretch;
+    width: max-content;
+  }
+  .ch {
+    white-space: pre;
+  }
+  .gap {
+    width: 6px;
+    min-height: 0;
+    padding: 0;
+    margin: 0 -3px;
+    border: 0;
+    background: none;
+    display: flex;
+    justify-content: center;
+    cursor: col-resize;
+    position: relative;
+    z-index: 1;
+  }
+  .gap span {
+    width: 1px;
+    height: 100%;
+    background: transparent;
+  }
+  .gap:hover span {
+    background: var(--muted);
+  }
+  .gap.set span {
+    background: color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  .gap.on span {
+    width: 2px;
+    background: var(--accent);
+  }
+  .hint {
+    color: var(--muted);
+    font-size: calc(11.5px * var(--text-scale));
+    align-self: center;
   }
   .seg path {
     stroke: currentColor;

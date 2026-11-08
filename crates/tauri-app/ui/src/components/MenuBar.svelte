@@ -14,6 +14,7 @@
     ["history", "History"],
     ["viewer", "Viewer"],
     ["controls", "Controls"],
+    ["text", "Text"],
     ["track", "Track"],
     ["timeline", "Timeline"],
     ["meters", "Meters"],
