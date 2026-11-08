@@ -1782,6 +1782,8 @@ fn main() {
             fx::particles_preset,
             fx::blade_ignite,
             fx::object_removal,
+            fx::paint_stroke,
+            fx::paint_clear,
             fx::effect_curves,
             fx::effect_lut,
             fx::effect_catalog,

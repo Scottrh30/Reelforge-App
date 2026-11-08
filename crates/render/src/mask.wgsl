@@ -441,3 +441,87 @@ fn fs_refine_apply(in: VsOut) -> @location(0) vec4<f32> {
     }
     return c * clamp(m, 0.0, 1.0);
 }
+
+// Paint (see core paint.rs): the second texture holds the strokes showing
+// now. extra = (-, -, layer size); extra2 = (segments, runs, strokes, -).
+
+fn pt_u16(t: vec4<f32>) -> vec2<f32> {
+    let b = round(t * 255.0);
+    return vec2(b.x * 256.0 + b.y, b.z * 256.0 + b.w);
+}
+
+fn pt_point(t: vec4<f32>, size: vec2<f32>) -> vec2<f32> {
+    return (pt_u16(t) / 65535.0 * 2.0 - 0.5) * size;
+}
+
+fn pt_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    return length(p - a - ab * h);
+}
+
+// One stroke's mark on the picture so far.
+fn pt_apply(out: vec4<f32>, orig: vec4<f32>, k: i32, cover: f32, uv: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
+    if (cover <= 0.0) {
+        return out;
+    }
+    let h0 = textureLoad(second, vec2(k * 4, 2), 0);
+    let h1 = textureLoad(second, vec2(k * 4 + 1, 2), 0);
+    let h2 = textureLoad(second, vec2(k * 4 + 2, 2), 0);
+    let tool = u32(round(h0.r * 255.0));
+    let a = cover * h0.g;
+    var what = orig;
+    if (tool == 0u) {
+        let off = (pt_u16(h2) / 65535.0 * 2.0 - 1.0);
+        what = textureSampleLevel(src, src_sampler, to_tex(uv + off), 0.0);
+    } else if (tool == 1u) {
+        what = vec4(to_linear(h1.rgb), 1.0);
+    }
+    return mix(out, what, a);
+}
+
+@fragment
+fn fs_paint(in: VsOut) -> @location(0) vec4<f32> {
+    let orig = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let runs = i32(fx.extra2.y);
+    var out = orig;
+    var cur = -1;
+    var cover = 0.0;
+    for (var r = 0; r < runs; r = r + 1) {
+        let r2 = textureLoad(second, vec2(r * 3 + 2, 1), 0);
+        let ids = pt_u16(r2);
+        let k = i32(ids.x) / 16;
+        let n = i32(ids.x) % 16;
+        if (k != cur) {
+            if (cur >= 0) {
+                out = pt_apply(out, orig, cur, cover, in.uv, size);
+            }
+            cur = k;
+            cover = 0.0;
+        }
+        let lo = pt_point(textureLoad(second, vec2(r * 3, 1), 0), size);
+        let hi = pt_point(textureLoad(second, vec2(r * 3 + 1, 1), 0), size);
+        if (any(p < lo) || any(p > hi)) {
+            continue;
+        }
+        let h3 = textureLoad(second, vec2(k * 4 + 3, 2), 0);
+        let radius = max(pt_u16(h3).x / 4.0, 0.5);
+        let hard = textureLoad(second, vec2(k * 4, 2), 0).b;
+        let first = i32(ids.y);
+        for (var s = first; s < first + n; s = s + 1) {
+            let a = pt_point(textureLoad(second, vec2(s * 3, 0), 0), size);
+            let b = pt_point(textureLoad(second, vec2(s * 3 + 1, 0), 0), size);
+            let d = pt_dist(p, a, b);
+            // Solid to `hardness` of the radius, fading out to the edge.
+            let inner = radius * hard;
+            let c = 1.0 - smoothstep(min(inner, radius - 0.5), radius + 0.5, d);
+            cover = max(cover, c);
+        }
+    }
+    if (cur >= 0) {
+        out = pt_apply(out, orig, cur, cover, in.uv, size);
+    }
+    return out;
+}

@@ -576,7 +576,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1695,6 +1695,17 @@ impl Compositor {
                             continue;
                         }
                         push("fs_fluid", cur, Second::Table(i), o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::Paint => {
+                        if !self.tables.contains_key(&(key, i)) {
+                            continue;
+                        }
+                        let mut u = uniform(&e.values, [0.0; 2]);
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        u[24..28].copy_from_slice(&e.gpu);
+                        push("fs_paint", cur, Second::Table(i), o1, u);
                         cur = o1;
                     }
                     EffectKind::ObjectRemoval => {

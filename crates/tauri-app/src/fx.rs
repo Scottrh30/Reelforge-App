@@ -76,6 +76,8 @@ pub struct EffectView {
     pub filled: Option<usize>,
     /// …only the one frame, as a preview.
     pub fill_preview: bool,
+    /// Paint: how many strokes.
+    pub strokes: usize,
     pub animated: bool,
     /// Positions to drag in the Viewer (an OpenFX plugin's): the first of
     /// each one's two parameters (x, y in % of the layer, y down) and its name.
@@ -216,6 +218,10 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 plate_error,
                 environment,
                 environment_error,
+                strokes: match &fx.data {
+                    Some(EffectData::Paint(s)) => s.len(),
+                    _ => 0,
+                },
                 fill_preview: matches!(&fx.data, Some(EffectData::Fill(dir)) if reelforge_core::fillstore::is_preview(dir)),
                 filled: match &fx.data {
                     Some(EffectData::Fill(dir)) if reelforge_core::fillstore::exists(dir) => Some(reelforge_core::fillstore::frame_count(dir)),
@@ -528,6 +534,19 @@ pub fn particles_preset(id: u64, index: usize, preset: usize) -> Res<()> {
 #[tauri::command]
 pub fn object_removal(id: u64, index: usize, preview: Option<bool>) -> Res<()> {
     ed(|e| e.start_object_removal(reelforge_core::ClipId(id), index, preview.unwrap_or(false)))
+}
+
+/// Paint a stroke (layer pixels) with Paint effect `index` of clip `id`;
+/// `source` sets where clone strokes copy from (an Alt-click).
+#[tauri::command]
+pub fn paint_stroke(id: u64, index: usize, points: Vec<[f32; 2]>, source: Option<[f32; 2]>) -> Res<()> {
+    ed(|e| e.paint_stroke(reelforge_core::ClipId(id), index, points, source))
+}
+
+/// Take every stroke off Paint effect `index` of clip `id`.
+#[tauri::command]
+pub fn paint_clear(id: u64, index: usize) -> Res<()> {
+    ed(|e| e.paint_clear(reelforge_core::ClipId(id), index))
 }
 
 /// Keyframe the blade's Length so it switches on (0 → 100 %) or off

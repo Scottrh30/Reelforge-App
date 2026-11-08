@@ -666,6 +666,44 @@
     el.addEventListener("pointerup", up);
   }
 
+  // Paint: drag to paint a stroke with the Paint effect; Alt-click sets where clones copy from.
+  const painting = $derived(app.paint && ins && app.paint.clip === ins.id ? app.paint : null);
+  const paintFx = $derived(painting && ins ? ins.effects[painting.index] : null);
+  /// The brush's radius on screen.
+  const paintRadius = $derived(paintFx ? (paintFx.params[1]?.value ?? 20) / 2 : 10);
+  function paintDown(e: PointerEvent) {
+    if (!painting || !inv || e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const at = toLayer(e);
+    if (e.altKey) {
+      app.paint = { ...painting, source: at };
+      say("Clone source set: paint where it should go");
+      return;
+    }
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    stroke = { fg: true, points: [at] };
+    const move = (ev: PointerEvent) => {
+      if (!stroke) return;
+      const p = toLayer(ev);
+      const last = stroke.points[stroke.points.length - 1];
+      if (Math.hypot(p[0] - last[0], p[1] - last[1]) * layerScale() >= 2) stroke = { fg: true, points: [...stroke.points, p] };
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      const s = stroke;
+      if (!s || !app.paint || !ins) return;
+      const source = app.paint.source;
+      await run(api.paintStroke(ins.id, app.paint.index, s.points, source));
+      stroke = null;
+      if (app.paint) app.paint = { ...app.paint, source: null };
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+
   // Freehand: each click adds a point; clicking the first one (or Enter, or a double-click) closes it.
   let hover = $state<Pt | null>(null);
   function drawClick(e: MouseEvent) {
@@ -692,6 +730,7 @@
     shiftHeld = e.shiftKey;
     if (e.key === "Escape" && !e.defaultPrevented) {
       if (app.roto) app.roto = null;
+      else if (app.paint) app.paint = null;
       else if (app.meshSel) app.meshSel = null;
       else if (app.camSel) app.camSel = null;
     }
@@ -955,6 +994,23 @@
       {#if pickBox}
         {@const [a, b] = pickBox}
         <polygon points={pts([a, [b[0], a[1]], b, [a[0], b[1]]])} class="pickbox" />
+      {/if}
+    {/if}
+
+    <!-- Paint effect strokes. -->
+    {#if painting && !roto && !drawing}
+      <rect x="0" y="0" width="100%" height="100%" class="catch roto" onpointerdown={paintDown} onpointermove={(e) => (brushAt = toBoxPt(e))} onpointerleave={() => (brushAt = null)} role="presentation" />
+      {#if painting.source}
+        {@const sp = toBox(painting.source)}
+        <circle cx={sp[0]} cy={sp[1]} r={6} class="brush" />
+        <line x1={sp[0] - 9} y1={sp[1]} x2={sp[0] + 9} y2={sp[1]} class="brush" />
+        <line x1={sp[0]} y1={sp[1] - 9} x2={sp[0]} y2={sp[1] + 9} class="brush" />
+      {/if}
+      {#if stroke && stroke.points.length}
+        <polyline points={pts(stroke.points)} class="rotostroke paint" stroke-width={paintRadius * 2 * layerScale()} />
+      {/if}
+      {#if brushAt}
+        <circle cx={brushAt[0]} cy={brushAt[1]} r={paintRadius * layerScale()} class="brush" />
       {/if}
     {/if}
 
@@ -1273,6 +1329,9 @@
     stroke-linecap: round;
     stroke-linejoin: round;
     pointer-events: none;
+  }
+  .rotostroke.paint {
+    stroke: rgba(255, 255, 255, 0.35);
   }
   .rotostroke.bg {
     stroke: rgba(240, 80, 80, 0.45);

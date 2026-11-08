@@ -288,6 +288,17 @@
           </div>
           {#if fx.environment_error}<p class="warn">{fx.environment_error}</p>{:else if !fx.environment}<p class="note">An environment light lights 3D layers from a panorama all round the scene, and shiny 3D text, shapes and models reflect it (Reflections, under Environment). Choose an .hdr or .exr panorama.</p>{/if}
         {/if}
+        {#if fx.kind === "Paint"}
+          {@const on = app.paint?.clip === ins.id && app.paint.index === i}
+          <div class="row lut">
+            <span class="file">{fx.strokes} stroke{fx.strokes === 1 ? "" : "s"}</span>
+            <button class="small" class:on onclick={() => (app.paint = on ? null : { clip: ins.id, index: i, source: null })} title="Paint in the Viewer with this effect's tool (Esc stops)">{on ? "Stop painting" : "Paint in Viewer"}</button>
+            <button class="small" disabled={!fx.strokes} onclick={() => run(api.paintClear(ins.id, i))} title="Take every stroke off (undo brings them back)">Clear</button>
+          </div>
+          {#if on}
+            <p class="note">Drag in the Viewer to paint. For <b>Clone</b>, Alt-click where to copy from first; the next stroke copies from there, keeping the same distance for later strokes. Undo takes the last stroke away.</p>
+          {/if}
+        {/if}
         {#if fx.kind === "ObjectRemoval"}
           {@const areas = ins.masks.filter((m) => m.mask.enabled && m.mask.fill_area).length}
           {@const busy = app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null}

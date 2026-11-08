@@ -279,6 +279,7 @@ enum TrackMsg {
 mod camtrack;
 mod fill;
 pub mod roto;
+mod paint;
 mod diskspace;
 mod viewcam;
 mod remap;

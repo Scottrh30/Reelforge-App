@@ -382,6 +382,14 @@ What works now:
     areas** outlines the target in red and the source in green. Keyframe the target, or pick
     *Patch replacer: target* under **Apply to** in the Track panel so it follows the tracked
     motion
+  - **Paint / clone** (Repair), like After Effects' Clone Stamp and Brush: press **Paint in
+    Viewer** and drag over the picture. **Tool**: *Clone* copies the picture from elsewhere in
+    the frame (Alt-click where to copy from; the next stroke copies from there, and later
+    strokes keep the same distance, shown as **Clone from X/Y**), *Brush* paints in a
+    **Colour**, *Erase* takes earlier strokes away. **Size**, **Hardness** and **Opacity**.
+    **Strokes last** *This frame* (frame-by-frame cleanup), *From here on* or *The whole
+    clip* (a mark on a locked-off shot). Each stroke is one undo step; **Clear** takes them
+    all off. Strokes are drawn on the GPU in the order painted
   - **Object removal** (Repair), like After Effects' Content-Aware Fill or Resolve's Object
     Removal: takes out a person, a sign, a boom or a logo for the whole clip. Draw a mask round
     it in the Masks panel and set its **Use** to **Object to remove** (it doesn't change the

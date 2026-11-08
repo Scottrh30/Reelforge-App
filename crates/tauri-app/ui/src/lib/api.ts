@@ -550,7 +550,7 @@ export type BenchReport = {
 export type TrackMatte = "Alpha" | "AlphaInverted" | "Luma" | "LumaInverted";
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint";
 
 export interface Curves {
   master: Pt[];
@@ -594,6 +594,8 @@ export interface EffectView {
   /// Object removal: frames filled so far (null: not worked out yet).
   filled: number | null;
   fill_preview: boolean;
+  /// Paint: how many strokes.
+  strokes: number;
   animated: boolean;
   /// Positions to drag in the Viewer (an OpenFX plugin's): x at `param`, y at `param + 1`.
   points: { param: number; label: string; relative: number | null }[];
@@ -1051,6 +1053,8 @@ export const api = {
   trackerOp: (id: number, op: "clear" | "remove") => invoke("tracker_op", { id, op }),
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
   trackCancel: () => invoke("track_cancel"),
+  paintStroke: (id: number, index: number, points: Pt[], source: Pt | null) => invoke("paint_stroke", { id, index, points, source }),
+  paintClear: (id: number, index: number) => invoke("paint_clear", { id, index }),
   objectRemoval: (id: number, index: number, preview = false) => invoke("object_removal", { id, index, preview }),
   camtrackStart: (id: number, fov: number | null, tripod: boolean) => invoke("camtrack_start", { id, fov, tripod }),
   camtrackMake: (id: number, what: CamMake, picked: number[]) => invoke("camtrack_make", { id, what, picked }),

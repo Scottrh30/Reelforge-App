@@ -2221,3 +2221,32 @@ fn refine_edge_fits_a_mask_to_the_picture() {
     assert!(near(px(&fine, w, 20, 16), [230, 230, 230]), "the subject stays: {:?}", px(&fine, w, 20, 16));
     assert!(near(px(&fine, w, 50, 16), [255, 0, 0]));
 }
+
+/// Paint: a clone stroke copies the red half over the blue, a brush stroke
+/// paints green, and an erase stroke over it brings the picture back.
+#[test]
+fn paint_clones_brushes_and_erases() {
+    use reelforge_core::paint::{Lasts, PaintStroke, Tool};
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (80u32, 40u32);
+    let img: Vec<u8> = (0..w * h).flat_map(|i| if i % w < 40 { [255u8, 0, 0, 255] } else { [0, 0, 255, 255] }).collect();
+    let st = |tool, pts: Vec<[f32; 2]>, colour: u32, offset: [f32; 2]| PaintStroke { tool, points: pts, radius: 5.0, hardness: 90.0, opacity: 100.0, colour, offset, at: Time::ZERO, lasts: Lasts::Always, frame: Time::from_secs_f64(0.04) };
+    let mut n = 7400;
+    let mut draw = |c: &mut Compositor, strokes: Vec<PaintStroke>| {
+        let mut e = Effect::new(EffectKind::Paint);
+        e.data = Some(reelforge_core::effects::EffectData::Paint(strokes));
+        n += 1;
+        let mut l = layer(1, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        let v = e.eval_sized(Time::ZERO, None, [w as f32, h as f32]);
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let out = draw(&mut c, vec![st(Tool::Clone, vec![[55.0, 10.0], [65.0, 10.0]], 0, [-30.0, 0.0]), st(Tool::Brush, vec![[60.0, 30.0]], 0x00ff00, [0.0; 2])]);
+    assert!(near(px(&out, w, 60, 10), [255, 0, 0]), "cloned: {:?}", px(&out, w, 60, 10));
+    assert!(near(px(&out, w, 60, 30), [0, 255, 0]), "brushed: {:?}", px(&out, w, 60, 30));
+    assert!(near(px(&out, w, 60, 20), [0, 0, 255]), "untouched: {:?}", px(&out, w, 60, 20));
+    let out = draw(&mut c, vec![st(Tool::Brush, vec![[60.0, 30.0]], 0x00ff00, [0.0; 2]), st(Tool::Erase, vec![[60.0, 30.0]], 0, [0.0; 2])]);
+    assert!(near(px(&out, w, 60, 30), [0, 0, 255]), "erased: {:?}", px(&out, w, 60, 30));
+}
