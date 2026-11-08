@@ -115,6 +115,7 @@ fn category_of(s: &str) -> EffectCategory {
         "stylize" | "stylise" | "light" | "lightstylize" | "lightandstylize" => EffectCategory::Stylize,
         "distort" | "distortion" | "warp" => EffectCategory::Distort,
         "repair" | "restoration" | "cleanup" => EffectCategory::Repair,
+        "generate" | "generator" | "render" | "noise" => EffectCategory::Generate,
         _ => EffectCategory::Plugins,
     }
 }

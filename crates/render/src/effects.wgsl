@@ -1390,3 +1390,143 @@ fn fs_disintegrate(in: VsOut) -> @location(0) vec4<f32> {
     let glow = rgb_of(fx.p1.y) * g * 1.3 * c.a;
     return vec4(c.rgb * (1.0 - g * 0.5) + glow, c.a);
 }
+
+// ---- Fractal noise ----
+// p0 = (type, scale px, detail (octaves), roughness %), p1 = (contrast %,
+// brightness %, evolution °, speed °/s), p2 = (drift x, drift y px/s, dark,
+// light colour), p3 = (blend, opacity %, seed); extra = (-, time, layer size).
+
+// A gradient at a lattice corner (one of 12 cube-edge directions).
+fn grad3(seed: u32, c: vec3<f32>) -> vec3<f32> {
+    let h = pcg(seed ^ pcg(ibits(c.x) ^ pcg(ibits(c.y) ^ pcg(ibits(c.z))))) % 12u;
+    switch h {
+        case 0u: { return vec3(1.0, 1.0, 0.0); }
+        case 1u: { return vec3(-1.0, 1.0, 0.0); }
+        case 2u: { return vec3(1.0, -1.0, 0.0); }
+        case 3u: { return vec3(-1.0, -1.0, 0.0); }
+        case 4u: { return vec3(1.0, 0.0, 1.0); }
+        case 5u: { return vec3(-1.0, 0.0, 1.0); }
+        case 6u: { return vec3(1.0, 0.0, -1.0); }
+        case 7u: { return vec3(-1.0, 0.0, -1.0); }
+        case 8u: { return vec3(0.0, 1.0, 1.0); }
+        case 9u: { return vec3(0.0, -1.0, 1.0); }
+        case 10u: { return vec3(0.0, 1.0, -1.0); }
+        default: { return vec3(0.0, -1.0, -1.0); }
+    }
+}
+
+// Gradient (Perlin) noise in 3D, about -1..1.
+fn perlin3(seed: u32, p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    var n: array<f32, 8>;
+    for (var k = 0u; k < 8u; k = k + 1u) {
+        let o = vec3(f32(k & 1u), f32((k >> 1u) & 1u), f32((k >> 2u) & 1u));
+        n[k] = dot(grad3(seed, i + o), f - o);
+    }
+    let x0 = mix(n[0], n[1], u.x);
+    let x1 = mix(n[2], n[3], u.x);
+    let x2 = mix(n[4], n[5], u.x);
+    let x3 = mix(n[6], n[7], u.x);
+    return mix(mix(x0, x1, u.y), mix(x2, x3, u.y), u.z) * 1.1;
+}
+
+// Octaves summed: style 0 plain, 1 turbulent (|n|), 2 ridged; 0..1.
+fn fbm3(seed: u32, p0: vec3<f32>, octaves: f32, rough: f32, style: u32) -> f32 {
+    var p = p0;
+    var amp = 1.0;
+    var sum = 0.0;
+    var norm = 0.0;
+    let whole = u32(clamp(floor(octaves), 1.0, 10.0));
+    let part = clamp(octaves - f32(whole), 0.0, 1.0);
+    for (var k = 0u; k <= whole; k = k + 1u) {
+        // The last octave fades in with a fractional Detail.
+        var w = amp;
+        if (k == whole) {
+            w = amp * part;
+            if (w <= 0.0) {
+                break;
+            }
+        }
+        let n = perlin3(seed + k * 1013u, p);
+        var v: f32;
+        switch style {
+            case 1u: { v = abs(n); }
+            case 2u: { let r = 1.0 - abs(n); v = r * r; }
+            default: { v = n * 0.5 + 0.5; }
+        }
+        sum += v * w;
+        norm += w;
+        amp *= rough;
+        // Each octave twice as fine, turned a little so lattices don't line up.
+        p = vec3(p.x * 1.6 - p.y * 1.2 + 17.3, p.x * 1.2 + p.y * 1.6 - 9.1, p.z * 1.5 + 3.7);
+    }
+    return sum / max(norm, 1e-5);
+}
+
+fn fractal_value(p: vec2<f32>, z: f32) -> f32 {
+    let seed = seed_of(fx.p3.z) + 0x9e37u;
+    let octaves = fx.p0.z;
+    let rough = clamp(fx.p0.w / 100.0, 0.0, 1.0);
+    let q = vec3(p, z);
+    switch u32(round(fx.p0.x)) {
+        // Turbulent: billowing, like smoke.
+        case 1u: { return clamp(fbm3(seed, q, octaves, rough, 1u) * 1.6, 0.0, 1.0); }
+        // Ridged: sharp crests, like mountains or veins.
+        case 2u: { return fbm3(seed, q, octaves, rough, 2u); }
+        // Clouds: soft puffs with clear sky between.
+        case 3u: {
+            let v = fbm3(seed, q, octaves, rough, 0u);
+            return smoothstep(0.33, 0.72, v);
+        }
+        // Liquid: the noise pushed along by itself.
+        case 4u: {
+            let w = vec2(fbm3(seed + 7u, q, min(octaves, 4.0), rough, 0u), fbm3(seed + 11u, q + vec3(5.2, 1.3, 0.0), min(octaves, 4.0), rough, 0u));
+            return clamp(0.5 + (fbm3(seed, vec3(p + (w - 0.5) * 4.0, z), octaves, rough, 0u) - 0.5) * 1.9, 0.0, 1.0);
+        }
+        // Marble: bands bent by the noise.
+        case 5u: {
+            let v = fbm3(seed, q, octaves, rough, 0u);
+            return 0.5 + 0.5 * sin((p.x + p.y) * 14.0 + (v - 0.5) * 22.0);
+        }
+        // Smooth: stretched, as octaves summed bunch up round the middle.
+        default: { return clamp(0.5 + (fbm3(seed, q, octaves, rough, 0u) - 0.5) * 1.9, 0.0, 1.0); }
+    }
+}
+
+@fragment
+fn fs_fractal(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let ins = inside(in.uv);
+    if (ins == 0.0) {
+        return c;
+    }
+    let t = fx.extra.y;
+    let size = fx.extra.zw;
+    let scale = max(fx.p0.y, 1.0);
+    let px = in.uv * size - fx.p2.xy * t;
+    let z = (fx.p1.z + fx.p1.w * t) / 360.0;
+    var v = fractal_value(px / scale, z);
+    v = (v - 0.5) * fx.p1.x / 100.0 + 0.5 + fx.p1.y / 100.0;
+    v = clamp(v, 0.0, 1.0);
+    // Colours mixed as they look (display values).
+    let dark = to_display(rgb_of(fx.p2.z));
+    let light = to_display(rgb_of(fx.p2.w));
+    let n = mix(dark, light, v);
+    let base = to_display(unpremul(c));
+    var out: vec4<f32>;
+    switch u32(round(fx.p3.x)) {
+        case 1u: { out = vec4(to_linear(1.0 - (1.0 - base) * (1.0 - n)) * c.a, c.a); }
+        case 2u: { out = vec4(to_linear(base * n) * c.a, c.a); }
+        case 3u: {
+            let o = select(1.0 - 2.0 * (1.0 - base) * (1.0 - n), 2.0 * base * n, base < vec3(0.5));
+            out = vec4(to_linear(o) * c.a, c.a);
+        }
+        case 4u: { out = vec4(to_linear(min(base + n, vec3(1.0))) * c.a, c.a); }
+        // As transparency: the layer kept where the noise is light.
+        case 5u: { out = c * v; }
+        default: { out = vec4(to_linear(n), 1.0); }
+    }
+    return mix(c, out, clamp(fx.p3.y / 100.0, 0.0, 1.0));
+}

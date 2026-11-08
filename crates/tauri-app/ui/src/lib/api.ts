@@ -542,7 +542,7 @@ export type BenchReport = {
 };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise";
 
 export interface Curves {
   master: Pt[];

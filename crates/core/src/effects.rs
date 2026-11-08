@@ -104,6 +104,9 @@ pub enum EffectKind {
     /// The layer breaks up into particles over time, a ragged glowing front
     /// sweeping across it (see [`crate::disintegrate`]).
     Disintegrate,
+    /// Fractal noise: clouds, smoke, liquid or marble patterns that evolve
+    /// over time, drawn over the layer or used as its transparency.
+    FractalNoise,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -126,6 +129,8 @@ pub enum EffectCategory {
     Repair,
     /// Particles, fire, smoke, explosions, weather, gunfire and fluid.
     Simulation,
+    /// Patterns made from nothing: fractal noise, lightning.
+    Generate,
     /// Plugins that didn't name a category.
     Plugins,
     /// OpenFX plugins (Sapphire, Neat Video, BorisFX, the OpenFX Misc set…).
@@ -133,7 +138,7 @@ pub enum EffectCategory {
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 9] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
+    pub const ALL: [EffectCategory; 10] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
@@ -143,6 +148,7 @@ impl EffectCategory {
             EffectCategory::Distort => "Distort",
             EffectCategory::Repair => "Repair",
             EffectCategory::Simulation => "Particles & simulation",
+            EffectCategory::Generate => "Generate",
             EffectCategory::Plugins => "Other plugins",
             EffectCategory::OpenFx => "OpenFX",
         }
@@ -847,6 +853,28 @@ pub mod wire {
     pub const GAP: usize = 6;
     pub const SHOW: usize = 7;
 }
+/// Fractal noise parameter indices.
+pub mod fractal {
+    pub const TYPE: usize = 0;
+    pub const SCALE: usize = 1;
+    pub const DETAIL: usize = 2;
+    pub const ROUGHNESS: usize = 3;
+    pub const CONTRAST: usize = 4;
+    pub const BRIGHTNESS: usize = 5;
+    /// Where it is in its evolution (°: a turn is one full change).
+    pub const EVOLUTION: usize = 6;
+    /// How fast it evolves (° a second).
+    pub const SPEED: usize = 7;
+    pub const DRIFT_X: usize = 8;
+    pub const DRIFT_Y: usize = 9;
+    pub const DARK: usize = 10;
+    pub const LIGHT: usize = 11;
+    pub const BLEND: usize = 12;
+    pub const OPACITY: usize = 13;
+    pub const SEED: usize = 14;
+    pub const TYPES: [&str; 6] = ["Smooth", "Turbulent", "Ridged", "Clouds", "Liquid", "Marble"];
+    pub const BLENDS: [&str; 6] = ["Replace the layer", "Screen over it", "Multiply", "Overlay", "Add", "As the layer's transparency"];
+}
 /// Halftone parameter indices.
 pub mod halftone {
     pub const STYLE: usize = 0;
@@ -952,6 +980,23 @@ const HALFTONE: [ParamSpec; 8] = [
     color("Paper", 0xf6f1e6),
     spec("Mix", 100.0, 0.0, 100.0, " %", 0.5),
 ];
+const FRACTAL: [ParamSpec; 15] = [
+    choice("Type", &fractal::TYPES),
+    spec("Scale", 250.0, 4.0, 5000.0, " px", 1.0),
+    spec("Detail", 6.0, 1.0, 10.0, "", 0.02),
+    spec("Roughness", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Contrast", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Brightness", 0.0, -100.0, 100.0, " %", 0.5),
+    spec("Evolution", 0.0, -36000.0, 36000.0, "°", 1.0),
+    spec("Evolution speed", 45.0, -3600.0, 3600.0, "°/s", 0.5),
+    spec("Drift X", 0.0, -5000.0, 5000.0, " px/s", 0.5),
+    spec("Drift Y", 0.0, -5000.0, 5000.0, " px/s", 0.5),
+    color("Dark colour", 0x000000),
+    color("Light colour", 0xffffff),
+    choice("Blend", &fractal::BLENDS),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
 const CRT: [ParamSpec; 12] = [
     spec("Curvature", 30.0, 0.0, 100.0, " %", 0.5),
     spec("Scan lines", 50.0, 0.0, 100.0, " %", 0.5),
@@ -992,7 +1037,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 32] = [
+    pub const ALL: [EffectKind; 33] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -1021,6 +1066,7 @@ impl EffectKind {
         EffectKind::BulletHit,
         EffectKind::Fluid,
         EffectKind::Disintegrate,
+        EffectKind::FractalNoise,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -1063,6 +1109,7 @@ impl EffectKind {
             EffectKind::BulletHit => "Bullet hit",
             EffectKind::Fluid => "Fluid",
             EffectKind::Disintegrate => "Disintegrate",
+            EffectKind::FractalNoise => "Fractal noise",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -1078,6 +1125,7 @@ impl EffectKind {
             EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate => EffectCategory::Simulation,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::WireRemoval => EffectCategory::Repair,
+            EffectKind::FractalNoise => EffectCategory::Generate,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
@@ -1107,6 +1155,7 @@ impl EffectKind {
             EffectKind::MuzzleFlash => "A gun's flash at the barrel (drag it in the Viewer): rifle, pistol, shotgun or side vents, one shot or a burst, lighting the scene round it. Put it on an adjustment layer to light the footage.",
             EffectKind::BulletHit => "A bullet striking a wall, concrete, metal, glass or wood: a flash, sparks and a puff of dust, and the hole or cracks it leaves. Put it on an adjustment layer over the footage.",
             EffectKind::Disintegrate => "The layer breaks up into particles of its own colours, a ragged glowing front sweeping across it in the direction you choose, the pieces drifting away and fading.",
+            EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
             EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
@@ -1161,6 +1210,7 @@ impl EffectKind {
             EffectKind::BulletHit => &BULLET_HIT,
             EffectKind::Fluid => &FLUID,
             EffectKind::Disintegrate => &DISINTEGRATE,
+            EffectKind::FractalNoise => &FRACTAL,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -1195,6 +1245,7 @@ impl EffectKind {
             EffectKind::BulletHit => &[(0, "Hit"), (5, "Look")],
             EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look"), (15, "Obstacles")],
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
+            EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
         }
@@ -1278,6 +1329,7 @@ impl EffectValues {
             EffectKind::WireRemoval => false,
             EffectKind::Shatter => self.pieces.is_none(),
             EffectKind::Disintegrate => self.particles.is_none(),
+            EffectKind::FractalNoise => v[fractal::OPACITY] == 0.0,
             EffectKind::MuzzleFlash => v[muzzle::BRIGHTNESS] == 0.0 && v[muzzle::LIGHT] == 0.0,
             EffectKind::BulletHit => false,
             EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.fluid.is_none(),
@@ -1311,6 +1363,7 @@ impl EffectValues {
         let v = &self.values;
         self.kind.animates_with_time()
             || (self.kind == EffectKind::NeonEdges && v[neon::FLICKER] > 0.0)
+            || (self.kind == EffectKind::FractalNoise && (v[fractal::SPEED] != 0.0 || v[fractal::DRIFT_X] != 0.0 || v[fractal::DRIFT_Y] != 0.0))
             || (self.kind == EffectKind::Crt && (v[crt::WOBBLE] > 0.0 || v[crt::NOISE] > 0.0 || v[crt::TRACKING] > 0.0))
     }
 }

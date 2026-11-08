@@ -2044,3 +2044,47 @@ fn simulations_draw_what_they_say() {
     let none = draw(&mut c, &clear, EffectKind::Particles, &atomic, 0.5);
     assert!(none.chunks_exact(4).all(|q| q[0] < 8 && q[1] < 8 && q[2] < 8), "nothing from a clear layer");
 }
+
+/// Fractal noise: a pattern across the layer that's the same at the same
+/// moment, evolves over time, and can cut the layer out.
+#[test]
+fn fractal_noise_patterns_evolve_and_cut_out() {
+    use reelforge_core::effects::fractal as f;
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let grey = solid(w, h, [128, 128, 128, 255]);
+    let mut key = 7000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, set: &[(usize, f32)], t: f64| {
+        let mut e = Effect::new(EffectKind::FractalNoise);
+        e.params[f::SCALE].value = 40.0;
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        key += 1;
+        let mut l = layer(1, &grey, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        c.render([w, h], &[with_fx(l, vec![e.eval(Time::from_secs_f64(t))])]);
+        c.read_output().unwrap()
+    };
+    let spread = |img: &[u8]| {
+        let v: Vec<u8> = img.chunks(4).map(|p| p[0]).collect();
+        (*v.iter().min().unwrap(), *v.iter().max().unwrap())
+    };
+    for ty in 0..6 {
+        let img = draw(&mut c, &[(f::TYPE, ty as f32)], 0.0);
+        let (lo, hi) = spread(&img);
+        assert!(hi - lo > 80, "type {ty}: {lo}..{hi}");
+        assert_eq!(img, draw(&mut c, &[(f::TYPE, ty as f32)], 0.0), "type {ty} is the same each time");
+    }
+    let a = draw(&mut c, &[], 0.0);
+    let b = draw(&mut c, &[], 2.0);
+    assert!(a.iter().zip(&b).filter(|(x, y)| x.abs_diff(**y) > 10).count() > 2000, "evolves");
+    let still = draw(&mut c, &[(f::SPEED, 0.0)], 2.0);
+    assert_eq!(a, still, "no speed, no change");
+    // Drawn over black, "as transparency" leaves the grey only where the noise is light.
+    let cut = draw(&mut c, &[(f::BLEND, 5.0), (f::CONTRAST, 400.0)], 0.0);
+    let dark = cut.chunks(4).filter(|p| p[0] < 10).count();
+    let kept = cut.chunks(4).filter(|p| (120..136).contains(&p[0])).count();
+    assert!(dark > 500 && kept > 500, "{dark} {kept}");
+}

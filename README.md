@@ -510,8 +510,21 @@ What works now:
       and kept as it plays (a step a frame), with a checkpoint every second, so seeking back
       starts from the nearest one. **Flow round the layer's shape**: put it on a title or a
       keyed layer and the fluid flows round the letters or the subject instead of through them
+  - **Generate** (a category of its own):
+    - **Fractal noise**: a pattern that drifts and evolves, like After Effects' Fractal Noise or
+      HitFilm's Clouds. **Type**: *Smooth*, *Turbulent* (billowing smoke), *Ridged* (sharp
+      crests and veins), *Clouds* (puffs with clear sky between), *Liquid* (the noise pushed
+      along by itself) or *Marble* (bands bent by the noise). **Scale**, **Detail** (how many
+      finer layers, fractional values blending in), **Roughness** (how strong the finer layers
+      are), **Contrast** and **Brightness**. **Evolution** (keyframable, a turn being one whole
+      change) and **Evolution speed** keep it changing; **Drift X/Y** slide it along (clouds
+      blowing past). Drawn in two colours (**Dark** and **Light**), it **replaces the layer**
+      (put it on a plane), goes **over** it (screen, multiply, overlay or add), or becomes the
+      layer's **transparency** (a smoky reveal, a texture for a key or other effects), with an
+      **Opacity** and a **Seed** for a different pattern. It's 3D gradient noise on the
+      graphics card, the same every time at the same moment
   - The **browser** (`E`, or **Edit → Effects & transitions…**) lists every effect by category
-    (Colour, Blur & sharpen, Keying, Light & stylize, Particles & simulation…) and every transition, with a search box
+    (Colour, Blur & sharpen, Keying, Light & stylize, Particles & simulation, Generate…) and every transition, with a search box
     and a one-line description of each; **Add** puts an effect on the selected clip
   - Turn each effect on or off, reorder (applied top to bottom) or remove it. Every parameter
     has a keyframe button and works like the transform properties. The viewer and export use
