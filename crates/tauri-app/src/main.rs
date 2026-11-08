@@ -873,6 +873,39 @@ fn set_track_matte(id: u64, matte: Option<reelforge_core::TrackMatte>) -> Res<()
     })
 }
 
+/// Make `what` of clip `id` a template control of the sequence being edited.
+#[tauri::command]
+fn expose_control(id: u64, what: reelforge_core::template::Target, label: Option<String>) -> Res<()> {
+    ed(|e| e.expose_control(clip(id), what, label))
+}
+
+/// Rename (with a label) or remove (without) control `index` of the sequence being edited.
+#[tauri::command]
+fn edit_control(index: usize, label: Option<String>) -> Res<()> {
+    ed(|e| e.edit_control(index, label))
+}
+
+/// Set control `index` of the composition clip `id` plays.
+#[tauri::command]
+fn set_control(id: u64, index: usize, value: reelforge_core::template::Value) -> Res<()> {
+    ed(|e| e.set_control(clip(id), index, value))
+}
+
+/// Save the sequence being edited as a template (asks where).
+#[tauri::command]
+fn save_template() -> Res<()> {
+    let name = ed(|e| e.seq().name.clone())?;
+    let Some(path) = rfd::FileDialog::new().set_title("Save as a template").add_filter("Reelforge template", &[reelforge_core::template::EXTENSION]).set_file_name(format!("{name}.{}", reelforge_core::template::EXTENSION)).save_file() else { return Ok(()) };
+    ed(|e| e.save_template(&path))
+}
+
+/// Add a template (asks which) at the playhead.
+#[tauri::command]
+fn add_template() -> Res<()> {
+    let Some(path) = rfd::FileDialog::new().set_title("Add a template").add_filter("Reelforge template", &[reelforge_core::template::EXTENSION]).pick_file() else { return Ok(()) };
+    ed(|e| e.add_template(&path))
+}
+
 /// Every installed font face for titles (empty until the background scan finishes).
 #[tauri::command]
 fn font_faces() -> Res<Vec<reelforge_core::FontChoice>> {
@@ -1696,6 +1729,11 @@ fn main() {
             set_transform,
             set_blend,
             set_track_matte,
+            expose_control,
+            edit_control,
+            set_control,
+            save_template,
+            add_template,
             set_title,
             font_faces,
             place_title,

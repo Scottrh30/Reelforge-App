@@ -144,9 +144,34 @@ pub struct ClipView {
     pub label: Option<String>,
 }
 
+/// A template control on a composition clip: what to show and its value now.
+#[derive(Serialize)]
+pub struct ControlView {
+    pub label: String,
+    pub kind: reelforge_core::template::Kind,
+    pub value: Option<reelforge_core::template::Value>,
+    /// For a choice: its options.
+    pub options: Vec<&'static str>,
+}
+
+/// Something of the selected clip that can be made a control.
+#[derive(Serialize)]
+pub struct ExposeView {
+    pub label: String,
+    pub what: reelforge_core::template::Target,
+    /// Already a control.
+    pub exposed: bool,
+}
+
 /// The selected clip, for the Controls panel.
 #[derive(Serialize)]
 pub struct Inspector {
+    /// A composition clip: its composition's template controls.
+    pub controls: Vec<ControlView>,
+    /// What of this clip could be a control of the sequence it's in.
+    pub exposable: Vec<ExposeView>,
+    /// The sequence being edited's controls: (label, the clip it's on, what of it).
+    pub seq_controls: Vec<(String, u64, String)>,
     pub id: u64,
     pub name: String,
     pub kind: &'static str,
@@ -655,7 +680,46 @@ pub fn state(e: &Editor) -> State {
         let footage = c.title.is_none() && c.nested.is_none() && p.media(c.media).is_some_and(|m| m.info.video.is_some() && m.info.duration > Time::ZERO);
         let job = e.tracking.as_ref().map(|j| (j.clip, j.progress));
         let cam_job = e.tracking.as_ref().is_some_and(|j| j.camera && j.clip == c.id);
+        use reelforge_core::template::Target;
+        let controls = c
+            .nested
+            .and_then(|n| p.sequences.get(n))
+            .map(|s| {
+                s.controls
+                    .iter()
+                    .map(|k| {
+                        let target = s.find_clip(k.clip).map(|(_, x)| x);
+                        let options = match k.what {
+                            Target::Param { effect, param } => target.and_then(|x| x.effects.get(effect)).and_then(|f| f.kind.params().get(param)).and_then(|pp| match pp.ui {
+                                reelforge_core::effects::ParamUi::Choice(o) => Some(o.to_vec()),
+                                _ => None,
+                            }),
+                            _ => None,
+                        };
+                        ControlView { label: k.label.clone(), kind: target.map_or(reelforge_core::template::Kind::Number, |x| k.what.kind(x)), value: target.and_then(|x| k.what.get(x)), options: options.unwrap_or_default() }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let here = &e.seq().controls;
+        let mut can: Vec<Target> = Vec::new();
+        if c.title.is_some() {
+            can.extend([Target::Text, Target::TextColour]);
+        }
+        if video {
+            can.extend([Target::Opacity, Target::Position]);
+            for (ei, f) in c.effects.iter().enumerate() {
+                for pi in 0..f.params.len() {
+                    can.push(Target::Param { effect: ei, param: pi });
+                }
+            }
+        }
+        let exposable = can.into_iter().map(|w| ExposeView { label: w.describe(c), what: w, exposed: here.iter().any(|k| k.clip == c.id && k.what == w) }).collect();
+        let seq_controls = here.iter().map(|k| (k.label.clone(), k.clip.0, e.seq().find_clip(k.clip).map_or("(gone)".into(), |(_, x)| format!("{}: {}", x.display_name(p), k.what.describe(x))))).collect();
         Inspector {
+            controls,
+            exposable,
+            seq_controls,
             layer_map: map.as_ref().map(matrix),
             layer_inv: map.and_then(|m| m.inverse()).as_ref().map(matrix),
             layer_px,

@@ -4,6 +4,7 @@
   import { api, type Transform, type Blend, type TrackMatte, type TitleSpec, type ClipAudio, type TrackAudio } from "../lib/api";
   import NumberField from "./NumberField.svelte";
   import MasksPanel from "./MasksPanel.svelte";
+  import TemplateControls from "./TemplateControls.svelte";
   import { showPanel } from "../lib/dock.svelte";
   import { setPanel } from "../lib/session.svelte";
   import EffectsPanel from "./EffectsPanel.svelte";
@@ -593,6 +594,7 @@
       <EffectsPanel {ins} scene={true} />
     {/if}
     {#if ins.visual}
+      <TemplateControls {ins} />
       <EffectsPanel {ins} />
       <MasksPanel {ins} />
     {/if}

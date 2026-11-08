@@ -68,6 +68,8 @@
     { label: "Project versions…", run: () => (app.versionsOpen = true) },
     { separator: true },
     { label: "Import media…", hint: "Ctrl+I", run: actions.importMedia },
+    { label: "Add motion graphics template…", run: () => run(api.addTemplate()) },
+    { label: "Save sequence as motion graphics template…", run: () => run(api.saveTemplate()) },
     { label: "Export…", hint: "Ctrl+M", run: actions.exportOpen },
     {
       label: "Export edit for another editor",

@@ -292,6 +292,12 @@ export interface Inspector {
   duration: Ticks;
   source_in: Ticks;
   visual: { transform: Transform; blend: Blend; track_matte: TrackMatte | null; layer_size: [number, number] } | null;
+  /// A composition clip: its template controls.
+  controls: { label: string; kind: ControlKind; value: ControlValue | null; options: string[] }[];
+  /// What of this clip could be a control of the sequence it's in.
+  exposable: { label: string; what: ControlTarget; exposed: boolean }[];
+  /// The sequence being edited's controls: label, clip id, what.
+  seq_controls: [string, number, string][];
   title: TitleSpec | null;
   audio: ClipAudio | null;
   speed: number;
@@ -548,6 +554,10 @@ export type BenchReport = {
 };
 /// Shown only through the layer on the video track above: its alpha or brightness, or the reverse.
 export type TrackMatte = "Alpha" | "AlphaInverted" | "Luma" | "LumaInverted";
+/// Template controls (see core template.rs).
+export type ControlKind = "Text" | "Colour" | "Number" | "Choice" | "Toggle" | "Percent" | "Point";
+export type ControlValue = string | number | [number, number];
+export type ControlTarget = "Text" | "TextColour" | "Opacity" | "Position" | { Param: { effect: number; param: number } };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
 export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint";
@@ -1001,6 +1011,11 @@ export const api = {
   setTrackAudio: (index: number, audio: TrackAudio) => invoke("set_track_audio", { index, audio }),
   setTransform: (id: number, transform: Transform) => invoke("set_transform", { id, transform }),
   setBlend: (id: number, blend: Blend) => invoke("set_blend", { id, blend }),
+  exposeControl: (id: number, what: ControlTarget, label: string | null = null) => invoke("expose_control", { id, what, label }),
+  editControl: (index: number, label: string | null) => invoke("edit_control", { index, label }),
+  setControl: (id: number, index: number, value: ControlValue) => invoke("set_control", { id, index, value }),
+  saveTemplate: () => invoke("save_template"),
+  addTemplate: () => invoke("add_template"),
   setTrackMatte: (id: number, matte: TrackMatte | null) => invoke("set_track_matte", { id, matte }),
   setTitle: (id: number, spec: TitleSpec) => invoke("set_title", { id, spec }),
   setClipAudio: (id: number, audio: ClipAudio) => invoke("set_clip_audio", { id, audio }),

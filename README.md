@@ -87,6 +87,16 @@ What works now:
 - **Per-clip transform** in the Controls panel: position, scale (with a lock for uniform
   scaling), rotation, opacity, **anchor point**, **crop**, and **blend modes**, plus Reset /
   Fit / Fill buttons. Clips sit at their native pixel size by default, like HitFilm
+  - **Motion graphics templates**, like After Effects' Essential Graphics: inside a
+    composition, select a clip and under **Template controls of this sequence** make any of its
+    settings a control (a title's text or colour, opacity, position, or any effect setting),
+    named as you like. Every clip playing that composition then shows them at the top of the
+    Controls panel (**Template controls**), so a lower third's name or a logo's colour is set
+    without opening it. **File → Save sequence as motion graphics template…** writes it (with
+    the compositions inside it and the footage they use, by path) to a .rftemplate file;
+    **File → Add motion graphics template…** adds one to any project as a composition of its
+    own, placed at the playhead, so each copy's controls set that copy only. Setting a control
+    is one undo step
   - **Track matte** (under Blend), like After Effects': the layer shows only through the
     layer on the video track directly above it, which becomes its matte and isn't drawn
     itself. *Alpha* (where the layer above is), *Alpha inverted* (where it isn't), *Luma*

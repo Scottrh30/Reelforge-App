@@ -617,6 +617,10 @@ pub struct Sequence {
     /// first video track) close up the gaps they'd leave.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub magnetic: bool,
+    /// Template controls: settings inside this composition shown on the
+    /// clips that play it (see [`crate::template`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<crate::template::Control>,
 }
 
 /// A named point on the timeline (M adds one at the playhead).
@@ -669,6 +673,7 @@ impl Sequence {
             markers: Vec::new(),
             multicam: false,
             magnetic: false,
+            controls: Vec::new(),
         }
     }
 

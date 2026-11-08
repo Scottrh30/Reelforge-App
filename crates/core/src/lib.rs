@@ -20,6 +20,7 @@ pub mod inpaint;
 pub mod fillstore;
 pub mod rotobrush;
 pub mod paint;
+pub mod template;
 pub mod effects;
 pub mod environment;
 pub mod fluid;

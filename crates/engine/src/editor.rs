@@ -280,6 +280,7 @@ mod camtrack;
 mod fill;
 pub mod roto;
 mod paint;
+mod template;
 mod diskspace;
 mod viewcam;
 mod remap;
