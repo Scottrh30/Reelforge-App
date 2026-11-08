@@ -278,6 +278,7 @@ mod viewcam;
 mod remap;
 mod multicam;
 pub mod versions;
+mod interchange;
 pub use multicam::MulticamAt;
 mod replace;
 mod snapshot;

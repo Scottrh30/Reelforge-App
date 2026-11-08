@@ -69,6 +69,15 @@
     { separator: true },
     { label: "Import media…", hint: "Ctrl+I", run: actions.importMedia },
     { label: "Export…", hint: "Ctrl+M", run: actions.exportOpen },
+    {
+      label: "Export edit for another editor",
+      submenu: [
+        { label: "EDL (CMX 3600)…", hint: "Avid, Premiere, Resolve", run: () => run(api.exportEdit("edl")) },
+        { label: "Final Cut Pro X XML (FCPXML)…", hint: "Final Cut Pro, Resolve", run: () => run(api.exportEdit("fcpxml")) },
+        { label: "Final Cut Pro 7 XML…", hint: "Premiere, Resolve", run: () => run(api.exportEdit("xml")) },
+        { label: "OpenTimelineIO…", hint: "Resolve, Hiero, RV", run: () => run(api.exportEdit("otio")) },
+      ],
+    },
     { label: "Snapshot of the frame", hint: "Ctrl+Shift+E", run: () => run(api.snapshot(false)) },
     { label: "Save snapshot as…", run: () => run(api.snapshot(true)) },
     { label: "Export queue", checked: app.queueOpen, run: () => (app.queueOpen = !app.queueOpen) },

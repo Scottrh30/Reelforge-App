@@ -1401,6 +1401,31 @@ fn snapshot(save_as: bool) -> Res<Option<String>> {
     })?
 }
 
+/// File > Export edit as: the sequence being edited as an EDL ("edl"),
+/// FCPXML ("fcpxml"), Final Cut Pro 7 XML ("xml") or OpenTimelineIO
+/// ("otio"), to a file chosen here. Returns where it went.
+#[tauri::command]
+fn export_edit(format: String) -> Res<Option<String>> {
+    use reelforge_core::interchange::Format;
+    let Some(f) = Format::parse(&format) else { return Err(format!("unknown format {format}")) };
+    let (dir, name) = ed(|e| (e.project_path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())), format!("{}.{}", e.seq().name, f.extension())))?;
+    let mut dlg = rfd::FileDialog::new().set_title(format!("Export the edit as {}", f.label())).add_filter(f.label(), &[f.extension()]).set_file_name(name);
+    if let Some(d) = dir.filter(|d| d.is_dir()) {
+        dlg = dlg.set_directory(d);
+    }
+    let Some(mut path) = dlg.save_file() else { return Ok(None) };
+    if path.extension().is_none() {
+        path.set_extension(f.extension());
+    }
+    ed(|e| match e.export_edit(f, &path) {
+        Ok(_) => Some(path.display().to_string()),
+        Err(err) => {
+            e.status = err;
+            None
+        }
+    })
+}
+
 /// Snapshot settings: choose their folder (`choose`; else back to the
 /// default), or open it.
 #[tauri::command]
@@ -1523,6 +1548,7 @@ fn main() {
             snapshot,
             snapshot_folder,
             snapshot_import,
+            export_edit,
             frame,
             waveform,
             waveform_rate,

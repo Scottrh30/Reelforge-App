@@ -998,6 +998,7 @@ export const api = {
   renameVersion: (file: string, name: string, note: string) => invoke<boolean>("rename_version", { file, name, note }),
   deleteVersion: (file: string) => invoke<boolean>("delete_version", { file }),
   setVersionsOnSave: (on: boolean) => invoke("set_versions_on_save", { on }),
+  exportEdit: (format: "edl" | "fcpxml" | "xml" | "otio") => invoke<string | null>("export_edit", { format }),
   addMask: (id: number, shape: "rectangle" | "ellipse") => invoke<number | null>("add_mask", { id, shape }),
   addFreehandMask: (id: number, points: Pt[]) => invoke<number | null>("add_freehand_mask", { id, points }),
   setMasks: (id: number, masks: Mask[], done: boolean) => invoke("set_masks", { id, masks, done }),

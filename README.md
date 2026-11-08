@@ -634,6 +634,18 @@ What works now:
   it starts; **File > Open an autosave…** opens older ones. Saving always writes a new file and
   then swaps it in, so a crash mid-save can't corrupt the project. Closing, starting a new
   project or opening another asks **Save changes?** if there's unsaved work
+- **Export edit for another editor** (**File > Export edit for another editor**): hand the cuts
+  of the sequence being edited to another program as a **CMX 3600 EDL** (Avid, Premiere,
+  Resolve and most others: Video 1 plus up to four audio tracks, reel names from the file names,
+  dissolves, M2 speed lines, clip names, file paths and markers as comments), **FCPXML 1.10**
+  (Final Cut Pro, Resolve: Video 1 as the primary storyline, other tracks as connected clips,
+  speed as time maps, dissolves and markers), **Final Cut Pro 7 XML** (Premiere, Resolve: every
+  track, Time Remap speed, cross dissolves, markers) or **OpenTimelineIO** (Resolve, Hiero, RV,
+  pipeline tools: every track, linear time warps and freeze frames, dissolves, markers). What
+  goes across is the edit: which part of which file plays where, on which track, at what speed.
+  Effects, colour, masks, keyframes and titles stay in Reelforge; titles, solids and
+  compositions become named gaps. All four have been read back with OpenTimelineIO's own
+  readers. AAF isn't written yet
 - **Project versions** (**File > Project versions…**, or **Save version…** / Ctrl+Alt+S): keep
   the project as it is now under a name and a note (*Rough cut for the client*), in a
   "*project* versions" folder beside the project file. Every Save also keeps one by itself when

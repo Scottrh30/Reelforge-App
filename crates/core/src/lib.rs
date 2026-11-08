@@ -19,6 +19,7 @@ pub mod environment;
 pub mod flow;
 pub mod frame;
 pub mod imageseq;
+pub mod interchange;
 pub mod lut;
 pub mod mask;
 pub mod matte;
