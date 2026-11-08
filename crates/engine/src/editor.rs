@@ -273,6 +273,8 @@ mod camtrack;
 mod diskspace;
 mod viewcam;
 mod remap;
+mod multicam;
+pub use multicam::MulticamAt;
 mod replace;
 mod snapshot;
 mod stilltrim_tests;
@@ -366,6 +368,8 @@ pub struct Editor {
     pub view: Option<(viewcam::ViewMode, reelforge_core::space3d::Camera)>,
     /// Bumped when the view changes (it isn't a project change).
     pub view_rev: u64,
+    /// The Viewer shows multicam clips as a grid of their angles.
+    pub multicam_grid: bool,
     mixed_rev: u64,
     /// Project revision at the last save (or open): anything newer is unsaved.
     pub saved_rev: u64,
@@ -438,6 +442,7 @@ impl Editor {
             rev: 1,
             view: None,
             view_rev: 0,
+            multicam_grid: false,
             target: None,
             mixed_rev: 0,
             saved_rev: 1,
@@ -1953,7 +1958,10 @@ impl Editor {
         for track in targets {
             let id = ClipId(self.project.alloc_id());
             first.get_or_insert(id);
-            cmds.push(Box::new(AddClip { seq: self.active, track, clip: Clip::new_nested(id, index, start, dur, link) }));
+            let mut clip = Clip::new_nested(id, index, start, dur, link);
+            // A multicam source's clip starts on its first angle.
+            clip.angle = self.project.sequences[index].multicam.then(reelforge_core::multicam::Angle::default);
+            cmds.push(Box::new(AddClip { seq: self.active, track, clip }));
         }
         self.execute(Box::new(Batch { name: "Add composition".into(), cmds }));
         self.select_only(first);
@@ -3511,8 +3519,11 @@ impl Editor {
         self.playback.scrub_if_moved();
         self.meters.poll(self.playback.audio.as_ref());
         let sources = self.decode_paths();
+        // Rendered previews are of the edit, never the angle grid.
+        reelforge_core::multicam::set_grid(false);
         self.step_render_job(&sources);
         self.apply_view();
+        reelforge_core::multicam::set_grid(self.multicam_grid);
         self.preview.update(&self.project, self.active, self.playback.playhead, self.playback.playing, &sources, &mut self.render_cache);
         if let Some(e) = self.preview.error.take() {
             self.status = e;

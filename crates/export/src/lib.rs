@@ -166,7 +166,12 @@ fn mix_sequence(project: &Project, seq: usize, rate: u32, depth: usize) -> Vec<M
                 // Inner sample x plays at outer sample y where x = a + r·(cs + y − ws).
                 let (a, cs) = (c.anchor.to_frame(sr) as f64, c.source_in.to_frame(sr) as f64);
                 let outer = |x: f64| ws as f64 + (x - a) / r - cs;
+                // A multicam clip plays only the angle it's heard on.
+                let heard = c.angle.zip(project.sequences.get(inner).filter(|s| s.multicam)).map(|(a, s)| reelforge_core::multicam::audio_angles(s).get(a.heard() as usize).copied());
                 for mut m in mix_sequence(project, inner, rate, depth + 1) {
+                    if heard.is_some_and(|track| track != Some(m.track)) {
+                        continue;
+                    }
                     if !c.is_retimed() {
                         m.start += ws - c.source_in.to_frame(sr);
                     } else {

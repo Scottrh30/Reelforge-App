@@ -46,6 +46,8 @@ export const app = $state({
   aboutTab: null as null | "diagnostics" | "check" | "notices",
   /// Timeline > Duck music under dialogue… is open.
   duckOpen: false,
+  /// New multicam source… is open, with these takes ticked to start with.
+  multicamOpen: null as null | number[],
   /// Media being dragged from the Media panel (pointer position in the window).
   dragMedia: null as null | { id: number; name: string; x: number; y: number },
   /// An effect or transition being dragged from the Effects panel.

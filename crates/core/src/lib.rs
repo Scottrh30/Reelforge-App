@@ -31,6 +31,7 @@ pub mod time;
 pub mod title;
 pub mod meshtrack;
 pub mod meshwarp;
+pub mod multicam;
 pub mod planar;
 pub mod space3d;
 pub mod track;

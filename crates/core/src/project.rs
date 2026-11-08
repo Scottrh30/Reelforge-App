@@ -171,6 +171,9 @@ pub struct Clip {
     /// (slowed down or remapped footage).
     #[serde(default, skip_serializing_if = "is_default_blend")]
     pub frame_blend: FrameBlend,
+    /// For a clip playing a multicam source: the angle it shows and plays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<crate::multicam::Angle>,
 }
 
 /// How retimed footage fills the moments between its frames.
@@ -234,6 +237,7 @@ impl Clip {
             label: None,
             remap: None,
             frame_blend: FrameBlend::Nearest,
+            angle: None,
         }
     }
 
@@ -554,6 +558,11 @@ pub struct Sequence {
     /// Markers on the timeline ruler, sorted by time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<Marker>,
+    /// A multicam source: each video track is a camera angle (and each audio
+    /// track that angle's sound), and clips playing it show one angle at a
+    /// time (see [`crate::multicam`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multicam: bool,
 }
 
 /// A named point on the timeline (M adds one at the playhead).
@@ -604,6 +613,7 @@ impl Sequence {
             in_point: None,
             out_point: None,
             markers: Vec::new(),
+            multicam: false,
         }
     }
 

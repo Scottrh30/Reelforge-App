@@ -176,6 +176,11 @@ export function onKey(e: KeyboardEvent) {
     if (w) return go(() => (switchTo(w.name), say(`${w.name} workspace`)));
     return;
   }
+  // 1…9 (Shift: picture only): cut the multicam clip at the playhead to that angle.
+  if (!e.altKey && /^Digit[1-9]$/.test(e.code) && app.live?.multicam) {
+    const angle = Number(e.code.slice(5)) - 1;
+    return go(() => run(api.switchAngle(angle, e.shiftKey)));
+  }
   switch (e.key) {
     case " ":
       return go(() => actions.act("play"));

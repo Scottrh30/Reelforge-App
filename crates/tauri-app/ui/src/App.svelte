@@ -19,6 +19,7 @@
   import ContextMenu from "./components/ContextMenu.svelte";
   import Dialogs from "./components/Dialogs.svelte";
   import DuckDialog from "./components/DuckDialog.svelte";
+  import MulticamDialog from "./components/MulticamDialog.svelte";
   import AboutDialog from "./components/AboutDialog.svelte";
   import ExportDialog from "./components/ExportDialog.svelte";
   import ExportQueue from "./components/ExportQueue.svelte";
@@ -159,6 +160,7 @@
 <Dialogs />
 <ExportDialog />
 <DuckDialog />
+<MulticamDialog />
 <AboutDialog />
 <ExportQueue />
 <EffectsBrowser />

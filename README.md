@@ -649,6 +649,21 @@ What works now:
   new file's own pixel size instead. A frame of a numbered image sequence brings in the whole
   sequence. The status line says if clips run past the end of the new file (they hold its last
   frame) or if it lacks sound or picture the clips use. One undo step
+- **Multicam** (**Timeline > New multicam source…**, or right-click a take in the Media panel):
+  tick two or more takes of the same event, in angle order, and line them up by **sound** (the
+  takes' loudness is compared, coarse to fine, so the same claps and words line up to a hundredth
+  of a second, then each starts on a frame) or by **their starts**. That makes a multicam source,
+  a composition with one video and one audio track per angle (named after the takes), and puts a
+  multicam clip playing it at the playhead, with the Viewer showing **every angle in a grid**
+  (2×2 up to four, 3×3 up to nine, 4×4). Play it and press **1–9**, or click an angle in the
+  grid, to cut to that angle at the playhead, live; **Shift** cuts the picture only, the sound
+  staying on the angle heard. The angle seen is outlined in the grid and the one heard marked ♪;
+  the chip in the Viewer's top bar (or **Timeline > Multicam: show all angles**) switches between
+  the grid and the edit as it plays. Each cut is an ordinary cut of the multicam clip, so it can
+  be trimmed, rolled and undone like any other, and each piece shows its angle's name on the
+  timeline. The Controls panel shows a multicam clip's angle and lets its **Sound** follow the
+  picture or stay on one angle (the best microphone). Open the source to slip a take that didn't
+  line up. Exports and rendered previews are always of the edit, never the grid
 - **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, render cache size,
   proxies, autosave interval, and the proxy/autosave folders
 - **Speed** (Controls panel, any footage or composition clip): 1–2000%, with one-click 25/50/
@@ -1562,6 +1577,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | M | Add a marker at the playhead |
 | Up / Down | Previous / next cut, marker or in/out point |
 | Shift+F | Freeze frame at the playhead |
+| 1–9 (Shift: picture only) | Multicam: cut to that angle at the playhead |
 | Ctrl+G | Make composition (the selected clips, or everything between in and out) |
 | Ctrl+click / Shift+click | Add a clip to the selection, or take it out |
 | Drag on empty track space | Select clips with a box (Ctrl adds to the selection) |

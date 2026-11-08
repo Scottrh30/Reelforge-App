@@ -46,6 +46,8 @@ pub struct SeqInfo {
     pub height: u32,
     pub fps: f64,
     pub duration: i64,
+    /// A multicam source.
+    pub multicam: bool,
 }
 
 #[derive(Serialize)]
@@ -165,6 +167,8 @@ pub struct Inspector {
     pub remap: Option<RemapView>,
     /// What retimed footage shows between its frames: "Nearest", "Blend" or "Flow".
     pub frame_blend: reelforge_core::FrameBlend,
+    /// A multicam clip: its source's angles and the ones seen and heard.
+    pub multicam: Option<AngleView>,
     pub effects: Vec<crate::fx::EffectView>,
     /// Transform properties with keyframes.
     pub animated: Vec<&'static str>,
@@ -210,6 +214,14 @@ pub struct Inspector {
 }
 
 /// A 3D model layer's file, as its settings show it.
+#[derive(Serialize)]
+pub struct AngleView {
+    pub angles: Vec<String>,
+    pub video: u8,
+    /// The angle heard, if it doesn't follow the one seen.
+    pub audio: Option<u8>,
+}
+
 #[derive(Serialize)]
 pub struct ModelInfo {
     pub path: String,
@@ -465,6 +477,11 @@ fn clip_name(p: &Project, c: &Clip) -> String {
         }
         return if first.is_empty() { "Title".into() } else { first.to_string() };
     }
+    if let (Some(a), Some(s)) = (c.angle, c.nested.and_then(|s| p.sequences.get(s)).filter(|s| s.multicam)) {
+        // A multicam clip: the angle it's on.
+        let names = reelforge_core::multicam::angle_names(s);
+        return names.get(a.video as usize).cloned().unwrap_or_else(|| format!("Angle {}", a.video + 1));
+    }
     if let Some(s) = c.nested {
         return p.sequences.get(s).map(|s| s.name.clone()).unwrap_or_else(|| "Composition".into());
     }
@@ -661,6 +678,7 @@ pub fn state(e: &Editor) -> State {
             reverse: c.reverse,
             remap: remap_view(e, c),
             frame_blend: c.frame_blend,
+            multicam: c.angle.zip(c.nested.and_then(|i| p.sequences.get(i)).filter(|s| s.multicam)).map(|(a, s)| AngleView { angles: reelforge_core::multicam::angle_names(s), video: a.video, audio: a.audio }),
             effects: crate::fx::views(e, c),
             animated,
             keys: (video && c.scene.is_none()).then(|| crate::keys::view(e, c)),
@@ -695,7 +713,7 @@ pub fn state(e: &Editor) -> State {
         sequences: p
             .sequences
             .iter()
-            .map(|s| SeqInfo { name: s.name.clone(), width: s.width, height: s.height, fps: s.frame_rate.fps(), duration: s.duration().0 })
+            .map(|s| SeqInfo { name: s.name.clone(), width: s.width, height: s.height, fps: s.frame_rate.fps(), duration: s.duration().0, multicam: s.multicam })
             .collect(),
         media,
         seq,

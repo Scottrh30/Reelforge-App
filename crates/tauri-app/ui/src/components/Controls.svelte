@@ -394,6 +394,23 @@
       </div>
     {/if}
 
+    {#if ins.multicam}
+      {@const mc = ins.multicam}
+      <div class="group">
+        <h4>Multicam</h4>
+        <div class="grid2">
+          <span class="lbl">Angle</span>
+          <span>{mc.video + 1} · {mc.angles[mc.video] ?? "?"}</span>
+          <span class="lbl">Sound</span>
+          <select aria-label="Sound" value={mc.audio == null ? "follow" : String(mc.audio)} onchange={(e) => run(api.setAudioAngle(ins.id, e.currentTarget.value === "follow" ? null : Number(e.currentTarget.value)))}>
+            <option value="follow">Follows the picture</option>
+            {#each mc.angles as a, i}<option value={String(i)}>{i + 1} · {a}</option>{/each}
+          </select>
+        </div>
+        <p class="note">Play and press 1–9 to cut to an angle at the playhead (Shift: the picture only, the sound stays), or click one in the Viewer's angle grid.</p>
+      </div>
+    {/if}
+
     {#if ins.transition_in}
       {@const tx = ins.transition_in}
       <div class="group">

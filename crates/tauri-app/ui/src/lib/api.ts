@@ -264,6 +264,8 @@ export interface SeqInfo {
   height: number;
   fps: number;
   duration: Ticks;
+  /// A multicam source.
+  multicam: boolean;
 }
 
 /** Which parts of a tracked motion are applied. */
@@ -293,6 +295,8 @@ export interface Inspector {
   reverse: boolean;
   remap: RemapView | null;
   frame_blend: "Nearest" | "Blend" | "Flow";
+  /// A multicam clip: its source's angles, the one seen, and the one heard if it doesn't follow.
+  multicam: { angles: string[]; video: number; audio: number | null } | null;
   effects: EffectView[];
   animated: string[];
   keys: KeysView | null;
@@ -843,6 +847,18 @@ export interface Live {
   viewer: { layers: number; proxied: number; proxies_on: boolean; decode: string; gpu: string | null; quality: number };
   /// Disk space running short (until dismissed).
   disk: DiskLow | null;
+  /// The multicam clip at the playhead.
+  multicam: MulticamLive | null;
+}
+export interface MulticamLive {
+  clip: number;
+  angles: string[];
+  /// The angle seen and the one heard (0-based).
+  video: number;
+  heard: number;
+  audio_fixed: boolean;
+  /// The Viewer shows the angle grid.
+  grid: boolean;
 }
 export interface DiskLow {
   free: number;
@@ -955,6 +971,10 @@ export const api = {
   timeRemapMoveKey: (id: number, index: number, secs: number) => invoke("time_remap_move_key", { id, index, secs }),
   timeRemapInterp: (id: number, interp: "Linear" | "Ease" | "Hold") => invoke("time_remap_interp", { id, interp }),
   setFrameBlend: (id: number, blend: "Nearest" | "Blend" | "Flow") => invoke("set_frame_blend", { id, blend }),
+  createMulticam: (media: number[], sync: "audio" | "start") => invoke("create_multicam", { media, sync }),
+  switchAngle: (angle: number, pictureOnly: boolean) => invoke("switch_angle", { angle, pictureOnly }),
+  setAudioAngle: (clip: number, audio: number | null) => invoke("set_audio_angle", { clip, audio }),
+  setMulticamGrid: (on: boolean) => invoke("set_multicam_grid", { on }),
   addMask: (id: number, shape: "rectangle" | "ellipse") => invoke<number | null>("add_mask", { id, shape }),
   addFreehandMask: (id: number, points: Pt[]) => invoke<number | null>("add_freehand_mask", { id, points }),
   setMasks: (id: number, masks: Mask[], done: boolean) => invoke("set_masks", { id, masks, done }),

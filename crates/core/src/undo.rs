@@ -290,6 +290,7 @@ impl Command for SplitClip {
             // Remap keys are at clip times too: both halves keep them.
             remap: clip.remap.clone(),
             frame_blend: clip.frame_blend,
+            angle: clip.angle,
         };
         clip.duration = left;
         clip.audio.fade_out = Time::ZERO;
@@ -740,6 +741,77 @@ pub fn composition_from_media(p: &mut Project, media: MediaId, fallback: &Sequen
         seq.tracks[t].clips.push(Clip::new(id, media, Time::ZERO, Time::ZERO, duration, link));
     }
     Ok(AddSequence::new(p, seq))
+}
+
+/// "New multicam source": a multicam composition (see [`crate::multicam`])
+/// with one video and one audio track per take in `media`, each take
+/// starting `offsets[i]` after the first (as worked out by
+/// [`crate::multicam::sync_offsets`]; missing ones are 0). Takes are moved so
+/// the earliest starts at 0. Size and rate come from the first take with a
+/// picture (else `fallback`). Allocates clip ids, hence `&mut`.
+pub fn multicam_from_media(p: &mut Project, media: &[MediaId], offsets: &[f64], fallback: &Sequence) -> Result<AddSequence, String> {
+    if media.len() < 2 {
+        return Err("Choose two or more takes for a multicam source".into());
+    }
+    let takes: Vec<crate::MediaAsset> = media.iter().map(|m| p.media(*m).cloned().ok_or("That media isn't in the project")).collect::<Result<_, _>>()?;
+    if let Some(m) = takes.iter().find(|m| m.info.duration <= Time::ZERO || (m.info.video.is_none() && m.info.audio.is_none())) {
+        return Err(format!("{} isn't footage or sound with a length", m.name));
+    }
+    let first = takes.iter().find(|m| m.info.video.is_some());
+    let (width, height) = first.and_then(|m| m.info.video.as_ref()).map_or((fallback.width, fallback.height), |v| (v.width.max(1), v.height.max(1)));
+    let rate = first.and_then(|m| m.info.video.as_ref()).map(|v| v.frame_rate).filter(|r| r.fps() > 0.0).unwrap_or(fallback.frame_rate);
+    let off: Vec<f64> = (0..takes.len()).map(|i| offsets.get(i).copied().unwrap_or(0.0)).collect();
+    let earliest = off.iter().copied().fold(f64::INFINITY, f64::min);
+    let stem = |m: &crate::MediaAsset| std::path::Path::new(&m.name).file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| m.name.clone());
+    let name = unique_sequence_name(p, &format!("{} multicam", stem(&takes[0])));
+    let mut seq = Sequence { tracks: Vec::new(), multicam: true, ..Sequence::new(name, width, height, rate) };
+    let n = takes.len();
+    for (i, m) in takes.iter().enumerate() {
+        seq.tracks.push(Track::new(format!("{} {}", i + 1, stem(m)), crate::TrackKind::Video));
+    }
+    for (i, m) in takes.iter().enumerate() {
+        seq.tracks.push(Track::new(format!("{} {}", i + 1, stem(m)), crate::TrackKind::Audio));
+    }
+    for (i, m) in takes.iter().enumerate() {
+        // Start on a frame: the sound moves by under half a frame at most.
+        let start = Time::from_secs_f64(off[i] - earliest).snap(rate);
+        let duration = m.info.duration;
+        let mut targets = Vec::new();
+        if m.info.video.is_some() {
+            targets.push(i);
+        }
+        if m.info.audio.is_some() {
+            targets.push(n + i);
+        }
+        let link = (targets.len() > 1).then(|| p.alloc_id());
+        for t in targets {
+            let id = ClipId(p.alloc_id());
+            seq.tracks[t].clips.push(Clip::new(id, m.id, start, Time::ZERO, duration, link));
+        }
+    }
+    Ok(AddSequence::new(p, seq))
+}
+
+/// Give multicam clips these angles (the old ones are kept for undo), one undo step.
+pub struct SetAngle {
+    pub seq: usize,
+    pub clips: Vec<(ClipId, Option<crate::multicam::Angle>)>,
+}
+
+impl Command for SetAngle {
+    fn name(&self) -> &str {
+        "Switch angle"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        for (id, angle) in &mut self.clips {
+            if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(*id) {
+                std::mem::swap(&mut c.angle, angle);
+            }
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        self.apply(p);
+    }
 }
 
 /// Plan "Make composition" for clips `ids` (and everything linked to them)

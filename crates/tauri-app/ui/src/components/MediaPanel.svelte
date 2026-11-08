@@ -16,6 +16,7 @@
     openMenu(e, [
       { heading: true, label: m.name },
       { label: "New composition from media", run: () => run(api.newCompositionFromMedia(m.id)) },
+      { label: "New multicam source…", hint: "this and other takes", disabled: m.missing || m.duration <= 0, run: () => (app.multicamOpen = [m.id]) },
       { label: `Add to ${seq} at playhead`, run: () => run(api.addToTimeline(m.id, null, app.live?.playhead ?? 0)) },
       { label: `Append to end of ${seq}`, run: () => run(api.addToTimeline(m.id, null, null)) },
       { separator: true },
@@ -49,7 +50,7 @@
     openMenu(e, [
       { heading: true, label: name },
       { label: "Open in Composition Timeline", run: () => openComp(index) },
-      { label: "Add to the edit at playhead", disabled: app.s?.active === index, run: () => run(api.addComposite(index)) },
+      { label: app.s?.sequences[index]?.multicam ? "Add the multicam clip to the edit at playhead" : "Add to the edit at playhead", disabled: app.s?.active === index, run: () => run(api.addComposite(index)) },
     ]);
   }
 

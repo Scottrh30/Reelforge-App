@@ -20,6 +20,7 @@ mod start;
 mod openfx;
 mod keys;
 mod ops;
+mod multicam;
 mod trans;
 mod scene;
 mod viewer;
@@ -93,6 +94,8 @@ struct Live {
     viewer: ViewerInfo,
     /// Disk space running short (until the warning is dismissed).
     disk: Option<reelforge_engine::disk::DiskLow>,
+    /// The multicam clip at the playhead.
+    multicam: Option<multicam::MulticamView>,
 }
 
 #[derive(Serialize)]
@@ -181,6 +184,7 @@ fn tick() -> Res<Live> {
             render_gen: e.render_cache.generation,
             viewer: viewer_info(e),
             disk: e.disk_low.clone().filter(|_| !e.disk_dismissed),
+            multicam: multicam::view(e),
         }
     })
 }
@@ -1560,6 +1564,11 @@ fn main() {
             scene::set_parent,
             scene::scene_point_drag,
             scene::view_set,
+            multicam::create_multicam,
+            multicam::switch_angle,
+            multicam::switch_angle_at,
+            multicam::set_audio_angle,
+            multicam::set_multicam_grid,
             fx::light_environment,
             fx::add_environment_light,
             scene::camera_tool_drag,

@@ -129,7 +129,7 @@ impl Scene {
         unchanged_from: Option<u64>,
     ) -> Result<u64> {
         self.tick += 1;
-        let sig = self.render_at(project, seq, t, compositor, provider, unchanged_from, 0)?;
+        let sig = self.render_at(project, seq, None, t, compositor, provider, unchanged_from, 0)?;
         let tick = self.tick;
         // Compositions off screen for a few seconds give their GPU memory back.
         self.nested.retain(|_, n| tick - n.last_used < 150);
@@ -139,10 +139,12 @@ impl Scene {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn render_at(
         &mut self,
         project: &Project,
         seq: usize,
+        angle: Option<reelforge_core::multicam::Angle>,
         t: Time,
         compositor: &mut Compositor,
         provider: &mut dyn FrameProvider,
@@ -155,7 +157,7 @@ impl Scene {
         // The camera and lights, for 3D layers.
         let scene3d = project.scene3d_at(seq, t);
         let mut items = Vec::new();
-        for item in project.video_layers_at(seq, t) {
+        for item in reelforge_core::multicam::layers_at(project, seq, t, angle) {
             match item {
                 VideoItem::Single(l) => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
                 VideoItem::Dissolve { from, to, mix, kind } => {
@@ -307,7 +309,7 @@ impl Scene {
             (_, Some(c)) if !l.clip.adjustment => Some(Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(c.to_vec()), u32::from_le_bytes(c) as u64), size: full, media: MediaId::GENERATED }),
             // An adjustment layer has no picture: it's drawn from the frame below.
             _ if l.clip.adjustment => Some(Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(vec![0u8; 4]), 0), size: full, media: MediaId::GENERATED }),
-            (Some(inner), _) => self.nested_picture(project, l.clip.id, inner, l.source_time, provider, depth)?,
+            (Some(inner), _) => self.nested_picture(project, l.clip.id, inner, l.clip.angle, l.source_time, provider, depth)?,
             (None, _) => provider.picture(project, l, frame_size)?,
         };
         let Some(mut picture) = picture else { return Ok(None) };
@@ -382,7 +384,8 @@ impl Scene {
     }
 
     /// Render composition `inner` at its time `t` and read the picture back.
-    fn nested_picture(&mut self, project: &Project, clip: ClipId, inner: usize, t: Time, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Picture>> {
+    #[allow(clippy::too_many_arguments)]
+    fn nested_picture(&mut self, project: &Project, clip: ClipId, inner: usize, angle: Option<reelforge_core::multicam::Angle>, t: Time, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Picture>> {
         let Some(s) = project.sequences.get(inner) else { return Ok(None) };
         if depth >= MAX_NESTING {
             return Ok(None);
@@ -398,7 +401,7 @@ impl Scene {
             }
         };
         n.last_used = self.tick;
-        let result = self.render_at(project, inner, t, &mut n.compositor, provider, n.signature.filter(|_| n.frame.is_some()), depth + 1);
+        let result = self.render_at(project, inner, angle, t, &mut n.compositor, provider, n.signature.filter(|_| n.frame.is_some()), depth + 1);
         let sig = match result {
             Ok(sig) => sig,
             Err(e) => {
@@ -469,11 +472,11 @@ fn solid_layer(l: &Layer, spec: &reelforge_core::TitleSpec, frame_size: [u32; 2]
 /// a rendered frame can be reused while its recipe is unchanged.
 pub fn frame_recipe(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId, std::path::PathBuf>) -> u64 {
     let mut h = DefaultHasher::new();
-    recipe_into(project, seq, t, sources, 0, &mut h);
+    recipe_into(project, seq, None, t, sources, 0, &mut h);
     h.finish()
 }
 
-fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId, std::path::PathBuf>, depth: usize, h: &mut DefaultHasher) {
+fn recipe_into(project: &Project, seq: usize, angle: Option<reelforge_core::multicam::Angle>, t: Time, sources: &HashMap<MediaId, std::path::PathBuf>, depth: usize, h: &mut DefaultHasher) {
     let Some(s) = project.sequences.get(seq) else { return };
     let frame_size = [s.width.max(2), s.height.max(2)];
     frame_size.hash(h);
@@ -498,7 +501,9 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
             (Some(inner), _) => {
                 1u8.hash(h);
                 if depth < MAX_NESTING {
-                    recipe_into(project, inner, l.source_time, sources, depth + 1, h);
+                    clip.angle.hash(h);
+                    reelforge_core::multicam::grid().hash(h);
+                    recipe_into(project, inner, clip.angle, l.source_time, sources, depth + 1, h);
                 }
                 project.sequences.get(inner).map_or([0.0; 2], |s| [s.width as f32, s.height as f32])
             }
@@ -570,7 +575,7 @@ fn recipe_into(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId
             mask::mask_hash(&clip.masks, clip.source_time(t), layer_size).hash(h);
         }
     };
-    for item in project.video_layers_at(seq, t) {
+    for item in reelforge_core::multicam::layers_at(project, seq, t, angle) {
         match item {
             VideoItem::Single(l) => {
                 0u8.hash(h);

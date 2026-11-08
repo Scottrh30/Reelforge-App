@@ -4,6 +4,7 @@
   import { livePump } from "../lib/live";
   import { actions } from "../lib/actions.svelte";
   import ViewerOverlay from "./ViewerOverlay.svelte";
+  import MulticamGrid from "./MulticamGrid.svelte";
   import ViewerTools from "./ViewerTools.svelte";
   import { openMenu } from "../lib/menu.svelte";
 
@@ -449,6 +450,16 @@
       title="Playback quality: draw the Viewer's picture at full, half or quarter resolution (footage is decoded that much smaller too), so heavy projects play smoothly; Automatic steps down by itself when playing falls behind and back up when it can. Export and Render preview always use full resolution."
       onclick={qualityMenu}>{quality}{#if app.s?.prefs.full_when_paused && (app.s?.prefs.playback_quality ?? 1) !== 1}<span class="paused-full" title="Full resolution when paused"> ⏸ full</span>{/if} ▾</button
     >
+    {#if app.live?.multicam}
+      {@const mc = app.live.multicam}
+      <button
+        class="chip"
+        class:viewing={mc.grid}
+        aria-pressed={mc.grid}
+        onclick={() => run(api.setMulticamGrid(!mc.grid))}
+        title="Multicam: show every angle of the clip at the playhead (click one, or press 1–9, to cut to it; Shift: picture only). Off: the edit as it plays">{mc.angles[mc.video] ?? "Multicam"}{mc.grid ? " · angles" : ""}</button
+      >
+    {/if}
     <button
       class="chip"
       class:viewing={(app.s?.view ?? "Active") !== "Active"}
@@ -552,6 +563,7 @@
     {#each guides.ys as gy}<div class="guide h" style="top:{fit.y + gy * fit.k}px; left:{fit.x}px; width:{fit.w}px"></div>{/each}
     {#if readout?.text}<div class="readout" style="left:{readout.x + 16}px; top:{readout.y + 16}px">{readout.text}</div>{/if}
     <ViewerOverlay {fit} {box} />
+    <MulticamGrid {fit} />
     <ViewerTools />
   </div>
   <div class="transport">
