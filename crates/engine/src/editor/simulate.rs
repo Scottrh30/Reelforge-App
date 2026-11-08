@@ -11,7 +11,7 @@ use reelforge_core::undo::{AddClip, Batch, Command};
 use reelforge_core::{Clip, ClipId, Effect, EffectKind, MediaId, TitleSpec, Time};
 
 /// What can be added (the menu's order): (name, label).
-pub const SIMULATIONS: [(&str, &str); 12] = [
+pub const SIMULATIONS: [(&str, &str); 13] = [
     ("fire", "Fire"),
     ("smoke", "Smoke"),
     ("explosion", "Explosion"),
@@ -24,6 +24,7 @@ pub const SIMULATIONS: [(&str, &str); 12] = [
     ("fluid", "Fluid (ink or coloured smoke)"),
     ("shatter", "Shatter the selected layer"),
     ("atomic", "Atomic particles from the selected layer"),
+    ("disintegrate", "Disintegrate the selected layer"),
 ];
 
 /// Particles from preset `name`, its sizes and speeds scaled by `k` (the
@@ -111,7 +112,7 @@ impl Editor {
                 "Added a gun shot: a muzzle flash, and its bullet hitting a wall a moment later. Drag both into place in the Viewer",
             ),
             "fluid" => self.add_effects_layer(vec![with(EffectKind::Fluid, &[(fl::DETAIL, 1.0)])], false, "Add fluid", "Added a fluid: coloured smoke pours from the source (drag it in the Viewer). It's worked out from the layer's start, so the first play of a long one takes a moment"),
-            "shatter" | "atomic" => self.add_to_selected(what),
+            "shatter" | "atomic" | "disintegrate" => self.add_to_selected(what),
             _ => {}
         }
     }
@@ -133,6 +134,8 @@ impl Editor {
         let k = self.seq().height as f32 / 1080.0;
         let (fx, msg) = if what == "shatter" {
             (with(EffectKind::Shatter, &[(shatter::AT, src)]), "The layer shatters at the playhead: drag the impact point in the Viewer")
+        } else if what == "disintegrate" {
+            (with(EffectKind::Disintegrate, &[(reelforge_core::effects::disintegrate::START, src)]), "The layer breaks up into particles from the playhead, over 2 seconds: set the direction, roughness and glow in the Controls panel")
         } else {
             (preset("Atomic", k, &[]), "The layer gives off particles in its own colours: try the Disintegrate preset for only the particles")
         };
@@ -180,7 +183,7 @@ mod tests {
     #[test]
     fn every_simulation_adds_its_effects() {
         let mut e = Editor::new(None, None);
-        for (what, _) in SIMULATIONS.iter().filter(|(w, _)| !matches!(*w, "shatter" | "atomic")) {
+        for (what, _) in SIMULATIONS.iter().filter(|(w, _)| !matches!(*w, "shatter" | "atomic" | "disintegrate")) {
             e.add_simulation(what);
             let id = e.selection.expect(what);
             let (_, c) = e.seq().find_clip(id).unwrap();

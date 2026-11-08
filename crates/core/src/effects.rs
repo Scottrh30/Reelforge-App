@@ -101,6 +101,9 @@ pub enum EffectKind {
     /// Coloured smoke or ink poured into still air: a 2D fluid simulation
     /// (see [`crate::fluid`]).
     Fluid,
+    /// The layer breaks up into particles over time, a ragged glowing front
+    /// sweeping across it (see [`crate::disintegrate`]).
+    Disintegrate,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -398,6 +401,25 @@ const BULLET_HIT: [ParamSpec; 10] = [
     spec("Dust", 70.0, 0.0, 200.0, " %", 0.5),
     spec("Hole", 100.0, 0.0, 100.0, " %", 0.5),
     spec("Flash", 100.0, 0.0, 300.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const DISINTEGRATE: [ParamSpec; 17] = [
+    spec("Direction", 0.0, -360.0, 360.0, "°", 0.5),
+    spec("Starts at", 0.5, 0.0, 3600.0, " s", 0.01),
+    spec("Takes", 2.0, 0.0, 600.0, " s", 0.01),
+    spec("Roughness", 40.0, 0.0, 100.0, " %", 0.5),
+    color("Edge glow", 0xff9a30),
+    spec("Edge glow width", 4.0, 0.0, 50.0, " %", 0.1),
+    spec("Particle size", 3.0, 0.2, 100.0, " px", 0.05),
+    spec("Particles", 20000.0, 0.0, 60000.0, "", 10.0),
+    spec("Drift speed", 120.0, 0.0, 3000.0, " px/s", 1.0),
+    spec("Drift direction", 30.0, -360.0, 360.0, "°", 0.5),
+    spec("Spread", 60.0, 0.0, 360.0, "°", 0.5),
+    spec("Gravity", -40.0, -5000.0, 5000.0, " px/s²", 1.0),
+    spec("Turbulence", 40.0, 0.0, 1000.0, " px", 0.5),
+    spec("Lifetime", 2.0, 0.05, 20.0, " s", 0.01),
+    color("Fade to", 0xff6a20),
+    choice("Look", &crate::particles::LOOKS),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
 const FLUID: [ParamSpec; 15] = [
@@ -766,6 +788,26 @@ pub mod bullet {
     pub const SEED: usize = 9;
     pub const SURFACES: [&str; 5] = ["Wall (plaster)", "Concrete", "Metal", "Glass", "Wood"];
 }
+/// Disintegrate parameter indices.
+pub mod disintegrate {
+    pub const DIRECTION: usize = 0;
+    pub const START: usize = 1;
+    pub const DURATION: usize = 2;
+    pub const ROUGH: usize = 3;
+    pub const GLOW: usize = 4;
+    pub const GLOW_WIDTH: usize = 5;
+    pub const SIZE: usize = 6;
+    pub const COUNT: usize = 7;
+    pub const SPEED: usize = 8;
+    pub const DRIFT: usize = 9;
+    pub const SPREAD: usize = 10;
+    pub const GRAVITY: usize = 11;
+    pub const TURBULENCE: usize = 12;
+    pub const LIFETIME: usize = 13;
+    pub const FADE_TO: usize = 14;
+    pub const LOOK: usize = 15;
+    pub const SEED: usize = 16;
+}
 /// Fluid parameter indices.
 pub mod fluid_params {
     pub const X: usize = 0;
@@ -943,7 +985,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 31] = [
+    pub const ALL: [EffectKind; 32] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -971,6 +1013,7 @@ impl EffectKind {
         EffectKind::MuzzleFlash,
         EffectKind::BulletHit,
         EffectKind::Fluid,
+        EffectKind::Disintegrate,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -1012,6 +1055,7 @@ impl EffectKind {
             EffectKind::MuzzleFlash => "Muzzle flash",
             EffectKind::BulletHit => "Bullet hit",
             EffectKind::Fluid => "Fluid",
+            EffectKind::Disintegrate => "Disintegrate",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -1024,7 +1068,7 @@ impl EffectKind {
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner | EffectKind::MatteChoker | EffectKind::RefineMatte => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
-            EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid => EffectCategory::Simulation,
+            EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate => EffectCategory::Simulation,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::WireRemoval => EffectCategory::Repair,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
@@ -1055,6 +1099,7 @@ impl EffectKind {
             EffectKind::Shatter => "The layer breaks into irregular pieces at a moment you choose, thrown out from the impact point (drag it in the Viewer), tumbling and falling. Pieces beyond its reach stay put.",
             EffectKind::MuzzleFlash => "A gun's flash at the barrel (drag it in the Viewer): rifle, pistol, shotgun or side vents, one shot or a burst, lighting the scene round it. Put it on an adjustment layer to light the footage.",
             EffectKind::BulletHit => "A bullet striking a wall, concrete, metal, glass or wood: a flash, sparks and a puff of dust, and the hole or cracks it leaves. Put it on an adjustment layer over the footage.",
+            EffectKind::Disintegrate => "The layer breaks up into particles of its own colours, a ragged glowing front sweeping across it in the direction you choose, the pieces drifting away and fading.",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
             EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
@@ -1108,6 +1153,7 @@ impl EffectKind {
             EffectKind::MuzzleFlash => &MUZZLE_FLASH,
             EffectKind::BulletHit => &BULLET_HIT,
             EffectKind::Fluid => &FLUID,
+            EffectKind::Disintegrate => &DISINTEGRATE,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -1121,7 +1167,7 @@ impl EffectKind {
     /// Does the picture change with time even when the settings don't
     /// (flicker, shake, grain…)? Then every frame has to be drawn.
     pub fn animates_with_time(self) -> bool {
-        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::OpenFx | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid)
+        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::OpenFx | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate)
     }
 
     /// Headings to show above some parameters, as (first parameter, heading).
@@ -1141,6 +1187,7 @@ impl EffectKind {
             EffectKind::MuzzleFlash => &[(0, "Gun"), (5, "Flash"), (7, "Shots")],
             EffectKind::BulletHit => &[(0, "Hit"), (5, "Look")],
             EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look")],
+            EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
         }
@@ -1221,6 +1268,7 @@ impl EffectValues {
             EffectKind::Halftone => v[halftone::MIX] == 0.0,
             EffectKind::WireRemoval => false,
             EffectKind::Shatter => self.pieces.is_none(),
+            EffectKind::Disintegrate => self.particles.is_none(),
             EffectKind::MuzzleFlash => v[muzzle::BRIGHTNESS] == 0.0 && v[muzzle::LIGHT] == 0.0,
             EffectKind::BulletHit => false,
             EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.table.is_none(),
@@ -1396,6 +1444,7 @@ impl Effect {
         match self.kind {
             EffectKind::Shatter => v.pieces = Some(Arc::new(crate::shatter::simulate(self, t, size))),
             EffectKind::Fluid => v.table = crate::fluid::simulate(self, t, size),
+            EffectKind::Disintegrate => v.particles = Some(Arc::new(crate::disintegrate::simulate(self, t, size))),
             _ => {}
         }
         v
@@ -1462,7 +1511,7 @@ mod tests {
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 // These need the layer's size (a shatter's pieces, a fluid's grid).
-                EffectKind::Shatter | EffectKind::Fluid => assert!(v.is_identity() && !e.eval_sized(Time::from_secs_f64(0.5), None, [640.0, 360.0]).is_identity(), "{kind:?}"),
+                EffectKind::Shatter | EffectKind::Fluid | EffectKind::Disintegrate => assert!(v.is_identity() && !e.eval_sized(Time::from_secs_f64(0.5), None, [640.0, 360.0]).is_identity(), "{kind:?}"),
                 _ => assert!(!v.is_identity(), "{kind:?} should do something by default"),
             }
         }

@@ -575,7 +575,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1563,6 +1563,39 @@ impl Compositor {
                         let at = push("fs_clear", cur, Second::None, o1, u);
                         particle_marks.push((at, particle_sets.len()));
                         particle_sets.push(particles::Set::Pieces(pieces));
+                        cur = o1;
+                    }
+                    EffectKind::Disintegrate => {
+                        use reelforge_core::effects::disintegrate as d;
+                        let Some(ps) = &e.particles else { continue };
+                        let v = &e.values;
+                        // The particles' settings where the particle shader reads them,
+                        // and the sweep in the slots it doesn't use (see `fs_disintegrate`).
+                        let mut pv = [0.0f32; reelforge_core::effects::MAX_PARAMS];
+                        pv[0] = v[d::DIRECTION];
+                        pv[1] = v[d::START];
+                        pv[2] = reelforge_core::particles::SHAPE_PIXELS as f32;
+                        pv[3] = v[d::DURATION];
+                        pv[4] = v[d::ROUGH];
+                        pv[5] = v[d::GLOW];
+                        pv[6] = v[d::GLOW_WIDTH];
+                        pv[7] = v[d::SEED];
+                        pv[reelforge_core::particles::GRAVITY] = v[d::GRAVITY];
+                        pv[reelforge_core::particles::TURBULENCE] = v[d::TURBULENCE];
+                        pv[reelforge_core::particles::SIZE_START] = v[d::SIZE];
+                        pv[reelforge_core::particles::SIZE_END] = v[d::SIZE] * 0.4;
+                        pv[reelforge_core::particles::COLOR_END] = v[d::FADE_TO];
+                        pv[reelforge_core::particles::OPACITY] = 100.0;
+                        pv[reelforge_core::particles::LOOK] = v[d::LOOK];
+                        pv[reelforge_core::particles::SEED] = v[d::SEED];
+                        let mut u = uniform(&pv, [0.0; 2]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        u[28..32].copy_from_slice(&pv[16..20]);
+                        let at = push("fs_disintegrate", cur, Second::None, o1, u);
+                        particle_marks.push((at, particle_sets.len()));
+                        particle_sets.push(particles::Set::Particles(ps, v[d::LOOK]));
                         cur = o1;
                     }
                     EffectKind::Fluid => {

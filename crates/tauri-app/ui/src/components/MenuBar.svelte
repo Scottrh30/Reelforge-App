@@ -226,6 +226,7 @@
         { separator: true },
         { label: "Shatter the selected layer", disabled: app.s?.selected.length !== 1, run: () => run(api.addSimulation("shatter")) },
         { label: "Atomic particles from the selected layer", disabled: app.s?.selected.length !== 1, run: () => run(api.addSimulation("atomic")) },
+        { label: "Disintegrate the selected layer", disabled: app.s?.selected.length !== 1, run: () => run(api.addSimulation("disintegrate")) },
       ],
     },
     { label: "Add plane (new layer)", run: () => run(api.addNew("layer")) },

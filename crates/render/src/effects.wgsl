@@ -1351,3 +1351,42 @@ fn fs_bullet(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4(c.rgb + light, max(c.a, clamp(max3(light), 0.0, 1.0)));
 }
+
+// Disintegrate: the layer erased behind a ragged front (its particles are
+// drawn over it in the same pass). The uniform is laid out for the particle
+// shader; the sweep sits in slots it doesn't use: p0 = (direction °, starts
+// at s, -, takes s), p1 = (roughness %, edge glow colour, glow width %, seed).
+// The moment of each point matches core disintegrate::moment.
+@fragment
+fn fs_disintegrate(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = fx.extra.zw;
+    let a = radians(fx.p0.x);
+    let d = vec2(cos(a), -sin(a));
+    let c0 = 0.0;
+    let c1 = size.x * d.x;
+    let c2 = size.y * d.y;
+    let c3 = size.x * d.x + size.y * d.y;
+    let lo = min(min(c0, c1), min(c2, c3));
+    let hi = max(max(c0, c1), max(c2, c3));
+    let px = in.uv * size;
+    let along = (dot(px, d) - lo) / max(hi - lo, 1e-3);
+    let rough = clamp(fx.p1.x / 100.0, 0.0, 1.0);
+    let seed = u32(max(fx.p1.w, 0.0));
+    let cell = max(size.y, 1.0) / 6.0;
+    let n = (vnoise(seed, px / cell) * 2.0 + vnoise(seed + 1u, px / cell * 3.0)) / 3.0;
+    let moment = along * (1.0 - rough) + n * rough;
+    let dur = fx.p0.w;
+    var f = select(-1.0, 2.0, fx.extra.y >= fx.p0.y);
+    if (dur > 0.0) {
+        f = (fx.extra.y - fx.p0.y) / dur;
+    }
+    if (f >= moment) {
+        return vec4(0.0);
+    }
+    // Glowing just before the front reaches it.
+    let w = max(fx.p1.z / 100.0, 1e-4);
+    let g = smoothstep(moment - w, moment, f);
+    let glow = rgb_of(fx.p1.y) * g * 1.3 * c.a;
+    return vec4(c.rgb * (1.0 - g * 0.5) + glow, c.a);
+}

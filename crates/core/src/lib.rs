@@ -14,6 +14,7 @@ pub mod channels;
 pub mod clipboard;
 pub mod collect;
 pub mod edit;
+pub mod disintegrate;
 pub mod effects;
 pub mod environment;
 pub mod fluid;

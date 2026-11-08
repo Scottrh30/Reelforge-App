@@ -481,6 +481,15 @@ What works now:
       of dust (or smoke off metal) blowing out and settling, and the mark it leaves on **Wall**,
       **Concrete** (with cracks), **Metal** (a torn bright rim and scorch), **Glass** (a star of
       cracks and rings) or **Wood**
+    - **Disintegrate** (an effect, or **Disintegrate the selected layer**, starting at the
+      playhead): the layer breaks up into particles of its own colours over time. A front sweeps
+      across it in the **Direction** you choose (0° left to right, 90° bottom to top), from
+      **Starts at** for **Takes** seconds, made ragged by **Roughness**; just ahead of it the
+      picture glows (**Edge glow**, **Edge glow width**), behind it the picture is gone and its
+      particles drift off (**Drift speed**, **Drift direction**, **Spread**, **Gravity**,
+      **Turbulence**), fading to **Fade to** over their **Lifetime**. **Particles** sets how
+      many (up to 60,000), **Particle size** and **Look** how they're drawn. The front and the
+      particles come from the same moment for each point, so they meet exactly
     - **Fluid**: coloured smoke or ink poured from a **Source** (drag it) in a **Direction** with
       **Force**, swirling (**Swirl**), rising (**Rise**, negative sinks) and fading (**Fade**),
       changing between two colours (**Colour change** times a second). A real fluid simulation

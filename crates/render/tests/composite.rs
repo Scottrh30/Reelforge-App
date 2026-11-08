@@ -1975,6 +1975,18 @@ fn simulations_draw_what_they_say() {
     let coloured = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| px(&fl, w, x, y)[2] > 60).count();
     assert!(coloured > 40, "{coloured}");
 
+    // Disintegrate, left to right: halfway, the left half gone (bar a few
+    // particles), the right half still there, and glowing particles at the front.
+    {
+        use reelforge_core::effects::disintegrate as d;
+        let set = [(d::START, 0.0), (d::DURATION, 2.0), (d::ROUGH, 0.0), (d::SPEED, 0.0), (d::GRAVITY, 0.0), (d::TURBULENCE, 0.0), (d::COUNT, 3000.0), (d::LOOK, 3.0), (d::LIFETIME, 0.3)];
+        let img = draw(&mut c, &grey, EffectKind::Disintegrate, &set, 1.0);
+        let lit = |x0: u32, x1: u32| (0..h).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| lum(px(&img, w, x, y)) > 150).count();
+        assert!(lit(0, 50) < 50 * 90 / 4, "left mostly gone: {}", lit(0, 50));
+        assert!(lit(100, 160) == 60 * 90, "right still there: {}", lit(100, 160));
+        assert!(lit(60, 80) > 20, "particles at the front");
+    }
+
     // Atomic particles: born from a red layer's pixels, they're red; from a clear one, none.
     let atomic = [(p::SHAPE, p::SHAPE_PIXELS_ONLY as f32), (p::RATE, 2000.0), (p::LIFETIME, 1.0), (p::SPEED, 0.0), (p::GRAVITY, 0.0), (p::SIZE_START, 4.0), (p::SIZE_END, 4.0), (p::LOOK, 3.0), (p::COLOR_END, 0xff0000 as f32)];
     let img = draw(&mut c, &red, EffectKind::Particles, &atomic, 0.5);
