@@ -489,11 +489,11 @@
         : fx.points.filter((p) => fx.params.length > p.param + 1).map((p) => ({ index, param: p.param, label: `${fx.label}: ${p.label}`, at: [(fx.params[p.param].value / 100) * size[0], (fx.params[p.param + 1].value / 100) * size[1]] as Pt })),
     );
   });
-  // Wire removals: a line between their two ends (the ends are fxPoints).
+  // Wire removals and lightning: a line between their two ends (the ends are fxPoints).
   const wires = $derived.by((): [Pt, Pt][] => {
     if (!ins) return [];
     return ins.effects.flatMap((fx) => {
-      if (fx.kind !== "WireRemoval" || !fx.enabled || fx.params.length < 4) return [];
+      if ((fx.kind !== "WireRemoval" && fx.kind !== "Lightning") || !fx.enabled || fx.params.length < 4) return [];
       const v = (k: number) => fx.params[k].value;
       const at = (x: number, y: number): Pt => [(x / 100) * size[0], (y / 100) * size[1]];
       return [[at(v(0), v(1)), at(v(2), v(3))] as [Pt, Pt]];

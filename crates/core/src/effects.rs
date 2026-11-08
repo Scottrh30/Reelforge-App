@@ -107,6 +107,9 @@ pub enum EffectKind {
     /// Fractal noise: clouds, smoke, liquid or marble patterns that evolve
     /// over time, drawn over the layer or used as its transparency.
     FractalNoise,
+    /// Lightning: jagged, branching bolts between two points or all round
+    /// one, struck afresh several times a second (see [`crate::lightning`]).
+    Lightning,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -875,6 +878,34 @@ pub mod fractal {
     pub const TYPES: [&str; 6] = ["Smooth", "Turbulent", "Ridged", "Clouds", "Liquid", "Marble"];
     pub const BLENDS: [&str; 6] = ["Replace the layer", "Screen over it", "Multiply", "Overlay", "Add", "As the layer's transparency"];
 }
+/// Lightning parameter indices.
+pub mod lightning {
+    pub const START_X: usize = 0;
+    pub const START_Y: usize = 1;
+    pub const END_X: usize = 2;
+    pub const END_Y: usize = 3;
+    pub const TYPE: usize = 4;
+    pub const COUNT: usize = 5;
+    pub const JAGGED: usize = 6;
+    pub const DETAIL: usize = 7;
+    pub const BRANCHES: usize = 8;
+    pub const BRANCH_LENGTH: usize = 9;
+    pub const CORE: usize = 10;
+    pub const GLOW: usize = 11;
+    pub const GLOW_INTENSITY: usize = 12;
+    pub const CORE_COLOUR: usize = 13;
+    pub const GLOW_COLOUR: usize = 14;
+    /// New bolts a second (0: the same bolt throughout).
+    pub const RATE: usize = 15;
+    pub const FLICKER: usize = 16;
+    /// How much of the bolt has reached out from the start (%).
+    pub const GROW: usize = 17;
+    /// The flash lighting the layer itself (%).
+    pub const LIGHT: usize = 18;
+    pub const OPACITY: usize = 19;
+    pub const SEED: usize = 20;
+    pub const TYPES: [&str; 2] = ["Bolt (start to end)", "Ball (all round the start)"];
+}
 /// Halftone parameter indices.
 pub mod halftone {
     pub const STYLE: usize = 0;
@@ -997,6 +1028,29 @@ const FRACTAL: [ParamSpec; 15] = [
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
+const LIGHTNING: [ParamSpec; 21] = [
+    spec("Start X", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("Start Y", 5.0, -50.0, 150.0, " %", 0.1),
+    spec("End X", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("End Y", 95.0, -50.0, 150.0, " %", 0.1),
+    choice("Type", &lightning::TYPES),
+    spec("Bolts", 1.0, 1.0, 24.0, "", 0.02),
+    spec("Jaggedness", 50.0, 0.0, 300.0, " %", 0.5),
+    spec("Detail", 7.0, 2.0, 10.0, "", 0.02),
+    spec("Branches", 40.0, 0.0, 300.0, " %", 0.5),
+    spec("Branch length", 45.0, 0.0, 200.0, " %", 0.5),
+    spec("Core width", 3.0, 0.0, 60.0, " px", 0.05),
+    spec("Glow size", 14.0, 0.0, 400.0, " px", 0.2),
+    spec("Glow intensity", 100.0, 0.0, 500.0, " %", 0.5),
+    color("Core colour", 0xffffff),
+    color("Glow colour", 0x6f9dff),
+    spec("Strikes a second", 10.0, 0.0, 60.0, "", 0.05),
+    spec("Flicker", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Grow", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Light the layer", 0.0, 0.0, 300.0, " %", 0.5),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
 const CRT: [ParamSpec; 12] = [
     spec("Curvature", 30.0, 0.0, 100.0, " %", 0.5),
     spec("Scan lines", 50.0, 0.0, 100.0, " %", 0.5),
@@ -1037,7 +1091,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 33] = [
+    pub const ALL: [EffectKind; 34] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -1067,6 +1121,7 @@ impl EffectKind {
         EffectKind::Fluid,
         EffectKind::Disintegrate,
         EffectKind::FractalNoise,
+        EffectKind::Lightning,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -1110,6 +1165,7 @@ impl EffectKind {
             EffectKind::Fluid => "Fluid",
             EffectKind::Disintegrate => "Disintegrate",
             EffectKind::FractalNoise => "Fractal noise",
+            EffectKind::Lightning => "Lightning",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -1125,7 +1181,7 @@ impl EffectKind {
             EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate => EffectCategory::Simulation,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::WireRemoval => EffectCategory::Repair,
-            EffectKind::FractalNoise => EffectCategory::Generate,
+            EffectKind::FractalNoise | EffectKind::Lightning => EffectCategory::Generate,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
@@ -1156,6 +1212,7 @@ impl EffectKind {
             EffectKind::BulletHit => "A bullet striking a wall, concrete, metal, glass or wood: a flash, sparks and a puff of dust, and the hole or cracks it leaves. Put it on an adjustment layer over the footage.",
             EffectKind::Disintegrate => "The layer breaks up into particles of its own colours, a ragged glowing front sweeping across it in the direction you choose, the pieces drifting away and fading.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
+            EffectKind::Lightning => "Jagged, branching bolts of lightning or electricity between two points (drag them in the Viewer) or all round one, struck afresh several times a second, flickering and lighting the layer.",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
             EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
@@ -1211,6 +1268,7 @@ impl EffectKind {
             EffectKind::Fluid => &FLUID,
             EffectKind::Disintegrate => &DISINTEGRATE,
             EffectKind::FractalNoise => &FRACTAL,
+            EffectKind::Lightning => &LIGHTNING,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -1224,7 +1282,7 @@ impl EffectKind {
     /// Does the picture change with time even when the settings don't
     /// (flicker, shake, grain…)? Then every frame has to be drawn.
     pub fn animates_with_time(self) -> bool {
-        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::OpenFx | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate)
+        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::OpenFx | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate | EffectKind::Lightning)
     }
 
     /// Headings to show above some parameters, as (first parameter, heading).
@@ -1246,6 +1304,7 @@ impl EffectKind {
             EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look"), (15, "Obstacles")],
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
             EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
+            EffectKind::Lightning => &[(0, "Path"), (4, "Shape"), (10, "Look"), (15, "Motion")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
         }
@@ -1297,6 +1356,9 @@ pub struct EffectValues {
     pub pieces: Option<Arc<crate::shatter::Pieces>>,
     /// For a fluid: what to simulate on the graphics card.
     pub fluid: Option<Arc<crate::fluid::FluidJob>>,
+    /// For lightning: the strike's brightness (0–1), and how many segments
+    /// and runs of them its table holds.
+    pub lightning: [f32; 3],
 }
 
 impl EffectValues {
@@ -1330,6 +1392,7 @@ impl EffectValues {
             EffectKind::Shatter => self.pieces.is_none(),
             EffectKind::Disintegrate => self.particles.is_none(),
             EffectKind::FractalNoise => v[fractal::OPACITY] == 0.0,
+            EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
             EffectKind::MuzzleFlash => v[muzzle::BRIGHTNESS] == 0.0 && v[muzzle::LIGHT] == 0.0,
             EffectKind::BulletHit => false,
             EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.fluid.is_none(),
@@ -1496,7 +1559,7 @@ impl Effect {
         }
         let plugin = if self.kind == EffectKind::Plugin { self.plugin_def() } else { None };
         let particles = (self.kind == EffectKind::Particles).then(|| Arc::new(crate::particles::simulate(self, t)));
-        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None, fluid: None }
+        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None, fluid: None, lightning: [0.0; 3] }
     }
 
     /// [`Self::eval_moving`] for a layer `size` pixels across: what needs
@@ -1507,6 +1570,12 @@ impl Effect {
             EffectKind::Shatter => v.pieces = Some(Arc::new(crate::shatter::simulate(self, t, size))),
             EffectKind::Fluid => v.fluid = crate::fluid::job(self, t, size).map(Arc::new),
             EffectKind::Disintegrate => v.particles = Some(Arc::new(crate::disintegrate::simulate(self, t, size))),
+            EffectKind::Lightning => {
+                let b = crate::lightning::bolts(self, t, size);
+                v.table = crate::lightning::table(&b, size);
+                // The strike's brightness and the table's size, for the GPU (spare slots).
+                v.lightning = [b.flash, b.segments.len() as f32, b.segments.len().div_ceil(crate::lightning::CHUNK) as f32];
+            }
             _ => {}
         }
         v
@@ -1573,7 +1642,7 @@ mod tests {
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 // These need the layer's size (a shatter's pieces, a fluid's grid).
-                EffectKind::Shatter | EffectKind::Fluid | EffectKind::Disintegrate => assert!(v.is_identity() && !e.eval_sized(Time::from_secs_f64(0.5), None, [640.0, 360.0]).is_identity(), "{kind:?}"),
+                EffectKind::Shatter | EffectKind::Fluid | EffectKind::Disintegrate | EffectKind::Lightning => assert!(v.is_identity() && !e.eval_sized(Time::from_secs_f64(0.5), None, [640.0, 360.0]).is_identity(), "{kind:?}"),
                 _ => assert!(!v.is_identity(), "{kind:?} should do something by default"),
             }
         }

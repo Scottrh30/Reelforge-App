@@ -523,6 +523,16 @@ What works now:
       layer's **transparency** (a smoky reveal, a texture for a key or other effects), with an
       **Opacity** and a **Seed** for a different pattern. It's 3D gradient noise on the
       graphics card, the same every time at the same moment
+    - **Lightning**: jagged, branching bolts, like HitFilm's Lightning or After Effects' Advanced
+      Lightning. **Type**: a *Bolt* from **Start** to **End** (drag both in the Viewer), or a
+      *Ball* of bolts all round the start reaching about as far as the end. **Bolts** (several
+      at once), **Jaggedness**, **Detail**, **Branches** (forking, and forking again) and
+      **Branch length**; a white-hot **Core** that thins towards the tip and a **Glow** (size,
+      intensity, colour). **Strikes a second** sets how often a new bolt is struck (0 holds the
+      same one), **Flicker** how much each strike's brightness varies and dies away, **Grow**
+      (keyframe 0 → 100 %) has the bolt reach out from the start, and **Light the layer**
+      brightens the picture in the glow's colour with each flash (put it on an adjustment
+      layer to light the shot). The bolts are worked out on the CPU and drawn on the GPU
   - The **browser** (`E`, or **Edit → Effects & transitions…**) lists every effect by category
     (Colour, Blur & sharpen, Keying, Light & stylize, Particles & simulation, Generate…) and every transition, with a search box
     and a one-line description of each; **Add** puts an effect on the selected clip

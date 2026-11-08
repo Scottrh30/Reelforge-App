@@ -249,3 +249,69 @@ fn fs_fluid(in: VsOut) -> @location(0) vec4<f32> {
     let a = clamp(d.a * fx.p3.y / 100.0, 0.0, 1.0) * inside;
     return vec4(lin * a, a) + c * (1.0 - a);
 }
+
+// Lightning (see core lightning.rs): the second texture is the table of
+// segments (row 0, three texels each) and of boxes round each run of 8
+// (row 1). p2.zw = core width px, glow size px; p3 = (glow intensity %,
+// core colour, glow colour, -); p4 = (-, -, light the layer %, opacity %);
+// extra2 = (flash 0–1, segments, runs, -); extra.zw = layer size.
+
+fn lt_rgb(v: f32) -> vec3<f32> {
+    let c = u32(clamp(round(v), 0.0, 16777215.0));
+    return to_linear(vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0);
+}
+
+// A texel's two 16-bit fractions → layer pixels.
+fn lt_point(t: vec4<f32>, size: vec2<f32>) -> vec2<f32> {
+    let b = round(t * 255.0);
+    let f = vec2(b.x * 256.0 + b.y, b.z * 256.0 + b.w) / 65535.0;
+    return (f * 2.0 - 0.5) * size;
+}
+
+fn lt_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    return length(p - a - ab * h);
+}
+
+@fragment
+fn fs_lightning(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let core_w = max(fx.p2.z, 0.0);
+    let glow_w = max(fx.p2.w, 0.01);
+    let flash = fx.extra2.x;
+    let segs = i32(fx.extra2.y);
+    let runs = i32(fx.extra2.z);
+    // Past this, a run adds nothing worth seeing.
+    let reach = core_w + glow_w * 9.0 + 2.0;
+    var core = 0.0;
+    var glow = 0.0;
+    for (var r = 0; r < runs; r = r + 1) {
+        let lo = lt_point(textureLoad(second, vec2(r * 2, 1), 0), size) - reach;
+        let hi = lt_point(textureLoad(second, vec2(r * 2 + 1, 1), 0), size) + reach;
+        if (any(p < lo) || any(p > hi)) {
+            continue;
+        }
+        let last = min(r * 8 + 8, segs);
+        for (var s = r * 8; s < last; s = s + 1) {
+            let a = lt_point(textureLoad(second, vec2(s * 3, 0), 0), size);
+            let b = lt_point(textureLoad(second, vec2(s * 3 + 1, 0), 0), size);
+            let wb = textureLoad(second, vec2(s * 3 + 2, 0), 0);
+            let d = lt_dist(p, a, b);
+            let w = core_w * wb.x * 0.5;
+            core = max(core, wb.y * (1.0 - smoothstep(w, w + 1.0, d)));
+            // A bright tight glow and a faint wide one.
+            // (Faded out before the reach, so skipped runs leave no edge.)
+            let fade = 1.0 - smoothstep(reach * 0.5, reach - 1.0, d);
+            glow = max(glow, wb.y * fade * (exp(-d / glow_w) + 0.25 * exp(-d / (glow_w * 3.0))));
+        }
+    }
+    let light = (lt_rgb(fx.p3.y) * core + lt_rgb(fx.p3.z) * glow * fx.p3.x / 100.0) * flash;
+    // The scene lit by the flash, then the bolts added on top.
+    let lit = c.rgb * (1.0 + lt_rgb(fx.p3.z) * fx.p4.z / 100.0 * flash * 2.0);
+    let rgb = lit + light;
+    let a = max(c.a, clamp(max(max(light.r, light.g), light.b), 0.0, 1.0));
+    return mix(c, vec4(rgb, a), clamp(fx.p4.w / 100.0, 0.0, 1.0));
+}

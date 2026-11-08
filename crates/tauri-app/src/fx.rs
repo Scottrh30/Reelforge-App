@@ -208,7 +208,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 plate_error,
                 environment,
                 environment_error,
-                points: if fx.kind == EffectKind::WireRemoval {
+                points: if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
                     vec![PointView { param: 0, label: "Start".into() }, PointView { param: 2, label: "End".into() }]
                 } else if let Some(label) = match fx.kind {
                     EffectKind::Shatter => Some("Impact"),

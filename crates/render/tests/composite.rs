@@ -643,7 +643,7 @@ fn plugin(id: &str, manifest_extra: &str, params: &str, source: &str) -> std::sy
 fn plugin_fx(def: &std::sync::Arc<reelforge_core::plugin::PluginDef>, values: &[f32], time: f32) -> EffectValues {
     let mut v = [0.0; reelforge_core::effects::MAX_PARAMS];
     v[..values.len()].copy_from_slice(values);
-    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None, particles: None, pieces: None, fluid: None }
+    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None, particles: None, pieces: None, fluid: None, lightning: [0.0; 3] }
 }
 
 #[test]
@@ -2087,4 +2087,41 @@ fn fractal_noise_patterns_evolve_and_cut_out() {
     let dark = cut.chunks(4).filter(|p| p[0] < 10).count();
     let kept = cut.chunks(4).filter(|p| (120..136).contains(&p[0])).count();
     assert!(dark > 500 && kept > 500, "{dark} {kept}");
+}
+
+/// Lightning: a bright bolt from the top to the bottom, dark far from it,
+/// a new bolt with each strike; nothing with no opacity.
+#[test]
+fn lightning_strikes_between_its_points() {
+    use reelforge_core::effects::lightning as lt;
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let dark = solid(w, h, [10, 10, 20, 255]);
+    let mut key = 7100u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, set: &[(usize, f32)], t: f64| {
+        let mut e = Effect::new(EffectKind::Lightning);
+        e.params[lt::GLOW].value = 3.0;
+        e.params[lt::FLICKER].value = 0.0;
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        let v = e.eval_sized(Time::from_secs_f64(t), None, [w as f32, h as f32]);
+        key += 1;
+        let mut l = layer(1, &dark, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        let fx = if v.is_identity() { Vec::new() } else { vec![v] };
+        c.render([w, h], &[with_fx(l, fx)]);
+        c.read_output().unwrap()
+    };
+    let img = draw(&mut c, &[(lt::BRANCHES, 0.0)], 0.0);
+    // Every row in the middle has a white-hot pixel near the centre line.
+    for y in 10..80 {
+        assert!((50..110).any(|x| px(&img, w, x, y)[0] > 200), "row {y}");
+    }
+    // The sides stay dark.
+    assert!(px(&img, w, 2, 45)[0] < 40 && px(&img, w, 157, 45)[0] < 40, "{:?}", px(&img, w, 2, 45));
+    assert_eq!(img, draw(&mut c, &[(lt::BRANCHES, 0.0)], 0.0), "the same moment, the same bolt");
+    assert_ne!(img, draw(&mut c, &[(lt::BRANCHES, 0.0)], 0.55), "a new strike");
+    assert_eq!(draw(&mut c, &[(lt::OPACITY, 0.0)], 0.0), draw(&mut c, &[(lt::OPACITY, 0.0)], 0.3));
 }
