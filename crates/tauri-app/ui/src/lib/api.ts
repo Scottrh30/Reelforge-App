@@ -281,6 +281,7 @@ export interface Inspector {
   title_missing_font: boolean;
   model: { path: string; triangles: number; error: string | null } | null;
   gizmo: Gizmo | null;
+  gizmo3d: Gizmo3d | null;
   track: string;
   start: Ticks;
   duration: Ticks;
@@ -485,8 +486,17 @@ export interface Gizmo {
   cropped: boolean;
 }
 
+/// A 3D layer's arrows (X, Y, Z) and rings, in frame pixels.
+export interface Gizmo3d {
+  origin: Pt;
+  tips: (Pt | null)[];
+  rings: Pt[][];
+}
+export type Handle3d = { Axis: number } | { Ring: number };
+
 export interface ViewerHover {
-  handle: GizmoHandle;
+  handle: GizmoHandle | null;
+  g3: Handle3d | null;
   dir: number | null;
   tip: string;
 }

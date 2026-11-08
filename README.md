@@ -980,6 +980,15 @@ What works now:
     3D layers next to each other on the timeline are drawn furthest first; 2D layers between them
     keep their places. In the Viewer a 3D layer shows its outline as the camera sees it, and
     dragging it moves it across the camera's view (Shift: straight across or down)
+  - **3D gizmo**: a selected 3D layer, 3D text, shape or model shows arrows along its *own*
+    axes, X red, Y green and Z blue (they turn with it), and a ring for each of its turns. Drag
+    an arrow to move it along that axis only (Z: nearer or further), and drag round a ring to
+    turn it about that axis: X tilts it forwards or back, Y swings it left or right, Z spins it
+    in its plane, each changing just that one Rotation in Controls (so keyframes stay tidy).
+    Shift moves in whole pixels and turns in 15° steps; the readout shows the numbers. The
+    gizmo keeps its size on screen, works from the Front, Top and Left views too, and an arrow
+    pointing straight at the camera shows as a dot. Dragging anywhere else on the layer still
+    moves it across the view
   - **Timeline → Add camera**: a camera clip on a new top track. Its settings (Controls) are its
     position, **point of interest** (what it looks at), **roll**, **field of view**, and **depth
     of field** (focus distance and how much things out of focus blur). The topmost camera clip

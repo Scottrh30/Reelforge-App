@@ -273,6 +273,12 @@
     return [bx + giz.stem_dir[0] * 26, by + giz.stem_dir[1] * 26];
   });
 
+  // A 3D layer's arrows and rings (the one under the pointer lit up).
+  const g3 = $derived(giz?.three_d ? (app.s?.inspector?.gizmo3d ?? null) : null);
+  let hot3 = $state<import("../lib/api").Handle3d | null>(null);
+  const AXIS = ["x", "y", "z"];
+  const isHot = (kind: "Axis" | "Ring", i: number) => !!hot3 && kind in hot3 && (hot3 as Record<string, number>)[kind] === i;
+
   // Ctrl held: edges crop and the anchor can be grabbed.
   let ctrl = $state(false);
   // (Releasing Ctrl itself can still report ctrlKey on some systems.)
@@ -296,10 +302,14 @@
     hoverBusy = true;
     try {
       const h = await api.viewerHover(framePt(e), e.ctrlKey || e.metaKey, fit.k);
+      hot3 = h?.g3 ?? null;
       if (!h) {
         cursor = "default";
         tip = "";
-      } else {
+      } else if (h.g3) {
+        tip = h.tip;
+        cursor = "Ring" in h.g3 ? "grab" : "move";
+      } else if (h.handle) {
         tip = h.tip;
         if (h.handle.kind === "rotate") cursor = "grab";
         else if (h.handle.kind === "anchor") cursor = "crosshair";
@@ -479,8 +489,31 @@
     {#if giz}
       <svg class="gizmo" aria-hidden="true">
         {#if giz.three_d}
-          <!-- A 3D layer: its outline as the camera sees it (drag to move; turn it in Controls). -->
+          <!-- A 3D layer: its outline as the camera sees it (drag it to move across the view),
+               and arrows to move it along its own axes and rings to turn it. -->
           <polygon points={ptsAttr(giz.corners)} class="box three" />
+          {#if g3}
+            {#each g3.rings as ring, i}
+              {#if ring.length > 1}<polyline points={ptsAttr(ring)} class="ring {AXIS[i]}" class:hot={isHot("Ring", i)} />{/if}
+            {/each}
+            {#each g3.tips as t, i}
+              {#if t}
+                {@const o = toBox(g3.origin)}
+                {@const p = toBox(t)}
+                {@const len = Math.hypot(p[0] - o[0], p[1] - o[1])}
+                {#if len > 12}
+                  {@const ux = (p[0] - o[0]) / len}
+                  {@const uy = (p[1] - o[1]) / len}
+                  <line class="axis {AXIS[i]}" class:hot={isHot("Axis", i)} x1={o[0] + ux * len * 0.25} y1={o[1] + uy * len * 0.25} x2={p[0]} y2={p[1]} />
+                  <polygon class="head {AXIS[i]}" class:hot={isHot("Axis", i)} points="{p[0] + ux * 9},{p[1] + uy * 9} {p[0] - uy * 4.5},{p[1] + ux * 4.5} {p[0] + uy * 4.5},{p[1] - ux * 4.5}" />
+                {:else}
+                  <!-- Pointing straight at (or away from) the camera. -->
+                  <circle class="head {AXIS[i]}" cx={p[0]} cy={p[1]} r="3" />
+                {/if}
+              {/if}
+            {/each}
+            <circle class="pivot" cx={toBox(g3.origin)[0]} cy={toBox(g3.origin)[1]} r="3" />
+          {/if}
         {:else if giz.pinned}
           <polygon points={ptsAttr(giz.corners)} class="pin" />
           <line class="diag" x1={toBox(giz.corners[0])[0]} y1={toBox(giz.corners[0])[1]} x2={toBox(giz.corners[2])[0]} y2={toBox(giz.corners[2])[1]} />
@@ -681,6 +714,45 @@
     height: 100%;
     pointer-events: none;
     overflow: visible;
+  }
+  .gizmo .ring {
+    fill: none;
+    stroke-width: 1.5;
+    opacity: 0.75;
+  }
+  .gizmo .axis {
+    stroke-width: 2.5;
+    stroke-linecap: round;
+  }
+  .gizmo .ring.hot,
+  .gizmo .axis.hot {
+    stroke-width: 3.5;
+    opacity: 1;
+  }
+  .gizmo .head.hot {
+    filter: brightness(1.3);
+  }
+  .gizmo .x {
+    stroke: rgb(240, 80, 80);
+  }
+  .gizmo .y {
+    stroke: rgb(110, 210, 90);
+  }
+  .gizmo .z {
+    stroke: rgb(80, 150, 255);
+  }
+  .gizmo .head.x {
+    fill: rgb(240, 80, 80);
+  }
+  .gizmo .head.y {
+    fill: rgb(110, 210, 90);
+  }
+  .gizmo .head.z {
+    fill: rgb(80, 150, 255);
+  }
+  .gizmo .pivot {
+    fill: white;
+    stroke: rgba(0, 0, 0, 0.6);
   }
   .gizmo .box {
     fill: none;

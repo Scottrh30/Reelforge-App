@@ -6,6 +6,7 @@
 use crate::{ed, Res};
 use reelforge_engine::editor::Editor;
 use reelforge_engine::gizmo::{self, DragState, Geometry, Handle, MoveState};
+use reelforge_engine::gizmo3d;
 use serde::Serialize;
 use std::cell::RefCell;
 
@@ -14,6 +15,15 @@ enum Drag {
     Move(MoveState),
     /// A 3D layer moved across the camera's view: its transform at the start, and where the drag began.
     Move3d(reelforge_core::ClipId, reelforge_core::Transform, [f32; 2]),
+    /// A 3D layer's arrow or ring.
+    Gizmo3d(gizmo3d::Drag3d, reelforge_core::ClipId),
+}
+
+/// The selected 3D layer's arrows and rings, as the Viewer sees it.
+pub fn gizmo_3d(e: &Editor) -> Option<gizmo3d::Gizmo3d> {
+    let (_, t) = selected_3d(e)?;
+    let scene = e.project.scene3d_at(e.active, e.playback.playhead);
+    gizmo3d::gizmo3d(&t, &scene)
 }
 
 /// The selected layer is a 3D layer: its real transform at the playhead.
@@ -38,7 +48,9 @@ pub fn geometry(e: &Editor) -> Option<Geometry> {
 
 #[derive(Serialize)]
 pub struct Hover {
-    pub handle: Handle,
+    /// A 2D handle, or (`g3`) a 3D layer's arrow or ring.
+    pub handle: Option<Handle>,
+    pub g3: Option<gizmo3d::Handle3d>,
     /// The handle's direction on screen in degrees (None: rotate or anchor).
     pub dir: Option<f32>,
     pub tip: &'static str,
@@ -52,12 +64,14 @@ pub fn viewer_hover(at: [f32; 2], ctrl: bool, scale: f32) -> Res<Option<Hover>> 
             return None;
         }
         if selected_3d(e).is_some() {
-            return None; // a 3D layer has no handles: drag it, turn it in Controls
+            // A 3D layer: its arrows and rings (anywhere else on it moves it across the view).
+            let h = gizmo3d::hit3d(&gizmo_3d(e)?, at, scale)?;
+            return Some(Hover { handle: None, g3: Some(h), dir: None, tip: gizmo3d::hint3d(h) });
         }
         let (layer, t) = e.gizmo_layer()?;
         let h = gizmo::handle_at(&t, &layer, e.frame_px(), scale, at, ctrl)?;
         let (dir, tip) = gizmo::hint(h, ctrl && matches!(h, Handle::Edge(_)), &t);
-        Some(Hover { handle: h, dir, tip })
+        Some(Hover { handle: Some(h), g3: None, dir, tip })
     })
 }
 
@@ -69,6 +83,17 @@ pub fn viewer_press(at: [f32; 2], ctrl: bool, scale: f32) -> Res<&'static str> {
         e.commit_live_edit();
         DRAG.with(|d| *d.borrow_mut() = None);
         let frame = e.frame_px();
+        if !e.playback.playing {
+            if let (Some((id, real)), Some(g)) = (selected_3d(e), gizmo_3d(e)) {
+                if let Some(h) = gizmo3d::hit3d(&g, at, scale) {
+                    let scene = e.project.scene3d_at(e.active, e.playback.playhead);
+                    if let Some(d) = gizmo3d::start_drag(h, &real, &scene, at) {
+                        DRAG.with(|s| *s.borrow_mut() = Some((Drag::Gizmo3d(d, id), false)));
+                        return "handle";
+                    }
+                }
+            }
+        }
         if !e.playback.playing && selected_3d(e).is_none() {
             if let Some((layer, t)) = e.gizmo_layer() {
                 if let Some(h) = gizmo::handle_at(&t, &layer, frame, scale, at, ctrl) {
@@ -138,6 +163,11 @@ pub fn viewer_drag(at: [f32; 2], shift: bool, alt: bool, scale: f32) -> Res<Feed
                     }
                     let t = e.moved_3d(start, dlt);
                     out.readout = format!("Position {:.0}, {:.0}, {:.0}", t.position[0], t.position[1], t.depth);
+                    Some((*id, t))
+                }
+                Drag::Gizmo3d(d, id) => {
+                    let t = gizmo3d::dragged3d(d, at, shift);
+                    out.readout = gizmo3d::readout3d(d, &t);
                     Some((*id, t))
                 }
                 Drag::Move(m) => {

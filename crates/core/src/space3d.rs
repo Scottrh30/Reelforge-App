@@ -503,14 +503,29 @@ impl LayerSpace {
 
 /// Where the 3D layer with transform `t` (a picture `layer` pixels in size,
 /// at 100%) sits, as seen by `scene`'s camera, lit by its lights if `t.lit`.
+/// A 3D layer's turn applied to `v`: about X, then Y, then Z (the 2D
+/// rotation), all about the world's axes — so its own X, Y and Z axes are
+/// `layer_rotation(t, [1,0,0])` and so on.
+pub fn layer_rotation(t: &Transform, v: V3) -> V3 {
+    let v = rotate(v, [1.0, 0.0, 0.0], t.orientation[0].to_radians());
+    let v = rotate(v, [0.0, 1.0, 0.0], -t.orientation[1].to_radians());
+    rotate(v, [0.0, 0.0, 1.0], t.rotation.to_radians())
+}
+
+/// The axis each of a 3D layer's turns (X, Y and Z: `orientation[0]`,
+/// `orientation[1]`, `rotation`) turns it about, in the world: Z is the
+/// world's Z, Y is Y turned by Z, X is the layer's own X.
+pub fn turn_axes(t: &Transform) -> [V3; 3] {
+    let z = [0.0, 0.0, 1.0];
+    let y = rotate([0.0, 1.0, 0.0], z, t.rotation.to_radians());
+    let x = layer_rotation(t, [1.0, 0.0, 0.0]);
+    [x, y, z]
+}
+
 pub fn layer_space(t: &Transform, layer: [f32; 2], scene: &Scene3d) -> LayerSpace {
     let cam = &scene.camera;
     // The plane's axes in the world: X then Y rotation, then Z (the 2D rotation).
-    let rot = |v: V3| {
-        let v = rotate(v, [1.0, 0.0, 0.0], t.orientation[0].to_radians());
-        let v = rotate(v, [0.0, 1.0, 0.0], -t.orientation[1].to_radians());
-        rotate(v, [0.0, 0.0, 1.0], t.rotation.to_radians())
-    };
+    let rot = |v: V3| layer_rotation(t, v);
     let u = rot([t.scale[0], 0.0, 0.0]);
     let v = rot([0.0, t.scale[1], 0.0]);
     let pos = [t.position[0], t.position[1], t.depth];

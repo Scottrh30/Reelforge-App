@@ -156,6 +156,8 @@ pub struct Inspector {
     pub model: Option<ModelInfo>,
     /// The transform gizmo in the viewer (frame pixels), when the layer shows at the playhead.
     pub gizmo: Option<reelforge_engine::gizmo::Geometry>,
+    /// A 3D layer's arrows and rings (frame pixels).
+    pub gizmo3d: Option<reelforge_engine::gizmo3d::Gizmo3d>,
     pub audio: Option<ClipAudio>,
     pub speed: f32,
     pub reverse: bool,
@@ -650,6 +652,7 @@ pub fn state(e: &Editor) -> State {
                 Err(err) => ModelInfo { triangles: 0, error: Some(err), path: m.path.display().to_string() },
             }),
             gizmo: if video { crate::viewer::geometry(e) } else { None },
+            gizmo3d: if video { crate::viewer::gizmo_3d(e) } else { None },
             audio: (tr.kind == TrackKind::Audio).then(|| c.audio.clone()),
             speed: c.speed,
             reverse: c.reverse,
