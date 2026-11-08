@@ -162,6 +162,9 @@ export interface SeqView {
   tracks: TrackView[];
   /// The highlighted track: where Paste and new layers go.
   target_track: number | null;
+  /// The magnetic timeline: the main track closes up its gaps.
+  magnetic: boolean;
+  main_track: number | null;
 }
 
 export type Transition =
@@ -998,6 +1001,7 @@ export const api = {
   renameVersion: (file: string, name: string, note: string) => invoke<boolean>("rename_version", { file, name, note }),
   deleteVersion: (file: string) => invoke<boolean>("delete_version", { file }),
   setVersionsOnSave: (on: boolean) => invoke("set_versions_on_save", { on }),
+  setMagnetic: (on: boolean) => invoke("set_magnetic", { on }),
   exportEdit: (format: "edl" | "fcpxml" | "xml" | "otio") => invoke<string | null>("export_edit", { format }),
   addMask: (id: number, shape: "rectangle" | "ellipse") => invoke<number | null>("add_mask", { id, shape }),
   addFreehandMask: (id: number, points: Pt[]) => invoke<number | null>("add_freehand_mask", { id, points }),

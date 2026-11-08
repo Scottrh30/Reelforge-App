@@ -1105,6 +1105,7 @@
       {/each}
     </div>
     <button class:on={app.snapping} onclick={() => (app.snapping = !app.snapping)} title="Snap to cuts, the playhead and markers (hold Alt to drag freely)">Snap</button>
+    <button class:on={!!seq?.magnetic} aria-pressed={!!seq?.magnetic} onclick={() => run(api.setMagnetic(!seq?.magnetic))} title="Magnetic timeline: trimming or deleting clips on the main track (Video 1) closes up the gap, moving everything after it along with it. Other tracks edit as usual">Magnetic</button>
     <button onclick={() => run(api.action("split"))} title="Split at the playhead (S)">Split</button>
     {/if}
   </div>
@@ -1221,7 +1222,7 @@
                   }}
                 />
               {:else}
-                <span class="tname" role="presentation" ondblclick={() => (renaming = tr.index)} title="Double-click to rename, right-click for more">{tr.name}</span>
+                <span class="tname" role="presentation" ondblclick={() => (renaming = tr.index)} title="Double-click to rename, right-click for more">{tr.name}</span>{#if seq?.magnetic && seq.main_track === tr.index}<span class="mainmark" title="The main track: with the magnetic timeline on, trims and deletes here close up the gaps">main</span>{/if}
               {/if}
               </div>
               {#if !tr.collapsed}
@@ -1512,6 +1513,15 @@
   }
   .tools {
     display: flex;
+  }
+  .mainmark {
+    font-size: calc(9.5px * var(--text-scale));
+    color: var(--accent);
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    padding: 0 3px;
+    margin-left: 4px;
+    flex: none;
   }
   .tools button {
     border-radius: 0;

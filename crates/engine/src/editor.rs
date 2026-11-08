@@ -279,6 +279,7 @@ mod remap;
 mod multicam;
 pub mod versions;
 mod interchange;
+pub mod magnetic;
 pub use multicam::MulticamAt;
 mod replace;
 mod snapshot;
@@ -883,6 +884,12 @@ impl Editor {
             return false;
         }
         self.select_only(None);
+        if let Some((cmd, closed)) = self.magnetic_delete(&ids) {
+            self.execute(cmd);
+            let rate = self.seq().frame_rate;
+            self.status = format!("Deleted, and closed up {} on the main track", closed.timecode(rate));
+            return true;
+        }
         let cmd = reelforge_core::undo::delete_clips(&self.project, self.active, &ids);
         self.execute(cmd);
         true
@@ -2059,6 +2066,7 @@ impl Editor {
     /// Every call starts again from the timings before the gesture began, so
     /// the result never depends on the drag's history.
     pub fn trim_live(&mut self, id: ClipId, edge: Edge, mode: TrimMode, delta: Time) -> Option<TrimPlan> {
+        let mode = self.magnetic_mode(id, mode);
         let snapshot = match &self.live_edit {
             Some(LiveEdit::Timing(lead, snap, m)) if *lead == id && *m == mode => snap.clone(),
             _ => self.all_timings(),

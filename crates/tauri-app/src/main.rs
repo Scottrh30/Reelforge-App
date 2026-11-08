@@ -1401,6 +1401,12 @@ fn snapshot(save_as: bool) -> Res<Option<String>> {
     })?
 }
 
+/// The magnetic timeline on or off for the sequence being edited.
+#[tauri::command]
+fn set_magnetic(on: bool) -> Res<()> {
+    ed(|e| e.set_magnetic(on))
+}
+
 /// File > Export edit as: the sequence being edited as an EDL ("edl"),
 /// FCPXML ("fcpxml"), Final Cut Pro 7 XML ("xml") or OpenTimelineIO
 /// ("otio"), to a file chosen here. Returns where it went.
@@ -1549,6 +1555,7 @@ fn main() {
             snapshot_folder,
             snapshot_import,
             export_edit,
+            set_magnetic,
             frame,
             waveform,
             waveform_rate,

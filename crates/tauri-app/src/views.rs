@@ -93,6 +93,10 @@ pub struct SeqView {
     pub tracks: Vec<TrackView>,
     /// The highlighted track: where Paste and new layers go.
     pub target_track: Option<usize>,
+    /// The magnetic timeline is on: the main track closes up its gaps.
+    pub magnetic: bool,
+    /// The main track (the first video track).
+    pub main_track: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -605,6 +609,8 @@ pub fn state(e: &Editor) -> State {
         transitions: crate::trans::marks(p, e.active),
         tracks,
         target_track: e.target_track(),
+        magnetic: s.magnetic,
+        main_track: reelforge_engine::editor::magnetic::main_track(s),
     };
     let inspector = e.selection.and_then(|id| s.find_clip(id)).map(|(ti, c)| {
         let tr = &s.tracks[ti];

@@ -242,6 +242,13 @@ What works now:
     Each trim is one undo step.
 - **Ripple delete** (**Shift+Del** or **Edit → Ripple delete**): removes the selected clip and
   closes the gap it leaves on all tracks
+- **Magnetic timeline** (the **Magnetic** button by Snap, or **Timeline → Magnetic timeline**;
+  kept with each sequence): the main track (Video 1, marked *main*) closes up after itself.
+  Deleting or cutting clips from it closes the gaps they'd leave (several at once too), and
+  trimming one of its clips with the Select tool ripples: shorter pulls everything after it
+  up, longer pushes it along. Clips on the other tracks after the edit move with it, so titles,
+  B-roll and sound laid over the main track stay in sync. Other tracks trim and delete as usual,
+  roll, slip and slide work as ever, and gaps that were there before stay
 - **Slip and slide**: two more tools next to the trim tools, acting on the whole clip.
   - **Slip (Y)**: drag a clip to change which part of its media it shows. It stays where it is
     and keeps its length. While you drag, a band under the clip shows the whole source file, so

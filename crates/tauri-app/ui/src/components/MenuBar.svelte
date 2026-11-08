@@ -193,6 +193,7 @@
   const timeline = (): MenuItem[] => [
     { label: "Play / pause", hint: "Space", run: () => actions.act("play") },
     { label: "Split at playhead", hint: "S", run: () => actions.act("split") },
+    { label: "Magnetic timeline", hint: "main track closes up", checked: !!app.s?.seq.magnetic, run: () => run(api.setMagnetic(!app.s?.seq.magnetic)) },
     { label: "Cross-dissolve at playhead", hint: "Ctrl+D", run: () => actions.act("dissolve") },
     { label: "Audio crossfade at playhead", hint: "Ctrl+Shift+D", run: () => actions.act("crossfade") },
     { label: "Duck music under dialogue…", run: () => (app.duckOpen = true) },

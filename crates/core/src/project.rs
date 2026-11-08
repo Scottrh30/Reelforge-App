@@ -563,6 +563,10 @@ pub struct Sequence {
     /// time (see [`crate::multicam`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub multicam: bool,
+    /// The magnetic timeline: trims and deletes on the main track (the
+    /// first video track) close up the gaps they'd leave.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub magnetic: bool,
 }
 
 /// A named point on the timeline (M adds one at the playhead).
@@ -614,6 +618,7 @@ impl Sequence {
             out_point: None,
             markers: Vec::new(),
             multicam: false,
+            magnetic: false,
         }
     }
 
