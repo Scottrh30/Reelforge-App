@@ -634,6 +634,16 @@ What works now:
   it starts; **File > Open an autosave…** opens older ones. Saving always writes a new file and
   then swaps it in, so a crash mid-save can't corrupt the project. Closing, starting a new
   project or opening another asks **Save changes?** if there's unsaved work
+- **Project versions** (**File > Project versions…**, or **Save version…** / Ctrl+Alt+S): keep
+  the project as it is now under a name and a note (*Rough cut for the client*), in a
+  "*project* versions" folder beside the project file. Every Save also keeps one by itself when
+  the project changed since the last (the newest 30 of those; **Name it** to keep one for good,
+  or turn it off in the dialog). Each version lists when it was kept and its size, rate, length,
+  sequences, clips and media. **Restore** puts the project back to that version as one undo
+  step (what was there is kept as a version first, and the project file isn't written until you
+  save); **Open as copy** opens it as a separate, unsaved project to look at or copy clips from;
+  **Rename** and **Delete** tidy the list. Versions are ordinary project files, so they open
+  with File > Open too
 - **Missing media**: files that have moved show a red banner in the Media panel and a
   "MEDIA OFFLINE" frame in the viewer. **Relink…** a file and Reelforge also looks for the
   other missing files in that folder (and its subfolders) by name; **Search a folder…** does
@@ -1562,6 +1572,7 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+I | Import media |
 | Ctrl+S | Save project |
+| Ctrl+Alt+S | Save a version of the project (Project versions) |
 | Ctrl+M | Export |
 | Ctrl+Shift+E | Snapshot: save the frame at the playhead as a picture |
 | Ctrl+Shift+D | Add/remove audio crossfade at the nearest cut |

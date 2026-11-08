@@ -48,6 +48,8 @@ export const app = $state({
   duckOpen: false,
   /// New multicam source… is open, with these takes ticked to start with.
   multicamOpen: null as null | number[],
+  /// File > Project versions… is open.
+  versionsOpen: false,
   /// Media being dragged from the Media panel (pointer position in the window).
   dragMedia: null as null | { id: number; name: string; x: number; y: number },
   /// An effect or transition being dragged from the Effects panel.

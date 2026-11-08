@@ -91,6 +91,8 @@ pub struct Prefs {
     pub snapshot_folder: Option<PathBuf>,
     /// Add each snapshot to the Media panel as well.
     pub snapshot_import: bool,
+    /// Keep a project version (see `versions`) every time the project is saved.
+    pub versions_on_save: bool,
     /// Warn when the drive Reelforge saves to has less than this many GB free (0: never).
     pub disk_warn_gb: f32,
     /// Effects added lately, newest first (as `fx_favourites` names them), at most `RECENT_FX`.
@@ -157,6 +159,7 @@ impl Default for Prefs {
             cache_folder: None,
             snapshot_folder: None,
             snapshot_import: false,
+            versions_on_save: true,
         }
     }
 }
@@ -274,6 +277,7 @@ mod diskspace;
 mod viewcam;
 mod remap;
 mod multicam;
+pub mod versions;
 pub use multicam::MulticamAt;
 mod replace;
 mod snapshot;
@@ -3382,6 +3386,7 @@ impl Editor {
             s.set_project(Some(path.to_owned()));
             s.autosaved_rev = self.rev;
         }
+        self.auto_version();
         Ok(())
     }
 

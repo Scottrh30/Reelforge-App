@@ -850,6 +850,22 @@ export interface Live {
   /// The multicam clip at the playhead.
   multicam: MulticamLive | null;
 }
+export interface ProjectVersion {
+  file: string;
+  name: string;
+  note: string;
+  /// When it was kept (seconds since 1970).
+  saved: number;
+  /// Kept by itself on Save.
+  auto: boolean;
+  summary: string;
+}
+export interface VersionsView {
+  /// Where they're kept (null until the project is saved).
+  folder: string | null;
+  versions: ProjectVersion[];
+  on_save: boolean;
+}
 export interface MulticamLive {
   clip: number;
   angles: string[];
@@ -975,6 +991,13 @@ export const api = {
   switchAngle: (angle: number, pictureOnly: boolean) => invoke("switch_angle", { angle, pictureOnly }),
   setAudioAngle: (clip: number, audio: number | null) => invoke("set_audio_angle", { clip, audio }),
   setMulticamGrid: (on: boolean) => invoke("set_multicam_grid", { on }),
+  versionsList: () => invoke<VersionsView>("versions_list"),
+  saveVersion: (name: string, note: string) => invoke<boolean>("save_version", { name, note }),
+  restoreVersion: (file: string) => invoke<boolean>("restore_version", { file }),
+  openVersionCopy: (file: string) => invoke<boolean>("open_version_copy", { file }),
+  renameVersion: (file: string, name: string, note: string) => invoke<boolean>("rename_version", { file, name, note }),
+  deleteVersion: (file: string) => invoke<boolean>("delete_version", { file }),
+  setVersionsOnSave: (on: boolean) => invoke("set_versions_on_save", { on }),
   addMask: (id: number, shape: "rectangle" | "ellipse") => invoke<number | null>("add_mask", { id, shape }),
   addFreehandMask: (id: number, points: Pt[]) => invoke<number | null>("add_freehand_mask", { id, points }),
   setMasks: (id: number, masks: Mask[], done: boolean) => invoke("set_masks", { id, masks, done }),

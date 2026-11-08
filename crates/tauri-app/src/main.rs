@@ -21,6 +21,7 @@ mod openfx;
 mod keys;
 mod ops;
 mod multicam;
+mod versions;
 mod trans;
 mod scene;
 mod viewer;
@@ -1565,6 +1566,13 @@ fn main() {
             scene::scene_point_drag,
             scene::view_set,
             multicam::create_multicam,
+            versions::versions_list,
+            versions::save_version,
+            versions::restore_version,
+            versions::open_version_copy,
+            versions::rename_version,
+            versions::delete_version,
+            versions::set_versions_on_save,
             multicam::switch_angle,
             multicam::switch_angle_at,
             multicam::set_audio_angle,

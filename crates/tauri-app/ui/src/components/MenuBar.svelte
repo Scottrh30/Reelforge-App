@@ -64,6 +64,8 @@
     { label: "Save", hint: "Ctrl+S", run: actions.save },
     { label: "Save as…", hint: "Ctrl+Shift+S", run: actions.saveAs },
     { label: "Save as template…", run: saveTemplate },
+    { label: "Save version…", hint: "Ctrl+Alt+S", run: () => (app.versionsOpen = true) },
+    { label: "Project versions…", run: () => (app.versionsOpen = true) },
     { separator: true },
     { label: "Import media…", hint: "Ctrl+I", run: actions.importMedia },
     { label: "Export…", hint: "Ctrl+M", run: actions.exportOpen },

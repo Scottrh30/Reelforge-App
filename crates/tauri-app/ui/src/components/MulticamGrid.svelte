@@ -30,7 +30,7 @@
         onclick={(e) => pick(e, i)}
         title="Cut to {name} at the playhead ({i < 9 ? `${i + 1}` : 'click'}; Shift: picture only, the sound stays)"
       >
-        <span class="name"><b>{i + 1}</b> {name}{#if mc.heard === i}<span class="heard" title="The sound heard">♪</span>{/if}</span>
+        <span class="name">{name}{#if mc.heard === i}<span class="heard" title="The sound heard">♪</span>{/if}</span>
       </button>
     {/each}
   </div>

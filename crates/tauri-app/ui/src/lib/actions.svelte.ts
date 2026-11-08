@@ -142,7 +142,7 @@ export function onKey(e: KeyboardEvent) {
     }
     return;
   }
-  if (ask.open || app.startOpen || app.exportOpen || app.effectsOpen || app.savePreset || app.pluginsOpen || app.collectOpen || app.pasteAttrsOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
+  if (ask.open || app.startOpen || app.exportOpen || app.effectsOpen || app.savePreset || app.pluginsOpen || app.collectOpen || app.pasteAttrsOpen || app.versionsOpen || app.multicamOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const go = (f: () => unknown) => {
@@ -152,6 +152,7 @@ export function onKey(e: KeyboardEvent) {
   if (ctrl) {
     if (k === "z" && !e.shiftKey) return go(actions.undo);
     if (k === "y" || (k === "z" && e.shiftKey)) return go(actions.redo);
+    if (k === "s" && e.altKey) return go(() => (app.versionsOpen = true));
     if (k === "s" && e.shiftKey) return go(actions.saveAs);
     if (k === "s") return go(actions.save);
     if (k === "o") return go(actions.open);
