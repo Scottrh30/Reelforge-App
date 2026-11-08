@@ -228,7 +228,7 @@ impl EffectPreset {
     /// The effects of a clip whose media starts at `source_in` (all of them,
     /// nothing else, timed from its start).
     pub fn from_clip(name: &str, effects: &[Effect], source_in: Time) -> Option<Self> {
-        let v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, anim: TransformAnim::default(), effects: effects.to_vec(), masks: Vec::new(), mesh: None };
+        let v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, track_matte: None, anim: TransformAnim::default(), effects: effects.to_vec(), masks: Vec::new(), mesh: None };
         Self::from_visual(name, &v, source_in, Time::ZERO, [0.0, 0.0], &SaveOptions::default())
     }
 
@@ -731,7 +731,7 @@ mod tests {
     /// A 4 s clip (media from 10 s, 200 × 100 layer) with a blur faded up
     /// over its first second, a glow, a mask, a slide in and Screen.
     fn source() -> ClipVisual {
-        let mut v = ClipVisual { transform: Transform::default(), blend: BlendMode::Screen, anim: TransformAnim::default(), effects: vec![keyed(10.0), Effect::new(EffectKind::Glow)], masks: Vec::new(), mesh: None };
+        let mut v = ClipVisual { transform: Transform::default(), blend: BlendMode::Screen, track_matte: None, anim: TransformAnim::default(), effects: vec![keyed(10.0), Effect::new(EffectKind::Glow)], masks: Vec::new(), mesh: None };
         let mut m = Mask { points: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0]], ..Mask::default() };
         m.keys = vec![reelforge_core::mask::ShapeKey::new(secs(13.0), m.points.clone())];
         v.masks.push(m);
@@ -755,7 +755,7 @@ mod tests {
         assert!(m.anim.crop.is_empty(), "crop isn't motion");
         assert!(p.summary().starts_with("Gaussian blur + 1 mask, motion, Screen blend · 5 keyframes"), "{}", p.summary());
         // Onto a 2 s clip from 0 s, twice the size: masks scale, keys land from its start.
-        let mut t = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, anim: TransformAnim::default(), effects: vec![Effect::new(EffectKind::Vignette)], masks: Vec::new(), mesh: None };
+        let mut t = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, track_matte: None, anim: TransformAnim::default(), effects: vec![Effect::new(EffectKind::Vignette)], masks: Vec::new(), mesh: None };
         p.apply(&mut t, Time::ZERO, secs(2.0), [400.0, 200.0], false);
         assert_eq!(t.effects.len(), 2, "added after its own");
         assert_eq!(t.effects[1].params[0].keys.0[1].at, secs(1.0));
@@ -775,7 +775,7 @@ mod tests {
     fn keyframes_can_count_from_the_end_or_stretch() {
         let v = source();
         let opts = |timing| SaveOptions { effects: Some(vec![0]), motion: true, timing, ..SaveOptions::default() };
-        let blank = || ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };
+        let blank = || ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, track_matte: None, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };
         // The blur's keys are at 0 s and 1 s of a 4 s clip.
         let p = EffectPreset::from_visual("x", &v, secs(10.0), secs(4.0), [200.0, 100.0], &opts(Timing::FromEnd)).unwrap();
         let mut t = blank();
@@ -806,7 +806,7 @@ mod tests {
         }
         // A fade sets only the opacity: the clip stays where it is.
         let fade = all.iter().find(|p| p.name == "Fade out").unwrap();
-        let mut v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };
+        let mut v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, track_matte: None, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };
         v.transform.position = [50.0, 20.0];
         v.transform.scale = [0.5, 0.5];
         fade.apply(&mut v, secs(2.0), secs(6.0), [100.0, 100.0], false);
@@ -817,7 +817,7 @@ mod tests {
 
     #[test]
     fn titles_audio_and_transitions_go_in_when_chosen() {
-        let v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };
+        let v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, track_matte: None, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };
         let mut audio = ClipAudio { volume_db: -6.0, fade_in: secs(0.5), ..ClipAudio::default() };
         audio.volume_keys.push(reelforge_core::VolumeKey { at: secs(11.0), db: -20.0 });
         let parts = ClipParts {

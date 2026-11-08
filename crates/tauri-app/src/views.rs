@@ -451,6 +451,7 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
 pub struct VisualView {
     pub transform: Transform,
     pub blend: BlendMode,
+    pub track_matte: Option<reelforge_core::TrackMatte>,
     pub layer_size: [f32; 2],
 }
 
@@ -628,7 +629,7 @@ pub fn state(e: &Editor) -> State {
                 Some([w, h]) => [w as f32, h as f32],
                 None => [s.width as f32, s.height as f32],
             };
-            VisualView { transform: c.transform, blend: c.blend, layer_size: size }
+            VisualView { transform: c.transform, blend: c.blend, track_matte: c.track_matte, layer_size: size }
         });
         let a = &c.anim;
         let mut animated = Vec::new();

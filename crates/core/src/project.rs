@@ -96,6 +96,10 @@ pub struct Clip {
     pub transform: Transform,
     #[serde(default)]
     pub blend: BlendMode,
+    /// Shown only through the layer on the track above (its alpha or its
+    /// brightness, or the reverse), which is then not drawn itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_matte: Option<TrackMatte>,
     /// Volume, pan and fades (audio clips).
     #[serde(default)]
     pub audio: ClipAudio,
@@ -211,11 +215,31 @@ fn is_default_blend(b: &FrameBlend) -> bool {
     *b == FrameBlend::Nearest
 }
 
+/// What a track matte takes from the layer above.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TrackMatte {
+    /// Shown where the layer above is opaque.
+    Alpha,
+    /// Shown where it's transparent.
+    AlphaInverted,
+    /// Shown where it's bright.
+    Luma,
+    /// Shown where it's dark.
+    LumaInverted,
+}
+
+impl TrackMatte {
+    pub fn index(self) -> u32 {
+        self as u32
+    }
+}
+
 /// Everything about how a video clip looks, edited and undone as one unit.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClipVisual {
     pub transform: Transform,
     pub blend: BlendMode,
+    pub track_matte: Option<TrackMatte>,
     pub anim: TransformAnim,
     pub effects: Vec<Effect>,
     pub masks: Vec<crate::mask::Mask>,
@@ -234,6 +258,7 @@ impl Clip {
             link,
             transform: Transform::default(),
             blend: BlendMode::Normal,
+            track_matte: None,
             audio: ClipAudio::default(),
             anim: TransformAnim::default(),
             dissolve_in: Time::ZERO,
@@ -344,11 +369,11 @@ impl Clip {
     }
 
     pub fn visual(&self) -> ClipVisual {
-        ClipVisual { transform: self.transform, blend: self.blend, anim: self.anim.clone(), effects: self.effects.clone(), masks: self.masks.clone(), mesh: self.mesh.clone() }
+        ClipVisual { transform: self.transform, blend: self.blend, track_matte: self.track_matte, anim: self.anim.clone(), effects: self.effects.clone(), masks: self.masks.clone(), mesh: self.mesh.clone() }
     }
 
     pub fn set_visual(&mut self, v: ClipVisual) {
-        (self.transform, self.blend, self.anim, self.effects, self.masks, self.mesh) = (v.transform, v.blend, v.anim, v.effects, v.masks, v.mesh);
+        (self.transform, self.blend, self.track_matte, self.anim, self.effects, self.masks, self.mesh) = (v.transform, v.blend, v.track_matte, v.anim, v.effects, v.masks, v.mesh);
     }
 
     /// The mesh warp's grid at sequence time `t`, if the clip has one.

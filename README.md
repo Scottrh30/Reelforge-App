@@ -87,6 +87,14 @@ What works now:
 - **Per-clip transform** in the Controls panel: position, scale (with a lock for uniform
   scaling), rotation, opacity, **anchor point**, **crop**, and **blend modes**, plus Reset /
   Fit / Fill buttons. Clips sit at their native pixel size by default, like HitFilm
+  - **Track matte** (under Blend), like After Effects': the layer shows only through the
+    layer on the video track directly above it, which becomes its matte and isn't drawn
+    itself. *Alpha* (where the layer above is), *Alpha inverted* (where it isn't), *Luma*
+    (where it's bright, as it looks) or *Luma inverted* (where it's dark). Put footage under a
+    title for footage-filled text, under a painted or animated shape for a reveal, or under a
+    gradient for a fade. The matte can be any layer (with its own effects, masks, transform
+    and keyframes); with nothing above at a moment, an alpha or luma matte hides the layer and
+    an inverted one shows all of it. The pair is composited with the layer's blend mode
   - **Blend modes**, grouped in the menu (hover one for what it does): Normal; Darken, Multiply,
     Colour burn; Lighten, Screen, Colour dodge, Add; Overlay, Soft light, Hard light;
     Difference, Exclusion; Hue, Saturation, Colour, Luminosity. They work on every kind of layer

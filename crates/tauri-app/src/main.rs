@@ -849,6 +849,22 @@ fn set_blend(id: u64, blend: BlendMode) -> Res<()> {
     })
 }
 
+/// Show clip `id` only through the layer on the video track above (or not, with `None`).
+#[tauri::command]
+fn set_track_matte(id: u64, matte: Option<reelforge_core::TrackMatte>) -> Res<()> {
+    ed(|e| {
+        if let Some(mut v) = e.visual(clip(id)) {
+            v.track_matte = matte;
+            e.set_visual_live(clip(id), v);
+            e.commit_live_edit();
+            e.status = match matte {
+                None => "Track matte off".into(),
+                Some(_) => "Track matte on: this layer shows through the layer on the video track above, which isn't drawn itself".into(),
+            };
+        }
+    })
+}
+
 /// Every installed font face for titles (empty until the background scan finishes).
 #[tauri::command]
 fn font_faces() -> Res<Vec<reelforge_core::FontChoice>> {
@@ -1671,6 +1687,7 @@ fn main() {
             set_track_audio,
             set_transform,
             set_blend,
+            set_track_matte,
             set_title,
             font_faces,
             place_title,

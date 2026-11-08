@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { app, run, timecode } from "../lib/session.svelte";
-  import { api, type Transform, type Blend, type TitleSpec, type ClipAudio, type TrackAudio } from "../lib/api";
+  import { api, type Transform, type Blend, type TrackMatte, type TitleSpec, type ClipAudio, type TrackAudio } from "../lib/api";
   import NumberField from "./NumberField.svelte";
   import MasksPanel from "./MasksPanel.svelte";
   import { showPanel } from "../lib/dock.svelte";
@@ -548,6 +548,19 @@
                 {#each modes as [m, label, tip]}<option value={m} title={tip}>{label}</option>{/each}
               {/if}
             {/each}
+          </select>
+          <span class="lbl">Track matte</span>
+          <select
+            value={ins.visual.track_matte ?? ""}
+            aria-label="Track matte"
+            title="Show this layer only through the layer on the video track directly above it (that layer becomes the matte and isn't drawn itself)"
+            onchange={(e) => run(api.setTrackMatte(ins.id, (e.currentTarget.value || null) as TrackMatte | null))}
+          >
+            <option value="">None</option>
+            <option value="Alpha">Alpha (where the layer above is)</option>
+            <option value="AlphaInverted">Alpha inverted (where it isn't)</option>
+            <option value="Luma">Luma (where it's bright)</option>
+            <option value="LumaInverted">Luma inverted (where it's dark)</option>
           </select>
         </div>
         {#if ins.keys && (ins.keys.prev_key != null || ins.keys.next_key != null)}

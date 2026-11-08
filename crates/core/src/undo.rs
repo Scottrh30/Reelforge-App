@@ -263,6 +263,7 @@ impl Command for SplitClip {
             link: clip.link.and(self.new_link),
             transform: clip.transform,
             blend: clip.blend,
+            track_matte: clip.track_matte,
             // The fade-in and any crossfade stay on the left half, the fade-out goes
             // right. Volume keys are anchored to source time, so both halves keep them.
             audio: ClipAudio { fade_in: Time::ZERO, crossfade_in: Time::ZERO, ..clip.audio.clone() },
@@ -1615,7 +1616,7 @@ mod tests {
         let t = Transform { position: [10.0, 5.0], scale: [0.5, 0.5], rotation: 15.0, opacity: 0.4, ..Default::default() };
         let old = ClipVisual::default();
         let effects = vec![crate::Effect::new(crate::EffectKind::Blur)];
-        let new = ClipVisual { transform: t, blend: BlendMode::Screen, anim: Default::default(), effects: effects.clone(), mesh: None, masks: Vec::new() };
+        let new = ClipVisual { transform: t, blend: BlendMode::Screen, track_matte: None, anim: Default::default(), effects: effects.clone(), mesh: None, masks: Vec::new() };
         u.execute(&mut p, Box::new(SetClipVisual { seq: 0, id: ClipId(1001), old, new }));
         let cmd = split_group(&mut p, 0, ClipId(1001), Time::from_secs_f64(2.0)).unwrap();
         u.execute(&mut p, cmd);

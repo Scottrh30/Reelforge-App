@@ -268,6 +268,10 @@ pub enum DrawItem<'a> {
     /// with `to`'s blend mode. With `dip`, it fades out to that colour (linear
     /// RGB) and in from it instead.
     Dissolve { from: LayerInput<'a>, to: LayerInput<'a>, mix: f32, dip: Option<[f32; 3]> },
+    /// `layer` seen only through `matte` (the layer above it, not drawn
+    /// itself): `kind` 0 its alpha, 1 its alpha inverted, 2 its brightness,
+    /// 3 its brightness inverted. Composited with `layer`'s blend mode.
+    Matted { matte: LayerInput<'a>, layer: LayerInput<'a>, kind: u32 },
 }
 
 struct LayerTex {
@@ -306,6 +310,13 @@ struct Targets {
     backdrop_bind: wgpu::BindGroup,
     /// Depth, for runs of 3D layers (so layers that cut through each other do).
     depth_view: wgpu::TextureView,
+    /// Track mattes: the matte drawn alone, the matted layer drawn alone
+    /// (into the group target), and the two put together.
+    matte_view: wgpu::TextureView,
+    matte_load: wgpu::BindGroup,
+    group_load: wgpu::BindGroup,
+    matted_view: wgpu::TextureView,
+    matted_bind: wgpu::BindGroup,
 }
 
 pub struct Compositor {
@@ -332,6 +343,8 @@ pub struct Compositor {
     fx_targets: HashMap<u64, FxTargets>,
     output_pipeline: wgpu::RenderPipeline,
     output_alpha_pipeline: wgpu::RenderPipeline,
+    /// Track mattes, by kind (see [`DrawItem::Matted`]).
+    matte_pipelines: [wgpu::RenderPipeline; 4],
     /// 16-bit export outputs: sRGB, PQ, HLG.
     deep_pipelines: [wgpu::RenderPipeline; 4],
     /// Render over transparency and keep the alpha in the output (for composite
@@ -655,6 +668,21 @@ impl Compositor {
         let output_pipeline = output_pipeline_with("fs_output", OUTPUT_FORMAT);
         let output_alpha_pipeline = output_pipeline_with("fs_output_alpha", OUTPUT_FORMAT);
         let deep_pipelines = ["fs_deep_srgb", "fs_deep_pq", "fs_deep_hlg", "fs_deep_srgb_alpha"].map(|e| output_pipeline_with(e, DEEP_FORMAT));
+        let matte_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("track mattes"), source: wgpu::ShaderSource::Wgsl(include_str!("matte.wgsl").into()) });
+        let matte_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("track mattes"), bind_group_layouts: &[Some(&output_layout), Some(&output_layout)], immediate_size: 0 });
+        let matte_pipelines = ["fs_matte_alpha", "fs_matte_alpha_inv", "fs_matte_luma", "fs_matte_luma_inv"].map(|entry| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&matte_pl),
+                vertex: wgpu::VertexState { module: &matte_shader, entry_point: Some("vs_fullscreen"), compilation_options: Default::default(), buffers: &[] },
+                fragment: Some(wgpu::FragmentState { module: &matte_shader, entry_point: Some(entry), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        });
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("layer uniforms"),
@@ -723,6 +751,7 @@ impl Compositor {
             fx_targets: HashMap::new(),
             output_pipeline,
             output_alpha_pipeline,
+            matte_pipelines,
             deep_pipelines,
             yuv: yuv::YuvConverter::new(device, LAYER_FORMAT, FLOAT_LAYER_FORMAT),
             solid: solid::SolidRenderer::new(device, queue, LAYER_FORMAT),
@@ -874,7 +903,22 @@ impl Compositor {
             ],
         });
         let depth_view = tex("3D depth", DEPTH_FORMAT, U::RENDER_ATTACHMENT).create_view(&Default::default());
-        self.targets = Some(Targets { size, accum_view, group_view, group_bind, output, output_view, output_bind, accum_bind, accum, backdrop, backdrop_bind, depth_view });
+        let load = |label, view: &wgpu::TextureView| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(label), layout: &self.output_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) }] })
+        };
+        let matte_view = tex("track matte", ACCUM_FORMAT, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING).create_view(&Default::default());
+        let matte_load = load("track matte", &matte_view);
+        let group_load = load("matted layer", &group_view);
+        let matted_view = tex("matted", ACCUM_FORMAT, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING).create_view(&Default::default());
+        let matted_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("matted"),
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&matted_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        self.targets = Some(Targets { size, accum_view, group_view, group_bind, output, output_view, output_bind, accum_bind, accum, backdrop, backdrop_bind, depth_view, matte_view, matte_load, group_load, matted_view, matted_bind });
         self.output_generation += 1;
     }
 
@@ -1151,6 +1195,7 @@ impl Compositor {
             items.iter().flat_map(|item| match item {
                 DrawItem::Layer(l) => vec![l],
                 DrawItem::Dissolve { from, to, .. } => vec![from, to],
+                DrawItem::Matted { matte, layer, .. } => vec![matte, layer],
             })
         };
 
@@ -1744,6 +1789,9 @@ impl Compositor {
             /// Draw a dissolve group: sum the layers into the group target (cleared
             /// to `clear`, premultiplied, for a dip), then composite the group into the frame.
             Group { a: Option<Draw>, b: Option<Draw>, over: usize, blend: BlendMode, clear: wgpu::Color },
+            /// A track matte: the matte and the layer each drawn alone, the
+            /// layer kept where the matte says, the result composited.
+            Matte { matte: Draw, layer: Draw, kind: u32, over: usize, blend: BlendMode },
         }
         type Uniform<'m> = (Transform, [f32; 2], Option<Wipe>, Option<&'m reelforge_core::meshwarp::MeshShape>, Option<&'m reelforge_core::space3d::LayerSpace>, [f32; 4]);
         let mut uniforms: Vec<Uniform> = Vec::new();
@@ -1803,6 +1851,15 @@ impl Compositor {
                     let over = slot(&mut uniforms, (Transform::default(), frame, None), None, None);
                     ops.push(Op::Group { a, b, over, blend: to.blend, clear });
                 }
+                DrawItem::Matted { matte, layer, kind } => {
+                    let m = Draw { slot: slot(&mut uniforms, (matte.transform, matte.layer_size, matte.wipe), matte.mesh.as_ref(), matte.space), key: matte.key, fx: processed.get(&matte.key).copied() };
+                    let d = Draw { slot: slot(&mut uniforms, (layer.transform, layer.layer_size, layer.wipe), layer.mesh.as_ref(), layer.space), key: layer.key, fx: processed.get(&layer.key).copied() };
+                    for x in [&m, &d] {
+                        with_margin(&mut uniforms, x.slot, x.fx, x.key);
+                    }
+                    let over = slot(&mut uniforms, (Transform::default(), frame, None), None, None);
+                    ops.push(Op::Matte { matte: m, layer: d, kind: (*kind).min(3), over, blend: layer.blend });
+                }
             }
             if uniforms.len() > MAX_DRAWS - 3 {
                 log::warn!("too many layers; dropping the rest");
@@ -1823,6 +1880,7 @@ impl Compositor {
                 let ls: Vec<&LayerInput> = match item {
                     DrawItem::Layer(l) => vec![l],
                     DrawItem::Dissolve { from, to, .. } => vec![from, to],
+                    DrawItem::Matted { matte, layer, .. } => vec![matte, layer],
                 };
                 for l in ls {
                     if let PixelData::Solid(s) = &l.pixels {
@@ -1849,6 +1907,7 @@ impl Compositor {
                             add(d);
                         }
                     }
+                    Op::Matte { layer, .. } => add(layer),
                     Op::Adjust { .. } => {}
                 }
             }
@@ -2176,6 +2235,34 @@ impl Compositor {
                     pass.set_pipeline(&self.group_pipelines[blend]);
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
                     pass.set_bind_group(1, bind, &[]);
+                    pass.draw(0..6, 0..1);
+                }
+                Op::Matte { matte, layer, kind, over, blend } => {
+                    drop(frame_pass.take());
+                    depth_run = false;
+                    for (d, view) in [(matte, &targets.matte_view), (layer, &targets.group_view)] {
+                        let mut gp = pass_on(&mut enc, view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+                        let Some(bind) = source(d) else { continue };
+                        gp.set_pipeline(if d.fx.is_some() || premul(d) { &self.sum_premul_pipeline } else { &self.sum_pipeline });
+                        gp.set_bind_group(0, &self.uniform_bind, &[offset(d.slot)]);
+                        gp.set_bind_group(1, bind, &[]);
+                        gp.draw(0..verts[d.slot], 0..1);
+                    }
+                    {
+                        let mut mp = pass_on(&mut enc, &targets.matted_view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+                        mp.set_pipeline(&self.matte_pipelines[*kind as usize]);
+                        mp.set_bind_group(0, &targets.group_load, &[]);
+                        mp.set_bind_group(1, &targets.matte_load, &[]);
+                        mp.draw(0..3, 0..1);
+                    }
+                    let read = copy_backdrop(&mut enc, *blend);
+                    let pass = frame_pass.insert(pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Load));
+                    if read {
+                        pass.set_bind_group(2, &targets.backdrop_bind, &[]);
+                    }
+                    pass.set_pipeline(&self.group_pipelines[blend]);
+                    pass.set_bind_group(0, &self.uniform_bind, &[offset(*over)]);
+                    pass.set_bind_group(1, &targets.matted_bind, &[]);
                     pass.draw(0..6, 0..1);
                 }
                 Op::Group { a, b, over, blend, clear } => {

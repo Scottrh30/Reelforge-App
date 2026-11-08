@@ -2169,3 +2169,27 @@ fn patch_replacer_covers_a_spot_and_matches_the_light() {
     let shown = draw(&mut c, &[(pr::SHOW, 1.0)]);
     assert!((60..100).any(|x| { let q = px(&shown, w, x, 30); q[0] as i32 > q[1] as i32 + 80 }), "a red outline");
 }
+
+/// Track mattes: a red frame seen through a small white square above it
+/// (alpha), outside it (inverted), or through a grey frame's brightness.
+#[test]
+fn track_mattes_show_the_layer_through_the_one_above() {
+    let Some(mut c) = setup() else { return };
+    let red = solid(1, 1, [255, 0, 0, 255]);
+    let white = solid(1, 1, [255, 255, 255, 255]);
+    let grey = solid(1, 1, [128, 128, 128, 255]);
+    let square = || layer(2, &white, [1, 1], [8.0, 8.0], Transform::default(), BlendMode::Normal);
+    let draw = |c: &mut Compositor, matte: LayerInput, kind: u32| {
+        c.render_items([16, 16], &[DrawItem::Matted { matte, layer: full(1, &red, [16, 16]), kind }]);
+        c.read_output().unwrap()
+    };
+    let a = draw(&mut c, square(), 0);
+    assert!(near(px(&a, 16, 8, 8), [255, 0, 0]), "{:?}", px(&a, 16, 8, 8));
+    assert!(near(px(&a, 16, 1, 1), [0, 0, 0]), "{:?}", px(&a, 16, 1, 1));
+    let inv = draw(&mut c, square(), 1);
+    assert!(near(px(&inv, 16, 8, 8), [0, 0, 0]) && near(px(&inv, 16, 1, 1), [255, 0, 0]));
+    // Grey (128 as it looks) lets about half through; inverted, the other half.
+    let l = px(&draw(&mut c, full(3, &grey, [16, 16]), 2), 16, 8, 8)[0] as i32;
+    let li = px(&draw(&mut c, full(3, &grey, [16, 16]), 3), 16, 8, 8)[0] as i32;
+    assert!((150..215).contains(&l) && (150..215).contains(&li), "{l} {li}");
+}

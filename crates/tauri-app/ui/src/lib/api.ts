@@ -291,7 +291,7 @@ export interface Inspector {
   start: Ticks;
   duration: Ticks;
   source_in: Ticks;
-  visual: { transform: Transform; blend: Blend; layer_size: [number, number] } | null;
+  visual: { transform: Transform; blend: Blend; track_matte: TrackMatte | null; layer_size: [number, number] } | null;
   title: TitleSpec | null;
   audio: ClipAudio | null;
   speed: number;
@@ -542,6 +542,8 @@ export type BenchReport = {
   adapter: string;
   lines: { what: string; ms: number; verdict: "realtime" | "slow" | "heavy"; note: string }[];
 };
+/// Shown only through the layer on the video track above: its alpha or brightness, or the reverse.
+export type TrackMatte = "Alpha" | "AlphaInverted" | "Luma" | "LumaInverted";
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
 export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval";
@@ -992,6 +994,7 @@ export const api = {
   setTrackAudio: (index: number, audio: TrackAudio) => invoke("set_track_audio", { index, audio }),
   setTransform: (id: number, transform: Transform) => invoke("set_transform", { id, transform }),
   setBlend: (id: number, blend: Blend) => invoke("set_blend", { id, blend }),
+  setTrackMatte: (id: number, matte: TrackMatte | null) => invoke("set_track_matte", { id, matte }),
   setTitle: (id: number, spec: TitleSpec) => invoke("set_title", { id, spec }),
   setClipAudio: (id: number, audio: ClipAudio) => invoke("set_clip_audio", { id, audio }),
   setSpeed: (id: number, speed: number, reverse: boolean) => invoke("set_speed", { id, speed, reverse }),

@@ -69,6 +69,8 @@ enum Item {
     Single(Gathered),
     /// A dissolve, or a dip through a colour.
     Dissolve(Gathered, Gathered, f32, Option<[f32; 3]>),
+    /// A layer seen only through a track matte (the layer above, not drawn itself).
+    Matted { matte: Gathered, layer: Gathered, kind: reelforge_core::TrackMatte },
 }
 
 /// A composition's own renderer and its last picture.
@@ -157,7 +159,13 @@ impl Scene {
         // The camera and lights, for 3D layers.
         let scene3d = project.scene3d_at(seq, t);
         let mut items = Vec::new();
+        // Each item's track, and its clip's track matte.
+        let mut tags: Vec<(usize, Option<reelforge_core::TrackMatte>)> = Vec::new();
         for item in reelforge_core::multicam::layers_at(project, seq, t, angle) {
+            let tag = match &item {
+                VideoItem::Single(l) => (l.track, l.clip.track_matte),
+                VideoItem::Dissolve { to, .. } => (to.track, None),
+            };
             match item {
                 VideoItem::Single(l) => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
                 VideoItem::Dissolve { from, to, mix, kind } => {
@@ -191,7 +199,10 @@ impl Scene {
                     }
                 }
             }
+            tags.resize(items.len(), tag);
         }
+        let items = track_mattes(items, &tags, &s.tracks);
+        let mut items = items;
 
         sort_3d(&mut items);
         let signature = signature(frame_size, &items);
@@ -203,6 +214,7 @@ impl Scene {
             .map(|i| match i {
                 Item::Single(g) => DrawItem::Layer(input(g)),
                 Item::Dissolve(a, b, mix, dip) => DrawItem::Dissolve { from: input(a), to: input(b), mix: *mix, dip: *dip },
+                Item::Matted { matte, layer, kind } => DrawItem::Matted { matte: input(matte), layer: input(layer), kind: kind.index() },
             })
             .collect();
         compositor.render_items(frame_size, &draw);
@@ -211,6 +223,7 @@ impl Scene {
             .flat_map(|i| match i {
                 Item::Single(g) => vec![g.key],
                 Item::Dissolve(a, b, ..) => vec![a.key, b.key],
+                Item::Matted { matte, layer, .. } => vec![matte.key, layer.key],
             })
             .collect();
         compositor.retain_layers(|k| keys.contains(&k));
@@ -535,6 +548,7 @@ fn recipe_into(project: &Project, seq: usize, angle: Option<reelforge_core::mult
             scene3d.camera.dof.map(|(f, a)| (f.to_bits(), a.to_bits())).hash(h);
         }
         l.blend.hash(h);
+        clip.track_matte.hash(h);
         for e in &l.effects {
             e.kind.hash(h);
             for v in e.values {
@@ -614,6 +628,38 @@ fn input(g: &Gathered) -> LayerInput<'_> {
 
 /// 3D layers next to each other in the stack are drawn furthest first (2D
 /// layers between them keep their places, as in HitFilm).
+/// Pair each layer with a track matte with the layer on the video track
+/// directly above (drawn into its matte, not by itself). With nothing there,
+/// an alpha or luma matte hides the layer and an inverted one shows it all.
+fn track_mattes(items: Vec<Item>, tags: &[(usize, Option<reelforge_core::TrackMatte>)], tracks: &[reelforge_core::Track]) -> Vec<Item> {
+    use reelforge_core::TrackMatte;
+    let above = |ti: usize| (ti + 1..tracks.len()).find(|&j| tracks[j].kind == reelforge_core::TrackKind::Video && !tracks[j].muted);
+    let mut slots: Vec<Option<Item>> = items.into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(slots.len());
+    let mut i = 0;
+    while i < slots.len() {
+        let (track, matte) = tags[i];
+        if let (Some(kind), Some(Item::Single(_))) = (matte, &slots[i]) {
+            let next = i + 1 < slots.len() && Some(tags[i + 1].0) == above(track) && (i + 2 >= slots.len() || tags[i + 2].0 != tags[i + 1].0);
+            if next && matches!(slots[i + 1], Some(Item::Single(_))) {
+                let (Some(Item::Single(layer)), Some(Item::Single(m))) = (slots[i].take(), slots[i + 1].take()) else { unreachable!() };
+                out.push(Item::Matted { matte: m, layer, kind });
+                i += 2;
+                continue;
+            }
+            if !next && matches!(kind, TrackMatte::Alpha | TrackMatte::Luma) {
+                i += 1;
+                continue;
+            }
+        }
+        if let Some(it) = slots[i].take() {
+            out.push(it);
+        }
+        i += 1;
+    }
+    out
+}
+
 fn sort_3d(items: &mut [Item]) {
     let is_3d = |i: &Item| matches!(i, Item::Single(g) if g.space.is_some() || g.sort_depth.is_some());
     let mut start = 0;
@@ -721,6 +767,12 @@ fn signature(frame_size: [u32; 2], items: &[Item]) -> u64 {
                 layer(b, &mut h);
                 mix.to_bits().hash(&mut h);
                 dip.map(|c| c.map(f32::to_bits)).hash(&mut h);
+            }
+            Item::Matted { matte, layer: l, kind } => {
+                2u8.hash(&mut h);
+                layer(matte, &mut h);
+                layer(l, &mut h);
+                kind.hash(&mut h);
             }
         }
     }
@@ -847,5 +899,39 @@ mod layer_tests {
         let before = frame_recipe(&p, 0, secs(1.0), &none);
         p.sequences[0].tracks[0].clips[0].plane = Some([0, 255, 0, 255]);
         assert_ne!(frame_recipe(&p, 0, secs(1.0), &none), before);
+    }
+
+    #[test]
+    fn a_track_matte_shows_a_layer_through_the_one_above() {
+        let Some((device, queue)) = reelforge_render::headless_device() else { return };
+        let secs = Time::from_secs_f64;
+        let mut seq = Sequence::new("T", 64, 32, FrameRate::new(25, 1));
+        while seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).count() < 2 {
+            seq.tracks.insert(0, reelforge_core::Track::new("V", TrackKind::Video));
+        }
+        let mut red = Clip::new_plane(ClipId(1), Time::ZERO, secs(5.0), [255, 0, 0, 255]);
+        red.track_matte = Some(reelforge_core::TrackMatte::Alpha);
+        let mut white = Clip::new_plane(ClipId(2), Time::ZERO, secs(2.0), [255, 255, 255, 255]);
+        white.transform.scale = [0.25, 0.25];
+        seq.tracks[0].clips = vec![red];
+        seq.tracks[1].clips = vec![white];
+        let mut p = Project::new();
+        p.sequences = vec![seq];
+        let mut scene = Scene::new(&device, &queue);
+        let mut comp = Compositor::new(&device, &queue);
+        let mut shot = |p: &Project, s: f64| {
+            scene.render(p, 0, secs(s), &mut comp, &mut Nothing, None).unwrap();
+            comp.read_output().unwrap()
+        };
+        let px = |img: &[u8], x: usize, y: usize| [img[(y * 64 + x) * 4], img[(y * 64 + x) * 4 + 1], img[(y * 64 + x) * 4 + 2]];
+        let img = shot(&p, 1.0);
+        assert_eq!(px(&img, 32, 16), [255, 0, 0], "red through the square (and the square itself not drawn)");
+        assert_eq!(px(&img, 2, 2), [0, 0, 0]);
+        // Nothing above (after 2 s): an alpha matte hides it, an inverted one shows it.
+        assert_eq!(px(&shot(&p, 3.0), 32, 16), [0, 0, 0]);
+        p.sequences[0].tracks[0].clips[0].track_matte = Some(reelforge_core::TrackMatte::AlphaInverted);
+        assert_eq!(px(&shot(&p, 3.0), 32, 16), [255, 0, 0]);
+        let img = shot(&p, 1.0);
+        assert_eq!((px(&img, 32, 16), px(&img, 2, 2)), ([0, 0, 0], [255, 0, 0]));
     }
 }
