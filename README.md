@@ -361,6 +361,19 @@ What works now:
     picture is filled from just past each edge (**Fill from** sets how far past), blended across
     the width so a gradient or a sky carries on through. **Show area** tints what it covers red
     while you line it up. Keyframe the ends to follow a moving wire
+  - **Patch replacer** (Repair), like DaVinci Resolve's: covers a blemish, a logo, a sign or a
+    stray object with a patch of the picture from beside it. Drag the **Target** handle onto
+    what to hide and the **Source** handle onto clean picture to take the patch from; the
+    source is measured from the target (**Source offset X/Y**), so it moves with it. **Width**,
+    **Height**, **Rotation**, **Shape** (ellipse or rectangle) and **Softness** (a feather just
+    inside the edge). **Fill**: *Adaptive blend* (the default) copies the source's detail but
+    matches its light and colour to what's round the target, so the join doesn't show (the
+    difference between the two areas' surroundings, sampled at 48 points round the rim, is
+    blended across the patch, nearest points counting most); *Clone* copies it as it is; *Fill
+    from the edges* fills smoothly from the surroundings alone (for small specks). **Show
+    areas** outlines the target in red and the source in green. Keyframe the target, or pick
+    *Patch replacer: target* under **Apply to** in the Track panel so it follows the tracked
+    motion
   - **Glow**: threshold, radius, intensity and softness; bright areas bloom outwards
   - **Drop shadow**: distance, angle, softness and opacity, from the layer's alpha
   - **Vignette**: amount, size and softness

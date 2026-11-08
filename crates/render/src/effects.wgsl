@@ -1530,3 +1530,103 @@ fn fs_fractal(in: VsOut) -> @location(0) vec4<f32> {
     }
     return mix(c, out, clamp(fx.p3.y / 100.0, 0.0, 1.0));
 }
+
+// ---- Patch replacer ----
+// p0 = (target x %, y %, source offset x %, y %), p1 = (width px, height px,
+// rotation °, shape: 0 ellipse / 1 rectangle), p2 = (softness px, fill: 0
+// adaptive / 1 clone / 2 from the edges, show areas, opacity %); extra.zw = layer size.
+
+fn patch_rot(v: vec2<f32>, a: f32) -> vec2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
+}
+
+// Signed distance (px) from the shape's edge, negative inside; `q` is in the shape's own frame.
+fn patch_sd(q: vec2<f32>, half: vec2<f32>) -> f32 {
+    if (fx.p1.w > 0.5) {
+        let d = abs(q) - half;
+        return length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);
+    }
+    // An ellipse: scaled so the distance is about right near the edge.
+    let k = length(q / half);
+    return (k - 1.0) * min(half.x, half.y);
+}
+
+// A point just outside the shape's edge at turn `f` (0–1), in the shape's own frame.
+fn patch_rim(f: f32, half: vec2<f32>, out: f32) -> vec2<f32> {
+    if (fx.p1.w > 0.5) {
+        // Round the rectangle's perimeter.
+        let h = half + vec2(out);
+        let per = 4.0 * (h.x + h.y);
+        var t = f * per;
+        if (t < 2.0 * h.x) { return vec2(-h.x + t, -h.y); }
+        t -= 2.0 * h.x;
+        if (t < 2.0 * h.y) { return vec2(h.x, -h.y + t); }
+        t -= 2.0 * h.y;
+        if (t < 2.0 * h.x) { return vec2(h.x - t, h.y); }
+        t -= 2.0 * h.x;
+        return vec2(-h.x, h.y - t);
+    }
+    let a = f * 6.28318530718;
+    return vec2(cos(a), sin(a)) * (half + vec2(out));
+}
+
+fn patch_at(p: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(src, src_sampler, to_tex(p / size), 0.0);
+}
+
+@fragment
+fn fs_patch(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let centre = fx.p0.xy / 100.0 * size;
+    let off = fx.p0.zw / 100.0 * size;
+    let half = max(fx.p1.xy * 0.5, vec2(1.0));
+    let rot = radians(fx.p1.z);
+    let soft = max(fx.p2.x, 0.0);
+    let q = patch_rot(p - centre, -rot);
+    let d = patch_sd(q, half);
+    // Full inside, feathered over `soft` just inside the edge.
+    let m = 1.0 - smoothstep(-soft - 0.5, 0.5, d);
+    var out = c;
+    if (m > 0.0) {
+        let taken = patch_at(p + off, size);
+        let fill = u32(round(fx.p2.y));
+        var res = taken;
+        if (fill != 1u) {
+            // Round the rim, just outside the feather: what's there, and what's
+            // round the source; weighted towards the nearest parts of the rim.
+            var sum_w = 0.0;
+            var sum_diff = vec4(0.0);
+            var sum_edge = vec4(0.0);
+            for (var k = 0u; k < 48u; k = k + 1u) {
+                let r = patch_rim((f32(k) + 0.5) / 48.0, half, 2.0);
+                let b = centre + patch_rot(r, rot);
+                let here = patch_at(b, size);
+                let dq = q - r;
+                let w = 1.0 / (dot(dq, dq) + 1.0);
+                sum_w += w;
+                sum_edge += here * w;
+                sum_diff += (here - patch_at(b + off, size)) * w;
+            }
+            if (fill == 2u) {
+                res = sum_edge / sum_w;
+            } else {
+                res = max(taken + sum_diff / sum_w, vec4(0.0));
+                res = vec4(min(res.rgb, vec3(max(res.a, 1e-4)) * 64.0), clamp(res.a, 0.0, 1.0));
+            }
+        }
+        out = mix(c, res, m * clamp(fx.p2.w / 100.0, 0.0, 1.0));
+    }
+    if (fx.p2.z > 0.5) {
+        // Outlines: the target red, the source green.
+        let ds = patch_sd(patch_rot(p - centre - off, -rot), half);
+        let line_t = 1.0 - smoothstep(0.75, 1.75, abs(d));
+        let line_s = 1.0 - smoothstep(0.75, 1.75, abs(ds));
+        out = mix(out, vec4(0.9, 0.08, 0.05, 1.0), line_t);
+        out = mix(out, vec4(0.1, 0.85, 0.15, 1.0), line_s * (1.0 - line_t));
+    }
+    return out;
+}

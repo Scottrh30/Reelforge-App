@@ -2125,3 +2125,47 @@ fn lightning_strikes_between_its_points() {
     assert_ne!(img, draw(&mut c, &[(lt::BRANCHES, 0.0)], 0.55), "a new strike");
     assert_eq!(draw(&mut c, &[(lt::OPACITY, 0.0)], 0.0), draw(&mut c, &[(lt::OPACITY, 0.0)], 0.3));
 }
+
+/// Patch replacer: a dark spot on a left-to-right gradient covered from the
+/// brighter area to its right: cloned, it shows brighter; adaptive, it
+/// matches what's round it.
+#[test]
+fn patch_replacer_covers_a_spot_and_matches_the_light() {
+    use reelforge_core::effects::patch as pr;
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let pic: Vec<u8> = (0..h)
+        .flat_map(|y| (0..w).flat_map(move |x| if (x as i32 - 80).pow(2) + (y as i32 - 45).pow(2) < 64 { [10u8, 10, 10, 255] } else { [(40 + x) as u8, (40 + x) as u8, (40 + x) as u8, 255] }))
+        .collect();
+    let mut key = 7200u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, set: &[(usize, f32)]| {
+        let mut e = Effect::new(EffectKind::PatchReplacer);
+        e.params[pr::WIDTH].value = 30.0;
+        e.params[pr::HEIGHT].value = 30.0;
+        e.params[pr::SOFTNESS].value = 4.0;
+        e.params[pr::SOURCE_X].value = 30.0;
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        let v = e.eval_sized(Time::ZERO, None, [w as f32, h as f32]);
+        key += 1;
+        let mut l = layer(1, &pic, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let clone = draw(&mut c, &[(pr::FILL, 1.0)]);
+    // 48 px to the right, the source is about 48 levels brighter.
+    let v = px(&clone, w, 80, 45)[0] as i32;
+    assert!((150..185).contains(&v), "cloned: {v}");
+    for fill in [0.0, 2.0] {
+        let img = draw(&mut c, &[(pr::FILL, fill)]);
+        let v = px(&img, w, 80, 45)[0] as i32;
+        assert!((110..135).contains(&v), "fill {fill}: {v}");
+        // Outside the patch nothing changes.
+        assert_eq!(px(&img, w, 20, 45), px(&pic, w, 20, 45));
+    }
+    let shown = draw(&mut c, &[(pr::SHOW, 1.0)]);
+    assert!((60..100).any(|x| { let q = px(&shown, w, x, 30); q[0] as i32 > q[1] as i32 + 80 }), "a red outline");
+}

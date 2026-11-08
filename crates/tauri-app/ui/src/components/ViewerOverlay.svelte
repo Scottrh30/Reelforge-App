@@ -480,13 +480,21 @@
     });
   });
   // OpenFX plugins' positions: a handle each (x, y in % of the layer, y down).
-  type FxPoint = { index: number; param: number; label: string; at: Pt };
+  type FxPoint = { index: number; param: number; label: string; at: Pt; base: Pt };
   const fxPoints = $derived.by((): FxPoint[] => {
     if (!ins) return [];
     return ins.effects.flatMap((fx, index) =>
       !fx.enabled || !fx.points
         ? []
-        : fx.points.filter((p) => fx.params.length > p.param + 1).map((p) => ({ index, param: p.param, label: `${fx.label}: ${p.label}`, at: [(fx.params[p.param].value / 100) * size[0], (fx.params[p.param + 1].value / 100) * size[1]] as Pt })),
+        : fx.points
+            .filter((p) => fx.params.length > p.param + 1 && (p.relative === null || fx.params.length > p.relative + 1))
+            .map((p) => {
+              // A relative point (a patch's source) is measured from its base point.
+              const v = (k: number) => fx.params[k].value;
+              const base: Pt = p.relative === null ? [0, 0] : [(v(p.relative) / 100) * size[0], (v(p.relative + 1) / 100) * size[1]];
+              const at: Pt = [base[0] + (v(p.param) / 100) * size[0], base[1] + (v(p.param + 1) / 100) * size[1]];
+              return { index, param: p.param, label: `${fx.label}: ${p.label}`, at, base };
+            }),
     );
   });
   // Wire removals and lightning: a line between their two ends (the ends are fxPoints).
@@ -514,8 +522,8 @@
       let [dx, dy] = [now[0] - start[0], now[1] - start[1]];
       // Shift: straight across or straight down.
       if (ev.shiftKey) Math.abs(dx) > Math.abs(dy) ? (dy = 0) : (dx = 0);
-      const x = ((m.at[0] + dx) / size[0]) * 100;
-      const y = ((m.at[1] + dy) / size[1]) * 100;
+      const x = ((m.at[0] + dx - m.base[0]) / size[0]) * 100;
+      const y = ((m.at[1] + dy - m.base[1]) / size[1]) * 100;
       pump.push(() => Promise.all([api.effectParam(id, m.index, m.param, x), api.effectParam(id, m.index, m.param + 1, y)]));
     };
     const up = async () => {

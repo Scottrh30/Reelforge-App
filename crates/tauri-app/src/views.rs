@@ -383,12 +383,19 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
         targets.push(TargetView { clip: c.id.0, mask: Some(i), blade: None, point: false, label: format!("Mask: {}", m.name) });
     }
     // Energy blades: on this clip, or (below) on layers over it.
-    let blades = |o: &Clip| -> Vec<usize> { o.effects.iter().enumerate().filter(|(_, f)| f.kind == reelforge_core::EffectKind::EnergyBlade).map(|(i, _)| i).collect() };
-    let blade_label = |list: &[usize], i: usize| if list.len() > 1 { format!("Energy blade {}", list.iter().position(|&j| j == i).unwrap_or(0) + 1) } else { "Energy blade".to_string() };
+    // (And patch replacers, whose target follows the same way.)
+    let blades = |o: &Clip| -> Vec<usize> { o.effects.iter().enumerate().filter(|(_, f)| matches!(f.kind, reelforge_core::EffectKind::EnergyBlade | reelforge_core::EffectKind::PatchReplacer)).map(|(i, _)| i).collect() };
+    let blade_label = |o: &Clip, list: &[usize], i: usize| {
+        let patch = o.effects[i].kind == reelforge_core::EffectKind::PatchReplacer;
+        let same: Vec<usize> = list.iter().copied().filter(|&j| (o.effects[j].kind == reelforge_core::EffectKind::PatchReplacer) == patch).collect();
+        let name = if patch { "Patch replacer" } else { "Energy blade" };
+        let what = if patch { "target" } else { "hilt and tip" };
+        if same.len() > 1 { format!("{name} {}: {what}", same.iter().position(|&j| j == i).unwrap_or(0) + 1) } else { format!("{name}: {what}") }
+    };
     if trk.mode != TrackMode::Mesh {
         let list = blades(c);
         for &i in &list {
-            targets.push(TargetView { clip: c.id.0, mask: None, blade: Some(i), point: false, label: format!("{}: hilt and tip (this clip)", blade_label(&list, i)) });
+            targets.push(TargetView { clip: c.id.0, mask: None, blade: Some(i), point: false, label: format!("{} (this clip)", blade_label(c, &list, i)) });
         }
     }
     if let Some((ta, tb)) = range {
@@ -418,7 +425,7 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
                 if trk.mode != TrackMode::Mesh {
                     let list = blades(o);
                     for &i in &list {
-                        targets.push(TargetView { clip: o.id.0, mask: None, blade: Some(i), point: false, label: format!("{}: hilt and tip ({}, {})", blade_label(&list, i), o.display_name(&e.project), tr.name) });
+                        targets.push(TargetView { clip: o.id.0, mask: None, blade: Some(i), point: false, label: format!("{} ({}, {})", blade_label(o, &list, i), o.display_name(&e.project), tr.name) });
                     }
                 }
             }

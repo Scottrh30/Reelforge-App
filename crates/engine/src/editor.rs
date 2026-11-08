@@ -3200,7 +3200,15 @@ impl Editor {
         let s = self.seq();
         let (Some((_, a)), Some((_, b))) = (s.find_clip(tracked), s.find_clip(target)) else { return };
         let Some(track) = &a.tracker else { return };
-        let Some(fx) = b.effects.get(index).filter(|f| f.kind == EffectKind::EnergyBlade) else { return };
+        let Some(fx) = b.effects.get(index).filter(|f| matches!(f.kind, EffectKind::EnergyBlade | EffectKind::PatchReplacer)) else { return };
+        // A patch replacer's target moves (its source, measured from the target, comes with it).
+        let patch = fx.kind == EffectKind::PatchReplacer;
+        let params = if patch {
+            use reelforge_core::effects::patch as pr;
+            [pr::X, pr::Y, pr::X, pr::Y]
+        } else {
+            [blade::HILT_X, blade::HILT_Y, blade::TIP_X, blade::TIP_Y]
+        };
         if s.is_locked(target) {
             self.status = LOCKED.into();
             return;
@@ -3232,7 +3240,7 @@ impl Editor {
         let ref_seq = to_seq(ref_media);
         let src = b.source_time(clamp_b(ref_seq));
         let pct = |i: usize| fx.value_at(i, src) / 100.0;
-        let ends_b = [[pct(blade::HILT_X) * lb[0], pct(blade::HILT_Y) * lb[1]], [pct(blade::TIP_X) * lb[0], pct(blade::TIP_Y) * lb[1]]];
+        let ends_b = [[pct(params[0]) * lb[0], pct(params[1]) * lb[1]], [pct(params[2]) * lb[0], pct(params[3]) * lb[1]]];
         let (Some(h), Some(t)) = (into_a(ref_seq, ends_b[0]), into_a(ref_seq, ends_b[1])) else { return };
         let Some(path) = reelforge_core::track::follow_blade(track, [h, t], ref_media, axes) else {
             self.status = if track.mode == TrackMode::Mesh {
@@ -3259,13 +3267,10 @@ impl Editor {
         let mut v = b.visual();
         let e = &mut v.effects[index];
         e.normalize();
-        for (j, i) in [blade::HILT_X, blade::HILT_Y, blade::TIP_X, blade::TIP_Y].into_iter().enumerate() {
+        for (j, i) in params.into_iter().enumerate().take(if patch { 2 } else { 4 }) {
             let p = &mut e.params[i];
             // A part left out keeps the blade's own value (and keys).
-            let moves = match i {
-                blade::HILT_X | blade::TIP_X => axes.x || axes.rotation || axes.scale,
-                _ => axes.y || axes.rotation || axes.scale,
-            };
+            let moves = if j % 2 == 0 { axes.x || axes.rotation || axes.scale } else { axes.y || axes.rotation || axes.scale };
             if !moves {
                 continue;
             }
@@ -3274,7 +3279,8 @@ impl Editor {
                 p.keys.set(*at, val[j]);
             }
         }
-        let name = if same { "The blade".to_string() } else { format!("The blade on {}", b.display_name(&self.project)) };
+        let what = if patch { "The patch" } else { "The blade" };
+        let name = if same { what.to_string() } else { format!("{what} on {}", b.display_name(&self.project)) };
         self.set_visual_live(target, v);
         self.commit_live_edit();
         self.status = format!("{name} now follows the tracked motion ({} keyframes)", keys.len());
@@ -4095,6 +4101,21 @@ mod tests {
         assert!(!c.effects[0].params[blade::HILT_Y].keys.is_animated(), "Y left alone");
         e.undo();
         assert!(!e.seq().find_clip(id).unwrap().1.effects[0].params[blade::HILT_X].keys.is_animated(), "one undo step");
+
+        // A patch replacer's target follows too; its source offset is left alone.
+        {
+            use reelforge_core::effects::patch as pr;
+            let mut v = e.visual(id).unwrap();
+            v.effects.push(Effect::new(EffectKind::PatchReplacer));
+            e.set_visual_live(id, v);
+            e.commit_live_edit();
+            e.apply_track_to_blade(id, id, 1, Axes::ALL);
+            let (_, c) = e.seq().find_clip(id).unwrap();
+            let fx = &c.effects[1];
+            let at = |i, s: f64| fx.value_at(i, Time::from_secs_f64(s));
+            assert!((at(pr::X, 0.0) - 50.0).abs() < 0.01 && (at(pr::X, 0.5) - 60.0).abs() < 0.01, "{} {} ({})", at(pr::X, 0.0), at(pr::X, 0.5), e.status);
+            assert!(!fx.params[pr::SOURCE_X].keys.is_animated());
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

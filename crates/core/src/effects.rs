@@ -110,6 +110,10 @@ pub enum EffectKind {
     /// Lightning: jagged, branching bolts between two points or all round
     /// one, struck afresh several times a second (see [`crate::lightning`]).
     Lightning,
+    /// Patch replacer: an area covered with a patch from elsewhere in the
+    /// picture, its light matched to the surroundings (or cloned as it is,
+    /// or filled in from the edges). The source moves with the target.
+    PatchReplacer,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -906,6 +910,26 @@ pub mod lightning {
     pub const SEED: usize = 20;
     pub const TYPES: [&str; 2] = ["Bolt (start to end)", "Ball (all round the start)"];
 }
+/// Patch replacer parameter indices.
+pub mod patch {
+    /// The area covered (its centre, % of the layer).
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    /// Where the patch comes from, from the target (% of the layer).
+    pub const SOURCE_X: usize = 2;
+    pub const SOURCE_Y: usize = 3;
+    pub const WIDTH: usize = 4;
+    pub const HEIGHT: usize = 5;
+    pub const ROTATION: usize = 6;
+    pub const SHAPE: usize = 7;
+    pub const SOFTNESS: usize = 8;
+    pub const FILL: usize = 9;
+    /// Outline the target (red) and the source (green) in the picture.
+    pub const SHOW: usize = 10;
+    pub const OPACITY: usize = 11;
+    pub const SHAPES: [&str; 2] = ["Ellipse", "Rectangle"];
+    pub const FILLS: [&str; 3] = ["Adaptive blend (match the light)", "Clone (copy as it is)", "Fill from the edges"];
+}
 /// Halftone parameter indices.
 pub mod halftone {
     pub const STYLE: usize = 0;
@@ -1051,6 +1075,20 @@ const LIGHTNING: [ParamSpec; 21] = [
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
+const PATCH: [ParamSpec; 12] = [
+    spec("Target X", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("Target Y", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("Source offset X", 20.0, -150.0, 150.0, " %", 0.1),
+    spec("Source offset Y", 0.0, -150.0, 150.0, " %", 0.1),
+    spec("Width", 120.0, 2.0, 4000.0, " px", 0.5),
+    spec("Height", 120.0, 2.0, 4000.0, " px", 0.5),
+    spec("Rotation", 0.0, -360.0, 360.0, "°", 0.5),
+    choice("Shape", &patch::SHAPES),
+    spec("Softness", 12.0, 0.0, 500.0, " px", 0.25),
+    choice("Fill", &patch::FILLS),
+    ParamSpec { name: "Show areas", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+];
 const CRT: [ParamSpec; 12] = [
     spec("Curvature", 30.0, 0.0, 100.0, " %", 0.5),
     spec("Scan lines", 50.0, 0.0, 100.0, " %", 0.5),
@@ -1091,7 +1129,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 34] = [
+    pub const ALL: [EffectKind; 35] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -1122,6 +1160,7 @@ impl EffectKind {
         EffectKind::Disintegrate,
         EffectKind::FractalNoise,
         EffectKind::Lightning,
+        EffectKind::PatchReplacer,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -1166,6 +1205,7 @@ impl EffectKind {
             EffectKind::Disintegrate => "Disintegrate",
             EffectKind::FractalNoise => "Fractal noise",
             EffectKind::Lightning => "Lightning",
+            EffectKind::PatchReplacer => "Patch replacer",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -1180,7 +1220,7 @@ impl EffectKind {
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate => EffectCategory::Simulation,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
-            EffectKind::WireRemoval => EffectCategory::Repair,
+            EffectKind::WireRemoval | EffectKind::PatchReplacer => EffectCategory::Repair,
             EffectKind::FractalNoise | EffectKind::Lightning => EffectCategory::Generate,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
@@ -1213,6 +1253,7 @@ impl EffectKind {
             EffectKind::Disintegrate => "The layer breaks up into particles of its own colours, a ragged glowing front sweeping across it in the direction you choose, the pieces drifting away and fading.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
             EffectKind::Lightning => "Jagged, branching bolts of lightning or electricity between two points (drag them in the Viewer) or all round one, struck afresh several times a second, flickering and lighting the layer.",
+            EffectKind::PatchReplacer => "Covers a blemish, a logo or a sign with a patch of the picture from beside it (drag both in the Viewer), its light matched to the surroundings so the join doesn't show. Keyframe or track the target: the source moves with it.",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
             EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
@@ -1269,6 +1310,7 @@ impl EffectKind {
             EffectKind::Disintegrate => &DISINTEGRATE,
             EffectKind::FractalNoise => &FRACTAL,
             EffectKind::Lightning => &LIGHTNING,
+            EffectKind::PatchReplacer => &PATCH,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -1305,6 +1347,7 @@ impl EffectKind {
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
             EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
             EffectKind::Lightning => &[(0, "Path"), (4, "Shape"), (10, "Look"), (15, "Motion")],
+            EffectKind::PatchReplacer => &[(0, "Target"), (2, "Source"), (4, "Shape"), (9, "Fill")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
         }
@@ -1393,6 +1436,7 @@ impl EffectValues {
             EffectKind::Disintegrate => self.particles.is_none(),
             EffectKind::FractalNoise => v[fractal::OPACITY] == 0.0,
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
+            EffectKind::PatchReplacer => v[patch::OPACITY] == 0.0,
             EffectKind::MuzzleFlash => v[muzzle::BRIGHTNESS] == 0.0 && v[muzzle::LIGHT] == 0.0,
             EffectKind::BulletHit => false,
             EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.fluid.is_none(),

@@ -89,6 +89,9 @@ pub struct EffectView {
 pub struct PointView {
     pub param: usize,
     pub label: String,
+    /// Measured from another point (its first parameter), not from the
+    /// layer's corner: a patch's source, which moves with its target.
+    pub relative: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -209,7 +212,9 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 environment,
                 environment_error,
                 points: if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
-                    vec![PointView { param: 0, label: "Start".into() }, PointView { param: 2, label: "End".into() }]
+                    vec![PointView { param: 0, label: "Start".into(), relative: None }, PointView { param: 2, label: "End".into(), relative: None }]
+                } else if fx.kind == EffectKind::PatchReplacer {
+                    vec![PointView { param: 0, label: "Target".into(), relative: None }, PointView { param: 2, label: "Source".into(), relative: Some(0) }]
                 } else if let Some(label) = match fx.kind {
                     EffectKind::Shatter => Some("Impact"),
                     EffectKind::MuzzleFlash => Some("Barrel"),
@@ -217,9 +222,9 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::Fluid => Some("Source"),
                     _ => None,
                 } {
-                    vec![PointView { param: 0, label: label.into() }]
+                    vec![PointView { param: 0, label: label.into(), relative: None }]
                 } else {
-                    ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label }).collect())
+                    ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label, relative: None }).collect())
                 },
                 error: ofx.as_ref().and_then(|_| reelforge_export::ofxhost::error(c.id, index)).filter(|_| fx.enabled),
                 temporal: ofx.as_ref().is_some_and(|d| d.temporal),
