@@ -42,7 +42,7 @@
     if (prefs && r !== undefined) prefs.cache_folder = r;
     info = await api.settingsInfo();
   }
-  async function freeDisk(what: "render" | "proxies" | "autosaves") {
+  async function freeDisk(what: "render" | "proxies" | "autosaves" | "fills") {
     await run(api.diskFree(what));
     info = await api.settingsInfo();
   }
@@ -148,6 +148,8 @@
           <button class="tiny" disabled={!info.render_disk_frames && !info.render_frames} onclick={() => freeDisk("render")} title="Forget every rendered preview, in memory and on disk (made again when needed)">Clear</button>
           <span>Proxies</span><span class="n">{size(info.proxy_bytes)}</span>
           <button class="tiny" disabled={!info.unused_proxies} onclick={() => freeDisk("proxies")} title="Delete the proxies of footage that isn't in this project ({info.unused_proxies}, {size(info.unused_proxy_bytes)}); others' are made again if those projects are opened">Delete {info.unused_proxies} unused</button>
+          <span>Object removal fills</span><span class="n">{size(info.fill_bytes)}</span>
+          <button class="tiny" disabled={!info.unused_fills} onclick={() => freeDisk("fills")} title="Delete the fills nothing uses any more ({info.unused_fills}, {size(info.unused_fill_bytes)}): earlier fills replaced by Fill again, and ones whose project is gone or no longer has them. Other saved projects' fills are kept">Delete {info.unused_fills} unused</button>
           <span>Autosaves</span><span class="n">{info.autosaves} · {size(info.autosave_bytes)}</span>
           <button class="tiny" disabled={info.autosaves <= 1} onclick={() => freeDisk("autosaves")} title="Delete every autosave but this session's (crash recovery for earlier sessions goes with them)">Delete old</button>
         </div>

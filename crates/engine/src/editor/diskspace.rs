@@ -59,7 +59,11 @@ impl Editor {
                 let (n, bytes) = crate::safety::delete_old_autosaves(keep.as_deref());
                 self.status = format!("Deleted {n} old autosave{} ({})", if n == 1 { "" } else { "s" }, size_text(bytes));
             }
-            "proxies" => {
+"fills" => {
+                let (n, bytes) = disk::delete_unused_fills(&self.project, self.project_path.as_deref());
+                self.status = format!("Deleted {n} unused object removal fill{} ({}); fills an undo step went back to are gone too", if n == 1 { "" } else { "s" }, size_text(bytes));
+            }
+                        "proxies" => {
                 let (n, bytes) = disk::delete_unused_proxies(&self.project);
                 self.status = format!("Deleted {n} unused prox{} ({})", if n == 1 { "y" } else { "ies" }, size_text(bytes));
             }

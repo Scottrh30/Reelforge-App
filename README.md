@@ -755,8 +755,11 @@ What works now:
   once there's room), rather than failing part-way with a cryptic error
 - **Disk** (Settings): how much is free on the drive Reelforge keeps its files on, and what
   its rendered previews, proxies and autosaves take, each with a button: **Clear** the rendered
-  previews, **Delete unused** proxies (those of footage not in this project; how many is shown)
-  and **Delete old** autosaves (all but this session's). **Cache folder**: put proxies and
+  previews, **Delete unused** proxies (those of footage not in this project; how many is shown),
+  **Delete unused** Object removal fills (earlier fills replaced by Fill again, and ones whose
+  project is gone or no longer has them; each fill remembers the project that made it, and a
+  saved project that still names its fill keeps it, so other projects' fills are safe) and
+  **Delete old** autosaves (all but this session's). **Cache folder**: put proxies and
   rendered previews on another drive (a fast SSD for smooth playback, or a bigger disk) with
   **Choose…**, or back with **Default**; with **Move what's there** ticked, the files there now
   move across in the background (renamed on the same drive, copied then deleted across drives;

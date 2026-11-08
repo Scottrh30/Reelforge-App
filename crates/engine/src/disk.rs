@@ -142,6 +142,59 @@ pub fn delete_unused_proxies_in(dir: &Path, project: &Project) -> (usize, u64) {
     unused_proxies_in(dir, project).into_iter().filter(|(p, _)| std::fs::remove_file(p).is_ok()).fold((0, 0), |(n, b), (_, len)| (n + 1, b + len))
 }
 
+/// An Object removal fill folder in the cache.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FillDir {
+    pub path: PathBuf,
+    pub bytes: u64,
+    /// This project uses it, or the project that made it still does.
+    pub used: bool,
+}
+
+/// Every Object removal fill folder in `dir`, and whether it's still used:
+/// by `project` (saved at `path`, if it is), or by the project that made it
+/// (its saved file still names the folder). One whose project no longer
+/// exists or no longer names it is unused.
+pub fn fills_in(dir: &Path, project: &Project, path: Option<&Path>) -> Vec<FillDir> {
+    let here: std::collections::HashSet<PathBuf> = project
+        .sequences
+        .iter()
+        .flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter()))
+        .flat_map(|c| c.effects.iter())
+        .filter_map(|e| match &e.data {
+            Some(reelforge_core::effects::EffectData::Fill(d)) => Some(d.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut texts: std::collections::HashMap<String, Option<String>> = Default::default();
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<FillDir> = rd
+        .flatten()
+        .filter(|f| f.metadata().is_ok_and(|m| m.is_dir()))
+        .map(|f| {
+            let p = f.path();
+            let bytes = std::fs::read_dir(&p).map(|rd| rd.flatten().filter_map(|x| x.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0);
+            let name = f.file_name().to_string_lossy().to_string();
+            let owner = std::fs::read_to_string(p.join("owner.txt")).unwrap_or_default();
+            let mine = path.is_some_and(|q| q.display().to_string() == owner) || (path.is_none() && owner.is_empty());
+            let used = here.contains(&p)
+                || (!mine && !owner.is_empty() && texts.entry(owner.clone()).or_insert_with(|| std::fs::read_to_string(&owner).ok()).as_ref().is_some_and(|t| t.contains(&name)));
+            FillDir { path: p, bytes, used }
+        })
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+pub fn fills(project: &Project, path: Option<&Path>) -> Vec<FillDir> {
+    fills_in(&reelforge_media::proxy::media_cache_dir().join("fills"), project, path)
+}
+
+/// Delete the unused fill folders: (folders, bytes) deleted.
+pub fn delete_unused_fills(project: &Project, path: Option<&Path>) -> (usize, u64) {
+    fills(project, path).into_iter().filter(|f| !f.used && std::fs::remove_dir_all(&f.path).is_ok()).fold((0, 0), |(n, b), f| (n + 1, b + f.bytes))
+}
+
 /// Roughly how big an export will be (bytes), erring on the big side.
 pub fn estimate_export_bytes(s: &ExportSettings, fps: f64) -> u64 {
     let secs = (s.end - s.start).as_secs_f64().max(0.0);
@@ -278,5 +331,46 @@ mod tests {
         assert!(unused_proxies_in(&dir, &p).is_empty());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "its own proxies kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use super::*;
+    use reelforge_core::effects::{Effect, EffectData, EffectKind};
+    use reelforge_core::*;
+
+    #[test]
+    fn unused_fills_are_found_and_others_projects_kept() {
+        let root = std::env::temp_dir().join(format!("rf-fills-{}", std::process::id()));
+        let dir = root.join("fills");
+        let made = |name: &str, owner: &str| {
+            let p = dir.join(name);
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("000000.rff"), [0u8; 100]).unwrap();
+            std::fs::write(p.join("owner.txt"), owner).unwrap();
+            p
+        };
+        let here = root.join("here.rfproj");
+        let other = root.join("other.rfproj");
+        let used = made("1-0-a", &here.display().to_string());
+        let replaced = made("1-0-b", &here.display().to_string());
+        let others = made("2-0-c", &other.display().to_string());
+        let gone = made("3-0-d", &root.join("deleted.rfproj").display().to_string());
+        std::fs::write(&other, "{ \"fill\": \"…/fills/2-0-c\" }").unwrap();
+        let mut p = Project::new();
+        let mut seq = Sequence::new("S", 64, 32, FrameRate::new(25, 1));
+        let mut c = Clip::new_plane(ClipId(1), Time::ZERO, Time::from_secs_f64(1.0), [0, 0, 0, 255]);
+        let mut fx = Effect::new(EffectKind::ObjectRemoval);
+        fx.data = Some(EffectData::Fill(used.clone()));
+        c.effects.push(fx);
+        seq.tracks[0].clips = vec![c];
+        p.sequences = vec![seq];
+        let list = fills_in(&dir, &p, Some(&here));
+        let is_used = |q: &Path| list.iter().find(|f| f.path == q).unwrap().used;
+        assert!(is_used(&used) && is_used(&others));
+        assert!(!is_used(&replaced) && !is_used(&gone));
+        assert!(list.iter().all(|f| f.bytes >= 100));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

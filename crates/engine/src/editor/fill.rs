@@ -111,6 +111,8 @@ impl Editor {
         let feather = fx.value_at(rp::FEATHER, Time::ZERO).round().max(0.0) as usize;
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
         let dir: PathBuf = reelforge_media::proxy::media_cache_dir().join("fills").join(format!("{}-{index}-{stamp:x}", id.0));
+        // Which project made it, so cleaning up only takes what nothing uses.
+        let owner = self.project_path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
         let (tx, rx) = unbounded();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = cancel.clone();
@@ -121,6 +123,7 @@ impl Editor {
                 let ptx = tx.clone();
                 let r = (|| -> Result<Option<PathBuf>, String> {
                     std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't make {}: {e}", dir.display()))?;
+                    let _ = std::fs::write(dir.join("owner.txt"), &owner);
                     let (w, h) = (media_size[0], media_size[1]);
                     // Media pixels → layer pixels, for the masks.
                     let to_layer = [layer[0] / w as f32, layer[1] / h as f32];

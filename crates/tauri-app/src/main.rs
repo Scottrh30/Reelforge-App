@@ -432,6 +432,10 @@ struct SettingsInfo {
     free_bytes: u64,
     unused_proxies: usize,
     unused_proxy_bytes: u64,
+    /// Object removal fills: all of them, and those nothing uses.
+    fill_bytes: u64,
+    unused_fills: usize,
+    unused_fill_bytes: u64,
     autosaves: usize,
     autosave_bytes: u64,
     /// Where proxies and rendered previews go now.
@@ -447,6 +451,7 @@ fn settings_info() -> Res<SettingsInfo> {
         let (rused, rframes) = e.render_cache.stats();
         let (dused, dframes) = e.render_cache.disk.as_ref().map_or((0, 0), |d| d.stats());
         let unused = reelforge_engine::disk::unused_proxies(&e.project);
+        let fills = reelforge_engine::disk::fills(&e.project, e.project_path.as_deref());
         let (autosaves, autosave_bytes) = reelforge_engine::safety::autosave_usage();
         let dir = reelforge_media::proxy::media_cache_dir().join("proxies");
         let (proxy_bytes, proxies) = std::fs::read_dir(&dir)
@@ -469,6 +474,9 @@ fn settings_info() -> Res<SettingsInfo> {
             autosave_dir: reelforge_engine::safety::autosave_dir().display().to_string(),
             free_bytes: reelforge_engine::disk::free_bytes(&reelforge_media::proxy::media_cache_dir()).unwrap_or(0),
             unused_proxies: unused.len(),
+            fill_bytes: fills.iter().map(|f| f.bytes).sum(),
+            unused_fills: fills.iter().filter(|f| !f.used).count(),
+            unused_fill_bytes: fills.iter().filter(|f| !f.used).map(|f| f.bytes).sum(),
             unused_proxy_bytes: unused.iter().map(|u| u.1).sum(),
             autosaves,
             autosave_bytes,

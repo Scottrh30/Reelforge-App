@@ -477,6 +477,9 @@ export interface SettingsInfo {
   free_bytes: number;
   unused_proxies: number;
   unused_proxy_bytes: number;
+  fill_bytes: number;
+  unused_fills: number;
+  unused_fill_bytes: number;
   autosaves: number;
   autosave_bytes: number;
   media_cache_dir: string;
@@ -925,7 +928,7 @@ export interface AttrSet {
 
 export const api = {
   tick: () => invoke<Live>("tick"),
-  diskFree: (what: "render" | "proxies" | "autosaves") => invoke("disk_free", { what }),
+  diskFree: (what: "render" | "proxies" | "autosaves" | "fills") => invoke("disk_free", { what }),
   diskDismiss: () => invoke("disk_dismiss"),
   cacheFolderSet: (choose: boolean, moveFiles: boolean) => invoke<string | null>("cache_folder_set", { choose, moveFiles }),
   state: () => invoke<State>("get_state"),
