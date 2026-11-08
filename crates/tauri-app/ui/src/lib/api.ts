@@ -593,6 +593,7 @@ export interface EffectView {
   environment_error: string | null;
   /// Object removal: frames filled so far (null: not worked out yet).
   filled: number | null;
+  fill_preview: boolean;
   animated: boolean;
   /// Positions to drag in the Viewer (an OpenFX plugin's): x at `param`, y at `param + 1`.
   points: { param: number; label: string; relative: number | null }[];
@@ -1050,7 +1051,7 @@ export const api = {
   trackerOp: (id: number, op: "clear" | "remove") => invoke("tracker_op", { id, op }),
   trackStart: (id: number, forward: boolean) => invoke("track_start", { id, forward }),
   trackCancel: () => invoke("track_cancel"),
-  objectRemoval: (id: number, index: number) => invoke("object_removal", { id, index }),
+  objectRemoval: (id: number, index: number, preview = false) => invoke("object_removal", { id, index, preview }),
   camtrackStart: (id: number, fov: number | null, tripod: boolean) => invoke("camtrack_start", { id, fov, tripod }),
   camtrackMake: (id: number, what: CamMake, picked: number[]) => invoke("camtrack_make", { id, what, picked }),
   camtrackGround: (id: number, picked: number[]) => invoke("camtrack_ground", { id, picked }),

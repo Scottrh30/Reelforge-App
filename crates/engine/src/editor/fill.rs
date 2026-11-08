@@ -64,7 +64,9 @@ fn blur(a: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
 impl Editor {
     /// Work out object removal `index` of clip `id` in the background: every
     /// frame of the clip has what its "object to remove" masks cover filled.
-    pub fn start_object_removal(&mut self, id: ClipId, index: usize) {
+    /// With `preview`, only the frame at the playhead (and the frames round
+    /// it that it's filled from), to try the settings quickly.
+    pub fn start_object_removal(&mut self, id: ClipId, index: usize, preview: bool) {
         self.commit_live_edit();
         if self.tracking.is_some() {
             self.status = "Wait for the tracking or analysis already running to finish (or stop it)".into();
@@ -107,6 +109,17 @@ impl Editor {
             _ => Method::Object,
         };
         let reach = fx.value_at(rp::REACH, Time::ZERO).round().clamp(0.0, 60.0) as usize;
+        // A preview: the playhead's frame, with the frames either side it's filled from.
+        let only = if preview {
+            let at = ((self.playback.playhead.max(c.timeline_start) - c.timeline_start).0 / step.0.max(1)) as usize;
+            let at = at.min(times.len().saturating_sub(1));
+            let (lo, hi) = if method == Method::Object { (at.saturating_sub(reach), (at + reach + 1).min(times.len())) } else { (at, at + 1) };
+            times = times[lo..hi].to_vec();
+            Some(at - lo)
+        } else {
+            None
+        };
+        let frame_ticks = step.0;
         let grow = fx.value_at(rp::GROW, Time::ZERO).round().max(0.0) as usize;
         let feather = fx.value_at(rp::FEATHER, Time::ZERO).round().max(0.0) as usize;
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
@@ -176,7 +189,7 @@ impl Editor {
                     };
                     let mut filler = Filler::new(method, reach, 0x0b1e_c7 ^ times.len() as u64);
                     let mut prev: Option<(Vec<f32>, Vec<bool>)> = None;
-                    let mut index = FillIndex { size: [w as u32, h as u32], frames: Vec::new() };
+                    let mut index = FillIndex { size: [w as u32, h as u32], frames: Vec::new(), preview: only.map(|_| frame_ticks) };
                     let mut holes: Vec<Vec<bool>> = Vec::new();
                     let n = times.len();
                     let mut next_fill = 0usize;
@@ -244,12 +257,16 @@ impl Editor {
                         // Where the motion can't be found, the camera's taken to be still.
                         filler.push(FrameIn { img, hole: fill_hole, from_prev: from_prev.or(if i > 0 { Some(Homography::IDENTITY) } else { None }) });
                         // Fill each frame once the frames after it it may need are in.
-                        while next_fill < n && (next_fill + reach <= i) {
+                        while only.is_none() && next_fill < n && (next_fill + reach <= i) {
                             fill_one(&mut filler, next_fill, &holes[next_fill], &mut index)?;
                             holes[next_fill] = Vec::new();
                             next_fill += 1;
                             let _ = ptx.send(TrackMsg::Progress(next_fill as f32 / n as f32));
                         }
+                    }
+                    if let Some(o) = only {
+                        fill_one(&mut filler, o, &holes[o], &mut index)?;
+                        next_fill = n;
                     }
                     while next_fill < n {
                         if stop.load(Ordering::Relaxed) {
@@ -270,7 +287,7 @@ impl Editor {
             })
             .expect("object removal thread");
         self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: Some(index), roto: None });
-        self.status = "Removing the object: filling every frame…".into();
+        self.status = if preview { "Filling the frame at the playhead…" } else { "Removing the object: filling every frame…" }.into();
     }
 
     pub(super) fn finish_object_removal(&mut self, job: &TrackJob, r: Result<Option<PathBuf>, String>) {
@@ -286,7 +303,11 @@ impl Editor {
                 // The fill it replaces goes (unless an undo step still points at it, kept till then).
                 fx.data = Some(EffectData::Fill(dir.clone()));
                 self.execute(Box::new(SetClipVisual { seq: job.seq, id: job.clip, old, new }));
-                self.status = format!("Object removed: {} frames filled", fillstore::frame_count(&dir));
+                self.status = if fillstore::is_preview(&dir) {
+                    "Previewed at the playhead (only this frame is filled): try other settings, or press Remove object for the whole clip".into()
+                } else {
+                    format!("Object removed: {} frames filled", fillstore::frame_count(&dir))
+                };
             }
         }
     }
@@ -323,7 +344,7 @@ mod tests {
         c.effects.push(Effect::new(EffectKind::ObjectRemoval));
         let v = e.seq().tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
         e.project.sequences[0].tracks[v].clips.push(c);
-        e.start_object_removal(id, 0);
+        e.start_object_removal(id, 0, false);
         let t0 = std::time::Instant::now();
         while e.tracking.is_some() && t0.elapsed().as_secs() < 120 {
             e.poll_tracking();
@@ -353,6 +374,18 @@ mod tests {
         assert!(!c.effects[0].eval(Time::from_secs_f64(0.5)).is_identity());
         e.undo();
         assert!(e.seq().find_clip(id).unwrap().1.effects[0].data.is_none());
+        let _ = std::fs::remove_dir_all(&fill);
+        // A preview fills the playhead's frame alone.
+        e.playback.playhead = Time::from_secs_f64(0.5);
+        e.start_object_removal(id, 0, true);
+        while e.tracking.is_some() && t0.elapsed().as_secs() < 180 {
+            e.poll_tracking();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let (_, c) = e.seq().find_clip(id).unwrap();
+        let Some(EffectData::Fill(fill)) = c.effects[0].data.clone() else { panic!("no preview: {}", e.status) };
+        assert!(fillstore::is_preview(&fill) && fillstore::frame_count(&fill) == 1, "{}", e.status);
+        assert!(fillstore::load(&fill, Time::from_secs_f64(0.5)).is_some() && fillstore::load(&fill, Time::from_secs_f64(0.2)).is_none());
         let _ = std::fs::remove_dir_all(&fill);
         std::fs::remove_dir_all(&dir).unwrap();
     }

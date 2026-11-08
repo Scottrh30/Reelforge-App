@@ -292,11 +292,12 @@
           {@const areas = ins.masks.filter((m) => m.mask.enabled && m.mask.fill_area).length}
           {@const busy = app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null}
           <div class="row lut">
-            <span class="file">{busy !== null ? `Filling… ${Math.round(busy * 100)}%` : fx.filled !== null ? `${fx.filled} frames filled` : "Not worked out yet"}</span>
+            <span class="file">{busy !== null ? `Filling… ${Math.round(busy * 100)}%` : fx.fill_preview ? "Preview: this frame only" : fx.filled !== null ? `${fx.filled} frames filled` : "Not worked out yet"}</span>
             {#if busy !== null}
               <button class="small" onclick={() => run(api.trackCancel())} title="Stop (what's done so far is dropped)">Stop</button>
             {:else}
-              <button class="small" disabled={!areas || !!app.live?.tracking} onclick={() => run(api.objectRemoval(ins.id, i))} title={areas ? "Fill every frame of the clip where the Object to remove masks are (in the background)" : "Draw a mask round what to remove first, and set its Use to Object to remove"}>{fx.filled !== null ? "Fill again" : "Remove object"}</button>
+              <button class="small" disabled={!areas || !!app.live?.tracking} onclick={() => run(api.objectRemoval(ins.id, i, true))} title="Fill just the frame at the playhead (from the frames round it), to try the method and settings quickly">Preview frame</button>
+              <button class="small" disabled={!areas || !!app.live?.tracking} onclick={() => run(api.objectRemoval(ins.id, i))} title={areas ? "Fill every frame of the clip where the Object to remove masks are (in the background)" : "Draw a mask round what to remove first, and set its Use to Object to remove"}>{fx.filled !== null && !fx.fill_preview ? "Fill again" : "Remove object"}</button>
             {/if}
           </div>
           {#if !areas}

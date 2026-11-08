@@ -74,6 +74,8 @@ pub struct EffectView {
     /// Object removal: how many frames have been filled (`None` if not yet,
     /// or the fill is missing).
     pub filled: Option<usize>,
+    /// …only the one frame, as a preview.
+    pub fill_preview: bool,
     pub animated: bool,
     /// Positions to drag in the Viewer (an OpenFX plugin's): the first of
     /// each one's two parameters (x, y in % of the layer, y down) and its name.
@@ -214,6 +216,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 plate_error,
                 environment,
                 environment_error,
+                fill_preview: matches!(&fx.data, Some(EffectData::Fill(dir)) if reelforge_core::fillstore::is_preview(dir)),
                 filled: match &fx.data {
                     Some(EffectData::Fill(dir)) if reelforge_core::fillstore::exists(dir) => Some(reelforge_core::fillstore::frame_count(dir)),
                     _ => None,
@@ -523,8 +526,8 @@ pub fn particles_preset(id: u64, index: usize, preset: usize) -> Res<()> {
 
 /// Work out object removal `index` on clip `id` in the background.
 #[tauri::command]
-pub fn object_removal(id: u64, index: usize) -> Res<()> {
-    ed(|e| e.start_object_removal(reelforge_core::ClipId(id), index))
+pub fn object_removal(id: u64, index: usize, preview: Option<bool>) -> Res<()> {
+    ed(|e| e.start_object_removal(reelforge_core::ClipId(id), index, preview.unwrap_or(false)))
 }
 
 /// Keyframe the blade's Length so it switches on (0 → 100 %) or off

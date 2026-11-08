@@ -398,6 +398,9 @@ What works now:
     *Edge blend* fills smoothly from the edges (small or plain areas). **Frames each way**
     sets how far it looks, **Grow** covers a little more than the mask (edges, shadows) and
     **Feather** softens the join. After changing the masks or settings, press **Fill again**.
+    **Preview frame** fills just the frame at the playhead (from the frames round it) in a few
+    seconds, to try the method and settings before filling the whole clip; the preview shows
+    on that frame only.
     On a test pan across a brick wall with a logo stuck over it, the wall behind comes back
     exactly; with a still camera it's made up, bricks and mortar continuing through
   - **Glow**: threshold, radius, intensity and softness; bright areas bloom outwards

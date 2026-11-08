@@ -27,6 +27,10 @@ pub struct FillIndex {
     pub size: [u32; 2],
     /// In time order.
     pub frames: Vec<FillFrame>,
+    /// A preview of one frame (a frame's length, in ticks): it shows only
+    /// at that frame, not stretched over the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<i64>,
 }
 
 /// Write one frame's patch (`rgba`, `rect[2]` × `rect[3]`) into `dir`.
@@ -68,6 +72,11 @@ pub fn exists(dir: &Path) -> bool {
     read_index(dir).is_some_and(|i| !i.frames.is_empty())
 }
 
+/// Is the fill in `dir` a preview of one frame?
+pub fn is_preview(dir: &Path) -> bool {
+    read_index(dir).is_some_and(|i| i.preview.is_some())
+}
+
 /// How many frames the fill in `dir` has.
 pub fn frame_count(dir: &Path) -> usize {
     read_index(dir).map_or(0, |i| i.frames.len())
@@ -79,6 +88,9 @@ pub fn load(dir: &Path, t: Time) -> Option<(Arc<Table>, [f32; 4])> {
     let idx = read_index(dir)?;
     let i = idx.frames.partition_point(|f| f.at < t.0);
     let f = [i.checked_sub(1), Some(i)].into_iter().flatten().filter_map(|k| idx.frames.get(k)).min_by_key(|f| (f.at - t.0).abs())?;
+    if idx.preview.is_some_and(|len| (f.at - t.0).abs() * 2 > len) {
+        return None;
+    }
     let size = [idx.size[0].max(1) as f32, idx.size[1].max(1) as f32];
     let place = [f.rect[0] as f32 / size[0], f.rect[1] as f32 / size[1], f.rect[2] as f32 / size[0], f.rect[3] as f32 / size[1]];
     type Lru = Mutex<VecDeque<(PathBuf, Arc<Table>)>>;
@@ -121,7 +133,7 @@ mod tests {
     fn frames_are_written_and_found_by_time() {
         let dir = std::env::temp_dir().join(format!("rf-fill-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut idx = FillIndex { size: [100, 50], frames: Vec::new() };
+        let mut idx = FillIndex { size: [100, 50], frames: Vec::new(), preview: None };
         for n in 0..3 {
             let rgba = vec![n as u8 * 100; 2 * 2 * 4];
             let file = write_frame(&dir, n, [10, 20, 2, 2], &rgba).unwrap();
@@ -134,6 +146,15 @@ mod tests {
         assert_eq!(t.rgba[0], 100);
         assert_eq!(place, [0.1, 0.4, 0.02, 0.04]);
         assert_eq!(load(&dir, Time::from_secs_f64(5.0)).unwrap().0.rgba[0], 200);
+        // A preview shows only at its own frame.
+        idx.frames.truncate(1);
+        idx.preview = Some(Time::from_secs_f64(0.04).0);
+        write_index(&dir, &idx).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let _ = std::fs::File::options().append(true).open(dir.join("index.json")).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        assert!(is_preview(&dir));
+        assert!(load(&dir, Time::from_secs_f64(0.01)).is_some());
+        assert!(load(&dir, Time::from_secs_f64(0.5)).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
