@@ -97,6 +97,7 @@ pub mod solid;
 pub mod text;
 pub mod text3d;
 pub mod model3d;
+pub mod flowgpu;
 pub use solid::SolidInput;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -2145,28 +2146,36 @@ impl Compositor {
     /// Read the top-left `size` of a texture of `bpp` bytes per pixel back to
     /// memory, rows tightly packed. Blocks on the GPU.
     fn read_texture(&self, texture: &wgpu::Texture, size: [u32; 2], bpp: u32) -> Option<Vec<u8>> {
+        read_texture_bytes(&self.device, &self.queue, texture, size, bpp)
+    }
+}
+
+/// Read the top-left `size` of a texture of `bpp` bytes per pixel back to
+/// memory, rows tightly packed. Blocks on the GPU.
+pub(crate) fn read_texture_bytes(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, size: [u32; 2], bpp: u32) -> Option<Vec<u8>> {
+    {
         let [w, h] = size;
         let row = bpp * w;
         let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: padded as u64 * h as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut enc = self.device.create_command_encoder(&Default::default());
+        let mut enc = device.create_command_encoder(&Default::default());
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        self.queue.submit([enc.finish()]);
+        queue.submit([enc.finish()]);
         let slice = buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
         rx.recv().ok()?.ok()?;
         let mapped = slice.get_mapped_range().ok()?;
         let mut out = Vec::with_capacity((row * h) as usize);

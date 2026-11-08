@@ -7,7 +7,7 @@
 //! anchor 0, so clip time *is* media time for them.
 
 use crate::anim::{Curve, Interp, Key};
-use crate::project::{scale, Clip, ClipId, FrameBlend, Project};
+use crate::project::{scale, Clip, ClipId, FlowQuality, FrameBlend, Project};
 use crate::time::Time;
 use crate::undo::{split_group, AddClip, Batch, Command, MoveClip, SplitClip};
 
@@ -70,6 +70,28 @@ impl Command for SetRemap {
         if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(self.id) {
             (c.remap, c.frame_blend) = self.old.clone();
         }
+    }
+}
+
+/// Set how carefully optical flow works on clips (old values kept for undo).
+pub struct SetFlowQuality {
+    pub seq: usize,
+    pub clips: Vec<(ClipId, FlowQuality)>,
+}
+
+impl Command for SetFlowQuality {
+    fn name(&self) -> &str {
+        "Optical flow quality"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        for (id, q) in &mut self.clips {
+            if let Some((_, c)) = p.sequences[self.seq].find_clip_mut(*id) {
+                std::mem::swap(&mut c.flow_quality, q);
+            }
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        self.apply(p);
     }
 }
 

@@ -91,21 +91,18 @@ pub struct Scene {
     generation: u64,
     /// Runs clips' OpenFX effects.
     ofx: crate::ofxhost::OfxRunner,
-    /// Optical flow between a clip's frame and the next (for retiming), by
-    /// clip and frame number, with the tick it was last used.
-    flows: HashMap<(ClipId, i64), (Arc<Vec<[f32; 2]>>, u64)>,
+    /// Optical flow for retimed clips (made when first needed).
+    flow: Option<reelforge_render::flowgpu::FlowInterp>,
+    /// Each clip's last in-between frame, by what it was made from.
+    flow_frames: HashMap<ClipId, (u64, VideoFrame)>,
 }
 
-/// The grid optical flow is measured on, and the frames either side are pushed along.
-const FLOW_COLS: u8 = 24;
-/// Flows kept for reuse.
-const FLOW_KEEP: usize = 48;
 /// The second frame of a blend has a key of its own (it's another layer for the compositor).
 const NEXT_FRAME_KEY: u64 = 1 << 62;
 
 impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flows: HashMap::new() }
+        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new() }
     }
 
     /// Forget composition renders (e.g. a different project was opened).
@@ -113,7 +110,10 @@ impl Scene {
         self.nested.clear();
         self.masks.clear();
         self.ofx.clear();
-        self.flows.clear();
+        if let Some(f) = &mut self.flow {
+            f.clear();
+        }
+        self.flow_frames.clear();
     }
 
     /// Render sequence `seq` at time `t` into `compositor`. Returns a
@@ -249,45 +249,30 @@ impl Scene {
         };
         b.key = c.id.0 ^ NEXT_FRAME_KEY;
         if c.frame_blend == FrameBlend::Flow && a.mesh.is_none() && a.space.is_none() && !l.transform.three_d {
-            let (fa, fb) = (&a.picture.frame, &b.picture.frame);
-            if fa.width == fb.width && fa.height == fb.height && fa.width >= 8 && fa.height >= 8 {
-                let rows = ((FLOW_COLS as f32 * fa.height as f32 / fa.width as f32).round() as u8).clamp(4, reelforge_core::meshwarp::MAX_CELLS);
-                let key = (c.id, f0 as i64);
-                let tick = self.tick;
-                let flow = match self.flows.get_mut(&key) {
-                    Some((v, used)) => {
-                        *used = tick;
-                        v.clone()
-                    }
-                    None => {
-                        let v = Arc::new(reelforge_core::flow::grid_flow(&fa.rgba(), &fb.rgba(), fa.width, fa.height, FLOW_COLS, rows));
-                        if self.flows.len() >= FLOW_KEEP {
-                            if let Some(old) = self.flows.iter().min_by_key(|(_, (_, u))| *u).map(|(k, _)| *k) {
-                                self.flows.remove(&old);
-                            }
+            // The frame in between, worked out on the graphics card.
+            let mut h = DefaultHasher::new();
+            (c.id, f0 as i64, c.flow_quality, a.picture.frame.generation, b.picture.frame.generation, a.picture.frame.pts, b.picture.frame.pts).hash(&mut h);
+            let pair = h.finish();
+            let key = pair ^ (mix.to_bits() as u64).rotate_left(17);
+            let cached = self.flow_frames.get(&c.id).filter(|(k, _)| *k == key).map(|(_, f)| f.clone());
+            let frame = match cached {
+                Some(f) => Some(f),
+                None => {
+                    let interp = self.flow.get_or_insert_with(|| reelforge_render::flowgpu::FlowInterp::new(&self.device, &self.queue));
+                    (a.picture.frame.width == b.picture.frame.width && a.picture.frame.height == b.picture.frame.height).then_some(()).and_then(|_| interp.interpolate(c.id.0, pair, &a.picture.frame.pixels, &b.picture.frame.pixels, [a.picture.frame.width, a.picture.frame.height], mix, c.flow_quality)).map(|px| {
+                        self.generation += 1;
+                        let f = VideoFrame { pts: a.picture.frame.pts, width: px.width, height: px.height, pixels: reelforge_core::frame::Pixels::Float(Arc::new(px)), generation: self.generation };
+                        if self.flow_frames.len() > 16 {
+                            self.flow_frames.clear();
                         }
-                        self.flows.insert(key, (v.clone(), tick));
-                        v
-                    }
-                };
-                let full = [frame_size[0] as f32, frame_size[1] as f32];
-                let size = a.picture.size;
-                let map = l.transform.layer_map(size, full);
-                let (fw, fh) = (fa.width as f32, fa.height as f32);
-                let warp = |k: f32| {
-                    let mut points = Vec::with_capacity(flow.len());
-                    for j in 0..=rows as usize {
-                        for i in 0..=FLOW_COLS as usize {
-                            let m = flow[j * (FLOW_COLS as usize + 1) + i];
-                            let p = [i as f32 / FLOW_COLS as f32 * size[0] - size[0] * 0.5, j as f32 / rows as f32 * size[1] - size[1] * 0.5];
-                            points.push(map.apply([p[0] + k * m[0] * size[0] / fw, p[1] + k * m[1] * size[1] / fh]));
-                        }
-                    }
-                    reelforge_core::meshwarp::MeshShape { cols: FLOW_COLS, rows, points }
-                };
-                // The first frame moves on towards the second, the second back towards the first.
-                a.mesh = Some(warp(mix));
-                b.mesh = Some(warp(mix - 1.0));
+                        self.flow_frames.insert(c.id, (key, f.clone()));
+                        f
+                    })
+                }
+            };
+            if let Some(frame) = frame {
+                a.picture.frame = frame;
+                return Ok(Some(Item::Single(a)));
             }
         }
         Ok(Some(Item::Dissolve(a, b, mix, None)))

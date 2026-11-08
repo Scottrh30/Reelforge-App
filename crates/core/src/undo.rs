@@ -290,6 +290,7 @@ impl Command for SplitClip {
             // Remap keys are at clip times too: both halves keep them.
             remap: clip.remap.clone(),
             frame_blend: clip.frame_blend,
+            flow_quality: clip.flow_quality,
             angle: clip.angle,
         };
         clip.duration = left;

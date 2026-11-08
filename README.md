@@ -712,10 +712,15 @@ What works now:
     that sound is silent while remapping is on. Untick to go back to the clip's speed
   - **Between frames** (slowed, sped up, reversed or remapped footage): **Nearest frame** holds
     each frame; **Frame blending** cross-fades the two frames either side of the moment shown;
-    **Optical flow** works out how the picture moves from one frame to the next (on a 24-point
-    grid, coarse to fine) and moves both frames along that motion before cross-fading, for the
-    smoothest slow motion (slower to work out; things crossing each other can smear). Export and
-    Render preview use it too
+    **Optical flow** works out, on the graphics card, how every pixel moves between the two
+    frames, both ways (coarse to fine, with an edge-keeping median so things moving differently
+    keep their own motion), and draws the moment in between from both, pushed along that motion.
+    It knows when things cross: what one frame sees and the other doesn't (the background a car
+    uncovers, the part of a person walking behind a post) comes only from the frame that sees it,
+    and where two things land on the same spot the one in front wins, so they don't smear into
+    each other. **Flow quality**: **Fast** (works out the motion on a quarter-HD copy), **Balanced**
+    (half HD, the default) or **Best** (full size, refined more); better is slower. Export and
+    Render preview use it too. Footage deeper than 8 bits (10-bit, HDR, EXR) keeps its precision
   - **Freeze frame** (`Shift+F`, the Edit menu, or the Speed section): holds the frame at the
     playhead for 2 s (trim it to taste), splitting the clip there and pushing the rest of it
     (and its audio) later. A freeze frame's **Play from here** turns it back into motion

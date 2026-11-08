@@ -298,6 +298,7 @@ export interface Inspector {
   reverse: boolean;
   remap: RemapView | null;
   frame_blend: "Nearest" | "Blend" | "Flow";
+  flow_quality: "Fast" | "Balanced" | "Best";
   /// A multicam clip: its source's angles, the one seen, and the one heard if it doesn't follow.
   multicam: { angles: string[]; video: number; audio: number | null } | null;
   effects: EffectView[];
@@ -990,6 +991,7 @@ export const api = {
   timeRemapMoveKey: (id: number, index: number, secs: number) => invoke("time_remap_move_key", { id, index, secs }),
   timeRemapInterp: (id: number, interp: "Linear" | "Ease" | "Hold") => invoke("time_remap_interp", { id, interp }),
   setFrameBlend: (id: number, blend: "Nearest" | "Blend" | "Flow") => invoke("set_frame_blend", { id, blend }),
+  setFlowQuality: (id: number, quality: "Fast" | "Balanced" | "Best") => invoke("set_flow_quality", { id, quality }),
   createMulticam: (media: number[], sync: "audio" | "start") => invoke("create_multicam", { media, sync }),
   switchAngle: (angle: number, pictureOnly: boolean) => invoke("switch_angle", { angle, pictureOnly }),
   setAudioAngle: (clip: number, audio: number | null) => invoke("set_audio_angle", { clip, audio }),

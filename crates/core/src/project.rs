@@ -171,6 +171,9 @@ pub struct Clip {
     /// (slowed down or remapped footage).
     #[serde(default, skip_serializing_if = "is_default_blend")]
     pub frame_blend: FrameBlend,
+    /// How carefully optical flow (`FrameBlend::Flow`) works out the motion.
+    #[serde(default, skip_serializing_if = "is_default_quality")]
+    pub flow_quality: FlowQuality,
     /// For a clip playing a multicam source: the angle it shows and plays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub angle: Option<crate::multicam::Angle>,
@@ -187,6 +190,21 @@ pub enum FrameBlend {
     /// The frames either side moved towards each other along the motion
     /// between them (optical flow), then cross-faded.
     Flow,
+}
+
+/// How carefully optical flow works out the motion: the size it looks at
+/// (Fast a quarter of HD across, Balanced half, Best full) and how many
+/// times it refines it. Better is slower.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FlowQuality {
+    Fast,
+    #[default]
+    Balanced,
+    Best,
+}
+
+fn is_default_quality(q: &FlowQuality) -> bool {
+    *q == FlowQuality::Balanced
 }
 
 fn is_default_blend(b: &FrameBlend) -> bool {
@@ -237,6 +255,7 @@ impl Clip {
             label: None,
             remap: None,
             frame_blend: FrameBlend::Nearest,
+            flow_quality: FlowQuality::Balanced,
             angle: None,
         }
     }

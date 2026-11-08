@@ -93,6 +93,17 @@ impl Editor {
         }, None);
     }
 
+    /// How carefully optical flow works on clip `id` (and the clips linked to it).
+    pub fn set_flow_quality(&mut self, id: ClipId, quality: reelforge_core::FlowQuality) {
+        self.commit_live_edit();
+        let clips: Vec<(ClipId, reelforge_core::FlowQuality)> = self.seq().link_group(id).iter().map(|(_, c)| (c.id, quality)).collect();
+        if clips.is_empty() {
+            return;
+        }
+        self.execute(Box::new(reelforge_core::speed::SetFlowQuality { seq: self.active, clips }));
+        self.status = format!("Optical flow quality: {quality:?}");
+    }
+
     /// What retimed footage shows between its frames.
     pub fn set_frame_blend(&mut self, id: ClipId, blend: FrameBlend) {
         let msg = match blend {

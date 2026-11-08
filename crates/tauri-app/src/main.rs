@@ -944,6 +944,18 @@ fn set_frame_blend(id: u64, blend: String) -> Res<()> {
     ed(|e| e.set_frame_blend(clip(id), b))
 }
 
+/// How carefully optical flow works: "Fast", "Balanced" or "Best".
+#[tauri::command]
+fn set_flow_quality(id: u64, quality: String) -> Res<()> {
+    use reelforge_core::FlowQuality;
+    let q = match quality.as_str() {
+        "Fast" => FlowQuality::Fast,
+        "Best" => FlowQuality::Best,
+        _ => FlowQuality::Balanced,
+    };
+    ed(|e| e.set_flow_quality(clip(id), q))
+}
+
 // ---- Masks ---------------------------------------------------------------------
 
 /// Add a rectangle or ellipse mask in the middle of the clip. Returns its index.
@@ -1638,6 +1650,7 @@ fn main() {
             time_remap_move_key,
             time_remap_interp,
             set_frame_blend,
+            set_flow_quality,
             add_mask,
             add_freehand_mask,
             set_masks,

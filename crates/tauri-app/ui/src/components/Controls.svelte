@@ -124,7 +124,7 @@
   const blendTips: Record<string, string> = {
     Nearest: "Each frame is held until the next: crisp, but slow motion steps",
     Blend: "The frames either side are cross-faded: smoother, a little ghosted",
-    Flow: "The frames either side are moved along the motion between them, then cross-faded: the smoothest slow motion (slower to work out, and things crossing each other can smear)",
+    Flow: "Every pixel follows the motion between the frames either side (worked out on the graphics card, aware of things passing in front of others): the smoothest slow motion. Slower to work out; see Flow quality",
   };
   let rampOpen = $state(false);
   let ramp = $state({ from: 100, to: 25, steps: 8, smooth: true });
@@ -389,6 +389,14 @@
               <option value="Blend">Frame blending</option>
               <option value="Flow">Optical flow</option>
             </select>
+            {#if ins.frame_blend === "Flow"}
+              <span class="lbl">Flow quality</span>
+              <select aria-label="Optical flow quality" value={ins.flow_quality} title="How carefully the motion is worked out (on the graphics card): Fast looks at a quarter-HD copy of the frames, Balanced at half HD, Best at full size with more refining. Better is slower" onchange={(e) => run(api.setFlowQuality(ins.id, e.currentTarget.value as "Fast" | "Balanced" | "Best"))}>
+                <option value="Fast">Fast</option>
+                <option value="Balanced">Balanced</option>
+                <option value="Best">Best</option>
+              </select>
+            {/if}
           </div>
         {/if}
       </div>

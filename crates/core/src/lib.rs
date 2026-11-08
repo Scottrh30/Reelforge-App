@@ -16,7 +16,6 @@ pub mod collect;
 pub mod edit;
 pub mod effects;
 pub mod environment;
-pub mod flow;
 pub mod frame;
 pub mod imageseq;
 pub mod interchange;
