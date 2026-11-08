@@ -1987,6 +1987,37 @@ fn simulations_draw_what_they_say() {
         assert!(lit(60, 80) > 20, "particles at the front");
     }
 
+    // Collisions: thrown down onto a floor at 60%, nothing gets below it.
+    {
+        let clear = solid(w, h, [0, 0, 0, 0]);
+        let fall = [(p::EMIT_X, 50.0), (p::EMIT_Y, 10.0), (p::SHAPE, p::SHAPE_LINE as f32), (p::EMIT_SIZE, 120.0), (p::DIRECTION, -90.0), (p::SPREAD, 10.0), (p::SPEED, 60.0), (p::GRAVITY, 300.0), (p::RATE, 300.0), (p::LIFETIME, 3.0), (p::SIZE_START, 2.0), (p::SIZE_END, 2.0), (p::LOOK, 3.0), (p::COLOR_START, 0xffffff as f32), (p::COLOR_END, 0xffffff as f32)];
+        let bright_rows = |img: &[u8], y0: u32, y1: u32| (y0..y1).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| lum(px(img, w, x, y)) > 200).count();
+        let free = draw(&mut c, &clear, EffectKind::Particles, &fall, 2.0);
+        assert!(bright_rows(&free, 60, 90) > 20, "without a floor they fall through");
+        let mut floor = fall.to_vec();
+        floor.extend([(p::COLLIDE, p::COLLIDE_FLOOR as f32), (p::FLOOR, 60.0), (p::BOUNCE, 20.0)]);
+        let img = draw(&mut c, &clear, EffectKind::Particles, &floor, 2.0);
+        assert_eq!(bright_rows(&img, 58, 90), 0, "none below the floor");
+        assert!(bright_rows(&img, 50, 54) > 10, "piled on it: {}", bright_rows(&img, 50, 54));
+
+        // The layer's shape: a block in the lower middle catches them on its top edge.
+        let block: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if (50..110).contains(&x) && y >= 50 { [60u8, 60, 60, 255] } else { [0, 0, 0, 0] })).collect();
+        let mut on_shape = fall.to_vec();
+        on_shape.extend([(p::COLLIDE, p::COLLIDE_SHAPE as f32), (p::BOUNCE, 0.0)]);
+        let img = draw(&mut c, &block, EffectKind::Particles, &on_shape, 2.0);
+        let inside = (55..90).flat_map(|y| (55..105).map(move |x| (x, y))).filter(|&(x, y)| lum(px(&img, w, x, y)) > 200).count();
+        assert!(inside < 5, "kept out of the block: {inside}");
+        let on_top = (40..50).flat_map(|y| (55..105).map(move |x| (x, y))).filter(|&(x, y)| lum(px(&img, w, x, y)) > 200).count();
+        assert!(on_top > 10, "resting on it: {on_top}");
+
+        // Born inside the shape only, in the emitter's colour (white).
+        let inside_only = [(p::SHAPE, p::SHAPE_INSIDE as f32), (p::RATE, 3000.0), (p::SPEED, 0.0), (p::GRAVITY, 0.0), (p::LIFETIME, 1.0), (p::SIZE_START, 2.0), (p::SIZE_END, 2.0), (p::LOOK, 3.0), (p::COLOR_START, 0xffffff as f32), (p::COLOR_END, 0xffffff as f32)];
+        let img = draw(&mut c, &block, EffectKind::Particles, &inside_only, 0.5);
+        let out_of = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| !((48..112).contains(&x) && y >= 48) && lum(px(&img, w, x, y)) > 200).count();
+        assert_eq!(out_of, 0);
+        assert!((50..90).flat_map(|y| (50..110).map(move |x| (x, y))).filter(|&(x, y)| lum(px(&img, w, x, y)) > 200).count() > 100);
+    }
+
     // Atomic particles: born from a red layer's pixels, they're red; from a clear one, none.
     let atomic = [(p::SHAPE, p::SHAPE_PIXELS_ONLY as f32), (p::RATE, 2000.0), (p::LIFETIME, 1.0), (p::SPEED, 0.0), (p::GRAVITY, 0.0), (p::SIZE_START, 4.0), (p::SIZE_END, 4.0), (p::LOOK, 3.0), (p::COLOR_END, 0xff0000 as f32)];
     let img = draw(&mut c, &red, EffectKind::Particles, &atomic, 0.5);

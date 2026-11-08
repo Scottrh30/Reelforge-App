@@ -12,6 +12,7 @@ struct Fx {
     extra2: vec4<f32>,
     p4: vec4<f32>,        // colour at death, opacity, look, seed
     map: vec4<f32>,       // layer uv = target uv × xy + zw (the target can have a margin)
+    p5: vec4<f32>,        // collide with, floor %, bounce %, friction %
 };
 
 @group(0) @binding(0) var<uniform> fx: Fx;
@@ -75,6 +76,90 @@ fn wander(seed: f32, t: f32) -> f32 {
     return sin(t * (0.9 + seed * 0.8) + seed * 61.0) * 0.6 + sin(t * (2.1 + seed * 1.3) + seed * 17.0 + 1.7) * 0.4;
 }
 
+struct Path {
+    pos: vec2<f32>,
+    vel: vec2<f32>,
+    // 1 until it first hits something, then fading to 0.
+    free: f32,
+};
+
+// The layer's coverage at a point (layer pixels).
+fn cover_at(q: vec2<f32>, size: vec2<f32>) -> f32 {
+    let tuv = (q / size - fx.map.zw) / fx.map.xy;
+    if (any(tuv < vec2(0.0)) || any(tuv > vec2(1.0))) {
+        return 0.0;
+    }
+    return textureSampleLevel(src, src_sampler, tuv, 0.0).a;
+}
+
+// Walk the path from `start` (velocity `v0`, acceleration `acc`) for `age`
+// seconds, bouncing off a floor (and the sides), or off the layer's shape.
+fn collide_path(start: vec2<f32>, v0: vec2<f32>, acc: vec2<f32>, age: f32, size: vec2<f32>, mode: u32) -> Path {
+    let steps = select(24, 48, mode == 3u);
+    let dt = age / f32(steps);
+    let floor_y = fx.p5.y / 100.0 * size.y;
+    let bounce = clamp(fx.p5.z / 100.0, 0.0, 1.0);
+    let keep = 1.0 - clamp(fx.p5.w / 100.0, 0.0, 1.0);
+    var q = start;
+    var v = v0;
+    var first = -1.0;
+    // Born inside the shape: it can't hit the shape it's in until it's out.
+    var inside = mode == 3u && cover_at(start, size) > 0.5;
+    for (var i = 0; i < steps; i++) {
+        v += acc * dt;
+        var n = q + v * dt;
+        if (mode == 1u || mode == 2u) {
+            if (n.y > floor_y && v.y > 0.0) {
+                n.y = floor_y - (n.y - floor_y) * bounce;
+                v.y = -v.y * bounce;
+                v.x *= keep;
+                if (abs(v.y) < 40.0) {
+                    // Too slow to bounce: it rests on the floor.
+                    v.y = 0.0;
+                    n.y = floor_y;
+                }
+                if (first < 0.0) { first = f32(i) * dt; }
+            }
+            if (mode == 2u && ((n.x < 0.0 && v.x < 0.0) || (n.x > size.x && v.x > 0.0))) {
+                n.x = clamp(n.x, 0.0, size.x);
+                v.x = -v.x * bounce;
+                if (first < 0.0) { first = f32(i) * dt; }
+            }
+        } else if (mode == 3u) {
+            let a = cover_at(n, size);
+            if (inside) {
+                inside = a > 0.5;
+            } else if (a > 0.5) {
+                // Hit: bounce off the edge (its normal from how the coverage changes).
+                let e = 2.0;
+                let g = vec2(cover_at(n + vec2(e, 0.0), size) - cover_at(n - vec2(e, 0.0), size), cover_at(n + vec2(0.0, e), size) - cover_at(n - vec2(0.0, e), size));
+                var nrm = -g;
+                if (length(nrm) < 1e-3) {
+                    nrm = -normalize(v + vec2(1e-4, 0.0));
+                }
+                nrm = normalize(nrm);
+                let vn = dot(v, nrm);
+                if (vn < 0.0) {
+                    let tang = (v - vn * nrm) * keep;
+                    v = tang - vn * bounce * nrm;
+                }
+                if (length(v) < 25.0) {
+                    v = vec2(0.0);
+                }
+                n = q;
+                if (first < 0.0) { first = f32(i) * dt; }
+            }
+        }
+        // Resting: gravity alone mustn't drag it through what it rests on.
+        q = n;
+    }
+    var out: Path;
+    out.pos = q;
+    out.vel = v;
+    out.free = select(1.0, clamp(1.0 - (age - first) / 0.3, 0.0, 1.0), first >= 0.0);
+    return out;
+}
+
 @vertex
 fn vs_particle(@builtin(vertex_index) vi: u32, p: Inst) -> VsOut {
     var out: VsOut;
@@ -87,10 +172,21 @@ fn vs_particle(@builtin(vertex_index) vi: u32, p: Inst) -> VsOut {
 
     // Thrown, then pulled by gravity and wind, and pushed about by turbulence
     // (which builds up over the first half second).
-    var pos = p.emit.xy / 100.0 * size + p.emit.zw + p.motion.xy * age + 0.5 * accel * age * age;
-    let turb = fx.p3.x * min(age / 0.5, 1.0);
+    let start = p.emit.xy / 100.0 * size + p.emit.zw;
+    var pos = start + p.motion.xy * age + 0.5 * accel * age * age;
+    var vel = p.motion.xy + accel * age;
+    var turb_k = 1.0;
+    let collide = u32(round(fx.p5.x));
+    if (collide != 0u) {
+        // Bouncing: the path walked in steps, each checked against what it hits.
+        let hit = collide_path(start, p.motion.xy, accel, age, size, collide);
+        pos = hit.pos;
+        vel = hit.vel;
+        // Turbulence dies down once it has hit something (it would push it through).
+        turb_k = hit.free;
+    }
+    let turb = fx.p3.x * min(age / 0.5, 1.0) * turb_k;
     pos += turb * vec2(wander(seed, age), wander(seed + 0.37, age + 11.0));
-    let vel = p.motion.xy + accel * age;
 
     let look = u32(round(fx.p4.z));
     var radius = mix(fx.p3.y, fx.p3.z, f) * 0.5 * p.more.x;
@@ -148,7 +244,7 @@ fn vs_particle(@builtin(vertex_index) vi: u32, p: Inst) -> VsOut {
     out.corner = c;
     var rgb = mix(rgb_of(fx.p3.w), rgb_of(fx.p4.x), f);
     let shape = u32(round(fx.p0.z));
-    if (shape >= 5u) {
+    if (shape == 5u || shape == 6u) {
         // Born from the layer's picture: only where it shows, in its colour
         // there, turning to the colour at death as it dies.
         let tuv = (p.emit.xy / 100.0 - fx.map.zw) / fx.map.xy;
@@ -159,6 +255,20 @@ fn vs_particle(@builtin(vertex_index) vi: u32, p: Inst) -> VsOut {
         let own = select(vec3(0.0), c.rgb / c.a, c.a > 1e-4);
         rgb = mix(own, rgb_of(fx.p4.x), smoothstep(0.5, 1.0, f));
         alpha *= c.a;
+    } else if (shape == 7u || shape == 8u) {
+        // Born inside the layer's shape, or along its outline, in the emitter's colours.
+        let at = p.emit.xy / 100.0 * size;
+        let a = cover_at(at, size);
+        var keep = a > 0.5;
+        if (shape == 8u) {
+            let e = max(2.0, max(fx.p3.y, 2.0) * 0.5);
+            let lo = min(min(cover_at(at + vec2(e, 0.0), size), cover_at(at - vec2(e, 0.0), size)), min(cover_at(at + vec2(0.0, e), size), cover_at(at - vec2(0.0, e), size)));
+            let hi = max(max(cover_at(at + vec2(e, 0.0), size), cover_at(at - vec2(e, 0.0), size)), max(cover_at(at + vec2(0.0, e), size), cover_at(at - vec2(0.0, e), size)));
+            keep = hi - lo > 0.4 && a > 0.2;
+        }
+        if (!keep) {
+            out.pos = vec4(2.0, 2.0, 2.0, 1.0);
+        }
     }
     out.color = vec4(rgb, alpha);
     out.life = vec2(seed, f);

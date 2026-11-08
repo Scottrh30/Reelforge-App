@@ -34,8 +34,19 @@ pub const COLOR_END: usize = 16;
 pub const OPACITY: usize = 17;
 pub const LOOK: usize = 18;
 pub const SEED: usize = 19;
+pub const COLLIDE: usize = 20;
+/// Where the floor is, % of the layer's height.
+pub const FLOOR: usize = 21;
+pub const BOUNCE: usize = 22;
+pub const FRICTION: usize = 23;
 
-pub const SHAPES: [&str; 7] = ["Point", "Line", "Disc", "Ring (outwards)", "Whole layer", "Layer's pixels", "Layer's pixels, layer hidden"];
+/// What particles bounce off (the Collide with menu).
+pub const COLLIDE_WITH: [&str; 4] = ["Nothing", "A floor", "A floor and the sides", "The layer's shape"];
+pub const COLLIDE_FLOOR: u32 = 1;
+pub const COLLIDE_SIDES: u32 = 2;
+pub const COLLIDE_SHAPE: u32 = 3;
+
+pub const SHAPES: [&str; 9] = ["Point", "Line", "Disc", "Ring (outwards)", "Whole layer", "Layer's pixels", "Layer's pixels, layer hidden", "Inside the layer's shape", "Along the layer's outline"];
 pub const SHAPE_POINT: u32 = 0;
 pub const SHAPE_LINE: u32 = 1;
 pub const SHAPE_DISC: u32 = 2;
@@ -46,6 +57,11 @@ pub const SHAPE_LAYER: u32 = 4;
 pub const SHAPE_PIXELS: u32 = 5;
 /// The same, with the layer itself not drawn (only its particles).
 pub const SHAPE_PIXELS_ONLY: u32 = 6;
+/// Born only inside the layer's shape (its picture, a title's letters, a
+/// mask's cut-out), in the emitter's own colours.
+pub const SHAPE_INSIDE: u32 = 7;
+/// Born only along the edges of the layer's shape (a title's outline).
+pub const SHAPE_OUTLINE: u32 = 8;
 /// Glow, sparks and flame add light (drawn with additive blending); the
 /// others cover what's under them.
 pub const LOOKS: [&str; 8] = ["Glow (add)", "Sparks (add)", "Soft dots", "Solid dots", "Flame (add)", "Smoke", "Rain streaks", "Debris"];
@@ -244,7 +260,7 @@ pub fn simulate(e: &Effect, t: Time) -> Particles {
                 // Outwards from the middle (the spread still scatters it).
                 angle = -a + spread * (r(3) - 0.5);
             }
-            SHAPE_LAYER | SHAPE_PIXELS | SHAPE_PIXELS_ONLY => emit = [r(4) * 100.0, r(5) * 100.0],
+            SHAPE_LAYER | SHAPE_PIXELS | SHAPE_PIXELS_ONLY | SHAPE_INSIDE | SHAPE_OUTLINE => emit = [r(4) * 100.0, r(5) * 100.0],
             _ => {}
         }
         list.push(Particle {

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Most parameters any effect has (the GPU uniform holds this many).
-pub const MAX_PARAMS: usize = 20;
+pub const MAX_PARAMS: usize = 24;
 /// Most parameters a plugin may have (its shader sees params 0–15).
 pub const PLUGIN_MAX_PARAMS: usize = 16;
 
@@ -627,7 +627,7 @@ const BLADE: [ParamSpec; 20] = [
     choice("Blend", &["Add (light)", "Screen"]),
 ];
 
-const PARTICLES: [ParamSpec; 20] = [
+const PARTICLES: [ParamSpec; 24] = [
     spec("Emitter X", 50.0, -100.0, 200.0, " %", 0.1),
     spec("Emitter Y", 70.0, -100.0, 200.0, " %", 0.1),
     choice("Shape", &crate::particles::SHAPES),
@@ -648,6 +648,10 @@ const PARTICLES: [ParamSpec; 20] = [
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
     choice("Look", &crate::particles::LOOKS),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+    choice("Collide with", &crate::particles::COLLIDE_WITH),
+    spec("Floor", 90.0, -100.0, 200.0, " %", 0.1),
+    spec("Bounce", 35.0, 0.0, 100.0, " %", 0.5),
+    spec("Friction", 30.0, 0.0, 100.0, " %", 0.5),
 ];
 
 /// Parameter indices of the stylise effects.
@@ -1174,7 +1178,7 @@ impl EffectKind {
     pub fn sections(self) -> &'static [(usize, &'static str)] {
         match self {
             EffectKind::EnergyBlade => &[(0, "Blade"), (5, "Colour"), (7, "Core"), (11, "Glow"), (15, "Flicker"), (18, "Motion")],
-            EffectKind::Particles => &[(0, "Emitter"), (4, "Birth"), (7, "Motion"), (13, "Look")],
+            EffectKind::Particles => &[(0, "Emitter"), (4, "Birth"), (7, "Motion"), (13, "Look"), (20, "Collisions")],
             EffectKind::Camera => &[(0, "Position"), (3, "Point of interest"), (6, "Lens"), (8, "Depth of field")],
             EffectKind::Point => &[(0, "Position"), (3, "Rotation and scale")],
             EffectKind::ChromaKey => &[(0, "Key"), (4, "Matte")],

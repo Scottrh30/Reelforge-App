@@ -449,6 +449,17 @@ What works now:
         *Flame* add light; *Soft*/*Solid dots*, *Smoke* (billowing, turning puffs), *Rain
         streaks* and *Debris* (tumbling jagged chunks) cover what's under them. Flame is a
         noise-torn teardrop, hottest low down and early in its life
+      - **Emitting from a shape**: **Inside the layer's shape** is born only where the layer's
+        picture shows (a title's letters, a logo, a masked area: masks cut the layer before its
+        effects), **Along the layer's outline** only along its edges, both in the emitter's own
+        colours with the layer still drawn. Particles are scattered over the whole layer and
+        only those landing on the shape are kept, so raise **Birth rate** for a small shape
+      - **Collisions** (**Collide with**): **A floor** (at **Floor**, % down the layer), **A floor
+        and the sides**, or **The layer's shape**: snow settling on a title, sparks bouncing off a
+        logo. **Bounce** is how much speed they keep coming off (0 sticks), **Friction** how much
+        they slow sliding along; too slow to bounce, they rest. Turbulence dies away once they've
+        landed. Each particle's path is walked in steps on the graphics card, so it still needs
+        no frame-by-frame simulation
       - **Atomic particles**: with the shape **Layer's pixels**, particles are born only where the
         layer's picture shows, each in the picture's colour there, turning to the colour at
         death as they die (the Atomic preset: a picture giving off glowing dust). **Layer's

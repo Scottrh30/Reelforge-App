@@ -171,10 +171,13 @@ fn mesh_subdiv(m: &reelforge_core::meshwarp::MeshShape) -> u32 {
 }
 /// Effect passes per frame.
 const MAX_FX_PASSES: usize = 256;
-/// 9 × vec4: params 0–7, texel/direction, extra (aspect, time, layer size),
-/// params 8–15, extra2 (texture size, pass, pass count), params 16–19, and
-/// the map from the target's uv to the layer's (the target can have a margin).
-const FX_UNIFORM_SIZE: u64 = 144;
+/// 10 × vec4: params 0–7, texel/direction, extra (aspect, time, layer size),
+/// params 8–15, extra2 (texture size, pass, pass count), params 16–19, the
+/// map from the target's uv to the layer's (the target can have a margin),
+/// and params 20–23 (only the particle shader reads those).
+const FX_UNIFORM_SIZE: u64 = 160;
+/// Where params 20–23 sit.
+const FX_P5: usize = 36;
 /// Where `map` sits in an effect pass's uniform.
 const FX_MAP: usize = 32;
 /// The layer exactly fills its effect targets.
@@ -1543,6 +1546,7 @@ impl Compositor {
                         u[14] = l.layer_size[0];
                         u[15] = l.layer_size[1];
                         u[28..32].copy_from_slice(&e.values[16..20]);
+                        u[FX_P5..FX_P5 + 4].copy_from_slice(&e.values[20..24]);
                         // Only the particles, for those born from a hidden layer's pixels.
                         let hidden = e.values[reelforge_core::particles::SHAPE].round() as u32 == reelforge_core::particles::SHAPE_PIXELS_ONLY;
                         let at = push(if hidden { "fs_clear" } else { "fs_copy" }, cur, Second::None, o1, u);
