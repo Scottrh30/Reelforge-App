@@ -247,8 +247,13 @@ What works now:
   Deleting or cutting clips from it closes the gaps they'd leave (several at once too), and
   trimming one of its clips with the Select tool ripples: shorter pulls everything after it
   up, longer pushes it along. Clips on the other tracks after the edit move with it, so titles,
-  B-roll and sound laid over the main track stay in sync. Other tracks trim and delete as usual,
-  roll, slip and slide work as ever, and gaps that were there before stay
+  B-roll and sound laid over the main track stay in sync. Moving clips keeps it closed too:
+  drag a clip **off** the main track (onto another video track) and the gap closes behind it;
+  drop one **onto** it and it's inserted at the nearest cut (a drop inside a clip goes to
+  whichever of its ends is nearer, a drop past the end goes on the end), pushing everything after
+  along; drag one **along** it and it's reordered. Its linked sound goes with it. One undo step
+  each. Other tracks trim, move and delete as usual, roll, slip and slide work as ever, and gaps
+  that were there before stay
 - **Slip and slide**: two more tools next to the trim tools, acting on the whole clip.
   - **Slip (Y)**: drag a clip to change which part of its media it shows. It stays where it is
     and keeps its length. While you drag, a band under the clip shows the whole source file, so

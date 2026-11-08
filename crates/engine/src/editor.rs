@@ -867,6 +867,18 @@ impl Editor {
             sel = vec![lead];
         }
         let start = start.max(Time::ZERO).snap(self.seq().frame_rate);
+        match self.magnetic_move(lead, &sel, track, start) {
+            Some(Ok((cmd, what))) => {
+                self.execute(cmd);
+                self.status = what.into();
+                return;
+            }
+            Some(Err(e)) => {
+                self.status = format!("Can't move there: {e}");
+                return;
+            }
+            None => {}
+        }
         match reelforge_core::undo::move_clips(&self.project, self.active, lead, &sel, (track, start)) {
             Ok(cmd) => self.execute(cmd),
             Err(e) => self.status = format!("Can't move there: {e}"),
