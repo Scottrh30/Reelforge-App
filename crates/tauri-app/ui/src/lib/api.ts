@@ -535,6 +535,11 @@ export type ZeroCopyReport = {
   summary: string;
   formats: { format: string; status: "ok" | "mismatch" | "not used" | "skipped" | "error"; frames: number; on_gpu: number; worst: number; mean: number; ms_shared: number | null; ms_copied: number | null; detail: string }[];
 };
+/// Help → About → Check → Check performance.
+export type BenchReport = {
+  adapter: string;
+  lines: { what: string; ms: number; verdict: "realtime" | "slow" | "heavy"; note: string }[];
+};
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
 export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate";
@@ -1049,6 +1054,7 @@ export const api = {
   openLogFolder: () => invoke("open_log_folder"),
   checkDecoders: () => invoke<DecoderCheck[]>("check_decoders"),
   checkZeroCopy: () => invoke<ZeroCopyReport>("check_zero_copy"),
+  checkPerformance: () => invoke<BenchReport>("check_performance"),
   exportSuggest: (ext: string) => invoke<{ path: string; preset: number; has_audio: boolean }>("export_suggest", { ext }),
   exportPathDialog: (current: string, extension: string) => invoke<string | null>("export_path_dialog", { current, extension }),
   exportPresetSave: (name: string, spec: Spec, includeAudio: boolean) => invoke("export_preset_save", { name, spec, includeAudio }),

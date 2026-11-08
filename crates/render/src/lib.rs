@@ -99,6 +99,7 @@ pub mod text;
 pub mod text3d;
 pub mod model3d;
 pub mod flowgpu;
+pub mod bench;
 pub use solid::SolidInput;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;

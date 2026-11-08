@@ -3714,6 +3714,7 @@ dependencies = [
  "openusd",
  "pollster",
  "reelforge-core",
+ "serde",
  "stl_io",
  "tobj",
  "ttf-parser",

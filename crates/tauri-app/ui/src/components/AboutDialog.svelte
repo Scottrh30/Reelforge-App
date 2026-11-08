@@ -2,7 +2,7 @@
   // Help → About & diagnostics: the diagnostics report (to copy into a
   // message), the decoder check, and the third-party licence notices.
   import { app, run, say } from "../lib/session.svelte";
-  import { api, type DecoderCheck, type ZeroCopyReport } from "../lib/api";
+  import { api, type DecoderCheck, type ZeroCopyReport, type BenchReport } from "../lib/api";
 
   let report = $state("");
   let notices = $state("");
@@ -48,6 +48,22 @@
     zcBusy = true;
     zc = await get(api.checkZeroCopy());
     zcBusy = false;
+    report = (await get(api.diagnostics())) ?? report;
+  }
+
+  // Performance: time the heavy work on this graphics card.
+  let perf = $state<BenchReport | null>(null);
+  let perfBusy = $state(false);
+  let perfStarted = 0;
+  let perfElapsed = $state(0);
+  async function checkPerf() {
+    perfBusy = true;
+    perf = null;
+    perfStarted = performance.now();
+    const tick = setInterval(() => (perfElapsed = (performance.now() - perfStarted) / 1000), 250);
+    perf = await get(api.checkPerformance());
+    clearInterval(tick);
+    perfBusy = false;
     report = (await get(api.diagnostics())) ?? report;
   }
 
@@ -164,6 +180,29 @@
           <span class="grow"></span>
           <button class="primary" disabled={zcBusy} onclick={checkZc}>{zc ? "Check zero-copy again" : "Check zero-copy"}</button>
         </div>
+        <h3>Performance</h3>
+        <p class="muted">Times the heavy work on this graphics card at 1080p: optical flow at each quality, the fluid simulation at each detail, tens of thousands of particles, and four layers with effects. “Real time” fits in a frame at 30 fps. Usually a few seconds (minutes without a graphics card); the results go into the diagnostics report.</p>
+        {#if perf}
+          <p class="detail">{perf.adapter}</p>
+          <table>
+            <thead><tr><th>Work</th><th>Time</th><th>Speed</th></tr></thead>
+            <tbody>
+              {#each perf.lines as l}
+                <tr>
+                  <td>{l.what}<div class="detail">{l.note}</div></td>
+                  <td class="num">{l.ms < 10 ? l.ms.toFixed(1) : Math.round(l.ms)} ms</td>
+                  <td><span class="badge {l.verdict === 'realtime' ? 'ok' : l.verdict === 'heavy' ? 'mismatch' : 'skipped'}">{l.verdict === "realtime" ? "Real time" : l.verdict === "slow" ? "Slower" : "Heavy"}</span></td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else if perfBusy}
+          <p>Measuring… {perfElapsed.toFixed(0)} s</p>
+        {/if}
+        <div class="buttons">
+          <span class="grow"></span>
+          <button class="primary" disabled={perfBusy} onclick={checkPerf}>{perf ? "Check performance again" : "Check performance"}</button>
+        </div>
       {:else}
         <p class="muted">Reelforge is built from the open-source software listed here; each part keeps its own licence. The same text is in THIRD-PARTY-NOTICES.txt beside the program.</p>
         <div class="row">
@@ -272,8 +311,14 @@
     border-bottom: 1px solid var(--line-soft);
     vertical-align: top;
   }
-  td.detail {
+  td.detail,
+  .detail {
     color: var(--muted);
+  }
+  td.num {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
   .badge {
     display: inline-block;

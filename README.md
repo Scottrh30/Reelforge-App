@@ -1540,6 +1540,14 @@ PC, where each clip used to get up to 16, far more.
   **Differs** (zero-copy then switches itself off) or why it isn't available (no hardware
   decoder, zero-copy switched off in Settings, or not Windows), and the results go into the
   diagnostics report, so a run on your own graphics card can be sent over
+- **Check performance** (same tab): times the heavy work on your graphics card at 1080p:
+  optical flow at Fast, Balanced and Best (working out the motion for each new pair of frames,
+  and each frame drawn in between), the fluid simulation at each **Detail** (a frame's step,
+  and seeking 10 seconds ahead), around 50,000 particles, and four layers with blur, glow and
+  colour correction. Each line shows milliseconds and **Real time** (fits a 30 fps frame),
+  **Slower** or **Heavy** (over a quarter second), with the graphics card's name; the results
+  go into the diagnostics report. A few seconds on a graphics card, a few minutes on a
+  software renderer
 - **Third-party notices**, with a search box.
 
 The **log** goes to `%LOCALAPPDATA%\Reelforge\logs\reelforge.log` (the previous session's is
