@@ -16,6 +16,8 @@ pub mod collect;
 pub mod edit;
 pub mod disintegrate;
 pub mod lightning;
+pub mod inpaint;
+pub mod fillstore;
 pub mod effects;
 pub mod environment;
 pub mod fluid;

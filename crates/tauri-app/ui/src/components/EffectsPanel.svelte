@@ -288,6 +288,25 @@
           </div>
           {#if fx.environment_error}<p class="warn">{fx.environment_error}</p>{:else if !fx.environment}<p class="note">An environment light lights 3D layers from a panorama all round the scene, and shiny 3D text, shapes and models reflect it (Reflections, under Environment). Choose an .hdr or .exr panorama.</p>{/if}
         {/if}
+        {#if fx.kind === "ObjectRemoval"}
+          {@const areas = ins.masks.filter((m) => m.mask.enabled && m.mask.fill_area).length}
+          {@const busy = app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null}
+          <div class="row lut">
+            <span class="file">{busy !== null ? `Filling… ${Math.round(busy * 100)}%` : fx.filled !== null ? `${fx.filled} frames filled` : "Not worked out yet"}</span>
+            {#if busy !== null}
+              <button class="small" onclick={() => run(api.trackCancel())} title="Stop (what's done so far is dropped)">Stop</button>
+            {:else}
+              <button class="small" disabled={!areas || !!app.live?.tracking} onclick={() => run(api.objectRemoval(ins.id, i))} title={areas ? "Fill every frame of the clip where the Object to remove masks are (in the background)" : "Draw a mask round what to remove first, and set its Use to Object to remove"}>{fx.filled !== null ? "Fill again" : "Remove object"}</button>
+            {/if}
+          </div>
+          {#if !areas}
+            <p class="note">Draw a mask round what to remove (Masks panel) and set its <b>Use</b> to <b>Object to remove</b>; animate or track the mask to follow it. Then press Remove object.</p>
+          {:else if fx.filled === null && busy === null}
+            <p class="note">Press Remove object to fill {areas === 1 ? "the masked area" : "the masked areas"} in every frame. Object fills from the other frames where what's behind shows (best when the camera or the object moves), making up the rest; Surface makes it up once and carries it with the camera; Edge blend fills smoothly from the edges.</p>
+          {:else if fx.filled !== null && busy === null}
+            <p class="note">After changing the masks, the method or Grow and Feather, press Fill again.</p>
+          {/if}
+        {/if}
         {#if fx.kind === "DifferenceKey"}
           <div class="row lut">
             <span class="file" title={fx.plate ? `${fx.plate[0]} at ${fx.plate[1]}` : ""}>{fx.plate ? `Plate: ${fileName(fx.plate[0])} · ${fx.plate[1]}` : "No clean plate yet"}</span>

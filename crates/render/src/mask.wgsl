@@ -315,3 +315,19 @@ fn fs_lightning(in: VsOut) -> @location(0) vec4<f32> {
     let a = max(c.a, clamp(max(max(light.r, light.g), light.b), 0.0, 1.0));
     return mix(c, vec4(rgb, a), clamp(fx.p4.w / 100.0, 0.0, 1.0));
 }
+
+// Object removal: the second texture is this frame's patch (sRGB colour, and
+// alpha for how much of it covers the picture); extra2 = where it sits
+// (left, top, width, height as fractions of the layer); p1.x = opacity %.
+@fragment
+fn fs_fill(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let box = fx.extra2;
+    let f_uv = (in.uv - box.xy) / max(box.zw, vec2(1e-6));
+    let f = textureSampleLevel(second, second_sampler, clamp(f_uv, vec2(0.0), vec2(1.0)), 0.0);
+    let on = select(0.0, 1.0, all(f_uv >= vec2(0.0)) && all(f_uv <= vec2(1.0)));
+    let k = f.a * on * clamp(fx.p1.x / 100.0, 0.0, 1.0);
+    // The patch is opaque picture: over the layer, keeping its coverage.
+    let a = mix(c.a, 1.0, k);
+    return vec4(mix(c.rgb, to_linear(f.rgb), k), a);
+}

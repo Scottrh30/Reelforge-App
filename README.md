@@ -374,6 +374,24 @@ What works now:
     areas** outlines the target in red and the source in green. Keyframe the target, or pick
     *Patch replacer: target* under **Apply to** in the Track panel so it follows the tracked
     motion
+  - **Object removal** (Repair), like After Effects' Content-Aware Fill or Resolve's Object
+    Removal: takes out a person, a sign, a boom or a logo for the whole clip. Draw a mask round
+    it in the Masks panel and set its **Use** to **Object to remove** (it doesn't change the
+    picture by itself, and shows dotted in the Viewer); animate or track it to follow
+    something moving. Add the effect and press **Remove object**: every frame is filled in the
+    background (with a progress bar and **Stop**) and kept on disk in the cache folder, so it
+    plays straight away. **Method**: *Object* (the default) fills each frame from the other
+    frames where what's behind shows, the camera's motion between frames worked out from
+    details outside the mask (a perspective map per pair, fitted robustly) and the light
+    matched round the edge, then makes up what no frame shows (patch by patch from the edge
+    inwards, each copied from the best-matching part of the picture round it, lines running
+    into the hole first) and carries that on through the next frames, so it doesn't boil;
+    *Surface* makes it up once and carries it with the camera (a wall, a floor, the sky);
+    *Edge blend* fills smoothly from the edges (small or plain areas). **Frames each way**
+    sets how far it looks, **Grow** covers a little more than the mask (edges, shadows) and
+    **Feather** softens the join. After changing the masks or settings, press **Fill again**.
+    On a test pan across a brick wall with a logo stuck over it, the wall behind comes back
+    exactly; with a still camera it's made up, bricks and mortar continuing through
   - **Glow**: threshold, radius, intensity and softness; bright areas bloom outwards
   - **Drop shadow**: distance, angle, softness and opacity, from the layer's alpha
   - **Vignette**: amount, size and softness

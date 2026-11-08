@@ -114,6 +114,10 @@ pub enum EffectKind {
     /// picture, its light matched to the surroundings (or cloned as it is,
     /// or filled in from the edges). The source moves with the target.
     PatchReplacer,
+    /// Object removal (content-aware fill): what "object to remove" masks
+    /// cover, filled from the other frames or made up (see `crate::inpaint`),
+    /// worked out in the background and kept on disk.
+    ObjectRemoval,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -173,6 +177,8 @@ pub enum EffectData {
     Plate { path: PathBuf, at: crate::Time },
     /// An environment light's panorama (see `crate::environment`).
     Environment(PathBuf),
+    /// Object removal's filled frames: a folder (see `crate::fillstore`).
+    Fill(PathBuf),
 }
 
 /// How a parameter is shown and edited.
@@ -930,6 +936,18 @@ pub mod patch {
     pub const SHAPES: [&str; 2] = ["Ellipse", "Rectangle"];
     pub const FILLS: [&str; 3] = ["Adaptive blend (match the light)", "Clone (copy as it is)", "Fill from the edges"];
 }
+/// Object removal parameter indices.
+pub mod removal {
+    pub const METHOD: usize = 0;
+    /// How many frames each way are searched for what's behind.
+    pub const REACH: usize = 1;
+    /// Grow the area to fill past the mask (px), to cover shadows and edges.
+    pub const GROW: usize = 2;
+    /// A soft edge outside that (px).
+    pub const FEATHER: usize = 3;
+    pub const OPACITY: usize = 4;
+    pub const METHODS: [&str; 3] = ["Object (from other frames, the rest made up)", "Surface (made up once, carried with the camera)", "Edge blend (smooth, from the edges)"];
+}
 /// Halftone parameter indices.
 pub mod halftone {
     pub const STYLE: usize = 0;
@@ -1089,6 +1107,13 @@ const PATCH: [ParamSpec; 12] = [
     ParamSpec { name: "Show areas", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
 ];
+const OBJECT_REMOVAL: [ParamSpec; 5] = [
+    choice("Method", &removal::METHODS),
+    spec("Frames each way", 15.0, 0.0, 60.0, "", 0.1),
+    spec("Grow", 4.0, 0.0, 100.0, " px", 0.1),
+    spec("Feather", 3.0, 0.0, 50.0, " px", 0.1),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+];
 const CRT: [ParamSpec; 12] = [
     spec("Curvature", 30.0, 0.0, 100.0, " %", 0.5),
     spec("Scan lines", 50.0, 0.0, 100.0, " %", 0.5),
@@ -1129,7 +1154,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 35] = [
+    pub const ALL: [EffectKind; 36] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -1161,6 +1186,7 @@ impl EffectKind {
         EffectKind::FractalNoise,
         EffectKind::Lightning,
         EffectKind::PatchReplacer,
+        EffectKind::ObjectRemoval,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -1206,6 +1232,7 @@ impl EffectKind {
             EffectKind::FractalNoise => "Fractal noise",
             EffectKind::Lightning => "Lightning",
             EffectKind::PatchReplacer => "Patch replacer",
+            EffectKind::ObjectRemoval => "Object removal",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -1220,7 +1247,7 @@ impl EffectKind {
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate => EffectCategory::Simulation,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
-            EffectKind::WireRemoval | EffectKind::PatchReplacer => EffectCategory::Repair,
+            EffectKind::WireRemoval | EffectKind::PatchReplacer | EffectKind::ObjectRemoval => EffectCategory::Repair,
             EffectKind::FractalNoise | EffectKind::Lightning => EffectCategory::Generate,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
@@ -1254,6 +1281,7 @@ impl EffectKind {
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
             EffectKind::Lightning => "Jagged, branching bolts of lightning or electricity between two points (drag them in the Viewer) or all round one, struck afresh several times a second, flickering and lighting the layer.",
             EffectKind::PatchReplacer => "Covers a blemish, a logo or a sign with a patch of the picture from beside it (drag both in the Viewer), its light matched to the surroundings so the join doesn't show. Keyframe or track the target: the source moves with it.",
+            EffectKind::ObjectRemoval => "Content-aware fill: removes whatever a mask set to \"Object to remove\" covers (a person, a sign, a boom), filling it from the other frames where what's behind shows, or making it up from the picture round it. Worked out in the background over the clip.",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
             EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
@@ -1311,6 +1339,7 @@ impl EffectKind {
             EffectKind::FractalNoise => &FRACTAL,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
+            EffectKind::ObjectRemoval => &OBJECT_REMOVAL,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -1399,9 +1428,11 @@ pub struct EffectValues {
     pub pieces: Option<Arc<crate::shatter::Pieces>>,
     /// For a fluid: what to simulate on the graphics card.
     pub fluid: Option<Arc<crate::fluid::FluidJob>>,
-    /// For lightning: the strike's brightness (0–1), and how many segments
-    /// and runs of them its table holds.
-    pub lightning: [f32; 3],
+    /// Spare values for the GPU: for lightning, the strike's brightness
+    /// (0–1) and how many segments and runs of them its table holds; for
+    /// object removal, where its patch sits (left, top, width, height as
+    /// fractions of the layer).
+    pub gpu: [f32; 4],
 }
 
 impl EffectValues {
@@ -1437,6 +1468,7 @@ impl EffectValues {
             EffectKind::FractalNoise => v[fractal::OPACITY] == 0.0,
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
             EffectKind::PatchReplacer => v[patch::OPACITY] == 0.0,
+            EffectKind::ObjectRemoval => v[removal::OPACITY] == 0.0 || self.table.is_none(),
             EffectKind::MuzzleFlash => v[muzzle::BRIGHTNESS] == 0.0 && v[muzzle::LIGHT] == 0.0,
             EffectKind::BulletHit => false,
             EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.fluid.is_none(),
@@ -1603,7 +1635,13 @@ impl Effect {
         }
         let plugin = if self.kind == EffectKind::Plugin { self.plugin_def() } else { None };
         let particles = (self.kind == EffectKind::Particles).then(|| Arc::new(crate::particles::simulate(self, t)));
-        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None, fluid: None, lightning: [0.0; 3] }
+        let (mut table, mut gpu) = (self.table(), [0.0; 4]);
+        if let (Some(EffectData::Fill(dir)), EffectKind::ObjectRemoval) = (&self.data, self.kind) {
+            if let Some((tb, place)) = crate::fillstore::load(dir, t) {
+                (table, gpu) = (Some(tb), place);
+            }
+        }
+        EffectValues { kind: self.kind, values, table, plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None, fluid: None, gpu }
     }
 
     /// [`Self::eval_moving`] for a layer `size` pixels across: what needs
@@ -1618,7 +1656,7 @@ impl Effect {
                 let b = crate::lightning::bolts(self, t, size);
                 v.table = crate::lightning::table(&b, size);
                 // The strike's brightness and the table's size, for the GPU (spare slots).
-                v.lightning = [b.flash, b.segments.len() as f32, b.segments.len().div_ceil(crate::lightning::CHUNK) as f32];
+                v.gpu = [b.flash, b.segments.len() as f32, b.segments.len().div_ceil(crate::lightning::CHUNK) as f32, 0.0];
             }
             _ => {}
         }
@@ -1682,7 +1720,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut | EffectKind::DifferenceKey => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval => assert!(v.is_identity(), "{kind:?}"),
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 // These need the layer's size (a shatter's pieces, a fluid's grid).

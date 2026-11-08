@@ -112,6 +112,11 @@ pub struct Mask {
     /// solve the camera. Several of these combine with their modes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub track_ignore: bool,
+    /// Something to remove: it doesn't cut the layer; it's the area an
+    /// Object removal effect fills in (see `crate::inpaint`). Several of
+    /// these combine with their modes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fill_area: bool,
 }
 
 impl Default for Mask {
@@ -131,6 +136,7 @@ impl Default for Mask {
             feathers: Vec::new(),
             key_keep: false,
             track_ignore: false,
+            fill_area: false,
         }
     }
 }
@@ -531,7 +537,7 @@ pub fn mask_hash(masks: &[Mask], t: Time, layer: [f32; 2]) -> u64 {
     layer[0].to_bits().hash(&mut h);
     layer[1].to_bits().hash(&mut h);
     for m in masks.iter().filter(|m| m.enabled) {
-        (m.shape, m.mode, m.inverted, m.key_keep, m.track_ignore).hash(&mut h);
+        (m.shape, m.mode, m.inverted, m.key_keep, m.track_ignore, m.fill_area).hash(&mut h);
         for f in [m.feather, m.expansion, m.opacity] {
             f.to_bits().hash(&mut h);
         }
@@ -558,7 +564,7 @@ pub fn rasterize(masks: &[Mask], t: Time, layer: [f32; 2], max_side: u32) -> Opt
     let (w, h) = (((layer[0] * k).ceil() as usize).max(1), ((layer[1] * k).ceil() as usize).max(1));
     let combine = |keep: bool| -> Option<Vec<f32>> {
         let mut acc: Option<Vec<f32>> = None;
-        for m in masks.iter().filter(|m| m.enabled && !m.track_ignore && m.key_keep == keep) {
+        for m in masks.iter().filter(|m| m.enabled && !m.track_ignore && !m.fill_area && m.key_keep == keep) {
             let line = m.outline_feathered(t);
             let poly: Vec<[f32; 2]> = line.iter().map(|(p, _)| [p[0] * k, p[1] * k]).collect();
             if poly.len() < 3 {
@@ -592,6 +598,14 @@ pub fn rasterize(masks: &[Mask], t: Time, layer: [f32; 2], max_side: u32) -> Opt
 pub fn track_ignore_image(masks: &[Mask], t: Time, layer: [f32; 2]) -> Option<MaskImage> {
     let ignore: Vec<Mask> = masks.iter().filter(|m| m.enabled && m.track_ignore).map(|m| Mask { track_ignore: false, key_keep: false, ..m.clone() }).collect();
     rasterize(&ignore, t, layer, 320)
+}
+
+/// What Object removal fills at source time `t` ([`Mask::fill_area`] masks,
+/// combined with their modes), as an image over a `layer`-sized picture at
+/// most `max_side` pixels across; `None` if there are none.
+pub fn fill_area_image(masks: &[Mask], t: Time, layer: [f32; 2], max_side: u32) -> Option<MaskImage> {
+    let fill: Vec<Mask> = masks.iter().filter(|m| m.enabled && m.fill_area).map(|m| Mask { fill_area: false, track_ignore: false, key_keep: false, ..m.clone() }).collect();
+    rasterize(&fill, t, layer, max_side)
 }
 
 impl MaskImage {
@@ -906,6 +920,11 @@ mod tests {
         // Nothing enabled: no image.
         assert!(rasterize(&[Mask { enabled: false, ..rect(0.0, 0.0, 1.0, 1.0) }], Time::ZERO, layer, 4096).is_none());
         // Left out of the camera track: doesn't cut the layer, but is its own image.
+        // A fill area doesn't cut the layer either, and has an image of its own.
+        let fa = Mask { fill_area: true, ..rect(0.0, 0.0, 50.0, 100.0) };
+        assert!(rasterize(&[fa.clone()], Time::ZERO, layer, 64).is_none());
+        let img = fill_area_image(&[fa], Time::ZERO, layer, 64).unwrap();
+        assert!(img.at([10.0, 50.0], layer) > 200 && img.at([90.0, 50.0], layer) < 50);
         let ig = Mask { track_ignore: true, ..rect(0.0, 0.0, 50.0, 100.0) };
         assert!(rasterize(&[ig.clone()], Time::ZERO, layer, 4096).is_none());
         let both = rasterize(&[ig.clone(), rect(0.0, 0.0, 100.0, 50.0)], Time::ZERO, layer, 4096).unwrap();

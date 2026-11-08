@@ -346,7 +346,7 @@ impl Scene {
             if blur > 0.25 {
                 let mut values = [0.0; reelforge_core::effects::MAX_PARAMS];
                 values[0] = blur;
-                effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None, particles: None, pieces: None, fluid: None, lightning: [0.0; 3] });
+                effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None, particles: None, pieces: None, fluid: None, gpu: [0.0; 4] });
             }
         }
         Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, wipe: None, mesh, space, adjustment: false, solid: None, sort_depth: None }))
@@ -430,7 +430,7 @@ fn solid_layer(l: &Layer, spec: &reelforge_core::TitleSpec, frame_size: [u32; 2]
         let mut values = [0.0; reelforge_core::effects::MAX_PARAMS];
         // The picture is frame pixels, the blur was worked out in layer pixels.
         values[0] = blur * flat.scale;
-        effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None, particles: None, pieces: None, fluid: None, lightning: [0.0; 3] });
+        effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None, particles: None, pieces: None, fluid: None, gpu: [0.0; 4] });
     }
     let picture = Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(vec![0u8; 4]), 0), size: full, media: MediaId::GENERATED };
     Gathered {

@@ -729,7 +729,7 @@
           points={pts(m.outline)}
           class="mask"
           class:keep={!!m.mask.key_keep}
-          class:ignore={!!m.mask.track_ignore}
+          class:ignore={!!m.mask.track_ignore || !!m.mask.fill_area}
           class:on={i === active}
           class:off={!m.mask.enabled}
           stroke={MASK}

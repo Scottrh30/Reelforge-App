@@ -71,6 +71,9 @@ pub struct EffectView {
     /// An environment light's picture, and why it can't be read, if it can't.
     pub environment: Option<String>,
     pub environment_error: Option<String>,
+    /// Object removal: how many frames have been filled (`None` if not yet,
+    /// or the fill is missing).
+    pub filled: Option<usize>,
     pub animated: bool,
     /// Positions to drag in the Viewer (an OpenFX plugin's): the first of
     /// each one's two parameters (x, y in % of the layer, y down) and its name.
@@ -211,6 +214,10 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 plate_error,
                 environment,
                 environment_error,
+                filled: match &fx.data {
+                    Some(EffectData::Fill(dir)) if reelforge_core::fillstore::exists(dir) => Some(reelforge_core::fillstore::frame_count(dir)),
+                    _ => None,
+                },
                 points: if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
                     vec![PointView { param: 0, label: "Start".into(), relative: None }, PointView { param: 2, label: "End".into(), relative: None }]
                 } else if fx.kind == EffectKind::PatchReplacer {
@@ -512,6 +519,12 @@ pub fn particles_preset(id: u64, index: usize, preset: usize) -> Res<()> {
         e.commit_live_edit();
         e.status = format!("{name} particles");
     })
+}
+
+/// Work out object removal `index` on clip `id` in the background.
+#[tauri::command]
+pub fn object_removal(id: u64, index: usize) -> Res<()> {
+    ed(|e| e.start_object_removal(reelforge_core::ClipId(id), index))
 }
 
 /// Keyframe the blade's Length so it switches on (0 → 100 %) or off
