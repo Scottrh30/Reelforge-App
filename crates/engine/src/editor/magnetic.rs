@@ -10,7 +10,7 @@
 use super::Editor;
 use reelforge_core::edit::{ripple_delete, TrimMode};
 use reelforge_core::undo::{delete_clips, Batch, Command};
-use reelforge_core::{Clip, ClipId, Command as _, Sequence, Time, Track, TrackKind};
+use reelforge_core::{Clip, ClipId, Sequence, Time, Track, TrackKind};
 
 /// The main track: the first video track.
 pub fn main_track(s: &Sequence) -> Option<usize> {

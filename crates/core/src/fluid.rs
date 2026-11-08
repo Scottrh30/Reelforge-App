@@ -9,6 +9,11 @@
 //! as a checkpoint, and the latest), so playing forwards takes a step a
 //! frame and seeking goes back to the nearest checkpoint. The picture goes
 //! to the GPU as a small texture (a "table") the effect stretches over the layer.
+//!
+//! The app simulates on the graphics card (render crate, `fluidgpu`): this
+//! module gives it each step's settings ([`step_inputs`]) and the job
+//! ([`job`]). The CPU simulation here ([`simulate`]) is the same method,
+//! kept as the reference the GPU one is checked against.
 
 use crate::effects::{fluid_params as p, Effect, EffectKind};
 use crate::lut::Table;
@@ -19,7 +24,9 @@ use std::sync::{Arc, Mutex};
 /// Simulation steps a second.
 pub const RATE: f64 = 30.0;
 /// A checkpoint every this many steps.
-const EVERY: usize = 30;
+pub const EVERY: usize = 30;
+/// Grid columns on the graphics card for each Detail setting.
+const GPU_COLUMNS: [usize; 3] = [160, 320, 512];
 /// Simulations kept (different effects or settings).
 const KEEP: usize = 6;
 /// Pressure-solve iterations a step.
@@ -102,16 +109,51 @@ impl Grid {
     }
 }
 
-/// Settings read at a step's time.
-struct Inputs {
-    src: [f32; 2],
-    radius: f32,
-    push: [f32; 2],
-    amount: f32,
-    color: [f32; 3],
-    rise: f32,
-    swirl: f32,
-    fade: f32,
+/// Settings read at a step's time (grid cells, cells a step, linear colour).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Inputs {
+    pub src: [f32; 2],
+    pub radius: f32,
+    pub push: [f32; 2],
+    pub amount: f32,
+    pub color: [f32; 3],
+    pub rise: f32,
+    pub swirl: f32,
+    /// Fraction of the colour lost a second.
+    pub fade: f32,
+}
+
+/// The settings of step `step` of effect `e` on a `w`×`h` grid over a `size` layer.
+pub fn step_inputs(e: &Effect, step: usize, w: usize, h: usize, size: [f32; 2]) -> Inputs {
+    let seed = e.value_at(p::SEED, Time::ZERO) as u64;
+    inputs(e, step as f64 / RATE, &Grid { w, h }, size, seed)
+}
+
+/// What the graphics card needs to show a fluid at one moment: the effect
+/// (its settings over time), the grid, and how many steps in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FluidJob {
+    /// What the simulation depends on (not the time).
+    pub key: u64,
+    pub effect: Effect,
+    pub size: [f32; 2],
+    pub w: usize,
+    pub h: usize,
+    pub step: usize,
+    /// Flow round the layer's shape.
+    pub obstacles: bool,
+}
+
+/// The job for fluid effect `e` on a `size` layer at source time `t`.
+pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
+    if e.kind != EffectKind::Fluid || e.params.len() <= p::OBSTACLES {
+        return None;
+    }
+    let detail = (e.value_at(p::DETAIL, Time::ZERO).round().max(0.0) as usize).min(GPU_COLUMNS.len() - 1);
+    let w = GPU_COLUMNS[detail];
+    let h = ((w as f32 * size[1] / size[0].max(1.0)).round() as usize).clamp(8, 1024);
+    let obstacles = e.value_at(p::OBSTACLES, Time::ZERO) >= 0.5;
+    Some(FluidJob { key: key(e, w, h, size) ^ 0x6705, effect: e.clone(), size, w, h, step: (t.as_secs_f64() * RATE).floor().max(0.0) as usize, obstacles })
 }
 
 fn inputs(e: &Effect, t: f64, g: &Grid, size: [f32; 2], seed: u64) -> Inputs {

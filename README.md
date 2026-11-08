@@ -504,9 +504,12 @@ What works now:
     - **Fluid**: coloured smoke or ink poured from a **Source** (drag it) in a **Direction** with
       **Force**, swirling (**Swirl**), rising (**Rise**, negative sinks) and fading (**Fade**),
       changing between two colours (**Colour change** times a second). A real fluid simulation
-      (stable fluids on a grid, **Detail** low, medium or high), worked out from the clip's start
-      and kept as it plays, so playing on is quick and seeking back returns to the nearest
-      second it kept
+      (stable fluids: the flow pushed by the source and by rising colour, swirls kept alive by
+      vorticity confinement, made incompressible by a pressure solve), run on the graphics card
+      on a grid 160, 320 or 512 cells across (**Detail**). It's worked out from the clip's start
+      and kept as it plays (a step a frame), with a checkpoint every second, so seeking back
+      starts from the nearest one. **Flow round the layer's shape**: put it on a title or a
+      keyed layer and the fluid flows round the letters or the subject instead of through them
   - The **browser** (`E`, or **Edit → Effects & transitions…**) lists every effect by category
     (Colour, Blur & sharpen, Keying, Light & stylize, Particles & simulation…) and every transition, with a search box
     and a one-line description of each; **Add** puts an effect on the selected clip

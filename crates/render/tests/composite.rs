@@ -643,7 +643,7 @@ fn plugin(id: &str, manifest_extra: &str, params: &str, source: &str) -> std::sy
 fn plugin_fx(def: &std::sync::Arc<reelforge_core::plugin::PluginDef>, values: &[f32], time: f32) -> EffectValues {
     let mut v = [0.0; reelforge_core::effects::MAX_PARAMS];
     v[..values.len()].copy_from_slice(values);
-    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None, particles: None, pieces: None }
+    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None, particles: None, pieces: None, fluid: None }
 }
 
 #[test]
@@ -1970,10 +1970,28 @@ fn simulations_draw_what_they_say() {
     let glass = draw(&mut c, &grey, EffectKind::BulletHit, &at(3.0), 3.0);
     assert!((0..h).flat_map(|y| (0..w).map(move |x| (x, y))).any(|(x, y)| lum(px(&glass, w, x, y)) > 500));
 
-    // Fluid: on a clear layer, colour appears above the source after a while.
-    let fl = draw(&mut c, &clear, EffectKind::Fluid, &[], 1.5);
-    let coloured = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| px(&fl, w, x, y)[2] > 60).count();
-    assert!(coloured > 40, "{coloured}");
+    // Fluid (on the graphics card): on a clear layer, colour appears above
+    // the source and rises; seeking back gives the same picture as before;
+    // with obstacles on, a block in the way stays clear.
+    {
+        use reelforge_core::effects::fluid_params as fp;
+        let blue = |img: &[u8], y0: u32, y1: u32| (y0..y1).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| px(img, w, x, y)[2] > 60).count();
+        // (A source the size of a 1080p one, for this little layer.)
+        let small = [(fp::SIZE, 8.0), (fp::FORCE, 40.0)];
+        let early = draw(&mut c, &clear, EffectKind::Fluid, &small, 0.7);
+        let later = draw(&mut c, &clear, EffectKind::Fluid, &small, 2.0);
+        assert!(blue(&later, 0, h) > blue(&early, 0, h) && blue(&early, 0, h) > 20, "{} {}", blue(&early, 0, h), blue(&later, 0, h));
+        assert!(blue(&later, 0, 45) > blue(&early, 0, 45), "rises");
+        let again = draw(&mut c, &clear, EffectKind::Fluid, &small, 0.7);
+        let diff = early.iter().zip(&again).filter(|(a, b)| a.abs_diff(**b) > 2).count();
+        assert!(diff < 20, "seeking back: {diff}");
+        // A block above the source, the fluid flowing round it.
+        let block: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if (60..100).contains(&x) && (35..55).contains(&y) { [255u8, 255, 255, 255] } else { [0, 0, 0, 0] })).collect();
+        let img = draw(&mut c, &block, EffectKind::Fluid, &[(fp::SIZE, 8.0), (fp::FORCE, 40.0), (fp::OBSTACLES, 1.0)], 2.5);
+        let inside = (40..50).flat_map(|y| (65..95).map(move |x| (x, y))).filter(|&(x, y)| { let q = px(&img, w, x, y); q[2] > 60 && q[0] < 200 }).count();
+        assert_eq!(inside, 0, "nothing inside the block");
+        assert!(blue(&img, 0, h) > 40);
+    }
 
     // Disintegrate, left to right: halfway, the left half gone (bar a few
     // particles), the right half still there, and glowing particles at the front.

@@ -92,6 +92,7 @@ impl<'a> From<&'a reelforge_core::frame::Pixels> for PixelData<'a> {
 }
 
 mod particles;
+mod fluidgpu;
 pub mod plugin;
 pub mod solid;
 pub mod text;
@@ -371,6 +372,8 @@ pub struct Compositor {
     /// Draws solid objects (3D text) into their layer textures.
     solid: solid::SolidRenderer,
     particles: particles::ParticleRenderer,
+    /// Fluid effects, simulated on the card.
+    fluid: fluidgpu::FluidGpu,
     /// Reads frames shared by the hardware decoder (Windows, Direct3D 12).
     #[cfg(windows)]
     interop: Option<interop::Importer>,
@@ -723,6 +726,7 @@ impl Compositor {
             yuv: yuv::YuvConverter::new(device, LAYER_FORMAT, FLOAT_LAYER_FORMAT),
             solid: solid::SolidRenderer::new(device, queue, LAYER_FORMAT),
             particles: particles::ParticleRenderer::new(device, &fx_pl, ACCUM_FORMAT),
+            fluid: fluidgpu::FluidGpu::new(device, queue),
             #[cfg(windows)]
             interop: {
                 let i = interop::Importer::new(device);
@@ -1245,6 +1249,23 @@ impl Compositor {
             for (i, e) in l.effects.iter().enumerate() {
                 if let Some(t) = &e.table {
                     self.upload_table((l.key, i), t);
+                }
+                if let Some(job) = &e.fluid {
+                    // Stepped on to now; its picture goes in as this effect's table.
+                    let layer = self.layers.get(&l.key).filter(|t| !t.float).map(|t| (t.texture.create_view(&Default::default()), t.content_id));
+                    if let Some(tex) = self.fluid.step_to(job, layer.as_ref().map(|(v, id)| (v, *id))) {
+                        let view = tex.create_view(&Default::default());
+                        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("fluid picture"),
+                            layout: &self.texture_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                            ],
+                        });
+                        let size = [tex.width(), tex.height()];
+                        self.tables.insert((l.key, i), LayerTex { texture: tex, bind_group, size, content_id: job.key ^ job.step as u64, float: false });
+                    }
                 }
             }
             let [pw, ph] = [fx_px[0].max(1) as f32, fx_px[1].max(1) as f32];

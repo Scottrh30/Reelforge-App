@@ -422,7 +422,7 @@ const DISINTEGRATE: [ParamSpec; 17] = [
     choice("Look", &crate::particles::LOOKS),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
-const FLUID: [ParamSpec; 15] = [
+const FLUID: [ParamSpec; 16] = [
     spec("Source X", 50.0, -50.0, 150.0, " %", 0.1),
     spec("Source Y", 85.0, -50.0, 150.0, " %", 0.1),
     spec("Direction", 90.0, -360.0, 360.0, "°", 0.5),
@@ -438,6 +438,7 @@ const FLUID: [ParamSpec; 15] = [
     choice("Detail", &fluid_params::DETAILS),
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+    choice("Flow round the layer's shape", &["Off", "On"]),
 ];
 const LEVELS: [ParamSpec; 5] = [
     spec("Input black", 0.0, 0.0, 254.0, "", 0.5),
@@ -829,6 +830,8 @@ pub mod fluid_params {
     pub const DETAIL: usize = 12;
     pub const OPACITY: usize = 13;
     pub const SEED: usize = 14;
+    /// Flow round the layer's own shape (a title's letters).
+    pub const OBSTACLES: usize = 15;
     pub const DETAILS: [&str; 3] = ["Low (fast)", "Medium", "High"];
 }
 /// Wire removal parameter indices.
@@ -1190,7 +1193,7 @@ impl EffectKind {
             EffectKind::Shatter => &[(0, "Impact"), (2, "Pieces"), (4, "Motion")],
             EffectKind::MuzzleFlash => &[(0, "Gun"), (5, "Flash"), (7, "Shots")],
             EffectKind::BulletHit => &[(0, "Hit"), (5, "Look")],
-            EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look")],
+            EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look"), (15, "Obstacles")],
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
@@ -1241,6 +1244,8 @@ pub struct EffectValues {
     pub particles: Option<Arc<crate::particles::Particles>>,
     /// For a shatter: its pieces now.
     pub pieces: Option<Arc<crate::shatter::Pieces>>,
+    /// For a fluid: what to simulate on the graphics card.
+    pub fluid: Option<Arc<crate::fluid::FluidJob>>,
 }
 
 impl EffectValues {
@@ -1275,7 +1280,7 @@ impl EffectValues {
             EffectKind::Disintegrate => self.particles.is_none(),
             EffectKind::MuzzleFlash => v[muzzle::BRIGHTNESS] == 0.0 && v[muzzle::LIGHT] == 0.0,
             EffectKind::BulletHit => false,
-            EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.table.is_none(),
+            EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.fluid.is_none(),
             EffectKind::RefineMatte => v[refine::SMOOTH] < 0.01 && v[refine::SHIFT].abs() < 0.01 && v[refine::FEATHER] < 0.01 && v[refine::DECONTAMINATE] == 0.0 && v[refine::VIEW] == 0.0,
             EffectKind::MatteChoker => v[choker::CHOKE].abs() < 0.01 && v[choker::SOFTNESS] < 0.01 && v[choker::CONTRAST] == 0.0 && v[choker::VIEW] == 0.0,
             EffectKind::KeyCleaner => v[cleaner::SPILL] == 0.0 && v[cleaner::HOLES] < 0.01 && v[cleaner::SPECKS] < 0.01 && v[cleaner::VIEW] == 0.0,
@@ -1438,7 +1443,7 @@ impl Effect {
         }
         let plugin = if self.kind == EffectKind::Plugin { self.plugin_def() } else { None };
         let particles = (self.kind == EffectKind::Particles).then(|| Arc::new(crate::particles::simulate(self, t)));
-        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None }
+        EffectValues { kind: self.kind, values, table: self.table(), plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None, fluid: None }
     }
 
     /// [`Self::eval_moving`] for a layer `size` pixels across: what needs
@@ -1447,7 +1452,7 @@ impl Effect {
         let mut v = self.eval_moving(t, prev);
         match self.kind {
             EffectKind::Shatter => v.pieces = Some(Arc::new(crate::shatter::simulate(self, t, size))),
-            EffectKind::Fluid => v.table = crate::fluid::simulate(self, t, size),
+            EffectKind::Fluid => v.fluid = crate::fluid::job(self, t, size).map(Arc::new),
             EffectKind::Disintegrate => v.particles = Some(Arc::new(crate::disintegrate::simulate(self, t, size))),
             _ => {}
         }
