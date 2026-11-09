@@ -1,0 +1,123 @@
+id = "scott.neon-fx.laser-blast"
+name = "Neon FX: Laser Blast"
+version = "1.0"
+author = "Neon FX"
+category = "Stylize"
+description = "Blaster bolts that fly from one point to another, with a muzzle flash and an impact flash. Keyframe Travel from 0 % to about 150 % over a few frames to fire."
+premultiplied = true
+
+[[param]]                     # 0
+name = "Colour"
+type = "choice"
+options = ["Blue", "Green", "Red", "Purple", "Yellow", "Cyan", "Pink", "Orange", "White", "Custom (hue)"]
+default = 2
+
+[[param]]                     # 1
+name = "Custom hue"
+default = 10
+min = 0
+max = 360
+suffix = "°"
+
+[[param]]                     # 2
+name = "From X"
+default = 15
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 3
+name = "From Y"
+default = 55
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 4
+name = "To X"
+default = 85
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 5
+name = "To Y"
+default = 45
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 6
+name = "Travel"
+default = 50
+min = 0
+max = 400
+suffix = " %"
+
+[[param]]                     # 7
+name = "Bolt length"
+default = 220
+min = 0
+max = 3000
+suffix = " px"
+
+[[param]]                     # 8
+name = "Core width"
+default = 7
+min = 0
+max = 100
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 9
+name = "Glow size"
+default = 20
+min = 0
+max = 300
+suffix = " px"
+
+[[param]]                     # 10
+name = "Glow intensity"
+default = 200
+min = 0
+max = 800
+suffix = " %"
+
+[[param]]                     # 11
+name = "Muzzle flash"
+default = 100
+min = 0
+max = 400
+suffix = " %"
+
+[[param]]                     # 12
+name = "Impact flash"
+default = 100
+min = 0
+max = 400
+suffix = " %"
+
+[[param]]                     # 13
+name = "Bolts"
+default = 1
+min = 1
+max = 6
+step = 0.05
+
+[[param]]                     # 14
+name = "Gap between bolts"
+default = 40
+min = 0
+max = 200
+suffix = " %"
+
+[[param]]                     # 15
+name = "Flicker"
+default = 10
+min = 0
+max = 100
+suffix = " %"

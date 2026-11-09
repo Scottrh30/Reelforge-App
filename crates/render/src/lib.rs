@@ -2610,6 +2610,14 @@ fn effect_margin(effects: &[EffectValues], px: [u32; 2], layer: [f32; 2]) -> [u3
                 x += r * kx;
                 y += r * ky;
             }
+            // A plugin says how far it reaches (its manifest's `spread`).
+            EffectKind::Plugin => {
+                if let Some(p) = &e.plugin {
+                    let r = p.spread_px(&e.values);
+                    x += r * kx;
+                    y += r * ky;
+                }
+            }
             EffectKind::DropShadow => {
                 let (d, a) = (e.values[0].max(0.0), e.values[1].to_radians());
                 x += (a.cos() * d).abs() * kx + 1.5 * e.values[2].max(0.0) * kx;

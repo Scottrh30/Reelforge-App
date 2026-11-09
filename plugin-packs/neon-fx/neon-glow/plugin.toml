@@ -1,0 +1,92 @@
+id = "scott.neon-fx.neon-glow"
+name = "Neon FX: Neon Glow"
+version = "1.0"
+author = "Neon FX"
+category = "Stylize"
+description = "Turns a title, logo, keyed subject or the bright parts of the picture into a glowing neon tube, with a buzz, a faulty-sign flicker or a slow pulse."
+passes = ["extract", "blur_across", "blur_down", "combine"]
+premultiplied = true
+# The glow spills past the layer's edges by up to 3 x Glow radius.
+spread = [4]
+spread_scale = 3.0
+
+[[param]]                     # 0
+name = "Colour"
+type = "choice"
+options = ["Blue", "Green", "Red", "Purple", "Yellow", "Cyan", "Pink", "Orange", "White", "Custom (hue)"]
+default = 6
+
+[[param]]                     # 1
+name = "Custom hue"
+default = 320
+min = 0
+max = 360
+suffix = "°"
+
+[[param]]                     # 2
+name = "Glow from"
+type = "choice"
+options = ["Shape (transparency)", "Bright areas", "Whole picture"]
+default = 0
+
+[[param]]                     # 3
+name = "Brightness threshold"
+default = 55
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 4
+name = "Glow radius"
+default = 30
+min = 0
+max = 300
+suffix = " px"
+
+[[param]]                     # 5
+name = "Glow intensity"
+default = 180
+min = 0
+max = 800
+suffix = " %"
+
+[[param]]                     # 6
+name = "Tube colour"
+default = 80
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 7
+name = "Halo"
+default = 70
+min = 0
+max = 300
+suffix = " %"
+
+[[param]]                     # 8
+name = "Flicker"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 9
+name = "Flicker style"
+type = "choice"
+options = ["Buzz", "Faulty sign", "Pulse"]
+default = 0
+
+[[param]]                     # 10
+name = "Flicker speed"
+default = 1
+min = 0
+max = 20
+suffix = " /s"
+step = 0.01
+
+[[param]]                     # 11
+name = "Background"
+type = "choice"
+options = ["Keep picture", "Darken picture", "Glow only"]
+default = 0

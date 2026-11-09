@@ -696,6 +696,9 @@ export interface PluginView {
   passes: number;
   error: string | null;
   removable: boolean;
+  /** The pack it came in ("Neon FX 1.0"); removing it removes the whole pack. */
+  pack: string | null;
+  pack_folder: string | null;
 }
 
 export interface PluginsView {

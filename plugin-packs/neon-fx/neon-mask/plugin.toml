@@ -1,0 +1,122 @@
+id = "scott.neon-fx.neon-mask"
+name = "Neon FX: Neon Mask"
+version = "1.0"
+author = "Neon FX"
+category = "Stylize"
+description = "Shows the picture through a shape (rectangle, ellipse, circle, diamond, hexagon or star) edged with a glowing neon tube. Animate it, draw the tube on, or invert it."
+premultiplied = true
+# The tube and its glow can reach past the layer's edges.
+spread = [11, 12, 12, 12]
+
+[[param]]                     # 0
+name = "Colour"
+type = "choice"
+options = ["Blue", "Green", "Red", "Purple", "Yellow", "Cyan", "Pink", "Orange", "White", "Custom (hue)"]
+default = 3
+
+[[param]]                     # 1
+name = "Custom hue"
+default = 280
+min = 0
+max = 360
+suffix = "°"
+
+[[param]]                     # 2
+name = "Shape"
+type = "choice"
+options = ["Rectangle", "Ellipse", "Circle", "Diamond", "Hexagon", "Star"]
+default = 0
+
+[[param]]                     # 3
+name = "Centre X"
+default = 50
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 4
+name = "Centre Y"
+default = 50
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 5
+name = "Width"
+default = 60
+min = 0
+max = 200
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 6
+name = "Height"
+default = 60
+min = 0
+max = 200
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 7
+name = "Rotation"
+default = 0
+min = -360
+max = 360
+suffix = "°"
+
+[[param]]                     # 8
+name = "Corner radius"
+default = 0
+min = 0
+max = 1000
+suffix = " px"
+
+[[param]]                     # 9
+name = "Invert"
+type = "toggle"
+default = 0
+
+[[param]]                     # 10
+name = "Masked-out picture"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 11
+name = "Tube width"
+default = 6
+min = 0
+max = 100
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 12
+name = "Glow radius"
+default = 26
+min = 0
+max = 300
+suffix = " px"
+
+[[param]]                     # 13
+name = "Glow intensity"
+default = 170
+min = 0
+max = 800
+suffix = " %"
+
+[[param]]                     # 14
+name = "Draw on"
+default = 100
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 15
+name = "Flicker"
+default = 0
+min = 0
+max = 100
+suffix = " %"

@@ -2,7 +2,7 @@
   // Edit > Plugins…: effect plugins (GPU shaders anyone can write). Install
   // from a folder or a .zip, make a new one from the template, remove, reload.
   import { app, run, say } from "../lib/session.svelte";
-  import { api, type OfxView, type PluginsView } from "../lib/api";
+  import { api, type OfxView, type PluginView, type PluginsView } from "../lib/api";
 
   let view = $state<PluginsView | null>(null);
   let ofx = $state<OfxView | null>(null);
@@ -20,6 +20,11 @@
       load();
     } else confirm = null;
   });
+
+  // How many effects are in this plugin's pack (removed together).
+  function packSize(p: PluginView) {
+    return view?.entries.filter((e) => e.pack_folder === p.pack_folder).length ?? 1;
+  }
 
   async function act(p: Promise<string | null>) {
     const msg = await run(p);
@@ -70,6 +75,7 @@
           <div class="item" class:broken={!p.ok}>
             <div class="top">
               <span class="name">{p.name}</span>
+              {#if p.pack}<span class="tag" title={`Part of the ${p.pack} pack: installed and removed together`}>{p.pack} pack</span>{/if}
               {#if p.ok}
                 <span class="muted">{p.version || "–"} · {p.category}</span>
                 <span class="state good">✓ loaded</span>
@@ -80,10 +86,10 @@
               <button class="small" onclick={() => run(api.openFolder(p.folder))}>Show folder</button>
               {#if p.removable}
                 {#if confirm === p.folder}
-                  <button class="small danger" onclick={() => ((confirm = null), act(api.pluginsRemove(p.folder)))}>Really remove</button>
+                  <button class="small danger" onclick={() => ((confirm = null), act(api.pluginsRemove(p.folder)))}>{p.pack ? `Really remove the pack (${packSize(p)} effects)` : "Really remove"}</button>
                   <button class="small" onclick={() => (confirm = null)}>Keep</button>
                 {:else}
-                  <button class="small" onclick={() => (confirm = p.folder)} title="Delete this plugin's folder">Remove</button>
+                  <button class="small" onclick={() => (confirm = p.folder)} title={p.pack ? `Delete the ${p.pack} pack: all ${packSize(p)} of its effects` : "Delete this plugin's folder"}>{p.pack ? "Remove pack" : "Remove"}</button>
                 {/if}
               {/if}
             </div>

@@ -939,6 +939,9 @@ pub struct PluginView {
     /// Why it didn't load.
     pub error: Option<String>,
     pub removable: bool,
+    /// The pack it came in (removing it removes the whole pack).
+    pub pack: Option<String>,
+    pub pack_folder: Option<String>,
 }
 
 #[tauri::command]
@@ -967,6 +970,8 @@ pub fn plugins_list() -> PluginsView {
                     passes: 0,
                     error: e.result.as_ref().err().cloned(),
                     removable: m.removable(e),
+                    pack: e.pack.as_ref().map(|p| if p.version.is_empty() { p.name.clone() } else { format!("{} {}", p.name, p.version) }),
+                    pack_folder: e.pack.as_ref().map(|p| p.folder.display().to_string()),
                 };
                 match &e.result {
                     Ok(d) => PluginView {
@@ -993,9 +998,9 @@ pub fn plugins_list() -> PluginsView {
 #[tauri::command]
 pub fn plugins_install(zip: bool) -> Res<Option<String>> {
     let picked = if zip {
-        rfd::FileDialog::new().set_title("Install a plugin (.zip)").add_filter("Plugin zip", &["zip"]).pick_file()
+        rfd::FileDialog::new().set_title("Install a plugin or plugin pack (.zip)").add_filter("Plugin zip", &["zip"]).pick_file()
     } else {
-        rfd::FileDialog::new().set_title("Install a plugin: its folder (with plugin.toml)").pick_folder()
+        rfd::FileDialog::new().set_title("Install a plugin: its folder (with plugin.toml, or pack.toml for a pack)").pick_folder()
     };
     let Some(path) = picked else { return Ok(None) };
     let r = plugins(|m| if zip { m.install_zip(&path) } else { m.install_folder(&path) }).map_err(|e| format!("Couldn't install: {e}"));

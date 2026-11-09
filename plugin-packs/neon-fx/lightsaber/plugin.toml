@@ -1,0 +1,114 @@
+id = "scott.neon-fx.lightsaber"
+name = "Neon FX: Lightsaber"
+version = "1.0"
+author = "Neon FX"
+category = "Stylize"
+description = "A glowing energy blade from a hilt to a tip. Keyframe the hilt and tip to follow a prop; animate Blade length to ignite or retract it."
+premultiplied = true
+
+[[param]]                     # 0
+name = "Colour"
+type = "choice"
+options = ["Blue", "Green", "Red", "Purple", "Yellow", "Cyan", "Pink", "Orange", "White", "Custom (hue)"]
+default = 0
+
+[[param]]                     # 1
+name = "Custom hue"
+default = 200
+min = 0
+max = 360
+suffix = "°"
+
+[[param]]                     # 2
+name = "Hilt X"
+default = 30
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 3
+name = "Hilt Y"
+default = 75
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 4
+name = "Tip X"
+default = 70
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 5
+name = "Tip Y"
+default = 25
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 6
+name = "Blade length"
+default = 100
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 7
+name = "Core width"
+default = 10
+min = 0
+max = 150
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 8
+name = "Glow size"
+default = 28
+min = 0
+max = 400
+suffix = " px"
+
+[[param]]                     # 9
+name = "Glow intensity"
+default = 160
+min = 0
+max = 800
+suffix = " %"
+
+[[param]]                     # 10
+name = "Core whiteness"
+default = 85
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 11
+name = "Tip taper"
+default = 30
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 12
+name = "Flicker"
+default = 15
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 13
+name = "Unstable"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 14
+name = "Blade only"
+type = "toggle"
+default = 0

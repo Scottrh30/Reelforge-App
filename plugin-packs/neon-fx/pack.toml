@@ -1,0 +1,8 @@
+# A plugin pack: several plugins installed and removed together.
+# Install it with Edit > Plugins... > Install from .zip... (or Install from folder...).
+# Removing any of its effects in the Plugins window removes the whole pack.
+id = "scott.neon-fx"
+name = "Neon FX"
+version = "1.0"
+author = "Scott"
+description = "Lightsaber blades, neon glows, neon outlines, neon shape masks and laser blasts."

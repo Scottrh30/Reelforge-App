@@ -58,6 +58,7 @@ description = "Pulls the red and blue channels apart."
 shader = "effect.wgsl"        # optional; this is the default
 passes = ["effect"]           # optional; the shader functions to run, in order (see "Several passes")
 premultiplied = false         # optional; see "Alpha"
+spread = []                   # optional; see "Reaching past the layer's edges"
 
 [[param]]                     # param(0) in the shader
 name = "Amount"
@@ -175,6 +176,52 @@ passes = ["bright", "blur_across", "blur_down", "combine"]
 Each function has the same shape as `effect`. In each pass, `sample` reads the previous
 pass's result, and `original` reads the picture as it came into the effect. Up to 8
 passes. See the **Bloom** example.
+
+## Reaching past the layer's edges
+
+A glow round a title or logo needs room outside the layer. Tell Reelforge how far
+your effect reaches, and it gives the layer a margin that big (your functions are
+called there too, with `uv` below 0 or above 1):
+
+```toml
+spread = [4, 6, 6, 6]         # parameter numbers whose values (pixels) add up to how far it reaches
+spread_scale = 1.0            # optional; multiplies the sum (default 1)
+```
+
+`spread = [4, 6, 6, 6]` means "Line width (param 4) plus three times Glow radius
+(param 6)". Without `spread`, the effect stays inside the layer, which is right for
+most effects and for anything on full-frame footage.
+
+## Plugin packs
+
+Several plugins that belong together can be installed and removed as one **pack**:
+a folder with a `pack.toml` and the plugin folders inside it.
+
+```
+neon-fx/
+  pack.toml
+  lightsaber/     plugin.toml, effect.wgsl
+  neon-glow/      plugin.toml, effect.wgsl
+  ...
+```
+
+```toml
+id = "scott.neon-fx"          # unique; installing a pack with the same id replaces it
+name = "Neon FX"
+version = "1.0"
+author = "Scott"
+description = "Lightsabers, neon glows, outlines, masks and laser blasts."
+```
+
+Zip the pack's folder to share it; **Install from .zip…** (or **Install from
+folder…**) installs the whole pack, after checking every plugin in it (one with a
+problem stops the install, and the message says which). The Plugins window tags each
+effect with its pack, and **Remove pack** on any of them deletes the whole pack.
+Installing a pack replaces any copies of its plugins you'd installed on their own.
+Each plugin in a pack still needs its own unique `id`.
+
+**Neon FX** (in the `plugin-packs` folder of the source) is a pack of five effects:
+Lightsaber, Neon Glow, Neon Outline, Neon Mask and Laser Blast.
 
 ## Alpha
 

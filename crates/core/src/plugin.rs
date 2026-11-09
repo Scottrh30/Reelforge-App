@@ -25,6 +25,10 @@ use std::sync::{Arc, Mutex, RwLock};
 /// The manifest file in every plugin folder.
 pub const MANIFEST: &str = "plugin.toml";
 
+/// The manifest of a plugin pack: a folder of plugin folders installed and
+/// removed together.
+pub const PACK_MANIFEST: &str = "pack.toml";
+
 /// Which plugin an effect uses (stored in the project).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PluginRef {
@@ -55,6 +59,19 @@ pub struct PluginDef {
     /// Unique per load: changes whenever the plugin is (re)loaded, so caches
     /// (compiled shaders, rendered frames) know to refresh.
     pub revision: u64,
+    /// How far (layer pixels) the effect reaches past the layer's edges: the
+    /// sum of these parameters' values, times `spread_scale`. Empty for an
+    /// effect that stays inside the layer.
+    pub spread: Vec<usize>,
+    pub spread_scale: f32,
+}
+
+impl PluginDef {
+    /// How far the effect reaches past the layer's edges (layer pixels), for
+    /// these parameter values.
+    pub fn spread_px(&self, values: &[f32]) -> f32 {
+        self.spread.iter().map(|&i| values.get(i).copied().unwrap_or(0.0).max(0.0)).sum::<f32>() * self.spread_scale.max(0.0)
+    }
 }
 
 // ---- The manifest ------------------------------------------------------------
@@ -80,6 +97,14 @@ struct Manifest {
     premultiplied: bool,
     #[serde(default, rename = "param")]
     params: Vec<ManifestParam>,
+    #[serde(default)]
+    spread: Vec<usize>,
+    #[serde(default = "one")]
+    spread_scale: f32,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 fn default_shader() -> String {
@@ -193,6 +218,12 @@ pub fn parse(manifest: &str, source: &str, folder: &Path) -> Result<PluginDef, S
     if let Some(bad) = passes.iter().find(|p| !is_ident(p)) {
         return Err(format!("{MANIFEST}: pass \"{bad}\" isn't a usable function name (letters, digits and _, not starting with rf_)"));
     }
+    if let Some(bad) = m.spread.iter().find(|&&i| i >= m.params.len()) {
+        return Err(format!("{MANIFEST}: spread names parameter {bad}, but there are only {} (numbered from 0)", m.params.len()));
+    }
+    if !m.spread_scale.is_finite() || m.spread_scale < 0.0 {
+        return Err(format!("{MANIFEST}: spread_scale should be 0 or more"));
+    }
     let params = intern_params(&m.params).map_err(|e| format!("{MANIFEST}: {e}"))?;
     Ok(PluginDef {
         id,
@@ -208,6 +239,8 @@ pub fn parse(manifest: &str, source: &str, folder: &Path) -> Result<PluginDef, S
         shader_file: folder.join(&m.shader),
         folder: folder.to_path_buf(),
         revision: next_revision(),
+        spread: m.spread,
+        spread_scale: m.spread_scale,
     })
 }
 
@@ -218,6 +251,42 @@ pub fn load_folder(folder: &Path) -> Result<PluginDef, String> {
     let shader = toml::from_str::<toml::Table>(&manifest).ok().and_then(|t| t.get("shader").and_then(|s| s.as_str().map(String::from))).unwrap_or_else(default_shader);
     let source = std::fs::read_to_string(folder.join(&shader)).map_err(|e| format!("can't read the shader {shader}: {e}"))?;
     parse(&manifest, &source, folder)
+}
+
+// ---- Packs ---------------------------------------------------------------------
+
+/// A plugin pack's own details (its pack.toml).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackDef {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Read a pack.toml's text.
+pub fn parse_pack(manifest: &str) -> Result<PackDef, String> {
+    let mut p: PackDef = toml::from_str(manifest).map_err(|e| format!("{PACK_MANIFEST}: {}", e.to_string().trim()))?;
+    p.id = p.id.trim().to_string();
+    p.name = p.name.trim().to_string();
+    if p.id.is_empty() || !p.id.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+        return Err(format!("{PACK_MANIFEST}: id \"{}\" should be letters, digits, dots, dashes or underscores", p.id));
+    }
+    if p.name.is_empty() {
+        return Err(format!("{PACK_MANIFEST}: name is empty"));
+    }
+    Ok(p)
+}
+
+/// Read the pack in `folder` (its pack.toml).
+pub fn load_pack(folder: &Path) -> Result<PackDef, String> {
+    let text = std::fs::read_to_string(folder.join(PACK_MANIFEST)).map_err(|e| format!("can't read {PACK_MANIFEST}: {e}"))?;
+    parse_pack(&text)
 }
 
 // ---- The registry --------------------------------------------------------------
