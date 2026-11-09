@@ -9,7 +9,13 @@
   let view = $state<StartView | null>(null);
   let group = $state("presets");
   let thumbs = $state<Record<string, string>>({});
-  let custom = $state({ w: 1920, h: 1080, rate: "30/1" });
+  let custom = $state({ w: 1920, h: 1080, rate: "30/1", aspect: "1/1" });
+  /// The pixel shape presets start with: "own" (each preset's), or "w/h".
+  let aspect = $state("own");
+  const pair = (s: string): [number, number] => s.split("/").map(Number) as [number, number];
+  /// A preset's pixel shape, as the picker has it.
+  const presetAspect = (p: PresetView): [number, number] => (aspect === "own" ? p.aspect : pair(aspect));
+  const aspectName = (a: [number, number]) => view?.aspects.find(([, w, h]) => w === a[0] && h === a[1])?.[0] ?? `${a[0]}:${a[1]}`;
   const RATES: [string, string][] = [
     ["23.976", "24000/1001"],
     ["24", "24/1"],
@@ -47,7 +53,7 @@
     await run(make());
     app.startOpen = false;
   }
-  const fromPreset = (p: PresetView, rate: [number, number] | null = null) => begin(() => api.startNewPreset(p.id, rate));
+  const fromPreset = (p: PresetView, rate: [number, number] | null = null) => begin(() => api.startNewPreset(p.id, rate, aspect === "own" ? null : pair(aspect)));
 
   // Preset groups folded shut, remembered between sessions (all open to start with).
   const FOLD_KEY = "reelforge.start.folded";
@@ -71,7 +77,7 @@
   const fromTemplate = (path: string) => begin(() => api.startNewTemplate(path));
   function fromCustom() {
     const [num, den] = custom.rate.split("/").map(Number);
-    begin(() => api.startNewCustom(Math.round(custom.w), Math.round(custom.h), num, den));
+    begin(() => api.startNewCustom(Math.round(custom.w), Math.round(custom.h), num, den, pair(custom.aspect)));
   }
   async function openRecent(path: string, exists: boolean) {
     if (!exists) return;
@@ -155,6 +161,16 @@
             <button role="tab" class:on={group === "presets"} aria-selected={group === "presets"} onclick={() => (group = "presets")}>Presets</button>
             <button role="tab" class:on={group === "templates"} aria-selected={group === "templates"} onclick={() => (group = "templates")}>Your templates{#if view.templates.length}<span class="count">{view.templates.length}</span>{/if}</button>
             <button role="tab" class:on={group === "custom"} aria-selected={group === "custom"} onclick={() => (group = "custom")}>Any size</button>
+            {#if group === "presets"}
+              <span class="grow"></span>
+              <label class="par" title="The shape of each pixel. Square for nearly everything made today; DV, HDV, DVCPro HD and anamorphic footage have wider or narrower pixels, shown stretched to their true shape.">
+                Pixel aspect
+                <select bind:value={aspect}>
+                  <option value="own">Each preset's own</option>
+                  {#each view.aspects as [name, w, h]}<option value="{w}/{h}">{name}</option>{/each}
+                </select>
+              </label>
+            {/if}
           </div>
 
           {#if group === "templates"}
@@ -186,9 +202,16 @@
                   {#each RATES as [l, v]}<option value={v}>{l} fps</option>{/each}
                 </select>
               </label>
+              <label
+                >Pixel aspect
+                <select bind:value={custom.aspect}>
+                  {#each view.aspects as [name, w, h]}<option value="{w}/{h}">{name}</option>{/each}
+                </select>
+              </label>
               {#if custom.w >= 16 && custom.h >= 16}
-                {@const [sw, sh] = shape(custom.w, custom.h)}
-                <div class="shape big"><div class="box" style="width:{sw}px;height:{sh}px"></div><span>{ratio(custom.w, custom.h)}</span></div>
+                {@const [pw, ph] = pair(custom.aspect)}
+                {@const [sw, sh] = shape((custom.w * pw) / ph, custom.h)}
+                <div class="shape big" title="The picture's shape on screen"><div class="box" style="width:{sw}px;height:{sh}px"></div><span>{ratio((custom.w * pw) / ph, custom.h)}</span></div>
               {/if}
               <button class="primary" onclick={fromCustom}>Create</button>
             </div>
@@ -204,12 +227,15 @@
                 {#if !folded[g]}
                 <div class="grid" id="presets-{g}">
                   {#each list as p (p.id)}
-                    {@const [sw, sh] = shape(p.width, p.height)}
-                    <div class="card" role="button" tabindex="0" onclick={() => fromPreset(p)} onkeydown={(e) => e.target === e.currentTarget && e.key === "Enter" && fromPreset(p)} title="New {p.name} project ({p.summary})">
-                      <div class="shape"><div class="box" style="width:{sw}px;height:{sh}px"></div><span>{ratio(p.width, p.height)}</span></div>
+                    {@const pa = presetAspect(p)}
+                    {@const dw = (p.width * pa[0]) / pa[1]}
+                    {@const [sw, sh] = shape(dw, p.height)}
+                    {@const changed = pa[0] !== p.aspect[0] || pa[1] !== p.aspect[1]}
+                    <div class="card" role="button" tabindex="0" onclick={() => fromPreset(p)} onkeydown={(e) => e.target === e.currentTarget && e.key === "Enter" && fromPreset(p)} title="New {p.name} project ({p.summary}{changed ? `, with ${aspectName(pa)} pixels` : ""})">
+                      <div class="shape"><div class="box" style="width:{sw}px;height:{sh}px"></div><span>{ratio(dw, p.height)}</span></div>
                       <div class="text">
                         <span class="name">{p.name}</span>
-                        <span class="sum">{p.summary}</span>
+                        <span class="sum">{p.summary}{#if changed}<span class="parnote"> · {aspectName(pa)} pixels</span>{/if}</span>
                         <span class="detail">{p.detail}</span>
                         <span class="rates" role="group" aria-label="Frame rate (fps)" title="Frame rate: click one to start at it">
                           {#each p.rates as [n, d, label]}
@@ -445,6 +471,16 @@
     flex-wrap: wrap;
     align-items: end;
     gap: 12px;
+  }
+  .par {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .parnote {
+    color: var(--accent);
   }
   .custom label {
     display: flex;

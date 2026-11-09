@@ -538,7 +538,12 @@ impl Editor {
     /// A new project whose sequence is `width` × `height` at `rate` (a
     /// preset from the start screen, or sizes typed in).
     pub fn new_project_with(&mut self, width: u32, height: u32, rate: reelforge_core::FrameRate) {
-        self.replace_project(crate::start::project_with(width, height, rate), None);
+        self.new_project_with_aspect(width, height, rate, (1, 1));
+    }
+
+    /// The same, with pixels of shape `aspect` (width, height; see `PIXEL_ASPECTS`).
+    pub fn new_project_with_aspect(&mut self, width: u32, height: u32, rate: reelforge_core::FrameRate, aspect: (u32, u32)) {
+        self.replace_project(crate::start::project_with_aspect(width, height, rate, aspect), None);
         let s = self.seq();
         self.status = format!("New project: {}", crate::start::summary_of(s));
     }
@@ -741,7 +746,7 @@ impl Editor {
         if self.seq().duration() == Time::ZERO {
             if let Some(v) = &media.info.video {
                 let s = &mut self.project.sequences[self.active];
-                (s.width, s.height, s.frame_rate) = (v.width, v.height, v.frame_rate);
+                (s.width, s.height, s.frame_rate, s.pixel_aspect) = (v.width, v.height, v.frame_rate, v.pixel_aspect);
                 self.touch();
             }
         }
@@ -2222,7 +2227,7 @@ impl Editor {
         self.commit_live_edit();
         let Some((_, c)) = self.seq().find_clip(id) else { return };
         let frame = [self.seq().width as f32, self.seq().height as f32];
-        let bounds = self.preview.title_bounds(id);
+        let bounds = self.preview.title_bounds(id, frame[0]);
         let pos = match (place, bounds) {
             ("centre", _) => [0.0, 0.0],
             ("lower_third", Some(b)) => [frame[0] * 0.10 - b[0], frame[1] * 0.85 - b[3]],
@@ -2551,10 +2556,7 @@ impl Editor {
 
     /// The size a clip's masks and tracker are in (its picture, or the frame for a title).
     pub fn layer_size(&self, clip: &Clip) -> [f32; 2] {
-        match self.project.picture_size(clip) {
-            Some([w, h]) => [w as f32, h as f32],
-            None => [self.seq().width as f32, self.seq().height as f32],
-        }
+        self.project.layer_dims(clip, self.seq()).unwrap_or([self.seq().width as f32, self.seq().height as f32])
     }
 
     /// The source time a clip's masks are seen at (the playhead, kept inside the clip).
@@ -2910,8 +2912,7 @@ impl Editor {
     /// Put a new tracker on a footage clip, centred on its picture.
     pub fn add_tracker(&mut self, id: ClipId, mode: TrackMode) {
         let Some((_, c)) = self.seq().find_clip(id) else { return };
-        let Some([w, h]) = self.project.picture_size(c) else { return };
-        let layer = [w as f32, h as f32];
+        let Some(layer) = self.project.layer_dims(c, self.seq()) else { return };
         let src = self.track_time(c);
         self.set_tracker(id, Some(Tracker::new(mode, [layer[0] / 2.0, layer[1] / 2.0], layer, src)), "Add tracker");
         self.status = match mode {

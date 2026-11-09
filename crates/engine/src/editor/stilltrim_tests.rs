@@ -13,7 +13,7 @@ mod tests {
             name: String::new(),
             info: MediaInfo {
                 duration: Time::from_secs_f64(secs),
-                video: Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(25, 1), codec: "png".into(), time_base: Rational::new(1, 25), hdr: None }),
+                video: Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(25, 1), codec: "png".into(), time_base: Rational::new(1, 25), hdr: None, pixel_aspect: (1, 1) }),
                 audio: None,
                 container: String::new(),
             },

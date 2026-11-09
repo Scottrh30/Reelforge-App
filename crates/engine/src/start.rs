@@ -20,6 +20,8 @@ pub struct Preset {
     pub height: u32,
     /// Frames per second, as a fraction.
     pub rate: (u32, u32),
+    /// Its pixels' shape (width, height; 1, 1 square): see `PIXEL_ASPECTS`.
+    pub aspect: (u32, u32),
 }
 
 impl Preset {
@@ -42,8 +44,13 @@ impl Preset {
 
     /// e.g. "1080 × 1920 · 30 fps".
     pub fn summary(&self) -> String {
-        format!("{} × {} · {} fps", self.width, self.height, rate_label(self.frame_rate()))
+        let par = if self.aspect.0 == self.aspect.1 { String::new() } else { format!(" · {}", reelforge_core::project::pixel_aspect_name(self.aspect)) };
+        format!("{} × {} · {} fps{par}", self.width, self.height, rate_label(self.frame_rate()))
     }
+}
+
+fn is_square(a: (u32, u32)) -> bool {
+    a.0 == a.1
 }
 
 /// "30", "29.97", "23.976"…
@@ -58,7 +65,12 @@ pub fn rate_label(r: FrameRate) -> String {
 }
 
 const fn p(id: &'static str, group: &'static str, name: &'static str, detail: &'static str, width: u32, height: u32, rate: (u32, u32)) -> Preset {
-    Preset { id, group, name, detail, width, height, rate }
+    Preset { id, group, name, detail, width, height, rate, aspect: (1, 1) }
+}
+
+/// A preset with non-square pixels.
+const fn pa(id: &'static str, name: &'static str, detail: &'static str, width: u32, height: u32, rate: (u32, u32), aspect: (u32, u32)) -> Preset {
+    Preset { id, group: "Broadcast & anamorphic", name, detail, width, height, rate, aspect }
 }
 
 /// Frame rates every preset also offers.
@@ -85,6 +97,13 @@ pub const PRESETS: &[Preset] = &[
     p("dci-2k", "Cinema", "DCI 2K", "Digital cinema, full container", 2048, 1080, (24, 1)),
     p("dci-4k", "Cinema", "DCI 4K", "Digital cinema, full container", 4096, 2160, (24, 1)),
     p("scope-2k", "Cinema", "DCI 2K Scope", "Digital cinema 2.39:1", 2048, 858, (24, 1)),
+    pa("dv-ntsc", "DV NTSC", "SD 4:3, Americas and Japan", 720, 480, (30000, 1001), (10, 11)),
+    pa("dv-ntsc-wide", "DV NTSC Widescreen", "SD 16:9, Americas and Japan", 720, 480, (30000, 1001), (40, 33)),
+    pa("dv-pal", "DV PAL", "SD 4:3, Europe and Australia", 720, 576, (25, 1), (12, 11)),
+    pa("dv-pal-wide", "DV PAL Widescreen", "SD 16:9, Europe and Australia", 720, 576, (25, 1), (35, 24)),
+    pa("hdv-1080", "HD Anamorphic 1080 (HDV)", "1440 × 1080 shown 16:9", 1440, 1080, (30000, 1001), (4, 3)),
+    pa("dvcpro-hd", "DVCPro HD 1080", "1280 × 1080 shown 16:9", 1280, 1080, (30000, 1001), (3, 2)),
+    pa("anamorphic-2x", "Anamorphic 2:1", "2× lens on a 4:3 sensor, shown 2.67:1", 2880, 2160, (24, 1), (2, 1)),
 ];
 
 pub fn preset(id: &str) -> Option<&'static Preset> {
@@ -94,9 +113,15 @@ pub fn preset(id: &str) -> Option<&'static Preset> {
 /// A new project with one sequence of this size and rate. Sizes are kept
 /// even (video encoders want that) and between 16 and 16384.
 pub fn project_with(width: u32, height: u32, rate: FrameRate) -> Project {
+    project_with_aspect(width, height, rate, (1, 1))
+}
+
+/// The same, with pixels of shape `aspect` (width, height).
+pub fn project_with_aspect(width: u32, height: u32, rate: FrameRate, aspect: (u32, u32)) -> Project {
     let even = |v: u32| (v.clamp(16, 16384) + 1) & !1;
     let mut p = Project::new();
-    p.sequences = vec![Sequence::new("Sequence 1", even(width), even(height), rate)];
+    let aspect = if aspect.0 == 0 || aspect.1 == 0 { (1, 1) } else { aspect };
+    p.sequences = vec![Sequence { pixel_aspect: aspect, ..Sequence::new("Sequence 1", even(width), even(height), rate) }];
     p
 }
 
@@ -189,7 +214,8 @@ pub struct UserTemplate {
 
 /// A sequence's size and rate, for lists.
 pub fn summary_of(s: &Sequence) -> String {
-    format!("{} × {} · {} fps", s.width, s.height, rate_label(s.frame_rate))
+    let par = if is_square(s.pixel_aspect) { String::new() } else { format!(" · {}", reelforge_core::project::pixel_aspect_name(s.pixel_aspect)) };
+    format!("{} × {} · {} fps{par}", s.width, s.height, rate_label(s.frame_rate))
 }
 
 /// The templates in `dir`, by name.
@@ -232,7 +258,7 @@ mod tests {
         for p in PRESETS {
             assert!(ids.insert(p.id), "{} twice", p.id);
             assert!(p.width % 2 == 0 && p.height % 2 == 0, "{}: even sizes", p.id);
-            assert!(["Social", "Web & TV", "Cinema"].contains(&p.group));
+            assert!(["Social", "Web & TV", "Cinema", "Broadcast & anamorphic"].contains(&p.group));
         }
         let v = preset("vertical-30").unwrap();
         assert_eq!((v.width, v.height, v.summary()), (1080, 1920, "1080 × 1920 · 30 fps".to_string()));
@@ -267,6 +293,21 @@ mod tests {
         // Odd or silly sizes are made usable.
         let p = project_with(1081, 3, FrameRate::new(25, 1));
         assert_eq!((p.sequences[0].width, p.sequences[0].height), (1082, 16));
+        assert_eq!(p.sequences[0].pixel_aspect, (1, 1));
+    }
+
+    #[test]
+    fn every_pixel_aspect_has_a_preset() {
+        use reelforge_core::project::PIXEL_ASPECTS;
+        for (name, w, h) in PIXEL_ASPECTS {
+            assert!(PRESETS.iter().any(|p| p.aspect == (w, h)), "no preset with {name} pixels");
+        }
+        let dv = preset("dv-ntsc").unwrap();
+        assert_eq!((dv.width, dv.height, dv.aspect), (720, 480, (10, 11)));
+        assert!(dv.summary().contains("DV NTSC"), "{}", dv.summary());
+        let p = project_with_aspect(1440, 1080, FrameRate::new(30000, 1001), (4, 3));
+        assert_eq!(p.sequences[0].display_width(), 1920);
+        assert_eq!(project_with_aspect(720, 576, FrameRate::new(25, 1), (0, 1)).sequences[0].pixel_aspect, (1, 1));
     }
 
     #[test]

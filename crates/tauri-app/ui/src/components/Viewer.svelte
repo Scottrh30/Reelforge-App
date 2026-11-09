@@ -59,7 +59,7 @@
   // zoomed-in view stays sharp.
   $effect(() => {
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(64, Math.round(Math.min(fit.w, fit.W * 1.0001) * dpr));
+    const w = Math.max(64, Math.round(Math.min(fit.w / fit.par, fit.W * 1.0001) * dpr));
     const h = Math.max(36, Math.round(Math.min(fit.h, fit.H * 1.0001) * dpr));
     if (w !== Math.round(viewer.width) || h !== Math.round(viewer.height)) {
       viewer.width = w;
@@ -77,14 +77,18 @@
   const fit = $derived.by(() => {
     const W = app.s?.seq.width ?? 1920;
     const H = app.s?.seq.height ?? 1080;
-    const k0 = Math.min(boxSize.w / W, boxSize.h / H);
+    // Wide or narrow pixels (DV, anamorphic) are shown at their true shape:
+    // k is frame pixels → screen pixels down, kx across.
+    const par = app.s?.seq.par || 1;
+    const k0 = Math.min(boxSize.w / (W * par), boxSize.h / H);
     const k = k0 * zoom;
-    return { k, k0, x: (boxSize.w - W * k) / 2 + pan.x, y: (boxSize.h - H * k) / 2 + pan.y, w: W * k, h: H * k, W, H };
+    const kx = k * par;
+    return { k, kx, par, k0, x: (boxSize.w - W * kx) / 2 + pan.x, y: (boxSize.h - H * k) / 2 + pan.y, w: W * kx, h: H * k, W, H };
   });
 
   /// Keep part of the picture in view however far it's dragged.
   function clampPan(p: { x: number; y: number }, k: number) {
-    const W = fit.W * k;
+    const W = fit.W * k * fit.par;
     const H = fit.H * k;
     const mx = (boxSize.w + W) / 2 - 60;
     const my = (boxSize.h + H) / 2 - 60;
@@ -96,12 +100,12 @@
     const kMin = fit.k0 * 0.1;
     const kMax = 32;
     const nk = Math.max(kMin, Math.min(kMax, k));
-    const fx = (sx - fit.x) / fit.k;
+    const fx = (sx - fit.x) / fit.kx;
     const fy = (sy - fit.y) / fit.k;
-    const nx = sx - fx * nk;
+    const nx = sx - fx * nk * fit.par;
     const ny = sy - fy * nk;
     zoom = nk / fit.k0;
-    pan = clampPan({ x: nx - (boxSize.w - fit.W * nk) / 2, y: ny - (boxSize.h - fit.H * nk) / 2 }, nk);
+    pan = clampPan({ x: nx - (boxSize.w - fit.W * nk * fit.par) / 2, y: ny - (boxSize.h - fit.H * nk) / 2 }, nk);
   }
 
   function fitView() {
@@ -190,8 +194,8 @@
     const move = (ev: PointerEvent) => {
       if (failed) return;
       // Orbit and dolly by screen distance; pan so the picture follows the pointer.
-      const k = tool === "pan" ? fit.k : 1;
-      const d: Pt = [(ev.clientX - x0) / k, (ev.clientY - y0) / k];
+      const [kx, k] = tool === "pan" ? [fit.kx, fit.k] : [1, 1];
+      const d: Pt = [(ev.clientX - x0) / kx, (ev.clientY - y0) / k];
       const start = first;
       first = false;
       pump.push(() =>
@@ -266,10 +270,10 @@
     if ((app.activeMask && app.activeMask.clip === ins.id) || (app.drawing && app.drawing.clip === ins.id) || (app.maskTool && ins.masks.length)) return null;
     return g;
   });
-  const toBox = (p: Pt): Pt => [fit.x + p[0] * fit.k, fit.y + p[1] * fit.k];
+  const toBox = (p: Pt): Pt => [fit.x + p[0] * fit.kx, fit.y + p[1] * fit.k];
   const ptsAttr = (list: Pt[]) => list.map((p) => toBox(p).join(",")).join(" ");
   const dist = (a: Pt, b: Pt) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-  const small = $derived(!!giz && (dist(giz.corners[0], giz.corners[1]) * fit.k < 32 || dist(giz.corners[1], giz.corners[2]) * fit.k < 32));
+  const small = $derived(!!giz && (dist(giz.corners[0], giz.corners[1]) * Math.min(fit.k, fit.kx) < 32 || dist(giz.corners[1], giz.corners[2]) * Math.min(fit.k, fit.kx) < 32));
   const stemTip = $derived.by((): Pt | null => {
     if (!giz) return null;
     const [bx, by] = toBox(giz.stem_base);
@@ -290,7 +294,7 @@
   /// Client pixels → frame pixels.
   function framePt(e: PointerEvent): Pt {
     const r = box!.getBoundingClientRect();
-    return [(e.clientX - r.left - fit.x) / fit.k, (e.clientY - r.top - fit.y) / fit.k];
+    return [(e.clientX - r.left - fit.x) / fit.kx, (e.clientY - r.top - fit.y) / fit.k];
   }
 
   // Hovering: the handle under the pointer sets the cursor and tooltip.
@@ -432,7 +436,7 @@
 <div class="viewer">
   <div class="head">
     <span class="name">{app.s?.seq.name ?? ""}</span>
-    <span class="muted">{app.s ? `${app.s.seq.width}×${app.s.seq.height} · ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</span>
+    <span class="muted">{app.s ? `${app.s.seq.width}×${app.s.seq.height}${app.s.seq.par !== 1 ? ` · ${app.s.seq.par_name} pixels` : ""} · ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</span>
     <span class="grow"></span>
     {#if app.live?.from_cache}<span class="rendered" title="Shown from Render preview">Rendered</span>{/if}
     {#if app.showFps && perf && (perf.label || playing)}<span
@@ -565,7 +569,7 @@
         {/if}
       </svg>
     {/if}
-    {#each guides.xs as gx}<div class="guide v" style="left:{fit.x + gx * fit.k}px; top:{fit.y}px; height:{fit.h}px"></div>{/each}
+    {#each guides.xs as gx}<div class="guide v" style="left:{fit.x + gx * fit.kx}px; top:{fit.y}px; height:{fit.h}px"></div>{/each}
     {#each guides.ys as gy}<div class="guide h" style="top:{fit.y + gy * fit.k}px; left:{fit.x}px; width:{fit.w}px"></div>{/each}
     {#if readout?.text}<div class="readout" style="left:{readout.x + 16}px; top:{readout.y + 16}px">{readout.text}</div>{/if}
     <ViewerOverlay {fit} {box} />

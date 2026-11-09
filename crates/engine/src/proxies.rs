@@ -232,7 +232,7 @@ mod tests {
         let mut p = Project::new();
         let info = MediaInfo {
             duration: Time::from_secs_f64(1.0),
-            video: Some(VideoStreamInfo { width: 3840, height: 2160, frame_rate: FrameRate::new(25, 1), codec: "h264".into(), time_base: Rational::new(1, 25), hdr: None }),
+            video: Some(VideoStreamInfo { width: 3840, height: 2160, frame_rate: FrameRate::new(25, 1), codec: "h264".into(), time_base: Rational::new(1, 25), hdr: None, pixel_aspect: (1, 1) }),
             audio: None,
             container: String::new(),
         };

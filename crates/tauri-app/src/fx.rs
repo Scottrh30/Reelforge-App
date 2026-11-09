@@ -424,7 +424,7 @@ pub fn effect_key_pick(id: u64, index: usize, a: [f32; 2], b: [f32; 2]) -> Res<S
         let fx = c.effects.get(index).filter(|f| f.kind == EffectKind::ChromaKey)?;
         let (src, _) = effect_time(e, c);
         let m = e.project.media(c.media)?;
-        let size = e.project.picture_size(c)?;
+        let size = e.project.layer_dims(c, e.seq())?;
         Some((m.path.clone(), e.track_time(c), size, fx.value_at(1, src), fx.value_at(2, src)))
     })?
     .ok_or("The eyedropper picks from a video or picture clip's own footage")?;
@@ -432,7 +432,7 @@ pub fn effect_key_pick(id: u64, index: usize, a: [f32; 2], b: [f32; 2]) -> Res<S
     let f = src.frame_at_blocking(at, std::time::Duration::from_secs(10)).ok_or("Couldn't read the frame at the playhead")?;
     let rgba = f.pixels.to_rgba();
     // Layer pixels → the frame's (a proxy may be smaller).
-    let (sx, sy) = (f.width as f32 / layer[0].max(1) as f32, f.height as f32 / layer[1].max(1) as f32);
+    let (sx, sy) = (f.width as f32 / layer[0].max(1.0), f.height as f32 / layer[1].max(1.0));
     let small = (a[0] - b[0]).abs() < 3.0 && (a[1] - b[1]).abs() < 3.0;
     let r = if small { 4.0 } else { 0.0 };
     let clampx = |v: f32| (v * sx).round().clamp(0.0, f.width as f32 - 1.0) as u32;

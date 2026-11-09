@@ -839,7 +839,7 @@ pub fn make_composite(p: &mut Project, seq: usize, ids: &[ClipId], name: String)
     let end = clips.iter().map(|(_, c)| c.timeline_end()).max().unwrap();
 
     // The new sequence: same format, one track per track that had a selected clip.
-    let mut comp = Sequence { tracks: Vec::new(), in_point: None, out_point: None, ..Sequence::new(name, s.width, s.height, s.frame_rate) };
+    let mut comp = Sequence { tracks: Vec::new(), in_point: None, out_point: None, pixel_aspect: s.pixel_aspect, ..Sequence::new(name, s.width, s.height, s.frame_rate) };
     let mut track_map = Vec::new(); // outer track -> inner track
     for (ti, tr) in s.tracks.iter().enumerate() {
         if clips.iter().any(|(t, _)| *t == ti) {
@@ -1691,7 +1691,7 @@ mod tests {
             name: String::new(),
             info: MediaInfo {
                 duration: Time::from_secs_f64(secs),
-                video: Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: "h264".into(), time_base: Rational::new(1, 30), hdr: None }),
+                video: Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: "h264".into(), time_base: Rational::new(1, 30), hdr: None, pixel_aspect: (1, 1) }),
                 audio: None,
                 container: String::new(),
             },
@@ -2023,7 +2023,7 @@ mod composite_tests {
             name: name.into(),
             info: MediaInfo {
                 duration: s(dur),
-                video: video.map(|(width, height, frame_rate)| VideoStreamInfo { width, height, frame_rate, codec: "h264".into(), time_base: crate::time::Rational::new(1, 90000), hdr: None }),
+                video: video.map(|(width, height, frame_rate)| VideoStreamInfo { width, height, frame_rate, codec: "h264".into(), time_base: crate::time::Rational::new(1, 90000), hdr: None, pixel_aspect: (1, 1) }),
                 audio: audio.then(|| AudioStreamInfo { sample_rate: 48000, channels: 2, codec: "aac".into() }),
                 container: String::new(),
             },

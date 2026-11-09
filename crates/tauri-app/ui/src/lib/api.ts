@@ -153,6 +153,9 @@ export interface SeqView {
   height: number;
   rate_num: number;
   rate_den: number;
+  /// Its pixels' width ÷ height (1: square), and their name.
+  par: number;
+  par_name: string;
   frame: Ticks;
   duration: Ticks;
   in_point: Ticks | null;
@@ -712,6 +715,8 @@ export interface PresetView {
   rates: [number, number, string][];
   /// Its own rate (what clicking the card uses).
   rate: [number, number];
+  /// Its own pixel shape [width, height] ([1, 1]: square).
+  aspect: [number, number];
 }
 
 export interface RecentView {
@@ -735,6 +740,8 @@ export interface UserTemplate {
 
 export interface StartView {
   presets: PresetView[];
+  /// Every pixel shape a new project can have: [name, width, height].
+  aspects: [string, number, number][];
   recent: RecentView[];
   templates: UserTemplate[];
   templates_dir: string;
@@ -1159,8 +1166,8 @@ export const api = {
   ofxGpu: (on: boolean) => invoke<string>("ofx_gpu", { on }),
   startView: () => invoke<StartView>("start_view"),
   startAtLaunch: () => invoke<boolean>("start_at_launch"),
-  startNewPreset: (id: string, rate: [number, number] | null = null) => invoke("start_new_preset", { id, rate }),
-  startNewCustom: (width: number, height: number, num: number, den: number) => invoke("start_new_custom", { width, height, num, den }),
+  startNewPreset: (id: string, rate: [number, number] | null = null, aspect: [number, number] | null = null) => invoke("start_new_preset", { id, rate, aspect }),
+  startNewCustom: (width: number, height: number, num: number, den: number, aspect: [number, number] | null = null) => invoke("start_new_custom", { width, height, num, den, aspect }),
   startNewTemplate: (path: string) => invoke("start_new_template", { path }),
   startOpenRecent: (path: string) => invoke<boolean>("start_open_recent", { path }),
   startForget: (path: string | null) => invoke("start_forget", { path }),

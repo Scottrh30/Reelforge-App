@@ -425,6 +425,11 @@ pub struct WriterSettings {
     /// Keep the frames' alpha (a transparent background), for codecs that can
     /// ([`VideoCodec::supports_alpha`]); otherwise ignored.
     pub alpha: bool,
+    /// The shape of the input frames' pixels (width, height; 1, 1 square).
+    /// Written at the same size, the file keeps them (players stretch it as
+    /// it should be shown); resized, it's made of square pixels, fitted as
+    /// it's shown.
+    pub pixel_aspect: (u32, u32),
 }
 
 /// How a picture goes into a frame of a different shape.
@@ -460,8 +465,9 @@ struct Canvas {
     y: i32,
 }
 
-fn canvas(fit: Fit, iw: u32, ih: u32, w: u32, h: u32) -> Option<Canvas> {
-    let (in_aspect, out_aspect) = (iw as f64 / ih.max(1) as f64, w as f64 / h.max(1) as f64);
+fn canvas(fit: Fit, iw: u32, ih: u32, w: u32, h: u32, par: f64) -> Option<Canvas> {
+    // The input as it's shown (its pixels may not be square).
+    let (in_aspect, out_aspect) = (iw as f64 * par / ih.max(1) as f64, w as f64 / h.max(1) as f64);
     // Leave it alone when the shapes differ by less than half a percent.
     if fit == Fit::Stretch || (in_aspect / out_aspect - 1.0).abs() <= 0.005 {
         return None;
@@ -469,10 +475,10 @@ fn canvas(fit: Fit, iw: u32, ih: u32, w: u32, h: u32) -> Option<Canvas> {
     // Letterbox grows the canvas around the input; crop shrinks it inside.
     let wider = (out_aspect > in_aspect) == (fit == Fit::Letterbox);
     let c = if wider {
-        let cw = (((ih as f64 * out_aspect).round() as u32 + 1) & !1).max(2);
+        let cw = (((ih as f64 * out_aspect / par).round() as u32 + 1) & !1).max(2);
         Canvas { w: cw, h: ih, x: (cw as i32 - iw as i32) / 2, y: 0 }
     } else {
-        let ch = (((iw as f64 / out_aspect).round() as u32 + 1) & !1).max(2);
+        let ch = (((iw as f64 * par / out_aspect).round() as u32 + 1) & !1).max(2);
         Canvas { w: iw, h: ch, x: 0, y: (ch as i32 - ih as i32) / 2 }
     };
     Some(c)
@@ -494,6 +500,7 @@ impl Default for WriterSettings {
             color: ColorOut::Sdr8,
             bitrate_kbps: None,
             alpha: false,
+            pixel_aspect: (1, 1),
         }
     }
 }
@@ -601,6 +608,14 @@ impl MovieWriter {
                     let mut st = octx.add_stream(codec)?;
                     st.set_parameters(&encoder);
                     st.set_time_base(encoder.time_base());
+                    // The pixels' shape on the stream too (MP4 and MOV write it as `pasp`).
+                    // SAFETY: a plain field of the stream just added, before the header is written.
+                    unsafe {
+                        let sar = (*encoder.as_ptr()).sample_aspect_ratio;
+                        if sar.num > 0 && sar.den > 0 {
+                            (*st.as_mut_ptr()).sample_aspect_ratio = sar;
+                        }
+                    }
                     // MXF needs the frame rate on the stream itself.
                     let fps = ff::Rational::new(s.frame_rate.0.num as i32, s.frame_rate.0.den as i32);
                     st.set_rate(fps);
@@ -614,7 +629,10 @@ impl MovieWriter {
                 let yuv = !is_rgb(pix);
                 let range = if pix == ff::format::Pixel::YUVJ420P { Range::JPEG } else { Range::MPEG };
                 let [iw, ih] = s.input_size.unwrap_or([s.width, s.height]);
-                let pad = canvas(s.fit, iw, ih, w, h);
+                let (pn, pd) = if s.pixel_aspect.0 == 0 || s.pixel_aspect.1 == 0 { (1, 1) } else { s.pixel_aspect };
+                // The same size: the pixels keep their shape (written into the file); resized: square.
+                let same = (iw, ih) == (w, h) || s.input_size.is_none();
+                let pad = canvas(s.fit, iw, ih, w, h, if same { 1.0 } else { pn as f64 / pd as f64 });
                 let (sw, sh) = pad.map_or((iw, ih), |c| (c.w, c.h));
                 let deep = s.wants_deep();
                 let color = s.effective_color();
@@ -1029,6 +1047,11 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
         let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().video()?;
         enc.set_width(w);
         enc.set_height(h);
+        // Non-square pixels kept (an export at the sequence's own size): written into the file.
+        let (pn, pd) = s.pixel_aspect;
+        if pn != pd && pn > 0 && pd > 0 && s.input_size.is_none_or(|[iw, ih]| (iw, ih) == (w, h)) {
+            enc.set_aspect_ratio(ff::Rational::new(pn as i32, pd as i32));
+        }
         enc.set_format(pix);
         enc.set_time_base(tb);
         enc.set_frame_rate(Some(fps));
@@ -1251,17 +1274,23 @@ mod fit_tests {
     #[test]
     fn canvases_for_each_fit() {
         // 16:9 into 9:16.
-        let lb = canvas(Fit::Letterbox, 1920, 1080, 1080, 1920).unwrap();
+        let lb = canvas(Fit::Letterbox, 1920, 1080, 1080, 1920, 1.0).unwrap();
         assert_eq!((lb.w, lb.h, lb.x, lb.y), (1920, 3414, 0, 1167));
-        let cr = canvas(Fit::Crop, 1920, 1080, 1080, 1920).unwrap();
+        let cr = canvas(Fit::Crop, 1920, 1080, 1080, 1920, 1.0).unwrap();
         assert_eq!((cr.w, cr.h, cr.x, cr.y), (608, 1080, -656, 0));
-        assert_eq!(canvas(Fit::Stretch, 1920, 1080, 1080, 1920), None);
-        assert_eq!(canvas(Fit::Crop, 1920, 1080, 1280, 720), None, "same shape");
+        assert_eq!(canvas(Fit::Stretch, 1920, 1080, 1080, 1920, 1.0), None);
+        assert_eq!(canvas(Fit::Crop, 1920, 1080, 1280, 720, 1.0), None, "same shape");
         // 4:3 into 16:9: bars at the sides, or crop top and bottom.
-        let lb = canvas(Fit::Letterbox, 640, 480, 1920, 1080).unwrap();
+        let lb = canvas(Fit::Letterbox, 640, 480, 1920, 1080, 1.0).unwrap();
         assert_eq!((lb.w, lb.h, lb.x, lb.y), (854, 480, 107, 0));
-        let cr = canvas(Fit::Crop, 640, 480, 1920, 1080).unwrap();
+        let cr = canvas(Fit::Crop, 640, 480, 1920, 1080, 1.0).unwrap();
         assert_eq!((cr.w, cr.h, cr.x, cr.y), (640, 360, 0, -60));
+        // DV NTSC (720 × 480 of 10:11 pixels, shown about 4:3) into square 16:9: bars at the sides.
+        let lb = canvas(Fit::Letterbox, 720, 480, 1920, 1080, 10.0 / 11.0).unwrap();
+        assert_eq!((lb.w, lb.h), (940, 480));
+        // 2:1 anamorphic 1440 × 1080 (shown 2.67:1) into 16:9: bars above and below.
+        let lb = canvas(Fit::Letterbox, 1440, 1080, 1920, 1080, 2.0).unwrap();
+        assert_eq!((lb.w, lb.h), (1440, 1620));
     }
 }
 

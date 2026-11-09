@@ -425,7 +425,7 @@ mod tests {
             name: String::new(),
             info: MediaInfo {
                 duration: s(secs),
-                video: Some(VideoStreamInfo { width: 8, height: 8, frame_rate: FrameRate::new(30, 1), codec: String::new(), time_base: Rational::new(1, 30), hdr: None }),
+                video: Some(VideoStreamInfo { width: 8, height: 8, frame_rate: FrameRate::new(30, 1), codec: String::new(), time_base: Rational::new(1, 30), hdr: None, pixel_aspect: (1, 1) }),
                 audio: None,
                 container: String::new(),
             },

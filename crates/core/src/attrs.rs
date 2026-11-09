@@ -111,7 +111,7 @@ pub fn paste_attributes(p: &Project, seq: usize, cb: &Clipboard, targets: &[Clip
     let s = &p.sequences[seq];
     let frame = [s.width as f32, s.height as f32];
     // A layer's own pixel size (masks are in it): its picture, or the frame for titles.
-    let size = |c: &Clip| p.picture_size(c).map(|[w, h]| [w as f32, h as f32]).unwrap_or(frame);
+    let size = |c: &Clip| p.layer_dims(c, s).unwrap_or(frame);
     let mut cmds: Vec<Box<dyn Command>> = Vec::new();
     let mut changed = 0;
     let mut locked = 0;

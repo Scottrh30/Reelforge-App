@@ -41,6 +41,10 @@ pub struct VideoStreamInfo {
     /// HDR footage: "PQ" (HDR10) or "HLG"; `None` for SDR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hdr: Option<String>,
+    /// The shape of its pixels (width, height): (1, 1) square; DV, HDV and
+    /// anamorphic footage have wider or narrower ones, as the file says.
+    #[serde(default = "square", skip_serializing_if = "is_square")]
+    pub pixel_aspect: (u32, u32),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -656,6 +660,38 @@ pub struct Sequence {
     /// clips that play it (see [`crate::template`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub controls: Vec<crate::template::Control>,
+    /// The shape of its pixels, width ÷ height as a fraction (1/1 square;
+    /// 10/11 DV NTSC, 4/3 HD anamorphic…): the frame is shown and exported
+    /// stretched by it, and square-pixel footage, titles and compositions
+    /// in it are squeezed to match, so they look right (see [`PIXEL_ASPECTS`]).
+    #[serde(default = "square", skip_serializing_if = "is_square")]
+    pub pixel_aspect: (u32, u32),
+}
+
+fn square() -> (u32, u32) {
+    (1, 1)
+}
+fn is_square(a: &(u32, u32)) -> bool {
+    a.0 == a.1
+}
+
+/// The pixel aspect ratios a sequence can have: name, width, height (as in
+/// HitFilm's project settings).
+pub const PIXEL_ASPECTS: [(&str, u32, u32); 8] = [
+    ("Square Pixels (1.0)", 1, 1),
+    ("DV NTSC (0.91)", 10, 11),
+    ("DV NTSC Wide (1.21)", 40, 33),
+    ("DV PAL (1.09)", 12, 11),
+    ("DV PAL Wide (1.46)", 35, 24),
+    ("HD Anamorphic 1080 (1.33)", 4, 3),
+    ("DVCPro HD (1.5)", 3, 2),
+    ("Anamorphic 2:1 (2.0)", 2, 1),
+];
+
+/// The name of a pixel aspect (its own numbers if it isn't one of [`PIXEL_ASPECTS`]).
+pub fn pixel_aspect_name(a: (u32, u32)) -> String {
+    let v = a.0 as f64 / a.1.max(1) as f64;
+    PIXEL_ASPECTS.iter().find(|p| (p.1 as f64 / p.2 as f64 - v).abs() < 1e-6).map_or_else(|| format!("{v:.2}"), |p| p.0.to_string())
 }
 
 /// A named point on the timeline (M adds one at the playhead).
@@ -692,6 +728,20 @@ impl MarkerColor {
 }
 
 impl Sequence {
+    /// Its pixels' width ÷ height (1 for square pixels).
+    pub fn par(&self) -> f32 {
+        if self.pixel_aspect.0 == 0 || self.pixel_aspect.1 == 0 {
+            1.0
+        } else {
+            self.pixel_aspect.0 as f32 / self.pixel_aspect.1 as f32
+        }
+    }
+
+    /// The frame as it's shown: as wide as its pixels make it.
+    pub fn display_width(&self) -> u32 {
+        ((self.width as f32 * self.par()).round() as u32).max(1)
+    }
+
     pub fn new(name: impl Into<String>, width: u32, height: u32, frame_rate: FrameRate) -> Self {
         Self {
             name: name.into(),
@@ -709,6 +759,7 @@ impl Sequence {
             multicam: false,
             magnetic: false,
             controls: Vec::new(),
+            pixel_aspect: (1, 1),
         }
     }
 
@@ -917,6 +968,26 @@ impl Project {
 
     /// A video layer's native size: the media's, or the composition's frame.
     /// (Titles are drawn on a canvas the size of the frame they're in.)
+    /// A clip's layer size in sequence `in_seq`'s pixels: its picture's size,
+    /// squeezed or stretched across by the pixel shapes (square-pixel footage
+    /// in a sequence with wide pixels takes fewer of them). `None` for a title
+    /// (its layer is the frame).
+    pub fn layer_dims(&self, c: &Clip, in_seq: &Sequence) -> Option<[f32; 2]> {
+        let [w, h] = self.picture_size(c)?;
+        let k = if c.plane.is_some() || c.adjustment { 1.0 } else { self.own_par(c) / in_seq.par() };
+        Some([w as f32 * k, h as f32])
+    }
+
+    /// The width ÷ height of a clip's own pixels: its footage's (as the file
+    /// says), its composition's, or 1 (square) for anything else.
+    pub fn own_par(&self, c: &Clip) -> f32 {
+        match c.nested {
+            Some(s) => self.sequences.get(s).map_or(1.0, |s| s.par()),
+            None if c.title.is_some() || c.plane.is_some() || c.adjustment => 1.0,
+            None => self.media(c.media).and_then(|m| m.info.video.as_ref()).map_or(1.0, |v| v.pixel_aspect.0 as f32 / v.pixel_aspect.1.max(1) as f32),
+        }
+    }
+
     pub fn picture_size(&self, c: &Clip) -> Option<[u32; 2]> {
         if c.plane.is_some() || c.adjustment {
             // As big as the frame of the sequence it's in.
@@ -1196,10 +1267,42 @@ mod crossfade_tests {
     }
 
     #[test]
+    fn layers_take_as_many_pixels_as_their_pixels_show_wide() {
+        let mut p = Project::new();
+        let mut m = media(1, 10.0);
+        m.info.video = Some(VideoStreamInfo { width: 640, height: 360, frame_rate: FrameRate::new(30, 1), codec: String::new(), time_base: Rational::new(1, 30), hdr: None, pixel_aspect: (1, 1) });
+        p.media.push(m.clone());
+        m.id = MediaId(2);
+        m.info.video.as_mut().unwrap().pixel_aspect = (10, 11);
+        p.media.push(m);
+        let square = Clip::new(ClipId(10), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);
+        let dv = Clip::new(ClipId(11), MediaId(2), secs(0.0), secs(0.0), secs(4.0), None);
+        // In a square-pixel sequence: square footage as it is; DV footage narrower.
+        let sq = Sequence::new("Square", 1920, 1080, FrameRate::new(30, 1));
+        assert_eq!(p.layer_dims(&square, &sq), Some([640.0, 360.0]));
+        assert!((p.layer_dims(&dv, &sq).unwrap()[0] - 581.818).abs() < 0.01);
+        // In a DV NTSC sequence: DV footage as it is; square footage 1.1× as many pixels across.
+        let ntsc = Sequence { pixel_aspect: (10, 11), ..Sequence::new("DV", 720, 480, FrameRate::new(30000, 1001)) };
+        assert!((ntsc.par() - 0.90909).abs() < 1e-4);
+        assert_eq!(ntsc.display_width(), 655);
+        assert!((p.layer_dims(&dv, &ntsc).unwrap()[0] - 640.0).abs() < 1e-3);
+        assert!((p.layer_dims(&square, &ntsc).unwrap()[0] - 704.0).abs() < 1e-3);
+        assert_eq!(pixel_aspect_name((10, 11)), "DV NTSC (0.91)");
+        assert_eq!(pixel_aspect_name((20, 22)), "DV NTSC (0.91)");
+        // Saved only when it isn't square; old projects open square.
+        let j = serde_json::to_string(&sq).unwrap();
+        assert!(!j.contains("pixel_aspect"));
+        let back: Sequence = serde_json::from_str(&serde_json::to_string(&ntsc).unwrap()).unwrap();
+        assert_eq!(back.pixel_aspect, (10, 11));
+        let old: Sequence = serde_json::from_str(&j).unwrap();
+        assert_eq!(old.pixel_aspect, (1, 1));
+    }
+
+    #[test]
     fn video_layers_dissolve_between_adjacent_clips() {
         let mut p = Project::new();
         let mut m = media(1, 10.0);
-        m.info.video = Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: String::new(), time_base: Rational::new(1, 30), hdr: None });
+        m.info.video = Some(VideoStreamInfo { width: 64, height: 64, frame_rate: FrameRate::new(30, 1), codec: String::new(), time_base: Rational::new(1, 30), hdr: None, pixel_aspect: (1, 1) });
         p.media.push(m);
         // A: source 0–4 at 0–4. B: source 5–9 at 4–8, 1 s dissolve (both have spare media).
         let mut a = Clip::new(ClipId(10), MediaId(1), secs(0.0), secs(0.0), secs(4.0), None);

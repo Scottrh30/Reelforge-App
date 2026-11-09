@@ -9,7 +9,7 @@
   import { livePump } from "../lib/live";
   import { openMenu } from "../lib/menu.svelte";
 
-  let { fit, box }: { fit: { k: number; x: number; y: number }; box: HTMLElement | undefined } = $props();
+  let { fit, box }: { fit: { k: number; kx: number; x: number; y: number }; box: HTMLElement | undefined } = $props();
 
   const MASK = "#ff6ec8";
   const POINT_COLOURS = ["#50dcff", "#ffd246", "#ff6ec8", "#78f078"];
@@ -35,7 +35,7 @@
   /// Layer pixels → box pixels.
   function toBox(p: Pt): Pt {
     const [fx, fy] = layerToFrame(map!, size, p);
-    return [fit.x + fx * fit.k, fit.y + fy * fit.k];
+    return [fit.x + fx * fit.kx, fit.y + fy * fit.k];
   }
   /// A pointer position (client pixels) → box pixels.
   function toBoxPt(e: PointerEvent | MouseEvent): Pt {
@@ -45,7 +45,7 @@
   /// A pointer position (client pixels) → layer pixels.
   function toLayer(e: PointerEvent | MouseEvent): Pt {
     const r = box!.getBoundingClientRect();
-    return frameToLayer(inv!, size, [(e.clientX - r.left - fit.x) / fit.k, (e.clientY - r.top - fit.y) / fit.k]);
+    return frameToLayer(inv!, size, [(e.clientX - r.left - fit.x) / fit.kx, (e.clientY - r.top - fit.y) / fit.k]);
   }
   const pts = (list: Pt[]) => list.map((p) => toBox(p).join(",")).join(" ");
   const square = (c: Pt, r: number): Pt[] => [
@@ -361,7 +361,7 @@
   $effect(() => {
     if (app.camSel && (!ins || app.camSel.clip !== ins.id || !ins.cam_track || app.camSel.points.some((p) => p >= ins.cam_track!.point_count))) app.camSel = null;
   });
-  const fbox = (p: Pt): Pt => [fit.x + p[0] * fit.k, fit.y + p[1] * fit.k];
+  const fbox = (p: Pt): Pt => [fit.x + p[0] * fit.kx, fit.y + p[1] * fit.k];
   /// Green fits well, yellow fairly, orange poorly.
   const fitColour = (e: number) => (e < 0.6 ? "#5ef08a" : e < 1.5 ? "#ffd246" : "#ff8a3d");
   function camPick(e: PointerEvent, k: number) {
@@ -582,7 +582,7 @@
     const pump = livePump();
     let first = true;
     const move = (ev: PointerEvent) => {
-      const d: Pt = [(ev.clientX - sx) / fit.k, (ev.clientY - sy) / fit.k];
+      const d: Pt = [(ev.clientX - sx) / fit.kx, (ev.clientY - sy) / fit.k];
       const start = first;
       first = false;
       pump.push(() => api.scenePointDrag(id, which, d, start));
@@ -771,7 +771,7 @@
 
 {#if ins?.parent_link}
   <!-- The selected layer's link to the point it follows. -->
-  {@const [a, b] = ins.parent_link.map((p) => [fit.x + p[0] * fit.k, fit.y + p[1] * fit.k])}
+  {@const [a, b] = ins.parent_link.map((p) => [fit.x + p[0] * fit.kx, fit.y + p[1] * fit.k])}
   <svg class="overlay" aria-hidden="true">
     <line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} class="plink" />
     <circle cx={a[0]} cy={a[1]} r="3" class="plinkend" />
@@ -782,11 +782,11 @@
 {#if ins && ins.scene_points.length}
   <svg class="overlay" aria-hidden="true">
     {#if ins.scene_points.length === 2}
-      {@const [a, b] = ins.scene_points.map((p) => [fit.x + p.at[0] * fit.k, fit.y + p.at[1] * fit.k])}
+      {@const [a, b] = ins.scene_points.map((p) => [fit.x + p.at[0] * fit.kx, fit.y + p.at[1] * fit.k])}
       <line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} class="bladeaxis" />
     {/if}
     {#each ins.scene_points as p}
-      {@const x = fit.x + p.at[0] * fit.k}
+      {@const x = fit.x + p.at[0] * fit.kx}
       {@const y = fit.y + p.at[1] * fit.k}
       {#if p.which === "position" && ins.kind === "point"}
         <!-- A point: crosshairs in a ring. -->

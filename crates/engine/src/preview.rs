@@ -197,8 +197,12 @@ impl Preview {
 
     /// Where a title's text is on its frame-sized canvas (`[x0, y0, x1, y1]`),
     /// once it has been drawn. Used to select titles by clicking their text.
-    pub fn title_bounds(&self, id: ClipId) -> Option<[f32; 4]> {
-        self.titles.get(&id).and_then(|t| t.bounds)
+    /// Where a title's text is, in the pixels of a frame `frame_width` across
+    /// (it may be laid out wider, on a frame of non-square pixels as shown).
+    pub fn title_bounds(&self, id: ClipId, frame_width: f32) -> Option<[f32; 4]> {
+        let t = self.titles.get(&id)?;
+        let k = if t.frame.width > 0 { frame_width / t.frame.width as f32 } else { 1.0 };
+        t.bounds.map(|b| [b[0] * k, b[1], b[2] * k, b[3]])
     }
 
     /// True if a title's font file couldn't be loaded (the built-in font was used).

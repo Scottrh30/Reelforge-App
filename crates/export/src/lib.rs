@@ -395,6 +395,7 @@ pub fn export_sequence(
         color: settings.color,
         bitrate_kbps: settings.bitrate_kbps,
         alpha: settings.alpha,
+        pixel_aspect: seq.pixel_aspect,
     })?;
     // 10-bit, HDR and ProRes get the 16-bit render in the output's curve.
     let deep = writer.wants_deep().then(|| match writer.color() {

@@ -99,6 +99,8 @@ pub struct Scene {
     flow: Option<reelforge_render::flowgpu::FlowInterp>,
     /// Each clip's last in-between frame, by what it was made from.
     flow_frames: HashMap<ClipId, (u64, VideoFrame)>,
+    /// The pixel shape (width ÷ height) of the sequence being drawn.
+    par: f32,
 }
 
 /// The second frame of a blend has a key of its own (it's another layer for the compositor).
@@ -106,7 +108,7 @@ const NEXT_FRAME_KEY: u64 = 1 << 62;
 
 impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new() }
+        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0 }
     }
 
     /// Forget composition renders (e.g. a different project was opened).
@@ -158,6 +160,7 @@ impl Scene {
         let Some(s) = project.sequences.get(seq) else { return Ok(0) };
         let frame_size = [s.width.max(2), s.height.max(2)];
         let fps = s.frame_rate.fps();
+        self.par = s.par();
         // The camera and lights, for 3D layers.
         let scene3d = project.scene3d_at(seq, t);
         let mut items = Vec::new();
@@ -310,9 +313,21 @@ impl Scene {
             // An adjustment layer has no picture: it's drawn from the frame below.
             _ if l.clip.adjustment => Some(Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(vec![0u8; 4]), 0), size: full, media: MediaId::GENERATED }),
             (Some(inner), _) => self.nested_picture(project, l.clip.id, inner, l.clip.angle, l.source_time, provider, depth)?,
+            // A title is laid out on the frame as it's shown (as wide as its
+            // pixels make it), then squeezed back into the frame's pixels.
+            (None, _) if l.clip.title.is_some() && self.par != 1.0 => provider.picture(project, l, [((frame_size[0] as f32 * self.par).round() as u32).max(2), frame_size[1]])?,
             (None, _) => provider.picture(project, l, frame_size)?,
         };
         let Some(mut picture) = picture else { return Ok(None) };
+        // Pixel shapes: a picture (footage, a title, a composition) whose
+        // pixels aren't this sequence's shape takes as many of this
+        // sequence's pixels across as it shows wide.
+        if l.clip.plane.is_none() && !l.clip.adjustment {
+            let k = project.own_par(&l.clip) / self.par;
+            if k != 1.0 {
+                picture.size[0] *= k;
+            }
+        }
         // OpenFX effects run on the picture first, on the CPU (not on an
         // adjustment layer, which has no picture of its own).
         if !l.clip.adjustment {
@@ -401,7 +416,9 @@ impl Scene {
             }
         };
         n.last_used = self.tick;
+        let outer_par = self.par;
         let result = self.render_at(project, inner, angle, t, &mut n.compositor, provider, n.signature.filter(|_| n.frame.is_some()), depth + 1);
+        self.par = outer_par;
         let sig = match result {
             Ok(sig) => sig,
             Err(e) => {
@@ -481,6 +498,8 @@ fn recipe_into(project: &Project, seq: usize, angle: Option<reelforge_core::mult
     let Some(s) = project.sequences.get(seq) else { return };
     let frame_size = [s.width.max(2), s.height.max(2)];
     frame_size.hash(h);
+    s.pixel_aspect.hash(h);
+    let par = s.par();
     let scene3d = project.scene3d_at(seq, t);
     let layer = |l: &Layer, h: &mut DefaultHasher| {
         let clip = l.clip;
@@ -512,7 +531,7 @@ fn recipe_into(project: &Project, seq: usize, angle: Option<reelforge_core::mult
                 2u8.hash(h);
                 let at = crate::title_clock(l);
                 let spec = clip.title_at(l.source_time).expect("a title");
-                spec.content_hash_at(frame_size, at.0, at.1).hash(h);
+                spec.content_hash_at([((frame_size[0] as f32 * par).round() as u32).max(2), frame_size[1]], at.0, at.1).hash(h);
                 [frame_size[0] as f32, frame_size[1] as f32]
             }
             (None, None) => {
@@ -533,6 +552,11 @@ fn recipe_into(project: &Project, seq: usize, angle: Option<reelforge_core::mult
                     None => [0.0; 2],
                 }
             }
+        };
+        let layer_size = if clip.plane.is_none() && !clip.adjustment && clip.title.is_none() {
+            [layer_size[0] * project.own_par(clip) / par, layer_size[1]]
+        } else {
+            layer_size
         };
         let tr = &l.transform;
         for f in tr.position.iter().chain(&tr.scale).chain([&tr.rotation, &tr.opacity]).chain(&tr.anchor).chain(&tr.crop) {
@@ -797,7 +821,7 @@ mod recipe_tests {
             name: "a.mp4".into(),
             info: MediaInfo {
                 duration: Time::from_secs_f64(10.0),
-                video: Some(VideoStreamInfo { width: 640, height: 360, frame_rate: FrameRate::new(25, 1), codec: "h264".into(), time_base: reelforge_core::Rational::new(1, 25), hdr: None }),
+                video: Some(VideoStreamInfo { width: 640, height: 360, frame_rate: FrameRate::new(25, 1), codec: "h264".into(), time_base: reelforge_core::Rational::new(1, 25), hdr: None, pixel_aspect: (1, 1) }),
                 audio: None,
                 container: String::new(),
             },

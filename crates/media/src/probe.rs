@@ -4,6 +4,19 @@ use ffmpeg_next as ff;
 use reelforge_core::{AudioStreamInfo, FrameRate, MediaInfo, Rational, Time, VideoStreamInfo};
 use std::path::Path;
 
+/// A stream's pixel shape, reduced (square when it doesn't say or says 1:1);
+/// the codec's own, else the container's.
+fn pixel_aspect(codec: ff::ffi::AVRational, stream: ff::ffi::AVRational) -> (u32, u32) {
+    let pick = |n: i32, d: i32| (n > 0 && d > 0 && n != d).then_some((n as u32, d as u32));
+    let Some((n, d)) = pick(codec.num, codec.den).or_else(|| pick(stream.num, stream.den)) else { return (1, 1) };
+    let g = gcd(n, d);
+    (n / g, d / g)
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a.max(1) } else { gcd(b, a % b) }
+}
+
 /// Open a file just long enough to read its streams and duration.
 pub fn probe(path: &Path) -> Result<MediaInfo> {
     init();
@@ -33,6 +46,8 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
                     ff::ffi::AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67 => Some("HLG".into()),
                     _ => None,
                 },
+                // SAFETY: reading a field of the stream's parameters.
+                pixel_aspect: pixel_aspect(unsafe { (*st.parameters().as_ptr()).sample_aspect_ratio }, unsafe { (*st.as_ptr()).sample_aspect_ratio }),
             })
         }
         None => None,

@@ -1317,3 +1317,31 @@ fn slow_motion_frame_blending_and_optical_flow() {
     assert!(blend(35) > 230, "where they overlap, white");
     assert!(flow(14) < 60 && flow(52) > 200 && flow(30) > 230, "moved half way (18–58): {} {} {}", flow(14), flow(52), flow(30));
 }
+
+/// A DV NTSC sequence (10:11 pixels) exported at its own size says so in
+/// the file, and DV footage probes with its pixel shape.
+#[test]
+fn exports_keep_the_sequences_pixel_aspect() {
+    let Some(dv) = ffmpeg("rf_export_dv_src.mp4", &["-f", "lavfi", "-i", "testsrc2=size=720x480:rate=25:duration=1", "-vf", "setsar=10/11", "-c:v", "libx264", "-pix_fmt", "yuv420p"]) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let src = asset(1, &dv);
+    assert_eq!(src.info.video.as_ref().unwrap().pixel_aspect, (10, 11));
+    let mut p = Project::new();
+    p.media.push(src);
+    let mut seq = Sequence::new("DV", 720, 480, FrameRate::new(25, 1));
+    seq.pixel_aspect = (10, 11);
+    seq.tracks[0].clips.push(Clip::new(ClipId(10), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(0.4), None));
+    p.sequences = vec![seq];
+    let out = std::env::temp_dir().join("rf_export_dv.mp4");
+    let mut s = settings(out.clone());
+    (s.width, s.height, s.include_audio, s.end) = (720, 480, false, Time::from_secs_f64(0.4));
+    export_sequence(&p, &s, &device, &queue, |_| true).unwrap();
+    let v = probe(&out).unwrap().video.unwrap();
+    assert_eq!((v.width, v.height, v.pixel_aspect), (720, 480, (10, 11)));
+    // The DV footage fills the DV frame exactly (no bars at the sides).
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+    let mut src = FrameSource::open(&dv, None).unwrap();
+    let g = src.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+    assert!(mean_abs_diff(&f.rgba(), &g.rgba()) < 6.0, "the footage is laid out as it was shot");
+}

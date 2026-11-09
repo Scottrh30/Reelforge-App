@@ -672,7 +672,7 @@ mod tests {
                 name: name.into(),
                 info: MediaInfo {
                     duration: s(60.0),
-                    video: Some(VideoStreamInfo { width: 1920, height: 1080, frame_rate: rate, codec: String::new(), time_base: Rational::new(1, 25), hdr: None }),
+                    video: Some(VideoStreamInfo { width: 1920, height: 1080, frame_rate: rate, codec: String::new(), time_base: Rational::new(1, 25), hdr: None, pixel_aspect: (1, 1) }),
                     audio: Some(AudioStreamInfo { sample_rate: 48000, channels: 2, codec: String::new() }),
                     container: String::new(),
                 },

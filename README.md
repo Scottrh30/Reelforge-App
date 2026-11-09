@@ -1007,9 +1007,21 @@ What works now:
   a new project from a preset, drawn to its shape — **Social** (Vertical 9:16 at 30 or 60 fps for
   Reels/TikTok/Shorts, Portrait 4:5, Square 1:1), **Web & TV** (1080p at 30, 60, 25 and 29.97
   fps, 4K UHD at 30, 60 and 24, 720p) and **Cinema** (1080p at 24 and 23.976, Scope 2.39:1 and
-  Flat 1.85:1 at 4K, DCI 2K, 4K and 2K Scope). Click a card for its usual frame rate (outlined),
+  Flat 1.85:1 at 4K, DCI 2K, 4K and 2K Scope, and **Broadcast & anamorphic**: DV NTSC and DV NTSC
+  Wide 720×480, DV PAL and DV PAL Wide 720×576, HDV 1440×1080, DVCPro HD 1280×1080 and Anamorphic
+  2:1). Click a card for its usual frame rate (outlined),
   or one of the rates under it: every preset also offers 25, 30, 50 and 60 fps. Each section
-  folds shut with a click on its heading (remembered). Or **any size** and frame rate typed in; or from
+  folds shut with a click on its heading (remembered). **Pixel aspect** (beside the tabs, and in
+  **any size**) gives a new project any of the pixel shapes HitFilm offers — Square (1.0), DV NTSC
+  (0.91), DV NTSC Wide (1.21), DV PAL (1.09), DV PAL Wide (1.46), HD Anamorphic 1080 (1.33),
+  DVCPro HD (1.5) and Anamorphic 2:1 (2.0) — or leaves each preset its own; the cards redraw to the
+  shape the picture will have. A sequence with wide or narrow pixels is shown in the Viewer
+  stretched to its true shape (the size line says which pixels), and footage, titles and
+  compositions are laid out by the shape of their own pixels — DV or anamorphic footage (as its file
+  says) fills a matching sequence exactly, and square-pixel footage and titles are squeezed so they
+  look right in it, and the other way round. Exports at the sequence's own size write the pixel
+  shape into the file, so players stretch it the same way; at any other size the picture is
+  resized to square pixels. Or **any size** and frame rate typed in; or from
   **your templates**: **File → Save as template…** keeps a whole project to start from (its
   sequences, tracks, titles, effects and media), and a project started from one is new and
   unsaved, so the template is never written over. **Recent projects** sit beside them, newest

@@ -354,12 +354,11 @@ impl Editor {
             .filter(|(c, _)| !c.adjustment)
             .filter_map(|(c, tr)| {
                 let (layer, size) = if c.title.is_some() {
-                    let b = self.preview.title_bounds(c.id)?;
+                    let b = self.preview.title_bounds(c.id, frame[0])?;
                     let (hw, hh) = (frame[0] / 2.0, frame[1] / 2.0);
                     (GizmoLayer { id: c.id, rect: [b[0] - hw, b[1] - hh, b[2] - hw, b[3] - hh], size: frame }, frame)
                 } else {
-                    let [w, h] = self.project.picture_size(c)?;
-                    let size = [w as f32, h as f32];
+                    let size = self.project.layer_dims(c, self.seq())?;
                     (GizmoLayer { id: c.id, rect: Transform::full_rect(size), size }, size)
                 };
                 if Self::is_3d_layer(c, &tr) {

@@ -40,6 +40,8 @@ pub struct PresetView {
     /// which one is its own.
     pub rates: Vec<(u32, u32, String)>,
     pub rate: (u32, u32),
+    /// Its own pixel shape (width, height).
+    pub aspect: (u32, u32),
 }
 
 #[derive(Serialize)]
@@ -60,6 +62,8 @@ pub struct RecentView {
 #[derive(Serialize)]
 pub struct StartView {
     pub presets: Vec<PresetView>,
+    /// Every pixel shape a new project can have: name, width, height.
+    pub aspects: Vec<(&'static str, u32, u32)>,
     pub recent: Vec<RecentView>,
     pub templates: Vec<UserTemplate>,
     pub templates_dir: String,
@@ -88,8 +92,10 @@ pub fn start_view() -> Res<StartView> {
                     summary: p.summary(),
                     rates: p.rates().into_iter().map(|(n, d)| (n, d, start::rate_label(FrameRate::new(n as i64, d as i64)))).collect(),
                     rate: p.rate,
+                    aspect: p.aspect,
                 })
                 .collect(),
+            aspects: reelforge_core::project::PIXEL_ASPECTS.to_vec(),
             recent: e
                 .recent
                 .list
@@ -121,23 +127,26 @@ pub fn start_at_launch() -> bool {
 }
 
 #[tauri::command]
-pub fn start_new_preset(id: String, rate: Option<(u32, u32)>) -> Res<()> {
+pub fn start_new_preset(id: String, rate: Option<(u32, u32)>, aspect: Option<(u32, u32)>) -> Res<()> {
     let p = start::preset(&id).ok_or_else(|| format!("no preset \"{id}\""))?;
     // One of the rates it offers (its own when none is given).
     let (n, d) = rate.filter(|r| p.rates().contains(r)).unwrap_or(p.rate);
-    ed(|e| e.new_project_with(p.width, p.height, FrameRate::new(n as i64, d as i64)))
+    // One of the pixel shapes (its own when none is given).
+    let aspect = aspect.filter(|a| reelforge_core::project::PIXEL_ASPECTS.iter().any(|x| (x.1, x.2) == *a)).unwrap_or(p.aspect);
+    ed(|e| e.new_project_with_aspect(p.width, p.height, FrameRate::new(n as i64, d as i64), aspect))
 }
 
 /// A new project of any size: `rate` as numerator and denominator (30/1, 30000/1001…).
 #[tauri::command]
-pub fn start_new_custom(width: u32, height: u32, num: u32, den: u32) -> Res<()> {
+pub fn start_new_custom(width: u32, height: u32, num: u32, den: u32, aspect: Option<(u32, u32)>) -> Res<()> {
     if width < 16 || height < 16 || width > 16384 || height > 16384 {
         return Err("Width and height go from 16 to 16384".into());
     }
     if num == 0 || den == 0 || num as f64 / den as f64 > 240.0 {
         return Err("The frame rate goes up to 240 fps".into());
     }
-    ed(|e| e.new_project_with(width, height, FrameRate::new(num as i64, den as i64)))
+    let aspect = aspect.filter(|a| reelforge_core::project::PIXEL_ASPECTS.iter().any(|x| (x.1, x.2) == *a)).unwrap_or((1, 1));
+    ed(|e| e.new_project_with_aspect(width, height, FrameRate::new(num as i64, den as i64), aspect))
 }
 
 #[tauri::command]

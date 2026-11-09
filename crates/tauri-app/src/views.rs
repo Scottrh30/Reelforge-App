@@ -83,6 +83,9 @@ pub struct SeqView {
     pub height: u32,
     pub rate_num: i64,
     pub rate_den: i64,
+    /// Its pixels' width ÷ height (1 square), and their name.
+    pub par: f32,
+    pub par_name: String,
     pub frame: i64,
     pub duration: i64,
     pub in_point: Option<i64>,
@@ -635,6 +638,8 @@ pub fn state(e: &Editor) -> State {
         height: s.height,
         rate_num: rate.0.num,
         rate_den: rate.0.den,
+        par: s.par(),
+        par_name: reelforge_core::project::pixel_aspect_name(s.pixel_aspect),
         frame: rate.frame_duration().0,
         duration: s.duration().0,
         in_point: s.in_point.map(|t| t.0),
@@ -650,10 +655,7 @@ pub fn state(e: &Editor) -> State {
         let tr = &s.tracks[ti];
         let kind = clip_kind(p, tr.kind, c);
         let visual = (tr.kind == TrackKind::Video && c.scene.is_none()).then(|| {
-            let size = match p.picture_size(c) {
-                Some([w, h]) => [w as f32, h as f32],
-                None => [s.width as f32, s.height as f32],
-            };
+            let size = p.layer_dims(c, s).unwrap_or([s.width as f32, s.height as f32]);
             VisualView { transform: c.transform, blend: c.blend, track_matte: c.track_matte, layer_size: size }
         });
         let a = &c.anim;
