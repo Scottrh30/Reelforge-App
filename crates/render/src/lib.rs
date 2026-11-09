@@ -576,7 +576,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_beauty", "fs_sky_cut", "fs_sky_fill"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1298,6 +1298,9 @@ impl Compositor {
                 if let Some(t) = &e.table {
                     self.upload_table((l.key, i), t);
                 }
+                if let Some(t) = &e.table2 {
+                    self.upload_table((l.key, i | TABLE2), t);
+                }
                 if let Some(job) = &e.fluid {
                     // Stepped on to now; its picture goes in as this effect's table.
                     let layer = self.layers.get(&l.key).filter(|t| !t.float).map(|t| (t.texture.create_view(&Default::default()), t.content_id));
@@ -1707,6 +1710,30 @@ impl Compositor {
                         u[24..28].copy_from_slice(&e.gpu);
                         push("fs_paint", cur, Second::Table(i), o1, u);
                         cur = o1;
+                    }
+                    EffectKind::FaceBeauty => {
+                        if !self.tables.contains_key(&(key, i)) {
+                            continue;
+                        }
+                        let mut u = uniform(&e.values, [0.0; 2]);
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        u[24..28].copy_from_slice(&e.gpu);
+                        push("fs_beauty", cur, Second::Table(i), o1, u);
+                        cur = o1;
+                    }
+                    EffectKind::SkyReplace => {
+                        if !self.tables.contains_key(&(key, i)) {
+                            continue;
+                        }
+                        let mut u = uniform(&e.values, [0.0; 2]);
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        u[24..28].copy_from_slice(&e.gpu);
+                        push("fs_sky_cut", cur, Second::Table(i), o1, u);
+                        let sky = if self.tables.contains_key(&(key, i | TABLE2)) { i | TABLE2 } else { i };
+                        push("fs_sky_fill", o1, Second::Table(sky), o2, u);
+                        cur = o2;
                     }
                     EffectKind::ObjectRemoval => {
                         if !self.tables.contains_key(&(key, i)) {
@@ -2530,6 +2557,9 @@ mod half_tests {
         assert_eq!((lut[0x3c00], lut[0x3800], lut[0xbc00], lut[0x4000]), (65535, 32768, 0, 65535));
     }
 }
+
+/// Effects' second tables are kept beside their first, by effect index with this bit set.
+const TABLE2: usize = 1 << 20;
 
 /// A device/queue without a window, for offline rendering and tests.
 pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {

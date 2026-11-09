@@ -87,6 +87,8 @@ struct Live {
     collect: Option<ops::CollectView>,
     /// A tracking run: the clip and how far along (0–1).
     tracking: Option<(u64, f32)>,
+    /// An AI upscale being made: the media and how far along (0–1).
+    upscaling: Option<(u64, f32)>,
     /// A render-preview run: how far along (0–1).
     render: Option<f32>,
     /// Bumped when the render cache gains or loses frames.
@@ -181,6 +183,7 @@ fn tick() -> Res<Live> {
             proxies: e.proxies.signature(),
             collect,
             tracking: e.tracking.as_ref().map(|j| (j.clip.0, j.progress)),
+            upscaling: e.upscale.as_ref().map(|j| (j.media.0, j.progress)),
             render: e.render_progress(),
             render_gen: e.render_cache.generation,
             viewer: viewer_info(e),
@@ -1121,6 +1124,17 @@ fn roto_pick(id: u64, point: [f32; 2], removal: bool) -> Res<Option<usize>> {
     ed(|e| e.roto_pick(clip(id), point, removal))
 }
 
+/// Make an AI-upscaled copy (2× or 4×) of media `media`; `replace` puts it in the original's place.
+#[tauri::command]
+fn upscale_media(media: u64, factor: u32, replace: bool) -> Res<()> {
+    ed(|e| e.start_upscale(MediaId(media), factor, replace))
+}
+
+#[tauri::command]
+fn upscale_cancel() -> Res<()> {
+    ed(|e| e.cancel_upscale())
+}
+
 /// Get the frame at the playhead of clip `id` ready for the roto brush, in the background.
 #[tauri::command]
 fn roto_prepare(id: u64) -> Res<()> {
@@ -1809,6 +1823,8 @@ fn main() {
             mask_from_key,
             roto_stroke,
             roto_prepare,
+            upscale_media,
+            upscale_cancel,
             roto_pick,
             roto_propagate,
             mask_smooth,
@@ -1872,6 +1888,10 @@ fn main() {
             fx::particles_preset,
             fx::blade_ignite,
             fx::object_removal,
+            fx::find_faces,
+            fx::face_on,
+            fx::find_sky,
+            fx::sky_image,
             fx::paint_stroke,
             fx::paint_clear,
             fx::effect_curves,

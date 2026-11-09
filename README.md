@@ -400,6 +400,27 @@ What works now:
     **Strokes last** *This frame* (frame-by-frame cleanup), *From here on* or *The whole
     clip* (a mark on a locked-off shot). Each stroke is one undo step; **Clear** takes them
     all off. Strokes are drawn on the GPU in the order painted
+  - **Face beauty** (Repair), like Resolve's Face Refinement and Filmora's face mosaic: press
+    **Find faces** and the faces in every frame are found (OpenCV's Viola–Jones Haar cascades,
+    front-on and turned to either side, built in) and followed through the clip in the
+    background — joined up frame to frame, short gaps filled, faces seen only for a moment
+    dropped (most false finds), the boxes smoothed. Each face found is listed to untick; **Show
+    faces** outlines them in the Viewer. **Mode**: *Smooth skin* takes out blotches and pores
+    with an edge-keeping (bilateral) smoothing over the skin (eyes, brows and lips, not skin
+    coloured, stay sharp), **Detail kept** putting fine texture back so it doesn't look plastic,
+    **Even out tone** pulling redness towards the skin round it, **Brighten** lifting it a touch;
+    *Blur faces* or *Pixelate faces* hide who they are. **Face area** and **Softness** set how far
+    round each face it works and how it fades out. **Where**: *All skin in the picture* smooths
+    every skin-coloured area without looking for faces
+  - **Sky replacement** (Keying), like Resolve's and Filmora's: press **Find the sky** and the
+    object model (the roto brush's MobileSAM) picks out the sky in every other frame —
+    pointed at what looks like sky along the top of the first frame, then at each frame's sky
+    from the last — its edge fitted to branches and roof lines with a guided filter, and the
+    camera's movement worked out from the ground. **Choose sky…** picks a picture (or use the
+    **Gradient**, top and horizon colours). The new sky covers the frame, moves with the
+    camera (**Follow the camera**), and can be placed, scaled, brightened and blurred; **Edge
+    softness** and **Edge shift** tune the join; **Match lighting** tints the footage towards
+    the new sky's colour so it sits in it. **View**: the result, the sky matte, or the sky alone
   - **Object removal** (Repair), like After Effects' Content-Aware Fill or Resolve's Object
     Removal: takes out a person, a sign, a boom or a logo for the whole clip. Draw a mask round
     it in the Masks panel and set its **Use** to **Object to remove** (it doesn't change the
@@ -862,6 +883,17 @@ What works now:
   "MEDIA OFFLINE" frame in the viewer. **Relink…** a file and Reelforge also looks for the
   other missing files in that folder (and its subfolders) by name; **Search a folder…** does
   it for all of them. Relinking can be undone. Export won't start while media is missing
+- **AI upscale** (right-click footage or a picture in the Media panel): a copy two or four times
+  the size, made by Real-ESRGAN's compact general model (built in): detail made up where the
+  original has none — sharper edges, cleaner texture, less blocking — rather than blurred as
+  ordinary scaling does. Frame by frame in the background (the Media panel shows how far it's
+  got; right-click again to stop), on the graphics card when there is one (the model runs as the
+  same compute shaders as the roto brush's), otherwise on the CPU, which is slow: seconds to a
+  minute a frame. Footage is written as H.264 with its sound, pictures as PNG, into a
+  **Reelforge upscaled** folder beside the original, and either added to the Media panel or put
+  in the original's place everywhere it's used (*use it in place of this*: laid out at the old
+  size, so framing, masks and keyframes stay as they were). Up to 7680 pixels wide; 4× of
+  anything wider than 1920 becomes 2×
 - **Replace footage** (right-click footage in the Media panel, or a clip in the timeline →
   **Replace footage**): swap a file for another (a new grade, a re-render, the final VFX shot, a
   higher resolution) and keep everything done with it: every cut, trim, speed change, effect,

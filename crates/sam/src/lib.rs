@@ -12,6 +12,8 @@
 use rayon::prelude::*;
 
 mod gpu;
+pub mod upscale;
+pub mod faces;
 pub use gpu::GpuEncoder;
 use std::collections::HashMap;
 
@@ -95,6 +97,16 @@ fn gelu(v: &mut [f32]) {
     });
 }
 
+/// c (m × n, rows `rsc` apart) = beta · c + a · b, with a and b read through
+/// their own strides (rows, columns), on this thread.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gemm_strided(m: usize, k: usize, n: usize, a: &[f32], rsa: isize, csa: isize, b: &[f32], rsb: isize, csb: isize, c: &mut [f32], rsc: isize, beta: f32) {
+    debug_assert!(c.len() >= (m - 1) * rsc as usize + n);
+    unsafe {
+        matrixmultiply::sgemm(m, k, n, 1.0, a.as_ptr(), rsa, csa, b.as_ptr(), rsb, csb, beta, c.as_mut_ptr(), rsc, 1);
+    }
+}
+
 /// c (m × n) = a (m × k) · b (k × n), row-major; `bt` reads b as its transpose (n × k).
 fn gemm(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], bt: bool, c: &mut [f32]) {
     let (rsb, csb) = if bt { (1, k as isize) } else { (n as isize, 1) };
@@ -109,46 +121,53 @@ fn gemm(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], bt: bool, c: &mut [f
     });
 }
 
+/// Named tensors from a packed weights file: `RFSAM1` (f16 throughout) or
+/// `RFSAM2` (big tensors int8 with a scale per output channel, the rest f16).
+pub(crate) fn load_weights(bytes: &[u8]) -> Option<HashMap<String, (Vec<usize>, Vec<f32>)>> {
+    if bytes.len() < 12 {
+        return None;
+    }
+    let hl = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
+    let mut w = HashMap::new();
+    let f16 = |d: &[u8], off: usize, n: usize| -> Vec<f32> { (0..n).map(|i| f16_to_f32(u16::from_le_bytes([d[off + 2 * i], d[off + 2 * i + 1]]))).collect() };
+    match &bytes[..6] {
+        // f16 throughout: offsets in halves.
+        b"RFSAM1" => {
+            let head: HashMap<String, (usize, Vec<usize>)> = serde_json::from_slice(&bytes[12..12 + hl]).ok()?;
+            let data = &bytes[12 + hl + (12 + hl) % 2..];
+            for (k, (off, shape)) in head {
+                let n: usize = shape.iter().product::<usize>().max(1);
+                w.insert(k, (shape.clone(), f16(data, 2 * off, n)));
+            }
+        }
+        // The big tensors int8 with a scale per output channel (f32,
+        // before them), the rest f16: offsets in bytes.
+        b"RFSAM2" => {
+            let head: HashMap<String, (usize, Vec<usize>, String)> = serde_json::from_slice(&bytes[12..12 + hl]).ok()?;
+            let data = &bytes[12 + hl + (4 - (12 + hl) % 4) % 4..];
+            for (k, (off, shape, kind)) in head {
+                let n: usize = shape.iter().product::<usize>().max(1);
+                let v = if kind == "i8" {
+                    let rows = shape[0].max(1);
+                    let per = n / rows;
+                    let scales: Vec<f32> = (0..rows).map(|r| f32::from_le_bytes(data[off + 4 * r..off + 4 * r + 4].try_into().unwrap())).collect();
+                    let q = &data[off + 4 * rows..off + 4 * rows + n];
+                    q.iter().enumerate().map(|(i, &b)| b as i8 as f32 * scales[i / per]).collect()
+                } else {
+                    f16(data, off, n)
+                };
+                w.insert(k, (shape, v));
+            }
+        }
+        _ => return None,
+    }
+    Some(w)
+}
+
 impl Sam {
     /// The weights from the packed file (see the module notes).
     pub fn load(bytes: &[u8]) -> Option<Sam> {
-        if bytes.len() < 12 {
-            return None;
-        }
-        let hl = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
-        let mut w = HashMap::new();
-        let f16 = |d: &[u8], off: usize, n: usize| -> Vec<f32> { (0..n).map(|i| f16_to_f32(u16::from_le_bytes([d[off + 2 * i], d[off + 2 * i + 1]]))).collect() };
-        match &bytes[..6] {
-            // f16 throughout: offsets in halves.
-            b"RFSAM1" => {
-                let head: HashMap<String, (usize, Vec<usize>)> = serde_json::from_slice(&bytes[12..12 + hl]).ok()?;
-                let data = &bytes[12 + hl + (12 + hl) % 2..];
-                for (k, (off, shape)) in head {
-                    let n: usize = shape.iter().product::<usize>().max(1);
-                    w.insert(k, (shape.clone(), f16(data, 2 * off, n)));
-                }
-            }
-            // The big tensors int8 with a scale per output channel (f32,
-            // before them), the rest f16: offsets in bytes.
-            b"RFSAM2" => {
-                let head: HashMap<String, (usize, Vec<usize>, String)> = serde_json::from_slice(&bytes[12..12 + hl]).ok()?;
-                let data = &bytes[12 + hl + (4 - (12 + hl) % 4) % 4..];
-                for (k, (off, shape, kind)) in head {
-                    let n: usize = shape.iter().product::<usize>().max(1);
-                    let v = if kind == "i8" {
-                        let rows = shape[0].max(1);
-                        let per = n / rows;
-                        let scales: Vec<f32> = (0..rows).map(|r| f32::from_le_bytes(data[off + 4 * r..off + 4 * r + 4].try_into().unwrap())).collect();
-                        let q = &data[off + 4 * rows..off + 4 * rows + n];
-                        q.iter().enumerate().map(|(i, &b)| b as i8 as f32 * scales[i / per]).collect()
-                    } else {
-                        f16(data, off, n)
-                    };
-                    w.insert(k, (shape, v));
-                }
-            }
-            _ => return None,
-        }
+        let w = load_weights(bytes)?;
         let mut sam = Sam { w, biases: HashMap::new() };
         // Attention biases expanded to full (heads × N × N) tables.
         let keys: Vec<String> = sam.w.keys().filter(|k| k.ends_with(".attn.attention_biases")).cloned().collect();

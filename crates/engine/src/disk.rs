@@ -163,6 +163,7 @@ pub fn fills_in(dir: &Path, project: &Project, path: Option<&Path>) -> Vec<FillD
         .flat_map(|c| c.effects.iter())
         .filter_map(|e| match &e.data {
             Some(reelforge_core::effects::EffectData::Fill(d)) => Some(d.clone()),
+            Some(reelforge_core::effects::EffectData::Sky { matte: Some(d), .. }) => Some(d.clone()),
             _ => None,
         })
         .collect();

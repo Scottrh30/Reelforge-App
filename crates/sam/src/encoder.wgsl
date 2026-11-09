@@ -357,3 +357,36 @@ fn attention(@builtin(global_invocation_id) gid: vec3<u32>) {
         c[oo + e] = acc[e] / sum;
     }
 }
+
+// ---- PReLU in place on a C × HW map: b the slope of each channel. u: 0 count, 1 HW.
+@compute @workgroup_size(256)
+fn prelu(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = flat(gid);
+    if (i >= u(0)) {
+        return;
+    }
+    let v = c[i];
+    c[i] = select(v, b[i / u(1)] * v, v < 0.0);
+}
+
+// ---- The upscaler's last step: a (3·16 × H × W) rearranged 4× larger, plus
+// b (the picture, 3 × H × W) blown up, clamped, into c (3 × 4H × 4W).
+// u: 0 H, 1 W.
+@compute @workgroup_size(256)
+fn shuffle(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let h = u(0);
+    let w = u(1);
+    let ow = w * 4u;
+    let x = gid.x;
+    let row = gid.y;
+    if (x >= ow) {
+        return;
+    }
+    let ch = row / (h * 4u);
+    let y = row % (h * 4u);
+    let r = y / 4u;
+    let cc = x / 4u;
+    let k = ch * 16u + (y % 4u) * 4u + (x % 4u);
+    let v = a[(k * h + r) * w + cc] + b[(ch * h + r) * w + cc];
+    c[row * ow + x] = clamp(v, 0.0, 1.0);
+}

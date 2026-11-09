@@ -10,6 +10,7 @@ license = "Apache-2.0"
 [dependencies]
 rayon = "1"
 serde_json.workspace = true
+serde.workspace = true
 matrixmultiply = "0.3"
 # The image encoder on the graphics card.
 wgpu.workspace = true

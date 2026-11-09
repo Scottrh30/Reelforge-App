@@ -121,6 +121,14 @@ pub enum EffectKind {
     /// Paint: clone-stamp, brush and erase strokes painted in the Viewer,
     /// each for a frame, from there on, or the whole clip (see `crate::paint`).
     Paint,
+    /// Smooths the skin of faces found and followed through the clip (or of
+    /// all the skin in the picture), keeping their detail; or blurs or
+    /// pixelates the faces (see `crate::faces`).
+    FaceBeauty,
+    /// Puts a new sky behind the footage: the sky found in each frame (in the
+    /// background, by the object model), its edge softened, the new sky moved
+    /// with the camera and the footage's light matched to it.
+    SkyReplace,
     /// A camera clip's settings (not an effect you add: see [`crate::space3d`]).
     Camera,
     /// A light clip's settings (see [`crate::space3d`]).
@@ -184,6 +192,11 @@ pub enum EffectData {
     Fill(PathBuf),
     /// Paint's strokes (see `crate::paint`).
     Paint(Vec<crate::paint::PaintStroke>),
+    /// Face beauty's faces, followed through the clip.
+    Faces(Vec<crate::faces::FaceTrack>),
+    /// Sky replacement: the new sky (a picture), and the sky found in each
+    /// frame (a folder, see `crate::fillstore`; alpha is the sky).
+    Sky { image: Option<PathBuf>, matte: Option<PathBuf> },
 }
 
 /// How a parameter is shown and edited.
@@ -967,6 +980,48 @@ pub mod paint_params {
     pub const TOOLS: [&str; 3] = ["Clone", "Brush", "Erase"];
     pub const LASTS_FOR: [&str; 3] = ["This frame", "From here on", "The whole clip"];
 }
+/// Face beauty parameter indices.
+pub mod beauty {
+    pub const MODE: usize = 0;
+    pub const SMOOTH: usize = 1;
+    /// How much of the skin's fine texture is kept.
+    pub const DETAIL: usize = 2;
+    pub const BRIGHTEN: usize = 3;
+    /// Blotches and redness evened out.
+    pub const EVEN: usize = 4;
+    /// The faces found, or all the skin in the picture.
+    pub const AREA: usize = 5;
+    /// How much bigger than the face found the area worked on is (%).
+    pub const SIZE: usize = 6;
+    pub const SOFTNESS: usize = 7;
+    /// Outline the faces found, to check them.
+    pub const SHOW: usize = 8;
+    pub const MODES: [&str; 3] = ["Smooth skin", "Blur faces", "Pixelate faces"];
+    pub const AREAS: [&str; 2] = ["The faces found", "All skin in the picture"];
+}
+/// Sky replacement parameter indices.
+pub mod sky {
+    pub const SOURCE: usize = 0;
+    pub const TOP: usize = 1;
+    pub const HORIZON: usize = 2;
+    /// Where the new sky sits (% of the frame) and how big it is (%).
+    pub const X: usize = 3;
+    pub const Y: usize = 4;
+    pub const SCALE: usize = 5;
+    /// How much it moves with the camera (%).
+    pub const FOLLOW: usize = 6;
+    pub const BRIGHTNESS: usize = 7;
+    pub const BLUR: usize = 8;
+    /// The sky's edge: softened (px) and moved out (+) or in (px).
+    pub const SOFTNESS: usize = 9;
+    pub const SHIFT: usize = 10;
+    /// The footage tinted towards the new sky's colour (%).
+    pub const MATCH: usize = 11;
+    pub const OPACITY: usize = 12;
+    pub const VIEW: usize = 13;
+    pub const SOURCES: [&str; 2] = ["Picture", "Gradient"];
+    pub const VIEWS: [&str; 3] = ["Result", "Sky matte", "Sky only"];
+}
 /// Halftone parameter indices.
 pub mod halftone {
     pub const STYLE: usize = 0;
@@ -1143,6 +1198,33 @@ const PAINT: [ParamSpec; 8] = [
     spec("Clone from X", -60.0, -10000.0, 10000.0, " px", 0.5),
     spec("Clone from Y", 0.0, -10000.0, 10000.0, " px", 0.5),
 ];
+const BEAUTY: [ParamSpec; 9] = [
+    choice("Mode", &beauty::MODES),
+    spec("Smoothing", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Detail kept", 35.0, 0.0, 100.0, " %", 0.5),
+    spec("Brighten", 10.0, 0.0, 100.0, " %", 0.5),
+    spec("Even out tone", 30.0, 0.0, 100.0, " %", 0.5),
+    choice("Where", &beauty::AREAS),
+    spec("Face area", 130.0, 60.0, 300.0, " %", 0.5),
+    spec("Softness", 40.0, 0.0, 100.0, " %", 0.5),
+    ParamSpec { name: "Show faces", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const SKY: [ParamSpec; 14] = [
+    choice("New sky", &sky::SOURCES),
+    color("Top colour", 0x2f6fc4),
+    color("Horizon colour", 0xcfe2f3),
+    spec("Position X", 0.0, -200.0, 200.0, " %", 0.2),
+    spec("Position Y", 0.0, -200.0, 200.0, " %", 0.2),
+    spec("Scale", 100.0, 20.0, 500.0, " %", 0.5),
+    spec("Follow the camera", 100.0, 0.0, 200.0, " %", 0.5),
+    spec("Brightness", 0.0, -100.0, 100.0, " %", 0.5),
+    spec("Blur", 0.0, 0.0, 100.0, " px", 0.2),
+    spec("Edge softness", 2.0, 0.0, 50.0, " px", 0.1),
+    spec("Edge shift", 0.0, -30.0, 30.0, " px", 0.1),
+    spec("Match lighting", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    choice("View", &sky::VIEWS),
+];
 const CRT: [ParamSpec; 12] = [
     spec("Curvature", 30.0, 0.0, 100.0, " %", 0.5),
     spec("Scan lines", 50.0, 0.0, 100.0, " %", 0.5),
@@ -1183,7 +1265,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 37] = [
+    pub const ALL: [EffectKind; 39] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -1217,6 +1299,8 @@ impl EffectKind {
         EffectKind::PatchReplacer,
         EffectKind::ObjectRemoval,
         EffectKind::Paint,
+        EffectKind::FaceBeauty,
+        EffectKind::SkyReplace,
         EffectKind::FilmGrain,
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
@@ -1264,6 +1348,8 @@ impl EffectKind {
             EffectKind::PatchReplacer => "Patch replacer",
             EffectKind::ObjectRemoval => "Object removal",
             EffectKind::Paint => "Paint / clone",
+            EffectKind::FaceBeauty => "Face beauty",
+            EffectKind::SkyReplace => "Sky replacement",
             EffectKind::Camera => "Camera",
             EffectKind::Light => "Light",
             EffectKind::Point => "Point",
@@ -1278,7 +1364,8 @@ impl EffectKind {
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate => EffectCategory::Simulation,
             EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
-            EffectKind::WireRemoval | EffectKind::PatchReplacer | EffectKind::ObjectRemoval | EffectKind::Paint => EffectCategory::Repair,
+            EffectKind::WireRemoval | EffectKind::PatchReplacer | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty => EffectCategory::Repair,
+            EffectKind::SkyReplace => EffectCategory::Keying,
             EffectKind::FractalNoise | EffectKind::Lightning => EffectCategory::Generate,
             EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
@@ -1313,6 +1400,8 @@ impl EffectKind {
             EffectKind::Lightning => "Jagged, branching bolts of lightning or electricity between two points (drag them in the Viewer) or all round one, struck afresh several times a second, flickering and lighting the layer.",
             EffectKind::PatchReplacer => "Covers a blemish, a logo or a sign with a patch of the picture from beside it (drag both in the Viewer), its light matched to the surroundings so the join doesn't show. Keyframe or track the target: the source moves with it.",
             EffectKind::ObjectRemoval => "Content-aware fill: removes whatever a mask set to \"Object to remove\" covers (a person, a sign, a boom), filling it from the other frames where what's behind shows, or making it up from the picture round it. Worked out in the background over the clip.",
+            EffectKind::FaceBeauty => "Finds the faces in the clip and follows them (Find faces), then smooths their skin while keeping its detail, evens out its tone and brightens it a touch; or blurs or pixelates them to hide who they are. Can smooth all the skin in the picture instead.",
+            EffectKind::SkyReplace => "A new sky behind the footage: the sky in every frame is found by the object model (Find the sky), its edge softened round trees and buildings, the new sky (a picture, or a gradient) moved with the camera, and the footage's light matched to it.",
             EffectKind::Paint => "Paint in the Viewer: clone the picture from somewhere else (Alt-click where to copy from), brush on a colour, or erase strokes. Each stroke lasts a frame, from there on, or the whole clip.",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
@@ -1373,6 +1462,8 @@ impl EffectKind {
             EffectKind::PatchReplacer => &PATCH,
             EffectKind::ObjectRemoval => &OBJECT_REMOVAL,
             EffectKind::Paint => &PAINT,
+            EffectKind::FaceBeauty => &BEAUTY,
+            EffectKind::SkyReplace => &SKY,
             EffectKind::Camera => &CAMERA,
             EffectKind::Light => &LIGHT,
             EffectKind::Point => &POINT,
@@ -1409,6 +1500,8 @@ impl EffectKind {
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
             EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
             EffectKind::Paint => &[(0, "Brush"), (5, "Strokes"), (6, "Clone")],
+            EffectKind::FaceBeauty => &[(0, "Look"), (5, "Faces")],
+            EffectKind::SkyReplace => &[(0, "Sky"), (3, "Placing"), (7, "Look"), (9, "Edge"), (11, "Blend")],
             EffectKind::Lightning => &[(0, "Path"), (4, "Shape"), (10, "Look"), (15, "Motion")],
             EffectKind::PatchReplacer => &[(0, "Target"), (2, "Source"), (4, "Shape"), (9, "Fill")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
@@ -1462,6 +1555,8 @@ pub struct EffectValues {
     pub pieces: Option<Arc<crate::shatter::Pieces>>,
     /// For a fluid: what to simulate on the graphics card.
     pub fluid: Option<Arc<crate::fluid::FluidJob>>,
+    /// A second table some effects need (sky replacement's new sky).
+    pub table2: Option<Arc<Table>>,
     /// Spare values for the GPU: for lightning, the strike's brightness
     /// (0–1) and how many segments and runs of them its table holds; for
     /// object removal, where its patch sits (left, top, width, height as
@@ -1504,6 +1599,11 @@ impl EffectValues {
             EffectKind::PatchReplacer => v[patch::OPACITY] == 0.0,
             EffectKind::ObjectRemoval => v[removal::OPACITY] == 0.0 || self.table.is_none(),
             EffectKind::Paint => self.table.is_none(),
+            EffectKind::FaceBeauty => {
+                let faces = v[beauty::AREA] == 0.0;
+                (faces && self.gpu[0] == 0.0) || (v[beauty::MODE] == 0.0 && v[beauty::SMOOTH] == 0.0 && v[beauty::BRIGHTEN] == 0.0 && v[beauty::EVEN] == 0.0 && v[beauty::SHOW] == 0.0)
+            }
+            EffectKind::SkyReplace => self.table.is_none() || v[sky::OPACITY] == 0.0,
             EffectKind::MuzzleFlash => v[muzzle::BRIGHTNESS] == 0.0 && v[muzzle::LIGHT] == 0.0,
             EffectKind::BulletHit => false,
             EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.fluid.is_none(),
@@ -1670,13 +1770,33 @@ impl Effect {
         }
         let plugin = if self.kind == EffectKind::Plugin { self.plugin_def() } else { None };
         let particles = (self.kind == EffectKind::Particles).then(|| Arc::new(crate::particles::simulate(self, t)));
-        let (mut table, mut gpu) = (self.table(), [0.0; 4]);
-        if let (Some(EffectData::Fill(dir)), EffectKind::ObjectRemoval) = (&self.data, self.kind) {
-            if let Some((tb, place)) = crate::fillstore::load(dir, t) {
-                (table, gpu) = (Some(tb), place);
+        let (mut table, mut gpu, mut table2) = (self.table(), [0.0; 4], None);
+        match (&self.data, self.kind) {
+            (Some(EffectData::Fill(dir)), EffectKind::ObjectRemoval) => {
+                if let Some((tb, place)) = crate::fillstore::load(dir, t) {
+                    (table, gpu) = (Some(tb), place);
+                }
             }
+            (data, EffectKind::FaceBeauty) => {
+                let tracks = match data {
+                    Some(EffectData::Faces(f)) => &f[..],
+                    _ => &[],
+                };
+                let (tb, n) = crate::faces::table(tracks, t);
+                (table, gpu) = (Some(tb), [n as f32, 0.0, 0.0, 0.0]);
+            }
+            (Some(EffectData::Sky { image, matte: Some(dir) }), EffectKind::SkyReplace) => {
+                if let Some((tb, _, shift)) = crate::fillstore::load_moved(dir, t) {
+                    table = Some(tb);
+                    gpu = [shift[0], shift[1], shift[2], 0.0];
+                    // The new sky, and its average colour (for matching the light).
+                    table2 = image.as_ref().filter(|_| values[sky::SOURCE] == 0.0).and_then(|p| crate::lut::load_plate(p, Time::ZERO));
+                    gpu[3] = table2.as_ref().map_or(0.0, |t| crate::lut::average_rgb(t) as f32);
+                }
+            }
+            _ => {}
         }
-        EffectValues { kind: self.kind, values, table, plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None, fluid: None, gpu }
+        EffectValues { kind: self.kind, values, table, plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None, fluid: None, gpu, table2 }
     }
 
     /// [`Self::eval_moving`] for a layer `size` pixels across: what needs
@@ -1765,7 +1885,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 // These need the layer's size (a shatter's pieces, a fluid's grid).

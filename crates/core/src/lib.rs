@@ -18,6 +18,7 @@ pub mod disintegrate;
 pub mod lightning;
 pub mod inpaint;
 pub mod fillstore;
+pub mod faces;
 pub mod rotobrush;
 pub mod paint;
 pub mod template;

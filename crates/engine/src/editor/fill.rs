@@ -215,7 +215,7 @@ impl Editor {
                         }
                         let rect = [(b[0] + crop[0]) as u32, (b[1] + crop[1]) as u32, bw as u32, bh as u32];
                         let file = fillstore::write_frame(&dir, i, rect, &rgba).map_err(|e| e.to_string())?;
-                        index.frames.push(FillFrame { at: times[i].0 .0, file, rect });
+                        index.frames.push(FillFrame { at: times[i].0 .0, file, rect, shift: None });
                         Ok(())
                     };
                     for (i, (src_t, media_t)) in times.iter().enumerate() {
@@ -286,7 +286,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::FillDone(r));
             })
             .expect("object removal thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: Some(index), roto: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: Some(index), roto: None, ai: None });
         self.status = if preview { "Filling the frame at the playhead…" } else { "Removing the object: filling every frame…" }.into();
     }
 

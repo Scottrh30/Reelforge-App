@@ -455,7 +455,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::RotoDone(r));
             })
             .expect("roto brush thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: Some(index) });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: Some(index), ai: None });
         self.status = format!("Carrying {} {}…", m.name, if forward { "forwards" } else { "backwards" });
     }
 

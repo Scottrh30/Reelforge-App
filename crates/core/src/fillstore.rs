@@ -19,6 +19,10 @@ pub struct FillFrame {
     pub file: String,
     /// The patch: left, top, width, height in pixels of the media frame.
     pub rect: [u32; 4],
+    /// How the picture has moved since the first frame made (sky
+    /// replacement: x, y as fractions of the frame, and scale).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shift: Option<[f32; 3]>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -85,6 +89,11 @@ pub fn frame_count(dir: &Path) -> usize {
 /// The patch for media time `t` (the nearest frame made), as a table for the
 /// GPU, and where it sits: left, top, width, height as fractions of the frame.
 pub fn load(dir: &Path, t: Time) -> Option<(Arc<Table>, [f32; 4])> {
+    load_moved(dir, t).map(|(t, p, _)| (t, p))
+}
+
+/// [`load`], and how the picture had moved by then (see [`FillFrame::shift`]).
+pub fn load_moved(dir: &Path, t: Time) -> Option<(Arc<Table>, [f32; 4], [f32; 3])> {
     let idx = read_index(dir)?;
     let i = idx.frames.partition_point(|f| f.at < t.0);
     let f = [i.checked_sub(1), Some(i)].into_iter().flatten().filter_map(|k| idx.frames.get(k)).min_by_key(|f| (f.at - t.0).abs())?;
@@ -97,8 +106,9 @@ pub fn load(dir: &Path, t: Time) -> Option<(Arc<Table>, [f32; 4])> {
     static FRAMES: OnceLock<Lru> = OnceLock::new();
     let path = dir.join(&f.file);
     let lru = FRAMES.get_or_init(Default::default);
+    let shift = f.shift.unwrap_or([0.0, 0.0, 1.0]);
     if let Some(t) = lru.lock().unwrap().iter().find(|(p, _)| *p == path).map(|(_, t)| t.clone()) {
-        return Some((t, place));
+        return Some((t, place, shift));
     }
     let data = std::fs::read(&path).ok()?;
     if data.len() < 20 || &data[..4] != b"RFF1" {
@@ -122,7 +132,7 @@ pub fn load(dir: &Path, t: Time) -> Option<(Arc<Table>, [f32; 4])> {
     while l.len() > 48 {
         l.pop_front();
     }
-    Some((table, place))
+    Some((table, place, shift))
 }
 
 #[cfg(test)]
@@ -137,7 +147,7 @@ mod tests {
         for n in 0..3 {
             let rgba = vec![n as u8 * 100; 2 * 2 * 4];
             let file = write_frame(&dir, n, [10, 20, 2, 2], &rgba).unwrap();
-            idx.frames.push(FillFrame { at: Time::from_secs_f64(n as f64 / 10.0).0, file, rect: [10, 20, 2, 2] });
+            idx.frames.push(FillFrame { at: Time::from_secs_f64(n as f64 / 10.0).0, file, rect: [10, 20, 2, 2], shift: None });
         }
         assert!(!exists(&dir));
         write_index(&dir, &idx).unwrap();

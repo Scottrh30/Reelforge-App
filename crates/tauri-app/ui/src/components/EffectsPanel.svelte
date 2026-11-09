@@ -134,6 +134,7 @@
 
   const keyTip = (p: ParamView) => (p.key_here ? "Remove the keyframe here" : p.animated ? "Add a keyframe at the playhead" : "Animate: add a keyframe at the playhead");
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+  /// (Face beauty's list of faces.)
   /// Object removal: the roto brush in one-click mode, making an Object to remove mask.
   function pickToRemove() {
     const id = app.s?.inspector?.id;
@@ -307,6 +308,45 @@
           </div>
           {#if on}
             <p class="note">Drag in the Viewer to paint. For <b>Clone</b>, Alt-click where to copy from first; the next stroke copies from there, keeping the same distance for later strokes. Undo takes the last stroke away.</p>
+          {/if}
+        {/if}
+        {#if fx.kind === "FaceBeauty"}
+          {@const busy = app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null}
+          <div class="row lut">
+            <span class="file">{busy !== null ? `Finding faces… ${Math.round(busy * 100)}%` : fx.faces === null ? "Faces not looked for yet" : fx.faces.length === 0 ? "No faces found" : `${fx.faces.length} face${fx.faces.length === 1 ? "" : "s"} found`}</span>
+            {#if busy !== null}
+              <button class="small" onclick={() => run(api.trackCancel())}>Stop</button>
+            {:else}
+              <button class="small" disabled={!!app.live?.tracking || ins.kind !== "video"} onclick={() => run(api.findFaces(ins.id, i))} title="Find the faces in every frame and follow them through the clip (in the background)">{fx.faces === null ? "Find faces" : "Find again"}</button>
+            {/if}
+          </div>
+          {#if fx.faces?.length}
+            <div class="faces">
+              {#each fx.faces as f, k}
+                <label class="check" title="Seen in {f.frames} frames"><input type="checkbox" checked={f.on} onchange={(e) => run(api.faceOn(ins.id, i, k, e.currentTarget.checked))} /> Face {k + 1} <span class="muted">({f.frames} frames, at {Math.round(f.rect[0] * 100)}%, {Math.round(f.rect[1] * 100)}%)</span></label>
+              {/each}
+            </div>
+            <p class="note">Tick <b>Show faces</b> to see which is which in the Viewer.</p>
+          {:else if fx.faces === null && busy === null}
+            <p class="note">Press <b>Find faces</b>: faces are found in every frame and followed through the clip. Or set <b>Where</b> to <b>All skin in the picture</b> to smooth skin without looking for faces.</p>
+          {/if}
+        {/if}
+        {#if fx.kind === "SkyReplace"}
+          {@const busy = app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null}
+          <div class="row lut">
+            <span class="file" title={fx.sky_image ?? ""}>{fx.sky_image ? fx.sky_image.split(/[\\/]/).pop() : "No picture: a gradient sky"}</span>
+            <button class="small" onclick={() => run(api.skyImage(ins.id, i))} title="Choose a picture of a sky">Choose sky…</button>
+          </div>
+          <div class="row lut">
+            <span class="file">{busy !== null ? `Finding the sky… ${Math.round(busy * 100)}%` : fx.sky_frames !== null ? `Sky found in ${fx.sky_frames} frames` : "The sky not found yet"}</span>
+            {#if busy !== null}
+              <button class="small" onclick={() => run(api.trackCancel())}>Stop</button>
+            {:else}
+              <button class="small" disabled={!!app.live?.tracking || ins.kind !== "video"} onclick={() => run(api.findSky(ins.id, i))} title="Find the sky in every frame, and how the camera moves (in the background)">{fx.sky_frames === null ? "Find the sky" : "Find again"}</button>
+            {/if}
+          </div>
+          {#if fx.sky_frames === null && busy === null}
+            <p class="note">Press <b>Find the sky</b>: the object model picks out the sky in every other frame (it looks for sky along the top of the first frame), its edge is fitted to the trees and roofs, and the camera's movement is worked out so the new sky moves with it. Then choose a sky picture, or use the gradient.</p>
           {/if}
         {/if}
         {#if fx.kind === "ObjectRemoval"}
@@ -582,5 +622,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .faces {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 4px 0;
   }
 </style>

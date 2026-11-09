@@ -3643,6 +3643,7 @@ dependencies = [
  "anyhow",
  "cpal",
  "crossbeam-channel",
+ "image",
  "jpeg-encoder",
  "libc",
  "log",
@@ -3746,6 +3747,7 @@ dependencies = [
  "matrixmultiply",
  "pollster",
  "rayon",
+ "serde",
  "serde_json",
  "wgpu",
 ]

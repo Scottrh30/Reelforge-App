@@ -525,3 +525,209 @@ fn fs_paint(in: VsOut) -> @location(0) vec4<f32> {
     }
     return out;
 }
+
+// ---- Face beauty: the faces (the second texture: two texels each, middle
+// and half size as 16-bit fractions of the layer; extra2.x how many).
+// p0 = (mode, smoothing %, detail %, brighten %), p1 = (even tone %, where,
+// face area %, softness %), p2.x = show faces. extra.zw = layer size.
+
+fn fb_frac(v: f32) -> f32 {
+    return v / 65535.0 * 2.0 - 0.5;
+}
+
+fn fb_skin(rgb: vec3<f32>) -> f32 {
+    let g = to_display(rgb);
+    let cb = 0.5 - 0.1687 * g.r - 0.3313 * g.g + 0.5 * g.b;
+    let cr = 0.5 + 0.5 * g.r - 0.4187 * g.g - 0.0813 * g.b;
+    let y = dot(g, vec3(0.299, 0.587, 0.114));
+    let a = smoothstep(0.27, 0.31, cb) * (1.0 - smoothstep(0.49, 0.53, cb));
+    let b = smoothstep(0.515, 0.545, cr) * (1.0 - smoothstep(0.68, 0.72, cr));
+    return a * b * smoothstep(0.08, 0.18, y);
+}
+
+@fragment
+fn fs_beauty(in: VsOut) -> @location(0) vec4<f32> {
+    let c0 = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let n = i32(fx.extra2.x);
+    let mode = i32(fx.p0.x);
+    let all_skin = fx.p1.y > 0.5;
+    // Which face this is in, and how far in (1 inside, fading out at the edge).
+    var w = select(0.0, 1.0, all_skin);
+    var face_r = size.y * 0.08;
+    var ring = 0.0;
+    let grow = max(fx.p1.z / 100.0, 0.1);
+    let soft = clamp(fx.p1.w / 100.0, 0.0, 1.0) * 0.8 + 0.05;
+    for (var i = 0; i < n; i = i + 1) {
+        let a = pt_u16(textureLoad(second, vec2(i * 2, 0), 0));
+        let b = pt_u16(textureLoad(second, vec2(i * 2 + 1, 0), 0));
+        let c = vec2(fb_frac(a.x), fb_frac(a.y)) * size;
+        let r = max(vec2(fb_frac(b.x), fb_frac(b.y)) * size, vec2(1.0));
+        let d = length((p - c) / (r * grow));
+        let wf = 1.0 - smoothstep(1.0 - soft, 1.0, d);
+        if (!all_skin && wf > w) {
+            w = wf;
+            face_r = r.x;
+        }
+        // The face as found, outlined (Show faces).
+        let e = length((p - c) / r);
+        ring = max(ring, 1.0 - smoothstep(1.0, 2.5, abs(e - 1.0) * r.x));
+    }
+    var out = c0;
+    let rgb0 = unpremul(c0);
+    if (w > 0.0) {
+        if (mode == 1) {
+            // Blur: a disc a quarter of the face across.
+            let rad = face_r * 0.25;
+            var acc = vec4(0.0);
+            for (var k = 0; k < 32; k = k + 1) {
+                let t = f32(k) * 2.39996;
+                let rr = rad * sqrt((f32(k) + 0.5) / 32.0);
+                acc += textureSample(src, src_sampler, to_tex(in.uv + vec2(cos(t), sin(t)) * rr / size));
+            }
+            out = mix(c0, acc / 32.0, w);
+        } else if (mode == 2) {
+            // Pixelate: blocks a fifth of the face across.
+            let blk = max(face_r / 5.0, 4.0);
+            let q = (floor(p / blk) + 0.5) * blk;
+            out = mix(c0, textureSample(src, src_sampler, to_tex(q / size)), w);
+        } else {
+            // Smooth skin: an edge-keeping (bilateral) average of the skin round it.
+            let skin = fb_skin(rgb0);
+            let k = w * skin;
+            if (k > 0.001) {
+                let rad = max(face_r * 0.12 * fx.p0.y / 50.0, 1.0);
+                let g0 = sqrt(max(rgb0, vec3(0.0)));
+                // How different a neighbour may be and still be smoothed in (more with more smoothing).
+                let sigma = 0.04 + 0.1 * clamp(fx.p0.y / 100.0, 0.0, 1.0);
+                var acc = vec3(0.0);
+                var wsum = 0.0;
+                var wide = vec3(0.0);
+                for (var j = 0; j < 24; j = j + 1) {
+                    let t = f32(j) * 2.39996;
+                    let rr = rad * sqrt((f32(j) + 0.5) / 24.0);
+                    let s = textureSample(src, src_sampler, to_tex(in.uv + vec2(cos(t), sin(t)) * rr / size));
+                    let rgb = unpremul(s);
+                    let g = sqrt(max(rgb, vec3(0.0)));
+                    let dg = g - g0;
+                    let ws = exp(-dot(dg, dg) / (2.0 * sigma * sigma)) * (0.2 + 0.8 * fb_skin(rgb));
+                    acc += rgb * ws;
+                    wsum += ws;
+                    wide += rgb;
+                }
+                let soft_c = (acc + rgb0) / (wsum + 1.0);
+                // The fine texture (pores), put back by `detail`.
+                let px = 1.5 / size;
+                let near = (unpremul(textureSample(src, src_sampler, to_tex(in.uv + vec2(px.x, 0.0)))) + unpremul(textureSample(src, src_sampler, to_tex(in.uv - vec2(px.x, 0.0)))) + unpremul(textureSample(src, src_sampler, to_tex(in.uv + vec2(0.0, px.y)))) + unpremul(textureSample(src, src_sampler, to_tex(in.uv - vec2(0.0, px.y))))) * 0.25;
+                var res = soft_c + (rgb0 - near) * clamp(fx.p0.z / 100.0, 0.0, 1.0);
+                // Even out the tone: the colour (not the brightness) towards the skin round it.
+                let lum = dot(res, vec3(0.2126, 0.7152, 0.0722));
+                let wide_c = wide / 24.0;
+                let wl = max(dot(wide_c, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+                res = mix(res, wide_c * (lum / wl), clamp(fx.p1.x / 100.0, 0.0, 1.0) * 0.8);
+                // Brighten a touch.
+                res *= 1.0 + 0.3 * clamp(fx.p0.w / 100.0, 0.0, 1.0);
+                let amt = k * clamp(fx.p0.y / 25.0, 0.0, 1.0);
+                out = vec4(mix(rgb0, max(res, vec3(0.0)), amt) * c0.a, c0.a);
+            }
+        }
+    }
+    if (fx.p2.x > 0.5 && n > 0) {
+        out = mix(out, vec4(0.1, 0.9, 0.3, 1.0), ring);
+    }
+    return out;
+}
+
+// ---- Sky replacement, first pass: the sky cut out of the layer. The second
+// texture is the sky matte (alpha, whole frame). p3.x = opacity, p3.y = view;
+// p2.y = edge softness px, p2.z = edge shift px. extra.zw = layer size.
+
+fn sky_matte(uv: vec2<f32>) -> f32 {
+    let size = fx.extra.zw;
+    let soft = max(fx.p2.y, 0.0);
+    let shift = fx.p2.z;
+    let r = soft + abs(shift);
+    var m = textureSampleLevel(second, second_sampler, clamp(uv, vec2(0.0), vec2(1.0)), 0.0).a;
+    if (r > 0.5) {
+        var acc = m;
+        for (var k = 0; k < 12; k = k + 1) {
+            let t = f32(k) * 0.5236;
+            for (var ring = 1; ring <= 2; ring = ring + 1) {
+                let o = vec2(cos(t), sin(t)) * r * f32(ring) / 2.0 / size;
+                acc += textureSampleLevel(second, second_sampler, clamp(uv + o, vec2(0.0), vec2(1.0)), 0.0).a;
+            }
+        }
+        m = acc / 25.0;
+        // A blurred edge rises over about 2r: moving it `shift` px along.
+        m = clamp(m + shift / max(2.0 * r, 1.0), 0.0, 1.0);
+    }
+    return m;
+}
+
+@fragment
+fn fs_sky_cut(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let m = sky_matte(in.uv) * clamp(fx.p3.x / 100.0, 0.0, 1.0);
+    if (i32(fx.p3.y) == 1) {
+        return vec4(vec3(m), 1.0);
+    }
+    return c * (1.0 - m);
+}
+
+// ---- Second pass: the new sky under what's left. The second texture is the
+// new sky picture (or anything, for the gradient). p0 = (source, top colour,
+// horizon colour, x %), p1 = (y %, scale %, follow %, brightness %), p2.x =
+// blur px, p2.w = match lighting %. extra2 = the camera's move (x, y as
+// fractions, scale) and the sky's average colour.
+@fragment
+fn fs_sky_fill(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let view = i32(fx.p3.y);
+    if (view == 1) {
+        return c;
+    }
+    let size = fx.extra.zw;
+    let follow = fx.p1.z / 100.0;
+    let mv = fx.extra2.xy * follow;
+    let zoom = max(fx.p1.y / 100.0 * (1.0 + (fx.extra2.z - 1.0) * follow), 0.05);
+    let picture = fx.p0.x < 0.5 && fx.extra2.w > 0.0;
+    let dims = vec2<f32>(textureDimensions(second));
+    let blur = max(fx.p2.x, 0.0);
+    var sky = vec3(0.0);
+    let taps = select(1, 13, blur > 0.5);
+    for (var k = 0; k < taps; k = k + 1) {
+        var o = vec2(0.0);
+        if (k > 0) {
+            let t = f32(k) * 2.39996;
+            o = vec2(cos(t), sin(t)) * blur * sqrt(f32(k) / 12.0) / size;
+        }
+        let uv = (in.uv + o - 0.5 - vec2(fx.p0.w, fx.p1.x) / 100.0 - mv) / zoom + 0.5;
+        if (picture) {
+            // Cover the frame, keeping the picture's shape.
+            let a = size.x / size.y;
+            let b = dims.x / max(dims.y, 1.0);
+            var q = uv;
+            if (b > a) {
+                q.x = (uv.x - 0.5) * a / b + 0.5;
+            } else {
+                q.y = (uv.y - 0.5) * b / a + 0.5;
+            }
+            sky += to_linear(textureSampleLevel(second, second_sampler, clamp(q, vec2(0.0), vec2(1.0)), 0.0).rgb);
+        } else {
+            sky += mix(lt_rgb(fx.p0.y), lt_rgb(fx.p0.z), smoothstep(0.0, 1.0, clamp(uv.y, 0.0, 1.0)));
+        }
+    }
+    sky = sky / f32(taps) * (1.0 + fx.p1.w / 100.0);
+    if (view == 2) {
+        return vec4(sky, 1.0);
+    }
+    // The footage's light towards the new sky's colour.
+    var avg = mix(lt_rgb(fx.p0.y), lt_rgb(fx.p0.z), 0.5);
+    if (picture) {
+        avg = lt_rgb(fx.extra2.w);
+    }
+    let tint = avg / max(dot(avg, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+    let fg = c.rgb * mix(vec3(1.0), clamp(tint, vec3(0.5), vec3(2.0)), clamp(fx.p2.w / 100.0, 0.0, 1.0) * 0.35);
+    return vec4(fg + sky * (1.0 - c.a), 1.0 - (1.0 - c.a) * 0.0);
+}

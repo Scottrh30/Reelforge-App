@@ -562,7 +562,7 @@ export type ControlValue = string | number | [number, number];
 export type ControlTarget = "Text" | "TextColour" | "Opacity" | "Position" | { Param: { effect: number; param: number } };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace";
 
 export interface Curves {
   master: Pt[];
@@ -608,6 +608,11 @@ export interface EffectView {
   fill_preview: boolean;
   /// Paint: how many strokes.
   strokes: number;
+  /// Face beauty: the faces found (null: not looked for yet).
+  faces: { on: boolean; frames: number; at: number; rect: [number, number, number, number] }[] | null;
+  /// Sky replacement: the new sky's picture, and frames the sky was found in (null: not yet).
+  sky_image: string | null;
+  sky_frames: number | null;
   animated: boolean;
   /// Positions to drag in the Viewer (an OpenFX plugin's): x at `param`, y at `param + 1`.
   points: { param: number; label: string; relative: number | null }[];
@@ -875,6 +880,7 @@ export interface Live {
   proxies: number;
   collect: CollectView | null;
   tracking: [number, number] | null;
+  upscaling: [number, number] | null;
   render: number | null;
   render_gen: number;
   /// What the Viewer works from, for its performance readout.
@@ -1075,6 +1081,10 @@ export const api = {
   paintStroke: (id: number, index: number, points: Pt[], source: Pt | null) => invoke("paint_stroke", { id, index, points, source }),
   paintClear: (id: number, index: number) => invoke("paint_clear", { id, index }),
   objectRemoval: (id: number, index: number, preview = false) => invoke("object_removal", { id, index, preview }),
+  findFaces: (id: number, index: number) => invoke("find_faces", { id, index }),
+  faceOn: (id: number, index: number, face: number, on: boolean) => invoke("face_on", { id, index, face, on }),
+  findSky: (id: number, index: number) => invoke("find_sky", { id, index }),
+  skyImage: (id: number, index: number) => invoke("sky_image", { id, index }),
   camtrackStart: (id: number, fov: number | null, tripod: boolean) => invoke("camtrack_start", { id, fov, tripod }),
   camtrackMake: (id: number, what: CamMake, picked: number[]) => invoke("camtrack_make", { id, what, picked }),
   camtrackGround: (id: number, picked: number[]) => invoke("camtrack_ground", { id, picked }),
@@ -1169,6 +1179,8 @@ export const api = {
   markerSet: (index: number, at: Ticks, name: string, color: MarkerColor) => invoke("marker_set", { index, at: Math.round(at), name, color }),
   markerRemove: (index: number) => invoke("marker_remove", { index }),
   proxyMake: (media: number) => invoke("proxy_make", { media }),
+  upscaleMedia: (media: number, factor: number, replace: boolean) => invoke("upscale_media", { media, factor, replace }),
+  upscaleCancel: () => invoke("upscale_cancel"),
   proxyDelete: (media: number) => invoke("proxy_delete", { media }),
   proxiesDeleteAll: () => invoke("proxies_delete_all"),
   proxiesRemake: (format: ProxyFormat) => invoke<number>("proxies_remake", { format }),

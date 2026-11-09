@@ -274,6 +274,8 @@ enum TrackMsg {
     FillDone(Result<Option<std::path::PathBuf>, String>),
     /// A roto brush run (`None`: stopped).
     RotoDone(Result<Option<roto::RotoRun>, String>),
+    /// Face beauty's faces or sky replacement's sky (`None`: stopped).
+    AiDone(Result<Option<aifx::AiResult>, String>),
 }
 
 mod camtrack;
@@ -291,6 +293,8 @@ pub mod magnetic;
 pub mod simulate;
 pub use multicam::MulticamAt;
 mod replace;
+mod aifx;
+pub mod upscale;
 mod snapshot;
 mod stilltrim_tests;
 pub use viewcam::ViewMode;
@@ -314,6 +318,8 @@ pub struct TrackJob {
     pub fill: Option<usize>,
     /// Carrying roto brush mask `.0` on through the shot.
     pub roto: Option<usize>,
+    /// Finding the faces or the sky for effect `.0`.
+    pub ai: Option<usize>,
 }
 
 /// An interactive edit in progress: what's being changed and its value before the gesture.
@@ -414,6 +420,8 @@ pub struct Editor {
     pub recoveries: Vec<crate::safety::Recovery>,
     /// A motion-tracking run in progress.
     pub tracking: Option<TrackJob>,
+    /// An AI upscale being made (Media panel).
+    pub upscale: Option<upscale::UpscaleJob>,
     /// A preset shown on a clip while it's hovered in the effects browser:
     /// the clip, and its look and title style before (put back by
     /// [`Editor::end_preset_preview`], and before anything else is done).
@@ -481,6 +489,7 @@ impl Editor {
             session: None,
             recoveries: Vec::new(),
             tracking: None,
+            upscale: None,
             preset_preview: None,
             comp_thumbs: HashMap::new(),
             fx_thumbs: HashMap::new(),
@@ -2942,7 +2951,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: None });
         self.status = "Tracking…".into();
     }
 
@@ -3014,7 +3023,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("mask tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id), camera: false, fill: None, roto: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id), camera: false, fill: None, roto: None, ai: None });
         self.status = if own { format!("Tracking {name}…") } else { format!("Tracking {name} through the footage below ({src_name})…") };
     }
 
@@ -3071,6 +3080,7 @@ impl Editor {
         let mut camera = None;
         let mut fill = None;
         let mut roto = None;
+        let mut ai = None;
         while let Ok(m) = job.rx.try_recv() {
             match m {
                 TrackMsg::Progress(p) => job.progress = p,
@@ -3078,7 +3088,13 @@ impl Editor {
                 TrackMsg::CameraDone(r) => camera = Some(r),
                 TrackMsg::FillDone(r) => fill = Some(r),
                 TrackMsg::RotoDone(r) => roto = Some(r),
+                TrackMsg::AiDone(r) => ai = Some(r),
             }
+        }
+        if let Some(r) = ai {
+            let job = self.tracking.take().unwrap();
+            self.finish_ai(&job, r);
+            return;
         }
         if let Some(r) = roto {
             let job = self.tracking.take().unwrap();
@@ -3572,6 +3588,7 @@ impl Editor {
             self.waveforms.insert(id, Arc::new(peaks));
         }
         self.poll_tracking();
+        self.poll_upscale();
         let seq = &self.project.sequences[self.active];
         let (rate, end) = (seq.frame_rate, seq.duration());
         self.playback.tick(rate, end);

@@ -35,6 +35,22 @@
             ]
           : []),
       { label: "Show in folder", disabled: m.missing, run: () => run(api.showInFolder(m.path)) },
+      ...(m.kind !== "audio" && !m.missing
+        ? [
+            app.live?.upscaling
+              ? { label: "Stop the AI upscale", run: () => run(api.upscaleCancel()) }
+              : {
+                  label: "AI upscale",
+                  submenu: [
+                    { label: "2× — add a copy", hint: `${m.width * 2}×${m.height * 2}`, disabled: m.width * 2 > 7680, run: () => run(api.upscaleMedia(m.id, 2, false)) },
+                    { label: "4× — add a copy", hint: `${m.width * 4}×${m.height * 4}`, disabled: m.width * 4 > 7680, run: () => run(api.upscaleMedia(m.id, 4, false)) },
+                    { separator: true },
+                    { label: "2× — use it in place of this", hint: "keeps every edit", disabled: m.width * 2 > 7680, run: () => run(api.upscaleMedia(m.id, 2, true)) },
+                    { label: "4× — use it in place of this", hint: "keeps every edit", disabled: m.width * 4 > 7680, run: () => run(api.upscaleMedia(m.id, 4, true)) },
+                  ],
+                },
+          ]
+        : []),
       { separator: true },
       {
         label: "Replace footage",
@@ -150,6 +166,7 @@
             {:else if m.proxy}
               <span class="flag" class:bad={m.proxy === "failed"} class:ready={m.proxy === "ready"} title={m.proxy_error ?? (m.proxy === "ready" ? `A small ${m.proxy_format ?? ""} copy for smooth editing; export uses the original` : "")}>{proxyLabel(m)}</span>
             {/if}
+            {#if app.live?.upscaling && app.live.upscaling[0] === m.id}<span class="flag ready" title="An AI-upscaled copy is being made (right-click to stop)">Upscaling {Math.round(app.live.upscaling[1] * 100)}%</span>{/if}
             {#if m.hdr}<span class="hdr" title="HDR footage ({m.hdr === 'PQ' ? 'HDR10, PQ' : 'HLG'}): its highlights are kept above white for HDR export; SDR shows and exports them cut at white">HDR</span>{/if}
           </div>
           <div class="name" title={m.path}>{m.name}</div>

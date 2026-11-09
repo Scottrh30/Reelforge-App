@@ -15,6 +15,8 @@ pub struct GpuEncoder {
     /// Every weight, and each attention block's full bias table.
     w: HashMap<String, (Vec<usize>, wgpu::Buffer)>,
     dummy: wgpu::Buffer,
+    /// The upscaler's weights, loaded when first needed.
+    up: std::sync::OnceLock<HashMap<String, (Vec<usize>, wgpu::Buffer)>>,
     /// What it runs on, for the status line.
     pub adapter: String,
 }
@@ -26,7 +28,7 @@ struct T {
     len: usize,
 }
 
-const ENTRIES: [&str; 12] = ["gemm", "im2col", "dwconv", "gelu", "add", "copy", "layernorm", "layernorm2d", "transpose", "windows", "unwindow", "attention"];
+const ENTRIES: [&str; 14] = ["gemm", "im2col", "dwconv", "gelu", "add", "copy", "layernorm", "layernorm2d", "transpose", "windows", "unwindow", "attention", "prelu", "shuffle"];
 
 impl GpuEncoder {
     /// A graphics card to run on, with the weights loaded onto it (`None`
@@ -69,7 +71,62 @@ impl GpuEncoder {
             w.insert(format!("{k}.table"), (vec![v.len()], up(k, v)));
         }
         let dummy = up("dummy", &[0.0; 4]);
-        Some(GpuEncoder { device, queue, pipes, w, dummy, adapter: format!("{} ({:?})", info.name, info.backend) })
+        Some(GpuEncoder { device, queue, pipes, w, dummy, up: Default::default(), adapter: format!("{} ({:?})", info.name, info.backend) })
+    }
+
+    /// One upscaler tile (see `crate::upscale`): `rgb` three planes h × w,
+    /// 0–1 → three planes four times the size.
+    pub fn upscale_tile(&self, m: &crate::upscale::Upscaler, rgb: &[f32], w: usize, h: usize) -> Option<Vec<f32>> {
+        let up = self.up.get_or_init(|| m.w.iter().map(|(k, (shape, v))| (k.clone(), (shape.clone(), self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(k), contents: bytes(v), usage: wgpu::BufferUsages::STORAGE })))).collect());
+        let mut r = Run { g: self, enc: self.device.create_command_encoder(&Default::default()), keep: Vec::new() };
+        let input = r.upload(rgb);
+        let hw = w * h;
+        let mut x = input.clone();
+        let mut c = 3usize;
+        for layer in (0..=66).step_by(2) {
+            let wt = &up.get(&format!("body.{layer}.weight"))?.1;
+            let (bias_shape, bias) = up.get(&format!("body.{layer}.bias"))?;
+            let o = bias_shape[0];
+            let cols = self.new_t(c * 9 * hw);
+            let mut u = [0u32; 16];
+            u[..8].copy_from_slice(&[c as u32, h as u32, w as u32, 3, 1, 1, h as u32, w as u32]);
+            r.go("im2col", u, [hw.div_ceil(256) as u32, (c * 9) as u32, 1], &[(1, &x.buf), (3, &cols.buf)]);
+            let y = r.gemm(o, c * 9, hw, wt, &cols.buf.clone(), false, Some((bias, true)));
+            if layer < 66 {
+                let a = &up.get(&format!("body.{}.weight", layer + 1))?.1;
+                let mut u = [0u32; 16];
+                u[..2].copy_from_slice(&[(o * hw) as u32, hw as u32]);
+                r.go("prelu", u, Run::flat(o * hw), &[(2, a), (3, &y.buf)]);
+            }
+            r.flush();
+            x = y;
+            c = o;
+        }
+        let out = self.new_t(3 * hw * 16);
+        let mut u = [0u32; 16];
+        u[..2].copy_from_slice(&[h as u32, w as u32]);
+        r.go("shuffle", u, [(w * 4).div_ceil(256) as u32, (3 * h * 4) as u32, 1], &[(1, &x.buf), (2, &input.buf), (3, &out.buf)]);
+        self.read(r, &out)
+    }
+
+    /// Submit what `r` recorded and read `out` back.
+    fn read(&self, mut r: Run<'_>, out: &T) -> Option<Vec<f32>> {
+        let size = (out.len * 4) as u64;
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("read back"), size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        r.enc.copy_buffer_to_buffer(&out.buf, 0, &staging, 0, size);
+        self.queue.submit([r.enc.finish()]);
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        rx.recv().ok()?.ok()?;
+        let data = slice.get_mapped_range().ok()?;
+        let v: Vec<f32> = data.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        drop(data);
+        staging.unmap();
+        v.iter().all(|x| x.is_finite()).then_some(v)
     }
 
     fn new_t(&self, len: usize) -> T {

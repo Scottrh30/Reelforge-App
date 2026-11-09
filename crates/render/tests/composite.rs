@@ -643,7 +643,7 @@ fn plugin(id: &str, manifest_extra: &str, params: &str, source: &str) -> std::sy
 fn plugin_fx(def: &std::sync::Arc<reelforge_core::plugin::PluginDef>, values: &[f32], time: f32) -> EffectValues {
     let mut v = [0.0; reelforge_core::effects::MAX_PARAMS];
     v[..values.len()].copy_from_slice(values);
-    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None, particles: None, pieces: None, fluid: None, gpu: [0.0; 4] }
+    EffectValues { kind: EffectKind::Plugin, values: v, table: None, plugin: Some(def.clone()), time, prev: None, particles: None, pieces: None, fluid: None, gpu: [0.0; 4], table2: None }
 }
 
 #[test]
@@ -2249,4 +2249,90 @@ fn paint_clones_brushes_and_erases() {
     assert!(near(px(&out, w, 60, 20), [0, 0, 255]), "untouched: {:?}", px(&out, w, 60, 20));
     let out = draw(&mut c, vec![st(Tool::Brush, vec![[60.0, 30.0]], 0x00ff00, [0.0; 2]), st(Tool::Erase, vec![[60.0, 30.0]], 0, [0.0; 2])]);
     assert!(near(px(&out, w, 60, 30), [0, 0, 255]), "erased: {:?}", px(&out, w, 60, 30));
+}
+
+/// Face beauty: the skin of a face found is smoothed (its blotches evened
+/// out), the picture outside it isn't; Pixelate turns the face into blocks.
+#[test]
+fn face_beauty_smooths_the_face_and_nothing_else() {
+    use reelforge_core::faces::{FaceKey, FaceTrack};
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 100u32);
+    // Skin with blotches all over (a face on the left, more skin on the right).
+    let img: Vec<u8> = (0..w * h)
+        .flat_map(|i| {
+            let (x, y) = (i % w, i / w);
+            let n = (((x * 7 + y * 13) % 5) as i32 - 2) * 12;
+            [(215 + n).clamp(0, 255) as u8, (160 + n).clamp(0, 255) as u8, (130 + n).clamp(0, 255) as u8, 255]
+        })
+        .collect();
+    let face = FaceTrack { on: true, keys: vec![FaceKey { at: Time::ZERO, rect: [0.25, 0.5, 0.3, 0.6] }] };
+    let mut n = 8100;
+    let mut draw = |c: &mut Compositor, mode: f32| {
+        let mut e = Effect::new(EffectKind::FaceBeauty);
+        e.params[reelforge_core::effects::beauty::MODE].value = mode;
+        e.params[reelforge_core::effects::beauty::SMOOTH].value = 100.0;
+        e.params[reelforge_core::effects::beauty::DETAIL].value = 0.0;
+        e.data = Some(reelforge_core::effects::EffectData::Faces(vec![face.clone()]));
+        n += 1;
+        let mut l = layer(1, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        let v = e.eval_sized(Time::ZERO, None, [w as f32, h as f32]);
+        assert!(!v.is_identity());
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let spread = |out: &[u8], x0: u32| {
+        let vals: Vec<f32> = (40..60).flat_map(|y| (x0..x0 + 10).map(move |x| (y, x))).map(|(y, x)| out[((y * w + x) * 4) as usize] as f32).collect();
+        let m = vals.iter().sum::<f32>() / vals.len() as f32;
+        (vals.iter().map(|v| (v - m).powi(2)).sum::<f32>() / vals.len() as f32).sqrt()
+    };
+    let out = draw(&mut c, 0.0);
+    let (face_sd, other_sd) = (spread(&out, 35), spread(&out, 130));
+    assert!(face_sd < other_sd * 0.5, "smoothed {face_sd} vs {other_sd}");
+    let px_out = draw(&mut c, 2.0);
+    // Blocks: neighbours inside one block alike.
+    assert_eq!(px(&px_out, w, 40, 50), px(&px_out, w, 41, 50));
+}
+
+/// Sky replacement: where the sky matte is, the new sky (a gradient here)
+/// shows; the ground stays; the matte view shows the matte.
+#[test]
+fn sky_replacement_puts_the_new_sky_where_the_old_was() {
+    use reelforge_core::effects::sky;
+    use reelforge_core::fillstore::{write_frame, write_index, FillFrame, FillIndex};
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (80u32, 60u32);
+    let img: Vec<u8> = (0..w * h).flat_map(|i| if i / w < 30 { [200u8, 220, 250, 255] } else { [90, 60, 40, 255] }).collect();
+    let dir = std::env::temp_dir().join(format!("rf-sky-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let matte: Vec<u8> = (0..w * h).flat_map(|i| [0, 0, 0, if i / w < 30 { 255u8 } else { 0 }]).collect();
+    let file = write_frame(&dir, 0, [0, 0, w, h], &matte).unwrap();
+    write_index(&dir, &FillIndex { size: [w, h], frames: vec![FillFrame { at: 0, file, rect: [0, 0, w, h], shift: Some([0.0, 0.0, 1.0]) }], preview: None }).unwrap();
+    let mut n = 8200;
+    let mut draw = |c: &mut Compositor, view: f32| {
+        let mut e = Effect::new(EffectKind::SkyReplace);
+        e.params[sky::SOURCE].value = 1.0;
+        e.params[sky::TOP].value = 0xff0000 as f32;
+        e.params[sky::HORIZON].value = 0xff0000 as f32;
+        e.params[sky::MATCH].value = 0.0;
+        e.params[sky::SOFTNESS].value = 0.0;
+        e.params[sky::VIEW].value = view;
+        e.data = Some(reelforge_core::effects::EffectData::Sky { image: None, matte: Some(dir.clone()) });
+        n += 1;
+        let mut l = layer(1, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        let v = e.eval_sized(Time::ZERO, None, [w as f32, h as f32]);
+        assert!(!v.is_identity());
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let out = draw(&mut c, 0.0);
+    assert!(near(px(&out, w, 40, 10), [255, 0, 0]), "new sky: {:?}", px(&out, w, 40, 10));
+    assert!(near(px(&out, w, 40, 50), [90, 60, 40]), "ground: {:?}", px(&out, w, 40, 50));
+    let m = draw(&mut c, 1.0);
+    assert!(near(px(&m, w, 40, 10), [255, 255, 255]) && near(px(&m, w, 40, 50), [0, 0, 0]));
+    std::fs::remove_dir_all(&dir).unwrap();
 }

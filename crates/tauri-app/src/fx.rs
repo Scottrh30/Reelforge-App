@@ -78,6 +78,13 @@ pub struct EffectView {
     pub fill_preview: bool,
     /// Paint: how many strokes.
     pub strokes: usize,
+    /// Face beauty: the faces found (`None`: not looked for yet): whether
+    /// each is on, the frames it's in, and where it is first.
+    pub faces: Option<Vec<FaceView>>,
+    /// Sky replacement: the new sky's picture, and how many frames the sky
+    /// has been found in (`None`: not yet).
+    pub sky_image: Option<String>,
+    pub sky_frames: Option<usize>,
     pub animated: bool,
     /// Positions to drag in the Viewer (an OpenFX plugin's): the first of
     /// each one's two parameters (x, y in % of the layer, y down) and its name.
@@ -221,6 +228,18 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 strokes: match &fx.data {
                     Some(EffectData::Paint(s)) => s.len(),
                     _ => 0,
+                },
+                faces: match &fx.data {
+                    Some(EffectData::Faces(f)) => Some(f.iter().map(|t| FaceView { on: t.on, frames: t.keys.len(), at: t.keys.first().map_or(0, |k| k.at.0), rect: t.keys.first().map_or([0.0; 4], |k| k.rect) }).collect()),
+                    _ => None,
+                },
+                sky_image: match &fx.data {
+                    Some(EffectData::Sky { image: Some(p), .. }) => Some(p.display().to_string()),
+                    _ => None,
+                },
+                sky_frames: match &fx.data {
+                    Some(EffectData::Sky { matte: Some(d), .. }) if reelforge_core::fillstore::exists(d) => Some(reelforge_core::fillstore::frame_count(d)),
+                    _ => None,
                 },
                 fill_preview: matches!(&fx.data, Some(EffectData::Fill(dir)) if reelforge_core::fillstore::is_preview(dir)),
                 filled: match &fx.data {
@@ -527,6 +546,64 @@ pub fn particles_preset(id: u64, index: usize, preset: usize) -> Res<()> {
         });
         e.commit_live_edit();
         e.status = format!("{name} particles");
+    })
+}
+
+#[derive(Serialize, Clone)]
+pub struct FaceView {
+    pub on: bool,
+    pub frames: usize,
+    /// Where it's first seen (source ticks), and its box there (middle, size; fractions of the layer).
+    pub at: i64,
+    pub rect: [f32; 4],
+}
+
+/// Face beauty `index` of clip `id`: find the faces and follow them, in the background.
+#[tauri::command]
+pub fn find_faces(id: u64, index: usize) -> Res<()> {
+    ed(|e| e.start_find_faces(reelforge_core::ClipId(id), index))
+}
+
+/// Face beauty: work on face `face` or leave it be.
+#[tauri::command]
+pub fn face_on(id: u64, index: usize, face: usize, on: bool) -> Res<()> {
+    ed(|e| {
+        e.commit_live_edit();
+        edit(e, id, |list, _, _| {
+            if let Some(EffectData::Faces(f)) = list.get_mut(index).and_then(|fx| fx.data.as_mut()) {
+                if let Some(t) = f.get_mut(face) {
+                    t.on = on;
+                }
+            }
+        });
+        e.commit_live_edit();
+    })
+}
+
+/// Sky replacement `index` of clip `id`: find the sky in every frame, in the background.
+#[tauri::command]
+pub fn find_sky(id: u64, index: usize) -> Res<()> {
+    ed(|e| e.start_find_sky(reelforge_core::ClipId(id), index))
+}
+
+/// Sky replacement: choose the new sky's picture.
+#[tauri::command]
+pub fn sky_image(id: u64, index: usize) -> Res<()> {
+    let Some(path) = rfd::FileDialog::new().set_title("The new sky (a picture)").add_filter("Pictures", &["jpg", "jpeg", "png", "tif", "tiff", "exr", "bmp", "webp"]).pick_file() else { return Ok(()) };
+    ed(|e| {
+        e.commit_live_edit();
+        edit(e, id, |list, _, _| {
+            if let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::SkyReplace) {
+                let matte = match &fx.data {
+                    Some(EffectData::Sky { matte, .. }) => matte.clone(),
+                    _ => None,
+                };
+                fx.data = Some(EffectData::Sky { image: Some(path.clone()), matte });
+                fx.params[reelforge_core::effects::sky::SOURCE].value = 0.0;
+            }
+        });
+        e.commit_live_edit();
+        e.status = format!("New sky: {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
     })
 }
 
