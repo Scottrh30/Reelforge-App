@@ -52,9 +52,9 @@ fn flash(px: vec2<f32>, p: vec2<f32>, size_px: f32, seed: f32) -> vec2<f32> {
     let r = max(size_px, 1.0);
     let ang = atan2(v.y, v.x);
     let blob = exp(-(dist * dist) / (r * r));
-    let rays = (pow(abs(cos(ang * 3.0 + seed * 6.2831853)), 24.0) + 0.6 * pow(abs(cos(ang * 2.0 + seed * 3.7 + 1.0)), 40.0)) * exp(-dist / (r * 2.2));
+    let rays = (pow(abs(cos(ang * 3.0 + seed * 6.2831853)), 24.0) + 0.6 * pow(abs(cos(ang * 2.0 + seed * 3.7 + 1.0)), 40.0)) * exp(-dist / (r * 1.3));
     let hot = exp(-(dist * dist) / (r * r * 0.12));
-    return vec2(hot, blob + 0.8 * rays);
+    return vec2(hot, blob + 0.45 * rays);
 }
 
 fn effect(uv: vec2<f32>) -> vec4<f32> {

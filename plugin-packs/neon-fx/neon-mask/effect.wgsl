@@ -152,13 +152,22 @@ fn effect(uv: vec2<f32>) -> vec4<f32> {
     let pic = sample_premul(uv) * mix(param(10) / 100.0, 1.0, inside);
 
     // The tube along the edge, drawn on round the shape's centre.
-    let vis = nfx_reveal(q, vec2(0.0), param(14) / 100.0, 0.0, 0.0, 0.0);
+    let draw = param(14) / 100.0;
+    let vis = nfx_reveal(q, vec2(0.0), draw, 0.0, 0.0, 0.0);
+    // The glow fades in over a wider angle, so the draw-on edge doesn't cut a
+    // hard line through it; it's brightest at the end that's being drawn.
+    var gvis = 1.0;
+    if (draw < 1.0) {
+        let ang = fract(degrees(atan2(q.x, -q.y)) / 360.0 + 1.0);
+        gvis = 1.0 - smoothstep(draw - 0.04, draw + 0.01, ang);
+        gvis = gvis * (1.0 + 0.6 * smoothstep(draw - 0.05, draw, ang)) * smoothstep(0.0, 0.02, draw) * smoothstep(0.0, 0.05, ang);
+    }
     let flick = nfx_flicker(param(15) / 100.0, 0, 1.0);
     let colour = nfx_colour(param_choice(0), param(1));
     let tw = max(param(11), 0.0);
     let ld = abs(d) - tw * 0.5;
     let core = (1.0 - smoothstep(-0.75, 0.75, ld)) * clamp(tw, 0.0, 1.0) * vis;
-    let glow = nfx_glow(max(ld, 0.0), param(12)) * param(13) / 100.0 * vis * flick;
+    let glow = nfx_glow(max(ld, 0.0), param(12)) * param(13) / 100.0 * gvis * flick;
     let hot = mix(colour, vec3(1.0), 0.7) * 1.5 * flick;
     let light = hot * core + colour * glow * (1.0 - core);
     let a = max(max(pic.a * (1.0 - core), core), clamp(nfx_max3(light), 0.0, 1.0));

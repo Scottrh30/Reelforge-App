@@ -58,7 +58,7 @@ suffix = " px"
 
 [[param]]                     # 7
 name = "Glow intensity"
-default = 170
+default = 130
 min = 0
 max = 800
 suffix = " %"
