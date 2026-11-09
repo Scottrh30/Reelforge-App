@@ -128,7 +128,7 @@
       <div class="row">
         <span class="lbl" title="What the mask does. A garbage matte for keys keeps the layer inside it whatever the chroma, luma or difference key says (a subject near the screen's colour, a dark logo on a luma key); it doesn't cut the layer. To keep something out of the shot, use an ordinary mask (it cuts the layer before the key). Leave out of the 3D camera track marks something moving on its own, so the camera solve ignores it; it doesn't cut the layer either. Object to remove marks what the Object removal effect fills in.">Use</span>
         <select
-          value={m.key_keep ? "keep" : m.track_ignore ? "track" : m.fill_area ? "fill" : "cut"}
+          value={m.key_keep ? "keep" : m.track_ignore ? "track" : m.fill_area ? "fill" : m.text_path ? "path" : "cut"}
           aria-label="What this mask does"
           onchange={(e) =>
             change(
@@ -138,6 +138,7 @@
                 n.key_keep = v === "keep";
                 n.track_ignore = v === "track";
                 n.fill_area = v === "fill";
+                n.text_path = v === "path";
               },
               true,
             )}
@@ -146,6 +147,7 @@
           <option value="keep">Garbage matte: keys keep what's inside</option>
           <option value="track">Leave out of the 3D camera track</option>
           <option value="fill">Object to remove (Object removal fills it)</option>
+          <option value="path">Path for the text (Text tab → Path)</option>
         </select>
       </div>
       {#if m.fill_area}<p class="note">Doesn't change the picture by itself: add the Object removal effect (Repair) to this clip and press Remove object. Animate or track the mask to follow what's moving.</p>{/if}
@@ -165,7 +167,8 @@
           <NumberField label="Mask opacity" value={m.opacity * 100} min={0} max={100} step={0.5} digits={0} suffix="%" oninput={(v) => change(i, (n) => (n.opacity = v / 100), false)} oncommit={commit} />
         </div>
       </div>
-      {#if !m.track_ignore && !m.fill_area && !m.key_keep}
+      {#if m.text_path}<p class="note">Doesn't cut the layer: the title's text can run along it (Text tab → Path → Along).</p>{/if}
+      {#if !m.track_ignore && !m.fill_area && !m.key_keep && !m.text_path}
         <div class="row track">
           <label class="lbl" title="Fits the edge to the picture: within the radius each side of the mask's edge, every pixel's coverage is worked out from where its colour sits between the colours surely inside and surely outside, so hair, fur and motion blur go soft and background the mask took in goes">
             <input type="checkbox" checked={!!m.refine} onchange={(e) => change(i, (n) => (n.refine = e.currentTarget.checked ? { radius: 8, smooth: 20, shift: 0 } : undefined), true)} />

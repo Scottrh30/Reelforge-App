@@ -508,9 +508,10 @@ fn recipe_into(project: &Project, seq: usize, angle: Option<reelforge_core::mult
                 }
                 project.sequences.get(inner).map_or([0.0; 2], |s| [s.width as f32, s.height as f32])
             }
-            (None, Some(spec)) => {
+            (None, Some(_)) => {
                 2u8.hash(h);
                 let at = crate::title_clock(l);
+                let spec = clip.title_at(l.source_time).expect("a title");
                 spec.content_hash_at(frame_size, at.0, at.1).hash(h);
                 [frame_size[0] as f32, frame_size[1] as f32]
             }

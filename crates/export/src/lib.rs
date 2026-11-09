@@ -313,7 +313,8 @@ struct ExactFrames {
 impl FrameProvider for ExactFrames {
     fn picture(&mut self, project: &Project, l: &Layer, frame_size: [u32; 2]) -> Result<Option<Picture>> {
         let tick = self.tick;
-        if let Some(spec) = &l.clip.title {
+        if let Some(spec) = l.clip.title_at(l.source_time) {
+            let spec = &*spec;
             let at = title_clock(l);
             let hash = spec.content_hash_at(frame_size, at.0, at.1);
             let frame = match self.titles.get_mut(&l.clip.id) {

@@ -385,6 +385,8 @@ export interface Mask {
   key_keep?: boolean;
   track_ignore?: boolean;
   fill_area?: boolean;
+  /** A path for the clip's title text to run along (it doesn't cut the layer). */
+  text_path?: boolean;
   refine?: { radius: number; smooth: number; shift: number };
   roto?: { at: number; stroke: { fg: boolean; radius: number; points: Pt[] } }[];
 }

@@ -5,6 +5,7 @@
   import { app, run } from "../lib/session.svelte";
   import { api, type Inspector, type TitleSpec } from "../lib/api";
   import NumberField from "./NumberField.svelte";
+  import TextAnimators from "./TextAnimators.svelte";
 
   // `kerningTool`: show the kerning tool (the Text panel does; Controls keeps it short).
   let { ins, kerningTool = true }: { ins: Inspector; kerningTool?: boolean } = $props();
@@ -360,6 +361,9 @@
       <button class="small" onclick={() => run(api.placeTitle(ins.id, "top"))} title="Near the top, inside the title-safe area">Top</button>
     </div>
   </div>
+  {#if kerningTool && !t.shape && !solid}
+    <TextAnimators {ins} {t} {set} {once} {commit} />
+  {/if}
 </div>
 
 <style>

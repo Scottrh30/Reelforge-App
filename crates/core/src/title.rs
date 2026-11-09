@@ -50,6 +50,209 @@ impl TextCase {
     }
 }
 
+/// What a range selector counts through.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SelectorUnits {
+    #[default]
+    Characters,
+    /// Characters, leaving out spaces.
+    CharactersNoSpaces,
+    Words,
+    Lines,
+}
+
+/// How a range selector's selection rises and falls across its range.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SelectorShape {
+    /// Fully in the range, out of it outside (the edge piece partly).
+    #[default]
+    Square,
+    /// Rising across the range: none before it, all after.
+    RampUp,
+    /// Falling across the range: all before it, none after.
+    RampDown,
+    /// Up to the middle of the range and down again.
+    Triangle,
+    /// A half circle across the range.
+    Round,
+    /// A smooth bell across the range.
+    Smooth,
+}
+
+/// Which characters (words, lines) an animator works on, and how much: a
+/// range from `start` to `end` (percent of the text), moved by `offset`,
+/// each of which can be keyframed (seconds into the clip).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RangeSelector {
+    pub start: f32,
+    pub end: f32,
+    pub offset: f32,
+    #[serde(default, skip_serializing_if = "no_keys")]
+    pub start_keys: crate::anim::Curve<f32>,
+    #[serde(default, skip_serializing_if = "no_keys")]
+    pub end_keys: crate::anim::Curve<f32>,
+    #[serde(default, skip_serializing_if = "no_keys")]
+    pub offset_keys: crate::anim::Curve<f32>,
+    #[serde(default)]
+    pub units: SelectorUnits,
+    #[serde(default)]
+    pub shape: SelectorShape,
+    /// Percent (−100 to 100): how strongly the selected pieces take the
+    /// animator's values.
+    #[serde(default = "hundred")]
+    pub amount: f32,
+    /// Go through the pieces in a shuffled order (`seed` picks which).
+    #[serde(default)]
+    pub randomize: bool,
+    #[serde(default)]
+    pub seed: u32,
+}
+
+fn hundred() -> f32 {
+    100.0
+}
+fn no_keys(c: &crate::anim::Curve<f32>) -> bool {
+    c.0.is_empty()
+}
+
+impl Default for RangeSelector {
+    fn default() -> Self {
+        RangeSelector { start: 0.0, end: 100.0, offset: 0.0, start_keys: Default::default(), end_keys: Default::default(), offset_keys: Default::default(), units: SelectorUnits::Characters, shape: SelectorShape::Square, amount: 100.0, randomize: false, seed: 0 }
+    }
+}
+
+impl RangeSelector {
+    pub fn is_animated(&self) -> bool {
+        !(self.start_keys.0.is_empty() && self.end_keys.0.is_empty() && self.offset_keys.0.is_empty())
+    }
+
+    /// How much of piece `i` of `n` is selected (0–1, times the amount) at
+    /// `t` seconds into the clip.
+    pub fn selection(&self, i: usize, n: usize, t: f32) -> f32 {
+        if n == 0 {
+            return 0.0;
+        }
+        let at = crate::time::Time::from_secs_f64(t as f64);
+        let (a, b, o) = (self.start_keys.value_at(at, self.start), self.end_keys.value_at(at, self.end), self.offset_keys.value_at(at, self.offset));
+        let k = n as f32 / 100.0;
+        let (s, e) = ((a.min(b) + o) * k, (a.max(b) + o) * k);
+        let i = if self.randomize { shuffled(n, self.seed)[i] } else { i };
+        let (lo, mid) = (i as f32, i as f32 + 0.5);
+        let span = e - s;
+        let u = if span > 1e-6 { (mid - s) / span } else if mid >= s { 1.0 } else { 0.0 };
+        let inside = (0.0..=1.0).contains(&u) && span > 1e-6;
+        let v = match self.shape {
+            SelectorShape::Square => (e.min(lo + 1.0) - s.max(lo)).clamp(0.0, 1.0),
+            SelectorShape::RampUp => u.clamp(0.0, 1.0),
+            SelectorShape::RampDown => 1.0 - u.clamp(0.0, 1.0),
+            SelectorShape::Triangle if inside => 1.0 - (2.0 * u - 1.0).abs(),
+            SelectorShape::Round if inside => (1.0 - (2.0 * u - 1.0).powi(2)).max(0.0).sqrt(),
+            SelectorShape::Smooth if inside => 0.5 - 0.5 * (std::f32::consts::TAU * u).cos(),
+            _ => 0.0,
+        };
+        v * self.amount / 100.0
+    }
+}
+
+/// A shuffled order of `n` pieces (the same for the same seed).
+fn shuffled(n: usize, seed: u32) -> Vec<usize> {
+    let mut v: Vec<usize> = (0..n).collect();
+    let mut x = seed as u64 ^ 0x9E37_79B9_7F4A_7C15;
+    for i in (1..n).rev() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        v.swap(i, (x % (i as u64 + 1)) as usize);
+    }
+    v
+}
+
+/// Per-character animation, as After Effects' text animators: values that
+/// the characters picked by the range selector take (all the way where
+/// they're fully selected, part way where partly).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextAnimator {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Moved by (pixels).
+    #[serde(default)]
+    pub position: [f32; 2],
+    /// Scaled to (percent; 100 = unchanged), round the bottom middle of each letter.
+    #[serde(default = "hundreds")]
+    pub scale: [f32; 2],
+    /// Turned (degrees, clockwise).
+    #[serde(default)]
+    pub rotation: f32,
+    /// Opacity (percent; 100 = unchanged).
+    #[serde(default = "hundred")]
+    pub opacity: f32,
+    /// Coloured (straight alpha: its alpha is how far towards it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[u8; 4]>,
+    /// Extra space after each character (pixels), pushing the rest along.
+    #[serde(default)]
+    pub tracking: f32,
+    #[serde(default)]
+    pub selector: RangeSelector,
+}
+
+fn yes() -> bool {
+    true
+}
+fn hundreds() -> [f32; 2] {
+    [100.0, 100.0]
+}
+
+impl Default for TextAnimator {
+    fn default() -> Self {
+        TextAnimator { name: "Animator".into(), enabled: true, position: [0.0; 2], scale: [100.0; 2], rotation: 0.0, opacity: 100.0, fill: None, tracking: 0.0, selector: RangeSelector::default() }
+    }
+}
+
+/// What the animators do to one character at a moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphMod {
+    pub offset: [f32; 2],
+    pub scale: [f32; 2],
+    /// Degrees.
+    pub rotation: f32,
+    /// Multiplies its opacity.
+    pub opacity: f32,
+    /// Its colour, if an animator changes it.
+    pub color: Option<[u8; 4]>,
+    pub tracking: f32,
+}
+
+impl Default for GlyphMod {
+    fn default() -> Self {
+        GlyphMod { offset: [0.0; 2], scale: [1.0; 2], rotation: 0.0, opacity: 1.0, color: None, tracking: 0.0 }
+    }
+}
+
+/// Text set along the outline of one of the clip's masks.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextPath {
+    /// Which of the clip's masks.
+    pub mask: usize,
+    /// Run the other way round it.
+    #[serde(default)]
+    pub reverse: bool,
+    /// Letters turn to follow it (otherwise they stay upright).
+    #[serde(default = "yes")]
+    pub perpendicular: bool,
+    /// Don't join its last point back to its first.
+    #[serde(default)]
+    pub open: bool,
+    /// Pixels along it from where the alignment puts the text.
+    #[serde(default)]
+    pub margin: f32,
+    /// The outline at the moment drawn (filled in from the mask before drawing; not saved).
+    #[serde(skip)]
+    pub line: Option<std::sync::Arc<Vec<[f32; 2]>>>,
+}
+
 /// Which font file to use. `None` path = the built-in font.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FontChoice {
@@ -167,6 +370,12 @@ pub struct TitleSpec {
     /// Letters, words or lines coming in (and going out) one after another.
     #[serde(default, skip_serializing_if = "TextAnim::is_none")]
     pub anim: TextAnim,
+    /// Per-character animators with range selectors (2D text).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub animators: Vec<TextAnimator>,
+    /// The text set along a mask's outline (2D text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<TextPath>,
 }
 
 /// A filled outline used in place of a title's text: one or more paths, each
@@ -247,9 +456,6 @@ pub struct ModelSource {
     pub part_colours: Vec<(String, [u8; 3])>,
 }
 
-fn yes() -> bool {
-    true
-}
 
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
@@ -421,6 +627,8 @@ impl Default for TitleSpec {
             shape: None,
             model: None,
             anim: TextAnim::default(),
+            animators: Vec::new(),
+            path: None,
         }
     }
 }
@@ -469,6 +677,73 @@ impl TitleSpec {
             word_start = ch.is_whitespace() || ch == '-' || ch == '/' || ch == '(' || ch == '"';
         }
         out
+    }
+
+    /// Are its letters placed one by one (animators, or a path)?
+    pub fn places_glyphs(&self) -> bool {
+        self.shape.is_none() && self.model.is_none() && (self.animators.iter().any(|a| a.enabled) || self.path.as_ref().is_some_and(|p| p.line.as_ref().is_some_and(|l| l.len() >= 2)))
+    }
+
+    /// What the animators do to each character (newlines left out, as laid
+    /// out) at `t` seconds into the clip; `None` without any.
+    pub fn glyph_mods(&self, t: f32) -> Option<Vec<GlyphMod>> {
+        let live: Vec<&TextAnimator> = self.animators.iter().filter(|a| a.enabled).collect();
+        if live.is_empty() || self.shape.is_some() {
+            return None;
+        }
+        let lines = self.shown_lines();
+        // Each character's piece by units: (character, character not counting spaces, word, line).
+        let mut idx: Vec<[Option<usize>; 4]> = Vec::new();
+        let (mut c, mut cs, mut w) = (0usize, 0usize, 0usize);
+        let mut in_word = false;
+        for (li, line) in lines.iter().enumerate() {
+            in_word = false;
+            for (_, ch) in line {
+                let space = ch.is_whitespace();
+                if !space && !in_word {
+                    in_word = true;
+                    w += 1;
+                }
+                if space {
+                    in_word = false;
+                }
+                idx.push([Some(c), (!space).then_some(cs), (!space).then(|| w - 1), Some(li)]);
+                c += 1;
+                if !space {
+                    cs += 1;
+                }
+            }
+        }
+        let _ = in_word;
+        let counts = [c, cs, w, lines.len()];
+        let mut out = vec![GlyphMod::default(); idx.len()];
+        for a in live {
+            let u = match a.selector.units {
+                SelectorUnits::Characters => 0,
+                SelectorUnits::CharactersNoSpaces => 1,
+                SelectorUnits::Words => 2,
+                SelectorUnits::Lines => 3,
+            };
+            for (m, ix) in out.iter_mut().zip(&idx) {
+                let Some(i) = ix[u] else { continue };
+                let k = a.selector.selection(i, counts[u], t);
+                if k == 0.0 {
+                    continue;
+                }
+                m.offset = [m.offset[0] + a.position[0] * k, m.offset[1] + a.position[1] * k];
+                m.scale = [m.scale[0] * (1.0 + (a.scale[0] / 100.0 - 1.0) * k), m.scale[1] * (1.0 + (a.scale[1] / 100.0 - 1.0) * k)];
+                m.rotation += a.rotation * k;
+                m.opacity *= (1.0 + (a.opacity / 100.0 - 1.0) * k).clamp(0.0, 1.0);
+                m.tracking += a.tracking * k;
+                if let Some(f) = a.fill {
+                    let base = m.color.unwrap_or(self.color);
+                    let w = (k * f[3] as f32 / 255.0).clamp(0.0, 1.0);
+                    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * w).round() as u8;
+                    m.color = Some([mix(base[0], f[0]), mix(base[1], f[1]), mix(base[2], f[2]), base[3]]);
+                }
+            }
+        }
+        Some(out)
     }
 
     /// Extruded into solid 3D letters.
@@ -589,11 +864,19 @@ impl TitleSpec {
     pub fn content_hash_at(&self, frame: [u32; 2], t: f32, dur: f32) -> u64 {
         use std::hash::{Hash, Hasher};
         let base = self.content_hash(frame);
-        let Some(states) = self.glyph_states(t, dur) else { return base };
+        let states = self.glyph_states(t, dur);
+        let mods = self.animators.iter().any(|a| a.enabled && a.selector.is_animated()).then(|| self.glyph_mods(t)).flatten();
+        if states.is_none() && mods.is_none() {
+            return base;
+        }
         let mut h = std::collections::hash_map::DefaultHasher::new();
         base.hash(&mut h);
-        for g in states {
+        for g in states.into_iter().flatten() {
             ((g.alpha * 255.0).round() as i32, (g.dy * self.size * 8.0).round() as i32).hash(&mut h);
+        }
+        for m in mods.into_iter().flatten() {
+            let q = |v: f32| (v * 64.0).round() as i32;
+            (q(m.offset[0]), q(m.offset[1]), q(m.scale[0]), q(m.scale[1]), q(m.rotation), q(m.opacity), m.color, q(m.tracking)).hash(&mut h);
         }
         h.finish()
     }
@@ -626,6 +909,15 @@ impl TitleSpec {
         self.shape.as_ref().map(|s| s.id).hash(&mut h);
         self.model.hash(&mut h);
         self.case.hash(&mut h);
+        if !self.animators.is_empty() {
+            serde_json::to_string(&self.animators).unwrap_or_default().hash(&mut h);
+        }
+        if let Some(p) = &self.path {
+            (p.mask, p.reverse, p.perpendicular, p.open, p.margin.to_bits()).hash(&mut h);
+            for q in p.line.iter().flat_map(|l| l.iter()) {
+                (q[0].to_bits(), q[1].to_bits()).hash(&mut h);
+            }
+        }
         for (k, v) in &self.kerning {
             (k, v.to_bits()).hash(&mut h);
         }
@@ -687,6 +979,88 @@ mod tests {
         assert!(!json.contains("scale_x") && !json.contains("kerning") && !json.contains("case"));
         let back: TitleSpec = serde_json::from_str(&serde_json::to_string(&TitleSpec { kerning: [(3, 25.0)].into(), scale_y: 1.5, case: TextCase::Start, ..TitleSpec::default() }).unwrap()).unwrap();
         assert_eq!((back.kerning[&3], back.scale_y, back.case), (25.0, 1.5, TextCase::Start));
+    }
+}
+
+#[cfg(test)]
+mod animator_tests {
+    use super::*;
+
+    fn sel(shape: SelectorShape, start: f32, end: f32, offset: f32) -> RangeSelector {
+        RangeSelector { start, end, offset, shape, ..RangeSelector::default() }
+    }
+
+    #[test]
+    fn range_selectors_pick_pieces_by_shape() {
+        let v = |r: &RangeSelector| (0..4).map(|i| (r.selection(i, 4, 0.0) * 100.0).round() / 100.0).collect::<Vec<_>>();
+        assert_eq!(v(&sel(SelectorShape::Square, 0.0, 100.0, 0.0)), [1.0; 4]);
+        assert_eq!(v(&sel(SelectorShape::Square, 0.0, 50.0, 0.0)), [1.0, 1.0, 0.0, 0.0]);
+        // Partly over a piece: partly selected; the offset moves the range.
+        assert_eq!(v(&sel(SelectorShape::Square, 0.0, 37.5, 0.0)), [1.0, 0.5, 0.0, 0.0]);
+        assert_eq!(v(&sel(SelectorShape::Square, 0.0, 50.0, 25.0)), [0.0, 1.0, 1.0, 0.0]);
+        assert_eq!(v(&sel(SelectorShape::RampUp, 0.0, 100.0, 0.0)), [0.13, 0.38, 0.63, 0.88]);
+        assert_eq!(v(&sel(SelectorShape::RampDown, 0.0, 100.0, 0.0)), [0.88, 0.63, 0.38, 0.13]);
+        assert_eq!(v(&sel(SelectorShape::Triangle, 0.0, 100.0, 0.0)), [0.25, 0.75, 0.75, 0.25]);
+        assert_eq!(v(&RangeSelector { amount: 50.0, ..sel(SelectorShape::Square, 0.0, 100.0, 0.0) }), [0.5; 4]);
+        // Shuffled: the same pieces, another order.
+        let r = RangeSelector { randomize: true, seed: 3, ..sel(SelectorShape::Square, 0.0, 50.0, 0.0) };
+        assert_eq!(v(&r).iter().sum::<f32>(), 2.0);
+        // Keyframed: the start sweeps from 0 to 100 % over a second.
+        let mut k = sel(SelectorShape::Square, 0.0, 100.0, 0.0);
+        k.start_keys.set(crate::time::Time::ZERO, 0.0);
+        k.start_keys.set(crate::time::Time::from_secs_f64(1.0), 100.0);
+        assert_eq!(k.selection(0, 4, 0.0), 1.0);
+        assert_eq!((k.selection(0, 4, 0.5), k.selection(3, 4, 0.5)), (0.0, 1.0));
+        assert_eq!(k.selection(3, 4, 1.0), 0.0);
+    }
+
+    #[test]
+    fn animators_change_the_selected_characters() {
+        let a = TextAnimator { position: [0.0, 40.0], opacity: 0.0, rotation: 90.0, fill: Some([255, 0, 0, 255]), tracking: 10.0, selector: RangeSelector { units: SelectorUnits::Words, start: 0.0, end: 50.0, ..Default::default() }, ..Default::default() };
+        let t = TitleSpec { text: "ab cd".into(), animators: vec![a], ..TitleSpec::default() };
+        let m = t.glyph_mods(0.0).unwrap();
+        assert_eq!(m.len(), 5);
+        // The first word all the way; the space and the second word not at all.
+        assert_eq!((m[0].offset, m[0].opacity, m[0].rotation, m[0].color, m[0].tracking), ([0.0, 40.0], 0.0, 90.0, Some([255, 0, 0, 255]), 10.0));
+        assert_eq!(m[1].offset, [0.0, 40.0]);
+        assert_eq!((m[2].opacity, m[3].opacity, m[4].color), (1.0, 1.0, None));
+        assert!(t.content_hash([100, 100]) != TitleSpec { animators: vec![], ..t.clone() }.content_hash([100, 100]));
+        assert!(TitleSpec { animators: vec![], ..t.clone() }.glyph_mods(0.0).is_none());
+        // Off: nothing.
+        let off = TitleSpec { animators: vec![TextAnimator { enabled: false, ..t.animators[0].clone() }], ..t };
+        assert!(off.glyph_mods(0.0).is_none() && !off.places_glyphs());
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use crate::mask::{Mask, MaskShape};
+    use crate::time::Time;
+
+    #[test]
+    fn a_title_runs_along_its_mask_which_then_doesnt_cut_it() {
+        let spec = TitleSpec { path: Some(TextPath { mask: 0, reverse: false, perpendicular: true, open: false, margin: 0.0, line: None }), ..TitleSpec::default() };
+        let mut c = crate::project::Clip::new_title(crate::project::ClipId(1), Time::ZERO, Time::from_secs_f64(2.0), spec);
+        let ring = Mask { shape: MaskShape::Ellipse, points: vec![[100.0, 100.0], [300.0, 100.0], [300.0, 300.0], [100.0, 300.0]], text_path: true, ..Mask::default() };
+        c.masks.push(ring);
+        let t = c.title_at(Time::ZERO).unwrap();
+        let line = t.path.as_ref().unwrap().line.clone().unwrap();
+        // From the top, clockwise, back to the top.
+        assert!((line[0][0] - 200.0).abs() < 1.0 && (line[0][1] - 100.0).abs() < 1.0, "{:?}", line[0]);
+        assert!(line[3][0] > line[0][0] && line.first() == line.last());
+        assert!(t.places_glyphs());
+        // As a path it doesn't cut the layer.
+        assert!(crate::mask::rasterize(&c.masks, Time::ZERO, [400.0, 400.0], 400).is_none());
+        // Open, a freehand path stops at its last point.
+        let mut open = c.clone();
+        open.masks[0] = Mask { shape: MaskShape::Freehand, points: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]], text_path: true, ..Mask::default() };
+        open.title.as_mut().unwrap().path.as_mut().unwrap().open = true;
+        let l = open.title_at(Time::ZERO).unwrap().path.as_ref().unwrap().line.clone().unwrap();
+        assert_eq!(l.last(), Some(&[100.0, 100.0]));
+        // No such mask: drawn as ordinary text.
+        open.masks.clear();
+        assert!(!open.title_at(Time::ZERO).unwrap().places_glyphs());
     }
 }
 

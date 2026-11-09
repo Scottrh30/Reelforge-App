@@ -264,6 +264,18 @@ pub(crate) struct Layout {
     pub glyphs: Vec<ab_glyph::Glyph>,
     /// The text block: `[x0, y0, x1, y1]` (ascent of the first line to descent of the last).
     pub text_box: [f32; 4],
+    /// Each glyph's line, where it starts along it and how far it advances.
+    pub info: Vec<GlyphInfo>,
+    /// Each line's width.
+    pub widths: Vec<f32>,
+    pub line_h: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GlyphInfo {
+    pub line: usize,
+    pub x: f32,
+    pub advance: f32,
 }
 
 /// Lay out `spec`'s text with `font`: lines centred as a block in the frame,
@@ -277,7 +289,7 @@ pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layou
     // Kerning by hand is in thousandths of the (stretched) width of the font size.
     let kern_unit = scale.x / 1000.0;
     // Glyphs per line at baseline 0, and each line's width.
-    let lines: Vec<(Vec<ab_glyph::Glyph>, f32)> = spec
+    let lines: Vec<(Vec<(ab_glyph::Glyph, f32)>, f32)> = spec
         .shown_lines()
         .into_iter()
         .map(|line| {
@@ -292,7 +304,7 @@ pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layou
                         caret += spec.kerning.get(&at).copied().unwrap_or(0.0) * kern_unit;
                     }
                 }
-                glyphs.push(id.with_scale_and_position(scale, point(caret, 0.0)));
+                glyphs.push((id.with_scale_and_position(scale, point(caret, 0.0)), sf.h_advance(id)));
                 caret += sf.h_advance(id) + spec.letter_spacing;
                 prev = Some((id, at));
             }
@@ -307,6 +319,8 @@ pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layou
     let top = cy - block_h / 2.0;
     let text_box = [cx - block_w / 2.0, top, cx + block_w / 2.0, top + block_h];
     let mut glyphs = Vec::new();
+    let mut info = Vec::new();
+    let widths: Vec<f32> = lines.iter().map(|(_, w)| *w).collect();
     for (i, (line, lw)) in lines.into_iter().enumerate() {
         let baseline = top + ascent + i as f32 * line_h;
         let x0 = match spec.align {
@@ -314,17 +328,22 @@ pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layou
             TextAlign::Center => cx - lw / 2.0,
             TextAlign::Right => text_box[2] - lw,
         };
-        for mut g in line {
+        for (mut g, advance) in line {
+            info.push(GlyphInfo { line: i, x: g.position.x, advance });
             g.position = point(g.position.x + x0, baseline);
             glyphs.push(g);
         }
     }
-    Layout { glyphs, text_box }
+    Layout { glyphs, text_box, info, widths, line_h }
 }
 
 pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
     let (w, h) = (frame[0].max(1), frame[1].max(1));
     let (font, missing_font) = load_font(&spec.font);
+    if spec.places_glyphs() {
+        let lay = layout(spec, &font, [w, h]);
+        return render_placed(spec, &font, missing_font, &lay, spec.glyph_mods(0.0).as_deref(), None, [w, h]);
+    }
     if let Some(shape) = &spec.shape {
         // A shape instead of text: centred, `size` high.
         let placed = shape.placed([w as f32 / 2.0, h as f32 / 2.0], spec.size.max(1.0));
@@ -340,6 +359,12 @@ pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
 /// letters, words or lines each where and as visible as the animation has
 /// them then (the box behind stays put). Without one, [`render_title`].
 pub fn render_title_at(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32) -> RenderedTitle {
+    if spec.places_glyphs() {
+        let (w, h) = (frame[0].max(1), frame[1].max(1));
+        let (font, missing_font) = load_font(&spec.font);
+        let lay = layout(spec, &font, [w, h]);
+        return render_placed(spec, &font, missing_font, &lay, spec.glyph_mods(t).as_deref(), spec.glyph_states(t, dur).as_deref(), [w, h]);
+    }
     let Some(states) = spec.glyph_states(t, dur).filter(|_| spec.shape.is_none()) else { return render_title(spec, frame) };
     let (w, h) = (frame[0].max(1), frame[1].max(1));
     let (font, missing_font) = load_font(&spec.font);
@@ -390,6 +415,253 @@ pub fn render_title_at(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32) -> R
         }
     }
     RenderedTitle { width: w, height: h, rgba: out.into(), bounds: full, missing_font }
+}
+
+/// One glyph placed on its own: the middle of its baseline at `at`, turned
+/// by `angle` (radians, clockwise), scaled, with its opacity and colour.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Placed {
+    pub index: usize,
+    pub at: [f32; 2],
+    pub angle: f32,
+    pub scale: [f32; 2],
+    pub alpha: f32,
+    pub color: [u8; 4],
+}
+
+/// A polyline measured along its length.
+struct Track {
+    pts: Vec<[f32; 2]>,
+    /// Distance along it to each point.
+    run: Vec<f32>,
+    closed: bool,
+}
+
+impl Track {
+    fn new(pts: &[[f32; 2]]) -> Option<Track> {
+        let mut p: Vec<[f32; 2]> = Vec::with_capacity(pts.len());
+        for &q in pts {
+            if p.last().is_none_or(|l: &[f32; 2]| (l[0] - q[0]).abs() + (l[1] - q[1]).abs() > 1e-3) {
+                p.push(q);
+            }
+        }
+        if p.len() < 2 {
+            return None;
+        }
+        let closed = pts.len() > 2 && pts.first() == pts.last();
+        let mut run = vec![0.0f32];
+        for w in p.windows(2) {
+            run.push(run.last().unwrap() + ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt());
+        }
+        Some(Track { pts: p, run, closed })
+    }
+    fn len(&self) -> f32 {
+        *self.run.last().unwrap()
+    }
+    /// The point `d` along it (wrapping round a closed one; carried on
+    /// straight past the ends of an open one).
+    fn at(&self, d: f32) -> [f32; 2] {
+        let len = self.len().max(1e-6);
+        let d = if self.closed { d.rem_euclid(len) } else { d };
+        let n = self.pts.len();
+        let i = if d <= 0.0 { 0 } else if d >= len { n - 2 } else { (self.run.partition_point(|&r| r <= d)).clamp(1, n - 1) - 1 };
+        let (a, b) = (self.pts[i], self.pts[i + 1]);
+        let seg = (self.run[i + 1] - self.run[i]).max(1e-6);
+        let u = (d - self.run[i]) / seg;
+        [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u]
+    }
+}
+
+fn rot(v: [f32; 2], a: f32) -> [f32; 2] {
+    let (s, c) = a.sin_cos();
+    [v[0] * c - v[1] * s, v[0] * s + v[1] * c]
+}
+
+/// Where each glyph goes: along its line (or the path), moved, turned,
+/// scaled and faded by the animators and the text animation.
+pub(crate) fn place(spec: &TitleSpec, lay: &Layout, mods: Option<&[reelforge_core::GlyphMod]>, states: Option<&[reelforge_core::GlyphState]>, frame: [u32; 2]) -> Vec<Placed> {
+    let n = lay.glyphs.len();
+    // Tracking pushes the rest of the line along (and the line is aligned again).
+    let mut before = vec![0.0f32; n];
+    let mut extra = vec![0.0f32; lay.widths.len()];
+    for i in 0..n {
+        let line = lay.info[i].line;
+        before[i] = extra[line];
+        extra[line] += mods.and_then(|m| m.get(i)).map_or(0.0, |m| m.tracking);
+    }
+    let track = spec.path.as_ref().and_then(|p| p.line.as_deref()).and_then(|l| Track::new(l));
+    let margin = spec.path.as_ref().map_or(0.0, |p| p.margin);
+    let perpendicular = spec.path.as_ref().is_none_or(|p| p.perpendicular);
+    let (cx, b) = (frame[0] as f32 / 2.0, lay.text_box);
+    (0..n)
+        .map(|i| {
+            let g = &lay.glyphs[i];
+            let inf = lay.info[i];
+            let lw = lay.widths[inf.line] + extra[inf.line];
+            let x = inf.x + before[i] + inf.advance / 2.0;
+            let (mut at, mut angle) = match &track {
+                None => {
+                    let x0 = match spec.align {
+                        TextAlign::Left => b[0],
+                        TextAlign::Center => cx - lw / 2.0,
+                        TextAlign::Right => b[2] - lw,
+                    };
+                    ([x0 + x, g.position.y], 0.0)
+                }
+                Some(t) => {
+                    let start = match (spec.align, t.closed) {
+                        (TextAlign::Left, _) => 0.0,
+                        (TextAlign::Center, true) => -lw / 2.0,
+                        (TextAlign::Right, true) => -lw,
+                        (TextAlign::Center, false) => (t.len() - lw) / 2.0,
+                        (TextAlign::Right, false) => t.len() - lw,
+                    } + margin;
+                    let d = start + x;
+                    let p = t.at(d);
+                    let h = (inf.advance / 2.0).max(1.0);
+                    let (p0, p1) = (t.at(d - h), t.at(d + h));
+                    let angle = if perpendicular { (p1[1] - p0[1]).atan2(p1[0] - p0[0]) } else { 0.0 };
+                    // Later lines below the first, across the path.
+                    let down = rot([0.0, inf.line as f32 * lay.line_h], angle);
+                    ([p[0] + down[0], p[1] + down[1]], angle)
+                }
+            };
+            let mut scale = [1.0, 1.0];
+            let mut alpha = 1.0;
+            let mut color = spec.color;
+            if let Some(st) = states.and_then(|s| s.get(i)) {
+                alpha *= st.alpha;
+                let d = rot([0.0, st.dy * spec.size], angle);
+                at = [at[0] + d[0], at[1] + d[1]];
+            }
+            if let Some(m) = mods.and_then(|m| m.get(i)) {
+                let d = if track.is_some() { rot(m.offset, angle) } else { m.offset };
+                at = [at[0] + d[0], at[1] + d[1]];
+                angle += m.rotation.to_radians();
+                scale = m.scale;
+                alpha *= m.opacity;
+                if let Some(c) = m.color {
+                    color = c;
+                }
+            }
+            Placed { index: i, at, angle, scale, alpha, color }
+        })
+        .collect()
+}
+
+/// A placed glyph's outline as polygons on the canvas.
+fn glyph_contours(font: &FontArc, g: &ab_glyph::Glyph, advance: f32, p: &Placed) -> Vec<Vec<[f32; 2]>> {
+    let Some(outline) = font.outline(g.id) else { return Vec::new() };
+    let sf = font.as_scaled(g.scale);
+    let (hs, vs) = (sf.h_scale_factor(), sf.v_scale_factor());
+    let map = |q: ab_glyph::Point| -> [f32; 2] {
+        let local = [(q.x * hs - advance / 2.0) * p.scale[0], -q.y * vs * p.scale[1]];
+        let r = rot(local, p.angle);
+        [p.at[0] + r[0], p.at[1] + r[1]]
+    };
+    let mut out: Vec<Vec<[f32; 2]>> = Vec::new();
+    let mut last: Option<ab_glyph::Point> = None;
+    for c in &outline.curves {
+        use ab_glyph::OutlineCurve::*;
+        let (p0, end) = match c {
+            Line(a, b) => (*a, *b),
+            Quad(a, _, b) => (*a, *b),
+            Cubic(a, _, _, b) => (*a, *b),
+        };
+        if last.is_none_or(|l| (l.x - p0.x).abs() + (l.y - p0.y).abs() > 1e-3) {
+            out.push(vec![map(p0)]);
+        }
+        let contour = out.last_mut().unwrap();
+        let px = |a: ab_glyph::Point, b: ab_glyph::Point| ((a.x - b.x) * hs).hypot((a.y - b.y) * vs) * p.scale[0].abs().max(p.scale[1].abs());
+        match c {
+            Line(_, b) => contour.push(map(*b)),
+            Quad(a, c1, b) => {
+                let steps = ((px(*a, *c1) + px(*c1, *b)) / 3.0).ceil().clamp(2.0, 16.0) as usize;
+                for k in 1..=steps {
+                    let t = k as f32 / steps as f32;
+                    let u = 1.0 - t;
+                    contour.push(map(ab_glyph::point(u * u * a.x + 2.0 * u * t * c1.x + t * t * b.x, u * u * a.y + 2.0 * u * t * c1.y + t * t * b.y)));
+                }
+            }
+            Cubic(a, c1, c2, b) => {
+                let steps = ((px(*a, *c1) + px(*c1, *c2) + px(*c2, *b)) / 3.0).ceil().clamp(2.0, 20.0) as usize;
+                for k in 1..=steps {
+                    let t = k as f32 / steps as f32;
+                    let u = 1.0 - t;
+                    let (w0, w1, w2, w3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                    contour.push(map(ab_glyph::point(w0 * a.x + w1 * c1.x + w2 * c2.x + w3 * b.x, w0 * a.y + w1 * c1.y + w2 * c2.y + w3 * b.y)));
+                }
+            }
+        }
+        last = Some(end);
+    }
+    out.retain(|c| c.len() >= 3);
+    out
+}
+
+/// Draw a title whose glyphs are placed one by one ([`place`]): glyphs
+/// alike in opacity and colour are drawn together (outline and shadow
+/// included) and laid over the canvas.
+fn render_placed(spec: &TitleSpec, font: &FontArc, missing_font: bool, lay: &Layout, mods: Option<&[reelforge_core::GlyphMod]>, states: Option<&[reelforge_core::GlyphState]>, frame: [u32; 2]) -> RenderedTitle {
+    let [w, h] = frame;
+    let placed = place(spec, lay, mods, states, frame);
+    let boxed = spec.background && spec.path.is_none();
+    let mut out = if boxed { draw(spec, font, &[], lay.text_box, true, frame, missing_font).rgba.to_vec() } else { vec![0u8; (w * h * 4) as usize] };
+    let mut bounds: Option<[f32; 4]> = None;
+    let mut grow = |b: [f32; 4]| bounds = Some(bounds.map_or(b, |k| [k[0].min(b[0]), k[1].min(b[1]), k[2].max(b[2]), k[3].max(b[3])]));
+    if boxed {
+        if let Some(b) = draw_bounds(spec, font, lay) {
+            grow(b);
+        }
+    }
+    let mut groups: Vec<((u8, [u8; 4]), Vec<Vec<[f32; 2]>>)> = Vec::new();
+    for p in &placed {
+        let a = (p.alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+        if a == 0 {
+            continue;
+        }
+        let contours = glyph_contours(font, &lay.glyphs[p.index], lay.info[p.index].advance, p);
+        if contours.is_empty() {
+            continue;
+        }
+        let key = (a, p.color);
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, c)) => c.extend(contours),
+            None => groups.push((key, contours)),
+        }
+    }
+    let o = spec.outline.max(0.0);
+    for ((alpha, color), contours) in groups {
+        let mut gb = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for q in contours.iter().flatten() {
+            gb = [gb[0].min(q[0]), gb[1].min(q[1]), gb[2].max(q[0]), gb[3].max(q[1])];
+        }
+        let styled = TitleSpec { color, ..spec.clone() };
+        let part = draw_with(&styled, font, &[], &[reelforge_core::ShapePath { contours, even_odd: false }], gb, false, frame, missing_font);
+        grow([gb[0] - o, gb[1] - o, gb[2] + o, gb[3] + o]);
+        // Lay it over the canvas, only where it can have drawn.
+        let (sdx, sdy) = if spec.shadow { let a = spec.shadow_angle.to_radians(); (spec.shadow_distance * a.cos(), spec.shadow_distance * a.sin()) } else { (0.0, 0.0) };
+        let m = o + sdx.abs().max(sdy.abs()) + if spec.shadow { spec.shadow_softness.max(0.0) * 1.5 } else { 0.0 } + 4.0 + spec.size * 0.25;
+        let (x0, y0) = (((gb[0] - m).floor().max(0.0)) as u32, ((gb[1] - m).floor().max(0.0)) as u32);
+        let (x1, y1) = (((gb[2] + m).ceil().max(0.0) as u32).min(w), ((gb[3] + m).ceil().max(0.0) as u32).min(h));
+        let a = alpha as f32 / 255.0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y * w + x) * 4) as usize;
+                let pa = part.rgba[i + 3] as f32 / 255.0 * a;
+                if pa <= 0.0 {
+                    continue;
+                }
+                let oa = out[i + 3] as f32 / 255.0;
+                let ra = pa + oa * (1.0 - pa);
+                for k in 0..3 {
+                    out[i + k] = ((part.rgba[i + k] as f32 * pa + out[i + k] as f32 * oa * (1.0 - pa)) / ra).round().clamp(0.0, 255.0) as u8;
+                }
+                out[i + 3] = (ra * 255.0).round() as u8;
+            }
+        }
+    }
+    RenderedTitle { width: w, height: h, rgba: out.into(), bounds, missing_font }
 }
 
 /// Where a title's text (and box) is, settled, without drawing it.
@@ -700,6 +972,29 @@ mod tests {
         let gap = |l: &Layout| l.glyphs[1].position.x - l.glyphs[0].position.x;
         assert!((gap(&a) - gap(&b) - 6.0).abs() < 0.01);
         assert!((a.glyphs[3].position.x - a.glyphs[2].position.x - (b.glyphs[3].position.x - b.glyphs[2].position.x)).abs() < 0.01);
+    }
+
+    #[test]
+    fn text_follows_a_path_and_animators_move_letters() {
+        use reelforge_core::{RangeSelector, TextAnimator, TextPath};
+        // Along a straight path down the middle of the frame, upright text turns to run down it.
+        let line = std::sync::Arc::new(vec![[200.0, 20.0], [200.0, 380.0]]);
+        let spec = TitleSpec { text: "ABCDEFGH".into(), size: 40.0, shadow: false, align: TextAlign::Left, path: Some(TextPath { mask: 0, reverse: false, perpendicular: true, open: true, margin: 10.0, line: Some(line) }), ..TitleSpec::default() };
+        let r = render_title(&spec, [400, 400]);
+        let b = r.bounds.unwrap();
+        // Turned a quarter: tall and narrow, standing on x = 200 (their tops to its right), from 10 px in.
+        assert!(b[3] - b[1] > 4.0 * (b[2] - b[0]) && b[2] - b[0] < 40.0, "{b:?}");
+        assert!((b[0] - 200.0).abs() < 2.0 && b[1] > 28.0 && b[1] < 36.0, "{b:?}");
+        // An animator fading out the second half: only the first half drawn.
+        let a = TextAnimator { opacity: 0.0, selector: RangeSelector { start: 50.0, end: 100.0, ..Default::default() }, ..Default::default() };
+        let plain_spec = plain("IIII");
+        let full = render_title(&plain_spec, [400, 200]).bounds.unwrap();
+        let half = render_title(&TitleSpec { animators: vec![a.clone()], ..plain_spec.clone() }, [400, 200]).bounds.unwrap();
+        assert!((half[0] - full[0]).abs() < 1.0 && half[2] < (full[0] + full[2]) / 2.0 + 2.0, "{half:?} {full:?}");
+        // The second half moved down 30 px instead.
+        let moved = TextAnimator { position: [0.0, 30.0], opacity: 100.0, ..a };
+        let m = render_title(&TitleSpec { animators: vec![moved], ..plain_spec }, [400, 200]).bounds.unwrap();
+        assert!((m[3] - full[3] - 30.0).abs() < 1.0 && (m[1] - full[1]).abs() < 1.0, "{m:?} {full:?}");
     }
 
     #[test]

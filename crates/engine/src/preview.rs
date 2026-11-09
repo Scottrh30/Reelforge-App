@@ -465,9 +465,9 @@ struct PreviewFrames<'a> {
 
 impl FrameProvider for PreviewFrames<'_> {
     fn picture(&mut self, project: &Project, l: &Layer, frame_size: [u32; 2]) -> anyhow::Result<Option<Picture>> {
-        if let Some(spec) = &l.clip.title {
+        if let Some(spec) = l.clip.title_at(l.source_time) {
             // Titles are drawn on a canvas the size of the frame, so 100% is their natural size.
-            let frame = title_frame(self.titles, l.clip.id, spec, frame_size, reelforge_export::title_clock(l));
+            let frame = title_frame(self.titles, l.clip.id, &spec, frame_size, reelforge_export::title_clock(l));
             return Ok(Some(Picture { frame, size: [frame_size[0] as f32, frame_size[1] as f32], media: MediaId::GENERATED }));
         }
         let Some(media) = project.media(l.clip.media) else { return Ok(None) };

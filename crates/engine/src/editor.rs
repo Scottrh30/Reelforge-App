@@ -2447,7 +2447,7 @@ impl Editor {
                 }
             }
             if let (Some(style), Some(old)) = (&p.title, &c.title) {
-                let new = TitleSpec { text: old.text.clone(), kerning: old.kerning.clone(), ..style.clone() };
+                let new = TitleSpec { text: old.text.clone(), kerning: old.kerning.clone(), path: old.path.clone(), ..style.clone() };
                 if new != *old {
                     cmds.push(Box::new(SetTitle { seq, id, old: old.clone(), new }));
                 }
@@ -2516,7 +2516,7 @@ impl Editor {
         p.apply(&mut v, c.source_in, c.duration, layer, false);
         c.set_visual(v);
         if let (Some(style), Some(t)) = (&p.title, c.title.as_mut()) {
-            *t = TitleSpec { text: t.text.clone(), kerning: t.kerning.clone(), ..style.clone() };
+            *t = TitleSpec { text: t.text.clone(), kerning: t.kerning.clone(), path: t.path.clone(), ..style.clone() };
         }
         let clean = !self.is_dirty();
         self.preset_preview = Some((id, old_v, old_t, clean));

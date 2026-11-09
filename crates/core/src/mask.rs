@@ -117,6 +117,9 @@ pub struct Mask {
     /// these combine with their modes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fill_area: bool,
+    /// A path for a title's text to run along: it doesn't cut the layer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text_path: bool,
     /// Roto brush strokes painted on it, at the source times they were
     /// painted (see `crate::rotobrush`): its shape is cut from them there,
     /// and they still count when it's carried on through those frames.
@@ -148,7 +151,7 @@ impl Default for RefineEdge {
 /// The refined edge for a layer's masks: the widest of the cutting masks
 /// that ask for one (`None` if none do).
 pub fn refine_of(masks: &[Mask]) -> Option<RefineEdge> {
-    masks.iter().filter(|m| m.enabled && !m.track_ignore && !m.fill_area && !m.key_keep).filter_map(|m| m.refine).max_by(|a, b| a.radius.total_cmp(&b.radius))
+    masks.iter().filter(|m| m.enabled && !m.track_ignore && !m.fill_area && !m.text_path && !m.key_keep).filter_map(|m| m.refine).max_by(|a, b| a.radius.total_cmp(&b.radius))
 }
 
 /// A roto brush stroke on a mask, at a moment.
@@ -176,6 +179,7 @@ impl Default for Mask {
             key_keep: false,
             track_ignore: false,
             fill_area: false,
+            text_path: false,
             roto: Vec::new(),
             refine: None,
         }
@@ -578,7 +582,7 @@ pub fn mask_hash(masks: &[Mask], t: Time, layer: [f32; 2]) -> u64 {
     layer[0].to_bits().hash(&mut h);
     layer[1].to_bits().hash(&mut h);
     for m in masks.iter().filter(|m| m.enabled) {
-        (m.shape, m.mode, m.inverted, m.key_keep, m.track_ignore, m.fill_area).hash(&mut h);
+        (m.shape, m.mode, m.inverted, m.key_keep, m.track_ignore, m.fill_area, m.text_path).hash(&mut h);
         for f in [m.feather, m.expansion, m.opacity] {
             f.to_bits().hash(&mut h);
         }
@@ -606,7 +610,7 @@ pub fn rasterize(masks: &[Mask], t: Time, layer: [f32; 2], max_side: u32) -> Opt
     let (w, h) = (((layer[0] * k).ceil() as usize).max(1), ((layer[1] * k).ceil() as usize).max(1));
     let combine = |keep: bool| -> Option<Vec<f32>> {
         let mut acc: Option<Vec<f32>> = None;
-        for m in masks.iter().filter(|m| m.enabled && !m.track_ignore && !m.fill_area && m.key_keep == keep) {
+        for m in masks.iter().filter(|m| m.enabled && !m.track_ignore && !m.fill_area && !m.text_path && m.key_keep == keep) {
             let line = m.outline_feathered(t);
             let poly: Vec<[f32; 2]> = line.iter().map(|(p, _)| [p[0] * k, p[1] * k]).collect();
             if poly.len() < 3 {

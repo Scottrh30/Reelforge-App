@@ -663,6 +663,32 @@ What works now:
   all** put them back. Typing in the text keeps each pair's kerning with its letters. Case,
   scale and kerning work on 3D text and with text animations too; scale and case are part of a
   title preset, kerning stays with the text
+- **Text animators** (Text tab → **Animators**), as After Effects' text animators: each
+  animator moves (**Position**), scales (**Scale** X and Y, round the bottom middle of each
+  letter), turns (**Rotation**), fades (**Opacity**), colours (**Colour**, with how far towards
+  it) and spaces out (**Tracking**, pushing the rest of the line along) the characters its
+  **range selector** picks. The range runs from **Start** to **End** (percent of the text),
+  moved by **Offset**; each has a ◆ that adds or takes away a keyframe at the playhead (once a
+  value has keys, typing it keys it there), so sweeping the range across the text animates the
+  letters one after another. **Based on** counts characters, characters without spaces, words or
+  lines; **Shape** is how the selection rises and falls across the range (**Square**, the piece
+  at the edge partly; **Ramp up**, **Ramp down**, **Triangle**, **Round**, **Smooth**);
+  **Amount** scales it (negative turns it round); **Random order** shuffles the pieces. Several
+  animators add up, on top of the **Animate** presets. **+ Add animator** offers ready-made ones
+  that bring the text in over its first second — fade in, rise and fade in, drop in, scale up,
+  spin in, tracking in, stretch in, words pop in, letters in random order — and a colour sweep
+  (a band of colour across the text over two seconds), or an empty one. Glyphs alike in opacity
+  and colour are drawn together with the title's outline and shadow, so a moving letter keeps
+  them
+- **Text on a path** (Text tab → **Path**): **Along** sets the text along the outline of one
+  of the clip's masks (**Round a circle** adds a circle mask and uses it). The mask then doesn't
+  cut the layer (its **Use** in Masks is **Path for the text**), and editing, keyframing or
+  tracking it moves the path. Alignment places the text: **Left** starts at the path's first
+  point (a circle's top), **Centre** centres it there on a closed path (in the middle of an open
+  one), **Right** ends there; **Margin** moves it along. **Letters follow it** turns each
+  letter to the path (off: upright); **Reverse** runs the other way (round a circle: inside
+  it); **Open path** doesn't join a freehand path's ends. More lines run beneath the first, and
+  animators work along the path (their position in the path's direction)
 - **3D text** (**Timeline → Add 3D text**, or set **3D depth** on any title): the letters are
   extruded into solid 3D objects, as deep as **3D depth** (pixels), seen through the camera and
   lit by the scene's lights, or by a soft light from above left when there are none. **Sides**

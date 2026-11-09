@@ -247,6 +247,41 @@ pub struct ClipVisual {
 }
 
 impl Clip {
+    /// Its title as drawn at source time `t`: with the outline of the mask
+    /// its text runs along (if it has one) filled in.
+    pub fn title_at(&self, t: Time) -> Option<std::borrow::Cow<'_, TitleSpec>> {
+        let spec = self.title.as_ref()?;
+        let Some(path) = spec.path.as_ref().filter(|_| !spec.is_3d() && spec.shape.is_none()) else { return Some(std::borrow::Cow::Borrowed(spec)) };
+        let mut s = spec.clone();
+        let line = self.masks.get(path.mask).filter(|m| m.enabled).map(|m| {
+            let mut l = m.outline(t);
+            if m.shape == crate::mask::MaskShape::Ellipse {
+                // Round an ellipse from its top, clockwise.
+                if let Some(top) = (0..l.len()).min_by(|&a, &b| l[a][1].total_cmp(&l[b][1])) {
+                    l.rotate_left(top);
+                }
+            }
+            if path.open && m.shape != crate::mask::MaskShape::Ellipse {
+                // Up to the last point: the side back to the first left off.
+                if let Some(last) = m.points_at(t).last() {
+                    if let Some(i) = l.iter().rposition(|p| p == last) {
+                        l.truncate(i + 1);
+                    }
+                }
+            } else if let Some(&f) = l.first() {
+                l.push(f);
+            }
+            if path.reverse {
+                l.reverse();
+            }
+            l
+        });
+        if let Some(p) = s.path.as_mut() {
+            p.line = line.filter(|l| l.len() >= 2).map(std::sync::Arc::new);
+        }
+        Some(std::borrow::Cow::Owned(s))
+    }
+
     /// A clip with default transform and blend mode.
     pub fn new(id: ClipId, media: MediaId, timeline_start: Time, source_in: Time, duration: Time, link: Option<u64>) -> Self {
         Self {
