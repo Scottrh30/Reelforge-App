@@ -24,6 +24,7 @@ mod multicam;
 mod versions;
 mod trans;
 mod scene;
+mod scopes;
 mod viewer;
 mod views;
 
@@ -209,9 +210,9 @@ fn frame(max_w: u32, max_h: u32, have: i64, jpeg: bool) -> Res<Response> {
         if e.preview.picture_rev as i64 == have {
             return Response::new(vec![0u8]);
         }
-        let Some((rgba, [w, h])) = e.preview.read_output() else { return Response::new(vec![0u8]) };
+        let Some((rgba, [w, h])) = scopes::picture(e) else { return Response::new(vec![0u8]) };
         let k = (w / max_w.max(1)).min(h / max_h.max(1)).max(1);
-        let (rgba, w, h) = if k > 1 { shrink(&rgba, w, h, k) } else { (rgba, w, h) };
+        let (rgba, w, h) = if k > 1 { shrink(&rgba, w, h, k) } else { ((*rgba).clone(), w, h) };
         let mut out = Vec::with_capacity(9 + rgba.len());
         if jpeg {
             out.push(2);
@@ -1721,6 +1722,7 @@ fn main() {
             export_edit,
             set_magnetic,
             frame,
+            scopes::scope,
             waveform,
             waveform_rate,
             font_families,
@@ -1883,6 +1885,7 @@ fn main() {
             fx_presets::fx_preset_import,
             fx::effect_op,
             fx::effect_param,
+            fx::effect_params,
             fx::effect_key,
             fx::blade_preset,
             fx::particles_preset,

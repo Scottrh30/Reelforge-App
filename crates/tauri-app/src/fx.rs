@@ -394,19 +394,28 @@ pub fn effect_op(id: u64, index: usize, op: String) -> Res<()> {
 /// ends it). On an animated parameter it sets the keyframe at the playhead.
 #[tauri::command]
 pub fn effect_param(id: u64, index: usize, param: usize, value: f32) -> Res<()> {
+    effect_params(id, index, vec![(param, value)])
+}
+
+/// Several of an effect's parameters at once (a colour wheel's puck moves
+/// X and Y together), as one live edit.
+#[tauri::command]
+pub fn effect_params(id: u64, index: usize, values: Vec<(usize, f32)>) -> Res<()> {
     ed(|e| {
         edit(e, id, |list, src, in_clip| {
             let Some(fx) = list.get_mut(index) else { return };
             fx.normalize();
-            let Some(s) = fx.spec(param) else { return };
-            let v = value.clamp(s.min, s.max);
-            let p = &mut fx.params[param];
-            if p.keys.is_animated() {
-                if in_clip {
-                    p.keys.set(src, v);
+            for &(param, value) in &values {
+                let Some(s) = fx.spec(param) else { continue };
+                let v = value.clamp(s.min, s.max);
+                let p = &mut fx.params[param];
+                if p.keys.is_animated() {
+                    if in_clip {
+                        p.keys.set(src, v);
+                    }
+                } else {
+                    p.value = v;
                 }
-            } else {
-                p.value = v;
             }
         });
     })

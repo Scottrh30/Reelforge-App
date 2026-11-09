@@ -565,7 +565,7 @@ export type ControlValue = string | number | [number, number];
 export type ControlTarget = "Text" | "TextColour" | "Opacity" | "Position" | { Param: { effect: number; param: number } };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace";
 
 export interface Curves {
   master: Pt[];
@@ -701,6 +701,17 @@ export interface PluginsView {
   entries: PluginView[];
   live_reload: boolean;
   folder: string;
+}
+
+export type ScopeKind = "Waveform" | "Parade" | "Vectorscope" | "Histogram";
+export interface ScopeOptions {
+  scope: ScopeKind;
+  width: number;
+  height: number;
+  /// Waveform and histogram: red, green and blue rather than luma.
+  rgb: boolean;
+  brightness: number;
+  zoom: number;
 }
 
 export interface PresetView {
@@ -961,6 +972,8 @@ export const api = {
   cacheFolderSet: (choose: boolean, moveFiles: boolean) => invoke<string | null>("cache_folder_set", { choose, moveFiles }),
   state: () => invoke<State>("get_state"),
   frame: (max_w: number, max_h: number, have: number, jpeg: boolean) => invoke<ArrayBuffer>("frame", { maxW: max_w, maxH: max_h, have, jpeg }),
+  /// A scope of the Viewer's picture (see engine scopes): [kind, w, h (u32), picture_rev (u64), RGBA…].
+  scope: (options: ScopeOptions, have: number) => invoke<ArrayBuffer>("scope", { options, have }),
   waveform: (media: number) => invoke<ArrayBuffer>("waveform", { media }),
   waveformRate: () => invoke<number>("waveform_rate"),
   fontFamilies: () => invoke<string[]>("font_families"),
@@ -1124,6 +1137,7 @@ export const api = {
   effectAdd: (id: number, kind: EffectKind, plugin: string | null) => invoke("effect_add", { id, kind, plugin }),
   effectOp: (id: number, index: number, op: "up" | "down" | "remove" | "toggle" | "duplicate" | "reset") => invoke("effect_op", { id, index, op }),
   effectParam: (id: number, index: number, param: number, value: number) => invoke("effect_param", { id, index, param, value }),
+  effectParams: (id: number, index: number, values: [number, number][]) => invoke("effect_params", { id, index, values }),
   effectKey: (id: number, index: number, param: number) => invoke("effect_key", { id, index, param }),
   bladePreset: (id: number, index: number, preset: number) => invoke("blade_preset", { id, index, preset }),
   particlesPreset: (id: number, index: number, preset: number) => invoke("particles_preset", { id, index, preset }),

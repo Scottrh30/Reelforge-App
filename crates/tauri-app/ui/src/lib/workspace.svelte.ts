@@ -33,13 +33,13 @@ export interface Workspace {
 }
 
 const DEFAULT_SIZES: Sizes = { leftW: 300, rightW: 320, bottomH: 340, metersW: 64 };
-const ALL_ON = { media: true, effects: true, history: true, viewer: true, controls: true, text: true, track: true, timeline: true, meters: true };
+const ALL_ON = { media: true, effects: true, history: true, viewer: true, controls: true, text: true, track: true, scopes: true, timeline: true, meters: true };
 
 /// The built-in workspaces as they come.
 export const BUILT_IN: Workspace[] = [
   {
     name: "Editing",
-    dock: { left: ["media", "effects", "history"], right: ["controls", "text", "track"], float: [], active: { left: "media", right: "controls" }, rects: {} },
+    dock: { left: ["media", "effects", "history"], right: ["controls", "text", "track", "scopes"], float: [], active: { left: "media", right: "controls" }, rects: {} },
     sizes: { ...DEFAULT_SIZES },
     panels: { ...ALL_ON },
     headerW: 140,
@@ -47,7 +47,7 @@ export const BUILT_IN: Workspace[] = [
   {
     // The effects library beside the clip's settings, and a bigger Viewer.
     name: "Effects",
-    dock: { left: ["effects", "media", "history"], right: ["controls", "text", "track"], float: [], active: { left: "effects", right: "controls" }, rects: {} },
+    dock: { left: ["effects", "media", "history"], right: ["controls", "text", "track", "scopes"], float: [], active: { left: "effects", right: "controls" }, rects: {} },
     sizes: { leftW: 280, rightW: 380, bottomH: 260, metersW: 64 },
     panels: { ...ALL_ON },
     headerW: 140,
@@ -55,16 +55,16 @@ export const BUILT_IN: Workspace[] = [
   {
     // The Track panel in front with Controls beside it, a big Viewer, and a short timeline.
     name: "Tracking",
-    dock: { left: ["media", "effects", "history"], right: ["track", "controls", "text"], float: [], active: { left: "media", right: "track" }, rects: {} },
+    dock: { left: ["media", "effects", "history"], right: ["track", "controls", "text", "scopes"], float: [], active: { left: "media", right: "track" }, rects: {} },
     sizes: { leftW: 240, rightW: 360, bottomH: 220, metersW: 64 },
     panels: { ...ALL_ON, history: false, meters: false },
     headerW: 120,
   },
   {
-    // Controls (colour effects and curves) wide on the right, no left dock: the biggest Viewer.
+    // The scopes on the left, Controls (colour wheels, curves) wide on the right.
     name: "Colour",
-    dock: { left: ["media", "effects", "history"], right: ["controls", "text", "track"], float: [], active: { left: "effects", right: "controls" }, rects: {} },
-    sizes: { leftW: 260, rightW: 420, bottomH: 240, metersW: 64 },
+    dock: { left: ["scopes", "media", "effects", "history"], right: ["controls", "text", "track"], float: [], active: { left: "scopes", right: "controls" }, rects: {} },
+    sizes: { leftW: 340, rightW: 420, bottomH: 240, metersW: 64 },
     panels: { ...ALL_ON, media: false, effects: false, history: false, meters: false },
     headerW: 120,
   },
@@ -163,7 +163,7 @@ export function modified(): boolean {
 export function applyWorkspace(w: Workspace) {
   const d = clone(w.dock);
   // Every panel exactly once, even from a workspace saved before a panel existed.
-  const all: PanelId[] = ["media", "effects", "history", "controls", "text", "track"];
+  const all: PanelId[] = ["media", "effects", "history", "controls", "text", "track", "scopes"];
   const seen = new Set<PanelId>();
   const keep = (l: PanelId[]) => (l ?? []).filter((p) => all.includes(p) && !seen.has(p) && (seen.add(p), true));
   dock.left = keep(d.left);

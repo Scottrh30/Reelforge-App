@@ -20,5 +20,6 @@ pub mod preview;
 pub mod proxies;
 pub mod render_cache;
 pub mod safety;
+pub mod scopes;
 pub mod snap;
 pub mod start;

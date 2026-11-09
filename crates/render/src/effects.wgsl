@@ -420,6 +420,41 @@ fn fs_levels(in: VsOut) -> @location(0) vec4<f32> {
     return vec4(to_linear(v) * c.a, c.a);
 }
 
+// Colour wheels (see core effects::wheels::apply, which does the same sums):
+// p0 = lift x, y, master, gamma x; p1 = gamma y, master, gain x, y;
+// p2 = gain master, offset x, y, master; p3 = saturation, contrast, pivot, hue.
+fn wheel_tint(x: f32, y: f32) -> vec3<f32> {
+    let cb = x * 0.0035;
+    let cr = y * 0.0035;
+    return vec3(1.5748 * cr, -0.1873 * cb - 0.4681 * cr, 1.8556 * cb);
+}
+
+@fragment
+fn fs_wheels(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let g = to_display(unpremul(c));
+    let lift = fx.p0.z * 0.005 + wheel_tint(fx.p0.x, fx.p0.y) * 0.4;
+    let gain = exp2(fx.p2.x * 0.01 + wheel_tint(fx.p1.z, fx.p1.w));
+    let gamma = exp2(-(fx.p1.y * 0.01 + wheel_tint(fx.p0.w, fx.p1.x)));
+    let offset = fx.p2.w * 0.005 + wheel_tint(fx.p2.y, fx.p2.z) * 0.4;
+    var v = g + lift * (1.0 - g);
+    v = pow(max(v * gain, vec3(0.0)), gamma) + offset;
+    v = (v - fx.p3.z * 0.01) * (fx.p3.y * 0.01) + fx.p3.z * 0.01;
+    let luma = dot(v, LUMA);
+    let cb0 = (v.b - luma) / 1.8556;
+    let cr0 = (v.r - luma) / 1.5748;
+    let a = radians(fx.p3.w);
+    let s = sin(a);
+    let co = cos(a);
+    let sat = fx.p3.x * 0.01;
+    let cb = (cb0 * co - cr0 * s) * sat;
+    let cr = (cb0 * s + cr0 * co) * sat;
+    let r = luma + 1.5748 * cr;
+    let b = luma + 1.8556 * cb;
+    let gr = (luma - 0.2126 * r - 0.0722 * b) / 0.7152;
+    return vec4(to_linear(max(vec3(r, gr, b), vec3(0.0))) * c.a, c.a);
+}
+
 // Sharpen: p0 = (amount %, radius in texels).
 @fragment
 fn fs_sharpen(in: VsOut) -> @location(0) vec4<f32> {

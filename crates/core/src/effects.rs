@@ -46,6 +46,10 @@ pub enum EffectKind {
     Levels,
     /// Tone curves, master and per channel (the points live in `Effect::data`).
     Curves,
+    /// Lift, gamma, gain and offset colour wheels (shadows, midtones,
+    /// highlights, everything), with contrast, pivot and saturation, as in
+    /// DaVinci Resolve's primaries. See [`wheels`].
+    ColorWheels,
     /// Unsharp-mask style sharpening.
     Sharpen,
     /// Bright parts bloom outwards.
@@ -484,6 +488,24 @@ const LEVELS: [ParamSpec; 5] = [
     spec("Output black", 0.0, 0.0, 255.0, "", 0.5),
     spec("Output white", 255.0, 0.0, 255.0, "", 0.5),
 ];
+const WHEELS: [ParamSpec; 16] = [
+    spec("Lift X", 0.0, -100.0, 100.0, " %", 0.25),
+    spec("Lift Y", 0.0, -100.0, 100.0, " %", 0.25),
+    spec("Lift", 0.0, -100.0, 100.0, " %", 0.2),
+    spec("Gamma X", 0.0, -100.0, 100.0, " %", 0.25),
+    spec("Gamma Y", 0.0, -100.0, 100.0, " %", 0.25),
+    spec("Gamma", 0.0, -100.0, 100.0, " %", 0.2),
+    spec("Gain X", 0.0, -100.0, 100.0, " %", 0.25),
+    spec("Gain Y", 0.0, -100.0, 100.0, " %", 0.25),
+    spec("Gain", 0.0, -100.0, 100.0, " %", 0.2),
+    spec("Offset X", 0.0, -100.0, 100.0, " %", 0.25),
+    spec("Offset Y", 0.0, -100.0, 100.0, " %", 0.25),
+    spec("Offset", 0.0, -100.0, 100.0, " %", 0.2),
+    spec("Saturation", 100.0, 0.0, 200.0, " %", 0.5),
+    spec("Contrast", 100.0, 0.0, 200.0, " %", 0.5),
+    spec("Pivot", 43.5, 0.0, 100.0, " %", 0.2),
+    spec("Hue", 0.0, -180.0, 180.0, "°", 0.5),
+];
 const CURVES: [ParamSpec; 1] = [spec("Strength", 100.0, 0.0, 100.0, " %", 0.5)];
 const SHARPEN: [ParamSpec; 2] = [spec("Amount", 50.0, 0.0, 500.0, " %", 0.5), spec("Radius", 1.5, 0.5, 10.0, " px", 0.02)];
 const GLOW: [ParamSpec; 4] = [
@@ -718,6 +740,55 @@ pub mod aberration {
     pub const MODE: usize = 1;
     pub const ANGLE: usize = 2;
     pub const FALLOFF: usize = 3;
+}
+/// Colour wheels parameter indices and the grade they make (the GPU shader
+/// `fs_wheels` does the same sums).
+pub mod wheels {
+    /// The wheels in order; each has X, Y (where its puck is, -100 to 100 %
+    /// of the rim: right is blue, up is red, as on a vectorscope) and its
+    /// master (the ring under it, -100 to 100 %).
+    pub const NAMES: [&str; 4] = ["Lift", "Gamma", "Gain", "Offset"];
+    pub const LIFT: usize = 0;
+    pub const GAMMA: usize = 3;
+    pub const GAIN: usize = 6;
+    pub const OFFSET: usize = 9;
+    pub const SATURATION: usize = 12;
+    pub const CONTRAST: usize = 13;
+    pub const PIVOT: usize = 14;
+    pub const HUE: usize = 15;
+
+    /// A puck at (x, y) (-1 to 1 each) as a colour push with no brightness of
+    /// its own: the Rec. 709 R′G′B′ of chroma (Cb, Cr) = (x, y) × 0.35.
+    pub fn tint(x: f32, y: f32) -> [f32; 3] {
+        let (cb, cr) = (x * 0.35, y * 0.35);
+        [1.5748 * cr, -0.1873 * cb - 0.4681 * cr, 1.8556 * cb]
+    }
+
+    /// The grade of display-referred R′G′B′ `c` (0–1) by params `v`.
+    pub fn apply(v: &[f32], c: [f32; 3]) -> [f32; 3] {
+        let w = |i: usize| (tint(v[i] / 100.0, v[i + 1] / 100.0), v[i + 2] / 100.0);
+        let ((tl, ml), (tg, mg), (tn, mn), (to, mo)) = (w(LIFT), w(GAMMA), w(GAIN), w(OFFSET));
+        let (sat, con, piv) = (v[SATURATION] / 100.0, v[CONTRAST] / 100.0, v[PIVOT] / 100.0);
+        let mut out = [0.0; 3];
+        for k in 0..3 {
+            let lift = ml * 0.5 + tl[k] * 0.4;
+            let gain = (mn + tn[k]).exp2();
+            let gamma = (-(mg + tg[k])).exp2();
+            let offset = mo * 0.5 + to[k] * 0.4;
+            let x = c[k] + lift * (1.0 - c[k]);
+            let x = (x * gain).max(0.0).powf(gamma) + offset;
+            out[k] = (x - piv) * con + piv;
+        }
+        let luma = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
+        // Hue: turn the colour round the grey axis (in Cb/Cr).
+        let (cb, cr) = ((out[2] - luma) / 1.8556, (out[0] - luma) / 1.5748);
+        let (s, co) = v[HUE].to_radians().sin_cos();
+        let (cb, cr) = ((cb * co - cr * s) * sat, (cb * s + cr * co) * sat);
+        let r = luma + 1.5748 * cr;
+        let b = luma + 1.8556 * cb;
+        let g = (luma - 0.2126 * r - 0.0722 * b) / 0.7152;
+        [r.max(0.0), g.max(0.0), b.max(0.0)]
+    }
 }
 pub mod grain {
     pub const AMOUNT: usize = 0;
@@ -1265,10 +1336,11 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 39] = [
+    pub const ALL: [EffectKind; 40] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
+        EffectKind::ColorWheels,
         EffectKind::Lut,
         EffectKind::Blur,
         EffectKind::Sharpen,
@@ -1319,6 +1391,7 @@ impl EffectKind {
             EffectKind::RefineMatte => "Refine matte",
             EffectKind::Vignette => "Vignette",
             EffectKind::Levels => "Levels",
+            EffectKind::ColorWheels => "Colour wheels",
             EffectKind::Curves => "Curves",
             EffectKind::Sharpen => "Sharpen",
             EffectKind::Glow => "Glow",
@@ -1358,7 +1431,7 @@ impl EffectKind {
 
     pub fn category(self) -> EffectCategory {
         match self {
-            EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut => EffectCategory::Color,
+            EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner | EffectKind::MatteChoker | EffectKind::RefineMatte => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
@@ -1377,6 +1450,7 @@ impl EffectKind {
     pub fn description(self) -> &'static str {
         match self {
             EffectKind::ColorCorrect => "Exposure, contrast, saturation and white balance.",
+            EffectKind::ColorWheels => "Grade with lift, gamma, gain and offset wheels: push the shadows, midtones, highlights or the whole picture towards a colour and brighten or darken each, then set contrast, saturation and hue. Watch the scopes as you go.",
             EffectKind::Levels => "Set the black and white points and the midtones (gamma), like Photoshop's Levels.",
             EffectKind::Curves => "Shape the tones with curves: an S-curve for contrast, or per-channel colour shifts.",
             EffectKind::Lut => "Apply a colour look or camera conversion from a .cube LUT file.",
@@ -1435,6 +1509,7 @@ impl EffectKind {
             EffectKind::RefineMatte => &REFINE_MATTE,
             EffectKind::Vignette => &VIGNETTE,
             EffectKind::Levels => &LEVELS,
+            EffectKind::ColorWheels => &WHEELS,
             EffectKind::Curves => &CURVES,
             EffectKind::Sharpen => &SHARPEN,
             EffectKind::Glow => &GLOW,
@@ -1501,6 +1576,7 @@ impl EffectKind {
             EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
             EffectKind::Paint => &[(0, "Brush"), (5, "Strokes"), (6, "Clone")],
             EffectKind::FaceBeauty => &[(0, "Look"), (5, "Faces")],
+            EffectKind::ColorWheels => &[(0, "Lift (shadows)"), (3, "Gamma (midtones)"), (6, "Gain (highlights)"), (9, "Offset (everything)"), (12, "Overall")],
             EffectKind::SkyReplace => &[(0, "Sky"), (3, "Placing"), (7, "Look"), (9, "Edge"), (11, "Blend")],
             EffectKind::Lightning => &[(0, "Path"), (4, "Shape"), (10, "Look"), (15, "Motion")],
             EffectKind::PatchReplacer => &[(0, "Target"), (2, "Source"), (4, "Shape"), (9, "Fill")],
@@ -1575,6 +1651,7 @@ impl EffectValues {
             // Without its clean plate it does nothing.
             EffectKind::DifferenceKey => self.table.is_none(),
             EffectKind::Vignette => v[0] == 0.0,
+            EffectKind::ColorWheels => v[..12].iter().all(|&x| x == 0.0) && v[wheels::SATURATION] == 100.0 && v[wheels::CONTRAST] == 100.0 && v[wheels::HUE] == 0.0,
             EffectKind::Levels => v[0] == 0.0 && v[1] == 255.0 && v[2] == 1.0 && v[3] == 0.0 && v[4] == 255.0,
             EffectKind::Curves | EffectKind::Lut => self.table.is_none() || v[0] == 0.0,
             EffectKind::Sharpen => v[0] == 0.0,
@@ -1885,7 +1962,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 // These need the layer's size (a shatter's pieces, a fluid's grid).
@@ -1893,6 +1970,61 @@ mod tests {
                 _ => assert!(!v.is_identity(), "{kind:?} should do something by default"),
             }
         }
+    }
+
+    #[test]
+    fn colour_wheels_grade_as_a_colourist_expects() {
+        let base: Vec<f32> = EffectKind::ColorWheels.params().iter().map(|p| p.default).collect();
+        let with = |pairs: &[(usize, f32)]| {
+            let mut v = base.clone();
+            for &(i, x) in pairs {
+                v[i] = x;
+            }
+            v
+        };
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-4);
+        // At rest nothing changes.
+        for c in [[0.0, 0.0, 0.0], [0.2, 0.5, 0.9], [1.0, 1.0, 1.0]] {
+            assert!(near(wheels::apply(&base, c), c), "{c:?}");
+        }
+        // The pucks push towards the colour they point at, with no change of
+        // brightness: right is blue, up is red (as on a vectorscope).
+        let t = wheels::tint(1.0, 0.0);
+        assert!(t[2] > 0.5 && t[0].abs() < 1e-6 && (0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2]).abs() < 1e-5);
+        let t = wheels::tint(0.0, 1.0);
+        assert!(t[0] > 0.5 && (0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2]).abs() < 1e-5);
+        // Lift moves black and leaves white; gain moves white and leaves black.
+        let lift = with(&[(wheels::LIFT + 2, 20.0)]);
+        assert!(near(wheels::apply(&lift, [0.0; 3]), [0.1; 3]));
+        assert!(near(wheels::apply(&lift, [1.0; 3]), [1.0; 3]));
+        let gain = with(&[(wheels::GAIN + 2, 100.0)]);
+        assert!(near(wheels::apply(&gain, [0.0; 3]), [0.0; 3]));
+        assert!(near(wheels::apply(&gain, [0.4; 3]), [0.8; 3]));
+        // Gamma lifts the middle and leaves both ends.
+        let gamma = with(&[(wheels::GAMMA + 2, 50.0)]);
+        let mid = wheels::apply(&gamma, [0.5; 3]);
+        assert!(mid[0] > 0.55 && near(wheels::apply(&gamma, [1.0; 3]), [1.0; 3]) && near(wheels::apply(&gamma, [0.0; 3]), [0.0; 3]));
+        // Gain towards orange warms the highlights more than the shadows.
+        let warm = with(&[(wheels::GAIN, -40.0), (wheels::GAIN + 1, 40.0)]);
+        let hi = wheels::apply(&warm, [0.8; 3]);
+        let lo = wheels::apply(&warm, [0.1; 3]);
+        assert!(hi[0] > hi[2] && hi[0] - hi[2] > lo[0] - lo[2]);
+        // Offset moves everything the same.
+        let off = with(&[(wheels::OFFSET + 2, -20.0)]);
+        assert!(near(wheels::apply(&off, [0.5; 3]), [0.4; 3]));
+        // Saturation 0 is grey of the same luma; contrast pivots.
+        let grey = wheels::apply(&with(&[(wheels::SATURATION, 0.0)]), [0.9, 0.3, 0.1]);
+        assert!((grey[0] - grey[1]).abs() < 1e-5 && (grey[0] - (0.2126 * 0.9 + 0.7152 * 0.3 + 0.0722 * 0.1)).abs() < 1e-5);
+        let con = with(&[(wheels::CONTRAST, 200.0), (wheels::PIVOT, 50.0)]);
+        assert!(near(wheels::apply(&con, [0.5; 3]), [0.5; 3]) && near(wheels::apply(&con, [0.6; 3]), [0.7; 3]));
+        // Hue turns a colour and keeps its luma; 360° is back where it was.
+        let c = [0.6, 0.4, 0.3];
+        let h = wheels::apply(&with(&[(wheels::HUE, 120.0)]), c);
+        let y = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        assert!((y(h) - y(c)).abs() < 1e-4 && h[0] < c[0]);
+        assert!(near(wheels::apply(&with(&[(wheels::HUE, 180.0)]), wheels::apply(&with(&[(wheels::HUE, 180.0)]), c)), c));
+        let e = Effect::new(EffectKind::ColorWheels);
+        assert!(e.eval(Time::ZERO).is_identity());
     }
 
     #[test]

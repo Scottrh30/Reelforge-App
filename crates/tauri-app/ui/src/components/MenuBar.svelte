@@ -16,6 +16,7 @@
     ["controls", "Controls"],
     ["text", "Text"],
     ["track", "Track"],
+    ["scopes", "Scopes"],
     ["timeline", "Timeline"],
     ["meters", "Meters"],
   ];

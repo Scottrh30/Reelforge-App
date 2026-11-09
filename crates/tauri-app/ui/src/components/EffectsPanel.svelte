@@ -8,6 +8,7 @@
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
   import NumberField from "./NumberField.svelte";
   import CurvesEditor from "./CurvesEditor.svelte";
+  import ColorWheels from "./ColorWheels.svelte";
 
   // `scene`: the settings of a camera or light clip (one fixed card, no adding).
   let { ins, scene = false }: { ins: Inspector; scene?: boolean } = $props();
@@ -17,6 +18,8 @@
   let drafts = $state<Record<string, number>>({});
   // Effects folded shut (by position), per clip.
   let folded = $state<Record<string, boolean>>({});
+  // Colour wheels whose numbers (for typing and keyframing) are shown.
+  let numbers = $state<Record<string, boolean>>({});
   let shownId: number | null = null;
   $effect(() => {
     const id = ins.id;
@@ -33,6 +36,12 @@
     drafts[`${i}:${p}`] = v;
     const id = ins.id;
     pump.push(() => api.effectParam(id, i, p, v));
+  }
+  /// Several at once (one live edit, so none is dropped by the pump).
+  function setMany(i: number, vs: [number, number][]) {
+    for (const [p, v] of vs) drafts[`${i}:${p}`] = v;
+    const id = ins.id;
+    pump.push(() => api.effectParams(id, i, vs));
   }
   async function commit() {
     await pump.done();
@@ -202,7 +211,13 @@
         <p class="warn">This plugin isn't installed (id “{fx.plugin}”), so the effect is skipped. Its settings are kept: install the plugin and it comes back.</p>
       {/if}
       {#if !folded[key]}
-        {#if fx.params.length}
+        {#if fx.kind === "ColorWheels"}
+          <ColorWheels values={fx.params.map((p, pi) => value(i, pi, p))} onset={(vs) => setMany(i, vs)} oncommit={commit} />
+          <button class="ghost small numbers" aria-expanded={!!numbers[key]} onclick={() => (numbers[key] = !numbers[key])} title="Every setting as a number, to type or keyframe">
+            <span class="chev" class:shut={!numbers[key]} aria-hidden="true">▾</span> Numbers and keyframes
+          </button>
+        {/if}
+        {#if fx.params.length && (fx.kind !== "ColorWheels" || numbers[key])}
           <div class="params">
             {#each fx.params as p, pi}
               {#if p.section}<span class="sec">{p.section}</span>{/if}
@@ -468,6 +483,12 @@
   }
   .chev.shut {
     transform: rotate(-90deg);
+  }
+  .numbers {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 4px;
   }
   .name {
     font-weight: 600;

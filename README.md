@@ -21,12 +21,24 @@ What works now:
   or floats, and the sizes of the docks, timeline, meters and track headers. Four come built
   in: **Editing** (the starting layout), **Effects** (the effects library in front, wide
   Controls, a bigger Viewer), **Tracking** (the Track panel in front, a big Viewer, a short
-  timeline) and **Colour** (wide Controls only, the biggest Viewer). **Alt+Shift+1…9**
+  timeline) and **Colour** (the Scopes on the left, wide Controls on the right). **Alt+Shift+1…9**
   switches to the first nine. A `*` beside the name means the layout has changed since you
   chose it: **Save changes to “…”** keeps the changes in that workspace (a changed built-in one
   can be put back with **Restore “…” as it came**), **Undo layout changes** goes back to it,
   and **Save as new workspace…** keeps it under a name of your own, which can be renamed or
   deleted later. Workspaces are kept on this computer, not in the project
+- **Scopes** (a dock tab; on the left in the **Colour** workspace): the Viewer's picture
+  measured, as it changes and while playing — **Waveform** (brightness across the picture, left
+  to right as in the Viewer, from 0 % black to 100 % white; **RGB** overlays red, green and blue
+  instead of luma), **Parade** (a waveform each for red, green and blue side by side: matched
+  heights on something white or grey mean it's neutral), **Vectorscope** (hue round the circle
+  and saturation out from the middle, with boxes at the 75 % and 100 % colour bars, a dashed
+  skin tone line, the trace drawn in the colours it stands for, and **Zoom** 2× or 4× for
+  pictures with little colour) and **Histogram** (how many pixels at each level, luma or
+  **RGB**). Show any of them at once; they share the space and are remembered. Point at a
+  waveform or parade to read the level there (percent and 0–255). **Brightness** sets how
+  bright the traces are (double-click it for normal). Levels are the picture's display values,
+  luma and chroma Rec. 709
 - Import video/image/audio via **File → Import**, `Ctrl+I`, or drag files from Explorer
 - **Image sequences** (VFX renders and comps: OpenEXR, DPX, PNG, TIFF, TGA, JPEG…): import any
   one numbered frame (`comp_v2.1001.exr`) and the whole sequence comes in as one clip,
@@ -318,6 +330,16 @@ What works now:
   - **Curves**: master, red, green and blue tone curves drawn in a small editor (drag a point,
     double-click to add one, right-click to remove; smooth curves that never overshoot), with
     a Strength mix
+  - **Colour wheels**: grading as in DaVinci Resolve's primaries, with four wheels — **Lift**
+    (shadows: black moves most, white not at all), **Gamma** (midtones: black and white stay
+    put), **Gain** (highlights: white moves most, black not at all) and **Offset** (everything
+    by the same amount). Drag anywhere on a wheel to push its puck towards a colour (**Shift**
+    for fine moves, arrow keys when it has focus, double-click to centre it); the number under
+    it brightens or darkens that range, and ↺ resets the wheel. The wheels are laid out like the
+    vectorscope (red up, blue to the right), so the trace moves the way the puck does, and a
+    push keeps the brightness where it was. Then **Saturation**, **Contrast** (about **Pivot**)
+    and **Hue** (turns every colour round the wheel). **Numbers and keyframes** shows every
+    setting as a number, to type or keyframe
   - **LUT (.cube)**: load any 3D `.cube` LUT (Resolve, Photoshop, camera LUT packs), sampled
     with full trilinear interpolation, with a Strength mix
   - **Gaussian blur**: radius in pixels (two separable passes, any size)
@@ -2206,6 +2228,15 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   unchanged vertex shader draws the quad and the GPU interpolates texture coordinates in
   perspective. Hit testing, the gizmo, masks and the tracker overlay all go through
   `layer_map`, so they agree with what's drawn. Pin keys are a `Curve<Pin>` like any property
+- **Scopes** (`engine/src/scopes.rs`, `tauri-app/src/scopes.rs`, `ui/src/components/ScopesPanel.svelte`):
+  drawn on the CPU from the Viewer's picture, which is read back from the GPU once per change
+  and shared with the Viewer itself. About a third of a million samples at most, binned per
+  output column (waveform, parade), per cell with their colour (vectorscope) or per level
+  (histogram), then lit by `1 − e^(−count·k)` so both thin and dense traces show.
+- **Colour wheels** (`core::effects::wheels`, `fs_wheels` in `render/src/effects.wgsl`): on
+  display values, `((v + lift·(1 − v))·gain)^gamma + offset`, then contrast about the pivot,
+  then hue and saturation in Rec. 709 Cb/Cr. A puck at (x, y) is the chroma (Cb, Cr) = 0.35·(x,
+  y) as R′G′B′ with no luma; the CPU sums and the shader are tested against each other.
 - **Curves** (`core/src/channels.rs`, `ui/src/components/CurvesPanel.svelte`): `Channel` addresses any keyframeable
   number on a clip (a transform component or an effect parameter), with uniform get/set/move
   operations, so the curve editor doesn't care what it's editing. A drag re-applies the move

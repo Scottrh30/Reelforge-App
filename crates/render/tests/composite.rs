@@ -302,6 +302,29 @@ fn effects_follow_the_layer_and_work_in_dissolves() {
 // ---- New effects ---------------------------------------------------------------
 
 #[test]
+fn colour_wheels_on_the_gpu_match_the_sums() {
+    let Some(mut c) = setup() else { return };
+    use reelforge_core::effects::wheels;
+    let settings: &[(usize, f32)] = &[(wheels::LIFT, -30.0), (wheels::LIFT + 1, 10.0), (wheels::LIFT + 2, 8.0), (wheels::GAMMA + 2, 20.0), (wheels::GAIN, -25.0), (wheels::GAIN + 1, 30.0), (wheels::GAIN + 2, 10.0), (wheels::OFFSET + 2, -4.0), (wheels::SATURATION, 120.0), (wheels::CONTRAST, 110.0), (wheels::HUE, 15.0)];
+    let v = {
+        let mut v: Vec<f32> = EffectKind::ColorWheels.params().iter().map(|p| p.default).collect();
+        for &(i, x) in settings {
+            v[i] = x;
+        }
+        v
+    };
+    for (k, rgb) in [[200u8, 120, 60], [30, 40, 90], [128, 128, 128]].into_iter().enumerate() {
+        let img = solid(1, 1, [rgb[0], rgb[1], rgb[2], 255]);
+        c.render([4, 4], &[with_fx(full(40 + k as u64, &img, [4, 4]), vec![fx(EffectKind::ColorWheels, settings)])]);
+        let got = px(&c.read_output().unwrap(), 4, 2, 2);
+        let want = wheels::apply(&v, rgb.map(|x| x as f32 / 255.0)).map(|x| (x.clamp(0.0, 1.0) * 255.0).round() as i32);
+        for ch in 0..3 {
+            assert!((got[ch] as i32 - want[ch]).abs() <= 6, "{rgb:?}: GPU {got:?}, sums {want:?}");
+        }
+    }
+}
+
+#[test]
 fn levels_curves_and_luts_remap_colours() {
     let Some(mut c) = setup() else { return };
     let grey = solid(1, 1, [128, 128, 128, 255]);
