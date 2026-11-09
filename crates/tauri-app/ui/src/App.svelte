@@ -19,6 +19,7 @@
   import ContextMenu from "./components/ContextMenu.svelte";
   import Dialogs from "./components/Dialogs.svelte";
   import DuckDialog from "./components/DuckDialog.svelte";
+  import SequenceSettingsDialog from "./components/SequenceSettingsDialog.svelte";
   import MulticamDialog from "./components/MulticamDialog.svelte";
   import VersionsDialog from "./components/VersionsDialog.svelte";
   import AboutDialog from "./components/AboutDialog.svelte";
@@ -161,6 +162,7 @@
 <Dialogs />
 <ExportDialog />
 <DuckDialog />
+<SequenceSettingsDialog />
 <MulticamDialog />
 <VersionsDialog />
 <AboutDialog />

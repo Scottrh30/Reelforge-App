@@ -1488,6 +1488,23 @@ impl Editor {
         }
     }
 
+    /// Change the sequence's name, frame size (even, 16–16384), frame rate
+    /// and pixel shape (one of `PIXEL_ASPECTS`; square otherwise), as one undo step.
+    pub fn set_sequence_settings(&mut self, name: &str, width: u32, height: u32, rate: reelforge_core::FrameRate, aspect: (u32, u32)) {
+        use reelforge_core::undo::{SequenceSettings, SetSequenceSettings};
+        let even = |v: u32| (v.clamp(16, 16384) + 1) & !1;
+        let aspect = if reelforge_core::project::PIXEL_ASPECTS.iter().any(|a| (a.1, a.2) == aspect) { aspect } else { (1, 1) };
+        let rate = if rate.0.num > 0 && rate.0.den > 0 && rate.0.num / rate.0.den <= 1000 { rate } else { self.seq().frame_rate };
+        let old = SequenceSettings::of(self.seq());
+        let name = name.trim();
+        let new = SequenceSettings { name: if name.is_empty() { old.name.clone() } else { name.to_string() }, width: even(width), height: even(height), frame_rate: rate, pixel_aspect: aspect };
+        if new == old {
+            return;
+        }
+        self.execute(Box::new(SetSequenceSettings { seq: self.active, old, new }));
+        self.status = format!("{}: {}", self.seq().name, crate::start::summary_of(self.seq()));
+    }
+
     pub fn rename_track(&mut self, index: usize, name: String) {
         let Some(old) = self.seq().tracks.get(index).map(|t| t.name.clone()) else { return };
         if name.is_empty() || name == old {
@@ -3637,6 +3654,30 @@ mod tests {
 
     fn editor() -> Editor {
         Editor::new(None, None)
+    }
+
+    /// Sequence settings: name, size, rate and pixel shape change as one
+    /// undo step; sizes are made even, unknown pixel shapes square, and
+    /// nothing changed is no step at all.
+    #[test]
+    fn sequence_settings_change_and_undo() {
+        let mut e = editor();
+        let before = e.seq().clone();
+        let steps = e.undo.position();
+        e.set_sequence_settings("  DV cut ", 721, 480, FrameRate::new(30000, 1001), (10, 11));
+        let s = e.seq();
+        assert_eq!((s.name.as_str(), s.width, s.height, s.frame_rate, s.pixel_aspect), ("DV cut", 722, 480, FrameRate::new(30000, 1001), (10, 11)));
+        assert!(e.status.contains("DV NTSC"), "{}", e.status);
+        assert_eq!(e.undo.position(), steps + 1);
+        e.set_sequence_settings("DV cut", 722, 480, FrameRate::new(30000, 1001), (10, 11));
+        assert_eq!(e.undo.position(), steps + 1, "no change, no step");
+        e.set_sequence_settings("", 4, 99999, FrameRate::new(0, 1), (7, 5));
+        let s = e.seq();
+        assert_eq!((s.name.as_str(), s.width, s.height, s.frame_rate, s.pixel_aspect), ("DV cut", 16, 16384, FrameRate::new(30000, 1001), (1, 1)));
+        e.undo();
+        e.undo();
+        let s = e.seq();
+        assert_eq!((&s.name, s.width, s.height, s.frame_rate, s.pixel_aspect), (&before.name, before.width, before.height, before.frame_rate, before.pixel_aspect));
     }
 
 /// Delete bad points and re-solve: points fitting worse than a limit go,

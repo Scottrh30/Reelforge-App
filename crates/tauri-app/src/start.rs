@@ -137,6 +137,19 @@ pub fn start_new_preset(id: String, rate: Option<(u32, u32)>, aspect: Option<(u3
 }
 
 /// A new project of any size: `rate` as numerator and denominator (30/1, 30000/1001…).
+/// Every pixel shape a sequence can have: name, width, height.
+#[tauri::command]
+pub fn pixel_aspects() -> Vec<(&'static str, u32, u32)> {
+    reelforge_core::project::PIXEL_ASPECTS.to_vec()
+}
+
+/// Timeline → Sequence settings…: the open sequence's name, frame size,
+/// frame rate and pixel shape (one undo step).
+#[tauri::command]
+pub fn set_sequence_settings(name: String, width: u32, height: u32, num: u32, den: u32, aspect: (u32, u32)) -> Res<()> {
+    ed(|e| e.set_sequence_settings(&name, width, height, FrameRate::new(num as i64, den.max(1) as i64), aspect))
+}
+
 #[tauri::command]
 pub fn start_new_custom(width: u32, height: u32, num: u32, den: u32, aspect: Option<(u32, u32)>) -> Res<()> {
     if width < 16 || height < 16 || width > 16384 || height > 16384 {

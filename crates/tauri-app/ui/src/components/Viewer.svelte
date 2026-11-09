@@ -436,7 +436,7 @@
 <div class="viewer">
   <div class="head">
     <span class="name">{app.s?.seq.name ?? ""}</span>
-    <span class="muted">{app.s ? `${app.s.seq.width}×${app.s.seq.height}${app.s.seq.par !== 1 ? ` · ${app.s.seq.par_name} pixels` : ""} · ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</span>
+    <button class="ghost settings" onclick={() => (app.seqSettingsOpen = true)} title="Sequence settings: frame size, frame rate and pixel aspect">{app.s ? `${app.s.seq.width}×${app.s.seq.height}${app.s.seq.par !== 1 ? ` · ${app.s.seq.par_name} pixels` : ""} · ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</button>
     <span class="grow"></span>
     {#if app.live?.from_cache}<span class="rendered" title="Shown from Render preview">Rendered</span>{/if}
     {#if app.showFps && perf && (perf.label || playing)}<span
@@ -624,6 +624,15 @@
 </div>
 
 <style>
+  .head .settings {
+    color: var(--muted);
+    min-height: 0;
+    padding: 0 4px;
+    font: inherit;
+  }
+  .head .settings:hover {
+    color: var(--text);
+  }
   .shuttle {
     margin-left: 10px;
     color: var(--accent);

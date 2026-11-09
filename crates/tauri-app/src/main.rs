@@ -1918,6 +1918,8 @@ fn main() {
             start::start_at_launch,
             start::start_new_preset,
             start::start_new_custom,
+            start::pixel_aspects,
+            start::set_sequence_settings,
             start::start_new_template,
             start::start_open_recent,
             start::start_forget,

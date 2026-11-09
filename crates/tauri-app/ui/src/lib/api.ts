@@ -156,6 +156,7 @@ export interface SeqView {
   /// Its pixels' width ÷ height (1: square), and their name.
   par: number;
   par_name: string;
+  pixel_aspect: [number, number];
   frame: Ticks;
   duration: Ticks;
   in_point: Ticks | null;
@@ -1181,6 +1182,8 @@ export const api = {
   startView: () => invoke<StartView>("start_view"),
   startAtLaunch: () => invoke<boolean>("start_at_launch"),
   startNewPreset: (id: string, rate: [number, number] | null = null, aspect: [number, number] | null = null) => invoke("start_new_preset", { id, rate, aspect }),
+  pixelAspects: () => invoke<[string, number, number][]>("pixel_aspects"),
+  setSequenceSettings: (name: string, width: number, height: number, num: number, den: number, aspect: [number, number]) => invoke("set_sequence_settings", { name, width, height, num, den, aspect }),
   startNewCustom: (width: number, height: number, num: number, den: number, aspect: [number, number] | null = null) => invoke("start_new_custom", { width, height, num, den, aspect }),
   startNewTemplate: (path: string) => invoke("start_new_template", { path }),
   startOpenRecent: (path: string) => invoke<boolean>("start_open_recent", { path }),

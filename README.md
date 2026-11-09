@@ -1043,7 +1043,11 @@ What works now:
   says) fills a matching sequence exactly, and square-pixel footage and titles are squeezed so they
   look right in it, and the other way round. Exports at the sequence's own size write the pixel
   shape into the file, so players stretch it the same way; at any other size the picture is
-  resized to square pixels. Or **any size** and frame rate typed in; or from
+  resized to square pixels. To change an existing sequence's pixel aspect (or its name, frame
+  size or frame rate), use **Timeline → Sequence settings…** (**Composition settings…** inside
+  a composition), or click the size line at the top of the Viewer: layers keep their size and
+  stay where they are from the middle of the frame, edits keep their times, and it's one undo
+  step. Or **any size** and frame rate typed in; or from
   **your templates**: **File → Save as template…** keeps a whole project to start from (its
   sequences, tracks, titles, effects and media), and a project started from one is new and
   unsaved, so the template is never written over. **Recent projects** sit beside them, newest

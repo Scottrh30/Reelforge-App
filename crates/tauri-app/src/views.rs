@@ -86,6 +86,7 @@ pub struct SeqView {
     /// Its pixels' width ÷ height (1 square), and their name.
     pub par: f32,
     pub par_name: String,
+    pub pixel_aspect: (u32, u32),
     pub frame: i64,
     pub duration: i64,
     pub in_point: Option<i64>,
@@ -640,6 +641,7 @@ pub fn state(e: &Editor) -> State {
         rate_den: rate.0.den,
         par: s.par(),
         par_name: reelforge_core::project::pixel_aspect_name(s.pixel_aspect),
+        pixel_aspect: s.pixel_aspect,
         frame: rate.frame_duration().0,
         duration: s.duration().0,
         in_point: s.in_point.map(|t| t.0),

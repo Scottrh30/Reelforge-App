@@ -273,6 +273,8 @@
     { label: "Add video track", run: () => actions.act("add_video_track") },
     { label: "Add audio track", run: () => actions.act("add_audio_track") },
     { separator: true },
+    { label: app.s?.active ? "Composition settings…" : "Sequence settings…", run: () => (app.seqSettingsOpen = true) },
+    { separator: true },
     { label: "New composition", run: () => run(api.newComposite()) },
     { label: "Make composition from selection", hint: "Ctrl+G", run: () => actions.act("make_composite") },
   ];

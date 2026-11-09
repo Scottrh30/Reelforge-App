@@ -46,6 +46,8 @@ export const app = $state({
   aboutTab: null as null | "diagnostics" | "check" | "notices",
   /// Timeline > Duck music under dialogue… is open.
   duckOpen: false,
+  /// Timeline > Sequence settings… is open.
+  seqSettingsOpen: false,
   /// New multicam source… is open, with these takes ticked to start with.
   multicamOpen: null as null | number[],
   /// File > Project versions… is open.

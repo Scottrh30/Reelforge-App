@@ -1107,6 +1107,51 @@ impl Command for RenameTrack {
     }
 }
 
+/// A sequence's settings: name, frame size, frame rate and pixel shape.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SequenceSettings {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: crate::FrameRate,
+    pub pixel_aspect: (u32, u32),
+}
+
+impl SequenceSettings {
+    pub fn of(s: &Sequence) -> Self {
+        SequenceSettings { name: s.name.clone(), width: s.width, height: s.height, frame_rate: s.frame_rate, pixel_aspect: s.pixel_aspect }
+    }
+    fn put(&self, s: &mut Sequence) {
+        s.name = self.name.clone();
+        (s.width, s.height, s.frame_rate, s.pixel_aspect) = (self.width, self.height, self.frame_rate, self.pixel_aspect);
+    }
+}
+
+/// Change a sequence's settings (Timeline → Sequence settings…). Layers
+/// stay where they are relative to the frame's centre, at their own size;
+/// edits stay at the same times.
+pub struct SetSequenceSettings {
+    pub seq: usize,
+    pub old: SequenceSettings,
+    pub new: SequenceSettings,
+}
+
+impl Command for SetSequenceSettings {
+    fn name(&self) -> &str {
+        "Sequence settings"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some(s) = p.sequences.get_mut(self.seq) {
+            self.new.put(s);
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some(s) = p.sequences.get_mut(self.seq) {
+            self.old.put(s);
+        }
+    }
+}
+
 /// Add, change or remove a clip's motion tracker.
 pub struct SetTracker {
     pub seq: usize,
