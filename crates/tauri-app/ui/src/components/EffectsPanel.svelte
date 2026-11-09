@@ -2,7 +2,7 @@
   // The Effects section of the Controls panel: the clip's effect stack, top
   // of the list applied first. Add, reorder, switch off, edit and keyframe.
   import { untrack } from "svelte";
-  import { app, run } from "../lib/session.svelte";
+  import { app, run, say } from "../lib/session.svelte";
   import { api, type FxPreset, type Inspector, type CatalogGroup, type Curves, type EffectView, type ParamView } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
@@ -134,6 +134,16 @@
 
   const keyTip = (p: ParamView) => (p.key_here ? "Remove the keyframe here" : p.animated ? "Add a keyframe at the playhead" : "Animate: add a keyframe at the playhead");
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+  /// Object removal: the roto brush in one-click mode, making an Object to remove mask.
+  function pickToRemove() {
+    const id = app.s?.inspector?.id;
+    if (id == null) return;
+    app.drawing = null;
+    app.paint = null;
+    app.roto = { clip: id, mask: null, size: app.roto?.size ?? 14, pick: true, removal: true };
+    api.rotoPrepare(id).catch(() => {});
+    say("Click what to remove in the Viewer: it's picked out and followed through the clip (Esc stops)");
+  }
 </script>
 
 <div class="group">
@@ -311,8 +321,13 @@
               <button class="small" disabled={!areas || !!app.live?.tracking} onclick={() => run(api.objectRemoval(ins.id, i))} title={areas ? "Fill every frame of the clip where the Object to remove masks are (in the background)" : "Draw a mask round what to remove first, and set its Use to Object to remove"}>{fx.filled !== null && !fx.fill_preview ? "Fill again" : "Remove object"}</button>
             {/if}
           </div>
+          {#if busy === null && ins.kind === "video"}
+            <div class="row lut">
+              <button class="small" class:on={app.roto?.clip === ins.id && !!app.roto?.pick && !!app.roto?.removal} disabled={!!app.live?.tracking} onclick={pickToRemove} title="Click what to remove in the Viewer: the roto brush picks it out as an Object to remove mask and carries it through the clip">Pick what to remove…</button>
+            </div>
+          {/if}
           {#if !areas}
-            <p class="note">Draw a mask round what to remove (Masks panel) and set its <b>Use</b> to <b>Object to remove</b>; animate or track the mask to follow it. Then press Remove object.</p>
+            <p class="note">Press <b>Pick what to remove</b> and click it in the Viewer (the roto brush follows it through the clip), or draw a mask round it (Masks panel) and set its <b>Use</b> to <b>Object to remove</b>. Then press Remove object; raise Grow if its edges show.</p>
           {:else if fx.filled === null && busy === null}
             <p class="note">Press Remove object to fill {areas === 1 ? "the masked area" : "the masked areas"} in every frame. Object fills from the other frames where what's behind shows (best when the camera or the object moves), making up the rest; Surface makes it up once and carries it with the camera; Edge blend fills smoothly from the edges.</p>
           {:else if fx.filled !== null && busy === null}

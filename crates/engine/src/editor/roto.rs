@@ -258,8 +258,9 @@ impl Editor {
     /// Paint roto brush stroke `stroke` (layer pixels) over clip `id` at the
     /// playhead: the subject's outline there is cut from every stroke
     /// painted on this frame, into mask `mask` (a new one if `None`). One
-    /// undo step. Returns the mask's index.
-    pub fn roto_stroke(&mut self, id: ClipId, mask: Option<usize>, stroke: Stroke) -> Option<usize> {
+    /// undo step. A new mask is an Object to remove (for the Object removal
+    /// effect) when `removal`. Returns the mask's index.
+    pub fn roto_stroke(&mut self, id: ClipId, mask: Option<usize>, stroke: Stroke, removal: bool) -> Option<usize> {
         self.commit_live_edit();
         if self.seq().is_locked(id) {
             self.status = LOCKED.into();
@@ -287,7 +288,8 @@ impl Editor {
         let index = match mask.filter(|&i| i < v.masks.len()) {
             Some(i) => i,
             None => {
-                v.masks.push(Mask { name: "Roto brush".into(), shape: MaskShape::Freehand, ..Mask::default() });
+                let name = if removal { "Object to remove" } else { "Roto brush" };
+                v.masks.push(Mask { name: name.into(), shape: MaskShape::Freehand, fill_area: removal, ..Mask::default() });
                 v.masks.len() - 1
             }
         };
@@ -321,6 +323,25 @@ impl Editor {
         self.set_visual_live(id, v);
         self.commit_live_edit();
         self.status = format!("{name}: {n} points round the subject. Paint more to correct it (Alt: what isn't it), then carry it on through the shot");
+        Some(index)
+    }
+
+    /// One click on clip `id` at `point` (layer pixels): the object there is
+    /// picked out into a new roto mask (an Object to remove when `removal`)
+    /// and carried on through the rest of the clip in the background (back
+    /// to its start, from its last frame). Returns the mask's index.
+    pub fn roto_pick(&mut self, id: ClipId, point: [f32; 2], removal: bool) -> Option<usize> {
+        if self.tracking.is_some() {
+            self.status = "Wait for the tracking or analysis already running to finish (or stop it)".into();
+            return None;
+        }
+        let index = self.roto_stroke(id, None, Stroke { fg: true, radius: 2.0, points: vec![point] }, removal)?;
+        let (_, c) = self.seq().find_clip(id)?;
+        let step = self.seq().frame_rate.frame_duration();
+        let forward = self.playback.playhead + step < c.timeline_end();
+        if c.duration > step {
+            self.start_roto_propagation(id, index, forward);
+        }
         Some(index)
     }
 
@@ -472,8 +493,8 @@ mod tests {
     use super::*;
     use reelforge_core::project::MediaAsset;
 
-    /// A ball moving across a textured background: a stroke on it in the
-    /// first frame outlines it, and carrying it forwards keeps the outline on it.
+    /// A box moving across a noisy background: a click on it in the first
+    /// frame outlines it, and carrying it forwards keeps the outline on it.
     #[test]
     fn a_painted_subject_is_followed_through_the_shot() {
         let dir = std::env::temp_dir().join(format!("rf-engine-roto-{}", std::process::id()));
@@ -496,12 +517,14 @@ mod tests {
         let v = e.seq().tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
         e.project.sequences[0].tracks[v].clips.push(c);
         e.playback.playhead = Time::ZERO;
-        let i = e.roto_stroke(id, None, Stroke { fg: true, radius: 3.0, points: vec![[38.0, 45.0], [52.0, 45.0]] }).expect("a mask");
+        // One click on it: picked out (as an Object to remove) and carried on by itself.
+        let i = e.roto_pick(id, [45.0, 45.0], true).expect("a mask");
         let xs = |pts: &[[f32; 2]]| (pts.iter().map(|p| p[0]).fold(f32::MAX, f32::min), pts.iter().map(|p| p[0]).fold(f32::MIN, f32::max));
         let m = e.seq().find_clip(id).unwrap().1.masks[i].clone();
+        assert!(m.fill_area && m.name == "Object to remove");
         let (lo, hi) = xs(&m.points_at(Time::ZERO));
         assert!((lo - 30.0).abs() < 3.0 && (hi - 60.0).abs() < 3.0, "{lo}..{hi}: {}", e.status);
-        e.start_roto_propagation(id, i, true);
+        assert!(e.tracking.is_some(), "carrying it on: {}", e.status);
         let t0 = std::time::Instant::now();
         while e.tracking.is_some() && t0.elapsed().as_secs() < 120 {
             e.poll_tracking();

@@ -49,17 +49,17 @@
     if (i != null) app.activeMask = { clip: ins.id, index: i };
   }
   const roto = $derived(app.roto?.clip === ins.id ? app.roto : null);
-  function rotoBrush() {
-    if (roto) {
+  function rotoBrush(pick = false) {
+    if (roto && !!roto.pick === pick && roto.mask === null) {
       app.roto = null;
       return;
     }
     app.drawing = null;
     app.maskTool = null;
     app.activeMask = null;
-    app.roto = { clip: ins.id, mask: null, size: app.roto?.size ?? 14 };
+    app.roto = { clip: ins.id, mask: null, size: app.roto?.size ?? 14, pick, removal: app.roto?.removal ?? false };
     api.rotoPrepare(ins.id).catch(() => {});
-    say("Paint over the subject in the Viewer; hold Alt to paint over what isn't it (Esc stops painting)");
+    say(pick ? "Click the object in the Viewer: it's picked out and carried through the clip (Esc stops)" : "Paint over the subject in the Viewer; hold Alt to paint over what isn't it (Esc stops painting)");
   }
   function freehand() {
     if (drawing) {
@@ -92,14 +92,22 @@
       <button class="small" onclick={() => add("rectangle")} title="A rectangle in the middle of the layer">+ Rectangle</button>
       <button class="small" onclick={() => add("ellipse")} title="An ellipse in the middle of the layer">+ Ellipse</button>
       <button class="small" class:on={drawing} onclick={freehand} title="Click points in the Viewer; click the first point or press Enter to close">+ Freehand</button>
-      <button class="small" class:on={!!roto} disabled={!trackable || ins.kind !== "video"} onclick={rotoBrush} title={ins.kind === "video" ? "Paint over a subject in the Viewer to cut a mask round it, then carry it through the shot" : "The roto brush works on footage"}>+ Roto brush</button>
+      <button class="small" class:on={!!roto} disabled={!trackable || ins.kind !== "video"} onclick={() => rotoBrush(false)} title={ins.kind === "video" ? "Paint over a subject in the Viewer to cut a mask round it, then carry it through the shot" : "The roto brush works on footage"}>+ Roto brush</button>
+      <button class="small" class:on={!!roto?.pick} disabled={!trackable || ins.kind !== "video"} onclick={() => rotoBrush(true)} title={ins.kind === "video" ? "Click an object in the Viewer: it's picked out and carried through the rest of the clip by itself" : "Picking objects works on footage"}>+ Pick object</button>
     </div>
   </div>
   {#if drawing}
     <p class="note">Click in the Viewer to place points. Click the first point, double-click or press Enter to close; Esc cancels.</p>
   {/if}
-  {#if roto}
-    <p class="note">Paint over the subject in the Viewer: its outline is found from the colours and edges. Paint again to add what was missed; hold <b>Alt</b> to paint over what isn't it. Then carry it on through the shot (below). Esc stops painting.</p>
+  {#if roto?.pick}
+    <p class="note">Click the object in the Viewer: it's picked out and carried through the rest of the clip by itself (from the last frame, back to the start). Then paint over any frame where it slipped to correct it, and carry on from there. Esc stops.</p>
+  {:else if roto}
+    <p class="note">Paint over the subject in the Viewer: the object model picks out what you paint over. Paint again to add what was missed; hold <b>Alt</b> to paint over what isn't it. Then carry it on through the shot (below). Esc stops painting.</p>
+  {/if}
+  {#if roto && roto.mask === null}
+    <label class="check rm" title="The new mask doesn't cut the layer: it marks what the Object removal effect fills in"><input type="checkbox" checked={!!roto.removal} onchange={(e) => app.roto && (app.roto.removal = e.currentTarget.checked)} /> Make it an Object to remove</label>
+  {/if}
+  {#if roto && !roto.pick}
     <div class="row">
       <span class="lbl">Brush</span>
       <input type="range" min="3" max="60" value={roto.size} oninput={(e) => app.roto && (app.roto.size = Number(e.currentTarget.value))} aria-label="Brush size" />
@@ -360,6 +368,9 @@
   }
   .name.on {
     color: #ff6ec8;
+  }
+  .rm {
+    margin: 2px 0 6px;
   }
   .check {
     display: flex;

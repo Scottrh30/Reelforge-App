@@ -97,7 +97,7 @@ export const app = $state({
   drawing: null as null | { clip: number; points: [number, number][] },
   /// The roto brush: painting in the Viewer cuts clip `clip`'s subject into
   /// mask `mask` (a new one first). `size` is the brush radius in screen pixels.
-  roto: null as null | { clip: number; mask: number | null; size: number },
+  roto: null as null | { clip: number; mask: number | null; size: number; pick?: boolean; removal?: boolean },
   /// Painting with Paint effect `index` of clip `clip` in the Viewer; `source`
   /// is where clone strokes copy from, Alt-clicked (layer pixels), until the next stroke.
   paint: null as null | { clip: number; index: number; source: [number, number] | null },

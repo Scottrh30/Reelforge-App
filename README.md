@@ -1057,10 +1057,14 @@ What works now:
     edges, keying the shape every frame. Where it slips, **Paint** on that frame to correct it
     and carry on from there; strokes painted on a frame count whenever it's cut again.
     **It sees objects, not just colours**: the cut is made by **MobileSAM**, a trained
-    Segment Anything model built into the app (no download, no GPU, nothing sent anywhere).
-    Each frame is encoded once (a second or two on the CPU; turning the brush on starts on the
-    frame at the playhead, so the first stroke rarely waits), then every stroke cuts from it in
-    about a tenth of a second: points along the subject's strokes and the others tell it what
+    Segment Anything model built into the app (no download, nothing sent anywhere; its weights
+    are stored as 8-bit integers with a scale per output channel, about 10 MB, picking out the
+    same outlines as the full-precision model to within a pixel). Each frame is encoded once —
+    on the graphics card when there's one (the whole image encoder runs as compute shaders,
+    step for step as on the CPU; a fraction of a second on a typical card), otherwise on the CPU
+    (a second or two; its depthwise convolutions and GELU are written to vectorise) — and turning
+    the brush on starts on the frame at the playhead, so the first stroke rarely waits. Then
+    every stroke cuts from it in about a tenth of a second: points along the subject's strokes and the others tell it what
     is and isn't the object, and when carrying on, a box round where the outline moved to and a
     point deep inside it. So one stroke takes a whole object — outline, holes, parts in other
     colours — even where it's much like what's behind it. Its edge (the model works at a
@@ -1087,6 +1091,13 @@ What works now:
   - **Smooth keys** (a mask with keyframes): takes the jitter out of a tracked shape. Each key
     is eased towards a steady line through its neighbours (1 to 8 frames wide), so shake goes
     and the movement, even at the ends of the track, stays; one undo step
+  - **+ Pick object** (Masks): one click on an object in the Viewer picks it out and carries it
+    through the rest of the clip by itself (from its last frame, back to the start), in the
+    background, with no strokes; paint over any frame where it slipped to correct it and carry on
+    from there. **Make it an Object to remove** (ticked before the first stroke or click) makes
+    the new mask mark what the **Object removal** effect fills rather than cut the layer — and
+    Object removal's own **Pick what to remove…** does both in one go: click the person, sign or
+    boom in the Viewer, wait for it to be followed, press **Remove object**
 - **Compositions**: a composition is a sequence of its own, with its own layers, that
   sits on the timeline as one clip (amber, marked `[C]`). Transform it, add effects, dissolve
   it, trim it like any clip; its audio plays and exports with it
@@ -1711,7 +1722,8 @@ PC, where each clip used to get up to 16, far more.
   optical flow at Fast, Balanced and Best (working out the motion for each new pair of frames,
   and each frame drawn in between), the fluid simulation at each **Detail** (a frame's step,
   and seeking 10 seconds ahead), around 50,000 particles, and four layers with blur, glow and
-  colour correction. Each line shows milliseconds and **Real time** (fits a 30 fps frame),
+  colour correction; and the roto brush's object model encoding one frame on the graphics card
+  and on the CPU (under a second counts as real time there). Each line shows milliseconds and **Real time** (fits a 30 fps frame),
   **Slower** or **Heavy** (over a quarter second), with the graphics card's name; the results
   go into the diagnostics report. A few seconds on a graphics card, a few minutes on a
   software renderer

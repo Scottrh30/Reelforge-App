@@ -15,6 +15,7 @@ reelforge-media.workspace = true
 reelforge-render.workspace = true
 reelforge-export.workspace = true
 reelforge-engine.workspace = true
+reelforge-sam.workspace = true
 reelforge-ofx.workspace = true
 anyhow.workspace = true
 log.workspace = true

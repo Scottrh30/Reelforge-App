@@ -3,12 +3,16 @@
 //!
 //! MobileSAM (Zhang et al. 2023, Apache-2.0) is Segment Anything's prompt
 //! encoder and mask decoder with a small TinyViT image encoder. Its weights
-//! ship with the app (batch norms folded into their convolutions, as f16;
-//! see `load`); this module runs the network: the image encoder once per
+//! ship with the app (batch norms folded into their convolutions; the big
+//! tensors as int8 with a scale per output channel, the rest as f16: about
+//! 10 MB; see `load`); this module runs the network: the image encoder once per
 //! frame ([`embed`], a second or two), then the decoder for each set of
 //! prompts ([`cut`], a tenth of a second).
 
 use rayon::prelude::*;
+
+mod gpu;
+pub use gpu::GpuEncoder;
 use std::collections::HashMap;
 
 /// The encoder's input size, and its output grid.
@@ -49,12 +53,25 @@ fn f16_to_f32(h: u16) -> f32 {
     f32::from_bits(bits)
 }
 
+/// e^x, branch-free so loops over it vectorise (relative error about 2e-7).
+#[inline(always)]
+fn exp_fast(x: f32) -> f32 {
+    let x = x.clamp(-87.0, 88.0);
+    // Rounded by the float adder (no rounding instruction needed: SSE2 is enough).
+    const MAGIC: f32 = 12_582_912.0;
+    let n = (x * std::f32::consts::LOG2_E + MAGIC) - MAGIC;
+    let r = x - n * 0.693_145_75 - n * 1.428_606_8e-6;
+    let p = 1.0 + r * (1.0 + r * (0.5 + r * (0.166_666_67 + r * (0.041_666_668 + r * (0.008_333_334 + r * 0.001_388_889)))));
+    p * f32::from_bits(((n as i32 + 127) << 23) as u32)
+}
+
 /// The error function (Abramowitz and Stegun 7.1.26: to within 1.5e-7).
+#[inline(always)]
 fn erf(x: f32) -> f32 {
     let a = x.abs();
     let t = 1.0 / (1.0 + 0.3275911 * a);
-    let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * (-a * a).exp();
-    if x < 0.0 { -y } else { y }
+    let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp_fast(-a * a);
+    y.copysign(x)
 }
 
 fn softmax_rows(s: &mut [f32], n: usize) {
@@ -62,7 +79,7 @@ fn softmax_rows(s: &mut [f32], n: usize) {
         let mx = r.iter().fold(f32::MIN, |a, &b| a.max(b));
         let mut sum = 0.0;
         for v in r.iter_mut() {
-            *v = (*v - mx).exp();
+            *v = exp_fast(*v - mx);
             sum += *v;
         }
         let k = 1.0 / sum;
@@ -71,7 +88,7 @@ fn softmax_rows(s: &mut [f32], n: usize) {
 }
 
 fn gelu(v: &mut [f32]) {
-    v.par_chunks_mut(4096).for_each(|c| {
+    v.par_chunks_mut(8192).for_each(|c| {
         for x in c {
             *x = 0.5 * *x * (1.0 + erf(*x * std::f32::consts::FRAC_1_SQRT_2));
         }
@@ -95,18 +112,42 @@ fn gemm(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], bt: bool, c: &mut [f
 impl Sam {
     /// The weights from the packed file (see the module notes).
     pub fn load(bytes: &[u8]) -> Option<Sam> {
-        if bytes.len() < 12 || &bytes[..6] != b"RFSAM1" {
+        if bytes.len() < 12 {
             return None;
         }
         let hl = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
-        let head: HashMap<String, (usize, Vec<usize>)> = serde_json::from_slice(&bytes[12..12 + hl]).ok()?;
-        let start = 12 + hl + (12 + hl) % 2;
-        let data = &bytes[start..];
         let mut w = HashMap::new();
-        for (k, (off, shape)) in head {
-            let n: usize = shape.iter().product::<usize>().max(1);
-            let v: Vec<f32> = (0..n).map(|i| f16_to_f32(u16::from_le_bytes([data[2 * (off + i)], data[2 * (off + i) + 1]]))).collect();
-            w.insert(k, (shape, v));
+        let f16 = |d: &[u8], off: usize, n: usize| -> Vec<f32> { (0..n).map(|i| f16_to_f32(u16::from_le_bytes([d[off + 2 * i], d[off + 2 * i + 1]]))).collect() };
+        match &bytes[..6] {
+            // f16 throughout: offsets in halves.
+            b"RFSAM1" => {
+                let head: HashMap<String, (usize, Vec<usize>)> = serde_json::from_slice(&bytes[12..12 + hl]).ok()?;
+                let data = &bytes[12 + hl + (12 + hl) % 2..];
+                for (k, (off, shape)) in head {
+                    let n: usize = shape.iter().product::<usize>().max(1);
+                    w.insert(k, (shape.clone(), f16(data, 2 * off, n)));
+                }
+            }
+            // The big tensors int8 with a scale per output channel (f32,
+            // before them), the rest f16: offsets in bytes.
+            b"RFSAM2" => {
+                let head: HashMap<String, (usize, Vec<usize>, String)> = serde_json::from_slice(&bytes[12..12 + hl]).ok()?;
+                let data = &bytes[12 + hl + (4 - (12 + hl) % 4) % 4..];
+                for (k, (off, shape, kind)) in head {
+                    let n: usize = shape.iter().product::<usize>().max(1);
+                    let v = if kind == "i8" {
+                        let rows = shape[0].max(1);
+                        let per = n / rows;
+                        let scales: Vec<f32> = (0..rows).map(|r| f32::from_le_bytes(data[off + 4 * r..off + 4 * r + 4].try_into().unwrap())).collect();
+                        let q = &data[off + 4 * rows..off + 4 * rows + n];
+                        q.iter().enumerate().map(|(i, &b)| b as i8 as f32 * scales[i / per]).collect()
+                    } else {
+                        f16(data, off, n)
+                    };
+                    w.insert(k, (shape, v));
+                }
+            }
+            _ => return None,
         }
         let mut sam = Sam { w, biases: HashMap::new() };
         // Attention biases expanded to full (heads × N × N) tables.
@@ -180,26 +221,31 @@ impl Sam {
         let ho = (h + 2 - 3) / stride + 1;
         let wo = (w + 2 - 3) / stride + 1;
         let mut out = vec![0.0f32; c * ho * wo];
+        let (pw, ph) = (w + 2, h + 2);
         out.par_chunks_mut(ho * wo).enumerate().for_each(|(ci, dst)| {
             let k = &wt[ci * 9..ci * 9 + 9];
             let src = &x[ci * h * w..(ci + 1) * h * w];
+            // The channel padded with a border of zeros, so the taps need no checks.
+            let mut p = vec![0.0f32; pw * ph];
+            for y in 0..h {
+                p[(y + 1) * pw + 1..(y + 1) * pw + 1 + w].copy_from_slice(&src[y * w..(y + 1) * w]);
+            }
             for yo in 0..ho {
-                for xo in 0..wo {
-                    let mut s = b[ci];
-                    for i in 0..3 {
-                        let yi = (yo * stride + i) as isize - 1;
-                        if yi < 0 || yi as usize >= h {
-                            continue;
+                let row = &mut dst[yo * wo..(yo + 1) * wo];
+                row.fill(b[ci]);
+                for i in 0..3 {
+                    let line = &p[(yo * stride + i) * pw..(yo * stride + i + 1) * pw];
+                    let (k0, k1, k2) = (k[i * 3], k[i * 3 + 1], k[i * 3 + 2]);
+                    if stride == 1 {
+                        for (xo, o) in row.iter_mut().enumerate() {
+                            *o += k0 * line[xo] + k1 * line[xo + 1] + k2 * line[xo + 2];
                         }
-                        for j in 0..3 {
-                            let xi = (xo * stride + j) as isize - 1;
-                            if xi < 0 || xi as usize >= w {
-                                continue;
-                            }
-                            s += k[i * 3 + j] * src[yi as usize * w + xi as usize];
+                    } else {
+                        for (xo, o) in row.iter_mut().enumerate() {
+                            let x0 = xo * stride;
+                            *o += k0 * line[x0] + k1 * line[x0 + 1] + k2 * line[x0 + 2];
                         }
                     }
-                    dst[yo * wo + xo] = s;
                 }
             }
         });
@@ -667,7 +713,15 @@ pub struct Embedding {
     pub scale: f32,
 }
 
-/// Encode a picture (RGBA, `w` × `h`).
+/// The image encoder on the graphics card, if there's a usable one (and
+/// `REELFORGE_SAM_CPU` isn't set).
+pub fn gpu() -> Option<&'static GpuEncoder> {
+    static G: std::sync::OnceLock<Option<GpuEncoder>> = std::sync::OnceLock::new();
+    G.get_or_init(|| if std::env::var_os("REELFORGE_SAM_CPU").is_some() { None } else { GpuEncoder::new(model()?) }).as_ref()
+}
+
+/// Encode a picture (RGBA, `w` × `h`): on the graphics card when there is
+/// one, otherwise (or if that fails) on the CPU.
 pub fn embed(rgba: &[u8], w: usize, h: usize) -> Option<Embedding> {
     let sam = model()?;
     if w == 0 || h == 0 || rgba.len() < w * h * 4 {
@@ -675,7 +729,8 @@ pub fn embed(rgba: &[u8], w: usize, h: usize) -> Option<Embedding> {
     }
     let rgb: Vec<u8> = rgba.chunks_exact(4).take(w * h).flat_map(|c| [c[0], c[1], c[2]]).collect();
     let (img, scale) = prepare(&rgb, w, h);
-    Some(Embedding { data: sam.encode(&img), w, h, scale })
+    let data = gpu().and_then(|g| g.encode(&img)).unwrap_or_else(|| sam.encode(&img));
+    Some(Embedding { data, w, h, scale })
 }
 
 /// What to cut out, in picture pixels.
@@ -753,5 +808,27 @@ mod tests {
         // A point off it, with a box over the ground only, picks out no disc.
         let off = cut(&e, &Prompt { points: &[([200.0, 90.0], false), ([40.0, 160.0], true)], ..Default::default() }).unwrap();
         assert!(off.logits[90 * w + 200] < 0.0);
+    }
+
+    /// The graphics card's encoder gives what the CPU's does.
+    #[test]
+    fn the_graphics_card_encodes_as_the_cpu_does() {
+        let sam = model().unwrap();
+        let Some(g) = GpuEncoder::open(sam, true) else {
+            eprintln!("no graphics adapter: skipped");
+            return;
+        };
+        let (w, h) = (96usize, 64usize);
+        let rgb: Vec<u8> = (0..w * h * 3).map(|i| ((i * 37 + (i / 97) * 11) % 251) as u8).collect();
+        let (img, _) = prepare(&rgb, w, h);
+        let t = std::time::Instant::now();
+        let a = sam.encode(&img);
+        let cpu = t.elapsed();
+        let t = std::time::Instant::now();
+        let b = g.encode(&img).expect("encoded");
+        eprintln!("cpu {cpu:?}, {} {:?}", g.adapter, t.elapsed());
+        let diff = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+        let mean = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.len() as f32;
+        assert!(diff < 0.02 && mean < 1e-3, "max {diff}, mean {mean}");
     }
 }

@@ -44,8 +44,8 @@ MobileSAM (the roto brush's object model)
 
 The roto brush picks out objects with MobileSAM: its network
 (crates/sam/src/lib.rs, written from MobileSAM's model code) and its trained
-weights (crates/sam/mobilesam.bin, converted to half precision with the batch
-norms folded in). MobileSAM is Segment Anything's prompt encoder and mask
+weights (crates/sam/mobilesam.bin, converted to 8-bit integers with a scale per
+output channel, and half precision, with the batch norms folded in). MobileSAM is Segment Anything's prompt encoder and mask
 decoder with a TinyViT image encoder:
 
     MobileSAM: Copyright (c) 2023 Chaoning Zhang and the MobileSAM authors.

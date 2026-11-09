@@ -657,8 +657,16 @@
       if (!s || !app.roto || !ins) return;
       const id = ins.id;
       const radius = app.roto.size / layerScale();
+      if (app.roto.pick && s.fg) {
+        // One click: pick the object out and carry it through the clip; then paint to correct it.
+        say("Picking out the object…");
+        const r = await run(api.rotoPick(id, s.points[0], !!app.roto.removal));
+        stroke = null;
+        if (typeof r === "number" && app.roto && app.roto.clip === id) app.roto = { ...app.roto, mask: r, pick: false };
+        return;
+      }
       say("Cutting round the subject…");
-      const r = await run(api.rotoStroke(id, app.roto.mask, s.fg, radius, s.points));
+      const r = await run(api.rotoStroke(id, app.roto.mask, s.fg, radius, s.points, !!app.roto.removal));
       stroke = null;
       if (typeof r === "number" && app.roto && app.roto.clip === id) app.roto = { ...app.roto, mask: r };
     };

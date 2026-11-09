@@ -1111,8 +1111,14 @@ fn mask_from_key(id: u64, index: usize) -> Res<Option<usize>> {
 /// Paint a roto brush stroke (layer pixels) on clip `id` at the playhead, into
 /// mask `mask` (a new one if none). Returns the mask's index.
 #[tauri::command]
-fn roto_stroke(id: u64, mask: Option<usize>, fg: bool, radius: f32, points: Vec<[f32; 2]>) -> Res<Option<usize>> {
-    ed(|e| e.roto_stroke(clip(id), mask, reelforge_core::rotobrush::Stroke { fg, radius, points }))
+fn roto_stroke(id: u64, mask: Option<usize>, fg: bool, radius: f32, points: Vec<[f32; 2]>, removal: Option<bool>) -> Res<Option<usize>> {
+    ed(|e| e.roto_stroke(clip(id), mask, reelforge_core::rotobrush::Stroke { fg, radius, points }, removal.unwrap_or(false)))
+}
+
+/// One click picks out the object at `point` (layer pixels) on clip `id` and carries it through the clip.
+#[tauri::command]
+fn roto_pick(id: u64, point: [f32; 2], removal: bool) -> Res<Option<usize>> {
+    ed(|e| e.roto_pick(clip(id), point, removal))
 }
 
 /// Get the frame at the playhead of clip `id` ready for the roto brush, in the background.
@@ -1595,7 +1601,45 @@ async fn check_zero_copy() -> Result<reelforge_export::zerocheck::ZeroCopyReport
 #[tauri::command]
 async fn check_performance() -> Result<reelforge_render::bench::BenchReport, String> {
     let gpu = ed(|e| e.preview.gpu())?.ok_or("there's no graphics device to check with")?;
-    tauri::async_runtime::spawn_blocking(move || reelforge_render::bench::run(&gpu.0, &gpu.1)).await.map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut r = reelforge_render::bench::run(&gpu.0, &gpu.1);
+        r.lines.extend(roto_model_bench());
+        r
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The roto brush's object model: encoding one frame on the graphics card
+/// and on the CPU (what the first stroke on a frame waits for).
+fn roto_model_bench() -> Vec<reelforge_render::bench::BenchLine> {
+    use reelforge_render::bench::BenchLine;
+    let Some(sam) = reelforge_sam::model() else { return Vec::new() };
+    let rgb: Vec<u8> = (0..1280 * 720 * 3).map(|i| ((i * 37 + (i / 3841) * 11) % 251) as u8).collect();
+    let (img, _) = reelforge_sam::prepare(&rgb, 1280, 720);
+    let line = |what: &str, ms: f64, note: String| BenchLine { what: what.into(), ms: (ms * 10.0).round() / 10.0, verdict: if ms <= 1000.0 { "realtime" } else if ms <= 3000.0 { "slow" } else { "heavy" }, note };
+    let time = |f: &dyn Fn()| {
+        let t = std::time::Instant::now();
+        f();
+        t.elapsed().as_secs_f64() * 1000.0
+    };
+    let mut out = Vec::new();
+    match reelforge_sam::gpu() {
+        Some(g) => {
+            let _ = g.encode(&img);
+            let ms = time(&|| {
+                let _ = g.encode(&img);
+            });
+            out.push(line("Roto brush: one frame for the object model, on the graphics card", ms, format!("{} (under a second: strokes and carrying feel quick)", g.adapter)));
+        }
+        None => {}
+    }
+    let ms = time(&|| {
+        let _ = sam.encode(&img);
+    });
+    let gpu = if reelforge_sam::gpu().is_some() { "" } else { "; no suitable graphics card, so the CPU does it" };
+    out.push(line("Roto brush: one frame for the object model, on the CPU", ms, format!("{} threads{gpu}", std::thread::available_parallelism().map_or(1, |n| n.get()))));
+    out
 }
 
 fn main() {
@@ -1765,6 +1809,7 @@ fn main() {
             mask_from_key,
             roto_stroke,
             roto_prepare,
+            roto_pick,
             roto_propagate,
             mask_smooth,
             mask_point_delete,
