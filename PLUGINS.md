@@ -248,8 +248,8 @@ effect with its pack, and **Remove pack** on any of them deletes the whole pack.
 Installing a pack replaces any copies of its plugins you'd installed on their own.
 Each plugin in a pack still needs its own unique `id`.
 
-**Neon FX** (in the `plugin-packs` folder of the source) is a pack of six effects:
-Lightsaber, Laser Beam, Laser Blast, Neon Glow, Neon Outline and Neon Mask. The
+**Neon FX** (in the `plugin-packs` folder of the source) is a pack of seven effects:
+Lightsaber, Laser Beam, Twin Laser, Laser Blast, Neon Glow, Neon Outline and Neon Mask. The
 lightsaber and lasers show off points, colours and sections.
 
 ## Alpha

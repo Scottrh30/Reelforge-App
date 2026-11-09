@@ -611,7 +611,7 @@ mod tests {
         let p = plugin::load_pack(&pack).unwrap();
         assert_eq!((p.id.as_str(), p.name.as_str()), ("scott.neon-fx", "Neon FX"));
         let folders = plugin_folders(&pack);
-        assert_eq!(folders.len(), 6, "{folders:?}");
+        assert_eq!(folders.len(), 7, "{folders:?}");
         for f in folders {
             let d = check_folder(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
             assert!(d.id.starts_with("scott.neon-fx.") && d.name.starts_with("Neon FX: ") && !d.description.is_empty(), "{}", d.id);

@@ -3,6 +3,6 @@
 # Removing any of its effects in the Plugins window removes the whole pack.
 id = "scott.neon-fx"
 name = "Neon FX"
-version = "2.0"
+version = "2.1"
 author = "Scott"
-description = "Lightsabers, laser beams and blaster bolts, neon glows, neon outlines and neon shape masks."
+description = "Lightsabers, laser beams, twin twisted lasers and blaster bolts, neon glows, neon outlines and neon shape masks."

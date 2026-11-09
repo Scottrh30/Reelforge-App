@@ -97,8 +97,8 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
     let pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin-packs/neon-fx");
     let load = |n: &str| Arc::new(plugin::load_folder(&pack.join(n)).unwrap_or_else(|e| panic!("{n}: {e}")));
-    let (saber, glow, outline, mask, laser, beam) = (load("lightsaber"), load("neon-glow"), load("neon-outline"), load("neon-mask"), load("laser-blast"), load("laser-beam"));
-    plugin::set_installed(vec![saber.clone(), glow.clone(), outline.clone(), mask.clone(), laser.clone(), beam.clone()]);
+    let (saber, glow, outline, mask, laser, beam, twin) = (load("lightsaber"), load("neon-glow"), load("neon-outline"), load("neon-mask"), load("laser-blast"), load("laser-beam"), load("twin-laser"));
+    plugin::set_installed(vec![saber.clone(), glow.clone(), outline.clone(), mask.clone(), laser.clone(), beam.clone(), twin.clone()]);
 
     let (device, queue) = headless_device().expect("a GPU (or lavapipe)");
     let mut c = Compositor::new(&device, &queue);
@@ -129,6 +129,10 @@ fn main() {
         Shot { name: "07-laser-blast-sparks", layers: vec![(&bg, full, vec![fx(&laser, &[(4, 60.0), (21, 80.0)], 0.2)])] },
         Shot { name: "08-laser-blast-burst-impact-distortion", layers: vec![(&ph, full, vec![fx(&laser, &[(9, rgb(0x22e04a)), (16, 3.0), (4, 108.0), (17, 35.0), (1, 70.0), (3, 30.0), (21, 60.0), (22, 90.0), (18, 18.0)], 0.2)])] },
         Shot { name: "09-laser-blast-muzzle", layers: vec![(&bg, full, vec![fx(&laser, &[(4, 12.0)], 0.2)])] },
+        Shot { name: "13-twin-laser", layers: vec![(&bg, full, vec![fx(&twin, &[], 0.3)])] },
+        Shot { name: "14-twin-laser-pulses-bend-halo", layers: vec![(&bg, full, vec![fx(&twin, &[(5, rgb(0x22e04a)), (6, rgb(0xffc21a)), (14, 4.0), (15, 120.0), (17, -140.0), (13, 10.0), (8, 20.0)], 0.3)])] },
+        Shot { name: "15-twin-laser-lightning-particles-wave", layers: vec![(&bg, full, vec![fx(&twin, &[(5, rgb(0x9a3dff)), (6, rgb(0x18e0ff)), (18, 30.0), (19, 300.0), (22, 90.0), (21, 70.0), (8, 22.0)], 0.3)])] },
+        Shot { name: "16-twin-laser-distortion", layers: vec![(&ph, full, vec![fx(&twin, &[(5, rgb(0xff1a12)), (6, rgb(0xffffff)), (23, 80.0), (22, 40.0), (0, 8.0), (1, 25.0), (2, 92.0), (3, 80.0)], 0.3)])] },
         Shot { name: "10-neon-glow-text", layers: vec![(&bg, full, vec![]), (&text, tsize, vec![fx(&glow, &[], 0.2)])] },
         Shot { name: "11-neon-outline-draw-on", layers: vec![(&bg, full, vec![]), (&text, tsize, vec![fx(&outline, &[(0, 2.0), (5, 1.0), (9, 0.0), (10, 62.0), (11, -90.0)], 0.2)])] },
         Shot { name: "12-neon-mask-star", layers: vec![(&bg, full, vec![]), (&ph, full, vec![fx(&mask, &[(0, 4.0), (2, 5.0), (7, 10.0), (5, 70.0), (6, 70.0)], 0.2)])] },
