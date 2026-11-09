@@ -78,13 +78,40 @@ default = 0
 name = "Wobble"
 type = "toggle"               # a checkbox; the shader gets 0 or 1
 default = 0
+
+[[param]]                     # param(3)
+section = "Look"              # optional: a heading shown above this parameter
+name = "Tint"
+type = "color"                # a colour picker; read it with param_color(3)
+default = 0x1f6bff            # 0xRRGGBB
 ```
 
-* Up to **16** parameters. Every one can be keyframed. Toggles and choices change at
-  keyframes rather than sliding through in-between values.
+* Up to **24** parameters. Every one can be keyframed. Toggles and choices change at
+  keyframes rather than sliding through in-between values; colours blend channel by
+  channel.
 * Parameters are numbered in the order they're listed, from 0.
 * Don't reorder or remove parameters of a plugin that's been used in projects: saved
   projects store the values by position. Add new ones at the end.
+
+### Points you drag in the Viewer
+
+A position (a gun barrel, a blade's hilt, where a beam ends) is two number
+parameters, x then y, in % of the layer (0–100, y down). Name them as a point and
+the Viewer shows a handle you drag; dragging sets both parameters (and keys them if
+they're animated), so they're tracked and keyframed like anything else.
+
+```toml
+[[point]]
+name = "Hilt"
+x = 0                         # its x parameter; y is the next one (param 1)
+line_to = 2                   # optional: draw a guide line to the point whose x is param 2
+
+[[point]]
+name = "Tip"
+x = 2
+```
+
+In the shader, `vec2(param(0), param(1)) / 100.0 * size()` is the point in pixels.
 
 ## effect.wgsl
 
@@ -116,6 +143,7 @@ fn effect(uv: vec2<f32>) -> vec4<f32> {
 | `param(i)` | Parameter `i` (from 0) as a number. |
 | `param_on(i)` | A toggle parameter as `true`/`false`. |
 | `param_choice(i)` | A choice parameter as the option number (`i32`, 0 = first). |
+| `param_color(i)` | A colour parameter, in linear light (`vec3`). |
 | `pixel()` | The size of one pixel in `uv` units. `uv + vec2(10.0, 0.0) * pixel()` is 10 pixels to the right. Use it for every distance, so the effect looks the same with proxies and at any resolution. |
 | `size()` | The layer's size in pixels (`vec2`). `uv * size()` is the pixel position. |
 | `aspect()` | Width ÷ height of the layer. |
@@ -210,7 +238,7 @@ id = "scott.neon-fx"          # unique; installing a pack with the same id repla
 name = "Neon FX"
 version = "1.0"
 author = "Scott"
-description = "Lightsabers, neon glows, outlines, masks and laser blasts."
+description = "Lightsabers, laser beams and blasts, neon glows, outlines and masks."
 ```
 
 Zip the pack's folder to share it; **Install from .zip…** (or **Install from
@@ -220,8 +248,9 @@ effect with its pack, and **Remove pack** on any of them deletes the whole pack.
 Installing a pack replaces any copies of its plugins you'd installed on their own.
 Each plugin in a pack still needs its own unique `id`.
 
-**Neon FX** (in the `plugin-packs` folder of the source) is a pack of five effects:
-Lightsaber, Neon Glow, Neon Outline, Neon Mask and Laser Blast.
+**Neon FX** (in the `plugin-packs` folder of the source) is a pack of six effects:
+Lightsaber, Laser Beam, Laser Blast, Neon Glow, Neon Outline and Neon Mask. The
+lightsaber and lasers show off points, colours and sections.
 
 ## Alpha
 

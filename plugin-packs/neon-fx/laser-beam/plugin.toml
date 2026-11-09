@@ -1,0 +1,196 @@
+id = "scott.neon-fx.laser-beam"
+name = "Neon FX: Laser Beam"
+version = "1.0"
+author = "Neon FX"
+category = "Stylize"
+description = "A continuous laser beam between two points you drag in the Viewer, with travelling pulses, waves and twists, particles, flicker and heat distortion. Animate Beam length to fire it."
+premultiplied = true
+
+[[point]]
+name = "Beam start"
+x = 0
+line_to = 2
+
+[[point]]
+name = "Beam end"
+x = 2
+
+[[param]]                     # 0
+section = "Beam"
+name = "Start X"
+default = 12
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 1
+name = "Start Y"
+default = 60
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 2
+name = "End X"
+default = 88
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 3
+name = "End Y"
+default = 40
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 4
+name = "Beam length"
+default = 100
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 5
+section = "Look"
+name = "Thickness"
+default = 8
+min = 0
+max = 200
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 6
+name = "Beam colour"
+type = "color"
+default = 0xff2a1a
+
+[[param]]                     # 7
+name = "Core colour"
+type = "color"
+default = 0xfff2ee
+
+[[param]]                     # 8
+name = "Inner core width"
+default = 55
+min = 0
+max = 100
+suffix = " % of beam"
+
+[[param]]                     # 9
+name = "Core blur"
+default = 1
+min = 0
+max = 50
+suffix = " px"
+step = 0.05
+
+[[param]]                     # 10
+name = "Glow size"
+default = 22
+min = 0
+max = 400
+suffix = " px"
+
+[[param]]                     # 11
+name = "Glow intensity"
+default = 150
+min = 0
+max = 800
+suffix = " %"
+
+[[param]]                     # 12
+name = "Halation"
+default = 30
+min = 0
+max = 300
+suffix = " %"
+
+[[param]]                     # 13
+section = "Pulses"
+name = "Pulses"
+default = 0
+min = 0
+max = 30
+step = 0.05
+
+[[param]]                     # 14
+name = "Pulse strength"
+default = 80
+min = 0
+max = 300
+suffix = " %"
+
+[[param]]                     # 15
+name = "Pulse speed"
+default = 1
+min = -10
+max = 10
+suffix = " lengths/s"
+step = 0.01
+
+[[param]]                     # 16
+name = "Pulse size"
+default = 6
+min = 0.5
+max = 50
+suffix = " % of beam"
+step = 0.05
+
+[[param]]                     # 17
+section = "Waves and twists"
+name = "Wave height"
+default = 0
+min = 0
+max = 300
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 18
+name = "Wave length"
+default = 120
+min = 4
+max = 2000
+suffix = " px"
+
+[[param]]                     # 19
+name = "Wave speed"
+default = 1
+min = -10
+max = 10
+suffix = " /s"
+step = 0.01
+
+[[param]]                     # 20
+name = "Twist"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 21
+section = "Effects"
+name = "Flicker"
+default = 10
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 22
+name = "Particles"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 23
+name = "Distortion"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+

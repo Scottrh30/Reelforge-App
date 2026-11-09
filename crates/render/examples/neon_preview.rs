@@ -97,8 +97,8 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
     let pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin-packs/neon-fx");
     let load = |n: &str| Arc::new(plugin::load_folder(&pack.join(n)).unwrap_or_else(|e| panic!("{n}: {e}")));
-    let (saber, glow, outline, mask, laser) = (load("lightsaber"), load("neon-glow"), load("neon-outline"), load("neon-mask"), load("laser-blast"));
-    plugin::set_installed(vec![saber.clone(), glow.clone(), outline.clone(), mask.clone(), laser.clone()]);
+    let (saber, glow, outline, mask, laser, beam) = (load("lightsaber"), load("neon-glow"), load("neon-outline"), load("neon-mask"), load("laser-blast"), load("laser-beam"));
+    plugin::set_installed(vec![saber.clone(), glow.clone(), outline.clone(), mask.clone(), laser.clone(), beam.clone()]);
 
     let (device, queue) = headless_device().expect("a GPU (or lavapipe)");
     let mut c = Compositor::new(&device, &queue);
@@ -108,29 +108,30 @@ fn main() {
     let full = [W, H];
     let tsize = [620, 240];
 
+    let rgb = |c: u32| c as f32;
     let shots = vec![
         Shot { name: "01-lightsaber-blue", layers: vec![(&bg, full, vec![fx(&saber, &[], 0.3)])] },
         Shot {
-            name: "02-lightsaber-duel",
+            name: "02-lightsaber-duel-unstable-heat",
             layers: vec![(
-                &bg,
+                &ph,
                 full,
                 vec![
-                    fx(&saber, &[(0, 2.0), (2, 22.0), (3, 80.0), (4, 58.0), (5, 22.0), (13, 70.0), (7, 9.0)], 0.5),
-                    fx(&saber, &[(0, 1.0), (2, 80.0), (3, 85.0), (4, 40.0), (5, 20.0), (6, 85.0)], 0.5),
+                    fx(&saber, &[(11, rgb(0xff1a12)), (7, 1.0), (0, 22.0), (1, 80.0), (2, 58.0), (3, 22.0), (21, 70.0), (22, 70.0), (5, 11.0), (6, 9.0)], 0.5),
+                    fx(&saber, &[(11, rgb(0x22e04a)), (7, 2.0), (0, 80.0), (1, 85.0), (2, 40.0), (3, 20.0), (4, 85.0)], 0.5),
                 ],
             )],
         },
-        Shot { name: "03-neon-glow-text", layers: vec![(&bg, full, vec![]), (&text, tsize, vec![fx(&glow, &[], 0.2)])] },
-        Shot { name: "04-neon-glow-bright-areas", layers: vec![(&ph, full, vec![fx(&glow, &[(0, 4.0), (2, 1.0), (3, 60.0), (6, 30.0), (11, 1.0)], 0.2)])] },
-        Shot { name: "05-neon-outline-text", layers: vec![(&bg, full, vec![]), (&text, tsize, vec![fx(&outline, &[(9, 0.0)], 0.2)])] },
-        Shot { name: "06-neon-outline-draw-on", layers: vec![(&bg, full, vec![]), (&text, tsize, vec![fx(&outline, &[(0, 2.0), (5, 1.0), (9, 0.0), (10, 62.0), (11, -90.0)], 0.2)])] },
-        Shot { name: "07-neon-mask-rect", layers: vec![(&bg, full, vec![]), (&ph, full, vec![fx(&mask, &[(8, 40.0), (5, 55.0), (6, 60.0)], 0.2)])] },
-        Shot { name: "08-neon-mask-star", layers: vec![(&bg, full, vec![]), (&ph, full, vec![fx(&mask, &[(0, 4.0), (2, 5.0), (7, 10.0), (5, 70.0), (6, 70.0)], 0.2)])] },
-        Shot { name: "09-neon-mask-hex-draw-on", layers: vec![(&bg, full, vec![]), (&ph, full, vec![fx(&mask, &[(0, 5.0), (2, 4.0), (10, 25.0), (14, 70.0)], 0.2)])] },
-        Shot { name: "10-laser-flight", layers: vec![(&bg, full, vec![fx(&laser, &[(6, 55.0)], 0.2)])] },
-        Shot { name: "11-laser-burst-impact", layers: vec![(&bg, full, vec![fx(&laser, &[(0, 1.0), (13, 3.0), (6, 104.0), (14, 35.0), (3, 70.0), (5, 30.0)], 0.2)])] },
-        Shot { name: "12-laser-muzzle", layers: vec![(&bg, full, vec![fx(&laser, &[(6, 12.0)], 0.2)])] },
+        Shot { name: "03-lightsaber-halo-halation", layers: vec![(&bg, full, vec![fx(&saber, &[(11, rgb(0x9a3dff)), (5, 20.0), (6, 12.0), (9, 50.0), (10, 3.0), (12, 10.0), (13, 22.0), (14, 120.0), (17, 140.0), (18, 220.0)], 0.3)])] },
+        Shot { name: "04-laser-beam-pulses", layers: vec![(&bg, full, vec![fx(&beam, &[(13, 5.0), (14, 120.0)], 0.3)])] },
+        Shot { name: "05-laser-beam-wave-twist-particles", layers: vec![(&bg, full, vec![fx(&beam, &[(6, rgb(0x18e0ff)), (5, 7.0), (17, 28.0), (18, 180.0), (20, 85.0), (22, 70.0), (13, 3.0)], 0.3)])] },
+        Shot { name: "06-laser-beam-distortion", layers: vec![(&ph, full, vec![fx(&beam, &[(6, rgb(0x22e04a)), (5, 12.0), (23, 90.0), (22, 50.0), (0, 5.0), (1, 30.0), (2, 95.0), (3, 75.0)], 0.3)])] },
+        Shot { name: "07-laser-blast-sparks", layers: vec![(&bg, full, vec![fx(&laser, &[(4, 60.0), (21, 80.0)], 0.2)])] },
+        Shot { name: "08-laser-blast-burst-impact-distortion", layers: vec![(&ph, full, vec![fx(&laser, &[(9, rgb(0x22e04a)), (16, 3.0), (4, 108.0), (17, 35.0), (1, 70.0), (3, 30.0), (21, 60.0), (22, 90.0), (18, 18.0)], 0.2)])] },
+        Shot { name: "09-laser-blast-muzzle", layers: vec![(&bg, full, vec![fx(&laser, &[(4, 12.0)], 0.2)])] },
+        Shot { name: "10-neon-glow-text", layers: vec![(&bg, full, vec![]), (&text, tsize, vec![fx(&glow, &[], 0.2)])] },
+        Shot { name: "11-neon-outline-draw-on", layers: vec![(&bg, full, vec![]), (&text, tsize, vec![fx(&outline, &[(0, 2.0), (5, 1.0), (9, 0.0), (10, 62.0), (11, -90.0)], 0.2)])] },
+        Shot { name: "12-neon-mask-star", layers: vec![(&bg, full, vec![]), (&ph, full, vec![fx(&mask, &[(0, 4.0), (2, 5.0), (7, 10.0), (5, 70.0), (6, 70.0)], 0.2)])] },
     ];
 
     for (n, s) in shots.iter().enumerate() {

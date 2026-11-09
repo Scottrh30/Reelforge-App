@@ -106,6 +106,8 @@ pub struct PointView {
     /// Measured from another point (its first parameter), not from the
     /// layer's corner: a patch's source, which moves with its target.
     pub relative: Option<usize>,
+    /// Draw a guide line to the point whose first parameter is this.
+    pub line_to: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -144,6 +146,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
         .enumerate()
         .map(|(index, fx)| {
             let ofx = fx.ofx_def();
+            let plug = fx.plugin_def();
             let mut fx = fx.clone();
             fx.normalize();
             let params = fx
@@ -158,7 +161,10 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                         ParamUi::Choice(o) => ("choice", o.to_vec()),
                         ParamUi::Color => ("color", Vec::new()),
                     };
-                    let section = fx.kind.sections().iter().find(|(at, _)| *at == i).map(|(_, h)| *h);
+                    let section = match &plug {
+                        Some(d) => d.sections.iter().find(|(at, _)| *at == i).map(|(_, h)| *h),
+                        None => fx.kind.sections().iter().find(|(at, _)| *at == i).map(|(_, h)| *h),
+                    };
                     ParamView {
                         name: s.name,
                         value: fx.value_at(i, src),
@@ -246,10 +252,12 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     Some(EffectData::Fill(dir)) if reelforge_core::fillstore::exists(dir) => Some(reelforge_core::fillstore::frame_count(dir)),
                     _ => None,
                 },
-                points: if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
-                    vec![PointView { param: 0, label: "Start".into(), relative: None }, PointView { param: 2, label: "End".into(), relative: None }]
+                points: if let Some(d) = plug.as_ref().filter(|_| fx.kind == EffectKind::Plugin) {
+                    d.points.iter().map(|p| PointView { param: p.x, label: p.name.clone(), relative: None, line_to: p.line_to }).collect()
+                } else if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
+                    vec![PointView { param: 0, label: "Start".into(), relative: None, line_to: None }, PointView { param: 2, label: "End".into(), relative: None, line_to: None }]
                 } else if fx.kind == EffectKind::PatchReplacer {
-                    vec![PointView { param: 0, label: "Target".into(), relative: None }, PointView { param: 2, label: "Source".into(), relative: Some(0) }]
+                    vec![PointView { param: 0, label: "Target".into(), relative: None, line_to: None }, PointView { param: 2, label: "Source".into(), relative: Some(0), line_to: None }]
                 } else if let Some(label) = match fx.kind {
                     EffectKind::Shatter => Some("Impact"),
                     EffectKind::MuzzleFlash => Some("Barrel"),
@@ -257,9 +265,9 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::Fluid => Some("Source"),
                     _ => None,
                 } {
-                    vec![PointView { param: 0, label: label.into(), relative: None }]
+                    vec![PointView { param: 0, label: label.into(), relative: None, line_to: None }]
                 } else {
-                    ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label, relative: None }).collect())
+                    ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label, relative: None, line_to: None }).collect())
                 },
                 error: ofx.as_ref().and_then(|_| reelforge_export::ofxhost::error(c.id, index)).filter(|_| fx.enabled),
                 temporal: ofx.as_ref().is_some_and(|d| d.temporal),

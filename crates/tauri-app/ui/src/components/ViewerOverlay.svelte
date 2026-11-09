@@ -497,14 +497,18 @@
             }),
     );
   });
-  // Wire removals and lightning: a line between their two ends (the ends are fxPoints).
+  // Wire removals and lightning: a line between their two ends (the ends are
+  // fxPoints); plugins: a line wherever a point names another with line_to.
   const wires = $derived.by((): [Pt, Pt][] => {
     if (!ins) return [];
     return ins.effects.flatMap((fx) => {
-      if ((fx.kind !== "WireRemoval" && fx.kind !== "Lightning") || !fx.enabled || fx.params.length < 4) return [];
+      if (!fx.enabled || fx.params.length < 4) return [];
       const v = (k: number) => fx.params[k].value;
       const at = (x: number, y: number): Pt => [(x / 100) * size[0], (y / 100) * size[1]];
-      return [[at(v(0), v(1)), at(v(2), v(3))] as [Pt, Pt]];
+      if (fx.kind === "WireRemoval" || fx.kind === "Lightning") return [[at(v(0), v(1)), at(v(2), v(3))] as [Pt, Pt]];
+      return (fx.points ?? [])
+        .filter((p) => p.line_to !== null && p.relative === null && fx.params.length > Math.max(p.param, p.line_to) + 1)
+        .map((p) => [at(v(p.param), v(p.param + 1)), at(v(p.line_to!), v(p.line_to! + 1))] as [Pt, Pt]);
     });
   });
   /// Drag a plugin's position.

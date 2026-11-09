@@ -23,9 +23,10 @@ struct RfFx {
     p3: vec4<f32>,
     // xy: texture size in texels, z: pass index, w: pass count
     extra2: vec4<f32>,
-    spare: vec4<f32>,
+    p4: vec4<f32>,
     // Where the layer sits in the target: layer uv = target uv × xy + zw.
     map: vec4<f32>,
+    p5: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> rf: RfFx;
 @group(1) @binding(0) var rf_src: texture_2d<f32>;
@@ -57,14 +58,19 @@ fn rf_unpremul(c: vec4<f32>) -> vec4<f32> {
 
 // Parameter i (0-based, in plugin.toml order).
 fn param(i: i32) -> f32 {
-    var all = array<vec4<f32>, 4>(rf.p0, rf.p1, rf.p2, rf.p3);
-    let k = clamp(i, 0, 15);
+    var all = array<vec4<f32>, 6>(rf.p0, rf.p1, rf.p2, rf.p3, rf.p4, rf.p5);
+    let k = clamp(i, 0, 23);
     return all[k / 4][k % 4];
 }
 // A toggle parameter as true/false.
 fn param_on(i: i32) -> bool { return param(i) > 0.5; }
 // A choice parameter as its option number (0 = the first).
 fn param_choice(i: i32) -> i32 { return i32(round(param(i))); }
+// A colour parameter, in linear light.
+fn param_color(i: i32) -> vec3<f32> {
+    let c = u32(clamp(round(param(i)), 0.0, 16777215.0));
+    return from_srgb(vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0);
+}
 
 // The picture coming into this pass (the layer, or the previous pass's result),
 // in linear light. sample: straight colour; sample_premul: premultiplied.

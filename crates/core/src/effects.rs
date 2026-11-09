@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 /// Most parameters any effect has (the GPU uniform holds this many).
 pub const MAX_PARAMS: usize = 24;
-/// Most parameters a plugin may have (its shader sees params 0–15).
-pub const PLUGIN_MAX_PARAMS: usize = 16;
+/// Most parameters a plugin may have (its shader sees all of them).
+pub const PLUGIN_MAX_PARAMS: usize = MAX_PARAMS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EffectKind {

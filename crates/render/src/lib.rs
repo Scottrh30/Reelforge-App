@@ -1801,6 +1801,8 @@ impl Compositor {
                         let (mut read, mut write) = (cur, o1);
                         for k in 0..n {
                             let mut u = uniform(&e.values, [0.0; 2]);
+                            u[28..32].copy_from_slice(&e.values[16..20]);
+                            u[FX_P5..FX_P5 + 4].copy_from_slice(&e.values[20..24]);
                             u[13] = e.time;
                             u[14] = l.layer_size[0];
                             u[15] = l.layer_size[1];
