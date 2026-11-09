@@ -36,6 +36,27 @@ pub trait FrameProvider {
     /// The picture for a media or title layer of a sequence `frame_size` big,
     /// or `None` to leave the layer out (nothing ready, no video).
     fn picture(&mut self, project: &Project, layer: &Layer, frame_size: [u32; 2]) -> Result<Option<Picture>>;
+
+    /// A 2D title layer laid out on a `frame_size` canvas, drawn `sharp`
+    /// times as finely (it's shown that much bigger) and on only the part of
+    /// the canvas round the middle that it reaches unless `whole` (see
+    /// `reelforge_render::text::render_title_sharp`). The picture's `size`
+    /// is what it covers, centred on the canvas.
+    fn title(&mut self, project: &Project, layer: &Layer, frame_size: [u32; 2], sharp: f32, whole: bool) -> Result<Option<Picture>> {
+        let _ = (sharp, whole);
+        self.picture(project, layer, frame_size)
+    }
+}
+
+/// How much finer to draw a 2D title shown `scale` times its size: 1 up to
+/// 100 %, then in steps of a quarter of an octave (about 19 %), so a zoom
+/// redraws it now and then rather than every frame; at most 8.
+pub fn title_sharpness(scale: [f32; 2]) -> f32 {
+    let s = scale[0].abs().max(scale[1].abs());
+    if !s.is_finite() || s <= 1.0 {
+        return 1.0;
+    }
+    (2.0f32).powf((s.log2() * 4.0 - 1e-4).ceil() / 4.0).min(8.0)
 }
 
 struct Gathered {
@@ -314,8 +335,16 @@ impl Scene {
             _ if l.clip.adjustment => Some(Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(vec![0u8; 4]), 0), size: full, media: MediaId::GENERATED }),
             (Some(inner), _) => self.nested_picture(project, l.clip.id, inner, l.clip.angle, l.source_time, provider, depth)?,
             // A title is laid out on the frame as it's shown (as wide as its
-            // pixels make it), then squeezed back into the frame's pixels.
-            (None, _) if l.clip.title.is_some() && self.par != 1.0 => provider.picture(project, l, [((frame_size[0] as f32 * self.par).round() as u32).max(2), frame_size[1]])?,
+            // pixels make it), then squeezed back into the frame's pixels;
+            // drawn as finely as it's scaled up, so it stays crisp.
+            (None, _) if l.clip.title.is_some() => {
+                let canvas = if self.par != 1.0 { [((frame_size[0] as f32 * self.par).round() as u32).max(2), frame_size[1]] } else { frame_size };
+                let tr = &l.transform;
+                // Masks, effects (OpenFX too), corner pins, warps, crops and
+                // 3D need the picture to cover the whole canvas.
+                let whole = mask::any_active(&l.clip.masks) || l.effects.iter().any(|e| !e.is_identity()) || !reelforge_core::ofx::steps(&l.clip.effects, l.clip.source_time(t)).is_empty() || tr.pin.is_some() || tr.three_d || tr.crop.iter().any(|&c| c != 0.0) || l.clip.mesh_at(t).is_some();
+                provider.title(project, l, canvas, title_sharpness(tr.scale), whole)?
+            }
             (None, _) => provider.picture(project, l, frame_size)?,
         };
         let Some(mut picture) = picture else { return Ok(None) };
@@ -883,6 +912,20 @@ mod layer_tests {
         fn picture(&mut self, _: &Project, _: &Layer, _: [u32; 2]) -> Result<Option<Picture>> {
             Ok(None)
         }
+    }
+
+    #[test]
+    fn titles_are_drawn_finer_in_steps_as_they_grow() {
+        assert_eq!(title_sharpness([1.0, 1.0]), 1.0);
+        assert_eq!(title_sharpness([0.3, -0.5]), 1.0);
+        assert_eq!(title_sharpness([2.0, 1.0]), 2.0);
+        assert_eq!(title_sharpness([-4.0, 1.0]), 4.0);
+        let k = title_sharpness([1.5, 1.5]);
+        assert!((1.5..1.7).contains(&k), "{k}");
+        // Nearby sizes share a step (no redraw every frame of a slow zoom).
+        assert_eq!(title_sharpness([1.42, 1.0]), title_sharpness([1.6, 1.0]));
+        assert_eq!(title_sharpness([50.0, 1.0]), 8.0);
+        assert_eq!(title_sharpness([f32::NAN, 1.0]), 1.0);
     }
 
     #[test]

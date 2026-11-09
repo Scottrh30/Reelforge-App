@@ -680,6 +680,29 @@ impl TitleSpec {
     }
 
     /// Are its letters placed one by one (animators, or a path)?
+    /// The same title drawn `k` times as big, on a canvas whose top-left
+    /// is at `origin` (pixels of the frame it's laid out on): every length
+    /// in pixels times `k`, and a text path's outline moved and scaled to
+    /// match. Laid out on a canvas centred where the frame's middle is (and
+    /// `k` times its size about it), it lands where the original would, magnified.
+    pub fn magnified(&self, k: f32, origin: [f32; 2]) -> TitleSpec {
+        let mut s = self.clone();
+        for v in [&mut s.size, &mut s.letter_spacing, &mut s.outline, &mut s.shadow_distance, &mut s.shadow_softness, &mut s.background_padding, &mut s.extrude, &mut s.bevel] {
+            *v *= k;
+        }
+        for a in &mut s.animators {
+            a.position = a.position.map(|v| v * k);
+            a.tracking *= k;
+        }
+        if let Some(p) = &mut s.path {
+            p.margin *= k;
+            if let Some(line) = &p.line {
+                p.line = Some(std::sync::Arc::new(line.iter().map(|q| [(q[0] - origin[0]) * k, (q[1] - origin[1]) * k]).collect()));
+            }
+        }
+        s
+    }
+
     pub fn places_glyphs(&self) -> bool {
         self.shape.is_none() && self.model.is_none() && (self.animators.iter().any(|a| a.enabled) || self.path.as_ref().is_some_and(|p| p.line.as_ref().is_some_and(|l| l.len() >= 2)))
     }

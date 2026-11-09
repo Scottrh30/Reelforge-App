@@ -295,22 +295,49 @@ pub fn title_clock(l: &Layer) -> (f32, f32) {
 pub fn render_still(project: &Project, seq: usize, t: Time, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(Vec<u8>, [u32; 2])> {
     let mut compositor = Compositor::new(device, queue);
     let mut scene = Scene::new(device, queue);
-    let mut frames = ExactFrames { sources: HashMap::new(), titles: HashMap::new(), tick: 1 };
+    let mut frames = ExactFrames { sources: HashMap::new(), titles: HashMap::new(), sharp_titles: HashMap::new(), tick: 1 };
     scene.render(project, seq, t, &mut compositor, &mut frames, None)?;
     let size = compositor.output_size().ok_or_else(|| anyhow!("nothing was drawn"))?;
     let rgba = compositor.read_output().ok_or_else(|| anyhow!("GPU readback failed"))?;
     Ok((rgba, size))
 }
 
+/// A title's content hash with how it's drawn for its size mixed in.
+pub fn sharp_hash(content: u64, sharp: f32, whole: bool) -> u64 {
+    content ^ (sharp.to_bits() as u64).rotate_left(17) ^ if whole { 0x5bd1_e995 } else { 0 }
+}
+
 /// Exact, full-size frames for export: one blocking decoder per clip, and titles.
 struct ExactFrames {
     sources: HashMap<ClipId, (FrameSource, u64)>,
     titles: HashMap<ClipId, (u64, VideoFrame, u64)>,
+    /// 2D titles drawn for the size they're shown at: (hash, picture, the frame pixels it covers, last used).
+    sharp_titles: HashMap<ClipId, (u64, VideoFrame, [f32; 2], u64)>,
     /// Counts frames, to close decoders that haven't been needed for a while.
     tick: u64,
 }
 
 impl FrameProvider for ExactFrames {
+    fn title(&mut self, _: &Project, l: &Layer, frame_size: [u32; 2], sharp: f32, whole: bool) -> Result<Option<Picture>> {
+        let Some(spec) = l.clip.title_at(l.source_time) else { return Ok(None) };
+        let at = title_clock(l);
+        let hash = sharp_hash(spec.content_hash_at(frame_size, at.0, at.1), sharp, whole);
+        let tick = self.tick;
+        let (frame, size) = match self.sharp_titles.get_mut(&l.clip.id) {
+            Some((h, f, size, used)) if *h == hash => {
+                *used = tick;
+                (f.clone(), *size)
+            }
+            _ => {
+                let r = reelforge_render::text::render_title_sharp(&spec, frame_size, at.0, at.1, sharp, whole);
+                let f = VideoFrame::from_rgba(Time::ZERO, r.title.width, r.title.height, r.title.rgba, hash);
+                self.sharp_titles.insert(l.clip.id, (hash, f.clone(), r.size, tick));
+                (f, r.size)
+            }
+        };
+        Ok(Some(Picture { frame, size, media: reelforge_core::MediaId::GENERATED }))
+    }
+
     fn picture(&mut self, project: &Project, l: &Layer, frame_size: [u32; 2]) -> Result<Option<Picture>> {
         let tick = self.tick;
         if let Some(spec) = l.clip.title_at(l.source_time) {
@@ -409,7 +436,7 @@ pub fn export_sequence(
     // A transparent background: the frame starts clear and keeps its coverage.
     compositor.transparent = writer.keeps_alpha();
     let mut scene = Scene::new(device, queue);
-    let mut frames = ExactFrames { sources: HashMap::new(), titles: HashMap::new(), tick: 0 };
+    let mut frames = ExactFrames { sources: HashMap::new(), titles: HashMap::new(), sharp_titles: HashMap::new(), tick: 0 };
     // Decoders not needed for this many frames are closed.
     let idle = (rate.fps() * 2.0).ceil() as u64;
     let mut audio_pos = Time::from_frame(first, rate).to_frame(sr);
@@ -457,6 +484,7 @@ pub fn export_sequence(
         let tick = frames.tick;
         frames.sources.retain(|_, (_, used)| tick - *used < idle);
         frames.titles.retain(|_, (_, _, used)| tick - *used < idle);
+        frames.sharp_titles.retain(|_, (_, _, _, used)| tick - *used < idle);
 
         let p = Progress { done: n as u64 + 1, total, elapsed: started.elapsed() };
         if !on_progress(p) {

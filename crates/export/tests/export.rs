@@ -1345,3 +1345,35 @@ fn exports_keep_the_sequences_pixel_aspect() {
     let g = src.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
     assert!(mean_abs_diff(&f.rgba(), &g.rgba()) < 6.0, "the footage is laid out as it was shot");
 }
+
+/// A title scaled to 400 % is drawn for that size: its letter edges stay a
+/// pixel or so wide, as at 100 %, rather than four pixels of blur; and it
+/// sits where the stretched one would.
+#[test]
+fn scaled_up_titles_stay_crisp() {
+    use reelforge_core::TitleSpec;
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let make = |scale: f32| {
+        let mut p = Project::new();
+        let mut seq = Sequence::new("T", 640, 360, FrameRate::new(25, 1));
+        let spec = TitleSpec { text: "H".into(), color: [255, 255, 255, 255], size: 30.0, shadow: false, ..TitleSpec::default() };
+        let mut t = Clip::new_title(ClipId(2), s(0.0), s(1.0), spec);
+        t.transform.scale = [scale, scale];
+        seq.tracks[1].clips = vec![t];
+        p.sequences = vec![seq];
+        let (rgba, [w, _]) = reelforge_export::render_still(&p, 0, s(0.2), &device, &queue).unwrap();
+        // Along the middle row: how many pixels are part-way between the black and the letter.
+        let y = 180usize;
+        let row: Vec<u8> = (0..w as usize).map(|x| rgba[(y * w as usize + x) * 4]).collect();
+        let soft = row.iter().filter(|&&v| v > 25 && v < 230).count();
+        let lit = row.iter().filter(|&&v| v >= 230).count();
+        (soft, lit)
+    };
+    let (soft1, lit1) = make(1.0);
+    let (soft4, lit4) = make(4.0);
+    // An H's two stems: four edges each time.
+    assert!(lit1 > 0 && soft1 <= 8, "at 100 %: {soft1} soft pixels");
+    assert!(soft4 <= 4, "at 400 % the edges stay sharp: {soft4} soft pixels (stretched, it is 8)");
+    assert!((lit4 as f32 / lit1 as f32 - 4.0).abs() < 1.0, "four times as wide: {lit1} → {lit4}");
+}

@@ -25,6 +25,10 @@ const IDLE_CLOSE: Duration = Duration::from_secs(4);
 struct TitleCache {
     hash: u64,
     frame: VideoFrame,
+    /// The frame pixels it covers, centred on the frame's middle.
+    size: [f32; 2],
+    /// The width of the canvas it was laid out on (its bounds are in its pixels).
+    layout_w: f32,
     bounds: Option<[f32; 4]>,
     missing_font: bool,
     last_used: Instant,
@@ -37,6 +41,8 @@ fn title_frame(titles: &mut HashMap<ClipId, TitleCache>, id: ClipId, spec: &reel
     let entry = titles.entry(id).or_insert_with(|| TitleCache {
         hash: hash ^ 1,
         frame: VideoFrame::from_rgba(Time::ZERO, 0, 0, Arc::from(Vec::new()), 0),
+        size: [0.0; 2],
+        layout_w: 1.0,
         bounds: None,
         missing_font: false,
         last_used: Instant::now(),
@@ -45,9 +51,34 @@ fn title_frame(titles: &mut HashMap<ClipId, TitleCache>, id: ClipId, spec: &reel
         let r = reelforge_render::text::render_title_at(spec, frame, at.0, at.1);
         entry.frame = VideoFrame::from_rgba(Time::ZERO, r.width, r.height, r.rgba, hash);
         (entry.hash, entry.bounds, entry.missing_font) = (hash, r.bounds, r.missing_font);
+        (entry.size, entry.layout_w) = ([frame[0] as f32, frame[1] as f32], frame[0] as f32);
     }
     entry.last_used = Instant::now();
     entry.frame.clone()
+}
+
+/// Draw a 2D title as finely as it's shown (`sharp` times) on just the part
+/// of the canvas it reaches (or reuse it): its picture and the frame pixels it covers.
+#[allow(clippy::too_many_arguments)]
+fn sharp_title_frame(titles: &mut HashMap<ClipId, TitleCache>, id: ClipId, spec: &reelforge_core::TitleSpec, frame: [u32; 2], at: (f32, f32), sharp: f32, whole: bool) -> (VideoFrame, [f32; 2]) {
+    let hash = reelforge_export::sharp_hash(spec.content_hash_at(frame, at.0, at.1), sharp, whole);
+    let entry = titles.entry(id).or_insert_with(|| TitleCache {
+        hash: hash ^ 1,
+        frame: VideoFrame::from_rgba(Time::ZERO, 0, 0, Arc::from(Vec::new()), 0),
+        size: [0.0; 2],
+        layout_w: 1.0,
+        bounds: None,
+        missing_font: false,
+        last_used: Instant::now(),
+    });
+    if entry.hash != hash {
+        let r = reelforge_render::text::render_title_sharp(spec, frame, at.0, at.1, sharp, whole);
+        entry.frame = VideoFrame::from_rgba(Time::ZERO, r.title.width, r.title.height, r.title.rgba, hash);
+        (entry.hash, entry.bounds, entry.missing_font) = (hash, r.title.bounds, r.title.missing_font);
+        (entry.size, entry.layout_w) = (r.size, frame[0] as f32);
+    }
+    entry.last_used = Instant::now();
+    (entry.frame.clone(), entry.size)
 }
 
 struct Slot {
@@ -201,7 +232,7 @@ impl Preview {
     /// (it may be laid out wider, on a frame of non-square pixels as shown).
     pub fn title_bounds(&self, id: ClipId, frame_width: f32) -> Option<[f32; 4]> {
         let t = self.titles.get(&id)?;
-        let k = if t.frame.width > 0 { frame_width / t.frame.width as f32 } else { 1.0 };
+        let k = if t.layout_w > 0.0 { frame_width / t.layout_w } else { 1.0 };
         t.bounds.map(|b| [b[0] * k, b[1], b[2] * k, b[3]])
     }
 
@@ -468,6 +499,12 @@ struct PreviewFrames<'a> {
 }
 
 impl FrameProvider for PreviewFrames<'_> {
+    fn title(&mut self, _: &Project, l: &Layer, frame_size: [u32; 2], sharp: f32, whole: bool) -> anyhow::Result<Option<Picture>> {
+        let Some(spec) = l.clip.title_at(l.source_time) else { return Ok(None) };
+        let (frame, size) = sharp_title_frame(self.titles, l.clip.id, &spec, frame_size, reelforge_export::title_clock(l), sharp, whole);
+        Ok(Some(Picture { frame, size, media: MediaId::GENERATED }))
+    }
+
     fn picture(&mut self, project: &Project, l: &Layer, frame_size: [u32; 2]) -> anyhow::Result<Option<Picture>> {
         if let Some(spec) = l.clip.title_at(l.source_time) {
             // Titles are drawn on a canvas the size of the frame, so 100% is their natural size.

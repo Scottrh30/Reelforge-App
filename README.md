@@ -706,6 +706,10 @@ What works now:
   all** put them back. Typing in the text keeps each pair's kerning with its letters. Case,
   scale and kerning work on 3D text and with text animations too; scale and case are part of a
   title preset, kerning stays with the text
+- **2D text stays crisp when resized**: scale a title up (in the Viewer, the Controls, or by
+  keyframes, or through a parent) and its letters are drawn again at that size, so edges,
+  outlines and shadows stay sharp instead of being a stretched picture. It's redrawn in steps
+  of about 19 % while a zoom plays, up to 800 %; export does the same
 - **Text animators** (Text tab → **Animators**), as After Effects' text animators: each
   animator moves (**Position**), scales (**Scale** X and Y, round the bottom middle of each
   letter), turns (**Rotation**), fades (**Opacity**), colours (**Colour**, with how far towards
@@ -2063,6 +2067,14 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   cache the image by a hash of the spec, so it's only redrawn when the title changes, and from
   there it's just another layer to the GPU compositor. Installed fonts are found once, in the
   background, by reading each font file's name table.
+  A 2D title scaled up is drawn for the size it's shown at, not stretched
+  (`text::render_title_sharp`, `scene::title_sharpness`): `TitleSpec::magnified` multiplies
+  every length in pixels (size, spacing, outline, shadow, box padding, animator moves, the text
+  path's outline) by the layer's scale (its world scale, parents included), in steps of a quarter
+  octave up to 8×, so a zoom redraws it only now and then. It's drawn on just the part of the
+  canvas round the middle that it reaches (symmetric, so the layer's centre doesn't move), which
+  keeps a 400 % title to a few megabytes; the picture stays under 16 million pixels. Masks,
+  effects, corner pins, warps, crops and 3D still get the whole canvas (more finely too).
 - **3D text** (`render/src/text3d.rs`, `render/src/solid.rs` and `solid.wgsl`): the same layout,
   but each glyph's outline is flattened into polygons (curves cut to within 0.1 px). The front
   and back faces are those polygons triangulated with the font's non-zero rule (`lyon`), so holes

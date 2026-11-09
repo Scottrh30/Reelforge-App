@@ -417,6 +417,96 @@ pub fn render_title_at(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32) -> R
     RenderedTitle { width: w, height: h, rgba: out.into(), bounds: full, missing_font }
 }
 
+/// A title drawn sharp for the size it's shown at (see [`render_title_sharp`]).
+pub struct SharpTitle {
+    /// The picture (`k` pixels per frame pixel); its bounds are in frame pixels.
+    pub title: RenderedTitle,
+    /// How much of the frame it covers (frame pixels), centred on the frame's middle.
+    pub size: [f32; 2],
+    /// Pixels of the picture per frame pixel.
+    pub k: f32,
+}
+
+/// The most pixels a sharp title's picture has (about 64 MB).
+pub const SHARP_MAX_PIXELS: f32 = 16_777_216.0;
+
+/// `spec`, laid out on a `frame`-sized canvas as [`render_title_at`] lays it
+/// out, drawn `k` times as sharp (so a layer scaled up `k` times stays
+/// crisp) on only the part of the canvas round its middle that the title
+/// reaches (all of it when `whole`: masks or effects that need the full
+/// canvas). The picture is kept under [`SHARP_MAX_PIXELS`] (and 8192 a
+/// side), so a very big `k` on a big canvas gives a little less.
+pub fn render_title_sharp(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32, k: f32, whole: bool) -> SharpTitle {
+    let (w, h) = (frame[0].max(1) as f32, frame[1].max(1) as f32);
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let (hw, hh) = if whole {
+        (cx, cy)
+    } else {
+        match reach(spec, [frame[0].max(1), frame[1].max(1)], t, dur) {
+            // Out to the farther side either way, so the middle stays the middle;
+            // no further than the canvas (the title is cut off there).
+            Some(r) => (((cx - r[0]).max(r[2] - cx)).clamp(2.0, cx), ((cy - r[1]).max(r[3] - cy)).clamp(2.0, cy)),
+            None => (2.0_f32.min(cx), 2.0_f32.min(cy)),
+        }
+    };
+    let k = k.clamp(1.0, 8.0).min((SHARP_MAX_PIXELS / (4.0 * hw * hh)).sqrt().max(1.0)).min(4096.0 / hw).min(4096.0 / hh);
+    let (cw, ch) = (2 * (hw * k).ceil() as u32, 2 * (hh * k).ceil() as u32);
+    let size = [cw as f32 / k, ch as f32 / k];
+    let origin = [cx - size[0] / 2.0, cy - size[1] / 2.0];
+    let mut title = if k == 1.0 && whole && [cw, ch] == [frame[0].max(1), frame[1].max(1)] {
+        render_title_at(spec, frame, t, dur)
+    } else {
+        render_title_at(&spec.magnified(k, origin), [cw, ch], t, dur)
+    };
+    title.bounds = title.bounds.map(|b| [b[0] / k + origin[0], b[1] / k + origin[1], b[2] / k + origin[0], b[3] / k + origin[1]]);
+    SharpTitle { title, size, k }
+}
+
+/// How far a title can draw on a `frame`-sized canvas (outline, shadow, box
+/// and moving letters included), without drawing it.
+fn reach(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32) -> Option<[f32; 4]> {
+    let (w, h) = (frame[0] as f32, frame[1] as f32);
+    let (sdx, sdy) = if spec.shadow {
+        let a = spec.shadow_angle.to_radians();
+        (spec.shadow_distance * a.cos(), spec.shadow_distance * a.sin())
+    } else {
+        (0.0, 0.0)
+    };
+    let soft = if spec.shadow { spec.shadow_softness.max(0.0) * 1.5 } else { 0.0 };
+    let pad = if spec.background { spec.background_padding.max(0.0) } else { 0.0 };
+    let mut margin = spec.outline.max(0.0) + pad + sdx.abs().max(sdy.abs()) + soft + 4.0 + spec.size.abs() * 0.25;
+    let b = if let Some(shape) = &spec.shape {
+        let (hw, hh) = (spec.size.max(1.0) * shape.aspect * 0.5, spec.size.max(1.0) * 0.5);
+        [w / 2.0 - hw, h / 2.0 - hh, w / 2.0 + hw, h / 2.0 + hh]
+    } else {
+        let (font, _) = load_font(&spec.font);
+        let lay = layout(spec, &font, frame);
+        if spec.places_glyphs() {
+            let mods = spec.glyph_mods(t);
+            let states = spec.glyph_states(t, dur);
+            let mut b: Option<[f32; 4]> = (spec.background && spec.path.is_none()).then_some(lay.text_box);
+            for p in place(spec, &lay, mods.as_deref(), states.as_deref(), frame) {
+                for q in glyph_contours(&font, &lay.glyphs[p.index], lay.info[p.index].advance, &p).iter().flatten() {
+                    b = Some(b.map_or([q[0], q[1], q[0], q[1]], |k| [k[0].min(q[0]), k[1].min(q[1]), k[2].max(q[0]), k[3].max(q[1])]));
+                }
+            }
+            b?
+        } else {
+            if spec.glyph_states(t, dur).is_some() {
+                // Letters moving in or out go up to about a line away.
+                margin += spec.size.abs() * 1.5;
+            }
+            let ink = draw_bounds(spec, &font, &lay);
+            if ink.is_none() && !spec.background {
+                return None;
+            }
+            let t = lay.text_box;
+            ink.map_or(t, |i| [t[0].min(i[0]), t[1].min(i[1]), t[2].max(i[2]), t[3].max(i[3])])
+        }
+    };
+    Some([b[0] - margin, b[1] - margin, b[2] + margin, b[3] + margin])
+}
+
 /// One glyph placed on its own: the middle of its baseline at `at`, turned
 /// by `angle` (radians, clockwise), scaled, with its opacity and colour.
 #[derive(Clone, Copy, Debug)]
@@ -897,6 +987,116 @@ mod tests {
 
     fn plain(text: &str) -> TitleSpec {
         TitleSpec { text: text.into(), size: 60.0, shadow: false, ..TitleSpec::default() }
+    }
+
+    /// Alpha at frame point (x, y) of a sharp title (nearest picture pixel).
+    fn alpha_at(r: &SharpTitle, frame: [u32; 2], x: f32, y: f32) -> u8 {
+        let ox = frame[0] as f32 / 2.0 - r.size[0] / 2.0;
+        let oy = frame[1] as f32 / 2.0 - r.size[1] / 2.0;
+        let (px_, py_) = (((x - ox) * r.k) as i64, ((y - oy) * r.k) as i64);
+        if px_ < 0 || py_ < 0 || px_ >= r.title.width as i64 || py_ >= r.title.height as i64 {
+            return 0;
+        }
+        px(&r.title, px_ as u32, py_ as u32)[3]
+    }
+
+    /// Titles drawn for their size: at 1× exactly the middle of the usual
+    /// picture, only as big as the text needs; magnified, the same shapes in
+    /// the same places with edges a fraction as soft; text on a path too.
+    #[test]
+    fn titles_stay_sharp_when_magnified() {
+        let frame = [640u32, 360];
+        let spec = TitleSpec { text: "Crisp".into(), size: 48.0, outline: 2.0, outline_color: [0, 0, 0, 255], shadow: true, shadow_distance: 4.0, shadow_softness: 2.0, ..TitleSpec::default() };
+        let full = render_title_at(&spec, frame, 0.0, 5.0);
+        let one = render_title_sharp(&spec, frame, 0.0, 5.0, 1.0, false);
+        assert_eq!(one.k, 1.0);
+        assert!(one.title.width * one.title.height * 3 < frame[0] * frame[1], "only round the text: {}×{}", one.title.width, one.title.height);
+        let (ox, oy) = ((frame[0] - one.title.width) / 2, (frame[1] - one.title.height) / 2);
+        for y in 0..one.title.height {
+            for x in 0..one.title.width {
+                let (a, b) = (px(&one.title, x, y), px(&full, x + ox, y + oy));
+                // (The colour of fully transparent pixels doesn't show.)
+                assert!(a == b || (a[3] == 0 && b[3] == 0), "at {x},{y}: {a:?} vs {b:?}");
+            }
+        }
+        // Nothing of the full picture is left outside.
+        let inside = |x: u32, y: u32| x >= ox && y >= oy && x < ox + one.title.width && y < oy + one.title.height;
+        assert!((0..frame[1]).all(|y| (0..frame[0]).all(|x| inside(x, y) || px(&full, x, y)[3] == 0)));
+        assert_eq!(one.title.bounds, full.bounds);
+        // 4× as fine: same bounds, same coverage (sampled), sharper edges.
+        let four = render_title_sharp(&spec, frame, 0.0, 5.0, 4.0, false);
+        assert_eq!(four.k, 4.0);
+        let (b1, b4) = (full.bounds.unwrap(), four.title.bounds.unwrap());
+        for i in 0..4 {
+            assert!((b1[i] - b4[i]).abs() < 1.5, "{b1:?} vs {b4:?}");
+        }
+        let mut diff = 0.0;
+        let mut n = 0.0;
+        for y in (b1[1] as u32)..(b1[3] as u32) {
+            for x in (b1[0] as u32)..(b1[2] as u32) {
+                // The 4× picture averaged over this frame pixel.
+                let mut sum = 0.0;
+                for j in 0..4 {
+                    for i in 0..4 {
+                        sum += alpha_at(&four, frame, x as f32 + (i as f32 + 0.5) / 4.0, y as f32 + (j as f32 + 0.5) / 4.0) as f32;
+                    }
+                }
+                diff += (sum / 16.0 - px(&full, x, y)[3] as f32).abs();
+                n += 1.0;
+            }
+        }
+        // (The outline is a little finer drawn finely, so not exactly the same.)
+        assert!(diff / n < 16.0, "the same shapes: mean alpha difference {}", diff / n);
+        let fill = plain("Crisp");
+        let (f1, f4) = (render_title_at(&fill, frame, 0.0, 5.0), render_title_sharp(&fill, frame, 0.0, 5.0, 4.0, false));
+        let b = f1.bounds.unwrap();
+        let (mut diff, mut n) = (0.0, 0.0);
+        for y in (b[1] as u32)..(b[3] as u32) {
+            for x in (b[0] as u32)..(b[2] as u32) {
+                let mut sum = 0.0;
+                for j in 0..4 {
+                    for i in 0..4 {
+                        sum += alpha_at(&f4, frame, x as f32 + (i as f32 + 0.5) / 4.0, y as f32 + (j as f32 + 0.5) / 4.0) as f32;
+                    }
+                }
+                diff += (sum / 16.0 - px(&f1, x, y)[3] as f32).abs();
+                n += 1.0;
+            }
+        }
+        assert!(diff / n < 2.0, "the same letters: mean alpha difference {}", diff / n);
+        // Edge softness: partly covered samples along the middle row, per frame pixel.
+        let row = (b1[1] + b1[3]) / 2.0;
+        let soft = |r: &SharpTitle, step: f32| {
+            let mut c = 0;
+            let mut x = b1[0];
+            while x < b1[2] {
+                let a = alpha_at(r, frame, x, row);
+                if a > 20 && a < 235 {
+                    c += 1;
+                }
+                x += step;
+            }
+            c as f32 * step
+        };
+        // (Letters only: a soft shadow is soft at any size.)
+        let fill1 = render_title_sharp(&fill, frame, 0.0, 5.0, 1.0, false);
+        let (s1, s4) = (soft(&fill1, 1.0), soft(&f4, 0.25));
+        assert!(s4 < s1 * 0.5, "edges {s4} frame pixels soft at 4×, {s1} at 1×");
+        // Masks or effects: the whole canvas, still magnified (within the pixel budget).
+        let whole = render_title_sharp(&spec, frame, 0.0, 5.0, 2.0, true);
+        assert_eq!((whole.size, whole.title.width, whole.title.height), ([640.0, 360.0], 1280, 720));
+        let big = render_title_sharp(&spec, [3840, 2160], 0.0, 5.0, 8.0, true);
+        assert!(big.title.width as f32 * big.title.height as f32 <= SHARP_MAX_PIXELS * 1.01 && big.k > 1.0 && big.k < 2.0, "{}", big.k);
+        // Text on a path lands where it did.
+        let line: Vec<[f32; 2]> = (0..=32).map(|i| { let a = i as f32 / 32.0 * std::f32::consts::PI; [320.0 - 150.0 * a.cos(), 220.0 - 120.0 * a.sin()] }).collect();
+        let on_path = TitleSpec { path: Some(reelforge_core::TextPath { mask: 0, reverse: false, perpendicular: true, open: true, margin: 0.0, line: Some(std::sync::Arc::new(line)) }), ..plain("Round the arc") };
+        let p1 = render_title_at(&on_path, frame, 0.0, 5.0).bounds.unwrap();
+        let p3 = render_title_sharp(&on_path, frame, 0.0, 5.0, 3.0, false);
+        let b = p3.title.bounds.unwrap();
+        for i in 0..4 {
+            assert!((p1[i] - b[i]).abs() < 1.5, "{p1:?} vs {b:?}");
+        }
+        assert!(p3.size[0] < 640.0 * 0.9 && p3.size[1] < 360.0 * 0.95, "{:?}", p3.size);
     }
 
     /// Animated titles: letters show up in turn, fades are partial, sliding
