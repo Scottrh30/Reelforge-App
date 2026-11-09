@@ -27,6 +27,16 @@ What works now:
   can be put back with **Restore “…” as it came**), **Undo layout changes** goes back to it,
   and **Save as new workspace…** keeps it under a name of your own, which can be renamed or
   deleted later. Workspaces are kept on this computer, not in the project
+- **Match colour…** (a clip's right-click menu, or **Timeline → Match colour…**): give the
+  selected clips the look of a reference — **another clip** on the timeline (as it's graded,
+  effects and all), something **from the Media panel**, or **a picture or video file**
+  (**Browse…**) — matching its **colour** (tint, saturation, and the colour of shadows,
+  midtones and highlights separately, so split toning like teal and orange comes across)
+  and/or its **brightness and contrast**. Each clip is measured as it is now (eight frames
+  through it, with its effects) and gets a **LUT** effect at the end of its effects, made for
+  it, whose **Strength** sets how far to go; matching again replaces that LUT, and it's all one
+  undo step. The LUTs (.cube files you can use elsewhere too) go in a **Looks** folder beside
+  the project (in Reelforge's own folder until it's saved)
 - **Scopes** (a dock tab; on the left in the **Colour** workspace): the Viewer's picture
   measured, as it changes and while playing — **Waveform** (brightness across the picture, left
   to right as in the Viewer, from 0 % black to 100 % white; **RGB** overlays red, green and blue
@@ -2244,6 +2254,15 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   unchanged vertex shader draws the quad and the GPU interpolates texture coordinates in
   perspective. Hit testing, the gizmo, masks and the tracker overlay all go through
   `layer_map`, so they agree with what's drawn. Pin keys are a `Curve<Pin>` like any property
+- **Match colour** (`core/src/colormatch.rs`, `engine/src/editor/colormatch.rs`): each look is
+  measured in CIE L\*a\*b\* (D65) from up to 40 000 samples a frame: a lightness histogram, and
+  the mean and spread of a\*/b\* in shadows, midtones and highlights (soft bands centred on L\*
+  15, 50 and 85; a band with under 5 % of the samples leans on the whole picture's). The tone
+  curve maps the clip's lightness percentiles (0.5 to 99.5) onto the reference's, slopes kept
+  between ¼ and 4, smoothed and rising; colour moves each band's mean onto the reference's and
+  scales its spread (¼–3×). The result is baked into a 33-point .cube. The clips (and a
+  reference clip) are rendered alone, with their effects, through the compositor on a
+  graphics card of its own in the background (their own frames, before effects, without one).
 - **Scopes** (`engine/src/scopes.rs`, `tauri-app/src/scopes.rs`, `ui/src/components/ScopesPanel.svelte`):
   drawn on the CPU from the Viewer's picture, which is read back from the GPU once per change
   and shared with the Viewer itself. About a third of a million samples at most, binned per

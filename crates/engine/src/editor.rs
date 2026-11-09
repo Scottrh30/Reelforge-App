@@ -295,6 +295,7 @@ pub use multicam::MulticamAt;
 mod replace;
 mod aifx;
 pub mod upscale;
+pub mod colormatch;
 mod snapshot;
 mod stilltrim_tests;
 pub use viewcam::ViewMode;
@@ -422,6 +423,8 @@ pub struct Editor {
     pub tracking: Option<TrackJob>,
     /// An AI upscale being made (Media panel).
     pub upscale: Option<upscale::UpscaleJob>,
+    /// Match colour, while it measures.
+    pub color_match: Option<colormatch::MatchJob>,
     /// A preset shown on a clip while it's hovered in the effects browser:
     /// the clip, and its look and title style before (put back by
     /// [`Editor::end_preset_preview`], and before anything else is done).
@@ -490,6 +493,7 @@ impl Editor {
             recoveries: Vec::new(),
             tracking: None,
             upscale: None,
+            color_match: None,
             preset_preview: None,
             comp_thumbs: HashMap::new(),
             fx_thumbs: HashMap::new(),
@@ -3607,6 +3611,7 @@ impl Editor {
         }
         self.poll_tracking();
         self.poll_upscale();
+        self.poll_color_match();
         let seq = &self.project.sequences[self.active];
         let (rate, end) = (seq.frame_rate, seq.duration());
         self.playback.tick(rate, end);

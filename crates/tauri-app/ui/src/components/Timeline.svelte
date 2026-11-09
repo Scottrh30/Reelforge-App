@@ -619,6 +619,7 @@
       { label: "Open composition", disabled: c.kind !== "comp", run: () => openCompFromClip(c) },
       { separator: true },
       colorMenu(c),
+      ...(c.kind === "video" || c.kind === "image" || c.kind === "comp" ? [{ label: "Match colour…", run: () => (app.matchColorOpen = true) }] : []),
       ...(c.kind === "plane"
         ? [
             {

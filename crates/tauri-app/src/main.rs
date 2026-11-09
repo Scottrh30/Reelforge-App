@@ -90,6 +90,8 @@ struct Live {
     tracking: Option<(u64, f32)>,
     /// An AI upscale being made: the media and how far along (0–1).
     upscaling: Option<(u64, f32)>,
+    /// Match colour's progress (0–1), while it measures.
+    matching: Option<f32>,
     /// A render-preview run: how far along (0–1).
     render: Option<f32>,
     /// Bumped when the render cache gains or loses frames.
@@ -185,6 +187,7 @@ fn tick() -> Res<Live> {
             collect,
             tracking: e.tracking.as_ref().map(|j| (j.clip.0, j.progress)),
             upscaling: e.upscale.as_ref().map(|j| (j.media.0, j.progress)),
+            matching: e.color_match.as_ref().map(|j| j.progress),
             render: e.render_progress(),
             render_gen: e.render_cache.generation,
             viewer: viewer_info(e),
@@ -1136,6 +1139,37 @@ fn upscale_cancel() -> Res<()> {
     ed(|e| e.cancel_upscale())
 }
 
+/// Match colour: give clips `targets` the look of a reference — `from`
+/// "clip" (clip `id` on the timeline, as graded), "media" (Media panel item
+/// `id`) or "file" (`path`) — matching brightness and contrast (`tone`)
+/// and/or colour.
+#[tauri::command]
+fn color_match(targets: Vec<u64>, from: String, id: u64, path: Option<String>, tone: bool, color: bool) -> Res<()> {
+    use reelforge_engine::editor::colormatch::MatchSource;
+    let source = match from.as_str() {
+        "clip" => MatchSource::Clip(ClipId(id)),
+        "media" => MatchSource::Media(MediaId(id)),
+        _ => MatchSource::File(path.map(std::path::PathBuf::from).ok_or("no file chosen")?),
+    };
+    let targets: Vec<ClipId> = targets.into_iter().map(ClipId).collect();
+    ed(|e| e.start_color_match(&targets, source, reelforge_core::colormatch::MatchWhat { tone, color }))
+}
+
+#[tauri::command]
+fn color_match_cancel() -> Res<()> {
+    ed(|e| e.cancel_color_match())
+}
+
+/// A picture or video to take a look from.
+#[tauri::command]
+fn color_match_pick() -> Option<String> {
+    rfd::FileDialog::new()
+        .set_title("Match colour to… (a picture or a video)")
+        .add_filter("Pictures and video", &["jpg", "jpeg", "png", "tif", "tiff", "exr", "bmp", "webp", "mp4", "mov", "mkv", "avi", "webm", "mxf", "m4v"])
+        .pick_file()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Get the frame at the playhead of clip `id` ready for the roto brush, in the background.
 #[tauri::command]
 fn roto_prepare(id: u64) -> Res<()> {
@@ -1827,6 +1861,9 @@ fn main() {
             roto_prepare,
             upscale_media,
             upscale_cancel,
+            color_match,
+            color_match_cancel,
+            color_match_pick,
             roto_pick,
             roto_propagate,
             mask_smooth,

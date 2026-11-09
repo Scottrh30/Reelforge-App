@@ -900,6 +900,8 @@ export interface Live {
   collect: CollectView | null;
   tracking: [number, number] | null;
   upscaling: [number, number] | null;
+  /// Match colour's progress (0–1), while it measures.
+  matching: number | null;
   render: number | null;
   render_gen: number;
   /// What the Viewer works from, for its performance readout.
@@ -987,6 +989,9 @@ export const api = {
   effectThumb: (id: number, kind: EffectKind, plugin: string | null, step = 0) => invoke<ArrayBuffer>("effect_thumb", { id, kind, plugin, step }),
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),
+  colorMatch: (targets: number[], from: "clip" | "media" | "file", id: number, path: string | null, tone: boolean, color: boolean) => invoke("color_match", { targets, from, id, path, tone, color }),
+  colorMatchCancel: () => invoke("color_match_cancel"),
+  colorMatchPick: () => invoke<string | null>("color_match_pick"),
   openPath: (path: string) => invoke("open_path", { path }),
   save: (saveAs: boolean) => invoke<boolean>("save", { saveAs }),
   importDialog: () => invoke("import_dialog"),

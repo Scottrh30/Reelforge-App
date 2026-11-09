@@ -48,6 +48,8 @@ export const app = $state({
   duckOpen: false,
   /// Timeline > Sequence settings… is open.
   seqSettingsOpen: false,
+  /// Match colour… is open.
+  matchColorOpen: false,
   /// New multicam source… is open, with these takes ticked to start with.
   multicamOpen: null as null | number[],
   /// File > Project versions… is open.

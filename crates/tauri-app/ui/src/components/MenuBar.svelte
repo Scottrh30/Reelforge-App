@@ -203,6 +203,7 @@
     { label: "Cross-dissolve at playhead", hint: "Ctrl+D", run: () => actions.act("dissolve") },
     { label: "Audio crossfade at playhead", hint: "Ctrl+Shift+D", run: () => actions.act("crossfade") },
     { label: "Duck music under dialogue…", run: () => (app.duckOpen = true) },
+    { label: "Match colour…", run: () => (app.matchColorOpen = true) },
     { label: "New multicam source…", run: () => (app.multicamOpen = []) },
     { label: "Multicam: show all angles", hint: "in the Viewer", checked: !!app.live?.multicam?.grid, disabled: !app.live?.multicam, run: () => run(api.setMulticamGrid(!app.live?.multicam?.grid)) },
     { label: "Transitions…", run: () => (app.effectsOpen = true) },
