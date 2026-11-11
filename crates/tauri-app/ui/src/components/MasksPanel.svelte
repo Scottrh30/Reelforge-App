@@ -155,7 +155,7 @@
           <option value="keep">Garbage matte: keys keep what's inside</option>
           <option value="track">Leave out of the 3D camera track</option>
           <option value="fill">Object to remove (Object removal fills it)</option>
-          <option value="path">Path for the text (Text tab → Path)</option>
+          <option value="path">A path (for text, or the Neon path effect)</option>
         </select>
       </div>
       {#if m.fill_area}<p class="note">Doesn't change the picture by itself: add the Object removal effect (Repair) to this clip and press Remove object. Animate or track the mask to follow what's moving.</p>{/if}
@@ -175,7 +175,7 @@
           <NumberField label="Mask opacity" value={m.opacity * 100} min={0} max={100} step={0.5} digits={0} suffix="%" oninput={(v) => change(i, (n) => (n.opacity = v / 100), false)} oncommit={commit} />
         </div>
       </div>
-      {#if m.text_path}<p class="note">Doesn't cut the layer: the title's text can run along it (Text tab → Path → Along).</p>{/if}
+      {#if m.text_path}<p class="note">Doesn't cut the layer: a title's text can run along it (Text tab → Path → Along), and the Neon path effect can glow along it (its Mask number is this one's place in the list).</p>{/if}
       {#if !m.track_ignore && !m.fill_area && !m.key_keep && !m.text_path}
         <div class="row track">
           <label class="lbl" title="Fits the edge to the picture: within the radius each side of the mask's edge, every pixel's coverage is worked out from where its colour sits between the colours surely inside and surely outside, so hair, fur and motion blur go soft and background the mask took in goes">

@@ -435,7 +435,20 @@ impl Clip {
     /// [`Self::effects_moving`] for a layer `size` pixels across.
     pub fn effects_sized(&self, t: Time, frame: Time, size: [f32; 2]) -> Vec<EffectValues> {
         let prev = self.source_time((t - frame).max(self.timeline_start));
-        crate::effects::eval_stack_sized(&self.effects, self.source_time(t), Some(prev), size)
+        let src = self.source_time(t);
+        // (Neon path draws along one of the clip's masks.)
+        self.effects
+            .iter()
+            .filter(|e| e.enabled)
+            .map(|e| {
+                let mut v = e.eval_sized(src, Some(prev), size);
+                if e.kind == crate::effects::EffectKind::NeonPath {
+                    crate::neonpath::fill(&mut v, &self.masks, src, size);
+                }
+                v
+            })
+            .filter(|v| !v.is_identity())
+            .collect()
     }
 
     /// The (possibly animated) transform at sequence time `t`.

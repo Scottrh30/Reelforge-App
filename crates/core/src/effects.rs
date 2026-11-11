@@ -114,6 +114,17 @@ pub enum EffectKind {
     /// Lightning: jagged, branching bolts between two points or all round
     /// one, struck afresh several times a second (see [`crate::lightning`]).
     Lightning,
+    /// Light rays (god rays) streaming from a point through the bright parts
+    /// of the layer, or the whole of it (HitFilm's Light Rays).
+    LightRays,
+    /// Long horizontal streaks from the bright parts of the layer, as an
+    /// anamorphic lens draws them.
+    AnamorphicFlare,
+    /// Smudges and specks on the lens, showing where light hits them.
+    LensDirt,
+    /// A glowing neon tube along one of the layer's masks, written on and
+    /// flickering as wanted. See [`crate::neonpath`].
+    NeonPath,
     /// Patch replacer: an area covered with a patch from elsewhere in the
     /// picture, its light matched to the surroundings (or cloned as it is,
     /// or filled in from the edges). The source moves with the target.
@@ -716,6 +727,21 @@ const PARTICLES: [ParamSpec; 24] = [
 
 /// Parameter indices of the stylise effects.
 pub mod flare {
+    /// The lens library (the first three are the original lenses).
+    pub const LENSES: [&str; 12] = [
+        "Warm (spherical)",
+        "Anamorphic (blue streak)",
+        "Glow only",
+        "Cinematic sun",
+        "Clean prime",
+        "Hexagon iris",
+        "Sci-fi rainbow",
+        "Red anamorphic",
+        "Spotlight",
+        "Vintage rings",
+        "Green tech",
+        "Starburst",
+    ];
     pub const X: usize = 0;
     pub const Y: usize = 1;
     pub const BRIGHTNESS: usize = 2;
@@ -725,6 +751,62 @@ pub mod flare {
     pub const STREAK: usize = 6;
     pub const GHOSTS: usize = 7;
     pub const HALO: usize = 8;
+}
+pub mod rays {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const LENGTH: usize = 2;
+    pub const BRIGHTNESS: usize = 3;
+    pub const THRESHOLD: usize = 4;
+    pub const SOFTNESS: usize = 5;
+    pub const COLOR: usize = 6;
+    pub const FROM: usize = 7;
+    pub const SHOW: usize = 8;
+}
+pub mod streak {
+    pub const THRESHOLD: usize = 0;
+    pub const LENGTH: usize = 1;
+    pub const BRIGHTNESS: usize = 2;
+    pub const SOFTNESS: usize = 3;
+    pub const COLOR: usize = 4;
+    pub const THICKNESS: usize = 5;
+    pub const SHOW: usize = 6;
+}
+pub mod dirt {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const LIT_BY: usize = 2;
+    pub const AMOUNT: usize = 3;
+    pub const SPREAD: usize = 4;
+    pub const THRESHOLD: usize = 5;
+    pub const SMUDGE: usize = 6;
+    pub const SPECKS: usize = 7;
+    pub const COLOR: usize = 8;
+    pub const SEED: usize = 9;
+}
+/// Neon path's parameters (10–14 and 18–19 sit where Lightning's do: the
+/// same shader draws both).
+pub mod neonpath {
+    pub const MASK: usize = 0;
+    pub const START: usize = 1;
+    pub const END: usize = 2;
+    pub const OFFSET: usize = 3;
+    pub const CLOSED: usize = 4;
+    pub const FLICKER: usize = 5;
+    pub const FLICKER_SPEED: usize = 6;
+    pub const TAPER: usize = 7;
+    pub const SEED: usize = 8;
+    pub const BRIGHTNESS: usize = 9;
+    pub const CORE_WIDTH: usize = 10;
+    pub const GLOW_SIZE: usize = 11;
+    pub const GLOW: usize = 12;
+    pub const CORE_COLOR: usize = 13;
+    pub const GLOW_COLOR: usize = 14;
+    pub const DASH: usize = 15;
+    pub const GAP: usize = 16;
+    pub const DASH_SPEED: usize = 17;
+    pub const LIGHT_LAYER: usize = 18;
+    pub const OPACITY: usize = 19;
 }
 pub mod shake {
     pub const AMOUNT: usize = 0;
@@ -1148,10 +1230,64 @@ const LENS_FLARE: [ParamSpec; 9] = [
     spec("Brightness", 100.0, 0.0, 500.0, " %", 0.5),
     spec("Size", 100.0, 10.0, 400.0, " %", 0.5),
     color("Colour", 0xffc890),
-    choice("Lens", &["Warm (spherical)", "Anamorphic (blue streak)", "Glow only"]),
+    choice("Lens", &flare::LENSES),
     spec("Streak", 50.0, 0.0, 200.0, " %", 0.5),
     spec("Ghosts", 60.0, 0.0, 200.0, " %", 0.5),
     spec("Halo", 40.0, 0.0, 200.0, " %", 0.5),
+];
+const LIGHT_RAYS: [ParamSpec; 9] = [
+    spec("Source X", 50.0, -100.0, 200.0, " %", 0.1),
+    spec("Source Y", 25.0, -100.0, 200.0, " %", 0.1),
+    spec("Length", 50.0, 0.0, 100.0, " %", 0.2),
+    spec("Brightness", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Threshold", 60.0, 0.0, 100.0, " %", 0.2),
+    spec("Softness", 25.0, 1.0, 100.0, " %", 0.2),
+    color("Colour", 0xfff4e0),
+    choice("Rays from", &["Bright parts of the layer", "The whole layer"]),
+    choice("Show", &["The layer and its rays", "Rays only"]),
+];
+const ANAMORPHIC: [ParamSpec; 7] = [
+    spec("Threshold", 85.0, 0.0, 100.0, " %", 0.2),
+    spec("Length", 400.0, 0.0, 3000.0, " px", 1.0),
+    spec("Brightness", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Softness", 10.0, 1.0, 100.0, " %", 0.2),
+    color("Colour", 0x5a8cff),
+    spec("Thickness", 2.0, 0.0, 60.0, " px", 0.05),
+    choice("Show", &["The layer and its streaks", "Streaks only"]),
+];
+const LENS_DIRT: [ParamSpec; 10] = [
+    spec("Light X", 50.0, -100.0, 200.0, " %", 0.1),
+    spec("Light Y", 40.0, -100.0, 200.0, " %", 0.1),
+    choice("Lit by", &["Bright parts of the layer", "The light (X, Y)"]),
+    spec("Amount", 100.0, 0.0, 300.0, " %", 0.5),
+    spec("Spread", 35.0, 5.0, 100.0, " %", 0.2),
+    spec("Threshold", 60.0, 0.0, 100.0, " %", 0.2),
+    spec("Smudge size", 100.0, 20.0, 400.0, " %", 0.5),
+    spec("Specks", 50.0, 0.0, 200.0, " %", 0.5),
+    color("Colour", 0xfff0dc),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const NEON_PATH: [ParamSpec; 20] = [
+    spec("Mask", 1.0, 1.0, 32.0, "", 0.02),
+    spec("Start", 0.0, 0.0, 100.0, " %", 0.2),
+    spec("End", 100.0, 0.0, 100.0, " %", 0.2),
+    spec("Offset", 0.0, -1000.0, 1000.0, " %", 0.2),
+    ParamSpec { name: "Closed", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Flicker", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Flicker speed", 6.0, 0.1, 30.0, " Hz", 0.05),
+    spec("Taper", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+    spec("Brightness", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Core width", 4.0, 0.0, 60.0, " px", 0.05),
+    spec("Glow size", 18.0, 0.0, 400.0, " px", 0.2),
+    spec("Glow intensity", 120.0, 0.0, 500.0, " %", 0.5),
+    color("Core colour", 0xfff0fa),
+    color("Glow colour", 0xff2bd6),
+    spec("Dash length", 0.0, 0.0, 2000.0, " px", 0.5),
+    spec("Gap", 12.0, 0.0, 2000.0, " px", 0.5),
+    spec("Dash speed", 0.0, -2000.0, 2000.0, " px/s", 1.0),
+    spec("Light the layer", 0.0, 0.0, 300.0, " %", 0.5),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
 ];
 const CAMERA_SHAKE: [ParamSpec; 7] = [
     spec("Amount", 12.0, 0.0, 500.0, " px", 0.25),
@@ -1336,7 +1472,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 40] = [
+    pub const ALL: [EffectKind; 44] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -1356,6 +1492,10 @@ impl EffectKind {
         EffectKind::EnergyBlade,
         EffectKind::Particles,
         EffectKind::LensFlare,
+        EffectKind::AnamorphicFlare,
+        EffectKind::LightRays,
+        EffectKind::LensDirt,
+        EffectKind::NeonPath,
         EffectKind::LightLeaks,
         EffectKind::NeonEdges,
         EffectKind::Halftone,
@@ -1402,6 +1542,10 @@ impl EffectKind {
             EffectKind::EnergyBlade => "Energy blade",
             EffectKind::Particles => "Particles",
             EffectKind::LensFlare => "Lens flare",
+            EffectKind::LightRays => "Light rays",
+            EffectKind::AnamorphicFlare => "Anamorphic flare",
+            EffectKind::LensDirt => "Lens dirt",
+            EffectKind::NeonPath => "Neon path",
             EffectKind::CameraShake => "Camera shake",
             EffectKind::ChromaticAberration => "Chromatic aberration",
             EffectKind::FilmGrain => "Film grain",
@@ -1436,7 +1580,7 @@ impl EffectKind {
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner | EffectKind::MatteChoker | EffectKind::RefineMatte => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
             EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate => EffectCategory::Simulation,
-            EffectKind::LensFlare | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
+            EffectKind::LensFlare | EffectKind::LightRays | EffectKind::AnamorphicFlare | EffectKind::LensDirt | EffectKind::NeonPath | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::WireRemoval | EffectKind::PatchReplacer | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty => EffectCategory::Repair,
             EffectKind::SkyReplace => EffectCategory::Keying,
             EffectKind::FractalNoise | EffectKind::Lightning => EffectCategory::Generate,
@@ -1478,7 +1622,11 @@ impl EffectKind {
             EffectKind::SkyReplace => "A new sky behind the footage: the sky in every frame is found by the object model (Find the sky), its edge softened round trees and buildings, the new sky (a picture, or a gradient) moved with the camera, and the footage's light matched to it.",
             EffectKind::Paint => "Paint in the Viewer: clone the picture from somewhere else (Alt-click where to copy from), brush on a colour, or erase strokes. Each stroke lasts a frame, from there on, or the whole clip.",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
-            EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Drag the light in the Viewer.",
+            EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Choose a lens from the library (cinematic sun, anamorphic, hexagon iris, sci-fi and more) and drag the light in the Viewer.",
+            EffectKind::LightRays => "Rays of light streaming out from a point through the bright parts of the layer (or all of it), like sun through trees or a logo's god rays. Drag the source in the Viewer.",
+            EffectKind::AnamorphicFlare => "Long horizontal streaks out of the bright parts of the picture (lamps, headlights, highlights), as an anamorphic lens draws them.",
+            EffectKind::LensDirt => "Smudges and specks on the lens that light up where bright light hits them: from the bright parts of the picture, or a light you place.",
+            EffectKind::NeonPath => "A glowing neon tube along one of the layer's masks: draw a mask (set its Use to A path), pick it here, then write it on, dash it or make it flicker.",
             EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
             EffectKind::ChromaticAberration => "Colour fringes: red and blue pulled apart towards the edges, like a cheap lens, or one way for a glitchy look.",
             EffectKind::FilmGrain => "Film grain that changes every frame: fine or coarse, mono or colour, kept out of the highlights.",
@@ -1518,6 +1666,10 @@ impl EffectKind {
             EffectKind::EnergyBlade => &BLADE,
             EffectKind::Particles => &PARTICLES,
             EffectKind::LensFlare => &LENS_FLARE,
+            EffectKind::LightRays => &LIGHT_RAYS,
+            EffectKind::AnamorphicFlare => &ANAMORPHIC,
+            EffectKind::LensDirt => &LENS_DIRT,
+            EffectKind::NeonPath => &NEON_PATH,
             EffectKind::CameraShake => &CAMERA_SHAKE,
             EffectKind::ChromaticAberration => &CHROMATIC,
             EffectKind::FilmGrain => &FILM_GRAIN,
@@ -1579,6 +1731,9 @@ impl EffectKind {
             EffectKind::ColorWheels => &[(0, "Lift (shadows)"), (3, "Gamma (midtones)"), (6, "Gain (highlights)"), (9, "Offset (everything)"), (12, "Overall")],
             EffectKind::SkyReplace => &[(0, "Sky"), (3, "Placing"), (7, "Look"), (9, "Edge"), (11, "Blend")],
             EffectKind::Lightning => &[(0, "Path"), (4, "Shape"), (10, "Look"), (15, "Motion")],
+            EffectKind::NeonPath => &[(0, "Path"), (5, "Flicker and taper"), (9, "Look"), (15, "Dashes"), (18, "Mix")],
+            EffectKind::LensDirt => &[(0, "Light"), (3, "Dirt")],
+            EffectKind::LightRays => &[(0, "Source"), (2, "Rays")],
             EffectKind::PatchReplacer => &[(0, "Target"), (2, "Source"), (4, "Shape"), (9, "Fill")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
@@ -1662,6 +1817,10 @@ impl EffectValues {
             // Run on the CPU before the GPU effects (see `crate::ofx`).
             EffectKind::OpenFx => true,
             EffectKind::LensFlare => v[flare::BRIGHTNESS] == 0.0,
+            EffectKind::LightRays => v[rays::BRIGHTNESS] == 0.0 || v[rays::LENGTH] == 0.0,
+            EffectKind::AnamorphicFlare => v[streak::BRIGHTNESS] == 0.0 || v[streak::LENGTH] == 0.0,
+            EffectKind::LensDirt => v[dirt::AMOUNT] == 0.0,
+            EffectKind::NeonPath => v[neonpath::OPACITY] == 0.0 || self.table.is_none(),
             EffectKind::CameraShake => v[shake::AMOUNT] == 0.0 && v[shake::ROTATION] == 0.0 && v[shake::ZOOM] == 100.0,
             EffectKind::ChromaticAberration => v[aberration::AMOUNT] == 0.0,
             EffectKind::FilmGrain => v[grain::AMOUNT] == 0.0,
@@ -1963,6 +2122,8 @@ mod tests {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
                 EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
+                // Needs a mask to run along (see neonpath's tests).
+                EffectKind::NeonPath => assert!(v.is_identity()),
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 // These need the layer's size (a shatter's pieces, a fluid's grid).

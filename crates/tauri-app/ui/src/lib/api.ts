@@ -566,7 +566,7 @@ export type ControlValue = string | number | [number, number];
 export type ControlTarget = "Text" | "TextColour" | "Opacity" | "Position" | { Param: { effect: number; param: number } };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace" | "LightRays" | "AnamorphicFlare" | "LensDirt" | "NeonPath";
 
 export interface Curves {
   master: Pt[];
@@ -1188,7 +1188,8 @@ export const api = {
   startAtLaunch: () => invoke<boolean>("start_at_launch"),
   startNewPreset: (id: string, rate: [number, number] | null = null, aspect: [number, number] | null = null) => invoke("start_new_preset", { id, rate, aspect }),
   pixelAspects: () => invoke<[string, number, number][]>("pixel_aspects"),
-  setSequenceSettings: (name: string, width: number, height: number, num: number, den: number, aspect: [number, number]) => invoke("set_sequence_settings", { name, width, height, num, den, aspect }),
+  setSequenceSettings: (name: string, width: number, height: number, num: number, den: number, aspect: [number, number], fit: "Keep" | "Fit" | "Fill" = "Keep") =>
+    invoke("set_sequence_settings", { name, width, height, num, den, aspect, fit }),
   startNewCustom: (width: number, height: number, num: number, den: number, aspect: [number, number] | null = null) => invoke("start_new_custom", { width, height, num, den, aspect }),
   startNewTemplate: (path: string) => invoke("start_new_template", { path }),
   startOpenRecent: (path: string) => invoke<boolean>("start_open_recent", { path }),

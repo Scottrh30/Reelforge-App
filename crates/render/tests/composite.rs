@@ -2359,3 +2359,132 @@ fn sky_replacement_puts_the_new_sky_where_the_old_was() {
     assert!(near(px(&m, w, 40, 10), [255, 255, 255]) && near(px(&m, w, 40, 50), [0, 0, 0]));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A picture 160×90: black, with a white square in the middle (pixels 70–90 across, 35–55 down).
+fn spot() -> Vec<u8> {
+    let mut v = Vec::with_capacity(160 * 90 * 4);
+    for y in 0..90 {
+        for x in 0..160 {
+            let on = (70..90).contains(&x) && (35..55).contains(&y);
+            v.extend_from_slice(&if on { [255, 255, 255, 255] } else { [0, 0, 0, 255] });
+        }
+    }
+    v
+}
+
+fn sum3(p: [u8; 4]) -> u32 {
+    p[0] as u32 + p[1] as u32 + p[2] as u32
+}
+
+/// Light rays stream away from the source through the bright square; the
+/// side towards the source stays dark; rays only leaves out the picture.
+#[test]
+fn light_rays_stream_from_the_source() {
+    let Some(mut c) = setup() else { return };
+    use reelforge_core::effects::rays;
+    let img = spot();
+    let mut l = layer(70, &img, [160, 90], [160.0, 90.0], Transform::default(), BlendMode::Normal);
+    l.effects = vec![fx(EffectKind::LightRays, &[(rays::X, 50.0), (rays::Y, 0.0), (rays::LENGTH, 80.0), (rays::BRIGHTNESS, 200.0)])];
+    c.render([160, 90], &[l]);
+    let out = c.read_output().unwrap();
+    let below = px(&out, 160, 80, 75);
+    let above = px(&out, 160, 80, 20);
+    let aside = px(&out, 160, 20, 75);
+    assert!(sum3(below) > 60, "rays below the square: {below:?}");
+    assert!(sum3(above) < 10 && sum3(aside) < 10, "dark towards the source and to the side: {above:?} {aside:?}");
+    // Rays only: the square itself isn't drawn, just the rays (fainter than white).
+    let mut l = layer(71, &img, [160, 90], [160.0, 90.0], Transform::default(), BlendMode::Normal);
+    l.effects = vec![fx(EffectKind::LightRays, &[(rays::X, 50.0), (rays::Y, 0.0), (rays::LENGTH, 80.0), (rays::SHOW, 1.0)])];
+    c.render([160, 90], &[l]);
+    let out = c.read_output().unwrap();
+    assert!(sum3(px(&out, 160, 80, 75)) > 20 && px(&out, 160, 80, 45)[0] < 250);
+}
+
+/// An anamorphic flare draws a long blue streak sideways from a bright
+/// spot, not up and down.
+#[test]
+fn anamorphic_flare_streaks_sideways() {
+    let Some(mut c) = setup() else { return };
+    use reelforge_core::effects::streak;
+    let img = spot();
+    let mut l = layer(72, &img, [160, 90], [160.0, 90.0], Transform::default(), BlendMode::Normal);
+    l.effects = vec![fx(EffectKind::AnamorphicFlare, &[(streak::LENGTH, 120.0), (streak::BRIGHTNESS, 200.0)])];
+    c.render([160, 90], &[l]);
+    let out = c.read_output().unwrap();
+    let side = px(&out, 160, 140, 45);
+    let below = px(&out, 160, 80, 80);
+    assert!(sum3(side) > 40 && side[2] > side[0], "a blue streak to the side: {side:?}");
+    assert!(sum3(below) < 15, "nothing below: {below:?}");
+}
+
+/// Lens dirt shows where the light is and not elsewhere; at zero it's nothing.
+#[test]
+fn lens_dirt_lights_up_round_the_light() {
+    let Some(mut c) = setup() else { return };
+    use reelforge_core::effects::dirt;
+    let grey = solid(1, 1, [40, 40, 40, 255]);
+    let mut l = full(73, &grey, [160, 90]);
+    l.effects = vec![fx(EffectKind::LensDirt, &[(dirt::LIT_BY, 1.0), (dirt::X, 25.0), (dirt::Y, 50.0), (dirt::SPREAD, 30.0), (dirt::SPECKS, 200.0), (dirt::AMOUNT, 300.0)])];
+    c.render([160, 90], &[l]);
+    let out = c.read_output().unwrap();
+    let (mut near_light, mut far) = (0u32, 0u32);
+    for y in 0..90 {
+        for x in 0..160 {
+            let lift = sum3(px(&out, 160, x, y)).saturating_sub(120);
+            if x < 60 {
+                near_light = near_light.max(lift)
+            } else if x > 130 {
+                far = far.max(lift)
+            }
+        }
+    }
+    assert!(near_light > 30 && far < 6, "dirt shows by the light ({near_light}) and not far off ({far})");
+    assert!(fx(EffectKind::LensDirt, &[(dirt::AMOUNT, 0.0)]).is_identity());
+}
+
+/// Neon path: a glowing tube along the mask, the rest of the layer as it was.
+#[test]
+fn neon_path_glows_along_the_mask() {
+    let Some(mut c) = setup() else { return };
+    use reelforge_core::mask::{Mask, MaskShape};
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    let masks = vec![Mask { shape: MaskShape::Rectangle, points: vec![[40.0, 20.0], [120.0, 20.0], [120.0, 70.0], [40.0, 70.0]], text_path: true, ..Mask::default() }];
+    let e = Effect::new(EffectKind::NeonPath);
+    let mut v = e.eval_sized(reelforge_core::Time::ZERO, None, [160.0, 90.0]);
+    reelforge_core::neonpath::fill(&mut v, &masks, reelforge_core::Time::ZERO, [160.0, 90.0]);
+    assert!(!v.is_identity());
+    let mut l = full(74, &black, [160, 90]);
+    l.effects = vec![v];
+    c.render([160, 90], &[l]);
+    let out = c.read_output().unwrap();
+    let on = px(&out, 160, 80, 20);
+    let glow = px(&out, 160, 80, 30);
+    let off = px(&out, 160, 80, 45);
+    assert!(sum3(on) > 500, "the tube's core: {on:?}");
+    assert!(glow[0] > glow[1] && glow[2] > glow[1] && sum3(glow) > 60, "pink glow beside it: {glow:?}");
+    assert!(sum3(off) < sum3(glow), "dimmer in the middle: {off:?}");
+}
+
+/// Every lens in the flare library draws (and they all differ).
+#[test]
+fn the_flare_library_lenses_all_draw() {
+    let Some(mut c) = setup() else { return };
+    use reelforge_core::effects::flare;
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    let mut shots: Vec<Vec<u8>> = Vec::new();
+    for lens in 0..flare::LENSES.len() {
+        let mut l = full(80 + lens as u64, &black, [160, 90]);
+        l.effects = vec![fx(EffectKind::LensFlare, &[(flare::STYLE, lens as f32), (flare::X, 30.0), (flare::Y, 30.0)])];
+        c.render([160, 90], &[l]);
+        let out = c.read_output().unwrap();
+        let core = px(&out, 160, 48, 27);
+        assert!(sum3(core) > 300, "{}: bright at the light, {core:?}", flare::LENSES[lens]);
+        assert!(out.chunks_exact(4).all(|p| p[3] == 255), "{}", flare::LENSES[lens]);
+        shots.push(out);
+    }
+    for a in 0..shots.len() {
+        for b in a + 1..shots.len() {
+            assert!(shots[a] != shots[b], "{} and {} look the same", flare::LENSES[a], flare::LENSES[b]);
+        }
+    }
+}

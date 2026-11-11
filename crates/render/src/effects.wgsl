@@ -674,7 +674,9 @@ fn fs_flare(in: VsOut) -> @location(0) vec4<f32> {
     let d = length(p - light) / k;
     // The bright core and its glow.
     var l = tint * (exp(-d / 14.0) * 1.8 + exp(-d / 60.0) * 0.45 + exp(-d / 260.0) * 0.08);
-    if (style != 2u) {
+    if (style >= 3u) {
+        l = flare_lib(style, p, light, size, k, tint);
+    } else if (style != 2u) {
         // A faint starburst (fainter still through an anamorphic lens).
         let a = atan2(p.y - light.y, p.x - light.x);
         let rays = pow(abs(cos(a * 6.0)), 80.0) * 0.7 + pow(abs(cos(a * 6.0 + 0.9)), 120.0) * 0.3;
@@ -708,6 +710,198 @@ fn fs_flare(in: VsOut) -> @location(0) vec4<f32> {
     }
     l *= bright;
     return vec4(c.rgb + l, max(c.a, clamp(max3(l), 0.0, 1.0)));
+}
+
+// Light rays: each pixel gathers the (bright) layer along the line to the
+// source, fading as it goes: rays streaming out from the source. p0 =
+// (source x %, y %, length %, brightness %), p1 = (threshold %, softness %,
+// colour, from), p2.x = show; extra.zw = layer size.
+fn ray_light(uv: vec2<f32>) -> vec3<f32> {
+    let c = textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+    if (fx.p1.w >= 0.5) {
+        return c.rgb;
+    }
+    let y = dot(to_display(unpremul(c)), LUMA);
+    let t = fx.p1.x / 100.0;
+    let s = max(fx.p1.y / 100.0, 0.01);
+    return c.rgb * smoothstep(t - s * 0.5, t + s * 0.5, y);
+}
+
+@fragment
+fn fs_rays(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let light = fx.p0.xy / 100.0;
+    let len = clamp(fx.p0.z / 100.0, 0.0, 1.0);
+    let n = 64;
+    // A different start for each pixel, so the steps don't show as bands.
+    let jitter = rnd3(7u, ibits(in.uv.x * fx.extra.z), ibits(in.uv.y * fx.extra.w)) / f32(n);
+    var acc = vec3(0.0);
+    var total = 0.0;
+    for (var i = 0; i < n; i = i + 1) {
+        let k = (f32(i) / f32(n) + jitter) * len;
+        let w = 1.0 - k * 0.8;
+        acc = acc + ray_light(in.uv + (light - in.uv) * k) * w;
+        total = total + w;
+    }
+    let rays = acc / max(total, 1e-3) * rgb_of(fx.p1.z) * (fx.p0.w / 100.0) * 1.6;
+    let a = clamp(max3(rays), 0.0, 1.0);
+    if (fx.p2.x >= 0.5) {
+        return vec4(rays, a);
+    }
+    return vec4(c.rgb + rays, max(c.a, a));
+}
+
+// Lens dirt: smudges, smears and specks on the lens (made up from the
+// seed), shown where light reaches them: the bright parts of the layer
+// round about, or a light placed at (x, y). p0 = (light x %, y %, lit by,
+// amount %), p1 = (spread %, threshold %, smudge size %, specks %), p2 =
+// (colour, seed); extra.zw = layer size.
+fn dirt_bright(uv: vec2<f32>) -> vec3<f32> {
+    let c = textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+    let y = dot(to_display(unpremul(c)), LUMA);
+    let t = fx.p1.y / 100.0;
+    return c.rgb * smoothstep(t - 0.1, t + 0.1, y);
+}
+
+@fragment
+fn fs_dirt(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let m = min(size.x, size.y);
+    let spread = max(fx.p1.x / 100.0, 0.01);
+    var light = vec3(0.0);
+    if (fx.p0.z < 0.5) {
+        // The bright parts nearby, gathered over a wide disc (a golden-angle
+        // spiral, turned differently at each pixel so it blends rather than steps),
+        // nearer ones counting for more.
+        let r = spread * 0.5 * m;
+        let turn = rnd3(11u, ibits(p.x), ibits(p.y)) * 6.28318;
+        var total = 0.0;
+        for (var i = 0; i < 48; i = i + 1) {
+            let f = (f32(i) + 0.5) / 48.0;
+            let a = f32(i) * 2.39996 + turn;
+            let o = vec2(cos(a), sin(a)) * sqrt(f) * r;
+            let w = 1.0 - f * 0.7;
+            light = light + dirt_bright(in.uv + o / size) * w;
+            total = total + w;
+        }
+        light = light / total * 2.5;
+    } else {
+        let d = length(p - fx.p0.xy / 100.0 * size) / (spread * m);
+        light = vec3(exp(-d * d * 2.5) * 1.4);
+    }
+    let seed = seed_of(fx.p2.y);
+    let k = m * 0.0035 * max(fx.p1.z / 100.0, 0.05);
+    // Smudges: soft blotches; smears: long streaks one way; specks: dots and rings.
+    let sp = p / (k * 40.0);
+    let smudge = smoothstep(0.42, 0.85, fbm2(seed, sp + vec2(fbm2(seed + 20u, sp * 0.7), fbm2(seed + 21u, sp * 0.7)) * 1.5)) * 0.55;
+    let sq = rot2(p, 0.6) * vec2(1.0, 7.0);
+    let smear = smoothstep(0.55, 0.85, fbm2(seed + 9u, sq / (k * 60.0))) * 0.35;
+    let cell_size = k * 9.0;
+    let cell = floor(p / cell_size);
+    var specks = 0.0;
+    for (var j = -1; j <= 1; j = j + 1) {
+        for (var i = -1; i <= 1; i = i + 1) {
+            let cc = cell + vec2(f32(i), f32(j));
+            let r0 = rnd3(seed + 3u, ibits(cc.x), ibits(cc.y));
+            if (r0 > fx.p1.w / 100.0 * 0.35) {
+                continue;
+            }
+            let ctr = (cc + vec2(rnd3(seed + 4u, ibits(cc.x), ibits(cc.y)), rnd3(seed + 5u, ibits(cc.x), ibits(cc.y)))) * cell_size;
+            let rad = cell_size * (0.08 + 0.45 * pow(rnd3(seed + 6u, ibits(cc.x), ibits(cc.y)), 2.0));
+            let d = length(p - ctr);
+            let disc = 1.0 - smoothstep(rad * 0.55, rad, d);
+            // Some are rings (dried drops).
+            let ring = select(disc, disc * smoothstep(rad * 0.35, rad * 0.8, d), r0 < fx.p1.w / 100.0 * 0.08);
+            specks = max(specks, ring * (0.4 + 0.6 * r0 / max(fx.p1.w / 100.0 * 0.35, 1e-3)));
+        }
+    }
+    let dirt = clamp(smudge + smear + specks * 0.8, 0.0, 1.0);
+    let glow = light * dirt * rgb_of(fx.p2.x) * (fx.p0.w / 100.0);
+    return vec4(c.rgb + glow, max(c.a, clamp(max3(glow), 0.0, 1.0)));
+}
+
+// The lens flare library (lenses 3 and on): per lens, the core's size,
+// rays (count, sharpness, strength), streak (strength, colour), halo
+// (radius, strength, rings, rainbow), ghosts (strength, colour, hexagon).
+const FLARE_CORE = array<f32, 9>(1.6, 0.7, 1.0, 1.0, 0.9, 2.4, 1.1, 1.0, 0.6);
+const FLARE_RAYS = array<vec3<f32>, 9>(vec3(12.0, 40.0, 0.25), vec3(0.0, 1.0, 0.0), vec3(6.0, 60.0, 0.18), vec3(8.0, 50.0, 0.12), vec3(0.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(5.0, 30.0, 0.1), vec3(4.0, 70.0, 0.2), vec3(16.0, 160.0, 0.7));
+// Streak: strength, colour (0 the light's, 1 blue, 2 rainbow, 3 red, 4 green), length.
+const FLARE_STREAK = array<vec3<f32>, 9>(vec3(0.3, 0.0, 300.0), vec3(0.0, 0.0, 1.0), vec3(0.1, 0.0, 200.0), vec3(1.0, 2.0, 700.0), vec3(1.2, 3.0, 1100.0), vec3(0.0, 0.0, 1.0), vec3(0.15, 0.0, 200.0), vec3(0.8, 4.0, 800.0), vec3(0.2, 0.0, 250.0));
+// Halo: radius, strength, rings, rainbow.
+const FLARE_HALO = array<vec4<f32>, 9>(vec4(260.0, 0.6, 1.0, 0.0), vec4(180.0, 0.3, 1.0, 0.0), vec4(200.0, 0.25, 1.0, 0.0), vec4(230.0, 1.0, 1.0, 1.0), vec4(160.0, 0.4, 1.0, 0.0), vec4(300.0, 0.25, 1.0, 0.0), vec4(150.0, 0.7, 3.0, 0.0), vec4(210.0, 0.5, 2.0, 0.3), vec4(120.0, 0.15, 1.0, 0.0));
+// Ghosts: strength, colour (0 the light's, 1 rainbow, 2 red, 3 green), hexagon.
+const FLARE_GHOSTS = array<vec3<f32>, 9>(vec3(0.6, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.2, 0.0, 1.0), vec3(1.0, 1.0, 1.0), vec3(0.9, 2.0, 0.0), vec3(0.0, 0.0, 0.0), vec3(0.9, 0.0, 0.0), vec3(1.0, 3.0, 1.0), vec3(0.0, 0.0, 0.0));
+
+fn flare_rainbow(f: f32) -> vec3<f32> {
+    return 0.5 + 0.5 * cos(6.28318 * (f + vec3(0.0, 0.33, 0.67)));
+}
+
+fn flare_lib(lens: u32, p: vec2<f32>, light: vec2<f32>, size: vec2<f32>, k: f32, tint: vec3<f32>) -> vec3<f32> {
+    let s = min(lens - 3u, 8u);
+    let d = length(p - light) / k;
+    let cs = FLARE_CORE[s];
+    var l = tint * (exp(-d / (14.0 * cs)) * 1.8 + exp(-d / (60.0 * cs)) * 0.45 + exp(-d / (260.0 * cs)) * 0.1);
+    let a = atan2(p.y - light.y, p.x - light.x);
+    let rays = FLARE_RAYS[s];
+    if (rays.z > 0.0) {
+        l += tint * pow(abs(cos(a * rays.x * 0.5)), rays.y) * exp(-d / 160.0) * rays.z;
+    }
+    let st = FLARE_STREAK[s];
+    if (st.x > 0.0) {
+        let dx = abs(p.x - light.x) / k;
+        let dy = abs(p.y - light.y);
+        var sc = tint;
+        let mode = u32(st.y);
+        if (mode == 2u) {
+            sc = flare_rainbow(dx / 600.0);
+        } else if (mode == 3u) {
+            sc = vec3(1.0, 0.18, 0.12);
+        } else if (mode == 4u) {
+            sc = vec3(0.3, 1.0, 0.45);
+        }
+        l += sc * exp(-dy / max(1.4 * k, 0.7)) * (exp(-dx / st.z) * 0.9 + exp(-dx / (st.z * 0.15))) * st.x * fx.p1.z / 100.0;
+    }
+    let h = FLARE_HALO[s];
+    for (var r = 0; r < i32(h.z); r = r + 1) {
+        let rr = h.x * (1.0 + f32(r) * 0.45);
+        var ring = vec3(exp(-pow((d - rr * 0.98) / 10.0, 2.0)), exp(-pow((d - rr) / 10.0, 2.0)), exp(-pow((d - rr * 1.02) / 10.0, 2.0)));
+        if (h.w > 0.0) {
+            ring = mix(ring, flare_rainbow((d - rr) / 60.0 + 0.5) * exp(-pow((d - rr) / 30.0, 2.0)), h.w);
+        }
+        l += ring * 0.18 * h.y * fx.p2.x / 100.0 / (1.0 + f32(r) * 0.6);
+    }
+    let gh = FLARE_GHOSTS[s];
+    if (gh.x > 0.0) {
+        let centre = size * 0.5;
+        let ks = array<f32, 7>(-0.55, -0.25, 0.3, 0.55, 0.8, 1.35, -1.0);
+        let rs = array<f32, 7>(70.0, 30.0, 18.0, 46.0, 24.0, 110.0, 40.0);
+        for (var g = 0; g < 7; g = g + 1) {
+            let gp = centre + (light - centre) * ks[g];
+            let q = (p - gp) / k;
+            var gd = length(q);
+            if (gh.z > 0.5) {
+                // A six-bladed iris.
+                let ang = atan2(q.y, q.x);
+                let seg = 1.0471976;
+                let f = cos(seg * 0.5) / cos(((ang % seg) + seg) % seg - seg * 0.5);
+                gd = gd / f;
+            }
+            let disc = smoothstep(rs[g], rs[g] * 0.6, gd) * (0.6 + 0.4 * smoothstep(rs[g] * 0.5, rs[g], gd));
+            var gc = mix(tint, vec3(1.0), 0.4);
+            let cm = u32(gh.y);
+            if (cm == 1u) {
+                gc = flare_rainbow(f32(g) / 7.0);
+            } else if (cm == 2u) {
+                gc = mix(vec3(1.0, 0.25, 0.1), vec3(1.0, 0.6, 0.2), f32(g) / 6.0);
+            } else if (cm == 3u) {
+                gc = mix(vec3(0.2, 1.0, 0.4), vec3(0.3, 0.9, 1.0), f32(g) / 6.0);
+            }
+            l += gc * disc * 0.16 * gh.x * fx.p1.w / 100.0;
+        }
+    }
+    return l;
 }
 
 // Camera shake: p0 = (amount px, rotation °, speed Hz, roughness %),

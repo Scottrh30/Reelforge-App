@@ -255,6 +255,8 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::MuzzleFlash => Some("Barrel"),
                     EffectKind::BulletHit => Some("Hit"),
                     EffectKind::Fluid => Some("Source"),
+                    EffectKind::LightRays => Some("Source"),
+                    EffectKind::LensDirt if fx.params.get(reelforge_core::effects::dirt::LIT_BY).is_some_and(|p| p.value >= 0.5) => Some("Light"),
                     _ => None,
                 } {
                     vec![PointView { param: 0, label: label.into(), relative: None }]

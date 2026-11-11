@@ -164,6 +164,17 @@ impl Default for Prefs {
     }
 }
 
+
+/// What happens to the layers when a sequence's frame changes size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub enum LayerFit {
+    /// They keep their size, centred (a bigger frame shows more round them).
+    Keep,
+    /// Scaled with the frame so all of it still shows (the smaller of the two changes).
+    Fit,
+    /// Scaled with the frame so it fills it (the larger change; edges may go off).
+    Fill,
+}
 impl Editor {
     /// Use new preferences: push them into the parts of the engine that use them.
     /// Remember that effect `key` (a kind's name, or `plugin:` and its id)
@@ -1495,7 +1506,15 @@ impl Editor {
     /// Change the sequence's name, frame size (even, 16–16384), frame rate
     /// and pixel shape (one of `PIXEL_ASPECTS`; square otherwise), as one undo step.
     pub fn set_sequence_settings(&mut self, name: &str, width: u32, height: u32, rate: reelforge_core::FrameRate, aspect: (u32, u32)) {
-        use reelforge_core::undo::{SequenceSettings, SetSequenceSettings};
+        self.set_sequence_settings_fit(name, width, height, rate, aspect, LayerFit::Keep)
+    }
+
+    /// [`Self::set_sequence_settings`], with the layers resized to the new
+    /// frame as `fit` says (when its size or pixel shape changes): each
+    /// layer's position and size (keyframes too) scaled by how much the
+    /// frame grew or shrank, so the picture is laid out as it was.
+    pub fn set_sequence_settings_fit(&mut self, name: &str, width: u32, height: u32, rate: reelforge_core::FrameRate, aspect: (u32, u32), fit: LayerFit) {
+        use reelforge_core::undo::{Batch, SequenceSettings, SetClipVisual, SetSequenceSettings};
         let even = |v: u32| (v.clamp(16, 16384) + 1) & !1;
         let aspect = if reelforge_core::project::PIXEL_ASPECTS.iter().any(|a| (a.1, a.2) == aspect) { aspect } else { (1, 1) };
         let rate = if rate.0.num > 0 && rate.0.den > 0 && rate.0.num / rate.0.den <= 1000 { rate } else { self.seq().frame_rate };
@@ -1505,7 +1524,45 @@ impl Editor {
         if new == old {
             return;
         }
-        self.execute(Box::new(SetSequenceSettings { seq: self.active, old, new }));
+        // How much bigger the frame is on screen (pixel shapes included).
+        let par = |a: (u32, u32)| a.0 as f32 / a.1.max(1) as f32;
+        let (opar, npar) = (par(old.pixel_aspect), par(new.pixel_aspect));
+        let (gx, gy) = (new.width as f32 * npar / (old.width as f32 * opar).max(1.0), new.height as f32 / old.height.max(1) as f32);
+        let f = match fit {
+            LayerFit::Keep => 1.0,
+            LayerFit::Fit => gx.min(gy),
+            LayerFit::Fill => gx.max(gy),
+        };
+        let mut cmds: Vec<Box<dyn reelforge_core::undo::Command>> = vec![Box::new(SetSequenceSettings { seq: self.active, old, new })];
+        if (f - 1.0).abs() > 1e-4 || (fit != LayerFit::Keep && (opar - npar).abs() > 1e-4) {
+            // Positions are in the sequence's pixels from the middle: x in its pixels' widths.
+            let (kx, ky) = (f * opar / npar, f);
+            for c in self.seq().tracks.iter().flat_map(|t| &t.clips) {
+                let old = c.visual();
+                let mut v = old.clone();
+                let sized = c.plane.is_none() && !c.adjustment && c.scene.is_none();
+                v.transform.position = [v.transform.position[0] * kx, v.transform.position[1] * ky];
+                for k in &mut v.anim.position.0 {
+                    k.value = [k.value[0] * kx, k.value[1] * ky];
+                }
+                if sized {
+                    v.transform.scale = v.transform.scale.map(|s| s * f);
+                    for k in &mut v.anim.scale.0 {
+                        k.value = k.value.map(|s| s * f);
+                    }
+                }
+                if v != old {
+                    cmds.push(Box::new(SetClipVisual { seq: self.active, id: c.id, old, new: v }));
+                }
+            }
+        }
+        if cmds.len() == 1 {
+            if let Some(c) = cmds.pop() {
+                self.execute(c);
+            }
+        } else {
+            self.execute(Box::new(Batch { name: "Sequence settings".into(), cmds }));
+        }
         self.status = format!("{}: {}", self.seq().name, crate::start::summary_of(self.seq()));
     }
 
@@ -3664,6 +3721,45 @@ mod tests {
     /// Sequence settings: name, size, rate and pixel shape change as one
     /// undo step; sizes are made even, unknown pixel shapes square, and
     /// nothing changed is no step at all.
+    /// Scale to fit: halving the frame halves every layer's size and its
+    /// distance from the middle (keyframes too); a solid keeps filling the
+    /// frame; all one undo step. Fill takes the bigger change.
+    #[test]
+    fn sequence_settings_can_scale_layers_to_fit() {
+        let mut e = editor();
+        let s = Time::from_secs_f64;
+        let r = e.seq().frame_rate;
+        e.set_sequence_settings("S", 1920, 1080, r, (1, 1));
+        let mut clip = Clip::new(ClipId(10), MediaId::GENERATED, s(0.0), s(0.0), s(2.0), None);
+        clip.transform.position = [400.0, -200.0];
+        clip.anim.position.0 = vec![reelforge_core::anim::Key { at: s(0.0), value: [100.0, 50.0], interp: Default::default(), ease_out: None, ease_in: None }];
+        clip.anim.scale.0 = vec![reelforge_core::anim::Key { at: s(0.0), value: [2.0, 2.0], interp: Default::default(), ease_out: None, ease_in: None }];
+        let mut solid = Clip::new(ClipId(11), MediaId::GENERATED, s(0.0), s(0.0), s(2.0), None);
+        solid.plane = Some([255, 0, 0, 255]);
+        solid.transform.position = [200.0, 0.0];
+        e.project.sequences[e.active].tracks[0].clips = vec![clip, solid];
+        let steps = e.undo.position();
+        e.set_sequence_settings_fit("S", 960, 540, r, (1, 1), LayerFit::Fit);
+        assert_eq!(e.undo.position(), steps + 1);
+        let c = |e: &Editor, id| e.seq().find_clip(ClipId(id)).unwrap().1.clone();
+        let a = c(&e, 10);
+        assert_eq!((a.transform.position, a.transform.scale), ([200.0, -100.0], [0.5, 0.5]));
+        assert_eq!((a.anim.position.0[0].value, a.anim.scale.0[0].value), ([50.0, 25.0], [1.0, 1.0]));
+        let p = c(&e, 11);
+        assert_eq!((p.transform.position, p.transform.scale), ([100.0, 0.0], [1.0, 1.0]));
+        e.undo();
+        assert_eq!((e.seq().width, c(&e, 10).transform.position, c(&e, 10).transform.scale), (1920, [400.0, -200.0], [1.0, 1.0]));
+        // 16:9 to square, fill: the bigger change (height) wins; keep: untouched.
+        e.set_sequence_settings_fit("S", 1080, 1080, r, (1, 1), LayerFit::Fill);
+        assert_eq!(c(&e, 10).transform.scale, [1.0, 1.0]);
+        e.undo();
+        e.set_sequence_settings_fit("S", 1080, 1080, r, (1, 1), LayerFit::Fit);
+        assert!((c(&e, 10).transform.scale[0] - 0.5625).abs() < 1e-5);
+        e.undo();
+        e.set_sequence_settings_fit("S", 960, 540, r, (1, 1), LayerFit::Keep);
+        assert_eq!(c(&e, 10).transform.scale, [1.0, 1.0]);
+    }
+
     #[test]
     fn sequence_settings_change_and_undo() {
         let mut e = editor();

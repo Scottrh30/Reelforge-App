@@ -21,6 +21,25 @@
   let f = $state({ name: "", w: 1920, h: 1080, rate: "30/1", aspect: "1/1" });
   // The frame size's shape kept while typing one side.
   let linked = $state(false);
+  // What happens to the layers when the frame changes size (remembered).
+  let fit = $state<"Keep" | "Fit" | "Fill">(
+    (() => {
+      try {
+        const v = localStorage.getItem("reelforge.seqFit");
+        return v === "Keep" || v === "Fill" ? v : "Fit";
+      } catch {
+        return "Fit";
+      }
+    })(),
+  );
+  $effect(() => {
+    const v = fit;
+    try {
+      localStorage.setItem("reelforge.seqFit", v);
+    } catch {
+      // Not remembered, then.
+    }
+  });
   // The rate the sequence has, when it isn't in the list.
   let ownRate = $state<[string, string] | null>(null);
 
@@ -78,11 +97,13 @@
     !!s && (f.name.trim() !== s.name || even(f.w) !== s.width || even(f.h) !== s.height || f.rate !== `${s.rate_num}/${s.rate_den}` || f.aspect !== `${s.pixel_aspect[0]}/${s.pixel_aspect[1]}`),
   );
   const sizeChanged = $derived(!!s && (even(f.w) !== s.width || even(f.h) !== s.height));
+  // The frame's shape on screen changes (size or pixel shape): the layers can follow.
+  const resized = $derived(sizeChanged || (!!s && f.aspect !== `${s.pixel_aspect[0]}/${s.pixel_aspect[1]}`));
   const close = () => (app.seqSettingsOpen = false);
   async function ok() {
     if (changed) {
       const [n, d] = pair(f.rate);
-      await run(api.setSequenceSettings(f.name, even(f.w), even(f.h), n, d, pair(f.aspect)));
+      await run(api.setSequenceSettings(f.name, even(f.w), even(f.h), n, d, pair(f.aspect), resized ? fit : "Keep"));
     }
     close();
   }
@@ -133,8 +154,16 @@
           {#if par !== 1}<span class="muted">shows as {shown.w} × {shown.h}</span>{/if}
         </div>
       </div>
+      {#if resized}
+        <div class="fit" role="radiogroup" aria-label="Layers">
+          <span>Layers</span>
+          <label title="Every layer scaled with the frame (and its distance from the middle), so all of the old frame still shows"><input type="radio" name="seqset-fit" value="Fit" bind:group={fit} /> Scale to fit</label>
+          <label title="Scaled so the new frame is filled; edges may go off it"><input type="radio" name="seqset-fit" value="Fill" bind:group={fit} /> Scale to fill</label>
+          <label title="Layers keep their size, centred: a bigger frame shows more around them"><input type="radio" name="seqset-fit" value="Keep" bind:group={fit} /> Keep their size</label>
+        </div>
+      {/if}
       <p class="muted">
-        {#if sizeChanged}Layers keep their size and stay where they are from the middle of the frame, so a bigger frame shows more around them.{/if}
+        {#if resized && fit !== "Keep"}Each layer's size and place (and their keyframes) change with the frame; solids and adjustment layers keep filling it; effects keep their settings in pixels.{:else if sizeChanged}Layers keep their size and stay where they are from the middle of the frame, so a bigger frame shows more around them.{/if}
         Edits keep their times; a new frame rate changes where frames fall, not when things happen. Undo puts it all back.
       </p>
       <div class="buttons">
@@ -238,6 +267,18 @@
     border-radius: 2px;
     background: var(--accent-soft);
     margin: 4px 0;
+  }
+  .fit {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: center;
+    font-size: calc(12.5px * var(--text-scale));
+  }
+  .fit label {
+    display: flex;
+    gap: 5px;
+    align-items: center;
   }
   .grow {
     flex: 1;

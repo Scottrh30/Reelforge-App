@@ -106,6 +106,24 @@ fn fs_glow_add(in: VsOut) -> @location(0) vec4<f32> {
     return vec4(base.rgb + g.rgb, min(base.a + g.a, 1.0));
 }
 
+// Anamorphic flare, last step: the bright parts stretched sideways (the
+// second texture) tinted and added as light. p0.z = brightness %, p0.y =
+// length px, p1 = (colour, thickness px, show).
+@fragment
+fn fs_streak_add(in: VsOut) -> @location(0) vec4<f32> {
+    let base = textureSample(src, src_sampler, to_tex(in.uv));
+    let s = second_at(in.uv);
+    let y = dot(s.rgb, vec3(0.2126, 0.7152, 0.0722));
+    // Spread thin, a long streak is faint: made up for, so Brightness means the same at any length.
+    let gain = 2.0 + sqrt(max(fx.p0.y, 0.0)) * 0.8;
+    let light = mix(lt_rgb(fx.p1.x) * y, s.rgb, 0.2) * gain * fx.p0.z / 100.0;
+    let a = clamp(max(max(light.r, light.g), light.b), 0.0, 1.0);
+    if (fx.p1.z >= 0.5) {
+        return vec4(light, a);
+    }
+    return vec4(base.rgb + light, max(base.a, a));
+}
+
 // Refine matte, last step: the refined matte (straight colour) with its
 // see-through edge's colour swapped towards the colour from within (the second
 // texture; alpha 0 where there was none). p0 = (decontaminate %, view).

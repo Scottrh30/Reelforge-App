@@ -576,7 +576,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_beauty", "fs_sky_cut", "fs_sky_fill"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -598,7 +598,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1748,7 +1748,23 @@ impl Compositor {
                         push("fs_fill", cur, Second::Table(i), o1, u);
                         cur = o1;
                     }
-                    EffectKind::Lightning => {
+                    EffectKind::AnamorphicFlare => {
+                        // Bright parts → stretched sideways (long), then a little
+                        // up and down (thickness) → tinted and added back as light.
+                        use reelforge_core::effects::streak;
+                        push("fs_bright", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                        let mut vx = [0.0; reelforge_core::effects::MAX_PARAMS];
+                        vx[0] = e.values[streak::LENGTH] * 0.5 * kx;
+                        push("fs_blur", o1, Second::None, o2, uniform(&vx, [1.0, 0.0]));
+                        vx[0] = e.values[streak::LENGTH] * 0.12 * kx;
+                        push("fs_blur", o2, Second::None, o1, uniform(&vx, [1.0, 0.0]));
+                        let mut vy = [0.0; reelforge_core::effects::MAX_PARAMS];
+                        vy[0] = e.values[streak::THICKNESS].max(0.01) * 0.5 * ky;
+                        push("fs_blur", o1, Second::None, o2, uniform(&vy, [0.0, 1.0]));
+                        push("fs_streak_add", cur, Second::Scratch(o2), o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::Lightning | EffectKind::NeonPath => {
                         if !self.tables.contains_key(&(key, i)) {
                             continue;
                         }
@@ -1769,7 +1785,7 @@ impl Compositor {
                         push(if e.kind == EffectKind::MuzzleFlash { "fs_muzzle" } else { "fs_bullet" }, cur, Second::None, o1, u);
                         cur = o1;
                     }
-                    EffectKind::LensFlare | EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::Halftone | EffectKind::Crt | EffectKind::FractalNoise | EffectKind::PatchReplacer => {
+                    EffectKind::LensFlare | EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::Halftone | EffectKind::Crt | EffectKind::FractalNoise | EffectKind::PatchReplacer | EffectKind::LightRays | EffectKind::LensDirt => {
                         // A number of its own (its place in the stack), the time and the layer's size.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
                         u[13] = e.time;
@@ -1785,6 +1801,8 @@ impl Compositor {
                             EffectKind::Crt => "fs_crt",
                             EffectKind::FractalNoise => "fs_fractal",
                             EffectKind::PatchReplacer => "fs_patch",
+                            EffectKind::LightRays => "fs_rays",
+                            EffectKind::LensDirt => "fs_dirt",
                             _ => "fs_leaks",
                         };
                         push(entry, cur, Second::None, o1, u);
@@ -2599,6 +2617,12 @@ fn effect_margin(effects: &[EffectValues], px: [u32; 2], layer: [f32; 2]) -> [u3
     let (mut x, mut y) = (0.0f32, 0.0f32);
     for e in effects {
         match e.kind {
+            // The streak reaches about 1.5 lengths each side.
+            EffectKind::AnamorphicFlare => {
+                use reelforge_core::effects::streak;
+                x += 1.5 * e.values[streak::LENGTH].max(0.0) * kx;
+                y += 1.5 * e.values[streak::THICKNESS].max(0.0) * ky;
+            }
             // The blur reaches 3 sigma, and sigma is half the radius (see `blur`).
             EffectKind::Glow => {
                 x += 1.5 * e.values[1].max(0.0) * kx;

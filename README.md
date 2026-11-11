@@ -505,10 +505,33 @@ What works now:
       over it are listed, and the X/Y/rotation/scale boxes choose which parts of the motion it takes
   - **Lens flare** (Light & stylize): glow, faint starburst, halo ring and ghost reflections
     along the line from the light through the middle of the frame, like a real lens.
-    **Lens**: *Warm (spherical)*, *Anamorphic* (a long blue horizontal streak) or *Glow only*;
+    **Lens**, a library of twelve: *Warm (spherical)*, *Anamorphic* (a long blue horizontal
+    streak), *Glow only*, *Cinematic sun* (big warm core, soft rays), *Clean prime* (neutral
+    ghosts, no rays), *Hexagon iris* (six-bladed ghosts), *Sci-fi rainbow* (rainbow streak,
+    halo and ghosts), *Red anamorphic*, *Spotlight* (a broad soft glow), *Vintage rings*
+    (several halo rings), *Green tech* and *Starburst* (sharp sixteen-point rays);
     **Streak**, **Ghosts** and **Halo** set each part. Drag the light (☀) in the Viewer, or
     keyframe its position to follow a light in the shot. Light is added (it shows on a
     transparent layer too)
+  - **Light rays** (Light & stylize): rays streaming out from a **Source** (drag it in the
+    Viewer) through the bright parts of the layer (**Threshold**, **Softness**), or the whole
+    layer, like sun through trees or god rays behind a logo. **Length** (how far they reach,
+    as a share of the way to the source), **Brightness**, **Colour**; **Show** the layer and
+    its rays, or the rays only (to put on a layer of their own)
+  - **Anamorphic flare** (Light & stylize): long horizontal streaks out of the bright parts
+    of the picture — lamps, headlights, highlights — as an anamorphic lens draws them:
+    **Threshold**, **Length** (px), **Thickness**, **Brightness**, **Colour** (blue by
+    default), and the layer and its streaks or the streaks only
+  - **Lens dirt** (Light & stylize): smudges, smears, specks and dried drops on the lens (made
+    up from the **Seed**; **Smudge size**, **Specks**) that show only where light reaches them —
+    from the bright parts of the picture round about (**Threshold**, **Spread**), or a light
+    you place and drag in the Viewer. **Amount** and **Colour**
+  - **Neon path** (Light & stylize): a glowing neon tube along one of the layer's masks.
+    Draw a mask with the pen (set its **Use** to *A path* so it doesn't cut the layer) and
+    give its number as **Mask**. **Start**, **End** and **Offset** write it on or send it round
+    (keyframe them), **Closed** joins the ends, **Dash length**, **Gap** and **Dash speed**
+    make a chasing border, **Taper** thins its ends, **Flicker** (and its speed) makes a failing
+    tube; **Core width** and colour, **Glow size**, intensity and colour, **Light the layer**
   - **Light leaks** (Light & stylize): soft blooms of coloured light drifting in from the
     left, right, top, bottom, corners or anywhere, between two colours, screened onto the
     picture. **Drift** sets how fast they wander and pulse; **Seed** gives another pattern
@@ -1059,9 +1082,12 @@ What works now:
   shape into the file, so players stretch it the same way; at any other size the picture is
   resized to square pixels. To change an existing sequence's pixel aspect (or its name, frame
   size or frame rate), use **Timeline → Sequence settings…** (**Composition settings…** inside
-  a composition), or click the size line at the top of the Viewer: layers keep their size and
-  stay where they are from the middle of the frame, edits keep their times, and it's one undo
-  step. Or **any size** and frame rate typed in; or from
+  a composition), or click the size line at the top of the Viewer. When the frame's size or
+  pixel shape changes, choose what the **Layers** do: **Scale to fit** (every layer's size and
+  its distance from the middle, keyframes too, scaled with the frame so all of the old frame
+  still shows; solids and adjustment layers keep filling it), **Scale to fill** (scaled so the
+  new frame is filled), or **Keep their size** (centred, so a bigger frame shows more round
+  them); the choice is remembered. Edits keep their times, and it's one undo step. Or **any size** and frame rate typed in; or from
   **your templates**: **File → Save as template…** keeps a whole project to start from (its
   sequences, tracks, titles, effects and media), and a project started from one is new and
   unsaved, so the template is never written over. **Recent projects** sit beside them, newest
