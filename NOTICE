@@ -1,0 +1,12 @@
+Reelforge
+Copyright (c) 2026 Reelforge - SRH
+
+Licensed under either of the Apache License, Version 2.0 (LICENSE-APACHE) or
+the MIT licence (LICENSE-MIT), at your option.
+
+Reelforge's video decoders (crates/h264, hevc, vp9, av1, bitstream and
+testkit) are adapted from FilmCraft, Copyright (c) 2026 ArtCraft Team and the
+FilmCraft contributors, used under its MIT / Apache-2.0 licence (see
+licenses/FilmCraft-LICENSE-MIT.txt and licenses/FilmCraft-LICENSE-APACHE.txt).
+Every other library built into the program is listed with its licence in
+THIRD-PARTY-NOTICES.txt.

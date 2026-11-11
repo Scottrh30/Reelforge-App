@@ -1754,6 +1754,10 @@ their tests), so building needs nothing beyond this repo. They're adapted from F
 (MIT OR Apache-2.0): see `THIRD-PARTY-NOTICES.txt`, which has to ship with the program and
 any copy of the source.
 
+**Reelforge's licence:** Copyright (c) 2026 Reelforge - SRH. Reelforge is licensed under
+either the Apache License 2.0 (`LICENSE-APACHE`) or the MIT licence (`LICENSE-MIT`), at your
+option; `NOTICE` says so and credits the code adapted from elsewhere.
+
 **Licence notices:** `THIRD-PARTY-NOTICES.txt` lists every library built into the Windows app
 (about 250 Rust crates, plus Svelte, the Tauri API and the IBM Plex Sans font in the interface)
 with its licence, and gives each one's own licence texts and copyright lines; where a library
