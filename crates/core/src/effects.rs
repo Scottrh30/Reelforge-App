@@ -46,6 +46,14 @@ pub enum EffectKind {
     Levels,
     /// Tone curves, master and per channel (the points live in `Effect::data`).
     Curves,
+    /// Grade only a colour range: pick it by hue, saturation and luminance
+    /// (or with the eyedropper), then shift its hue, saturation, brightness
+    /// and contrast or tint it. See [`qualify`].
+    HslQualifier,
+    /// Hue vs hue, hue vs saturation, hue vs luminance, luminance vs
+    /// saturation and saturation vs saturation curves (the points live in
+    /// `Effect::data`; see [`crate::lut::HueCurves`]).
+    HueCurves,
     /// Lift, gamma, gain and offset colour wheels (shadows, midtones,
     /// highlights, everything), with contrast, pivot and saturation, as in
     /// DaVinci Resolve's primaries. See [`wheels`].
@@ -196,6 +204,8 @@ impl EffectCategory {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EffectData {
     Curves(Curves),
+    /// The Hue curves effect's five curves.
+    HueCurves(crate::lut::HueCurves),
     /// A .cube file.
     Lut(PathBuf),
     /// A difference key's clean plate: the frame of a picture or video file
@@ -499,6 +509,29 @@ const LEVELS: [ParamSpec; 5] = [
     spec("Output black", 0.0, 0.0, 255.0, "", 0.5),
     spec("Output white", 255.0, 0.0, 255.0, "", 0.5),
 ];
+const QUALIFIER: [ParamSpec; 20] = [
+    spec("Hue", 30.0, 0.0, 360.0, "°", 0.5),
+    spec("Hue width", 60.0, 0.0, 360.0, "°", 0.5),
+    spec("Hue softness", 20.0, 0.0, 180.0, "°", 0.5),
+    spec("Saturation low", 10.0, 0.0, 100.0, " %", 0.2),
+    spec("Saturation high", 100.0, 0.0, 100.0, " %", 0.2),
+    spec("Saturation softness", 10.0, 0.0, 100.0, " %", 0.2),
+    spec("Luminance low", 5.0, 0.0, 100.0, " %", 0.2),
+    spec("Luminance high", 100.0, 0.0, 100.0, " %", 0.2),
+    spec("Luminance softness", 10.0, 0.0, 100.0, " %", 0.2),
+    ParamSpec { name: "Use hue", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Use saturation", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Use luminance", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Invert", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    choice("Show", &["The graded picture", "The matte (white is chosen)", "The chosen colours on grey"]),
+    spec("Hue shift", 0.0, -180.0, 180.0, "°", 0.5),
+    spec("Saturation", 100.0, 0.0, 300.0, " %", 0.5),
+    spec("Brightness", 0.0, -100.0, 100.0, " %", 0.2),
+    spec("Contrast", 100.0, 0.0, 300.0, " %", 0.5),
+    color("Tint", 0xff8a3c),
+    spec("Tint amount", 0.0, 0.0, 100.0, " %", 0.5),
+];
+const HUE_CURVES: [ParamSpec; 1] = [spec("Strength", 100.0, 0.0, 100.0, " %", 0.5)];
 const WHEELS: [ParamSpec; 16] = [
     spec("Lift X", 0.0, -100.0, 100.0, " %", 0.25),
     spec("Lift Y", 0.0, -100.0, 100.0, " %", 0.25),
@@ -870,6 +903,132 @@ pub mod wheels {
         let b = luma + 1.8556 * cb;
         let g = (luma - 0.2126 * r - 0.0722 * b) / 0.7152;
         [r.max(0.0), g.max(0.0), b.max(0.0)]
+    }
+}
+/// HSL qualifier parameter indices, and the selection and grade it makes
+/// (the GPU shader `fs_qualify` does the same sums).
+pub mod qualify {
+    pub const HUE: usize = 0;
+    pub const HUE_WIDTH: usize = 1;
+    pub const HUE_SOFT: usize = 2;
+    pub const SAT_LOW: usize = 3;
+    pub const SAT_HIGH: usize = 4;
+    pub const SAT_SOFT: usize = 5;
+    pub const LUM_LOW: usize = 6;
+    pub const LUM_HIGH: usize = 7;
+    pub const LUM_SOFT: usize = 8;
+    pub const USE_HUE: usize = 9;
+    pub const USE_SAT: usize = 10;
+    pub const USE_LUM: usize = 11;
+    pub const INVERT: usize = 12;
+    pub const SHOW: usize = 13;
+    pub const HUE_SHIFT: usize = 14;
+    pub const SATURATION: usize = 15;
+    pub const BRIGHTNESS: usize = 16;
+    pub const CONTRAST: usize = 17;
+    pub const TINT: usize = 18;
+    pub const TINT_AMOUNT: usize = 19;
+
+    /// Hue (0–360°), saturation (0–1, HSV) and Rec. 709 luminance of display R′G′B′.
+    pub fn hsl(c: [f32; 3]) -> (f32, f32, f32) {
+        let (mx, mn) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
+        let d = mx - mn;
+        let h = if d <= 1e-6 {
+            0.0
+        } else if mx == c[0] {
+            60.0 * ((c[1] - c[2]) / d).rem_euclid(6.0)
+        } else if mx == c[1] {
+            60.0 * ((c[2] - c[0]) / d + 2.0)
+        } else {
+            60.0 * ((c[0] - c[1]) / d + 4.0)
+        };
+        let s = if mx <= 1e-6 { 0.0 } else { d / mx };
+        (h, s, 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2])
+    }
+
+    fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
+        if e1 <= e0 {
+            return if x >= e0 { 1.0 } else { 0.0 };
+        }
+        let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    /// Inside a range `lo`–`hi` (0–1) with `soft` either side.
+    fn band(x: f32, lo: f32, hi: f32, soft: f32) -> f32 {
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
+        smooth(lo - soft, lo, x) * (1.0 - smooth(hi, hi + soft, x))
+    }
+
+    /// How much colour `c` is chosen (0–1), by params `v`.
+    pub fn matte(v: &[f32], c: [f32; 3]) -> f32 {
+        let (h, s, l) = hsl(c);
+        let mut m = 1.0;
+        if v[USE_HUE] >= 0.5 {
+            // Distance round the wheel from the centre hue; colourless pixels have no hue.
+            let d = ((h - v[HUE]).rem_euclid(360.0)).min((v[HUE] - h).rem_euclid(360.0));
+            let half = v[HUE_WIDTH].max(0.0) / 2.0;
+            m *= 1.0 - smooth(half, half + v[HUE_SOFT].max(0.0), d);
+            m *= smooth(0.0, 0.08, s);
+        }
+        if v[USE_SAT] >= 0.5 {
+            m *= band(s, v[SAT_LOW] / 100.0, v[SAT_HIGH] / 100.0, v[SAT_SOFT].max(0.0) / 100.0);
+        }
+        if v[USE_LUM] >= 0.5 {
+            m *= band(l, v[LUM_LOW] / 100.0, v[LUM_HIGH] / 100.0, v[LUM_SOFT].max(0.0) / 100.0);
+        }
+        if v[INVERT] >= 0.5 {
+            1.0 - m
+        } else {
+            m
+        }
+    }
+
+    /// The grade given to the chosen colours (display R′G′B′), before mixing by the matte.
+    pub fn grade(v: &[f32], c: [f32; 3]) -> [f32; 3] {
+        let y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let (cb, cr) = ((c[2] - y) / 1.8556, (c[0] - y) / 1.5748);
+        let (sn, cs) = v[HUE_SHIFT].to_radians().sin_cos();
+        let sat = v[SATURATION].max(0.0) / 100.0;
+        let (cb, cr) = ((cb * cs - cr * sn) * sat, (cb * sn + cr * cs) * sat);
+        // Brightness ±100 % is a gain of ×2 or ×½; contrast about mid-grey.
+        let y = (y * (v[BRIGHTNESS] / 100.0).exp2() - 0.5) * (v[CONTRAST].max(0.0) / 100.0) + 0.5;
+        let mut out = [y + 1.5748 * cr, 0.0, y + 1.8556 * cb];
+        out[1] = (y - 0.2126 * out[0] - 0.0722 * out[2]) / 0.7152;
+        // Tint: towards the colour, keeping the brightness.
+        let t = (v[TINT_AMOUNT] / 100.0).clamp(0.0, 1.0);
+        if t > 0.0 {
+            let tc = v[TINT] as u32;
+            let tint = [((tc >> 16) & 255) as f32 / 255.0, ((tc >> 8) & 255) as f32 / 255.0, (tc & 255) as f32 / 255.0];
+            let ty = (0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2]).max(1e-3);
+            for k in 0..3 {
+                out[k] += (tint[k] * y / ty - out[k]) * t * 0.6;
+            }
+        }
+        out.map(|x| x.max(0.0))
+    }
+
+    /// The whole effect on display colour `c`: graded where chosen (or what Show asks for).
+    pub fn apply(v: &[f32], c: [f32; 3]) -> [f32; 3] {
+        let m = matte(v, c);
+        match v[SHOW].round() as i32 {
+            1 => [m; 3],
+            2 => {
+                let y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+                let g = 0.35 + y * 0.3;
+                [0, 1, 2].map(|k| g + (c[k] - g) * m)
+            }
+            _ => {
+                let g = grade(v, c);
+                [0, 1, 2].map(|k| c[k] + (g[k] - c[k]) * m)
+            }
+        }
+    }
+
+    /// The eyedropper: hue, saturation and luminance ranges round colour `c`.
+    pub fn pick(c: [f32; 3]) -> [(usize, f32); 5] {
+        let (h, s, l) = hsl(c);
+        [(HUE, h), (SAT_LOW, ((s - 0.25) * 100.0).max(0.0)), (SAT_HIGH, ((s + 0.25) * 100.0).min(100.0)), (LUM_LOW, ((l - 0.3) * 100.0).max(0.0)), (LUM_HIGH, ((l + 0.3) * 100.0).min(100.0))]
     }
 }
 pub mod grain {
@@ -1472,11 +1631,13 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 44] = [
+    pub const ALL: [EffectKind; 46] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
         EffectKind::ColorWheels,
+        EffectKind::HslQualifier,
+        EffectKind::HueCurves,
         EffectKind::Lut,
         EffectKind::Blur,
         EffectKind::Sharpen,
@@ -1532,6 +1693,8 @@ impl EffectKind {
             EffectKind::Vignette => "Vignette",
             EffectKind::Levels => "Levels",
             EffectKind::ColorWheels => "Colour wheels",
+            EffectKind::HslQualifier => "HSL qualifier",
+            EffectKind::HueCurves => "Hue curves",
             EffectKind::Curves => "Curves",
             EffectKind::Sharpen => "Sharpen",
             EffectKind::Glow => "Glow",
@@ -1575,7 +1738,7 @@ impl EffectKind {
 
     pub fn category(self) -> EffectCategory {
         match self {
-            EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::Lut => EffectCategory::Color,
+            EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut => EffectCategory::Color,
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner | EffectKind::MatteChoker | EffectKind::RefineMatte => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
@@ -1594,6 +1757,8 @@ impl EffectKind {
     pub fn description(self) -> &'static str {
         match self {
             EffectKind::ColorCorrect => "Exposure, contrast, saturation and white balance.",
+            EffectKind::HslQualifier => "Grade just one colour range — skin, sky, a red car: pick it with the eyedropper or by hue, saturation and luminance, check it with Show matte, then shift its hue, saturation, brightness and contrast, or tint it.",
+            EffectKind::HueCurves => "Curves against hue, luminance or saturation: turn one hue into another, make some colours more or less saturated or brighter, or take colour out of the shadows or highlights.",
             EffectKind::ColorWheels => "Grade with lift, gamma, gain and offset wheels: push the shadows, midtones, highlights or the whole picture towards a colour and brighten or darken each, then set contrast, saturation and hue. Watch the scopes as you go.",
             EffectKind::Levels => "Set the black and white points and the midtones (gamma), like Photoshop's Levels.",
             EffectKind::Curves => "Shape the tones with curves: an S-curve for contrast, or per-channel colour shifts.",
@@ -1658,6 +1823,8 @@ impl EffectKind {
             EffectKind::Vignette => &VIGNETTE,
             EffectKind::Levels => &LEVELS,
             EffectKind::ColorWheels => &WHEELS,
+            EffectKind::HslQualifier => &QUALIFIER,
+            EffectKind::HueCurves => &HUE_CURVES,
             EffectKind::Curves => &CURVES,
             EffectKind::Sharpen => &SHARPEN,
             EffectKind::Glow => &GLOW,
@@ -1728,6 +1895,7 @@ impl EffectKind {
             EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
             EffectKind::Paint => &[(0, "Brush"), (5, "Strokes"), (6, "Clone")],
             EffectKind::FaceBeauty => &[(0, "Look"), (5, "Faces")],
+            EffectKind::HslQualifier => &[(0, "Hue"), (3, "Saturation"), (6, "Luminance"), (9, "Matte"), (14, "Grade inside")],
             EffectKind::ColorWheels => &[(0, "Lift (shadows)"), (3, "Gamma (midtones)"), (6, "Gain (highlights)"), (9, "Offset (everything)"), (12, "Overall")],
             EffectKind::SkyReplace => &[(0, "Sky"), (3, "Placing"), (7, "Look"), (9, "Edge"), (11, "Blend")],
             EffectKind::Lightning => &[(0, "Path"), (4, "Shape"), (10, "Look"), (15, "Motion")],
@@ -1806,6 +1974,8 @@ impl EffectValues {
             // Without its clean plate it does nothing.
             EffectKind::DifferenceKey => self.table.is_none(),
             EffectKind::Vignette => v[0] == 0.0,
+            EffectKind::HslQualifier => v[qualify::SHOW] == 0.0 && v[qualify::HUE_SHIFT] == 0.0 && v[qualify::SATURATION] == 100.0 && v[qualify::BRIGHTNESS] == 0.0 && v[qualify::CONTRAST] == 100.0 && v[qualify::TINT_AMOUNT] == 0.0,
+            EffectKind::HueCurves => v[0] == 0.0 || self.table.is_none(),
             EffectKind::ColorWheels => v[..12].iter().all(|&x| x == 0.0) && v[wheels::SATURATION] == 100.0 && v[wheels::CONTRAST] == 100.0 && v[wheels::HUE] == 0.0,
             EffectKind::Levels => v[0] == 0.0 && v[1] == 255.0 && v[2] == 1.0 && v[3] == 0.0 && v[4] == 255.0,
             EffectKind::Curves | EffectKind::Lut => self.table.is_none() || v[0] == 0.0,
@@ -1882,6 +2052,7 @@ impl Effect {
     pub fn new(kind: EffectKind) -> Self {
         let data = match kind {
             EffectKind::Curves => Some(EffectData::Curves(Curves::default())),
+            EffectKind::HueCurves => Some(EffectData::HueCurves(crate::lut::HueCurves::default())),
             _ => None,
         };
         Self { kind, enabled: true, params: kind.params().iter().map(|s| Param { value: s.default, keys: Curve::default() }).collect(), data, plugin: None }
@@ -2068,6 +2239,7 @@ impl Effect {
     pub fn table(&self) -> Option<Arc<Table>> {
         match (&self.data, self.kind) {
             (Some(EffectData::Curves(c)), EffectKind::Curves) if !c.is_identity() => Some(Arc::new(c.table())),
+            (Some(EffectData::HueCurves(c)), EffectKind::HueCurves) if !c.is_identity() => Some(Arc::new(c.table())),
             (Some(EffectData::Lut(path)), EffectKind::Lut) => crate::lut::load_cube(path).ok(),
             (Some(EffectData::Plate { path, at }), EffectKind::DifferenceKey) => crate::lut::load_plate(path, *at),
             _ => None,
@@ -2121,7 +2293,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
                 // Nothing has been born yet at the start, but soon is.
@@ -2186,6 +2358,52 @@ mod tests {
         assert!(near(wheels::apply(&with(&[(wheels::HUE, 180.0)]), wheels::apply(&with(&[(wheels::HUE, 180.0)]), c)), c));
         let e = Effect::new(EffectKind::ColorWheels);
         assert!(e.eval(Time::ZERO).is_identity());
+    }
+
+    #[test]
+    fn the_qualifier_chooses_a_colour_range_and_grades_only_that() {
+        let base: Vec<f32> = EffectKind::HslQualifier.params().iter().map(|p| p.default).collect();
+        let with = |set: &[(usize, f32)]| {
+            let mut v = base.clone();
+            for &(i, x) in set {
+                v[i] = x;
+            }
+            v
+        };
+        // Aimed at red (hue 0, 60° wide): red is chosen, green and grey aren't.
+        let red_only = with(&[(qualify::HUE, 0.0)]);
+        let (red, green, grey) = ([0.8, 0.15, 0.1], [0.2, 0.7, 0.2], [0.5, 0.5, 0.5]);
+        assert!(qualify::matte(&red_only, red) > 0.95);
+        assert!(qualify::matte(&red_only, green) < 0.01 && qualify::matte(&red_only, grey) < 0.01);
+        // It wraps round the wheel: hue 350 is near red too.
+        assert!(qualify::matte(&with(&[(qualify::HUE, 350.0)]), red) > 0.9);
+        // Softness blends at the edge; Invert flips it.
+        let edge = qualify::matte(&with(&[(qualify::HUE, 0.0), (qualify::HUE_WIDTH, 20.0), (qualify::HUE_SOFT, 30.0)]), [0.8, 0.4, 0.1]);
+        assert!(edge > 0.05 && edge < 0.95, "{edge}");
+        assert!(qualify::matte(&with(&[(qualify::HUE, 0.0), (qualify::INVERT, 1.0)]), green) > 0.95);
+        // Luminance only: the dark reds left out.
+        let bright_reds = with(&[(qualify::HUE, 0.0), (qualify::LUM_LOW, 25.0), (qualify::LUM_SOFT, 2.0)]);
+        assert!(qualify::matte(&bright_reds, [0.25, 0.03, 0.02]) < 0.05);
+        // The grade: red turned towards orange-yellow, greens untouched.
+        let turned = with(&[(qualify::HUE, 0.0), (qualify::HUE_SHIFT, 40.0)]);
+        let r2 = qualify::apply(&turned, red);
+        assert!(r2[1] > red[1] + 0.1, "{r2:?}");
+        assert_eq!(qualify::apply(&turned, green), green);
+        // Desaturate the chosen ones to grey of the same luminance.
+        let grey_reds = qualify::apply(&with(&[(qualify::HUE, 0.0), (qualify::SATURATION, 0.0)]), red);
+        assert!((grey_reds[0] - grey_reds[2]).abs() < 1e-4);
+        // Show the matte.
+        assert_eq!(qualify::apply(&with(&[(qualify::HUE, 0.0), (qualify::SHOW, 1.0)]), green), [0.0; 3]);
+        // At rest (no grade, showing the picture) it's nothing.
+        assert!(Effect::new(EffectKind::HslQualifier).eval(Time::ZERO).is_identity());
+        // The eyedropper centres it on the picked colour.
+        let picked = qualify::pick([0.2, 0.4, 0.85]);
+        assert!((picked[0].1 - 221.0).abs() < 2.0, "{picked:?}");
+        let mut v = base.clone();
+        for (i, x) in picked {
+            v[i] = x;
+        }
+        assert!(qualify::matte(&v, [0.2, 0.4, 0.85]) > 0.95);
     }
 
     #[test]

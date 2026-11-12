@@ -1318,6 +1318,38 @@ fn slow_motion_frame_blending_and_optical_flow() {
     assert!(flow(14) < 60 && flow(52) > 200 && flow(30) > 230, "moved half way (18–58): {} {} {}", flow(14), flow(52), flow(30));
 }
 
+/// 25p footage in a 50p sequence at normal speed: every other frame falls
+/// between two of the footage's, and is held, blended or flowed as chosen.
+#[test]
+fn footage_with_fewer_frames_than_the_sequence_is_filled_in() {
+    use reelforge_core::FrameBlend;
+    let Some(src) = ffmpeg("rf_moving_square2.mp4", &["-f", "lavfi", "-i", "color=c=black:s=320x180:r=25:d=1", "-f", "lavfi", "-i", "color=c=white:s=40x40:r=25:d=1", "-filter_complex", "[0][1]overlay=x='10+t*400':y=70", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "12"]) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let shot = |blend: FrameBlend| {
+        let mut p = Project::new();
+        p.media.push(asset(1, &src));
+        let mut seq = Sequence::new("T", 320, 180, FrameRate::new(50, 1));
+        let mut c = Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(1.0), None);
+        c.frame_blend = blend;
+        seq.tracks[0].clips = vec![c];
+        p.sequences = vec![seq];
+        let out = std::env::temp_dir().join(format!("rf_export_conform_{blend:?}.mp4"));
+        let mut st = settings(out.clone());
+        (st.width, st.height, st.end, st.include_audio) = (320, 180, s(0.1), false);
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        let f = FrameSource::open(&out, None).unwrap().frame_at_blocking(Time::from_frame(1, FrameRate::new(50, 1)), Duration::from_secs(5)).unwrap();
+        let rgba = f.rgba();
+        move |x: u32| rgba[((90 * 320 + x) * 4) as usize] as i32
+    };
+    let nearest = shot(FrameBlend::Nearest);
+    let blend = shot(FrameBlend::Blend);
+    let flow = shot(FrameBlend::Flow);
+    assert!(nearest(14) > 230 && nearest(55) < 25 || nearest(14) < 25 && nearest(55) > 230, "held: {} {}", nearest(14), nearest(55));
+    assert!((120..215).contains(&blend(14)) && (120..215).contains(&blend(55)), "blended: {} {}", blend(14), blend(55));
+    assert!(flow(14) < 60 && flow(52) > 200 && flow(30) > 230, "flowed half way: {} {} {}", flow(14), flow(52), flow(30));
+}
+
 /// A DV NTSC sequence (10:11 pixels) exported at its own size says so in
 /// the file, and DV footage probes with its pixel shape.
 #[test]

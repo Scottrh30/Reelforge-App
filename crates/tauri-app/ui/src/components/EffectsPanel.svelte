@@ -3,11 +3,12 @@
   // of the list applied first. Add, reorder, switch off, edit and keyframe.
   import { untrack } from "svelte";
   import { app, run, say } from "../lib/session.svelte";
-  import { api, type FxPreset, type Inspector, type CatalogGroup, type Curves, type EffectView, type ParamView } from "../lib/api";
+  import { api, type FxPreset, type Inspector, type CatalogGroup, type Curves, type HueCurves, type EffectView, type ParamView } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
   import NumberField from "./NumberField.svelte";
   import CurvesEditor from "./CurvesEditor.svelte";
+  import HueCurvesEditor from "./HueCurvesEditor.svelte";
   import ColorWheels from "./ColorWheels.svelte";
 
   // `scene`: the settings of a camera or light clip (one fixed card, no adding).
@@ -55,6 +56,11 @@
   function curves(i: number, c: Curves, done: boolean) {
     const id = ins.id;
     pump.push(() => api.effectCurves(id, i, c));
+    if (done) commit();
+  }
+  function hueCurves(i: number, c: HueCurves, done: boolean) {
+    const id = ins.id;
+    pump.push(() => api.effectHueCurves(id, i, c));
     if (done) commit();
   }
 
@@ -276,12 +282,31 @@
         {#if fx.kind === "Curves" && fx.curves}
           <CurvesEditor curves={fx.curves} onchange={(c, done) => curves(i, c, done)} />
         {/if}
+        {#if fx.kind === "HueCurves" && fx.hue_curves}
+          <HueCurvesEditor curves={fx.hue_curves} onchange={(c, done) => hueCurves(i, c, done)} />
+        {/if}
         {#if fx.kind === "Lut"}
           <div class="row lut">
             <span class="file" title={fx.lut ?? ""}>{fx.lut ? fileName(fx.lut) : "No LUT chosen"}</span>
             <button class="small" onclick={() => run(api.effectLut(ins.id, i))}>Choose .cube…</button>
           </div>
           {#if fx.lut_error}<p class="warn">{fx.lut_error}</p>{/if}
+        {/if}
+        {#if fx.kind === "HslQualifier"}
+          {@const picking = app.keyPick?.clip === ins.id && app.keyPick.index === i}
+          <div class="row">
+            <button class="small" class:active={picking} aria-pressed={picking} onclick={() => {
+              if (picking) {
+                app.keyPick = null;
+                app.note = "";
+              } else {
+                app.keyPick = { clip: ins.id, index: i };
+                app.drawing = null;
+                app.maskTool = null;
+                app.note = "Click the colour to grade in the Viewer, or drag a box over it to average a patch (Esc cancels)";
+              }
+            }} title="Choose the colour range from the picture in the Viewer: click, or drag a box to average a patch">{picking ? "Picking… (Esc)" : "Pick colour"}</button>
+          </div>
         {/if}
         {#if fx.kind === "ChromaKey"}
           {@const picking = app.keyPick?.clip === ins.id && app.keyPick.index === i}

@@ -576,7 +576,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add"]
+        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add", "fs_hue_curves"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -598,7 +598,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1618,6 +1618,20 @@ impl Compositor {
                     }
                     EffectKind::ColorWheels => {
                         push("fs_wheels", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::HslQualifier => {
+                        // Its grade is params 16–19.
+                        let mut u = uniform(&e.values, [0.0; 2]);
+                        u[28..32].copy_from_slice(&e.values[16..20]);
+                        push("fs_qualify", cur, Second::None, o1, u);
+                        cur = o1;
+                    }
+                    EffectKind::HueCurves => {
+                        if !self.tables.contains_key(&(key, i)) {
+                            continue;
+                        }
+                        push("fs_hue_curves", cur, Second::Table(i), o1, uniform(&e.values, [0.0; 2]));
                         cur = o1;
                     }
                     // Camera and light settings are never drawn (they're filtered out earlier).

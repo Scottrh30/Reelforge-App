@@ -502,6 +502,12 @@ fn fs_shadow(in: VsOut) -> @location(0) vec4<f32> {
 // p4 = flicker speed Hz, wobble %, motion blur %, blend; extra2 = previous
 // hilt and tip; texel_dir.z = a seed per blade.
 
+// A colour parameter (0xRRGGBB) as display values.
+fn rgb_hex(v: f32) -> vec3<f32> {
+    let c = u32(clamp(round(v), 0.0, 16777215.0));
+    return vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0;
+}
+
 fn rgb_of(v: f32) -> vec3<f32> {
     let c = u32(clamp(round(v), 0.0, 16777215.0));
     let g = vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0;
@@ -710,6 +716,96 @@ fn fs_flare(in: VsOut) -> @location(0) vec4<f32> {
     }
     l *= bright;
     return vec4(c.rgb + l, max(c.a, clamp(max3(l), 0.0, 1.0)));
+}
+
+// HSL qualifier (see core effects::qualify, which does the same sums):
+// p0 = (hue °, width °, softness °, sat low %), p1 = (sat high %, sat soft %,
+// lum low %, lum high %), p2 = (lum soft %, use hue, use sat, use lum), p3 =
+// (invert, show, hue shift °, saturation %), p4 = (brightness %, contrast %,
+// tint colour, tint amount %).
+fn q_band(x: f32, lo0: f32, hi0: f32, soft: f32) -> f32 {
+    let lo = min(lo0, hi0);
+    let hi = max(lo0, hi0);
+    return q_step(lo - soft, lo, x) * (1.0 - q_step(hi, hi + soft, x));
+}
+
+fn q_step(e0: f32, e1: f32, x: f32) -> f32 {
+    if (e1 <= e0) {
+        return select(0.0, 1.0, x >= e0);
+    }
+    let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+fn hsv_hs(c: vec3<f32>) -> vec2<f32> {
+    let mx = max(max(c.r, c.g), c.b);
+    let mn = min(min(c.r, c.g), c.b);
+    let d = mx - mn;
+    var h = 0.0;
+    if (d > 1e-6) {
+        if (mx == c.r) {
+            h = 60.0 * (((c.g - c.b) / d) - 6.0 * floor(((c.g - c.b) / d) / 6.0));
+        } else if (mx == c.g) {
+            h = 60.0 * ((c.b - c.r) / d + 2.0);
+        } else {
+            h = 60.0 * ((c.r - c.g) / d + 4.0);
+        }
+    }
+    return vec2(h, select(d / mx, 0.0, mx <= 1e-6));
+}
+
+fn q_mod(a: f32, b: f32) -> f32 {
+    return a - b * floor(a / b);
+}
+
+@fragment
+fn fs_qualify(in: VsOut) -> @location(0) vec4<f32> {
+    let src_c = textureSample(src, src_sampler, to_tex(in.uv));
+    let c = to_display(unpremul(src_c));
+    let hs = hsv_hs(c);
+    let l = dot(c, LUMA);
+    var m = 1.0;
+    if (fx.p2.y >= 0.5) {
+        let d = min(q_mod(hs.x - fx.p0.x, 360.0), q_mod(fx.p0.x - hs.x, 360.0));
+        let half = max(fx.p0.y, 0.0) / 2.0;
+        m = m * (1.0 - q_step(half, half + max(fx.p0.z, 0.0), d)) * q_step(0.0, 0.08, hs.y);
+    }
+    if (fx.p2.z >= 0.5) {
+        m = m * q_band(hs.y, fx.p0.w / 100.0, fx.p1.x / 100.0, max(fx.p1.y, 0.0) / 100.0);
+    }
+    if (fx.p2.w >= 0.5) {
+        m = m * q_band(l, fx.p1.z / 100.0, fx.p1.w / 100.0, max(fx.p2.x, 0.0) / 100.0);
+    }
+    if (fx.p3.x >= 0.5) {
+        m = 1.0 - m;
+    }
+    var out = c;
+    let show = u32(fx.p3.y + 0.5);
+    if (show == 1u) {
+        out = vec3(m);
+    } else if (show == 2u) {
+        let g = 0.35 + l * 0.3;
+        out = vec3(g) + (c - vec3(g)) * m;
+    } else {
+        let cb0 = (c.b - l) / 1.8556;
+        let cr0 = (c.r - l) / 1.5748;
+        let a = radians(fx.p3.z);
+        let sat = max(fx.p3.w, 0.0) / 100.0;
+        let cb = (cb0 * cos(a) - cr0 * sin(a)) * sat;
+        let cr = (cb0 * sin(a) + cr0 * cos(a)) * sat;
+        let y = (l * exp2(fx.p4.x / 100.0) - 0.5) * (max(fx.p4.y, 0.0) / 100.0) + 0.5;
+        var g = vec3(y + 1.5748 * cr, 0.0, y + 1.8556 * cb);
+        g.g = (y - 0.2126 * g.r - 0.0722 * g.b) / 0.7152;
+        let t = clamp(fx.p4.w / 100.0, 0.0, 1.0);
+        if (t > 0.0) {
+            let tint = rgb_hex(fx.p4.z);
+            let ty = max(dot(tint, LUMA), 1e-3);
+            g = g + (tint * y / ty - g) * t * 0.6;
+        }
+        g = max(g, vec3(0.0));
+        out = c + (g - c) * m;
+    }
+    return vec4(to_linear(max(out, vec3(0.0))) * src_c.a, src_c.a);
 }
 
 // Light rays: each pixel gathers the (bright) layer along the line to the

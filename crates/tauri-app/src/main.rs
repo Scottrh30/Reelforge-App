@@ -1935,6 +1935,7 @@ fn main() {
             fx::paint_stroke,
             fx::paint_clear,
             fx::effect_curves,
+            fx::effect_hue_curves,
             fx::effect_lut,
             fx::effect_catalog,
             fx::plugins_list,

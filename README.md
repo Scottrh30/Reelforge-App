@@ -350,6 +350,22 @@ What works now:
     push keeps the brightness where it was. Then **Saturation**, **Contrast** (about **Pivot**)
     and **Hue** (turns every colour round the wheel). **Numbers and keyframes** shows every
     setting as a number, to type or keyframe
+  - **HSL qualifier**: grade one range of colours and leave the rest alone (a secondary, as in
+    Resolve's qualifier or Lumetri's HSL Secondary). Choose the range by **Hue** (centre, width
+    and softness, round the wheel), **Saturation** and **Luminance** (low, high and softness
+    each), ticking which of the three count; **Pick colour** and click the Program monitor to
+    centre the range on what's there. **Invert** grades everything else instead. **Show**
+    the matte (white where it grades) or the selection over grey to see what's chosen. Inside
+    the range: **Hue shift**, **Saturation**, **Brightness**, **Contrast** and a **Tint** colour
+    and amount — skin warmed, a sky made bluer, one shirt turned another colour
+  - **Hue curves**: five curves in one editor, with a strip under each showing what's along
+    it — **Hue vs hue** (turn one hue into another), **Hue vs saturation**, **Hue vs luminance**
+    (for some hues only; greys are left alone), **Luminance vs saturation** (take the colour out
+    of the shadows or highlights) and **Saturation vs saturation** (boost the muted colours
+    without pushing the strong ones). The middle line is no change; click it to add a point (on
+    an empty hue curve two neutral neighbours come with it, so only nearby hues move), drag it
+    (**Shift**: up and down only), right-click or double-click to remove it. The hue curves wrap
+    round, as the wheel does. With a **Strength** mix
   - **LUT (.cube)**: load any 3D `.cube` LUT (Resolve, Photoshop, camera LUT packs), sampled
     with full trilinear interpolation, with a Strength mix
   - **Gaussian blur**: radius in pixels (two separable passes, any size)
@@ -996,7 +1012,9 @@ What works now:
     **Speed here** reads the speed at the playhead. The clip's length doesn't change (trim it as
     usual; past the first and last keys their frames hold), it goes on the linked sound too, and
     that sound is silent while remapping is on. Untick to go back to the clip's speed
-  - **Between frames** (slowed, sped up, reversed or remapped footage): **Nearest frame** holds
+  - **Between frames** (slowed, sped up, reversed or remapped footage, and footage with fewer
+    frames a second than the sequence, such as 24p or 25p in a 50p or 60p sequence, at normal
+    speed too): **Nearest frame** holds
     each frame; **Frame blending** cross-fades the two frames either side of the moment shown;
     **Optical flow** works out, on the graphics card, how every pixel moves between the two
     frames, both ways (coarse to fine, with an edge-keeping median so things moving differently
@@ -1925,13 +1943,24 @@ rustup target add x86_64-pc-windows-gnu
 export FFMPEG_DIR=$PWD/ffmpeg-n8.1-latest-win64-gpl-shared-8.1
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
 # mingw-w64 lacks d3d12video.h, which FFmpeg's headers include; a one-line stub
-# (`typedef struct ID3D12VideoDevice ID3D12VideoDevice;`) in ./stubs is enough for bindgen.
-export BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnu="--sysroot=/usr/x86_64-w64-mingw32 -I/usr/x86_64-w64-mingw32/include -I$PWD/stubs"
+# (`typedef struct ID3D12VideoDevice ID3D12VideoDevice;`) in tools/windows is enough for bindgen.
+export BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnu="--sysroot=/usr/x86_64-w64-mingw32 -I/usr/x86_64-w64-mingw32/include -I$PWD/tools/windows"
 (cd crates/tauri-app/ui && npm install && npm run build)
 cargo build --release -p reelforge-tauri --target x86_64-pc-windows-gnu
 ```
 
 Ship `reelforge.exe` with the `bin/*.dll` files from the FFmpeg build next to it.
+`tools/windows/` holds the `d3d12video.h` stub and **Get FFmpeg.bat**; `tools/notices.py
+--target x86_64-pc-windows-gnu` writes THIRD-PARTY-NOTICES.txt, and `tools/package-windows.sh
+out.zip` gathers the program, plugins, licences and notices into the download.
+
+### GitHub builds
+
+`.github/workflows/build.yml` runs on every push and pull request: one job type-checks and
+builds the interface and runs the whole test suite on Ubuntu (with FFmpeg 8.1); another
+cross-builds the Windows program as above and keeps **Reelforge-Windows-x64.zip** as a
+download on the run's page (Actions tab → the run → Artifacts). Pushing a tag such as `v1.0`
+also makes a GitHub Release with the zip attached. So a build never depends on one machine.
 
 **The download.** The Windows zip holds `reelforge.exe`, the example plugins, PLUGINS.md and
 **Get FFmpeg.bat**, which downloads the FFmpeg 8.1 shared build from BtbN and copies its DLLs
@@ -2302,6 +2331,18 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   display values, `((v + lift·(1 − v))·gain)^gamma + offset`, then contrast about the pivot,
   then hue and saturation in Rec. 709 Cb/Cr. A puck at (x, y) is the chroma (Cb, Cr) = 0.35·(x,
   y) as R′G′B′ with no luma; the CPU sums and the shader are tested against each other.
+- **HSL qualifier** (`core::effects::qualify`, `fs_qualify` in `render/src/effects.wgsl`): the
+  matte is the product of three soft bands — hue as a circular distance from the centre (full
+  inside half the width, falling to nothing over the softness), saturation and luminance as
+  smoothsteps at each end — each 1 when its tick is off, then inverted if asked. The grade
+  inside (hue turn, saturation, brightness, contrast about mid-grey, tint) is mixed in by the
+  matte. Twenty parameters: the last four go up as a fifth uniform vector. **Pick colour**
+  sets the centre and the ranges from the pixel clicked (`qualify::pick`).
+- **Hue curves** (`core::lut::HueCurves`, `fs_hue_curves` in `render/src/mask.wgsl`): five
+  point lists, evaluated as smooth monotone-safe curves (the hue ones wrapping) into a 256 × 5
+  table of 16-bit values, read by the shader with linear interpolation. Hue vs hue turns by
+  (y − 0.5)·360°, the others scale saturation or luminance by 2y. The CPU sums and the shader
+  are tested against each other.
 - **Curves** (`core/src/channels.rs`, `ui/src/components/CurvesPanel.svelte`): `Channel` addresses any keyframeable
   number on a clip (a transform component or an effect parameter), with uniform get/set/move
   operations, so the curve editor doesn't care what it's editing. A drag re-applies the move

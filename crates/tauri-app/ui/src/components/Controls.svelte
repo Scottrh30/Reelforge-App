@@ -382,9 +382,9 @@
           </div>
         {/if}
         {/if}
-        {#if ins.footage && ins.kind === "video" && (ins.remap || ins.speed !== 1 || ins.reverse)}
+        {#if ins.footage && ins.kind === "video" && (ins.remap || ins.speed !== 1 || ins.reverse || ins.fewer_frames)}
           <div class="grid2">
-            <span class="lbl">Between frames</span>
+            <span class="lbl" title={ins.fewer_frames && !(ins.remap || ins.speed !== 1 || ins.reverse) ? "This footage has fewer frames a second than the sequence: choose how the frames in between are made" : undefined}>Between frames</span>
             <select aria-label="Between frames" value={ins.frame_blend} title={blendTips[ins.frame_blend]} onchange={(e) => run(api.setFrameBlend(ins.id, e.currentTarget.value as "Nearest" | "Blend" | "Flow"))}>
               <option value="Nearest">Nearest frame</option>
               <option value="Blend">Frame blending</option>

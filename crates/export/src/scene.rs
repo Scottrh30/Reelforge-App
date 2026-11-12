@@ -263,13 +263,15 @@ impl Scene {
     fn gather_retimed(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], fps: f64, scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Item>> {
         use reelforge_core::FrameBlend;
         let c = l.clip;
-        let rate = (c.frame_blend != FrameBlend::Nearest && c.is_retimed() && c.nested.is_none() && c.title.is_none() && c.plane.is_none() && !c.adjustment)
+        // Retimed footage, or footage with fewer frames a second than the
+        // sequence (24p in a 60p sequence): blended or flowed in between.
+        let rate = (c.frame_blend != FrameBlend::Nearest && c.nested.is_none() && c.title.is_none() && c.plane.is_none() && !c.adjustment)
             .then(|| project.media(c.media))
             .flatten()
             .filter(|m| !project.is_still(m.id))
             .and_then(|m| m.info.video.as_ref())
             .map(|v| v.frame_rate.fps())
-            .filter(|r| *r > 0.0);
+            .filter(|r| r.is_finite() && *r > 0.0 && (c.is_retimed() || *r < fps * 0.999));
         let Some(media_fps) = rate else { return Ok(self.gather(project, l, t, frame_size, fps, scene3d, provider, depth)?.map(Item::Single)) };
         // Which two frames, and how far from the first to the second.
         let f = l.source_time.as_secs_f64() * media_fps;

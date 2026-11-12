@@ -2488,3 +2488,37 @@ fn the_flare_library_lenses_all_draw() {
         }
     }
 }
+
+/// The qualifier and the hue curves on the GPU do what their sums say.
+#[test]
+fn qualifier_and_hue_curves_on_the_gpu_match_the_sums() {
+    let Some(mut c) = setup() else { return };
+    use reelforge_core::effects::qualify;
+    let set: &[(usize, f32)] = &[(qualify::HUE, 10.0), (qualify::HUE_WIDTH, 50.0), (qualify::HUE_SHIFT, 35.0), (qualify::SATURATION, 140.0), (qualify::BRIGHTNESS, 20.0), (qualify::TINT_AMOUNT, 30.0)];
+    let v = {
+        let mut v: Vec<f32> = EffectKind::HslQualifier.params().iter().map(|p| p.default).collect();
+        for &(i, x) in set {
+            v[i] = x;
+        }
+        v
+    };
+    let curves = reelforge_core::lut::HueCurves { hue_hue: vec![[0.33, 0.62]], hue_sat: vec![[0.0, 0.5], [0.66, 0.1], [0.9, 0.5]], lum_sat: vec![[0.0, 0.3], [0.5, 0.5]], ..Default::default() };
+    for (k, rgb) in [[200u8, 60, 40], [40, 160, 60], [50, 80, 210], [128, 128, 128], [230, 140, 120]].into_iter().enumerate() {
+        let img = solid(1, 1, [rgb[0], rgb[1], rgb[2], 255]);
+        let f = rgb.map(|x| x as f32 / 255.0);
+        let close = |got: [u8; 4], want: [f32; 3], what: &str| {
+            let want = want.map(|x| (x.clamp(0.0, 1.0) * 255.0).round() as i32);
+            for ch in 0..3 {
+                assert!((got[ch] as i32 - want[ch]).abs() <= 6, "{what} {rgb:?}: GPU {got:?}, sums {want:?}");
+            }
+        };
+        c.render([4, 4], &[with_fx(full(90 + k as u64, &img, [4, 4]), vec![fx(EffectKind::HslQualifier, set)])]);
+        close(px(&c.read_output().unwrap(), 4, 2, 2), qualify::apply(&v, f), "qualifier");
+        let mut e = Effect::new(EffectKind::HueCurves);
+        e.data = Some(reelforge_core::effects::EffectData::HueCurves(curves.clone()));
+        let ev = e.eval(reelforge_core::Time::ZERO);
+        assert!(!ev.is_identity());
+        c.render([4, 4], &[with_fx(full(100 + k as u64, &img, [4, 4]), vec![ev])]);
+        close(px(&c.read_output().unwrap(), 4, 2, 2), curves.apply(f), "hue curves");
+    }
+}

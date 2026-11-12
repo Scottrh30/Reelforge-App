@@ -201,6 +201,9 @@ pub struct Inspector {
     /// What retimed footage shows between its frames: "Nearest", "Blend" or "Flow".
     pub frame_blend: reelforge_core::FrameBlend,
     pub flow_quality: reelforge_core::FlowQuality,
+    /// Footage with fewer frames a second than the sequence (so "Between
+    /// frames" applies at normal speed too).
+    pub fewer_frames: bool,
     /// A multicam clip: its source's angles and the ones seen and heard.
     pub multicam: Option<AngleView>,
     pub effects: Vec<crate::fx::EffectView>,
@@ -762,6 +765,8 @@ pub fn state(e: &Editor) -> State {
             remap: remap_view(e, c),
             frame_blend: c.frame_blend,
             flow_quality: c.flow_quality,
+            fewer_frames: !p.is_still(c.media)
+                && p.media(c.media).and_then(|m| m.info.video.as_ref()).map(|v| v.frame_rate.fps()).is_some_and(|r| r.is_finite() && r > 0.0 && r < e.seq().frame_rate.fps() * 0.999),
             multicam: c.angle.zip(c.nested.and_then(|i| p.sequences.get(i)).filter(|s| s.multicam)).map(|(a, s)| AngleView { angles: reelforge_core::multicam::angle_names(s), video: a.video, audio: a.audio }),
             effects: crate::fx::views(e, c),
             animated,

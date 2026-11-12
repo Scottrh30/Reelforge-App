@@ -1,0 +1,123 @@
+# Every push and pull request: the full test suite on Linux, and the Windows
+# download built and kept as an artifact (Actions → the run → Artifacts).
+# A version tag (v1.0, v1.2.3…) also publishes it as a GitHub Release.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: "1.97.0"
+  FFMPEG_BUILD: ffmpeg-n8.1-latest
+  FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
+  CARGO_INCREMENTAL: "0"
+  # Smaller test builds (the runners have little disk to spare).
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  test:
+    name: Tests (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libssl-dev libasound2-dev mesa-vulkan-drivers libvulkan1
+      - name: FFmpeg 8.1
+        run: |
+          curl -sSL "$FFMPEG_URL/$FFMPEG_BUILD-linux64-gpl-shared-8.1.tar.xz" | tar xJ -C "$RUNNER_TEMP"
+          d="$RUNNER_TEMP/$FFMPEG_BUILD-linux64-gpl-shared-8.1"
+          echo "FFMPEG_DIR=$d" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$d/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$d/lib" >> "$GITHUB_ENV"
+          echo "$d/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/tauri-app/ui/package-lock.json
+      - name: Interface
+        working-directory: crates/tauri-app/ui
+        run: |
+          npm ci
+          npx svelte-check --threshold error
+          npm run build
+      - name: Tests
+        run: cargo test --workspace
+
+  windows:
+    name: Windows download
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 clang libclang-dev zip
+      - name: FFmpeg 8.1 for Windows
+        run: |
+          curl -sSLo "$RUNNER_TEMP/ffmpeg.zip" "$FFMPEG_URL/$FFMPEG_BUILD-win64-gpl-shared-8.1.zip"
+          unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP"
+          echo "FFMPEG_DIR=$RUNNER_TEMP/$FFMPEG_BUILD-win64-gpl-shared-8.1" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnu=--sysroot=/usr/x86_64-w64-mingw32 -I/usr/x86_64-w64-mingw32/include -I$GITHUB_WORKSPACE/tools/windows" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/tauri-app/ui/package-lock.json
+      - name: Interface
+        working-directory: crates/tauri-app/ui
+        run: |
+          npm ci
+          npm run build
+      - name: Licence notices
+        # Built into the program (Help → Third-party notices), so made first.
+        run: python3 tools/notices.py --target x86_64-pc-windows-gnu
+      - name: Build
+        run: cargo build --release -p reelforge-tauri --target x86_64-pc-windows-gnu
+      - name: Package
+        run: tools/package-windows.sh "$RUNNER_TEMP/Reelforge-Windows-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Reelforge-Windows-x64
+          path: ${{ runner.temp }}/Reelforge-Windows-x64.zip
+          retention-days: 30
+      - name: Release (version tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/Reelforge-Windows-x64.zip
+          generate_release_notes: true

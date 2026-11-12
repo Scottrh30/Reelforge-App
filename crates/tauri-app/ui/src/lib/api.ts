@@ -309,6 +309,8 @@ export interface Inspector {
   remap: RemapView | null;
   frame_blend: "Nearest" | "Blend" | "Flow";
   flow_quality: "Fast" | "Balanced" | "Best";
+  /** Footage with fewer frames a second than the sequence. */
+  fewer_frames: boolean;
   /// A multicam clip: its source's angles, the one seen, and the one heard if it doesn't follow.
   multicam: { angles: string[]; video: number; audio: number | null } | null;
   effects: EffectView[];
@@ -566,7 +568,16 @@ export type ControlValue = string | number | [number, number];
 export type ControlTarget = "Text" | "TextColour" | "Opacity" | "Position" | { Param: { effect: number; param: number } };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace" | "LightRays" | "AnamorphicFlare" | "LensDirt" | "NeonPath";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace" | "LightRays" | "AnamorphicFlare" | "LensDirt" | "NeonPath" | "HslQualifier" | "HueCurves";
+
+/// The Hue curves effect's curves (points x, y in 0–1; y 0.5 is no change).
+export interface HueCurves {
+  hue_hue: [number, number][];
+  hue_sat: [number, number][];
+  hue_lum: [number, number][];
+  lum_sat: [number, number][];
+  sat_sat: [number, number][];
+}
 
 export interface Curves {
   master: Pt[];
@@ -600,6 +611,7 @@ export interface EffectView {
   missing: boolean;
   params: ParamView[];
   curves: Curves | null;
+  hue_curves: HueCurves | null;
   lut: string | null;
   lut_error: string | null;
   /// A difference key's clean plate: [file, timecode in it].
@@ -1149,6 +1161,7 @@ export const api = {
   particlesPreset: (id: number, index: number, preset: number) => invoke("particles_preset", { id, index, preset }),
   bladeIgnite: (id: number, index: number, retract: boolean, seconds: number) => invoke("blade_ignite", { id, index, retract, seconds }),
   effectCurves: (id: number, index: number, curves: Curves) => invoke("effect_curves", { id, index, curves }),
+  effectHueCurves: (id: number, index: number, curves: HueCurves) => invoke("effect_hue_curves", { id, index, curves }),
   effectLut: (id: number, index: number) => invoke("effect_lut", { id, index }),
   effectKeyPick: (id: number, index: number, a: Pt, b: Pt) => invoke<string>("effect_key_pick", { id, index, a, b }),
   effectPlate: (id: number, index: number, file: boolean) => invoke("effect_plate", { id, index, file }),

@@ -78,6 +78,55 @@ fn fs_curves(in: VsOut) -> @location(0) vec4<f32> {
     return vec4(to_linear(v) * c.a, c.a);
 }
 
+// Hue curves (see core lut::HueCurves::apply, which does the same sums): a
+// 256×5 table, a row a curve, 16 bits a value (red high, green low). p0.x =
+// strength %.
+fn hc_at(row: i32, x: f32) -> f32 {
+    let f = clamp(x, 0.0, 1.0) * 255.0;
+    let i = i32(floor(f));
+    let j = min(i + 1, 255);
+    let a = textureLoad(second, vec2(i, row), 0);
+    let b = textureLoad(second, vec2(j, row), 0);
+    let va = (round(a.r * 255.0) * 256.0 + round(a.g * 255.0)) / 65535.0;
+    let vb = (round(b.r * 255.0) * 256.0 + round(b.g * 255.0)) / 65535.0;
+    return mix(va, vb, f - f32(i));
+}
+
+@fragment
+fn fs_hue_curves(in: VsOut) -> @location(0) vec4<f32> {
+    let src_c = textureSample(src, src_sampler, to_tex(in.uv));
+    let c = to_display(unpremul(src_c));
+    let mx = max(max(c.r, c.g), c.b);
+    let mn = min(min(c.r, c.g), c.b);
+    let d = mx - mn;
+    var h = 0.0;
+    if (d > 1e-6) {
+        if (mx == c.r) {
+            let q = (c.g - c.b) / d;
+            h = (q - 6.0 * floor(q / 6.0)) / 6.0;
+        } else if (mx == c.g) {
+            h = ((c.b - c.r) / d + 2.0) / 6.0;
+        } else {
+            h = ((c.r - c.g) / d + 4.0) / 6.0;
+        }
+    }
+    let s = select(d / mx, 0.0, mx <= 1e-6);
+    let y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    let cb0 = (c.b - y) / 1.8556;
+    let cr0 = (c.r - y) / 1.5748;
+    let turn = (hc_at(0, h) - 0.5) * 6.2831853;
+    let gain = hc_at(1, h) * 2.0 * hc_at(3, y) * 2.0 * hc_at(4, s) * 2.0;
+    let cb = (cb0 * cos(turn) - cr0 * sin(turn)) * gain;
+    let cr = (cb0 * sin(turn) + cr0 * cos(turn)) * gain;
+    let lg = hc_at(2, h) * 2.0;
+    let y2 = y * (1.0 + (lg - 1.0) * clamp(s * 1.5, 0.0, 1.0));
+    let r = y2 + 1.5748 * cr;
+    let b = y2 + 1.8556 * cb;
+    let g = (y2 - 0.2126 * r - 0.0722 * b) / 0.7152;
+    let out = mix(c, max(vec3(r, g, b), vec3(0.0)), fx.p0.x / 100.0);
+    return vec4(to_linear(out) * src_c.a, src_c.a);
+}
+
 // A 3D LUT stored as N slices of N×N side by side. p0 = (strength %, N).
 fn lut_slice(rg: vec2<f32>, b: f32, n: f32) -> vec3<f32> {
     let x = (rg.x * (n - 1.0) + 0.5 + b * n) / (n * n);

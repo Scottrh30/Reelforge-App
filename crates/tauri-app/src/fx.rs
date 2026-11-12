@@ -62,6 +62,8 @@ pub struct EffectView {
     pub params: Vec<ParamView>,
     /// Tone curves (Curves effect).
     pub curves: Option<Curves>,
+    /// The Hue curves effect's curves.
+    pub hue_curves: Option<reelforge_core::lut::HueCurves>,
     /// The .cube file (LUT effect), and what's wrong with it, if anything.
     pub lut: Option<String>,
     pub lut_error: Option<String>,
@@ -219,6 +221,11 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 animated: fx.is_animated(),
                 params,
                 curves,
+                hue_curves: match (&fx.data, fx.kind) {
+                    (Some(EffectData::HueCurves(c)), _) => Some(c.clone()),
+                    (_, EffectKind::HueCurves) => Some(Default::default()),
+                    _ => None,
+                },
                 lut: lut.map(|p| p.display().to_string()),
                 lut_error,
                 plate,
@@ -432,7 +439,7 @@ pub fn effect_key_pick(id: u64, index: usize, a: [f32; 2], b: [f32; 2]) -> Res<S
     use reelforge_core::effects::key;
     let (path, at, layer, threshold, softness) = ed(|e| {
         let (_, c) = e.seq().find_clip(ClipId(id))?;
-        let fx = c.effects.get(index).filter(|f| f.kind == EffectKind::ChromaKey)?;
+        let fx = c.effects.get(index).filter(|f| f.kind == EffectKind::ChromaKey || f.kind == EffectKind::HslQualifier)?;
         let (src, _) = effect_time(e, c);
         let m = e.project.media(c.media)?;
         let size = e.project.layer_dims(c, e.seq())?;
@@ -468,6 +475,33 @@ pub fn effect_key_pick(id: u64, index: usize, a: [f32; 2], b: [f32; 2]) -> Res<S
     }
     let rgb = sum.map(|v| (v / n / 255.0) as f32);
     let hex = format!("#{:02x}{:02x}{:02x}", (rgb[0] * 255.0).round() as u8, (rgb[1] * 255.0).round() as u8, (rgb[2] * 255.0).round() as u8);
+    // The HSL qualifier: its ranges round the picked colour.
+    let qualifier = ed(|e| e.seq().find_clip(ClipId(id)).and_then(|(_, c)| c.effects.get(index)).is_some_and(|f| f.kind == EffectKind::HslQualifier))?;
+    if qualifier {
+        let set = reelforge_core::effects::qualify::pick(rgb);
+        let (h, s, l) = reelforge_core::effects::qualify::hsl(rgb);
+        return ed(|e| {
+            e.commit_live_edit();
+            edit(e, id, |list, src, in_clip| {
+                let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::HslQualifier) else { return };
+                fx.normalize();
+                for (param, v) in set {
+                    let p = &mut fx.params[param];
+                    if p.keys.is_animated() {
+                        if in_clip {
+                            p.keys.set(src, v);
+                        }
+                    } else {
+                        p.value = v;
+                    }
+                }
+            });
+            e.commit_live_edit();
+            let msg = format!("Colour picked: {hex} (hue {h:.0}°, saturation {:.0} %, luminance {:.0} %). Turn on Show → The matte to check what's chosen", s * 100.0, l * 100.0);
+            e.status = msg.clone();
+            msg
+        });
+    }
     let Some((hue, lower)) = key::pick(rgb, threshold, softness) else {
         let msg = format!("That's grey ({hex}): there's no colour to key. Pick the screen, or use the luma key for black or white");
         let _ = ed(|e| e.status = msg.clone());
@@ -745,6 +779,35 @@ pub fn effect_curves(id: u64, index: usize, curves: Curves) -> Res<()> {
         edit(e, id, |list, _, _| {
             if let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::Curves) {
                 fx.data = Some(EffectData::Curves(curves));
+            }
+        });
+    })
+}
+
+/// The Hue curves effect's points (live while dragging; `commit` ends it).
+#[tauri::command]
+pub fn effect_hue_curves(id: u64, index: usize, curves: reelforge_core::lut::HueCurves) -> Res<()> {
+    // Points in 0–1, sorted, at most 32 a curve.
+    let clean = |mut pts: Vec<[f32; 2]>| {
+        pts.retain(|p| p[0].is_finite() && p[1].is_finite());
+        for p in &mut pts {
+            *p = [p[0].clamp(0.0, 1.0), p[1].clamp(0.0, 1.0)];
+        }
+        pts.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        pts.truncate(32);
+        pts
+    };
+    let curves = reelforge_core::lut::HueCurves {
+        hue_hue: clean(curves.hue_hue),
+        hue_sat: clean(curves.hue_sat),
+        hue_lum: clean(curves.hue_lum),
+        lum_sat: clean(curves.lum_sat),
+        sat_sat: clean(curves.sat_sat),
+    };
+    ed(|e| {
+        edit(e, id, |list, _, _| {
+            if let Some(fx) = list.get_mut(index).filter(|f| f.kind == EffectKind::HueCurves) {
+                fx.data = Some(EffectData::HueCurves(curves));
             }
         });
     })
