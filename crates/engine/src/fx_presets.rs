@@ -435,6 +435,12 @@ impl EffectPreset {
 
 /// The folder the starter looks are in.
 pub const STARTERS: &str = "Starter looks";
+/// Neon signs: Neon path round a title's letters.
+pub const NEON_SIGNS: &str = "Neon signs";
+/// Ready-made lighting: flares, rays, dirt and glow together.
+pub const LIGHT_LOOKS: &str = "Light looks";
+/// The folders the built-in presets are in, in order.
+pub const BUILTIN_FOLDERS: [&str; 3] = [STARTERS, NEON_SIGNS, LIGHT_LOOKS];
 
 fn fx(kind: EffectKind, set: &[(usize, f32)]) -> Effect {
     let mut e = Effect::new(kind);
@@ -487,7 +493,80 @@ pub fn starters() -> Vec<EffectPreset> {
     let mut push = TransformAnim::default();
     push.scale = Curve(vec![reelforge_core::anim::Key::new(Time::ZERO, [1.0, 1.0], reelforge_core::anim::Interp::Linear), reelforge_core::anim::Key::new(one, [1.1, 1.1], reelforge_core::anim::Interp::Linear)]);
     out.push(EffectPreset { motion: Some(Motion { transform: Transform::default(), anim: push, props: vec!["scale".into()] }), timing: Timing::Stretch, length: one, ..look("Slow push in", Vec::new()) });
+    out.extend(neon_signs());
+    out.extend(light_looks());
     out
+}
+
+/// A Neon path round a title's letters, with only the tube showing.
+pub fn neon_sign(glow: u32, core: u32, set: &[(usize, f32)]) -> Effect {
+    use reelforge_core::effects::neonpath as n;
+    let mut e = fx(EffectKind::NeonPath, &[(n::MASK, 0.0), (n::SHOW_LAYER, 0.0), (n::GLOW_COLOR, glow as f32), (n::CORE_COLOR, core as f32), (n::GLOW_SIZE, 20.0), (n::GLOW, 140.0), (n::CORE_WIDTH, 4.0)]);
+    for &(i, v) in set {
+        e.params[i].value = v;
+    }
+    e
+}
+
+/// Neon signs for titles: the letters' outlines as glowing tubes.
+fn neon_signs() -> Vec<EffectPreset> {
+    use reelforge_core::anim::{Interp, Key};
+    use reelforge_core::effects::neonpath as n;
+    let sign = |name: &str, e: Effect| EffectPreset { effects: vec![e], folder: NEON_SIGNS.into(), builtin: true, ..EffectPreset::empty(name, Time::ZERO, Timing::FromStart) };
+    let mut on = neon_sign(0xff2633, 0xffe9ea, &[]);
+    on.params[n::END].keys = Curve(vec![Key::new(Time::ZERO, 0.0, Interp::Linear), Key::new(Time::from_secs_f64(1.5), 100.0, Interp::Linear)]);
+    vec![
+        sign("Neon pink", neon_sign(0xff2bd6, 0xfff0fa, &[])),
+        sign("Neon ice blue", neon_sign(0x26b7ff, 0xeaf8ff, &[])),
+        sign("Neon warm white", neon_sign(0xffa640, 0xfff7e6, &[(n::GLOW, 110.0)])),
+        sign("Neon green, failing tube", neon_sign(0x2dff6e, 0xeaffef, &[(n::FLICKER, 55.0), (n::FLICKER_SPEED, 8.0)])),
+        sign("Neon red, writing on", on),
+        sign("Neon purple marquee", neon_sign(0xa64bff, 0xf3e8ff, &[(n::DASH, 14.0), (n::GAP, 10.0), (n::DASH_SPEED, 40.0)])),
+        sign("Neon over the letters", neon_sign(0xff2bd6, 0xfff0fa, &[(n::SHOW_LAYER, 35.0), (n::LIGHT_LAYER, 60.0)])),
+    ]
+}
+
+/// Lighting looks made of the light effects together.
+fn light_looks() -> Vec<EffectPreset> {
+    use reelforge_core::effects::{dirt, flare, rays};
+    let light = |name: &str, effects: Vec<Effect>| EffectPreset { effects, folder: LIGHT_LOOKS.into(), builtin: true, ..EffectPreset::empty(name, Time::ZERO, Timing::FromStart) };
+    let sun = |x: f32, y: f32| [(flare::X, x), (flare::Y, y)];
+    vec![
+        light("Sunset", vec![
+            fx(EffectKind::ColorCorrect, &[(2, 108.0), (3, 30.0)]),
+            fx(EffectKind::LightRays, &[(rays::X, 75.0), (rays::Y, 30.0), (2, 45.0), (3, 90.0), (4, 55.0), (6, 0xffb070 as f32)]),
+            fx(EffectKind::LensFlare, &[sun(75.0, 30.0)[0], sun(75.0, 30.0)[1], (flare::BRIGHTNESS, 120.0), (4, 0xffa060 as f32), (5, 3.0)]),
+            fx(EffectKind::LensDirt, &[(dirt::X, 75.0), (dirt::Y, 30.0), (2, 1.0), (3, 70.0), (8, 0xffd6a8 as f32)]),
+        ]),
+        light("Sci-fi corridor", vec![
+            fx(EffectKind::ColorCorrect, &[(1, 112.0), (3, -25.0)]),
+            fx(EffectKind::Glow, &[(0, 65.0), (1, 30.0), (2, 120.0)]),
+            fx(EffectKind::AnamorphicFlare, &[(0, 75.0), (1, 900.0), (2, 140.0), (4, 0x4aa8ff as f32)]),
+            fx(EffectKind::LensFlare, &[(flare::X, 50.0), (flare::Y, 45.0), (flare::BRIGHTNESS, 70.0), (4, 0x8fc8ff as f32), (5, 6.0)]),
+        ]),
+        light("Night city", vec![
+            fx(EffectKind::ColorCorrect, &[(1, 110.0), (2, 115.0), (3, -10.0), (4, 8.0)]),
+            fx(EffectKind::Glow, &[(0, 60.0), (1, 40.0), (2, 90.0)]),
+            fx(EffectKind::AnamorphicFlare, &[(0, 88.0), (1, 500.0), (2, 70.0), (4, 0x6f8cff as f32)]),
+            fx(EffectKind::LensDirt, &[(3, 90.0), (5, 55.0), (7, 80.0)]),
+        ]),
+        light("Golden hour haze", vec![
+            fx(EffectKind::ColorCorrect, &[(1, 92.0), (3, 22.0)]),
+            fx(EffectKind::LightLeaks, &[(0, 0xffb347 as f32), (1, 0xff7a4a as f32), (2, 40.0)]),
+            fx(EffectKind::LightRays, &[(rays::X, 85.0), (rays::Y, 15.0), (2, 60.0), (3, 70.0), (6, 0xffd9a0 as f32)]),
+            fx(EffectKind::Glow, &[(0, 70.0), (1, 30.0), (2, 45.0)]),
+        ]),
+        light("Stage spotlight", vec![
+            fx(EffectKind::LightRays, &[(rays::X, 50.0), (rays::Y, -5.0), (2, 70.0), (3, 110.0), (4, 45.0)]),
+            fx(EffectKind::LensFlare, &[(flare::X, 50.0), (flare::Y, 5.0), (flare::BRIGHTNESS, 90.0), (5, 8.0)]),
+            fx(EffectKind::Vignette, &[(0, 45.0)]),
+        ]),
+        light("Summer sun", vec![
+            fx(EffectKind::LensFlare, &[(flare::X, 82.0), (flare::Y, 14.0), (flare::BRIGHTNESS, 110.0), (5, 0.0)]),
+            fx(EffectKind::LensDirt, &[(dirt::X, 82.0), (dirt::Y, 14.0), (2, 1.0), (3, 60.0)]),
+            fx(EffectKind::ColorCorrect, &[(2, 110.0), (3, 12.0)]),
+        ]),
+    ]
 }
 
 /// The saved presets, in one file.
@@ -799,11 +878,20 @@ mod tests {
         let all = starters();
         assert!(all.len() >= 10);
         for p in &all {
-            assert!(p.builtin && p.folder == STARTERS && p.has_visual(), "{}", p.name);
+            assert!(p.builtin && BUILTIN_FOLDERS.contains(&p.folder.as_str()) && p.has_visual(), "{}", p.name);
             for e in &p.effects {
                 assert_eq!(e.params.len(), e.kind.params().len(), "{}: {:?}", p.name, e.kind);
             }
         }
+        // Every look does something (Neon signs need a title's letters, so are checked on one elsewhere).
+        for p in all.iter().filter(|p| p.folder == LIGHT_LOOKS) {
+            assert!(p.effects.len() >= 3, "{}", p.name);
+            for e in &p.effects {
+                assert!(!e.eval_sized(Time::ZERO, None, [640.0, 360.0]).is_identity(), "{}: {:?}", p.name, e.kind);
+            }
+        }
+        let signs: Vec<_> = all.iter().filter(|p| p.folder == NEON_SIGNS).collect();
+        assert!(signs.len() >= 5 && signs.iter().all(|p| p.effects.iter().all(|e| e.kind == EffectKind::NeonPath && reelforge_core::neonpath::on_letters(&e.params.iter().map(|q| q.value).collect::<Vec<_>>()))));
         // A fade sets only the opacity: the clip stays where it is.
         let fade = all.iter().find(|p| p.name == "Fade out").unwrap();
         let mut v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, track_matte: None, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };

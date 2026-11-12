@@ -4,23 +4,58 @@
 //! thinner towards its ends with taper, becomes segments in the same table
 //! the Lightning effect draws from (see [`crate::lightning::table`]); the
 //! flicker is how bright it is at the moment.
+//!
+//! On a title the path can instead be the letters themselves (Path: "The
+//! letters"): every outline of every glyph, written on one after another,
+//! with no mask to draw. The outlines come from the renderer, which has the
+//! fonts (see [`set_letter_outlines`]).
 
 use crate::effects::{neonpath as p, EffectValues};
 use crate::lightning::{Bolts, Segment};
 use crate::mask::Mask;
 use crate::time::Time;
+use crate::title::TitleSpec;
+use std::sync::OnceLock;
 
 /// The most segments drawn (the table is three texels a segment).
 const MAX_SEGMENTS: usize = 2600;
+/// The most letter outlines followed.
+const MAX_LINES: usize = 600;
 
-/// Fill in a Neon path effect's table and brightness from `masks` at source time `t`.
-pub fn fill(v: &mut EffectValues, masks: &[Mask], t: Time, size: [f32; 2]) {
+/// A title's letter outlines (closed polygons in the pixels of a `frame`-sized canvas).
+pub type LetterOutlines = fn(&TitleSpec, [u32; 2]) -> Vec<Vec<[f32; 2]>>;
+static LETTERS: OnceLock<LetterOutlines> = OnceLock::new();
+
+/// Set by the renderer, which lays out the text.
+pub fn set_letter_outlines(f: LetterOutlines) {
+    let _ = LETTERS.set(f);
+}
+
+/// The Path setting is "The letters" (rather than a mask).
+pub fn on_letters(v: &[f32]) -> bool {
+    v.get(p::MASK).is_some_and(|m| m.round() < 0.5)
+}
+
+/// Fill in a Neon path effect's table and brightness from `masks` (or, on a
+/// title, its letters) at source time `t`.
+pub fn fill(v: &mut EffectValues, masks: &[Mask], title: Option<&TitleSpec>, t: Time, size: [f32; 2]) {
     let vals = &v.values;
-    let segs = segments(vals, masks, t, v.time);
+    let segs = if on_letters(vals) {
+        let lines = match (title, LETTERS.get()) {
+            (Some(spec), Some(f)) if !spec.is_3d() => f(spec, [size[0].max(1.0) as u32, size[1].max(1.0) as u32]),
+            _ => Vec::new(),
+        };
+        let lines: Vec<(Vec<[f32; 2]>, bool)> = lines.into_iter().filter(|l| l.len() >= 2).take(MAX_LINES).map(|l| (l, true)).collect();
+        segments_on(vals, &lines, v.time)
+    } else {
+        segments(vals, masks, t, v.time)
+    };
     let flash = brightness(vals, v.time);
     v.table = if segs.is_empty() { None } else { crate::lightning::table(&Bolts { segments: segs.clone(), flash }, size) };
     let n = segs.len();
-    v.gpu = [flash, n as f32, n.div_ceil(crate::lightning::CHUNK) as f32, 0.0];
+    // How much the layer itself is dimmed (0: as it is; 1: only the tube).
+    let dim = 1.0 - (vals.get(p::SHOW_LAYER).copied().unwrap_or(100.0) / 100.0).clamp(0.0, 1.0);
+    v.gpu = [flash, n as f32, n.div_ceil(crate::lightning::CHUNK) as f32, dim];
 }
 
 /// How bright the tube is at `secs` (0–4): its Brightness, dipping as it flickers.
@@ -56,12 +91,48 @@ fn smooth_noise(seed: u32, x: f32) -> f32 {
 
 /// The tube's segments (layer pixels) at source time `t` (`secs` for dashes on the move).
 pub fn segments(v: &[f32], masks: &[Mask], t: Time, secs: f32) -> Vec<Segment> {
+    if on_letters(v) {
+        return Vec::new();
+    }
     let index = (v[p::MASK].round() as usize).max(1) - 1;
     let Some(mask) = masks.get(index) else { return Vec::new() };
-    let mut line = mask.outline(t);
-    let closed = v[p::CLOSED] >= 0.5;
-    if line.len() < 2 {
+    segments_on(v, &[(mask.outline(t), v[p::CLOSED] >= 0.5)], secs)
+}
+
+/// The tube along `lines` (each with whether it's closed), one after
+/// another: Start and End are along all of them together (so a sign
+/// writes on letter by letter); Offset, dashes and taper go round each.
+pub fn segments_on(v: &[f32], lines: &[(Vec<[f32; 2]>, bool)], secs: f32) -> Vec<Segment> {
+    let length = |l: &[[f32; 2]], closed: bool| -> f32 { l.windows(2).map(|w| dist(w[0], w[1])).sum::<f32>() + if closed && l.len() > 2 { l.first().zip(l.last()).map_or(0.0, |(a, b)| dist(*a, *b)) } else { 0.0 } };
+    let lens: Vec<f32> = lines.iter().map(|(l, c)| length(l, *c)).collect();
+    let total: f32 = lens.iter().sum();
+    if !(total > 0.5) {
         return Vec::new();
+    }
+    let (s, e) = ((v[p::START] / 100.0).clamp(0.0, 1.0), (v[p::END] / 100.0).clamp(0.0, 1.0));
+    let (s, e) = (s.min(e) * total, s.max(e) * total);
+    let mut out = Vec::new();
+    let mut at = 0.0f32;
+    for ((line, closed), len) in lines.iter().zip(&lens) {
+        let (a, b) = (at, at + len);
+        at = b;
+        if *len <= 0.0 || e <= a || s >= b {
+            continue;
+        }
+        let (ls, le) = (((s - a) / len).clamp(0.0, 1.0), ((e - a) / len).clamp(0.0, 1.0));
+        along(v, line.clone(), *closed, ls, le, secs, &mut out);
+        if out.len() >= MAX_SEGMENTS {
+            out.truncate(MAX_SEGMENTS);
+            break;
+        }
+    }
+    out
+}
+
+/// The part `s`–`e` (fractions of its length) of one line, into `out`.
+fn along(v: &[f32], mut line: Vec<[f32; 2]>, closed: bool, s: f32, e: f32, secs: f32, out: &mut Vec<Segment>) {
+    if line.len() < 2 {
+        return;
     }
     if closed && line.first() != line.last() {
         line.push(line[0]);
@@ -73,18 +144,16 @@ pub fn segments(v: &[f32], masks: &[Mask], t: Time, secs: f32) -> Vec<Segment> {
     }
     let total = along.last().copied().unwrap_or(0.0);
     if total < 0.5 {
-        return Vec::new();
+        return;
     }
     // The part shown, in lengths (it can run past the end of a closed path and round again).
-    let (s, e) = ((v[p::START] / 100.0).clamp(0.0, 1.0), (v[p::END] / 100.0).clamp(0.0, 1.0));
-    let (s, e) = (s.min(e), s.max(e));
     if e - s <= 1e-4 {
-        return Vec::new();
+        return;
     }
     let off = v[p::OFFSET] / 100.0;
     let (from, to) = if closed { ((s + off) * total, (e + off) * total) } else { (((s + off).clamp(0.0, 1.0)) * total, ((e + off).clamp(0.0, 1.0)) * total) };
     if to - from <= 1e-3 {
-        return Vec::new();
+        return;
     }
     // Dashes: pieces `dash` long every `dash + gap`, sliding along at the dash speed.
     let (dash, gap) = (v[p::DASH].max(0.0), v[p::GAP].max(0.0));
@@ -116,7 +185,6 @@ pub fn segments(v: &[f32], masks: &[Mask], t: Time, secs: f32) -> Vec<Segment> {
         let u = ((d - from) / span).clamp(0.0, 1.0);
         1.0 - taper * (1.0 - (2.0 * u.min(1.0 - u)).min(1.0))
     };
-    let mut out = Vec::new();
     for (x0, x1) in pieces {
         // Corners of the outline inside the piece, and its two ends.
         let mut cuts = vec![x0];
@@ -139,12 +207,11 @@ pub fn segments(v: &[f32], masks: &[Mask], t: Time, secs: f32) -> Vec<Segment> {
                 let (d0, d1) = (w[0] + (w[1] - w[0]) * k as f32 / n as f32, w[0] + (w[1] - w[0]) * (k + 1) as f32 / n as f32);
                 out.push(Segment { a: at(d0), b: at(d1), width: width((d0 + d1) / 2.0), bright: 1.0 });
                 if out.len() >= MAX_SEGMENTS {
-                    return out;
+                    return;
                 }
             }
         }
     }
-    out
 }
 
 fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -195,6 +262,21 @@ mod tests {
         // No such mask, or nothing shown: nothing.
         assert!(segments(&values(&[(p::MASK, 2.0)]), &m, Time::ZERO, 0.0).is_empty());
         assert!(segments(&values(&[(p::END, 0.0)]), &m, Time::ZERO, 0.0).is_empty());
+    }
+
+    #[test]
+    fn several_lines_write_on_one_after_another() {
+        let a = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
+        let b = vec![[200.0, 0.0], [300.0, 0.0], [300.0, 100.0], [200.0, 100.0]];
+        let lines = vec![(a, true), (b, true)];
+        assert!((length(&segments_on(&values(&[]), &lines, 0.0)) - 800.0).abs() < 0.5);
+        // Halfway: the first square only; three quarters: half the second too.
+        let half = segments_on(&values(&[(p::END, 50.0)]), &lines, 0.0);
+        assert!((length(&half) - 400.0).abs() < 0.5 && half.iter().all(|s| s.a[0] <= 100.0));
+        assert!((length(&segments_on(&values(&[(p::END, 75.0)]), &lines, 0.0)) - 600.0).abs() < 0.5);
+        // The letters setting without a title (or a renderer): nothing, and no mask is read.
+        assert!(on_letters(&values(&[(p::MASK, 0.0)])));
+        assert!(segments(&values(&[(p::MASK, 0.0)]), &square(), Time::ZERO, 0.0).is_empty());
     }
 
     #[test]

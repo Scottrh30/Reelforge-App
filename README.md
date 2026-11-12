@@ -542,9 +542,14 @@ What works now:
     up from the **Seed**; **Smudge size**, **Specks**) that show only where light reaches them —
     from the bright parts of the picture round about (**Threshold**, **Spread**), or a light
     you place and drag in the Viewer. **Amount** and **Colour**
-  - **Neon path** (Light & stylize): a glowing neon tube along one of the layer's masks.
-    Draw a mask with the pen (set its **Use** to *A path* so it doesn't cut the layer) and
-    give its number as **Mask**. **Start**, **End** and **Offset** write it on or send it round
+  - **Neon path** (Light & stylize): a glowing neon tube along one of the layer's masks, or
+    round a title's letters. Draw a mask with the pen (set its **Use** to *A path* so it
+    doesn't cut the layer) and pick it as the **Path**; or, on a title, pick **The letters**:
+    every outline of every letter (and the holes in them, as real neon signs are bent), or of
+    a title's shape, with no mask to draw, following the text as you edit it. **Neon…** in a
+    title's panel does it in one click from the **Neon signs** presets (pink, ice blue, warm
+    white, a green failing tube, red writing on, a purple marquee, or over the letters).
+    **Show the layer** at 0 % leaves only the tube (a sign at night). **Start**, **End** and **Offset** write it on or send it round
     (keyframe them), **Closed** joins the ends, **Dash length**, **Gap** and **Dash speed**
     make a chasing border, **Taper** thins its ends, **Flicker** (and its speed) makes a failing
     tube; **Core width** and colour, **Glow size**, intensity and colour, **Light the layer**
@@ -1105,7 +1110,11 @@ What works now:
   its distance from the middle, keyframes too, scaled with the frame so all of the old frame
   still shows; solids and adjustment layers keep filling it), **Scale to fill** (scaled so the
   new frame is filled), or **Keep their size** (centred, so a bigger frame shows more round
-  them); the choice is remembered. Edits keep their times, and it's one undo step. Or **any size** and frame rate typed in; or from
+  them); the choice is remembered. When fitting or filling, looks keep their proportions as
+  well: a layer's effects are measured in its own pixels, so they shrink or grow with it, and
+  on solids and adjustment layers (always the frame's size) the effect settings measured in
+  pixels — blur radius, glow size, outline width, shake, dash lengths, with their keyframes —
+  are scaled with the frame too. Edits keep their times, and it's one undo step. Or **any size** and frame rate typed in; or from
   **your templates**: **File → Save as template…** keeps a whole project to start from (its
   sequences, tracks, titles, effects and media), and a project started from one is new and
   unsaved, so the template is never written over. **Recent projects** sit beside them, newest
@@ -1637,7 +1646,15 @@ it.
   - **Starter looks** come with Reelforge: Teal and orange, Black and white, Film look, Dreamy
     glow, Warm and soft, Old video (VHS), Green screen, Blue screen, Fade in, Fade out (sets
     only the opacity, over the clip's last second) and Slow push in (stretched over the clip).
-    They can be starred and exported, not renamed or deleted.
+    **Neon signs** (for titles: Neon path round the letters, only the tube showing): Neon pink,
+    ice blue, warm white, green failing tube, red writing on (over its first second and a
+    half), purple marquee (chasing dashes) and over the letters. **Light looks** put the light
+    effects together: **Sunset** (a warm grade, rays, a cinematic sun flare and lens dirt lit by
+    it, all from the same spot), **Sci-fi corridor** (cool, glowing, long blue anamorphic
+    streaks and a lens flare), **Night city** (glow, anamorphic streaks off the lights, dirt the
+    lights catch, richer colour), **Golden hour haze**, **Stage spotlight** and **Summer sun**.
+    Move a light by dragging its X and Y, or change any part. All of these can be starred and
+    exported, not renamed or deleted.
   - Presets are kept in `effect-presets.json` (pictures in `preset-pictures`) in the app's
     settings folder; one that uses a plugin you no longer have says so.
 
@@ -2331,6 +2348,12 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   display values, `((v + lift·(1 − v))·gain)^gamma + offset`, then contrast about the pivot,
   then hue and saturation in Rec. 709 Cb/Cr. A puck at (x, y) is the chroma (Cb, Cr) = 0.35·(x,
   y) as R′G′B′ with no luma; the CPU sums and the shader are tested against each other.
+- **Neon path on letters** (`core::neonpath`, `render::text3d::letter_outlines`): the renderer,
+  which has the fonts, registers a function that lays out the title and returns every glyph
+  contour as a polygon (curves cut to within half a pixel, cached by the title's content).
+  Start and End run along all the contours together, so a sign writes on letter by letter;
+  Offset, dashes and taper go round each. **Show the layer** dims the layer under the tube
+  (a fourth value passed to the same shader as Lightning).
 - **HSL qualifier** (`core::effects::qualify`, `fs_qualify` in `render/src/effects.wgsl`): the
   matte is the product of three soft bands — hue as a circular distance from the centre (full
   inside half the width, falling to nothing over the softness), saturation and luminance as

@@ -49,8 +49,11 @@
     for (const f of folders) out.push({ key: "f:" + f, label: f, items: list.filter((p) => !p.builtin && p.folder === f) });
     const loose = list.filter((p) => !p.builtin && !p.folder);
     if (loose.length) out.push({ key: "mine", label: folders.length ? "Not in a folder" : "Your presets", items: loose });
-    const starters = list.filter((p) => p.builtin);
-    if (starters.length) out.push({ key: "starters", label: "Starter looks", items: starters });
+    // The built-in ones in their own folders (Starter looks, Neon signs, Light looks).
+    const builtins = list.filter((p) => p.builtin);
+    for (const f of [...new Set(builtins.map((p) => p.folder || "Starter looks"))]) {
+      out.push({ key: f === "Starter looks" ? "starters" : "b:" + f, label: f, items: builtins.filter((p) => (p.folder || "Starter looks") === f) });
+    }
     return out;
   });
 

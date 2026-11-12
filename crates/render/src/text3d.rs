@@ -90,6 +90,30 @@ type P2 = [f32; 2];
 /// Each glyph's outline (or each path of a shape) as closed polygons in
 /// canvas pixels, and whether it's filled by the even-odd rule.
 fn glyph_polygons(spec: &TitleSpec, frame: [u32; 2]) -> Vec<(Vec<Vec<P2>>, bool)> {
+    glyph_polygons_within(spec, frame, TOLERANCE)
+}
+
+/// Every outline of a title's letters (or its shape's paths), in canvas
+/// pixels, curves cut to within half a pixel: what Neon path follows when
+/// its Path is the letters. Cached.
+pub fn letter_outlines(spec: &TitleSpec, frame: [u32; 2]) -> Vec<Vec<[f32; 2]>> {
+    type Cache = Mutex<HashMap<u64, Arc<Vec<Vec<P2>>>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let id = spec.content_hash(frame);
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(l) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
+        return l.as_ref().clone();
+    }
+    let lines: Arc<Vec<Vec<P2>>> = Arc::new(glyph_polygons_within(spec, frame, 0.5).into_iter().flat_map(|(polys, _)| polys).collect());
+    let mut c = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if c.len() >= 32 {
+        c.clear();
+    }
+    c.insert(id, lines.clone());
+    lines.as_ref().clone()
+}
+
+fn glyph_polygons_within(spec: &TitleSpec, frame: [u32; 2], tolerance: f32) -> Vec<(Vec<Vec<P2>>, bool)> {
     if let Some(shape) = &spec.shape {
         let c = [frame[0].max(1) as f32 / 2.0, frame[1].max(1) as f32 / 2.0];
         return shape.placed(c, spec.size.max(1.0)).into_iter().map(|p| (p.contours.into_iter().map(clean).filter(|c| c.len() >= 3).collect::<Vec<_>>(), p.even_odd)).filter(|p| !p.0.is_empty()).collect();
@@ -112,14 +136,14 @@ fn glyph_polygons(spec: &TitleSpec, frame: [u32; 2]) -> Vec<(Vec<Vec<P2>>, bool)
                 OutlineCurve::Quad(a, b, c) => {
                     let (a, b, c) = (px(a), px(b), px(c));
                     let dd = len([a[0] - 2.0 * b[0] + c[0], a[1] - 2.0 * b[1] + c[1]]);
-                    let n = ((dd / (8.0 * TOLERANCE)).sqrt().ceil() as usize).clamp(1, 64);
+                    let n = ((dd / (8.0 * tolerance)).sqrt().ceil() as usize).clamp(1, 64);
                     (a, (1..=n).map(|i| quad(a, b, c, i as f32 / n as f32)).collect())
                 }
                 OutlineCurve::Cubic(a, b, c, d) => {
                     let (a, b, c, d) = (px(a), px(b), px(c), px(d));
                     let d1 = len([a[0] - 2.0 * b[0] + c[0], a[1] - 2.0 * b[1] + c[1]]);
                     let d2 = len([b[0] - 2.0 * c[0] + d[0], b[1] - 2.0 * c[1] + d[1]]);
-                    let n = ((0.75 * d1.max(d2) / TOLERANCE).sqrt().ceil() as usize).clamp(1, 64);
+                    let n = ((0.75 * d1.max(d2) / tolerance).sqrt().ceil() as usize).clamp(1, 64);
                     (a, (1..=n).map(|i| cubic(a, b, c, d, i as f32 / n as f32)).collect())
                 }
             };

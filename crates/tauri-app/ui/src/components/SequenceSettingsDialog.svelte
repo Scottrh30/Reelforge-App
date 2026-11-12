@@ -157,7 +157,7 @@
       {#if resized}
         <div class="fit" role="radiogroup" aria-label="Layers">
           <span>Layers</span>
-          <label title="Every layer scaled with the frame (and its distance from the middle), so all of the old frame still shows"><input type="radio" name="seqset-fit" value="Fit" bind:group={fit} /> Scale to fit</label>
+          <label title="Every layer scaled with the frame (and its distance from the middle), so all of the old frame still shows; effect sizes in pixels (blur, glow, outlines) keep their proportions"><input type="radio" name="seqset-fit" value="Fit" bind:group={fit} /> Scale to fit</label>
           <label title="Scaled so the new frame is filled; edges may go off it"><input type="radio" name="seqset-fit" value="Fill" bind:group={fit} /> Scale to fill</label>
           <label title="Layers keep their size, centred: a bigger frame shows more around them"><input type="radio" name="seqset-fit" value="Keep" bind:group={fit} /> Keep their size</label>
         </div>

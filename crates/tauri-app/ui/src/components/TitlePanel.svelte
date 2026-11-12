@@ -10,6 +10,13 @@
   // `kerningTool`: show the kerning tool (the Text panel does; Controls keeps it short).
   let { ins, kerningTool = true }: { ins: Inspector; kerningTool?: boolean } = $props();
 
+  // Neon in one click: the built-in Neon signs (Neon path round the letters).
+  let neon = $state<string[]>([]);
+  api
+    .fxPresetList()
+    .then((l) => (neon = l.filter((p) => p.builtin && p.folder === "Neon signs").map((p) => p.name)))
+    .catch(() => {});
+
   type Font = { path: string | null; index: number; name: string };
   type Rgba = [number, number, number, number];
   // A local copy while editing so fields don't jump back between updates.
@@ -183,7 +190,26 @@
 </script>
 
 <div class="group">
-  <div class="phead"><h4>Title</h4><button class="ghost small" onclick={() => (app.savePreset = { clip: ins.id })} title="Save this title's style (font, size, colours, outline, shadow, background) as a preset for other titles">Save as preset…</button></div>
+  <div class="phead"><h4>Title</h4><button class="ghost small" onclick={() => (app.savePreset = { clip: ins.id })} title="Save this title's style (font, size, colours, outline, shadow, background) as a preset for other titles">Save as preset…</button>
+    {#if neon.length && !(t.extrude > 0) && !t.model}
+      <select
+        class="neon"
+        aria-label="Make it a neon sign"
+        title="Make it a neon sign: a glowing tube round the letters (Neon path, Path: The letters), no mask to draw. Change the colours, flicker and write-on under Effects"
+        value=""
+        onchange={(e) => {
+          const name = e.currentTarget.value;
+          e.currentTarget.value = "";
+          if (name) run(api.fxPresetApply(ins.id, name, false));
+        }}
+      >
+        <option value="">Neon…</option>
+        {#each neon as n}
+          <option value={n}>{n.replace(/^Neon /, "")}</option>
+        {/each}
+      </select>
+    {/if}
+  </div>
   {#if t.shape}
     <p class="note">A shape instead of text: <b>{(t.shape as { name: string }).name}</b> (from an SVG logo or a mask). Size is its height; font, alignment and spacing don't apply. 3D depth 0 makes it flat.</p>
   {:else}
@@ -610,5 +636,9 @@
   .muted {
     color: var(--muted);
     margin: 4px 6px;
+  }
+  .neon {
+    margin-left: 4px;
+    max-width: 9em;
   }
 </style>

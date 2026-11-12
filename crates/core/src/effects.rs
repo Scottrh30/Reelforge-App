@@ -840,6 +840,10 @@ pub mod neonpath {
     pub const DASH_SPEED: usize = 17;
     pub const LIGHT_LAYER: usize = 18;
     pub const OPACITY: usize = 19;
+    /// How much of the layer itself shows under the tube (0: only the tube, a sign at night).
+    pub const SHOW_LAYER: usize = 20;
+    /// The Path menu: a title's letters, then the layer's masks.
+    pub const PATHS: [&str; 17] = ["The letters (titles)", "Mask 1", "Mask 2", "Mask 3", "Mask 4", "Mask 5", "Mask 6", "Mask 7", "Mask 8", "Mask 9", "Mask 10", "Mask 11", "Mask 12", "Mask 13", "Mask 14", "Mask 15", "Mask 16"];
 }
 pub mod shake {
     pub const AMOUNT: usize = 0;
@@ -1426,8 +1430,8 @@ const LENS_DIRT: [ParamSpec; 10] = [
     color("Colour", 0xfff0dc),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
-const NEON_PATH: [ParamSpec; 20] = [
-    spec("Mask", 1.0, 1.0, 32.0, "", 0.02),
+const NEON_PATH: [ParamSpec; 21] = [
+    ParamSpec { name: "Path", default: 1.0, min: 0.0, max: 16.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&neonpath::PATHS) },
     spec("Start", 0.0, 0.0, 100.0, " %", 0.2),
     spec("End", 100.0, 0.0, 100.0, " %", 0.2),
     spec("Offset", 0.0, -1000.0, 1000.0, " %", 0.2),
@@ -1447,6 +1451,7 @@ const NEON_PATH: [ParamSpec; 20] = [
     spec("Dash speed", 0.0, -2000.0, 2000.0, " px/s", 1.0),
     spec("Light the layer", 0.0, 0.0, 300.0, " %", 0.5),
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Show the layer", 100.0, 0.0, 100.0, " %", 0.5),
 ];
 const CAMERA_SHAKE: [ParamSpec; 7] = [
     spec("Amount", 12.0, 0.0, 500.0, " px", 0.25),
@@ -1791,7 +1796,7 @@ impl EffectKind {
             EffectKind::LightRays => "Rays of light streaming out from a point through the bright parts of the layer (or all of it), like sun through trees or a logo's god rays. Drag the source in the Viewer.",
             EffectKind::AnamorphicFlare => "Long horizontal streaks out of the bright parts of the picture (lamps, headlights, highlights), as an anamorphic lens draws them.",
             EffectKind::LensDirt => "Smudges and specks on the lens that light up where bright light hits them: from the bright parts of the picture, or a light you place.",
-            EffectKind::NeonPath => "A glowing neon tube along one of the layer's masks: draw a mask (set its Use to A path), pick it here, then write it on, dash it or make it flicker.",
+            EffectKind::NeonPath => "A glowing neon tube along one of the layer's masks: draw a mask (set its Use to A path) and pick it as the Path, or on a title pick The letters to outline the text itself; then write it on, dash it or make it flicker. Show the layer at 0 % leaves only the tube.",
             EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
             EffectKind::ChromaticAberration => "Colour fringes: red and blue pulled apart towards the edges, like a cheap lens, or one way for a glitchy look.",
             EffectKind::FilmGrain => "Film grain that changes every frame: fine or coarse, mono or colour, kept out of the highlights.",
@@ -2049,6 +2054,33 @@ impl EffectValues {
 }
 
 impl Effect {
+    /// Multiply its settings measured in pixels (blur radius, glow size,
+    /// outline width, shake amount, dash speed…) and their keyframes by `k`,
+    /// kept within each setting's range; for a layer drawn `k` times as big.
+    /// A camera's, light's or point's positions, and plugins' settings, are
+    /// left alone. Whether anything changed.
+    pub fn scale_pixels(&mut self, k: f32) -> bool {
+        if !k.is_finite() || k <= 0.0 || (k - 1.0).abs() < 1e-6 || matches!(self.kind, EffectKind::Camera | EffectKind::Light | EffectKind::Point | EffectKind::Plugin | EffectKind::OpenFx) {
+            return false;
+        }
+        let mut changed = false;
+        for (p, spec) in self.params.iter_mut().zip(self.kind.params()) {
+            if !matches!(spec.ui, ParamUi::Number) || !spec.suffix.trim_start().starts_with("px") {
+                continue;
+            }
+            let fit = |v: f32| (v * k).clamp(spec.min.min(v), spec.max.max(v));
+            let v = fit(p.value);
+            changed |= v != p.value;
+            p.value = v;
+            for key in &mut p.keys.0 {
+                let v = fit(key.value);
+                changed |= v != key.value;
+                key.value = v;
+            }
+        }
+        changed
+    }
+
     pub fn new(kind: EffectKind) -> Self {
         let data = match kind {
             EffectKind::Curves => Some(EffectData::Curves(Curves::default())),

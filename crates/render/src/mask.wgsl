@@ -343,7 +343,8 @@ fn lt_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_lightning(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    // (Neon path can dim the layer itself, down to nothing but the tube.)
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * (1.0 - clamp(fx.extra2.w, 0.0, 1.0));
     let size = fx.extra.zw;
     let p = in.uv * size;
     let core_w = max(fx.p2.z, 0.0);

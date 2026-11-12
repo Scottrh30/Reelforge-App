@@ -443,7 +443,7 @@ impl Clip {
             .map(|e| {
                 let mut v = e.eval_sized(src, Some(prev), size);
                 if e.kind == crate::effects::EffectKind::NeonPath {
-                    crate::neonpath::fill(&mut v, &self.masks, src, size);
+                    crate::neonpath::fill(&mut v, &self.masks, self.title_at(src).as_deref(), src, size);
                 }
                 v
             })

@@ -2451,7 +2451,7 @@ fn neon_path_glows_along_the_mask() {
     let masks = vec![Mask { shape: MaskShape::Rectangle, points: vec![[40.0, 20.0], [120.0, 20.0], [120.0, 70.0], [40.0, 70.0]], text_path: true, ..Mask::default() }];
     let e = Effect::new(EffectKind::NeonPath);
     let mut v = e.eval_sized(reelforge_core::Time::ZERO, None, [160.0, 90.0]);
-    reelforge_core::neonpath::fill(&mut v, &masks, reelforge_core::Time::ZERO, [160.0, 90.0]);
+    reelforge_core::neonpath::fill(&mut v, &masks, None, reelforge_core::Time::ZERO, [160.0, 90.0]);
     assert!(!v.is_identity());
     let mut l = full(74, &black, [160, 90]);
     l.effects = vec![v];
@@ -2463,6 +2463,60 @@ fn neon_path_glows_along_the_mask() {
     assert!(sum3(on) > 500, "the tube's core: {on:?}");
     assert!(glow[0] > glow[1] && glow[2] > glow[1] && sum3(glow) > 60, "pink glow beside it: {glow:?}");
     assert!(sum3(off) < sum3(glow), "dimmer in the middle: {off:?}");
+    // Show the layer at 0 %: a grey layer looks as the black one did (only the tube's light).
+    let on_black = out.clone();
+    let grey = solid(1, 1, [128, 128, 128, 255]);
+    let mut e = Effect::new(EffectKind::NeonPath);
+    e.params[reelforge_core::effects::neonpath::SHOW_LAYER].value = 0.0;
+    let mut v = e.eval_sized(reelforge_core::Time::ZERO, None, [160.0, 90.0]);
+    reelforge_core::neonpath::fill(&mut v, &masks, None, reelforge_core::Time::ZERO, [160.0, 90.0]);
+    let mut l = full(74, &grey, [160, 90]);
+    l.effects = vec![v];
+    c.render([160, 90], &[l]);
+    let out = c.read_output().unwrap();
+    for (x, y) in [(80, 45), (5, 85), (80, 20), (150, 5)] {
+        let (a, b) = (px(&out, 160, x, y), px(&on_black, 160, x, y));
+        assert!((0..3).all(|k| (a[k] as i32 - b[k] as i32).abs() <= 3), "only the tube at {x},{y}: {a:?} (on black {b:?})");
+    }
+}
+
+/// Neon path on a title's letters: the renderer hands over every outline of
+/// every glyph, and the tube follows them (an O has two: outside and hole).
+#[test]
+fn neon_path_follows_a_titles_letters() {
+    use reelforge_core::{effects::neonpath as np, TitleSpec};
+    let spec = TitleSpec { text: "O".into(), size: 120.0, ..TitleSpec::default() };
+    let lines = reelforge_render::text3d::letter_outlines(&spec, [320, 180]);
+    if lines.is_empty() {
+        return; // no font on this machine
+    }
+    assert_eq!(lines.len(), 2, "outside and inside of the O");
+    let Some(mut c) = setup() else { return };
+    let mut e = Effect::new(EffectKind::NeonPath);
+    e.params[np::MASK].value = 0.0;
+    let mut v = e.eval_sized(reelforge_core::Time::ZERO, None, [320.0, 180.0]);
+    reelforge_core::neonpath::fill(&mut v, &[], Some(&spec), reelforge_core::Time::ZERO, [320.0, 180.0]);
+    assert!(v.table.is_some() && v.gpu[1] > 20.0, "segments round both outlines: {}", v.gpu[1]);
+    // Every segment lies on the letter's outlines.
+    let segs = reelforge_core::neonpath::segments_on(&v.values, &lines.iter().map(|l| (l.clone(), true)).collect::<Vec<_>>(), 0.0);
+    assert!(segs.len() as f32 == v.gpu[1]);
+    // Written on halfway: the outside first, so about half the length.
+    let mut half = v.values.clone();
+    half[np::END] = 50.0;
+    let all: f32 = segs.iter().map(|s| ((s.a[0] - s.b[0]).powi(2) + (s.a[1] - s.b[1]).powi(2)).sqrt()).sum();
+    let some: f32 = reelforge_core::neonpath::segments_on(&half, &lines.iter().map(|l| (l.clone(), true)).collect::<Vec<_>>(), 0.0).iter().map(|s| ((s.a[0] - s.b[0]).powi(2) + (s.a[1] - s.b[1]).powi(2)).sqrt()).sum();
+    assert!((some / all - 0.5).abs() < 0.02, "{some} of {all}");
+    // On the GPU: the tube's light round the O's outside edge, on an empty layer.
+    let clear = solid(1, 1, [0, 0, 0, 0]);
+    let mut l = full(75, &clear, [320, 180]);
+    l.effects = vec![v];
+    c.render([320, 180], &[l]);
+    let out = c.read_output().unwrap();
+    let p0 = lines[0].iter().copied().fold([f32::MAX, 0.0f32], |m, p| if p[0] < m[0] { p } else { m });
+    let lit = px(&out, 320, p0[0].round() as u32, p0[1].round() as u32);
+    assert!(sum3(lit) > 300, "lit on the outline at {p0:?}: {lit:?}");
+    let far = px(&out, 320, 2, 2);
+    assert!(sum3(far) * 8 < sum3(lit), "dimmer far away: {far:?}");
 }
 
 /// Every lens in the flare library draws (and they all differ).

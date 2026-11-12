@@ -1546,9 +1546,16 @@ impl Editor {
                     k.value = [k.value[0] * kx, k.value[1] * ky];
                 }
                 if sized {
+                    // (Its effects are in its own pixels, so they shrink or grow with it.)
                     v.transform.scale = v.transform.scale.map(|s| s * f);
                     for k in &mut v.anim.scale.0 {
                         k.value = k.value.map(|s| s * f);
+                    }
+                } else if c.scene.is_none() {
+                    // A solid or adjustment layer is always the frame's size, so its
+                    // effects' pixel sizes (blur, glow, outline…) change with the frame.
+                    for e in &mut v.effects {
+                        e.scale_pixels(f);
                     }
                 }
                 if v != old {
@@ -3758,6 +3765,40 @@ mod tests {
         e.undo();
         e.set_sequence_settings_fit("S", 960, 540, r, (1, 1), LayerFit::Keep);
         assert_eq!(c(&e, 10).transform.scale, [1.0, 1.0]);
+    }
+
+    /// Scale to fit keeps looks in proportion: a solid's or adjustment
+    /// layer's effect sizes in pixels (blur, glow, keyframes too) follow the
+    /// frame, other settings don't; a clip's own effects already shrink with
+    /// its scale, so they stay as they are.
+    #[test]
+    fn scale_to_fit_scales_effect_pixel_sizes_of_frame_sized_layers() {
+        use reelforge_core::effects::{Effect, EffectKind};
+        let mut e = editor();
+        let s = Time::from_secs_f64;
+        let r = e.seq().frame_rate;
+        e.set_sequence_settings("S", 1920, 1080, r, (1, 1));
+        let mut glow = Effect::new(EffectKind::Glow);
+        glow.params[0].value = 70.0; // threshold (%), not a size
+        glow.params[1].value = 40.0; // radius (px)
+        glow.params[1].keys.0 = vec![reelforge_core::anim::Key { at: s(0.0), value: 60.0, interp: Default::default(), ease_out: None, ease_in: None }];
+        let mut adj = Clip::new(ClipId(20), MediaId::GENERATED, s(0.0), s(0.0), s(2.0), None);
+        adj.adjustment = true;
+        adj.effects = vec![glow.clone()];
+        let mut clip = Clip::new(ClipId(21), MediaId::GENERATED, s(0.0), s(0.0), s(2.0), None);
+        clip.effects = vec![glow];
+        e.project.sequences[e.active].tracks[0].clips = vec![adj, clip];
+        e.set_sequence_settings_fit("S", 960, 540, r, (1, 1), LayerFit::Fit);
+        let c = |e: &Editor, id| e.seq().find_clip(ClipId(id)).unwrap().1.clone();
+        let a = c(&e, 20);
+        assert_eq!((a.effects[0].params[0].value, a.effects[0].params[1].value, a.effects[0].params[1].keys.0[0].value), (70.0, 20.0, 30.0));
+        let b = c(&e, 21);
+        assert_eq!((b.effects[0].params[1].value, b.transform.scale), (40.0, [0.5, 0.5]));
+        e.undo();
+        assert_eq!(c(&e, 20).effects[0].params[1].value, 40.0);
+        // Keep: nothing moves.
+        e.set_sequence_settings_fit("S", 960, 540, r, (1, 1), LayerFit::Keep);
+        assert_eq!(c(&e, 20).effects[0].params[1].value, 40.0);
     }
 
     #[test]

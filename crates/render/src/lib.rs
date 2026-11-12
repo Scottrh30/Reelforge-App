@@ -418,6 +418,8 @@ fn blend_state(mode: BlendMode) -> wgpu::BlendState {
 
 impl Compositor {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        // (Neon path can follow a title's letters, which only the renderer can lay out.)
+        reelforge_core::neonpath::set_letter_outlines(text3d::letter_outlines);
         let layer_shader = device.create_shader_module(wgpu::include_wgsl!("composite.wgsl"));
         let output_shader = device.create_shader_module(wgpu::include_wgsl!("output.wgsl"));
 

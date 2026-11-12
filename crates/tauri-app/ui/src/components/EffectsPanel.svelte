@@ -107,12 +107,12 @@
   function presetMenu(list: FxPreset[]): MenuItem[] {
     const one = (p: FxPreset): MenuItem => ({ label: p.favourite ? `★ ${p.name}` : p.name, run: () => run(api.fxPresetApply(ins.id, p.name, false)) });
     const favs = list.filter((p) => p.favourite).map(one);
-    const folders = [...new Set(list.map((p) => (p.builtin ? "Starter looks" : p.folder)).filter(Boolean))];
+    const folders = [...new Set(list.map((p) => (p.builtin ? p.folder || "Starter looks" : p.folder)).filter(Boolean))];
     const loose = list.filter((p) => !p.builtin && !p.folder).map(one);
     const out: MenuItem[] = [...favs];
     if (favs.length && (loose.length || folders.length)) out.push({ separator: true });
     out.push(...loose);
-    for (const f of folders) out.push({ label: f, submenu: list.filter((p) => (p.builtin ? "Starter looks" : p.folder) === f).map(one) });
+    for (const f of folders) out.push({ label: f, submenu: list.filter((p) => (p.builtin ? p.folder || "Starter looks" : p.folder) === f).map(one) });
     return out.length ? out : [{ label: "None saved yet", disabled: true, run: () => {} }];
   }
   function savePreset() {
