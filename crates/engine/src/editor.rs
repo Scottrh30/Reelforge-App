@@ -1613,7 +1613,33 @@ impl Editor {
     pub fn toggle_collapse(&mut self, track: usize) {
         let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
         tr.collapsed = !tr.collapsed;
+        tr.expanded = false;
         self.status = format!("{} {}", tr.name, if tr.collapsed { "collapsed" } else { "expanded" });
+        self.touch();
+    }
+
+    /// The track's arrow: collapsed → normal → (a video track) expanded with
+    /// its clip's effects and properties → collapsed.
+    pub fn cycle_track_view(&mut self, track: usize) {
+        let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
+        let video = tr.kind == TrackKind::Video;
+        (tr.collapsed, tr.expanded) = match (tr.collapsed, tr.expanded) {
+            (true, _) => (false, false),
+            (false, false) if video => (false, true),
+            _ => (true, false),
+        };
+        self.status = format!("{} {}", tr.name, if tr.collapsed { "collapsed" } else if tr.expanded { "expanded: its clip's effects and properties" } else { "expanded" });
+        self.touch();
+    }
+
+    /// Show or hide a video track's clip effects and properties in its header.
+    pub fn set_track_properties(&mut self, track: usize, on: bool) {
+        let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
+        if tr.kind != TrackKind::Video || tr.expanded == on && !tr.collapsed {
+            return;
+        }
+        tr.expanded = on;
+        tr.collapsed = false;
         self.touch();
     }
 
@@ -1622,6 +1648,9 @@ impl Editor {
     pub fn set_all_tracks(&mut self, kind: Option<TrackKind>, collapsed: bool, reset: bool) {
         for tr in self.project.sequences[self.active].tracks.iter_mut().filter(|t| kind.is_none_or(|k| t.kind == k)) {
             tr.collapsed = collapsed;
+            if collapsed {
+                tr.expanded = false;
+            }
             if reset {
                 tr.height = Track::DEFAULT_HEIGHT;
             }
@@ -3799,6 +3828,30 @@ mod tests {
         // Keep: nothing moves.
         e.set_sequence_settings_fit("S", 960, 540, r, (1, 1), LayerFit::Keep);
         assert_eq!(c(&e, 20).effects[0].params[1].value, 40.0);
+    }
+
+    /// A track's arrow: collapsed → normal → expanded with its clip's
+    /// properties (video tracks) → collapsed; audio tracks skip that step.
+    #[test]
+    fn track_arrows_cycle_through_expanded() {
+        let mut e = editor();
+        let v = e.seq().tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let a = e.seq().tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let st = |e: &Editor, i: usize| (e.seq().tracks[i].collapsed, e.seq().tracks[i].expanded);
+        assert_eq!(st(&e, v), (false, false));
+        e.cycle_track_view(v);
+        assert_eq!(st(&e, v), (false, true));
+        e.cycle_track_view(v);
+        assert_eq!(st(&e, v), (true, false));
+        e.cycle_track_view(v);
+        assert_eq!(st(&e, v), (false, false));
+        e.cycle_track_view(a);
+        assert_eq!(st(&e, a), (true, false), "audio: straight to collapsed");
+        e.set_track_properties(a, true);
+        assert_eq!(st(&e, a), (true, false), "no properties on audio tracks");
+        e.set_track_properties(v, true);
+        e.set_all_tracks(None, true, false);
+        assert_eq!(st(&e, v), (true, false), "collapsing all closes them");
     }
 
     #[test]

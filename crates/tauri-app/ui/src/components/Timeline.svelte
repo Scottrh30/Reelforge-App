@@ -8,6 +8,7 @@
   import { view, geo, perSequence, TRACK_H, MIN_TRACK_H, MAX_TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack, rowH, rowAtY } from "../lib/timeline.svelte";
   import Thumb from "./Thumb.svelte";
   import CurvesPanel from "./CurvesPanel.svelte";
+  import TrackProps from "./TrackProps.svelte";
 
   const SNAP_PX = 8;
   const EDGE_PX = 6;
@@ -539,6 +540,7 @@
       { label: tr.locked ? "Unlock track" : "Lock track", run: () => run(api.trackOp(tr.index, "lock")) },
       { separator: true },
       { label: tr.collapsed ? "Expand track" : "Collapse track", run: () => run(api.trackOp(tr.index, "collapse")) },
+      ...(tr.kind === "video" ? [{ label: tr.expanded ? "Hide clip properties" : "Show clip properties (effects, opacity, position…)", run: () => run(api.trackOp(tr.index, tr.expanded ? "properties_off" : "properties_on")) }] : []),
       ...(tr.kind === "video"
         ? [
             {
@@ -1192,6 +1194,7 @@
         <div class="hstack" style="transform: translateY({-view.vscroll}px)">
           {#each rows as tr (tr.index)}
             {@const lv = app.live?.tracks[tr.index]}
+            {@const foldTip = tr.collapsed ? "Expand track" : tr.expanded || tr.kind !== "video" ? "Collapse track" : "Expand further: show the clip's effects, opacity, position, anchor and rotation"}
             <div
               class="th"
               class:sel-track={litTrack === tr.index}
@@ -1206,8 +1209,8 @@
               title="Drag to move the track up or down, drag its bottom edge to resize it"
             >
               <div class="trow">
-              <button class="fold" onclick={() => run(api.trackOp(tr.index, "collapse"))} title={tr.collapsed ? "Expand track" : "Collapse track"} aria-label={tr.collapsed ? "Expand track" : "Collapse track"} aria-expanded={!tr.collapsed}>
-                <svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d={tr.collapsed ? "M3 1.5 7 5 3 8.5" : "M1.5 3 5 7 8.5 3"} fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <button class="fold" class:deep={tr.expanded} onclick={() => run(api.trackOp(tr.index, "cycle"))} title={foldTip} aria-label={foldTip} aria-expanded={!tr.collapsed}>
+                <svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d={tr.collapsed ? "M3 1.5 7 5 3 8.5" : tr.expanded ? "M1.5 1.5 5 5 8.5 1.5M1.5 5.5 5 9 8.5 5.5" : "M1.5 3 5 7 8.5 3"} fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
               </button>
               {#if renaming === tr.index}
                 <!-- svelte-ignore a11y_autofocus -->
@@ -1244,6 +1247,9 @@
                   </div>
                 {/if}
               </div>
+              {#if tr.expanded}
+                <TrackProps props={tr.props} locked={tr.locked} />
+              {/if}
               {/if}
               <span class="trsize" role="separator" aria-orientation="horizontal" aria-label="Resize {tr.name}" onpointerdown={(e) => sizeDown(e, tr)} ondblclick={() => run(api.trackOp(tr.index, "height", undefined, TRACK_H))} title="Drag to change the track's height, double-click to reset"></span>
             </div>
@@ -1759,6 +1765,9 @@
   }
   .fold:hover {
     color: var(--text);
+  }
+  .fold.deep {
+    color: var(--accent);
   }
   .th.collapsed {
     padding-top: 2px;

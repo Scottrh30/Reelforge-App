@@ -143,8 +143,23 @@ export interface TrackView {
   /// Row height in the timeline, and whether it's collapsed to a thin row.
   height: number;
   collapsed: boolean;
+  /// Showing a clip's effects and properties in its header (video tracks).
+  expanded: boolean;
+  /// For an expanded track: the clip shown (the selected one on it, else the one at the playhead).
+  props: TrackProps | null;
   /// Linked-sound waveforms under its clips: shown, hidden, or as Settings says (null).
   waveforms: boolean | null;
+}
+
+/// A clip's effects and transform (at the playhead), for an expanded track's header.
+export interface TrackProps {
+  clip: number;
+  name: string;
+  transform: Transform;
+  /// Keyframed: opacity, position, anchor, rotation.
+  animated: [boolean, boolean, boolean, boolean];
+  on_clip: boolean;
+  effects: { index: number; label: string; enabled: boolean }[];
 }
 
 export interface SeqView {
@@ -1049,7 +1064,7 @@ export const api = {
   seek: (t: Ticks) => invoke("seek", { t: Math.max(0, Math.round(t)) }),
   trackOp: (
     index: number,
-    op: "mute" | "lock" | "delete" | "rename" | "duplicate" | "target" | "untarget" | "collapse" | "waveforms_on" | "waveforms_off" | "waveforms_default" | "height" | "collapse_all" | "expand_all" | "reset_heights" | "collapse_every" | "expand_every",
+    op: "mute" | "lock" | "delete" | "rename" | "duplicate" | "target" | "untarget" | "collapse" | "cycle" | "properties_on" | "properties_off" | "waveforms_on" | "waveforms_off" | "waveforms_default" | "height" | "collapse_all" | "expand_all" | "reset_heights" | "collapse_every" | "expand_every",
     name?: string,
     to?: number,
   ) => invoke("track_op", { index, op, name, to }),

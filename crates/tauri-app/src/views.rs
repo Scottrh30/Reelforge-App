@@ -115,8 +115,57 @@ pub struct TrackView {
     /// Row height in the timeline, and whether it's collapsed to a thin row.
     pub height: u16,
     pub collapsed: bool,
+    /// Showing a clip's effects and properties in its header.
+    pub expanded: bool,
+    /// For an expanded track: the clip shown there (the selected one on the
+    /// track, else the one at the playhead), `None` if there's none.
+    pub props: Option<TrackProps>,
     /// Linked-sound waveforms under its clips: shown, hidden, or as Settings says (`None`).
     pub waveforms: Option<bool>,
+}
+
+/// A clip's effects and transform, for an expanded track's header.
+#[derive(Serialize)]
+pub struct TrackProps {
+    pub clip: u64,
+    pub name: String,
+    /// The transform as seen at the playhead (keyframes evaluated).
+    pub transform: Transform,
+    /// Keyframed: opacity, position, anchor, rotation.
+    pub animated: [bool; 4],
+    /// The playhead is on the clip (keyframed properties can be changed there).
+    pub on_clip: bool,
+    pub effects: Vec<TrackEffect>,
+}
+
+#[derive(Serialize)]
+pub struct TrackEffect {
+    pub index: usize,
+    pub label: String,
+    pub enabled: bool,
+}
+
+/// The clip an expanded track shows: the selected one on it, else the one at the playhead.
+fn track_props(e: &Editor, p: &reelforge_core::Project, t: &reelforge_core::project::Track) -> Option<TrackProps> {
+    if !t.expanded || t.collapsed || t.kind != TrackKind::Video {
+        return None;
+    }
+    let ph = e.playback.playhead;
+    let c = e.selection.and_then(|id| t.clips.iter().find(|c| c.id == id)).or_else(|| t.clips.iter().find(|c| c.contains(ph)))?;
+    if c.scene.is_some() {
+        return None;
+    }
+    let v = c.visual();
+    let (src, on_clip) = e.key_time(c);
+    let a = &v.anim;
+    Some(TrackProps {
+        clip: c.id.0,
+        name: clip_name(p, c),
+        transform: a.eval(&v.transform, src),
+        animated: [!a.opacity.is_empty(), !a.position.is_empty(), !a.anchor.is_empty(), !a.rotation.is_empty()],
+        on_clip,
+        effects: c.effects.iter().enumerate().map(|(index, fx)| TrackEffect { index, label: fx.label(), enabled: fx.enabled }).collect(),
+    })
 }
 
 #[derive(Serialize)]
@@ -608,6 +657,8 @@ pub fn state(e: &Editor) -> State {
             audio: t.audio,
             height: t.height,
             collapsed: t.collapsed,
+            expanded: t.expanded && !t.collapsed && t.kind == TrackKind::Video,
+            props: track_props(e, p, t),
             waveforms: t.waveforms,
             clips: t
                 .clips

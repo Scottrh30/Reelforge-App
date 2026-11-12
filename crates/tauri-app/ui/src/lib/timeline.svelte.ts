@@ -10,9 +10,16 @@ export const MAX_TRACK_H = 240;
 export const COLLAPSED_H = 22;
 
 /// How tall a track's row is on screen.
-export function rowH(tr: { height?: number; collapsed?: boolean }): number {
-  return tr.collapsed ? COLLAPSED_H : tr.height || TRACK_H;
+export function rowH(tr: { height?: number; collapsed?: boolean; expanded?: boolean; props?: { effects: unknown[] } | null }): number {
+  if (tr.collapsed) return COLLAPSED_H;
+  const h = tr.height || TRACK_H;
+  if (!tr.expanded) return h;
+  // Expanded: room for the clip's name, opacity, position, anchor, rotation and each effect (20 px a row).
+  const rows = tr.props ? 5 + Math.max(1, tr.props.effects.length) : 1;
+  return Math.max(h, EXPANDED_TOP + rows * 20 + 6);
 }
+/// An expanded track's name and buttons, above its clip's properties.
+export const EXPANDED_TOP = 50;
 
 /// The row at `y` (pixels from the top of the first row), given each row's top and the end.
 export function rowAtY(tops: number[], y: number): number {

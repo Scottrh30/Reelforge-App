@@ -703,10 +703,16 @@ What works now:
   stack (its clips go with it; video tracks stay above the audio tracks), or use **Move track
   up/down** on the right-click menu. **Track heights**: drag the bottom edge of a track's
   header to make its row taller or shorter (32–240 px; double-click the edge to reset). Taller
-  audio rows give a bigger waveform and volume line to work on. **Collapse** a track to a thin
-  strip with the arrow before its name (clips still show, as slim bars); the right-click menu
-  collapses or expands all video or all audio tracks at once, and **Reset track heights**.
-  Heights and collapsed tracks are saved with the project (they aren't edits, so there's
+  audio rows give a bigger waveform and volume line to work on. The arrow before a track's
+  name steps it through three views: normal, **expanded** (video tracks; a double arrow) and
+  **collapsed** to a thin strip (clips still show, as slim bars). An expanded track's header
+  also shows a clip — the one selected on that track, or else the one at the playhead (click
+  its name to select it): its **Opacity**, **Position**, **Anchor** and **Rotation** as seen at
+  the playhead, to drag or type (keyframed ones, marked ◆, get a key there, as in Controls),
+  and each of its **effects** with a box to switch it on or off. The row grows to fit them.
+  **Show clip properties** on the right-click menu does the same; the menu also collapses or
+  expands all video or all audio tracks at once, and **Reset track heights**. Heights,
+  expanded and collapsed tracks are saved with the project (they aren't edits, so there's
   nothing to undo). Clicking (or right-clicking) a track's name highlights
   the track, its row included; clicking empty timeline or **Esc** clears it, and **Alt+↑/↓**
   moves it up and down the tracks. The highlighted track is the **target**: **Paste** puts

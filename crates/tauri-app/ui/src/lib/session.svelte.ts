@@ -168,7 +168,8 @@ export async function refresh(force = false) {
   // Keyframed values in the Controls panel follow the playhead (a few times a
   // second while playing).
   const ins = app.s?.inspector;
-  const keyed = !!ins && (ins.effects.some((f) => f.animated) || ins.masks.some((m) => m.mask.keys.length > 0) || !!ins.keys);
+  // (So do expanded tracks' clip properties, and which clip they show.)
+  const keyed = (!!ins && (ins.effects.some((f) => f.animated) || ins.masks.some((m) => m.mask.keys.length > 0) || !!ins.keys)) || !!app.s?.seq.tracks.some((t) => t.expanded);
   const now = performance.now();
   const moved = keyed && live.playhead !== lastPlayhead && (!live.playing || now - lastPlayheadFetch > 250);
   // A title's outline is known once it has been drawn: fetch it then.
