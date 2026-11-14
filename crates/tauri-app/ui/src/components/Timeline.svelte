@@ -82,6 +82,59 @@
   });
 
   const x = (t: number) => (t / T - view.scroll) * view.pps;
+
+  // A keyframe diamond in an expanded track's lane being dragged along the
+  // timeline (its value stays); a click without moving goes to it instead.
+  let kdrag = $state<{ clip: number; ch: string; index: number; at: number } | null>(null);
+  function kdDown(e: PointerEvent, clip: number, ch: string, index: number, at: number, locked: boolean) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const x0 = e.clientX;
+    let moved = false;
+    let busy = false;
+    let pending: number | null = null;
+    const send = async (t: number) => {
+      if (busy) {
+        pending = t;
+        return;
+      }
+      busy = true;
+      const used = await api.keyRetime(clip, ch, index, t).catch(() => null);
+      if (kdrag && used != null) kdrag.at = used;
+      busy = false;
+      if (pending != null) {
+        const p = pending;
+        pending = null;
+        send(p);
+      }
+    };
+    const move = (ev: PointerEvent) => {
+      if (locked || (!moved && Math.abs(ev.clientX - x0) < 3)) return;
+      moved = true;
+      let t = at + ((ev.clientX - x0) / view.pps) * T;
+      // Shift: onto the playhead when close.
+      const ph = app.live?.playhead;
+      if (ev.shiftKey && ph != null && Math.abs(x(t) - x(ph)) < 10) t = ph;
+      kdrag = { clip, ch, index, at: kdrag?.at ?? at };
+      send(t);
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      if (moved) {
+        while (busy) await new Promise((r) => setTimeout(r, 10));
+        await run(api.commit());
+        kdrag = null;
+      } else run(api.seek(at));
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  }
   const tAt = (px: number) => Math.max(0, (view.scroll + px / view.pps) * T);
   const maxV = $derived(Math.max(0, totalH + 40 - lanesH));
   $effect(() => {
@@ -1288,19 +1341,22 @@
                 <div class="krows" style="top:{EXPANDED_TOP}px">
                   {#each trackRows(kp) as r, k}
                     {@const keys = r.kind === "prop" ? r.prop.keys : r.kind === "param" ? r.param.keys : null}
+                    {@const ch = r.kind === "prop" ? `t:${r.prop.prop}:0` : r.kind === "param" ? `e:${r.fx.index}:${r.pi}` : ""}
                     <div class="krow" class:fx={r.kind === "fx"} style="top:{k * ROW_H}px"></div>
                     {#if keys}
-                      {#each keys as at}
+                      {#each keys as at0, ki}
+                        {@const dragging = kdrag?.clip === kp.clip && kdrag.ch === ch && kdrag.index === ki}
+                        {@const at = dragging && kdrag ? kdrag.at : at0}
                         {@const kx = x(at)}
                         {#if kx > -10 && kx < lanesW + 10}
                           <button
                             class="kd"
                             class:now={Math.abs(at - (app.live?.playhead ?? -1)) < T / 1000}
+                            class:dragging
                             style="left:{kx - 5}px; top:{k * ROW_H + 4}px"
-                            title="{r.kind === 'prop' ? r.prop.prop : r.kind === 'param' ? r.param.name : ''} keyframe at {timecode(at)}: click to go there"
+                            title="{r.kind === 'prop' ? r.prop.prop : r.kind === 'param' ? r.param.name : ''} keyframe at {timecode(at)}: drag to move it (Shift: onto the playhead), click to go there"
                             aria-label="Keyframe at {timecode(at)}"
-                            onpointerdown={(e) => e.stopPropagation()}
-                            onclick={() => run(api.seek(at))}
+                            onpointerdown={(e) => kdDown(e, kp.clip, ch, ki, at0, tr.locked)}
                           ></button>
                         {/if}
                       {/each}
@@ -1839,6 +1895,10 @@
   }
   .kd:hover {
     filter: brightness(1.25);
+  }
+  .kd.dragging {
+    cursor: ew-resize;
+    outline: 1px solid #fff;
   }
   .kd.now {
     background: #fff;

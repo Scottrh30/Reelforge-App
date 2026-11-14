@@ -1233,6 +1233,8 @@ export const api = {
   transformKey: (id: number, prop: string) => invoke("transform_key", { id, prop }),
   /// Start keyframing a transform property, or stop (every key gone, the value at the playhead kept).
   transformStopwatch: (id: number, prop: string) => invoke("transform_stopwatch", { id, prop }),
+  /// Slide a key along the timeline, keeping its value (live; commit ends it). Returns the time used.
+  keyRetime: (id: number, channel: string, index: number, at: Ticks) => invoke<number | null>("key_retime", { id, channel, index, at: Math.round(at) }),
   keyMove: (id: number, channel: string, index: number, at: Ticks, value: number, keepTime: boolean) => invoke<number | null>("key_move", { id, channel, index, at: Math.round(at), value, keepTime }),
   keyInterp: (id: number, channel: string, index: number, interp: Interp) => invoke("key_interp", { id, channel, index, interp }),
   keyHandle: (id: number, channel: string, index: number, out: boolean, x: number, y: number) => invoke("key_handle", { id, channel, index, out, x, y }),

@@ -1973,6 +1973,7 @@ fn main() {
             keys::transform_key,
             keys::transform_stopwatch,
             keys::key_move,
+            keys::key_retime,
             keys::key_interp,
             keys::key_handle,
             keys::key_delete,

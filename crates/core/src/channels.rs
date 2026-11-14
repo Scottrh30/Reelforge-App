@@ -355,6 +355,23 @@ mod tests {
         assert_eq!(v.channel_keys(op).len(), 2);
     }
 
+    /// Sliding a key along (a diamond dragged in an expanded track's lane):
+    /// same value, new time, both components of a position with it.
+    #[test]
+    fn a_key_slides_keeping_its_value() {
+        let mut v = ClipVisual::default();
+        let x = Channel::Transform(Prop::Position, 0);
+        v.transform.position = [10.0, 20.0];
+        v.channel_add_key(x, s(0.0));
+        v.channel_add_key(x, s(2.0));
+        v.channel_set_key(Channel::Transform(Prop::Position, 1), 1, s(2.0), 120.0, Time(1));
+        let (_, value, _) = v.channel_keys(x)[1];
+        let t = v.channel_set_key(x, 1, s(3.0), value, Time(1));
+        assert_eq!(t, s(3.0));
+        assert_eq!(v.anim.position.0[1].value, [10.0, 120.0], "both components kept");
+        assert_eq!(v.anim.eval(&v.transform, s(1.5)).position, [10.0, 70.0], "halfway now at 1.5 s");
+    }
+
     #[test]
     fn effect_params_are_channels() {
         let mut v = ClipVisual::default();

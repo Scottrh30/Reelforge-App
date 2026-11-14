@@ -269,6 +269,29 @@ pub fn key_move(id: u64, channel: String, index: usize, at: i64, value: f32, kee
     })
 }
 
+/// Slide key `index` of `channel` along the timeline to `at`, keeping its
+/// value (a diamond dragged in an expanded track's lane; a transform
+/// property's components share their keys, so all move). Live, `commit`
+/// ends it; it stops a frame short of its neighbours. Returns the timeline
+/// time actually used.
+#[tauri::command]
+pub fn key_retime(id: u64, channel: String, index: usize, at: i64) -> Res<Option<i64>> {
+    let ch = parse_channel(&channel).ok_or("unknown channel")?;
+    ed(|e| {
+        let id = ClipId(id);
+        let rate = e.seq().frame_rate;
+        let (_, c) = e.seq().find_clip(id)?;
+        let c = c.clone();
+        let mut v = e.visual(id)?;
+        let (_, value, _) = *v.channel_keys(ch).get(index)?;
+        let src = c.source_time(Time(at).snap(rate).max(c.timeline_start).min(c.timeline_end()));
+        let src = src.max(c.source_in).min(c.source_in + c.duration);
+        let used = v.channel_set_key(ch, index, src, value, rate.frame_duration());
+        e.set_visual_live(id, v);
+        Some(timeline_of(&c, used).0)
+    })
+}
+
 /// A key's interpolation: "Linear", "Ease" or "Hold". One undo step.
 #[tauri::command]
 pub fn key_interp(id: u64, channel: String, index: usize, interp: Interp) -> Res<()> {

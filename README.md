@@ -715,8 +715,10 @@ What works now:
   playhead), click again to stop (all its keys go, keeping the value at the playhead). Once
   keyframed, the diamond at the row's end adds or removes the key at the playhead, and changing
   the value sets a key there. The track's lane keeps the clips along its top and shows each
-  row's **keyframes as diamonds on the same row**; click one to go to it (white: at the
-  playhead). The row grows to fit.
+  row's **keyframes as diamonds on the same row**: drag one along to move that keyframe in
+  time (its value stays; it snaps to frames, stops a frame short of its neighbours, and
+  **Shift** puts it on the playhead when close; one undo step), or click it to go to it
+  (white: at the playhead). The row grows to fit.
   **Show clip properties** on the right-click menu does the same; the menu also collapses or
   expands all video or all audio tracks at once, and **Reset track heights**. Heights,
   expanded and collapsed tracks are saved with the project (they aren't edits, so there's
