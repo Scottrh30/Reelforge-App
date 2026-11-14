@@ -232,6 +232,14 @@ pub fn transform_interp(id: u64, interp: Interp) -> Res<()> {
     })
 }
 
+/// The stopwatch of a transform property: start keyframing it, or stop
+/// (every keyframe gone, the value at the playhead kept).
+#[tauri::command]
+pub fn transform_stopwatch(id: u64, prop: String) -> Res<()> {
+    let p = prop_named(&prop).ok_or("unknown property")?;
+    ed(|e| e.transform_stopwatch(ClipId(id), p))
+}
+
 /// The keyframe button of a transform property ("Position", "Scale", …).
 #[tauri::command]
 pub fn transform_key(id: u64, prop: String) -> Res<()> {

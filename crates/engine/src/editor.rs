@@ -2385,6 +2385,28 @@ impl Editor {
         self.commit_live_edit();
     }
 
+    /// A transform property's stopwatch: on, a keyframe at the playhead (it's
+    /// animated from then on); off, every keyframe gone, keeping the value it
+    /// has at the playhead. One undo step.
+    pub fn transform_stopwatch(&mut self, id: ClipId, prop: Prop) {
+        self.commit_live_edit();
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
+        let (src, on_clip) = self.key_time(c);
+        let Some(mut v) = self.visual(id) else { return };
+        let shown = v.anim.eval(&v.transform, src);
+        if v.anim.prop_animated(prop) {
+            v.transform.copy_prop(prop, &shown);
+            v.anim.clear(prop);
+        } else if on_clip {
+            v.anim.set_key(prop, src, &shown);
+        } else {
+            self.status = "Move the playhead onto the clip to start keyframing".into();
+            return;
+        }
+        self.set_visual_live(id, v);
+        self.commit_live_edit();
+    }
+
     // ---- Markers ----------------------------------------------------------------------
 
     /// M: a marker at the playhead.
@@ -5079,6 +5101,34 @@ mod tests {
         assert!(!v.anim.prop_animated(Prop::Position));
         e.undo();
         assert_eq!(e.visual(id).unwrap().anim.key_count(Prop::Position), 1, "each toggle is one undo step");
+    }
+
+    /// The stopwatch: on, a key at the playhead; off, all keys gone and the
+    /// value at the playhead kept (not the first key's).
+    #[test]
+    fn transform_stopwatch_starts_and_stops_keyframing() {
+        let mut e = editor();
+        e.add_title();
+        let id = e.selection.unwrap();
+        let sec = Time::from_secs_f64(1.0);
+        e.seek(Time(sec.0 * 100));
+        e.transform_stopwatch(id, Prop::Rotation);
+        assert!(!e.visual(id).unwrap().anim.prop_animated(Prop::Rotation), "off the clip: nothing");
+        e.seek(Time::ZERO);
+        e.transform_stopwatch(id, Prop::Rotation);
+        assert_eq!(e.visual(id).unwrap().anim.key_count(Prop::Rotation), 1);
+        e.seek(sec);
+        let mut t = e.visual(id).unwrap().transform;
+        t.rotation = 40.0;
+        e.set_transform_live(id, t);
+        e.commit_live_edit();
+        e.seek(Time(sec.0 / 2));
+        e.transform_stopwatch(id, Prop::Rotation);
+        let v = e.visual(id).unwrap();
+        assert!(!v.anim.prop_animated(Prop::Rotation));
+        assert!((v.transform.rotation - 20.0).abs() < 1e-3, "the value at the playhead: {}", v.transform.rotation);
+        e.undo();
+        assert_eq!(e.visual(id).unwrap().anim.key_count(Prop::Rotation), 2, "one undo step");
     }
 
     #[test]

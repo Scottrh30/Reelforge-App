@@ -156,10 +156,10 @@ export interface TrackProps {
   clip: number;
   name: string;
   transform: Transform;
-  /// Keyframed: opacity, position, anchor, rotation.
-  animated: [boolean, boolean, boolean, boolean];
+  /// Opacity, Position, Scale, Anchor and Rotation, in that order.
+  props: { prop: "Opacity" | "Position" | "Scale" | "Anchor" | "Rotation"; animated: boolean; key_here: boolean; keys: Ticks[] }[];
   on_clip: boolean;
-  effects: { index: number; label: string; enabled: boolean }[];
+  effects: { index: number; label: string; enabled: boolean; params: ParamView[] }[];
 }
 
 export interface SeqView {
@@ -616,6 +616,8 @@ export interface ParamView {
   options: string[];
   animated: boolean;
   key_here: boolean;
+  /// Its keyframes' timeline times.
+  keys: Ticks[];
 }
 
 export interface EffectView {
@@ -1172,6 +1174,8 @@ export const api = {
   effectParam: (id: number, index: number, param: number, value: number) => invoke("effect_param", { id, index, param, value }),
   effectParams: (id: number, index: number, values: [number, number][]) => invoke("effect_params", { id, index, values }),
   effectKey: (id: number, index: number, param: number) => invoke("effect_key", { id, index, param }),
+  /// Start keyframing an effect setting, or stop (every key gone, the value at the playhead kept).
+  effectStopwatch: (id: number, index: number, param: number) => invoke("effect_stopwatch", { id, index, param }),
   bladePreset: (id: number, index: number, preset: number) => invoke("blade_preset", { id, index, preset }),
   particlesPreset: (id: number, index: number, preset: number) => invoke("particles_preset", { id, index, preset }),
   bladeIgnite: (id: number, index: number, retract: boolean, seconds: number) => invoke("blade_ignite", { id, index, retract, seconds }),
@@ -1227,6 +1231,8 @@ export const api = {
   templateRemove: (path: string) => invoke("template_remove", { path }),
   startScreenSetting: (on: boolean) => invoke("start_screen_setting", { on }),
   transformKey: (id: number, prop: string) => invoke("transform_key", { id, prop }),
+  /// Start keyframing a transform property, or stop (every key gone, the value at the playhead kept).
+  transformStopwatch: (id: number, prop: string) => invoke("transform_stopwatch", { id, prop }),
   keyMove: (id: number, channel: string, index: number, at: Ticks, value: number, keepTime: boolean) => invoke<number | null>("key_move", { id, channel, index, at: Math.round(at), value, keepTime }),
   keyInterp: (id: number, channel: string, index: number, interp: Interp) => invoke("key_interp", { id, channel, index, interp }),
   keyHandle: (id: number, channel: string, index: number, out: boolean, x: number, y: number) => invoke("key_handle", { id, channel, index, out, x, y }),

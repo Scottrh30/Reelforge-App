@@ -1,7 +1,8 @@
 // Timeline view state (zoom, scroll, header width) and the geometry other
 // panels need, e.g. to drop files from the desktop at the right place.
 
-import type { ClipView, TrackView } from "./api";
+import type { ClipView, TrackProps, TrackView } from "./api";
+import { ROW_H, trackRows } from "./trackrows.svelte";
 
 /// A track row's default height; rows can be resized (MIN_TRACK_H–MAX_TRACK_H) or collapsed.
 export const TRACK_H = 52;
@@ -10,13 +11,12 @@ export const MAX_TRACK_H = 240;
 export const COLLAPSED_H = 22;
 
 /// How tall a track's row is on screen.
-export function rowH(tr: { height?: number; collapsed?: boolean; expanded?: boolean; props?: { effects: unknown[] } | null }): number {
+export function rowH(tr: { height?: number; collapsed?: boolean; expanded?: boolean; props?: TrackProps | null }): number {
   if (tr.collapsed) return COLLAPSED_H;
   const h = tr.height || TRACK_H;
   if (!tr.expanded) return h;
-  // Expanded: room for the clip's name, opacity, position, anchor, rotation and each effect (20 px a row).
-  const rows = tr.props ? 5 + Math.max(1, tr.props.effects.length) : 1;
-  return Math.max(h, EXPANDED_TOP + rows * 20 + 6);
+  // Expanded: room for the clip's name, its transform, each effect and the settings of open ones.
+  return Math.max(h, EXPANDED_TOP + trackRows(tr.props).length * ROW_H + 6);
 }
 /// An expanded track's name and buttons, above its clip's properties.
 export const EXPANDED_TOP = 50;

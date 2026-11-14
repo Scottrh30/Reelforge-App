@@ -5,10 +5,11 @@
   import { api, type ClipAudio, type ClipView, type MediaView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu } from "../lib/menu.svelte";
-  import { view, geo, perSequence, TRACK_H, MIN_TRACK_H, MAX_TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack, rowH, rowAtY } from "../lib/timeline.svelte";
+  import { view, geo, perSequence, TRACK_H, MIN_TRACK_H, MAX_TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack, rowH, rowAtY, EXPANDED_TOP } from "../lib/timeline.svelte";
   import Thumb from "./Thumb.svelte";
   import CurvesPanel from "./CurvesPanel.svelte";
   import TrackProps from "./TrackProps.svelte";
+  import { ROW_H, trackRows } from "../lib/trackrows.svelte";
 
   const SNAP_PX = 8;
   const EDGE_PX = 6;
@@ -1248,7 +1249,7 @@
                 {/if}
               </div>
               {#if tr.expanded}
-                <TrackProps props={tr.props} locked={tr.locked} />
+                <div class="tpwrap" style="top:{EXPANDED_TOP}px"><TrackProps props={tr.props} locked={tr.locked} /></div>
               {/if}
               {/if}
               <span class="trsize" role="separator" aria-orientation="horizontal" aria-label="Resize {tr.name}" onpointerdown={(e) => sizeDown(e, tr)} ondblclick={() => run(api.trackOp(tr.index, "height", undefined, TRACK_H))} title="Drag to change the track's height, double-click to reset"></span>
@@ -1280,7 +1281,33 @@
             </svg>
           {/if}
           {#each rows as tr, ri (tr.index)}
-            <div class="lane" class:sel-track={litTrack === tr.index} class:locked={tr.locked} class:dropping={dropAt?.track === tr.index} class:collapsed={tr.collapsed} style="height:{hOf(tr)}px">
+            <div class="lane" class:sel-track={litTrack === tr.index} class:locked={tr.locked} class:dropping={dropAt?.track === tr.index} class:collapsed={tr.collapsed} class:expanded={tr.expanded} style="height:{hOf(tr)}px{tr.expanded ? `; --clip-h:${EXPANDED_TOP - 12}px` : ''}">
+              {#if tr.expanded && tr.props}
+                <!-- The expanded clip's keyframes, on the same rows as its properties in the header. -->
+                {@const kp = tr.props}
+                <div class="krows" style="top:{EXPANDED_TOP}px">
+                  {#each trackRows(kp) as r, k}
+                    {@const keys = r.kind === "prop" ? r.prop.keys : r.kind === "param" ? r.param.keys : null}
+                    <div class="krow" class:fx={r.kind === "fx"} style="top:{k * ROW_H}px"></div>
+                    {#if keys}
+                      {#each keys as at}
+                        {@const kx = x(at)}
+                        {#if kx > -10 && kx < lanesW + 10}
+                          <button
+                            class="kd"
+                            class:now={Math.abs(at - (app.live?.playhead ?? -1)) < T / 1000}
+                            style="left:{kx - 5}px; top:{k * ROW_H + 4}px"
+                            title="{r.kind === 'prop' ? r.prop.prop : r.kind === 'param' ? r.param.name : ''} keyframe at {timecode(at)}: click to go there"
+                            aria-label="Keyframe at {timecode(at)}"
+                            onpointerdown={(e) => e.stopPropagation()}
+                            onclick={() => run(api.seek(at))}
+                          ></button>
+                        {/if}
+                      {/each}
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
               {#each tr.clips as c (c.id)}
                 {@const l = x(c.start)}
                 {@const w = (c.duration / T) * view.pps}
@@ -1340,7 +1367,7 @@
                       {@const aw = (a.duration / T) * view.pps}
                       {@const vis0 = Math.max(0, -l, al)}
                       {@const vis1 = Math.min(w, lanesW - l, al + aw)}
-                      {@const bh = Math.max(12, Math.round((hOf(tr) - 14) * 0.38))}
+                      {@const bh = Math.max(12, Math.round(((tr.expanded ? EXPANDED_TOP : hOf(tr)) - 14) * 0.38))}
                       {#if vis1 > vis0}
                         <canvas
                           class="wave under"
@@ -1768,6 +1795,53 @@
   }
   .fold.deep {
     color: var(--accent);
+  }
+  .tpwrap {
+    position: absolute;
+    left: 4px;
+    right: 10px;
+    cursor: default;
+  }
+  /* An expanded track: its clips keep to the top, its properties' rows below. */
+  .lane.expanded .clip {
+    bottom: auto;
+    height: var(--clip-h);
+  }
+  .krows {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+  }
+  .krow {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 18px;
+    border-bottom: 1px solid var(--line-soft);
+    opacity: 0.55;
+  }
+  .krow.fx {
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .kd {
+    all: unset;
+    position: absolute;
+    width: 9px;
+    height: 9px;
+    transform: rotate(45deg);
+    background: var(--accent);
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+    pointer-events: auto;
+    z-index: 2;
+  }
+  .kd:hover {
+    filter: brightness(1.25);
+  }
+  .kd.now {
+    background: #fff;
   }
   .th.collapsed {
     padding-top: 2px;

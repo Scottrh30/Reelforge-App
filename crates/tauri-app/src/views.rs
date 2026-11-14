@@ -131,11 +131,21 @@ pub struct TrackProps {
     pub name: String,
     /// The transform as seen at the playhead (keyframes evaluated).
     pub transform: Transform,
-    /// Keyframed: opacity, position, anchor, rotation.
-    pub animated: [bool; 4],
+    /// Opacity, Position, Scale, Anchor and Rotation, in that order.
+    pub props: Vec<TrackPropKeys>,
     /// The playhead is on the clip (keyframed properties can be changed there).
     pub on_clip: bool,
     pub effects: Vec<TrackEffect>,
+}
+
+/// A transform property's keyframes, for its row.
+#[derive(Serialize)]
+pub struct TrackPropKeys {
+    pub prop: &'static str,
+    pub animated: bool,
+    pub key_here: bool,
+    /// Its keyframes' timeline times.
+    pub keys: Vec<i64>,
 }
 
 #[derive(Serialize)]
@@ -143,6 +153,8 @@ pub struct TrackEffect {
     pub index: usize,
     pub label: String,
     pub enabled: bool,
+    /// Its settings (shown when twirled open).
+    pub params: Vec<crate::fx::ParamView>,
 }
 
 /// The clip an expanded track shows: the selected one on it, else the one at the playhead.
@@ -155,17 +167,36 @@ fn track_props(e: &Editor, p: &reelforge_core::Project, t: &reelforge_core::proj
     if c.scene.is_some() {
         return None;
     }
+    use reelforge_core::{Channel, Prop};
     let v = c.visual();
     let (src, on_clip) = e.key_time(c);
     let a = &v.anim;
-    Some(TrackProps {
-        clip: c.id.0,
-        name: clip_name(p, c),
-        transform: a.eval(&v.transform, src),
-        animated: [!a.opacity.is_empty(), !a.position.is_empty(), !a.anchor.is_empty(), !a.rotation.is_empty()],
-        on_clip,
-        effects: c.effects.iter().enumerate().map(|(index, fx)| TrackEffect { index, label: fx.label(), enabled: fx.enabled }).collect(),
-    })
+    let channels = v.channels();
+    let props = [(Prop::Opacity, "Opacity"), (Prop::Position, "Position"), (Prop::Scale, "Scale"), (Prop::Anchor, "Anchor"), (Prop::Rotation, "Rotation")]
+        .into_iter()
+        .map(|(prop, name)| {
+            let mut keys: Vec<i64> = channels
+                .iter()
+                .filter(|ch| matches!(ch, Channel::Transform(q, _) if *q == prop))
+                .flat_map(|ch| v.channel_keys(*ch))
+                .map(|(at, _, _)| (c.timeline_start + (at - c.source_in)).0)
+                .collect();
+            keys.sort_unstable();
+            keys.dedup();
+            TrackPropKeys { prop: name, animated: a.prop_animated(prop), key_here: on_clip && a.has_key(prop, src), keys }
+        })
+        .collect();
+    let effects = c
+        .effects
+        .iter()
+        .enumerate()
+        .map(|(index, fx)| {
+            let mut n = fx.clone();
+            n.normalize();
+            TrackEffect { index, label: fx.label(), enabled: fx.enabled, params: crate::fx::param_views(&n, c, src, on_clip) }
+        })
+        .collect();
+    Some(TrackProps { clip: c.id.0, name: clip_name(p, c), transform: a.eval(&v.transform, src), props, on_clip, effects })
 }
 
 #[derive(Serialize)]

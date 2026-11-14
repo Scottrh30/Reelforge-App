@@ -130,6 +130,42 @@ pub struct ParamView {
     pub animated: bool,
     /// There's a keyframe at the playhead.
     pub key_here: bool,
+    /// Its keyframes' timeline times.
+    pub keys: Vec<i64>,
+}
+
+/// An effect's settings as seen at source time `src` (`fx` normalised).
+pub fn param_views(fx: &reelforge_core::effects::Effect, c: &Clip, src: Time, in_clip: bool) -> Vec<ParamView> {
+    fx.param_specs()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            let keys = &fx.params.get(i)?.keys;
+            let (ui, options) = match s.ui {
+                ParamUi::Number => ("number", Vec::new()),
+                ParamUi::Toggle => ("toggle", Vec::new()),
+                ParamUi::Choice(o) => ("choice", o.to_vec()),
+                ParamUi::Color => ("color", Vec::new()),
+            };
+            let section = fx.kind.sections().iter().find(|(at, _)| *at == i).map(|(_, h)| *h);
+            Some(ParamView {
+                name: s.name,
+                value: fx.value_at(i, src),
+                default: s.default,
+                min: s.min,
+                max: s.max,
+                suffix: s.suffix,
+                step: s.speed,
+                decimals: if s.speed < 0.1 { 2 } else { 1 },
+                ui,
+                section,
+                options,
+                animated: keys.is_animated(),
+                key_here: in_clip && keys.index_at(src).is_some(),
+                keys: keys.0.iter().map(|k| (c.timeline_start + (k.at - c.source_in)).0).collect(),
+            })
+        })
+        .collect()
 }
 
 /// The clip's source time at the playhead (held at the clip's ends), and
@@ -148,36 +184,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
             let ofx = fx.ofx_def();
             let mut fx = fx.clone();
             fx.normalize();
-            let params = fx
-                .param_specs()
-                .iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    let keys = &fx.params[i].keys;
-                    let (ui, options) = match s.ui {
-                        ParamUi::Number => ("number", Vec::new()),
-                        ParamUi::Toggle => ("toggle", Vec::new()),
-                        ParamUi::Choice(o) => ("choice", o.to_vec()),
-                        ParamUi::Color => ("color", Vec::new()),
-                    };
-                    let section = fx.kind.sections().iter().find(|(at, _)| *at == i).map(|(_, h)| *h);
-                    ParamView {
-                        name: s.name,
-                        value: fx.value_at(i, src),
-                        default: s.default,
-                        min: s.min,
-                        max: s.max,
-                        suffix: s.suffix,
-                        step: s.speed,
-                        decimals: if s.speed < 0.1 { 2 } else { 1 },
-                        ui,
-                        section,
-                        options,
-                        animated: keys.is_animated(),
-                        key_here: in_clip && keys.index_at(src).is_some(),
-                    }
-                })
-                .collect();
+            let params = param_views(&fx, c, src, in_clip);
             let (curves, lut) = match (&fx.data, fx.kind) {
                 (Some(EffectData::Curves(c)), _) => (Some(c.clone()), None),
                 (_, EffectKind::Curves) => (Some(Curves::default()), None),
@@ -751,6 +758,38 @@ pub fn effect_key(id: u64, index: usize, param: usize) -> Res<()> {
                 p.keys.remove_at(src);
             } else {
                 p.keys.set(src, shown);
+            }
+            Ok(())
+        });
+        if let Some(Err(msg)) = r {
+            e.status = msg.into();
+        }
+        e.commit_live_edit();
+    })
+}
+
+/// An effect setting's stopwatch: on, a keyframe at the playhead (it's
+/// animated from then on); off, every keyframe gone, keeping the value it
+/// has at the playhead. One undo step.
+#[tauri::command]
+pub fn effect_stopwatch(id: u64, index: usize, param: usize) -> Res<()> {
+    ed(|e| {
+        e.commit_live_edit();
+        let r = edit(e, id, |list, src, in_clip| {
+            let Some(fx) = list.get_mut(index) else { return Ok(()) };
+            fx.normalize();
+            if fx.spec(param).is_none() {
+                return Ok(());
+            }
+            let shown = fx.value_at(param, src);
+            let Some(p) = fx.params.get_mut(param) else { return Ok(()) };
+            if p.keys.is_animated() {
+                p.value = shown;
+                p.keys.0.clear();
+            } else if in_clip {
+                p.keys.set(src, shown);
+            } else {
+                return Err("Move the playhead onto the clip to start keyframing");
             }
             Ok(())
         });

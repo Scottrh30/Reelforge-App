@@ -705,11 +705,18 @@ What works now:
   header to make its row taller or shorter (32–240 px; double-click the edge to reset). Taller
   audio rows give a bigger waveform and volume line to work on. The arrow before a track's
   name steps it through three views: normal, **expanded** (video tracks; a double arrow) and
-  **collapsed** to a thin strip (clips still show, as slim bars). An expanded track's header
-  also shows a clip — the one selected on that track, or else the one at the playhead (click
-  its name to select it): its **Opacity**, **Position**, **Anchor** and **Rotation** as seen at
-  the playhead, to drag or type (keyframed ones, marked ◆, get a key there, as in Controls),
-  and each of its **effects** with a box to switch it on or off. The row grows to fit them.
+  **collapsed** to a thin strip (clips still show, as slim bars). An expanded track works like
+  a twirled-open layer in After Effects. Its header shows a clip — the one selected on that
+  track, or else the one at the playhead (click its name to select it) — one property a row:
+  **Opacity**, **Position**, **Scale**, **Anchor** and **Rotation** as seen at the playhead, to
+  drag or type, then each of its **effects** with a box to switch it on or off and a twirl
+  arrow that opens its settings below it (sliders, menus, colours and switches). Every
+  property and setting has a **stopwatch**: click it to start keyframing (a key at the
+  playhead), click again to stop (all its keys go, keeping the value at the playhead). Once
+  keyframed, the diamond at the row's end adds or removes the key at the playhead, and changing
+  the value sets a key there. The track's lane keeps the clips along its top and shows each
+  row's **keyframes as diamonds on the same row**; click one to go to it (white: at the
+  playhead). The row grows to fit.
   **Show clip properties** on the right-click menu does the same; the menu also collapses or
   expands all video or all audio tracks at once, and **Reset track heights**. Heights,
   expanded and collapsed tracks are saved with the project (they aren't edits, so there's
