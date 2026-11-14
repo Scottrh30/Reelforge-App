@@ -1117,6 +1117,8 @@ export const api = {
   maskFromKey: (id: number, index: number) => invoke<number | null>("mask_from_key", { id, index }),
   rotoStroke: (id: number, mask: number | null, fg: boolean, radius: number, points: Pt[], removal = false) => invoke<number | null>("roto_stroke", { id, mask, fg, radius, points, removal }),
   rotoPick: (id: number, point: Pt, removal: boolean) => invoke<number | null>("roto_pick", { id, point, removal }),
+  /// One click: the clip's background cut away through the whole clip (the subject found by itself). Returns the mask's index.
+  removeBackground: (id: number) => invoke<number | null>("remove_background", { id }),
   rotoPrepare: (id: number) => invoke("roto_prepare", { id }),
   rotoPropagate: (id: number, mask: number, forward: boolean) => invoke("roto_propagate", { id, mask, forward }),
   maskPointAddAt: (id: number, index: number, at: Pt) => invoke<number | null>("mask_point_add_at", { id, index, at }),

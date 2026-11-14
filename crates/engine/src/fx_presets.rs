@@ -521,6 +521,8 @@ fn neon_signs() -> Vec<EffectPreset> {
         sign("Neon warm white", neon_sign(0xffa640, 0xfff7e6, &[(n::GLOW, 110.0)])),
         sign("Neon green, failing tube", neon_sign(0x2dff6e, 0xeaffef, &[(n::FLICKER, 55.0), (n::FLICKER_SPEED, 8.0)])),
         sign("Neon red, writing on", on),
+        sign("Neon switching on", neon_sign(0xff2bd6, 0xfff0fa, &[(n::SWITCH_ON, 2.5), (n::STUTTER, 80.0)])),
+        sign("Neon blue, warming up at random", neon_sign(0x26b7ff, 0xeaf8ff, &[(n::SWITCH_ON, 3.0), (n::STUTTER, 100.0), (n::ORDER, 1.0)])),
         sign("Neon purple marquee", neon_sign(0xa64bff, 0xf3e8ff, &[(n::DASH, 14.0), (n::GAP, 10.0), (n::DASH_SPEED, 40.0)])),
         sign("Neon over the letters", neon_sign(0xff2bd6, 0xfff0fa, &[(n::SHOW_LAYER, 35.0), (n::LIGHT_LAYER, 60.0)])),
     ]

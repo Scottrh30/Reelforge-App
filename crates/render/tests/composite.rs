@@ -2534,7 +2534,7 @@ fn neon_path_glows_along_the_mask() {
     let masks = vec![Mask { shape: MaskShape::Rectangle, points: vec![[40.0, 20.0], [120.0, 20.0], [120.0, 70.0], [40.0, 70.0]], text_path: true, ..Mask::default() }];
     let e = Effect::new(EffectKind::NeonPath);
     let mut v = e.eval_sized(reelforge_core::Time::ZERO, None, [160.0, 90.0]);
-    reelforge_core::neonpath::fill(&mut v, &masks, None, reelforge_core::Time::ZERO, [160.0, 90.0]);
+    reelforge_core::neonpath::fill(&mut v, &masks, None, reelforge_core::Time::ZERO, 0.0, [160.0, 90.0]);
     assert!(!v.is_identity());
     let mut l = full(74, &black, [160, 90]);
     l.effects = vec![v];
@@ -2552,7 +2552,7 @@ fn neon_path_glows_along_the_mask() {
     let mut e = Effect::new(EffectKind::NeonPath);
     e.params[reelforge_core::effects::neonpath::SHOW_LAYER].value = 0.0;
     let mut v = e.eval_sized(reelforge_core::Time::ZERO, None, [160.0, 90.0]);
-    reelforge_core::neonpath::fill(&mut v, &masks, None, reelforge_core::Time::ZERO, [160.0, 90.0]);
+    reelforge_core::neonpath::fill(&mut v, &masks, None, reelforge_core::Time::ZERO, 0.0, [160.0, 90.0]);
     let mut l = full(74, &grey, [160, 90]);
     l.effects = vec![v];
     c.render([160, 90], &[l]);
@@ -2578,7 +2578,7 @@ fn neon_path_follows_a_titles_letters() {
     let mut e = Effect::new(EffectKind::NeonPath);
     e.params[np::MASK].value = 0.0;
     let mut v = e.eval_sized(reelforge_core::Time::ZERO, None, [320.0, 180.0]);
-    reelforge_core::neonpath::fill(&mut v, &[], Some(&spec), reelforge_core::Time::ZERO, [320.0, 180.0]);
+    reelforge_core::neonpath::fill(&mut v, &[], Some(&spec), reelforge_core::Time::ZERO, 0.0, [320.0, 180.0]);
     assert!(v.table.is_some() && v.gpu[1] > 20.0, "segments round both outlines: {}", v.gpu[1]);
     // Every segment lies on the letter's outlines.
     let segs = reelforge_core::neonpath::segments_on(&v.values, &lines.iter().map(|l| (l.clone(), true)).collect::<Vec<_>>(), 0.0);

@@ -1131,6 +1131,12 @@ fn roto_pick(id: u64, point: [f32; 2], removal: bool) -> Res<Option<usize>> {
     ed(|e| e.roto_pick(clip(id), point, removal))
 }
 
+/// One click: clip `id`'s background cut away through the whole clip (the subject found by itself).
+#[tauri::command]
+fn remove_background(id: u64) -> Res<Option<usize>> {
+    ed(|e| e.remove_background(clip(id)))
+}
+
 /// Make an AI-upscaled copy (2× or 4×) of media `media`; `replace` puts it in the original's place.
 #[tauri::command]
 fn upscale_media(media: u64, factor: u32, replace: bool) -> Res<()> {
@@ -1868,6 +1874,7 @@ fn main() {
             color_match_cancel,
             color_match_pick,
             roto_pick,
+            remove_background,
             roto_propagate,
             mask_smooth,
             mask_point_delete,

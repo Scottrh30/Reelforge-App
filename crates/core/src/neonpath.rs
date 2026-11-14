@@ -37,8 +37,9 @@ pub fn on_letters(v: &[f32]) -> bool {
 }
 
 /// Fill in a Neon path effect's table and brightness from `masks` (or, on a
-/// title, its letters) at source time `t`.
-pub fn fill(v: &mut EffectValues, masks: &[Mask], title: Option<&TitleSpec>, t: Time, size: [f32; 2]) {
+/// title, its letters) at source time `t`, `since` seconds after the clip's
+/// start (for switching on).
+pub fn fill(v: &mut EffectValues, masks: &[Mask], title: Option<&TitleSpec>, t: Time, since: f32, size: [f32; 2]) {
     let vals = &v.values;
     let segs = if on_letters(vals) {
         let lines = match (title, LETTERS.get()) {
@@ -46,9 +47,16 @@ pub fn fill(v: &mut EffectValues, masks: &[Mask], title: Option<&TitleSpec>, t: 
             _ => Vec::new(),
         };
         let lines: Vec<(Vec<[f32; 2]>, bool)> = lines.into_iter().filter(|l| l.len() >= 2).take(MAX_LINES).map(|l| (l, true)).collect();
-        segments_on(vals, &lines, v.time)
+        let on = switch_on(vals, &letters(&lines), since);
+        let mut segs = segments_lit(vals, &lines, Some(&on), v.time);
+        segs.retain(|s| s.bright > 1e-3);
+        segs
     } else {
-        segments(vals, masks, t, v.time)
+        let b = switch_on(vals, &[0], since).first().copied().unwrap_or(1.0);
+        let mut segs = segments(vals, masks, t, v.time);
+        segs.iter_mut().for_each(|s| s.bright *= b);
+        segs.retain(|s| s.bright > 1e-3);
+        segs
     };
     let flash = brightness(vals, v.time);
     v.table = if segs.is_empty() { None } else { crate::lightning::table(&Bolts { segments: segs.clone(), flash }, size) };
@@ -99,10 +107,74 @@ pub fn segments(v: &[f32], masks: &[Mask], t: Time, secs: f32) -> Vec<Segment> {
     segments_on(v, &[(mask.outline(t), v[p::CLOSED] >= 0.5)], secs)
 }
 
+/// Which letter each of a title's outlines belongs to, numbered left to
+/// right: an outline inside another's bounds (the hole in an O, the inside
+/// of an A) goes with it.
+pub fn letters(lines: &[(Vec<[f32; 2]>, bool)]) -> Vec<usize> {
+    let bounds: Vec<[f32; 4]> = lines
+        .iter()
+        .map(|(l, _)| l.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]))
+        .collect();
+    let area = |b: &[f32; 4]| (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
+    let inside = |a: &[f32; 4], b: &[f32; 4]| a[0] >= b[0] - 0.5 && a[1] >= b[1] - 0.5 && a[2] <= b[2] + 0.5 && a[3] <= b[3] + 0.5;
+    // Each outline's owner: the biggest outline it lies inside (itself if none).
+    let owner: Vec<usize> = (0..bounds.len())
+        .map(|i| (0..bounds.len()).filter(|&j| j != i && area(&bounds[j]) > area(&bounds[i]) && inside(&bounds[i], &bounds[j])).max_by(|&a, &b| area(&bounds[a]).total_cmp(&area(&bounds[b]))).unwrap_or(i))
+        .collect();
+    let mut tops: Vec<usize> = (0..bounds.len()).filter(|&i| owner[i] == i).collect();
+    tops.sort_by(|&a, &b| bounds[a][0].total_cmp(&bounds[b][0]));
+    owner.iter().map(|o| tops.iter().position(|t| t == o).unwrap_or(0)).collect()
+}
+
+/// How lit each outline is (0–1) `since` seconds after the clip's start,
+/// with `letter` giving each one's letter: Switch on spreads the letters'
+/// moments over its length (in Order), and each comes on stuttering (a
+/// failing starter, by Stutter) or with a quick fade up.
+pub fn switch_on(v: &[f32], letter: &[usize], since: f32) -> Vec<f32> {
+    let over = v.get(p::SWITCH_ON).copied().unwrap_or(0.0);
+    if !(over > 0.0) {
+        return vec![1.0; letter.len()];
+    }
+    let n = letter.iter().copied().max().map_or(1, |m| m + 1);
+    let stutter = (v.get(p::STUTTER).copied().unwrap_or(0.0) / 100.0).clamp(0.0, 1.0);
+    let order = v.get(p::ORDER).map_or(0, |o| o.round() as u32);
+    let seed = v[p::SEED].round() as u32;
+    // A random order: the letters' places shuffled by the seed.
+    let mut place: Vec<usize> = (0..n).collect();
+    if order == 1 {
+        place.sort_by(|&a, &b| hash(seed ^ 0x5eed, a as i64).total_cmp(&hash(seed ^ 0x5eed, b as i64)));
+    }
+    let len = 0.15 + 0.5 * stutter;
+    letter
+        .iter()
+        .map(|&l| {
+            let k = if order == 2 { 0 } else { place.iter().position(|&x| x == l).unwrap_or(0) };
+            let start = if order == 2 || n <= 1 { (over - len).max(0.0) } else { (over - len).max(0.0) * k as f32 / (n - 1) as f32 };
+            let u = (since - start) / len;
+            if u <= 0.0 {
+                return 0.0;
+            }
+            if u >= 1.0 {
+                return 1.0;
+            }
+            let fade = u * u * (3.0 - 2.0 * u);
+            // Stuttering: flashes on and off, on more and more of the time.
+            let tick = (since * 24.0).floor() as i64;
+            let flash = if hash(seed.wrapping_add(l as u32 * 31 + 1), tick) < u.powf(0.6) { 1.0 } else { 0.06 };
+            fade + (flash - fade) * stutter
+        })
+        .collect()
+}
+
 /// The tube along `lines` (each with whether it's closed), one after
 /// another: Start and End are along all of them together (so a sign
 /// writes on letter by letter); Offset, dashes and taper go round each.
 pub fn segments_on(v: &[f32], lines: &[(Vec<[f32; 2]>, bool)], secs: f32) -> Vec<Segment> {
+    segments_lit(v, lines, None, secs)
+}
+
+/// As [`segments_on`], each line's segments as bright as `lit` says.
+pub fn segments_lit(v: &[f32], lines: &[(Vec<[f32; 2]>, bool)], lit: Option<&[f32]>, secs: f32) -> Vec<Segment> {
     let length = |l: &[[f32; 2]], closed: bool| -> f32 { l.windows(2).map(|w| dist(w[0], w[1])).sum::<f32>() + if closed && l.len() > 2 { l.first().zip(l.last()).map_or(0.0, |(a, b)| dist(*a, *b)) } else { 0.0 } };
     let lens: Vec<f32> = lines.iter().map(|(l, c)| length(l, *c)).collect();
     let total: f32 = lens.iter().sum();
@@ -113,14 +185,18 @@ pub fn segments_on(v: &[f32], lines: &[(Vec<[f32; 2]>, bool)], secs: f32) -> Vec
     let (s, e) = (s.min(e) * total, s.max(e) * total);
     let mut out = Vec::new();
     let mut at = 0.0f32;
-    for ((line, closed), len) in lines.iter().zip(&lens) {
+    for (i, ((line, closed), len)) in lines.iter().zip(&lens).enumerate() {
         let (a, b) = (at, at + len);
         at = b;
         if *len <= 0.0 || e <= a || s >= b {
             continue;
         }
         let (ls, le) = (((s - a) / len).clamp(0.0, 1.0), ((e - a) / len).clamp(0.0, 1.0));
+        let from = out.len();
         along(v, line.clone(), *closed, ls, le, secs, &mut out);
+        if let Some(b) = lit.and_then(|l| l.get(i)) {
+            out[from..].iter_mut().for_each(|s| s.bright *= b);
+        }
         if out.len() >= MAX_SEGMENTS {
             out.truncate(MAX_SEGMENTS);
             break;
@@ -277,6 +353,39 @@ mod tests {
         // The letters setting without a title (or a renderer): nothing, and no mask is read.
         assert!(on_letters(&values(&[(p::MASK, 0.0)])));
         assert!(segments(&values(&[(p::MASK, 0.0)]), &square(), Time::ZERO, 0.0).is_empty());
+    }
+
+    /// Switching on: letters (an outline and the holes in it together) light
+    /// one after another, left to right, stuttering as they come on, all lit
+    /// by the end; random order is a shuffle; 0 s means always on.
+    #[test]
+    fn letters_switch_on_one_after_another() {
+        let sq = |x: f32, s: f32| vec![[x, 0.0], [x + s, 0.0], [x + s, s], [x, s]];
+        // "O" (an outline and its hole), then "I", given right to left.
+        let lines = vec![(sq(200.0, 40.0), true), (sq(0.0, 60.0), true), (sq(15.0, 30.0), true)];
+        assert_eq!(letters(&lines), vec![1, 0, 0]);
+        let v = values(&[(p::SWITCH_ON, 2.0), (p::STUTTER, 0.0)]);
+        let l = letters(&lines);
+        // Fade up over 0.15 s: the first letter at 0, the second at 1.85 s.
+        assert_eq!(switch_on(&v, &l, 0.0), vec![0.0, 0.0, 0.0]);
+        let mid = switch_on(&v, &l, 0.5);
+        assert_eq!((mid[0], mid[1], mid[2]), (0.0, 1.0, 1.0), "the O lit, hole and all; the I not yet");
+        assert_eq!(switch_on(&v, &l, 2.0), vec![1.0, 1.0, 1.0]);
+        assert!(switch_on(&values(&[]), &l, 0.0).iter().all(|&b| b == 1.0), "off: always lit");
+        // Stuttering: on and off in between, by the end lit.
+        let st = values(&[(p::SWITCH_ON, 2.0), (p::STUTTER, 100.0)]);
+        let seen: Vec<f32> = (0..30).map(|i| switch_on(&st, &l, 1.35 + i as f32 / 60.0)[0]).collect();
+        assert!(seen.iter().any(|&b| b > 0.9) && seen.iter().any(|&b| b < 0.1), "{seen:?}");
+        assert_eq!(switch_on(&st, &l, 2.0)[0], 1.0);
+        // On a mask path: the whole tube comes on at the end.
+        let mut e = Effect::new(EffectKind::NeonPath);
+        e.params[p::SWITCH_ON].value = 2.0;
+        e.params[p::STUTTER].value = 0.0;
+        let mut ev = e.eval_sized(Time::ZERO, None, [640.0, 360.0]);
+        fill(&mut ev, &square(), None, Time::ZERO, 0.5, [640.0, 360.0]);
+        assert!(ev.table.is_none(), "not on yet");
+        fill(&mut ev, &square(), None, Time::ZERO, 2.5, [640.0, 360.0]);
+        assert!(ev.table.is_some());
     }
 
     #[test]

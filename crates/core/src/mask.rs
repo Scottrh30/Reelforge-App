@@ -190,6 +190,35 @@ impl Default for Mask {
 const ELLIPSE_SEGMENTS: usize = 96;
 
 impl Mask {
+    /// Move and scale it with its layer's picture: every point (and key,
+    /// and roto brush stroke) from around `from` to around `to`, scaled by
+    /// `k` (x, y); handles, feather, expansion, brush sizes and the refined
+    /// edge's reach scale with it (by `k[1]`, the picture's scale).
+    pub fn reframe(&mut self, from: [f32; 2], to: [f32; 2], k: [f32; 2]) {
+        if !(k[0].is_finite() && k[1].is_finite() && k[0] > 0.0 && k[1] > 0.0) {
+            return;
+        }
+        let p = |q: &mut [f32; 2]| *q = [(q[0] - from[0]) * k[0] + to[0], (q[1] - from[1]) * k[1] + to[1]];
+        let h = |c: &mut [f32; 4]| *c = [c[0] * k[0], c[1] * k[1], c[2] * k[0], c[3] * k[1]];
+        self.points.iter_mut().for_each(p);
+        self.curves.iter_mut().for_each(h);
+        for key in &mut self.keys {
+            key.points.iter_mut().for_each(p);
+            key.curves.iter_mut().for_each(h);
+        }
+        let s = k[1];
+        self.feather *= s;
+        self.expansion *= s;
+        self.feathers.iter_mut().filter(|f| **f >= 0.0).for_each(|f| *f *= s);
+        for r in &mut self.roto {
+            r.stroke.points.iter_mut().for_each(p);
+            r.stroke.radius *= s;
+        }
+        if let Some(r) = &mut self.refine {
+            r.radius *= s;
+        }
+    }
+
     /// A rectangle or ellipse filling the middle half of a `layer`-sized picture.
     pub fn centred(shape: MaskShape, layer: [f32; 2]) -> Self {
         let [w, h] = layer;

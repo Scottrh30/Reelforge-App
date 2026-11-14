@@ -94,6 +94,14 @@
       <button class="small" class:on={drawing} onclick={freehand} title="Click points in the Viewer; click the first point or press Enter to close">+ Freehand</button>
       <button class="small" class:on={!!roto} disabled={!trackable || ins.kind !== "video"} onclick={() => rotoBrush(false)} title={ins.kind === "video" ? "Paint over a subject in the Viewer to cut a mask round it, then carry it through the shot" : "The roto brush works on footage"}>+ Roto brush</button>
       <button class="small" class:on={!!roto?.pick} disabled={!trackable || ins.kind !== "video"} onclick={() => rotoBrush(true)} title={ins.kind === "video" ? "Click an object in the Viewer: it's picked out and carried through the rest of the clip by itself" : "Picking objects works on footage"}>+ Pick object</button>
+      <button
+        class="small"
+        disabled={!trackable || ins.kind !== "video"}
+        onclick={() => {
+          app.roto = null;
+          run(api.removeBackground(ins.id));
+        }}
+        title={ins.kind === "video" ? "Cut the background away through the whole clip: the main subject is found by itself (at the playhead), cut out with a soft edge, and followed through the clip" : "Background removal works on footage"}>Remove background</button>
     </div>
   </div>
   {#if drawing}

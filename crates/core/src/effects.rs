@@ -856,6 +856,12 @@ pub mod neonpath {
     pub const OPACITY: usize = 19;
     /// How much of the layer itself shows under the tube (0: only the tube, a sign at night).
     pub const SHOW_LAYER: usize = 20;
+    /// Switch on: seconds from the clip's start until the last letter lights (0: always on).
+    pub const SWITCH_ON: usize = 21;
+    /// How much each letter stutters as it comes on (0: a quick fade up).
+    pub const STUTTER: usize = 22;
+    /// The order the letters light in.
+    pub const ORDER: usize = 23;
     /// The Path menu: a title's letters, then the layer's masks.
     pub const PATHS: [&str; 17] = ["The letters (titles)", "Mask 1", "Mask 2", "Mask 3", "Mask 4", "Mask 5", "Mask 6", "Mask 7", "Mask 8", "Mask 9", "Mask 10", "Mask 11", "Mask 12", "Mask 13", "Mask 14", "Mask 15", "Mask 16"];
 }
@@ -1495,7 +1501,7 @@ const LENS_DIRT: [ParamSpec; 10] = [
     color("Colour", 0xfff0dc),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
-const NEON_PATH: [ParamSpec; 21] = [
+const NEON_PATH: [ParamSpec; 24] = [
     ParamSpec { name: "Path", default: 1.0, min: 0.0, max: 16.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&neonpath::PATHS) },
     spec("Start", 0.0, 0.0, 100.0, " %", 0.2),
     spec("End", 100.0, 0.0, 100.0, " %", 0.2),
@@ -1517,6 +1523,9 @@ const NEON_PATH: [ParamSpec; 21] = [
     spec("Light the layer", 0.0, 0.0, 300.0, " %", 0.5),
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
     spec("Show the layer", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Switch on over", 0.0, 0.0, 60.0, " s", 0.02),
+    spec("Stutter", 70.0, 0.0, 100.0, " %", 0.5),
+    choice("Order", &["Left to right", "Random", "All together"]),
 ];
 const CAMERA_SHAKE: [ParamSpec; 7] = [
     spec("Amount", 12.0, 0.0, 500.0, " px", 0.25),
@@ -2058,7 +2067,7 @@ impl EffectKind {
             EffectKind::ColorWheels => &[(0, "Lift (shadows)"), (3, "Gamma (midtones)"), (6, "Gain (highlights)"), (9, "Offset (everything)"), (12, "Overall")],
             EffectKind::SkyReplace => &[(0, "Sky"), (3, "Placing"), (7, "Look"), (9, "Edge"), (11, "Blend")],
             EffectKind::Lightning => &[(0, "Path"), (4, "Shape"), (10, "Look"), (15, "Motion")],
-            EffectKind::NeonPath => &[(0, "Path"), (5, "Flicker and taper"), (9, "Look"), (15, "Dashes"), (18, "Mix")],
+            EffectKind::NeonPath => &[(0, "Path"), (5, "Flicker and taper"), (9, "Look"), (15, "Dashes"), (18, "Mix"), (21, "Switch on")],
             EffectKind::LensDirt => &[(0, "Light"), (3, "Dirt")],
             EffectKind::LightRays => &[(0, "Source"), (2, "Rays")],
             EffectKind::PatchReplacer => &[(0, "Target"), (2, "Source"), (4, "Shape"), (9, "Fill")],
@@ -2211,6 +2220,9 @@ impl EffectValues {
             || (self.kind == EffectKind::NeonEdges && v[neon::FLICKER] > 0.0)
             || (self.kind == EffectKind::FractalNoise && (v[fractal::SPEED] != 0.0 || v[fractal::DRIFT_X] != 0.0 || v[fractal::DRIFT_Y] != 0.0))
             || (self.kind == EffectKind::Crt && (v[crt::WOBBLE] > 0.0 || v[crt::NOISE] > 0.0 || v[crt::TRACKING] > 0.0))
+            || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)
+            || (self.kind == EffectKind::WaveWarp && v[wave::SPEED] != 0.0)
+            || (self.kind == EffectKind::NeonPath && (v[neonpath::FLICKER] > 0.0 || v[neonpath::DASH_SPEED] != 0.0 || v[neonpath::SWITCH_ON] > 0.0))
     }
 }
 

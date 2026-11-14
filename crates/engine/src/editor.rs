@@ -432,6 +432,9 @@ pub struct Editor {
     pub recoveries: Vec<crate::safety::Recovery>,
     /// A motion-tracking run in progress.
     pub tracking: Option<TrackJob>,
+    /// After a roto run forwards (clip, mask, from): carry it back from
+    /// there too (background removal covers the whole clip).
+    pub roto_then_back: Option<(ClipId, usize, Time)>,
     /// An AI upscale being made (Media panel).
     pub upscale: Option<upscale::UpscaleJob>,
     /// Match colour, while it measures.
@@ -503,6 +506,7 @@ impl Editor {
             session: None,
             recoveries: Vec::new(),
             tracking: None,
+            roto_then_back: None,
             upscale: None,
             color_match: None,
             preset_preview: None,
@@ -1528,13 +1532,15 @@ impl Editor {
         let par = |a: (u32, u32)| a.0 as f32 / a.1.max(1) as f32;
         let (opar, npar) = (par(old.pixel_aspect), par(new.pixel_aspect));
         let (gx, gy) = (new.width as f32 * npar / (old.width as f32 * opar).max(1.0), new.height as f32 / old.height.max(1) as f32);
+        let (old_w, old_h, new_w, new_h) = (old.width as f32, old.height as f32, new.width as f32, new.height as f32);
         let f = match fit {
             LayerFit::Keep => 1.0,
             LayerFit::Fit => gx.min(gy),
             LayerFit::Fill => gx.max(gy),
         };
         let mut cmds: Vec<Box<dyn reelforge_core::undo::Command>> = vec![Box::new(SetSequenceSettings { seq: self.active, old, new })];
-        if (f - 1.0).abs() > 1e-4 || (fit != LayerFit::Keep && (opar - npar).abs() > 1e-4) {
+        // (Keep still moves frame-sized layers' masks, so they stay over the centred picture.)
+        if (f - 1.0).abs() > 1e-4 || (fit != LayerFit::Keep && (opar - npar).abs() > 1e-4) || (old_w, old_h) != (new_w, new_h) {
             // Positions are in the sequence's pixels from the middle: x in its pixels' widths.
             let (kx, ky) = (f * opar / npar, f);
             for c in self.seq().tracks.iter().flat_map(|t| &t.clips) {
@@ -1553,9 +1559,17 @@ impl Editor {
                     }
                 } else if c.scene.is_none() {
                     // A solid or adjustment layer is always the frame's size, so its
-                    // effects' pixel sizes (blur, glow, outline…) change with the frame.
-                    for e in &mut v.effects {
-                        e.scale_pixels(f);
+                    // effects' pixel sizes (blur, glow, outline…) change with the
+                    // frame, and its masks move and scale with the picture (about
+                    // the middle).
+                    if fit != LayerFit::Keep {
+                        for e in &mut v.effects {
+                            e.scale_pixels(f);
+                        }
+                    }
+                    let (oc, nc) = ([old_w / 2.0, old_h / 2.0], [new_w / 2.0, new_h / 2.0]);
+                    for m in &mut v.masks {
+                        m.reframe(oc, nc, [kx, ky]);
                     }
                 }
                 if v != old {
@@ -3850,6 +3864,38 @@ mod tests {
         // Keep: nothing moves.
         e.set_sequence_settings_fit("S", 960, 540, r, (1, 1), LayerFit::Keep);
         assert_eq!(c(&e, 20).effects[0].params[1].value, 40.0);
+    }
+
+    /// A solid's or adjustment layer's masks move and scale with the
+    /// picture when the frame is fitted or filled (about the middle), with
+    /// their feather; Keep only moves them with the centred picture.
+    #[test]
+    fn scale_to_fit_moves_and_scales_masks_of_frame_sized_layers() {
+        use reelforge_core::mask::Mask;
+        let mut e = editor();
+        let s = Time::from_secs_f64;
+        let r = e.seq().frame_rate;
+        e.set_sequence_settings("S", 1920, 1080, r, (1, 1));
+        let mut adj = Clip::new(ClipId(30), MediaId::GENERATED, s(0.0), s(0.0), s(2.0), None);
+        adj.adjustment = true;
+        adj.masks = vec![Mask { points: vec![[760.0, 440.0], [1160.0, 440.0], [1160.0, 640.0], [760.0, 640.0]], feather: 20.0, curves: vec![[0.0, 0.0, 40.0, 10.0]; 4], ..Mask::default() }];
+        adj.masks[0].keys = vec![reelforge_core::mask::ShapeKey::new(s(1.0), vec![[0.0, 0.0], [1920.0, 0.0], [1920.0, 1080.0]])];
+        e.project.sequences[e.active].tracks[0].clips = vec![adj];
+        let m = |e: &Editor| e.seq().find_clip(ClipId(30)).unwrap().1.masks[0].clone();
+        e.set_sequence_settings_fit("S", 960, 540, r, (1, 1), LayerFit::Fit);
+        let a = m(&e);
+        assert_eq!(a.points, vec![[380.0, 220.0], [580.0, 220.0], [580.0, 320.0], [380.0, 320.0]]);
+        assert_eq!((a.feather, a.curves[0]), (10.0, [0.0, 0.0, 20.0, 5.0]));
+        assert_eq!(a.keys[0].points, vec![[0.0, 0.0], [960.0, 0.0], [960.0, 540.0]]);
+        e.undo();
+        // Filling a vertical frame: scaled up so the height fills, about the new middle.
+        e.set_sequence_settings_fit("S", 1080, 1920, r, (1, 1), LayerFit::Fill);
+        let b = m(&e);
+        let k = 1920.0 / 1080.0;
+        assert!((b.points[0][0] - (540.0 - 200.0 * k)).abs() < 0.01 && (b.points[0][1] - (960.0 - 100.0 * k)).abs() < 0.01, "{:?}", b.points[0]);
+        e.undo();
+        e.set_sequence_settings_fit("S", 960, 540, r, (1, 1), LayerFit::Keep);
+        assert_eq!((m(&e).points[0], m(&e).feather), ([280.0, 170.0], 20.0), "moved with the middle, same size");
     }
 
     /// A track's arrow: collapsed → normal → expanded with its clip's

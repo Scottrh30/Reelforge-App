@@ -239,6 +239,42 @@ pub fn cut_frame(img: &Image, k: [f32; 2], strokes: &[Stroke], prior: Option<&[[
     (line.len() >= 3).then(|| line.iter().map(|p| [p[0] / k[0], p[1] / k[1]]).collect())
 }
 
+/// Where the main subject of a frame is (frame pixels), with the frame
+/// encoded for the object model: of a few points round the middle, the one
+/// whose cut looks most like a subject — not tiny, not most of the frame,
+/// not reaching round three sides (that's the background), and near the
+/// middle.
+pub fn find_subject(img: &Image, model: &sam::Embedding) -> Option<[f32; 2]> {
+    let (w, h) = (img.w as f32, img.h as f32);
+    let tries = [[0.5, 0.5], [0.5, 0.38], [0.5, 0.62], [0.38, 0.5], [0.62, 0.5], [0.5, 0.26], [0.32, 0.42], [0.68, 0.42]];
+    let band = (img.w.max(img.h) / 40).max(5);
+    let mut best: Option<([f32; 2], f32)> = None;
+    for t in tries {
+        let p = [t[0] * w, t[1] * h];
+        let st = [Stroke { fg: true, radius: 2.0, points: vec![p] }];
+        let Some(line) = cut_frame(img, [1.0, 1.0], &st, None, band, Some(model)) else { continue };
+        let area = (0..line.len()).map(|j| { let (a, b) = (line[j], line[(j + 1) % line.len()]); a[0] * b[1] - b[0] * a[1] }).sum::<f32>().abs() / 2.0 / (w * h);
+        if !(0.015..0.85).contains(&area) {
+            continue;
+        }
+        let (x0, x1) = line.iter().fold((f32::MAX, f32::MIN), |m, q| (m.0.min(q[0]), m.1.max(q[0])));
+        let (y0, y1) = line.iter().fold((f32::MAX, f32::MIN), |m, q| (m.0.min(q[1]), m.1.max(q[1])));
+        let (mx, my) = (w * 0.015, h * 0.015);
+        let sides = [x0 <= mx, x1 >= w - mx, y0 <= my, y1 >= h - my].iter().filter(|&&b| b).count();
+        if sides >= 3 {
+            continue;
+        }
+        let n = line.len() as f32;
+        let c = line.iter().fold([0.0, 0.0], |s, q| [s[0] + q[0] / n, s[1] + q[1] / n]);
+        let off = (((c[0] / w - 0.5).powi(2) + (c[1] / h - 0.5).powi(2)).sqrt() / 0.7).min(1.0);
+        let score = area.sqrt() * (1.0 - off) * if sides == 2 { 0.7 } else { 1.0 };
+        if best.is_none_or(|b| score > b.1) {
+            best = Some((p, score));
+        }
+    }
+    best.map(|b| b.0)
+}
+
 impl Editor {
     /// Get the frame at the playhead of clip `id` ready for the roto brush
     /// (encoded for the object model) in the background, so the first
@@ -341,6 +377,69 @@ impl Editor {
         let forward = self.playback.playhead + step < c.timeline_end();
         if c.duration > step {
             self.start_roto_propagation(id, index, forward);
+        }
+        Some(index)
+    }
+
+    /// One click: the background of clip `id` cut away through the whole
+    /// clip. The main subject at the playhead (on the clip's first frame if
+    /// the playhead isn't on it) is found by itself — of a few points round
+    /// the middle, the one the object model cuts out most like a subject:
+    /// a good size, near the middle, not reaching right round the frame —
+    /// cut into a mask with a refined (soft) edge, and carried through the
+    /// clip in the background, forwards then back. Returns the mask's index.
+    pub fn remove_background(&mut self, id: ClipId) -> Option<usize> {
+        if self.tracking.is_some() {
+            self.status = "Wait for the tracking or analysis already running to finish (or stop it)".into();
+            return None;
+        }
+        let (_, c) = self.seq().find_clip(id)?;
+        let c = c.clone();
+        let Some(media) = self.project.media(c.media).filter(|m| m.info.video.is_some() && c.title.is_none() && c.nested.is_none() && c.scene.is_none()).cloned() else {
+            self.status = "Background removal works on footage or a picture".into();
+            return None;
+        };
+        if !(c.timeline_start..c.timeline_end()).contains(&self.playback.playhead) {
+            self.seek(c.timeline_start);
+        }
+        let layer = self.layer_size(&c);
+        let at = self.track_time(&c);
+        let Some(f) = reelforge_media::FrameSource::open(&media.path, Some((ROTO_SIDE, ROTO_SIDE))).ok().and_then(|mut s| s.frame_at_blocking(at, Duration::from_secs(10))) else {
+            self.status = "Couldn't read the frame at the playhead".into();
+            return None;
+        };
+        let (w, h) = (f.width as usize, f.height as usize);
+        let rgba = f.pixels.to_rgba();
+        let img = Image::from_rgba(&rgba, w, h);
+        let Some(model) = encoded(&media.path, at, &rgba, w, h) else {
+            self.status = "Couldn't look at the frame for a subject".into();
+            return None;
+        };
+        let Some(point) = find_subject(&img, &model) else {
+            self.status = "No clear subject found here: try another frame, or + Pick object and click it".into();
+            return None;
+        };
+        let k = [w as f32 / layer[0].max(1.0), h as f32 / layer[1].max(1.0)];
+        let index = self.roto_stroke(id, None, Stroke { fg: true, radius: 2.0, points: vec![[point[0] / k[0], point[1] / k[1]]] }, false)?;
+        // Named for what it does, with a soft edge for hair.
+        if let Some(mut v) = self.visual(id) {
+            if let Some(m) = v.masks.get_mut(index) {
+                m.name = "Background removal".into();
+                m.refine = Some(reelforge_core::mask::RefineEdge::default());
+            }
+            self.set_visual_live(id, v);
+            self.commit_live_edit();
+        }
+        let step = self.seq().frame_rate.frame_duration();
+        let here = self.playback.playhead;
+        if here + step < c.timeline_end() {
+            self.roto_then_back = Some((id, index, here));
+            self.start_roto_propagation(id, index, true);
+        } else if here > c.timeline_start {
+            self.start_roto_propagation(id, index, false);
+        }
+        if self.tracking.is_some() {
+            self.status = "Background removal: the subject is picked out; following it through the clip…".into();
         }
         Some(index)
     }
@@ -460,6 +559,20 @@ impl Editor {
     }
 
     pub(super) fn finish_roto(&mut self, job: &TrackJob, r: Result<Option<RotoRun>, String>) {
+        let back = self.roto_then_back.take();
+        let carry_back = matches!(&r, Ok(Some(_)));
+        self.finish_roto_run(job, r);
+        // Background removal: having carried it forwards, carry it back to the start.
+        if let Some((id, mask, from)) = back.filter(|b| carry_back && b.0 == job.clip) {
+            let start = self.seq().find_clip(id).map(|(_, c)| c.timeline_start);
+            if start.is_some_and(|s| from > s) {
+                self.playback.playhead = from;
+                self.start_roto_propagation(id, mask, false);
+            }
+        }
+    }
+
+    fn finish_roto_run(&mut self, job: &TrackJob, r: Result<Option<RotoRun>, String>) {
         match r {
             Err(e) => self.status = format!("Roto brush failed: {e}"),
             Ok(None) => self.status = "Roto brush stopped".into(),
@@ -538,6 +651,75 @@ mod tests {
         e.undo();
         assert_eq!(e.seq().find_clip(id).unwrap().1.masks[i].keys.len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// One click, no pointing: the box (the subject) is found by itself,
+    /// cut out with a soft edge, and followed both ways from the middle of
+    /// the clip to cover all of it.
+    #[test]
+    fn the_background_is_removed_across_the_whole_clip() {
+        let dir = std::env::temp_dir().join(format!("rf-engine-bg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("b.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-filter_complex", "color=c=0x3050a0:s=160x90:r=25:d=0.6,noise=alls=20:allf=t[bg];color=c=orange:s=36x40:r=25:d=0.6[fg];[bg][fg]overlay=x='50+t*40':y=25", "-pix_fmt", "yuv420p"])
+            .arg(&f)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return;
+        }
+        let mut e = Editor::new(None, None);
+        let info = reelforge_media::probe(&f).unwrap();
+        e.project.media.push(MediaAsset { id: MediaId(1), path: f, name: "b.mp4".into(), info, conform: None });
+        (e.project.sequences[0].width, e.project.sequences[0].height) = (160, 90);
+        let id = ClipId(e.project.alloc_id());
+        let c = Clip::new(id, MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(0.6), None);
+        let v = e.seq().tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+        e.project.sequences[0].tracks[v].clips.push(c);
+        e.playback.playhead = Time::from_secs_f64(0.3);
+        let i = e.remove_background(id).expect("a mask");
+        let xs = |pts: &[[f32; 2]]| (pts.iter().map(|p| p[0]).fold(f32::MAX, f32::min), pts.iter().map(|p| p[0]).fold(f32::MIN, f32::max));
+        let m = e.seq().find_clip(id).unwrap().1.masks[i].clone();
+        assert!(m.name == "Background removal" && m.refine.is_some() && !m.fill_area && m.mode == reelforge_core::mask::MaskMode::Add);
+        // At 0.3 s the box is at 62..98.
+        let (lo, hi) = xs(&m.points_at(Time::from_secs_f64(0.3)));
+        assert!((lo - 62.0).abs() < 3.5 && (hi - 98.0).abs() < 3.5, "{lo}..{hi}: {}", e.status);
+        let t0 = std::time::Instant::now();
+        while (e.tracking.is_some() || e.roto_then_back.is_some()) && t0.elapsed().as_secs() < 240 {
+            e.poll_tracking();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let m = e.seq().find_clip(id).unwrap().1.masks[i].clone();
+        let (first, last) = (m.keys.first().unwrap().at, m.keys.last().unwrap().at);
+        assert!(first == Time::ZERO && last >= Time::from_secs_f64(0.55), "covers the clip: {first:?}..{last:?} ({} keys): {}", m.keys.len(), e.status);
+        // At the start the box is at 50..86, at 0.5 s at 70..106.
+        let (lo, hi) = xs(&m.points_at(Time::ZERO));
+        assert!((lo - 50.0).abs() < 4.0 && (hi - 86.0).abs() < 4.0, "start {lo}..{hi}");
+        let (lo, hi) = xs(&m.points_at(Time::from_secs_f64(0.5)));
+        assert!((lo - 70.0).abs() < 4.0 && (hi - 106.0).abs() < 4.0, "0.5 s {lo}..{hi}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The subject finder ignores the background (the cut that reaches round the frame).
+    #[test]
+    fn the_subject_is_found_off_centre_too() {
+        let (w, h) = (192usize, 108usize);
+        let mut rgba = vec![0u8; w * h * 4];
+        let mut seed = 9u32;
+        for y in 0..h {
+            for x in 0..w {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let n = (seed >> 26) as u8;
+                let inside = ((x as f32 - 120.0) / 26.0).powi(2) + ((y as f32 - 52.0) / 34.0).powi(2) < 1.0;
+                let p = if inside { [230, 200, 60] } else { [40 + n, 90 + n, 140 + n] };
+                rgba[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[p[0], p[1], p[2], 255]);
+            }
+        }
+        let img = Image::from_rgba(&rgba, w, h);
+        let m = sam::embed(&rgba, w, h).unwrap();
+        let p = find_subject(&img, &m).expect("found");
+        assert!(((p[0] - 120.0) / 26.0).powi(2) + ((p[1] - 52.0) / 34.0).powi(2) < 1.0, "on the subject: {p:?}");
     }
 }
 #[cfg(test)]

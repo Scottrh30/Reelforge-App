@@ -549,7 +549,13 @@ What works now:
     a title's shape, with no mask to draw, following the text as you edit it. **Neon…** in a
     title's panel does it in one click from the **Neon signs** presets (pink, ice blue, warm
     white, a green failing tube, red writing on, a purple marquee, or over the letters).
-    **Show the layer** at 0 % leaves only the tube (a sign at night). **Start**, **End** and **Offset** write it on or send it round
+    **Show the layer** at 0 % leaves only the tube (a sign at night). **Switch on over** (seconds
+    from the clip's start; 0 is always lit) lights it like a real sign warming up: on
+    letters, one letter after another (an O and its hole together) — **Left to right**,
+    **Random** or **All together** — each coming on with a **Stutter** (flashing on and off as a
+    failing starter does, on more and more of the time) or, at 0 %, a quick fade up; on a mask,
+    the whole tube at the end. The **Neon switching on** and **Neon blue, warming up at random**
+    presets do it. **Start**, **End** and **Offset** write it on or send it round
     (keyframe them), **Closed** joins the ends, **Dash length**, **Gap** and **Dash speed**
     make a chasing border, **Taper** thins its ends, **Flicker** (and its speed) makes a failing
     tube; **Core width** and colour, **Glow size**, intensity and colour, **Light the layer**
@@ -1152,7 +1158,10 @@ What works now:
   well: a layer's effects are measured in its own pixels, so they shrink or grow with it, and
   on solids and adjustment layers (always the frame's size) the effect settings measured in
   pixels — blur radius, glow size, outline width, shake, dash lengths, with their keyframes —
-  are scaled with the frame too. Edits keep their times, and it's one undo step. Or **any size** and frame rate typed in; or from
+  are scaled with the frame too, and their masks move and scale with the picture about the
+  middle (points, keyframes, curve handles, feather, expansion, roto brush strokes and the
+  refined edge's reach). With **Keep their size** their masks just move with the centred
+  picture. Edits keep their times, and it's one undo step. Or **any size** and frame rate typed in; or from
   **your templates**: **File → Save as template…** keeps a whole project to start from (its
   sequences, tracks, titles, effects and media), and a project started from one is new and
   unsaved, so the template is never written over. **Recent projects** sit beside them, newest
@@ -1266,6 +1275,16 @@ What works now:
   - **Smooth keys** (a mask with keyframes): takes the jitter out of a tracked shape. Each key
     is eased towards a steady line through its neighbours (1 to 8 frames wide), so shake goes
     and the movement, even at the ends of the track, stays; one undo step
+  - **Remove background** (Masks), like Filmora's or CapCut's one-click cut-out: no clicking or
+    painting. The main subject at the playhead (on the clip's first frame if the playhead
+    isn't on it) is found by itself — the object model cuts out what's at a few points round
+    the middle and keeps the most subject-like cut: a good size, near the middle, and not
+    reaching round three sides of the frame (that's the background) — then it's cut into a
+    **Background removal** mask with a **Refine edge** (soft hair and motion blur) and followed
+    through the whole clip in the background, forwards to its end and back to its start. Put
+    something underneath (a colour, a picture, another shot) to replace the background, or
+    **Invert** the mask to keep the background instead. Where it slipped, paint over that frame
+    with the roto brush to correct it and carry it on from there
   - **+ Pick object** (Masks): one click on an object in the Viewer picks it out and carries it
     through the rest of the clip by itself (from its last frame, back to the start), in the
     background, with no strokes; paint over any frame where it slipped to correct it and carry on
