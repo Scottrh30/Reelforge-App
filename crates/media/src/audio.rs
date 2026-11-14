@@ -254,3 +254,35 @@ pub fn waveform_peaks(path: &Path, buckets_per_sec: u32) -> Result<Vec<f32>> {
     }
     Ok(peaks)
 }
+
+/// `n` mono samples at `rate` centred on source time `at` of `path` (silence
+/// past its ends), for the audio visualiser. A few files' readers are kept
+/// open, so going on from one frame to the next reads on without seeking.
+pub fn audio_window(path: &Path, at: reelforge_core::Time, n: usize, rate: u32) -> Option<Vec<f32>> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    type Readers = Mutex<HashMap<(std::path::PathBuf, u32), (AudioReader, u64)>>;
+    static READERS: OnceLock<Readers> = OnceLock::new();
+    static TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if n == 0 || n > 1 << 16 || rate == 0 {
+        return None;
+    }
+    let tick = TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut map = READERS.get_or_init(Default::default).lock().unwrap_or_else(PoisonError::into_inner);
+    let key = (path.to_path_buf(), rate);
+    if !map.contains_key(&key) {
+        let r = AudioReader::open(path, rate).ok()?;
+        if map.len() >= 6 {
+            if let Some(old) = map.iter().min_by_key(|(_, (_, t))| *t).map(|(k, _)| k.clone()) {
+                map.remove(&old);
+            }
+        }
+        map.insert(key.clone(), (r, tick));
+    }
+    let (r, used) = map.get_mut(&key)?;
+    *used = tick;
+    let start = (at.as_secs_f64() * rate as f64).round() as i64 - n as i64 / 2;
+    let mut buf = vec![0.0f32; n * CHANNELS];
+    r.read(start, &mut buf);
+    Some(buf.chunks_exact(CHANNELS).map(|c| c.iter().sum::<f32>() / CHANNELS as f32).collect())
+}

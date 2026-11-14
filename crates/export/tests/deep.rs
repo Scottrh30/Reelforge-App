@@ -43,6 +43,8 @@ fn settings(path: PathBuf) -> ExportSettings {
         color: ColorOut::Sdr10,
         bitrate_kbps: None,
         alpha: false,
+        frame_rate: None,
+        between_frames: None,
     }
 }
 

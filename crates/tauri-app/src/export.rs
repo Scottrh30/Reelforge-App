@@ -279,6 +279,8 @@ fn build_settings(e: &Editor, spec: &Spec, path: &std::path::Path, include_audio
         color: if spec.video.is_some_and(|v| v.supports_10bit() || v.supports_hdr()) { spec.color } else { ColorOut::Sdr8 },
         bitrate_kbps: spec.bitrate_kbps.filter(|_| spec.video.is_some_and(|v| v.uses_bitrate())),
         alpha: spec.alpha && spec.video.is_some_and(|v| v.supports_alpha()),
+        frame_rate: spec.frame_rate.filter(|r| *r != s.frame_rate && spec.video.is_some()),
+        between_frames: spec.between.filter(|b| *b != reelforge_core::FrameBlend::Nearest),
     };
     if let Some(v) = spec.video.filter(|v| v.is_dnxhd()) {
         let fps = s.frame_rate.fps();
@@ -623,6 +625,8 @@ mod tests {
             color: ColorOut::Sdr8,
             bitrate_kbps: Some(8000),
             alpha: false,
+            frame_rate: None,
+            between_frames: None,
         };
         assert_eq!(detail(&s), "H.264 (MP4) · 1920×1080 · 8.0 Mbit/s");
         assert_eq!(detail(&ExportSettings { video: None, ..s }), "WAV audio");

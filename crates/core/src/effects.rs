@@ -97,6 +97,8 @@ pub enum EffectKind {
     Mirror,
     /// Barrel or pincushion distortion: add a lens's bend, or take it out.
     LensDistortion,
+    /// The sound as bars, a line, dots or a waveform (an audio visualiser).
+    AudioSpectrum,
     /// Film grain, moving from frame to frame.
     FilmGrain,
     /// Digital glitches: sliced, shifted blocks, colour splits and scan lines.
@@ -874,6 +876,31 @@ pub mod shake {
     pub const EDGES: usize = 5;
     pub const SEED: usize = 6;
 }
+/// Audio spectrum: which sound, how it's drawn, along which line.
+pub mod audiovis {
+    pub const SOURCE: usize = 0;
+    /// Bars, Line, Dots or Waveform.
+    pub const DISPLAY: usize = 1;
+    pub const BANDS: usize = 2;
+    pub const START_X: usize = 3;
+    pub const START_Y: usize = 4;
+    pub const END_X: usize = 5;
+    pub const END_Y: usize = 6;
+    /// The tallest a band rises (% of the layer's height).
+    pub const HEIGHT: usize = 7;
+    /// How much of each band's width its bar fills (%).
+    pub const THICKNESS: usize = 8;
+    pub const LOW: usize = 9;
+    pub const HIGH: usize = 10;
+    pub const INSIDE: usize = 11;
+    pub const OUTSIDE: usize = 12;
+    pub const SENSITIVITY: usize = 13;
+    pub const GLOW: usize = 14;
+    /// Both sides of the line.
+    pub const MIRROR: usize = 15;
+    pub const SHOW_LAYER: usize = 16;
+    pub const SOURCES: [&str; 9] = ["The clip's own sound", "Audio 1", "Audio 2", "Audio 3", "Audio 4", "Audio 5", "Audio 6", "Audio 7", "Audio 8"];
+}
 /// Bulge and Twirl: centre (% of the layer), radius (% of its height) and amount.
 pub mod distort {
     pub const X: usize = 0;
@@ -1536,6 +1563,25 @@ const CAMERA_SHAKE: [ParamSpec; 7] = [
     choice("Edges", &["Mirror", "Repeat the edge", "Transparent"]),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
+const AUDIO_VIS: [ParamSpec; 17] = [
+    choice("Sound", &audiovis::SOURCES),
+    choice("Display", &["Bars", "Line", "Dots", "Waveform"]),
+    spec("Bands", 48.0, 2.0, 256.0, "", 0.2),
+    spec("Start X", 8.0, -100.0, 200.0, " %", 0.2),
+    spec("Start Y", 85.0, -100.0, 200.0, " %", 0.2),
+    spec("End X", 92.0, -100.0, 200.0, " %", 0.2),
+    spec("End Y", 85.0, -100.0, 200.0, " %", 0.2),
+    spec("Height", 35.0, 0.0, 200.0, " %", 0.2),
+    spec("Thickness", 65.0, 1.0, 100.0, " %", 0.5),
+    spec("Lowest", 40.0, 10.0, 11000.0, " Hz", 1.0),
+    spec("Highest", 12000.0, 20.0, 11025.0, " Hz", 10.0),
+    color("Inside colour", 0x4fd1ff),
+    color("Outside colour", 0xff4fd8),
+    spec("Sensitivity", 0.0, -30.0, 30.0, " dB", 0.1),
+    spec("Glow", 40.0, 0.0, 200.0, " %", 0.5),
+    ParamSpec { name: "Mirror", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Show the layer", 100.0, 0.0, 100.0, " %", 0.5),
+];
 /// Edges, starting at Stretch (no gaps).
 const EDGES_STRETCH: ParamSpec = ParamSpec { name: "Edges", default: 1.0, min: 0.0, max: 3.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&EDGES) };
 const BULGE: [ParamSpec; 6] = [
@@ -1762,7 +1808,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 53] = [
+    pub const ALL: [EffectKind; 54] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -1816,6 +1862,7 @@ impl EffectKind {
         EffectKind::PolarCoordinates,
         EffectKind::Mirror,
         EffectKind::LensDistortion,
+        EffectKind::AudioSpectrum,
     ];
 
     pub fn label(self) -> &'static str {
@@ -1869,6 +1916,7 @@ impl EffectKind {
             EffectKind::Fluid => "Fluid",
             EffectKind::Disintegrate => "Disintegrate",
             EffectKind::FractalNoise => "Fractal noise",
+            EffectKind::AudioSpectrum => "Audio spectrum",
             EffectKind::Lightning => "Lightning",
             EffectKind::PatchReplacer => "Patch replacer",
             EffectKind::ObjectRemoval => "Object removal",
@@ -1891,7 +1939,7 @@ impl EffectKind {
             EffectKind::LensFlare | EffectKind::LightRays | EffectKind::AnamorphicFlare | EffectKind::LensDirt | EffectKind::NeonPath | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::WireRemoval | EffectKind::PatchReplacer | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty => EffectCategory::Repair,
             EffectKind::SkyReplace => EffectCategory::Keying,
-            EffectKind::FractalNoise | EffectKind::Lightning => EffectCategory::Generate,
+            EffectKind::FractalNoise | EffectKind::Lightning | EffectKind::AudioSpectrum => EffectCategory::Generate,
             EffectKind::CameraShake
             | EffectKind::ChromaticAberration
             | EffectKind::Glitch
@@ -1933,6 +1981,7 @@ impl EffectKind {
             EffectKind::MuzzleFlash => "A gun's flash at the barrel (drag it in the Viewer): rifle, pistol, shotgun or side vents, one shot or a burst, lighting the scene round it. Put it on an adjustment layer to light the footage.",
             EffectKind::BulletHit => "A bullet striking a wall, concrete, metal, glass or wood: a flash, sparks and a puff of dust, and the hole or cracks it leaves. Put it on an adjustment layer over the footage.",
             EffectKind::Disintegrate => "The layer breaks up into particles of its own colours, a ragged glowing front sweeping across it in the direction you choose, the pieces drifting away and fading.",
+            EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
             EffectKind::Lightning => "Jagged, branching bolts of lightning or electricity between two points (drag them in the Viewer) or all round one, struck afresh several times a second, flickering and lighting the layer.",
             EffectKind::PatchReplacer => "Covers a blemish, a logo or a sign with a patch of the picture from beside it (drag both in the Viewer), its light matched to the surroundings so the join doesn't show. Keyframe or track the target: the source moves with it.",
@@ -2020,6 +2069,7 @@ impl EffectKind {
             EffectKind::Fluid => &FLUID,
             EffectKind::Disintegrate => &DISINTEGRATE,
             EffectKind::FractalNoise => &FRACTAL,
+            EffectKind::AudioSpectrum => &AUDIO_VIS,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
             EffectKind::ObjectRemoval => &OBJECT_REMOVAL,
@@ -2061,6 +2111,7 @@ impl EffectKind {
             EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look"), (15, "Obstacles")],
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
             EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
+            EffectKind::AudioSpectrum => &[(0, "Sound"), (3, "Where"), (7, "Shape"), (11, "Colour")],
             EffectKind::Paint => &[(0, "Brush"), (5, "Strokes"), (6, "Clone")],
             EffectKind::FaceBeauty => &[(0, "Look"), (5, "Faces")],
             EffectKind::HslQualifier => &[(0, "Hue"), (3, "Saturation"), (6, "Luminance"), (9, "Matte"), (14, "Grade inside")],
@@ -2176,6 +2227,7 @@ impl EffectValues {
             EffectKind::Shatter => self.pieces.is_none(),
             EffectKind::Disintegrate => self.particles.is_none(),
             EffectKind::FractalNoise => v[fractal::OPACITY] == 0.0,
+            EffectKind::AudioSpectrum => false,
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
             EffectKind::PatchReplacer => v[patch::OPACITY] == 0.0,
             EffectKind::ObjectRemoval => v[removal::OPACITY] == 0.0 || self.table.is_none(),
@@ -2218,6 +2270,7 @@ impl EffectValues {
         let v = &self.values;
         self.kind.animates_with_time()
             || (self.kind == EffectKind::NeonEdges && v[neon::FLICKER] > 0.0)
+            || self.kind == EffectKind::AudioSpectrum
             || (self.kind == EffectKind::FractalNoise && (v[fractal::SPEED] != 0.0 || v[fractal::DRIFT_X] != 0.0 || v[fractal::DRIFT_Y] != 0.0))
             || (self.kind == EffectKind::Crt && (v[crt::WOBBLE] > 0.0 || v[crt::NOISE] > 0.0 || v[crt::TRACKING] > 0.0))
             || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)

@@ -20,7 +20,7 @@ pub mod proxy;
 pub mod source;
 pub mod tracker;
 
-pub use audio::{waveform_peaks, AudioReader};
+pub use audio::{audio_window, waveform_peaks, AudioReader};
 pub use cache::{CacheKey, FrameCache};
 pub use decoder::{DecoderHandle, VideoFrame};
 pub use encode::{dnxhd_bitrate, is_hardware_encoder, sequence_file, ColorOut, Fit, MovieWriter, Quality, VideoCodec, WriterSettings};

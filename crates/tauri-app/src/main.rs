@@ -1137,6 +1137,12 @@ fn remove_background(id: u64) -> Res<Option<usize>> {
     ed(|e| e.remove_background(clip(id)))
 }
 
+/// What goes behind clip `id` once its background is cut away (a colour, a blur of the shot, or something from the project), on the track below.
+#[tauri::command]
+fn replace_background(id: u64, behind: reelforge_engine::editor::roto::Behind) -> Res<Option<u64>> {
+    ed(|e| e.replace_background(clip(id), behind).map(|c| c.0))
+}
+
 /// Make an AI-upscaled copy (2× or 4×) of media `media`; `replace` puts it in the original's place.
 #[tauri::command]
 fn upscale_media(media: u64, factor: u32, replace: bool) -> Res<()> {
@@ -1875,6 +1881,7 @@ fn main() {
             color_match_pick,
             roto_pick,
             remove_background,
+            replace_background,
             roto_propagate,
             mask_smooth,
             mask_point_delete,
@@ -1981,6 +1988,11 @@ fn main() {
             keys::transform_stopwatch,
             keys::key_move,
             keys::key_retime,
+            keys::keys_shift,
+            keys::keys_interp,
+            keys::keys_delete,
+            keys::keys_copy,
+            keys::keys_paste,
             keys::key_interp,
             keys::key_handle,
             keys::key_delete,

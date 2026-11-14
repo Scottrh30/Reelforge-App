@@ -64,6 +64,12 @@ pub struct Spec {
     /// A transparent background, for codecs with an alpha channel.
     #[serde(default)]
     pub alpha: bool,
+    /// Frames a second to write (the sequence's when `None`).
+    #[serde(default)]
+    pub frame_rate: Option<reelforge_core::FrameRate>,
+    /// How footage fills in between its frames throughout (`None`: as each clip says).
+    #[serde(default)]
+    pub between: Option<reelforge_core::FrameBlend>,
 }
 
 /// Export settings you saved under a name (kept with the app's settings).
@@ -133,7 +139,7 @@ impl Preset {
     }
 
     pub fn spec(self) -> Option<Spec> {
-        let s = |video, size, quality, fit, hardware| Some(Spec { video, size, quality, fit, hardware, color: ColorOut::Sdr8, bitrate_kbps: None, alpha: false });
+        let s = |video, size, quality, fit, hardware| Some(Spec { video, size, quality, fit, hardware, color: ColorOut::Sdr8, bitrate_kbps: None, alpha: false, frame_rate: None, between: None });
         use VideoCodec as V;
         match self {
             Preset::YouTube1080 => s(Some(V::H264), Size::Fixed(1920, 1080), Quality::High, Fit::Letterbox, false),

@@ -1140,7 +1140,12 @@ impl Project {
                 (Some(s), ..) => p.sequences.get(s).map_or(frame_size, |s| [s.width as f32, s.height as f32]),
                 _ => frame_size,
             };
-            Layer { track, clip: c, source_time, transform: p.world_transform(seq, c, t), blend: c.blend, effects: c.effects_sized(t, frame, size) }
+            let mut effects = c.effects_sized(t, frame, size);
+            // An audio visualiser hears the sound at the moment.
+            for v in effects.iter_mut().filter(|v| v.kind == crate::effects::EffectKind::AudioSpectrum) {
+                crate::audiovis::fill(v, p, seq, c, t);
+            }
+            Layer { track, clip: c, source_time, transform: p.world_transform(seq, c, t), blend: c.blend, effects }
         }
         let mut out = Vec::new();
         for (ti, tr) in s.tracks.iter().enumerate() {

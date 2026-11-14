@@ -5,6 +5,7 @@
 
 pub mod colormatch;
 pub mod neonpath;
+pub mod audiovis;
 pub mod anim;
 pub mod attrs;
 pub mod audio;

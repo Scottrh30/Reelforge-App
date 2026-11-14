@@ -340,6 +340,124 @@ pub fn key_add(id: u64, channel: String, at: i64) -> Res<Option<usize>> {
     })
 }
 
+/// A key picked out in an expanded track's lane.
+#[derive(serde::Deserialize, Clone)]
+pub struct KeyRef {
+    pub channel: String,
+    pub index: usize,
+    /// Its timeline time when the drag began (for `keys_shift`).
+    #[serde(default)]
+    pub at: i64,
+}
+
+/// A copied key: its channel, timeline time, value (as stored) and easing.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct CopiedKey {
+    pub channel: String,
+    pub at: i64,
+    pub value: f32,
+    pub interp: Interp,
+}
+
+/// Slide several keys of clip `id` together by `dt` (timeline ticks, from
+/// where each was when the drag began), snapped to frames and kept on the
+/// clip; they stop a frame short of keys that aren't moving. Live: `commit`
+/// ends it. Returns how far they went.
+#[tauri::command]
+pub fn keys_shift(id: u64, keys: Vec<KeyRef>, dt: i64) -> Res<Option<i64>> {
+    ed(|e| {
+        let cid = ClipId(id);
+        let rate = e.seq().frame_rate;
+        let (_, c) = e.seq().find_clip(cid)?;
+        let c = c.clone();
+        let picked: Vec<(reelforge_core::Channel, usize, Time)> = keys.iter().filter_map(|k| Some((parse_channel(&k.channel)?, k.index, c.source_time(Time(k.at))))).collect();
+        let dt = Time(dt).snap(rate);
+        let mut v = e.visual(cid)?;
+        let moved = v.channel_shift(&picked, dt, c.source_in, c.source_in + c.duration, rate.frame_duration());
+        e.set_visual_live(cid, v);
+        Some(moved.0)
+    })
+}
+
+/// The easing of several keys at once ("Linear", "Ease" or "Hold"). One undo step.
+#[tauri::command]
+pub fn keys_interp(id: u64, keys: Vec<KeyRef>, interp: Interp) -> Res<()> {
+    let picked: Vec<_> = keys.iter().filter_map(|k| Some((parse_channel(&k.channel)?, k.index))).collect();
+    one_step(id, |v| {
+        for (ch, i) in &picked {
+            v.channel_set_interp(*ch, *i, interp);
+        }
+    })
+}
+
+/// Delete several keys at once. One undo step.
+#[tauri::command]
+pub fn keys_delete(id: u64, keys: Vec<KeyRef>) -> Res<()> {
+    let mut picked: Vec<_> = keys.iter().filter_map(|k| Some((parse_channel(&k.channel)?, k.index))).collect();
+    // Last first, so the others' places stay put.
+    picked.sort_by(|a, b| b.1.cmp(&a.1));
+    one_step(id, |v| {
+        for (ch, i) in &picked {
+            v.channel_remove_key(*ch, *i);
+        }
+    })
+}
+
+/// Copy several keys of clip `id` (whole: a position key brings both its parts).
+#[tauri::command]
+pub fn keys_copy(id: u64, keys: Vec<KeyRef>) -> Res<Vec<CopiedKey>> {
+    ed(|e| {
+        let cid = ClipId(id);
+        let Some((_, c)) = e.seq().find_clip(cid) else { return Vec::new() };
+        let c = c.clone();
+        let Some(v) = e.visual(cid) else { return Vec::new() };
+        let mut out: Vec<CopiedKey> = Vec::new();
+        for k in &keys {
+            let Some(ch) = parse_channel(&k.channel) else { continue };
+            for part in v.channel_parts(ch) {
+                if let Some(&(at, value, interp)) = v.channel_keys(part).get(k.index) {
+                    let name = channel_id(part);
+                    let at = timeline_of(&c, at).0;
+                    if !out.iter().any(|o| o.channel == name && o.at == at) {
+                        out.push(CopiedKey { channel: name, at, value, interp });
+                    }
+                }
+            }
+        }
+        out
+    })
+}
+
+/// Paste copied keys into clip `id`, the first at timeline time `at` and the
+/// others as far after it as they were. One undo step. Returns how many went in.
+#[tauri::command]
+pub fn keys_paste(id: u64, keys: Vec<CopiedKey>, at: i64) -> Res<usize> {
+    ed(|e| {
+        e.commit_live_edit();
+        let cid = ClipId(id);
+        let rate = e.seq().frame_rate;
+        let Some((_, c)) = e.seq().find_clip(cid) else { return 0 };
+        let c = c.clone();
+        let Some(first) = keys.iter().map(|k| k.at).min() else { return 0 };
+        let Some(mut v) = e.visual(cid) else { return 0 };
+        let items: Vec<_> = keys
+            .iter()
+            .filter_map(|k| {
+                let t = Time(at + (k.at - first)).snap(rate);
+                (t >= c.timeline_start && t < c.timeline_end()).then(|| Some((parse_channel(&k.channel)?, c.source_time(t), k.value, k.interp))).flatten()
+            })
+            .collect();
+        let n = v.channel_paste(&items, rate.frame_duration());
+        e.set_visual_live(cid, v);
+        e.commit_live_edit();
+        e.status = match n {
+            0 => "Nothing pasted: the keys would fall off the clip, or it has no such settings".into(),
+            n => format!("Pasted {n} keyframe{}", if n == 1 { "" } else { "s" }),
+        };
+        n
+    })
+}
+
 fn one_step(id: u64, f: impl FnOnce(&mut reelforge_core::ClipVisual)) -> Res<()> {
     ed(|e| {
         e.commit_live_edit();

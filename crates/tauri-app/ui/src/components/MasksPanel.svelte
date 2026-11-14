@@ -83,6 +83,21 @@
     app.activeMask = null;
     await run(api.setMasks(ins.id, all, true));
   }
+
+  // Replace background: what goes behind once it's cut away.
+  let behind = $state("blur");
+  let behindColor = $state("#1e7a3c");
+  const pictures = $derived((app.s?.media ?? []).filter((m) => (m.kind === "video" || m.kind === "image") && !m.missing));
+  function putBehind() {
+    const hex = behindColor.replace("#", "");
+    const what =
+      behind === "blur"
+        ? ("Blur" as const)
+        : behind === "color"
+          ? { Color: [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)] as [number, number, number] }
+          : { Media: Number(behind.slice(1)) };
+    run(api.replaceBackground(ins.id, what));
+  }
 </script>
 
 <div class="group">
@@ -104,6 +119,25 @@
         title={ins.kind === "video" ? "Cut the background away through the whole clip: the main subject is found by itself (at the playhead), cut out with a soft edge, and followed through the clip" : "Background removal works on footage"}>Remove background</button>
     </div>
   </div>
+  {#if ins.kind === "video" && ins.masks.some((m) => m.mask.name === "Background removal")}
+    <!-- Then what goes behind: on the track below, over the same time. -->
+    <div class="behind" role="group" aria-label="Replace the background">
+      <span class="lbl">Behind it</span>
+      <select bind:value={behind} aria-label="What goes behind it">
+        <option value="blur">A blur of the shot</option>
+        <option value="color">A colour</option>
+        {#if pictures.length}
+          <optgroup label="From the project">
+            {#each pictures as m}<option value={"m" + m.id}>{m.name}</option>{/each}
+          </optgroup>
+        {/if}
+      </select>
+      {#if behind === "color"}
+        <input type="color" bind:value={behindColor} aria-label="Background colour" />
+      {/if}
+      <button class="small" onclick={putBehind} title="Put it on the video track below this clip (a new track if that's taken), over the same stretch of time">Put it behind</button>
+    </div>
+  {/if}
   {#if drawing}
     <p class="note">Click in the Viewer to place points. Click the first point, double-click or press Enter to close; Esc cancels.</p>
   {/if}
@@ -330,6 +364,26 @@
     display: flex;
     gap: 4px;
     flex-wrap: wrap;
+  }
+  .behind {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 4px 0 6px;
+  }
+  .behind .lbl {
+    color: var(--muted);
+    font-size: calc(11.5px * var(--text-scale));
+  }
+  .behind select {
+    min-width: 0;
+    max-width: 14em;
+  }
+  .behind input[type="color"] {
+    width: 34px;
+    height: 22px;
+    padding: 0;
   }
   .small {
     min-height: 22px;

@@ -239,6 +239,17 @@ pub fn cut_frame(img: &Image, k: [f32; 2], strokes: &[Stroke], prior: Option<&[[
     (line.len() >= 3).then(|| line.iter().map(|p| [p[0] / k[0], p[1] / k[1]]).collect())
 }
 
+/// What [`Editor::replace_background`] puts behind a clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Behind {
+    /// A solid colour (RGB).
+    Color([u8; 3]),
+    /// The shot itself, blurred.
+    Blur,
+    /// Footage or a picture from the project.
+    Media(MediaId),
+}
+
 /// Where the main subject of a frame is (frame pixels), with the frame
 /// encoded for the object model: of a few points round the middle, the one
 /// whose cut looks most like a subject — not tiny, not most of the frame,
@@ -442,6 +453,79 @@ impl Editor {
             self.status = "Background removal: the subject is picked out; following it through the clip…".into();
         }
         Some(index)
+    }
+
+    /// What goes behind clip `id` once its background is cut away: a layer
+    /// over the same stretch of time on the nearest free video track below
+    /// it (a new track there if none is free) — a solid colour, a blur of
+    /// the shot itself (its masks off, so the whole picture, softened and a
+    /// little bigger to hide the blurred edges), or footage or a picture from
+    /// the project, scaled to fill the frame. One undo step.
+    pub fn replace_background(&mut self, id: ClipId, behind: Behind) -> Option<ClipId> {
+        use reelforge_core::undo::{AddClip, AddTrack, Batch};
+        self.commit_live_edit();
+        let seq = self.active;
+        let s = self.seq();
+        let (ti, c) = s.find_clip(id)?;
+        let c = c.clone();
+        let (start, end) = (c.timeline_start, c.timeline_end());
+        let free = |t: &reelforge_core::project::Track| t.kind == TrackKind::Video && !t.locked && t.clips.iter().all(|o| o.timeline_end() <= start || o.timeline_start >= end);
+        let below = (0..ti).rev().find(|&j| s.tracks.get(j).is_some_and(free));
+        let new_id = ClipId(self.project.alloc_id());
+        let (w, h) = (self.seq().width as f32, self.seq().height as f32);
+        let mut layer = match behind {
+            Behind::Color(rgb) => Clip::new_plane(new_id, start, end - start, [rgb[0], rgb[1], rgb[2], 255]),
+            Behind::Blur => {
+                let mut b = c.clone();
+                b.id = new_id;
+                b.link = None;
+                b.masks.clear();
+                b.effects = vec![{
+                    let mut e = reelforge_core::Effect::new(reelforge_core::EffectKind::Blur);
+                    e.params[0].value = (h / 25.0).clamp(8.0, 120.0);
+                    e
+                }];
+                b.transform.scale = b.transform.scale.map(|k| k * 1.06);
+                b
+            }
+            Behind::Media(m) => {
+                let Some(asset) = self.project.media(m).cloned() else {
+                    self.status = "That's not in the project any more".into();
+                    return None;
+                };
+                let Some(v) = asset.info.video.as_ref() else {
+                    self.status = format!("{} has no picture to put behind", asset.name);
+                    return None;
+                };
+                let len = if self.project.is_still(m) { end - start } else { (end - start).min(asset.info.duration.max(Time(1))) };
+                let mut l = Clip::new(new_id, m, start, Time::ZERO, len, None);
+                // Filling the frame.
+                let k = (w / v.width.max(1) as f32).max(h / v.height.max(1) as f32);
+                l.transform.scale = [k, k];
+                l
+            }
+        };
+        layer.label = None;
+        let mut cmds: Vec<Box<dyn reelforge_core::undo::Command>> = Vec::new();
+        let track = match below {
+            Some(j) => j,
+            None => {
+                // A new video track just under the clip's.
+                let t = AddTrack { seq, index: ti, track: reelforge_core::project::Track::new(self.seq().next_track_name(TrackKind::Video), TrackKind::Video) };
+                cmds.push(Box::new(t));
+                ti
+            }
+        };
+        cmds.push(Box::new(AddClip { seq, track, clip: layer }));
+        let what = match behind {
+            Behind::Color(_) => "a colour",
+            Behind::Blur => "a blur of the shot",
+            Behind::Media(_) => "the picture",
+        };
+        self.execute(Box::new(Batch { name: "Replace background".into(), cmds }));
+        let name = self.seq().tracks.get(track).map_or(String::new(), |t| t.name.clone());
+        self.status = format!("Behind it now: {what}, on {name}");
+        Some(new_id)
     }
 
     /// Carry roto mask `index` of clip `id` on from the playhead through the

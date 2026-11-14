@@ -71,6 +71,8 @@ fn settings(path: PathBuf) -> ExportSettings {
         color: ColorOut::Sdr8,
         bitrate_kbps: None,
         alpha: false,
+        frame_rate: None,
+        between_frames: None,
     }
 }
 
@@ -1348,6 +1350,74 @@ fn footage_with_fewer_frames_than_the_sequence_is_filled_in() {
     assert!(nearest(14) > 230 && nearest(55) < 25 || nearest(14) < 25 && nearest(55) > 230, "held: {} {}", nearest(14), nearest(55));
     assert!((120..215).contains(&blend(14)) && (120..215).contains(&blend(55)), "blended: {} {}", blend(14), blend(55));
     assert!(flow(14) < 60 && flow(52) > 200 && flow(30) > 230, "flowed half way: {} {} {}", flow(14), flow(52), flow(30));
+}
+
+/// Exporting a 25p edit at 50 frames a second: twice the frames, each drawn
+/// at its own moment, and with Between frames set for the export, the frames
+/// in between blended (or held, as the clip says, without it).
+#[test]
+fn an_edit_exports_at_a_higher_frame_rate_with_frames_filled_in() {
+    use reelforge_core::FrameBlend;
+    let Some(src) = ffmpeg("rf_moving_square3.mp4", &["-f", "lavfi", "-i", "color=c=black:s=320x180:r=25:d=1", "-f", "lavfi", "-i", "color=c=white:s=40x40:r=25:d=1", "-filter_complex", "[0][1]overlay=x='10+t*400':y=70", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "12"]) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let shot = |between: Option<FrameBlend>| {
+        let mut p = Project::new();
+        p.media.push(asset(1, &src));
+        let mut seq = Sequence::new("T", 320, 180, FrameRate::new(25, 1));
+        seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(1.0), None)];
+        p.sequences = vec![seq];
+        let out = std::env::temp_dir().join(format!("rf_export_50p_{between:?}.mp4"));
+        let mut st = settings(out.clone());
+        (st.width, st.height, st.end, st.include_audio) = (320, 180, s(0.2), false);
+        st.frame_rate = Some(FrameRate::new(50, 1));
+        st.between_frames = between;
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+        let info = reelforge_media::probe(&out).unwrap();
+        let v = info.video.unwrap();
+        assert_eq!(v.frame_rate, FrameRate::new(50, 1), "written at 50p");
+        let f = FrameSource::open(&out, None).unwrap().frame_at_blocking(Time::from_frame(1, FrameRate::new(50, 1)), Duration::from_secs(5)).unwrap();
+        let rgba = f.rgba();
+        move |x: u32| rgba[((90 * 320 + x) * 4) as usize] as i32
+    };
+    let held = shot(None);
+    assert!(held(14) > 230 && held(55) < 25 || held(14) < 25 && held(55) > 230, "held as the clip says: {} {}", held(14), held(55));
+    let blended = shot(Some(FrameBlend::Blend));
+    assert!((120..215).contains(&blended(14)) && (120..215).contains(&blended(55)), "blended: {} {}", blended(14), blended(55));
+}
+
+/// The audio visualiser hears the clip's own sound: a 1 kHz tone lights the
+/// bar for 1 kHz and leaves the others low.
+#[test]
+fn the_audio_spectrum_hears_the_clip() {
+    use reelforge_core::effects::{audiovis as av, Effect, EffectKind};
+    let Some(src) = ffmpeg("rf_tone_1k.mp4", &["-f", "lavfi", "-i", "color=c=black:s=320x180:r=25:d=1", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest"]) else { return };
+    let Some((device, queue)) = headless_device() else { return };
+    let s = Time::from_secs_f64;
+    let mut p = Project::new();
+    p.media.push(asset(1, &src));
+    let mut seq = Sequence::new("T", 320, 180, FrameRate::new(25, 1));
+    let mut c = Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(1.0), None);
+    let mut e = Effect::new(EffectKind::AudioSpectrum);
+    for (i, v) in [(av::BANDS, 16.0), (av::START_X, 0.0), (av::START_Y, 100.0), (av::END_X, 100.0), (av::END_Y, 100.0), (av::HEIGHT, 100.0), (av::GLOW, 0.0), (av::LOW, 100.0), (av::HIGH, 10000.0), (av::INSIDE, 0xffffff as f32), (av::OUTSIDE, 0xffffff as f32)] {
+        e.params[i].value = v;
+    }
+    c.effects = vec![e];
+    seq.tracks[0].clips = vec![c];
+    p.sequences = vec![seq];
+    let out = std::env::temp_dir().join("rf_export_audiovis.mp4");
+    let mut st = settings(out.clone());
+    (st.width, st.height, st.start, st.end, st.include_audio) = (320, 180, s(0.4), s(0.6), false);
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    let f = FrameSource::open(&out, None).unwrap().frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+    let rgba = f.rgba();
+    // How high each of the 16 bands (20 px wide) rises.
+    let height = |band: u32| (0..180u32).filter(|&y| rgba[((y * 320 + band * 20 + 10) * 4) as usize] > 128).count();
+    // 1 kHz between 100 Hz and 10 kHz, evenly in pitch: half way, band 8.
+    let hs: Vec<usize> = (0..16).map(height).collect();
+    let peak = (0..16).max_by_key(|&b| hs[b]).unwrap();
+    assert!((7..=8).contains(&peak), "the 1 kHz band is highest: {hs:?}");
+    assert!(hs[peak] > 100 && hs[1] < hs[peak] / 2 && hs[14] < hs[peak] / 2, "the others low: {hs:?}");
 }
 
 /// A DV NTSC sequence (10:11 pixels) exported at its own size says so in

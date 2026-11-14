@@ -55,6 +55,13 @@ pub struct ExportSettings {
     /// Keep the transparency: where no layer covers the frame it's see-through
     /// rather than black (ProRes 4444, CineForm 4444, PNG and TIFF only).
     pub alpha: bool,
+    /// Frames a second written (the sequence's when `None`): every frame is
+    /// drawn at its own moment, so titles and animation move smoothly at it.
+    pub frame_rate: Option<FrameRate>,
+    /// How footage fills the moments between its frames for this export,
+    /// over what each clip says (`None` or Nearest: as each clip says) — so a
+    /// 24p edit delivered at 60p can be blended or flowed throughout.
+    pub between_frames: Option<reelforge_core::FrameBlend>,
 }
 
 impl ExportSettings {
@@ -389,7 +396,7 @@ pub fn export_sequence(
 ) -> Result<Report> {
     let started = Instant::now();
     let seq = project.sequences.get(settings.sequence).ok_or_else(|| anyhow!("the project has no sequence {}", settings.sequence))?;
-    let rate = seq.frame_rate;
+    let rate = settings.frame_rate.filter(|r| r.fps() > 0.0 && r.fps() <= 240.0).unwrap_or(seq.frame_rate);
     let frame_size = [seq.width.max(2), seq.height.max(2)];
     let (first, last) = frame_range(rate, settings.start, settings.end);
     let total = (last - first) as u64;
@@ -436,6 +443,10 @@ pub fn export_sequence(
     // A transparent background: the frame starts clear and keeps its coverage.
     compositor.transparent = writer.keeps_alpha();
     let mut scene = Scene::new(device, queue);
+    if rate != seq.frame_rate {
+        scene.out_fps = Some(rate.fps());
+    }
+    scene.between = settings.between_frames;
     let mut frames = ExactFrames { sources: HashMap::new(), titles: HashMap::new(), sharp_titles: HashMap::new(), tick: 0 };
     // Decoders not needed for this many frames are closed.
     let idle = (rate.fps() * 2.0).ceil() as u64;

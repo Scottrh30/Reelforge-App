@@ -296,6 +296,8 @@ mod tests {
             color: Default::default(),
             bitrate_kbps: bitrate,
             alpha: false,
+            frame_rate: None,
+            between_frames: None,
         };
         let mb = |b: u64| b as f64 / 1e6;
         // ProRes 422 HQ at 1080p25 is about 184 Mbit/s: a minute is about 1.4 GB.

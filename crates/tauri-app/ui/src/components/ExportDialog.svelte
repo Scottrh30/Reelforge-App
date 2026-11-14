@@ -49,7 +49,10 @@
   const busy = $derived((app.live?.export.jobs ?? []).some((j) => j.state === "waiting" || j.state === "running"));
 
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  const norm = (s: Spec): Spec => ({ video: s.video, size: s.size, quality: s.quality, fit: s.fit, hardware: s.hardware, color: s.color, bitrate_kbps: s.bitrate_kbps ?? null, alpha: !!s.alpha });
+  const norm = (s: Spec): Spec => ({ video: s.video, size: s.size, quality: s.quality, fit: s.fit, hardware: s.hardware, color: s.color, bitrate_kbps: s.bitrate_kbps ?? null, alpha: !!s.alpha, frame_rate: s.frame_rate ?? null, between: s.between ?? null });
+  // Frame rates to write at; the sequence's own is the first choice.
+  const RATES: [string, number, number][] = [["23.976", 24000, 1001], ["24", 24, 1], ["25", 25, 1], ["29.97", 30000, 1001], ["30", 30, 1], ["50", 50, 1], ["59.94", 60000, 1001], ["60", 60, 1], ["120", 120, 1]];
+  const outFps = $derived(spec?.frame_rate ? spec.frame_rate.num / spec.frame_rate.den : fps());
   const builtIn = $derived(opts && spec ? opts.presets.find((p) => p.spec && same(norm(p.spec), norm(spec!))) ?? null : null);
   // What the preset box shows.
   const presetValue = $derived(userPreset && saved.some((u) => u.name === userPreset && same(norm(u.spec), norm(spec!))) ? `u:${userPreset}` : builtIn ? `b:${builtIn.index}` : "custom");
@@ -177,7 +180,7 @@
   });
   const gb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
   const sizeMb = $derived(spec?.bitrate_kbps ? ((spec.bitrate_kbps * 1000) / 8 * secs + (includeAudio && hasAudio ? 24000 * secs : 0)) / 1e6 : 0);
-  const frames = $derived(Math.round(secs * fps()));
+  const frames = $derived(Math.round(secs * outFps));
 
   // ---- Presets ----
   async function savePreset() {
@@ -396,6 +399,35 @@
               <p class="hint">{spec.alpha ? "Where no layer covers the frame it's see-through, for putting over other footage." : "Where no layer covers the frame it's black."}</p>
             </div>
           {/if}
+
+          <span class="lbl">Frame rate</span>
+          <div class="col">
+            <select
+              aria-label="Frame rate"
+              value={spec.frame_rate ? `${spec.frame_rate.num}/${spec.frame_rate.den}` : ""}
+              onchange={(e) => {
+                const v = e.currentTarget.value;
+                if (!v) spec!.frame_rate = null;
+                else {
+                  const [num, den] = v.split("/").map(Number);
+                  spec!.frame_rate = { num, den };
+                }
+              }}
+            >
+              <option value="">As the sequence ({Math.round(fps() * 1000) / 1000} fps)</option>
+              {#each RATES as [name, num, den]}<option value="{num}/{den}">{name} fps</option>{/each}
+            </select>
+            <p class="hint">{spec.frame_rate ? "Every frame is drawn at its own moment, so titles, keyframes and effects move smoothly at this rate; footage fills in as Between frames says." : "Written at the sequence's frame rate."}</p>
+          </div>
+          <span class="lbl">Between frames</span>
+          <div class="col">
+            <select aria-label="Between frames" value={spec.between ?? ""} onchange={(e) => (spec!.between = (e.currentTarget.value || null) as Spec["between"])}>
+              <option value="">As each clip says</option>
+              <option value="Blend">Blend, for all footage</option>
+              <option value="Flow">Optical flow, for all footage</option>
+            </select>
+            <p class="hint">{spec.between === "Flow" ? "Footage with fewer frames a second than the export (24p delivered at 60p) gets the frames in between made from the motion: smoothest, slowest to export." : spec.between === "Blend" ? "Footage with fewer frames than the export gets cross-faded frames in between." : "Footage with fewer frames than the export holds each frame, unless its own Between frames (in Controls) says otherwise."}</p>
+          </div>
 
           <span class="lbl">Encoder</span>
           <label class="check" class:off={!codec.hardware} title={codec.hardware ? "Much faster, slightly bigger files at the same quality. 10-bit and HDR work too on H.265 (Main 10, with HDR10's metadata), where the card can. If no GPU encoder works, the software one is used." : "Only H.264 and H.265 have GPU encoders"}>

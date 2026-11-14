@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { app, run, tps, fps, timecode, shortTime, snapToFrame, say } from "../lib/session.svelte";
   import { MIN_DB, MAX_DB, volKeys, volumeAt, setVolKey, clampedFades, fadeCurve, tidyDb, dbText, dbGain } from "../lib/audio";
-  import { api, type ClipAudio, type ClipView, type MediaView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind } from "../lib/api";
+  import { api, type ClipAudio, type ClipView, type MediaView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind, type KeyRef, type CopiedKey } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu } from "../lib/menu.svelte";
   import { view, geo, perSequence, TRACK_H, MIN_TRACK_H, MAX_TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack, rowH, rowAtY, EXPANDED_TOP } from "../lib/timeline.svelte";
@@ -83,27 +83,51 @@
 
   const x = (t: number) => (t / T - view.scroll) * view.pps;
 
-  // A keyframe diamond in an expanded track's lane being dragged along the
-  // timeline (its value stays); a click without moving goes to it instead.
-  let kdrag = $state<{ clip: number; ch: string; index: number; at: number } | null>(null);
+  // Keyframe diamonds in expanded tracks' lanes: picked out (click; Shift or
+  // Ctrl/Cmd click adds or takes one away; drag over the rows for a box),
+  // dragged together along the timeline (values kept), and copied, pasted,
+  // eased or deleted (right-click, or Ctrl+C, Ctrl+V, Delete). One clip's at a time.
+  type Picked = { clip: number; ch: string; index: number; at: number };
+  let ksel = $state<Picked[]>([]);
+  // Being dragged: how far, for drawing them where they're going.
+  let kdrag = $state<{ clip: number; dt: number } | null>(null);
+  let kbox = $state<{ track: number; x0: number; y0: number; x1: number; y1: number } | null>(null);
+  let kclipboard: CopiedKey[] | null = null;
+  // Ctrl+V pastes keyframes only while they were copied last (not clips).
+  let kfresh = false;
+  const picked = (clip: number, ch: string, index: number) => ksel.some((k) => k.clip === clip && k.ch === ch && k.index === index);
+  const refs = (list: Picked[]): KeyRef[] => list.map((k) => ({ channel: k.ch, index: k.index, at: k.at }));
   function kdDown(e: PointerEvent, clip: number, ch: string, index: number, at: number, locked: boolean) {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
+    const add = e.shiftKey || e.ctrlKey || e.metaKey;
+    const me = { clip, ch, index, at };
+    if (ksel.length && ksel[0].clip !== clip) ksel = [];
+    if (add) {
+      ksel = picked(clip, ch, index) ? ksel.filter((k) => !(k.ch === ch && k.index === index)) : [...ksel, me];
+      return;
+    }
+    if (!picked(clip, ch, index)) ksel = [me];
+    const group = $state.snapshot(ksel) as Picked[];
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     const x0 = e.clientX;
     let moved = false;
     let busy = false;
     let pending: number | null = null;
-    const send = async (t: number) => {
+    let went = 0;
+    const send = async (dt: number) => {
       if (busy) {
-        pending = t;
+        pending = dt;
         return;
       }
       busy = true;
-      const used = await api.keyRetime(clip, ch, index, t).catch(() => null);
-      if (kdrag && used != null) kdrag.at = used;
+      const used = await api.keysShift(clip, refs(group), dt).catch(() => null);
+      if (used != null) {
+        went = used;
+        kdrag = { clip, dt: used };
+      }
       busy = false;
       if (pending != null) {
         const p = pending;
@@ -114,12 +138,12 @@
     const move = (ev: PointerEvent) => {
       if (locked || (!moved && Math.abs(ev.clientX - x0) < 3)) return;
       moved = true;
-      let t = at + ((ev.clientX - x0) / view.pps) * T;
-      // Shift: onto the playhead when close.
+      let dt = ((ev.clientX - x0) / view.pps) * T;
+      // Shift: the one dragged onto the playhead when close.
       const ph = app.live?.playhead;
-      if (ev.shiftKey && ph != null && Math.abs(x(t) - x(ph)) < 10) t = ph;
-      kdrag = { clip, ch, index, at: kdrag?.at ?? at };
-      send(t);
+      if (ev.shiftKey && ph != null && Math.abs(x(at + dt) - x(ph)) < 10) dt = ph - at;
+      if (!kdrag) kdrag = { clip, dt: 0 };
+      send(dt);
     };
     const up = async () => {
       el.removeEventListener("pointermove", move);
@@ -128,12 +152,109 @@
       if (moved) {
         while (busy) await new Promise((r) => setTimeout(r, 10));
         await run(api.commit());
+        // They're where they went now.
+        ksel = group.map((k) => ({ ...k, at: k.at + went }));
         kdrag = null;
       } else run(api.seek(at));
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
+  }
+  /// Dragging a box over an expanded track's rows picks the diamonds inside it.
+  function kboxDown(e: PointerEvent, track: number, clip: number, rows: { ch: string; keys: number[] | null }[]) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement;
+    const r = el.getBoundingClientRect();
+    const add = e.shiftKey || e.ctrlKey || e.metaKey;
+    const start = add && ksel[0]?.clip === clip ? [...ksel] : [];
+    el.setPointerCapture(e.pointerId);
+    kbox = { track, x0: e.clientX - r.left, y0: e.clientY - r.top, x1: e.clientX - r.left, y1: e.clientY - r.top };
+    const pick = () => {
+      if (!kbox) return;
+      const [lx, hx] = [Math.min(kbox.x0, kbox.x1), Math.max(kbox.x0, kbox.x1)];
+      const [ly, hy] = [Math.min(kbox.y0, kbox.y1), Math.max(kbox.y0, kbox.y1)];
+      const got: Picked[] = [];
+      rows.forEach((row, k) => {
+        const cy = k * ROW_H + 9;
+        if (!row.keys || cy < ly - 5 || cy > hy + 5) return;
+        row.keys.forEach((at, index) => {
+          const cx = x(at);
+          if (cx >= lx - 5 && cx <= hx + 5 && !start.some((s) => s.ch === row.ch && s.index === index)) got.push({ clip, ch: row.ch, index, at });
+        });
+      });
+      ksel = [...start, ...got];
+    };
+    const move = (ev: PointerEvent) => {
+      if (kbox) kbox = { ...kbox, x1: ev.clientX - r.left, y1: ev.clientY - r.top };
+      pick();
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      pick();
+      kbox = null;
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  }
+  async function kCopy() {
+    if (!ksel.length) return;
+    kclipboard = await api.keysCopy(ksel[0].clip, refs(ksel)).catch(() => null);
+    kfresh = !!kclipboard?.length;
+  }
+  async function kPaste(clip: number) {
+    if (!kclipboard?.length) return;
+    await run(api.keysPaste(clip, kclipboard, app.live?.playhead ?? 0));
+    ksel = [];
+  }
+  async function kDelete() {
+    if (!ksel.length) return;
+    await run(api.keysDelete(ksel[0].clip, refs(ksel)));
+    ksel = [];
+  }
+  function kMenu(e: MouseEvent, clip: number, ch: string, index: number, at: number) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!picked(clip, ch, index)) ksel = [{ clip, ch, index, at }];
+    // (Its own copy: a click on the menu clears the picked ones.)
+    const list = $state.snapshot(ksel) as Picked[];
+    const n = list.length;
+    const ease = (interp: "Linear" | "Ease" | "Hold") => run(api.keysInterp(clip, refs(list), interp));
+    openMenu(e, [
+      { heading: true, label: n === 1 ? "Keyframe" : `${n} keyframes` },
+      { label: "Linear", hint: "Straight on to the next", run: () => ease("Linear") },
+      { label: "Ease in and out", hint: "Slow out of it and into the next", run: () => ease("Ease") },
+      { label: "Hold", hint: "Jump at the next one", run: () => ease("Hold") },
+      { separator: true },
+      { label: "Copy", hint: "Ctrl+C", run: () => ((ksel = list), kCopy()) },
+      { label: "Paste at the playhead", hint: "Ctrl+V", disabled: !kclipboard?.length, run: () => kPaste(clip) },
+      { label: "Delete", hint: "Delete", run: () => ((ksel = list), kDelete()) },
+    ]);
+  }
+  /// A click anywhere but on the diamonds and their rows lets go of the picked ones.
+  function kOutside(e: PointerEvent) {
+    if (ksel.length && !(e.target as HTMLElement | null)?.closest?.(".kd, .karea")) ksel = [];
+  }
+  function kKeys(e: KeyboardEvent) {
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+    const mod = e.ctrlKey || e.metaKey;
+    // Copying anything else: Ctrl+V is for that now.
+    if (mod && !ksel.length && (e.key.toLowerCase() === "c" || e.key.toLowerCase() === "x")) kfresh = false;
+    if (ksel.length && (e.key === "Delete" || e.key === "Backspace")) kDelete();
+    else if (ksel.length && mod && e.key.toLowerCase() === "c") kCopy();
+    else if (kfresh && kclipboard?.length && mod && e.key.toLowerCase() === "v" && (ksel.length || app.s?.seq.tracks.some((tr) => tr.expanded && tr.props))) {
+      const clip = ksel[0]?.clip ?? app.s?.seq.tracks.find((tr) => tr.expanded && tr.props)?.props?.clip;
+      if (clip == null) return;
+      kPaste(clip);
+    } else if (ksel.length && e.key === "Escape") ksel = [];
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
   }
   const tAt = (px: number) => Math.max(0, (view.scroll + px / view.pps) * T);
   const maxV = $derived(Math.max(0, totalH + 40 - lanesH));
@@ -1112,7 +1233,7 @@
   }
 </script>
 
-<svelte:window onpointerup={windowUp} />
+<svelte:window onpointerup={windowUp} onkeydowncapture={kKeys} onpointerdowncapture={kOutside} />
 
 {#snippet newMenu()}
   <!-- Adds the chosen layer on a new track at the top, from the playhead. -->
@@ -1338,30 +1459,41 @@
               {#if tr.expanded && tr.props}
                 <!-- The expanded clip's keyframes, on the same rows as its properties in the header. -->
                 {@const kp = tr.props}
+                {@const krowsAll = trackRows(kp)}
+                {@const krowKeys = krowsAll.map((r) => ({ ch: r.kind === "prop" ? `t:${r.prop.prop}:0` : r.kind === "param" ? `e:${r.fx.index}:${r.pi}` : "", keys: r.kind === "prop" ? r.prop.keys : r.kind === "param" ? r.param.keys : null }))}
                 <div class="krows" style="top:{EXPANDED_TOP}px">
-                  {#each trackRows(kp) as r, k}
-                    {@const keys = r.kind === "prop" ? r.prop.keys : r.kind === "param" ? r.param.keys : null}
-                    {@const ch = r.kind === "prop" ? `t:${r.prop.prop}:0` : r.kind === "param" ? `e:${r.fx.index}:${r.pi}` : ""}
+                  <!-- Drag over the rows for a box picking the diamonds in it. -->
+                  <div class="karea" role="presentation" onpointerdown={(e) => kboxDown(e, tr.index, kp.clip, krowKeys)}></div>
+                  {#each krowsAll as r, k}
+                    {@const keys = krowKeys[k].keys}
+                    {@const ch = krowKeys[k].ch}
                     <div class="krow" class:fx={r.kind === "fx"} style="top:{k * ROW_H}px"></div>
                     {#if keys}
                       {#each keys as at0, ki}
-                        {@const dragging = kdrag?.clip === kp.clip && kdrag.ch === ch && kdrag.index === ki}
-                        {@const at = dragging && kdrag ? kdrag.at : at0}
+                        {@const sel = picked(kp.clip, ch, ki)}
+                        {@const dragging = sel && kdrag?.clip === kp.clip}
+                        {@const at = dragging && kdrag ? at0 + kdrag.dt : at0}
                         {@const kx = x(at)}
                         {#if kx > -10 && kx < lanesW + 10}
                           <button
                             class="kd"
                             class:now={Math.abs(at - (app.live?.playhead ?? -1)) < T / 1000}
+                            class:sel
                             class:dragging
                             style="left:{kx - 5}px; top:{k * ROW_H + 4}px"
-                            title="{r.kind === 'prop' ? r.prop.prop : r.kind === 'param' ? r.param.name : ''} keyframe at {timecode(at)}: drag to move it (Shift: onto the playhead), click to go there"
+                            title="{r.kind === 'prop' ? r.prop.prop : r.kind === 'param' ? r.param.name : ''} keyframe at {timecode(at)}: drag to move it (and any others picked out; Shift: onto the playhead), click to go there, Shift-click to add it to the ones picked out, right-click for easing, copy and paste"
                             aria-label="Keyframe at {timecode(at)}"
+                            aria-pressed={sel}
                             onpointerdown={(e) => kdDown(e, kp.clip, ch, ki, at0, tr.locked)}
+                            oncontextmenu={(e) => kMenu(e, kp.clip, ch, ki, at0)}
                           ></button>
                         {/if}
                       {/each}
                     {/if}
                   {/each}
+                  {#if kbox && kbox.track === tr.index}
+                    <div class="kbox" style="left:{Math.min(kbox.x0, kbox.x1)}px; top:{Math.min(kbox.y0, kbox.y1)}px; width:{Math.abs(kbox.x1 - kbox.x0)}px; height:{Math.abs(kbox.y1 - kbox.y0)}px"></div>
+                  {/if}
                 </div>
               {/if}
               {#each tr.clips as c (c.id)}
@@ -1898,7 +2030,23 @@
   }
   .kd.dragging {
     cursor: ew-resize;
-    outline: 1px solid #fff;
+  }
+  .kd.sel {
+    outline: 2px solid #fff;
+    outline-offset: 1px;
+  }
+  .karea {
+    position: absolute;
+    inset: 0;
+    pointer-events: auto;
+    cursor: crosshair;
+  }
+  .kbox {
+    position: absolute;
+    border: 1px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    pointer-events: none;
+    z-index: 3;
   }
   .kd.now {
     background: #fff;

@@ -120,6 +120,10 @@ pub struct Scene {
     flow: Option<reelforge_render::flowgpu::FlowInterp>,
     /// Each clip's last in-between frame, by what it was made from.
     flow_frames: HashMap<ClipId, (u64, VideoFrame)>,
+    /// Exporting at another frame rate: frames a second drawn (instead of the sequence's).
+    pub out_fps: Option<f64>,
+    /// How all footage fills in between its frames, over each clip's own choice.
+    pub between: Option<reelforge_core::FrameBlend>,
     /// The pixel shape (width ÷ height) of the sequence being drawn.
     par: f32,
 }
@@ -129,7 +133,9 @@ const NEXT_FRAME_KEY: u64 = 1 << 62;
 
 impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0 }
+        // (The audio visualiser hears sound through the media reader.)
+        reelforge_core::audiovis::set_audio_source(|p, at, n, r| reelforge_media::audio_window(p, at, n, r));
+        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0, out_fps: None, between: None }
     }
 
     /// Forget composition renders (e.g. a different project was opened).
@@ -180,7 +186,7 @@ impl Scene {
     ) -> Result<u64> {
         let Some(s) = project.sequences.get(seq) else { return Ok(0) };
         let frame_size = [s.width.max(2), s.height.max(2)];
-        let fps = s.frame_rate.fps();
+        let fps = self.out_fps.unwrap_or(s.frame_rate.fps());
         self.par = s.par();
         // The camera and lights, for 3D layers.
         let scene3d = project.scene3d_at(seq, t);
@@ -263,9 +269,11 @@ impl Scene {
     fn gather_retimed(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], fps: f64, scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Item>> {
         use reelforge_core::FrameBlend;
         let c = l.clip;
+        // (An export can blend or flow all footage, over each clip's own choice.)
+        let blend = self.between.filter(|b| *b != FrameBlend::Nearest).unwrap_or(c.frame_blend);
         // Retimed footage, or footage with fewer frames a second than the
         // sequence (24p in a 60p sequence): blended or flowed in between.
-        let rate = (c.frame_blend != FrameBlend::Nearest && c.nested.is_none() && c.title.is_none() && c.plane.is_none() && !c.adjustment)
+        let rate = (blend != FrameBlend::Nearest && c.nested.is_none() && c.title.is_none() && c.plane.is_none() && !c.adjustment)
             .then(|| project.media(c.media))
             .flatten()
             .filter(|m| !project.is_still(m.id))
@@ -289,7 +297,7 @@ impl Scene {
             return Ok(self.gather(project, l, t, frame_size, fps, scene3d, provider, depth)?.map(Item::Single));
         };
         b.key = c.id.0 ^ NEXT_FRAME_KEY;
-        if c.frame_blend == FrameBlend::Flow && a.mesh.is_none() && a.space.is_none() && !l.transform.three_d {
+        if blend == FrameBlend::Flow && a.mesh.is_none() && a.space.is_none() && !l.transform.three_d {
             // The frame in between, worked out on the graphics card.
             let mut h = DefaultHasher::new();
             (c.id, f0 as i64, c.flow_quality, a.picture.frame.generation, b.picture.frame.generation, a.picture.frame.pts, b.picture.frame.pts).hash(&mut h);

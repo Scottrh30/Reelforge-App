@@ -799,3 +799,82 @@ fn fs_sky_fill(in: VsOut) -> @location(0) vec4<f32> {
     let fg = c.rgb * mix(vec3(1.0), clamp(tint, vec3(0.5), vec3(2.0)), clamp(fx.p2.w / 100.0, 0.0, 1.0) * 0.35);
     return vec4(fg + sky * (1.0 - c.a), 1.0 - (1.0 - c.a) * 0.0);
 }
+
+// Audio spectrum (see core audiovis.rs): the second texture is one row of
+// band levels, 16 bits each (red high, green low). p0 = (source, display,
+// bands, start x %), p1 = (start y %, end x %, end y %, height % of the
+// layer's height), p2 = (thickness %, -, -, inside colour), p3 = (outside
+// colour, -, glow %, mirror), p4.x = show the layer %; extra.zw = layer size.
+fn av_level(i: i32, n: i32) -> f32 {
+    let t = textureLoad(second, vec2(clamp(i, 0, n - 1), 0), 0);
+    return (round(t.r * 255.0) * 256.0 + round(t.g * 255.0)) / 65535.0;
+}
+
+@fragment
+fn fs_audio_vis(in: VsOut) -> @location(0) vec4<f32> {
+    let src_c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = fx.extra.zw;
+    let n = i32(max(round(fx.p0.z), 1.0));
+    let display = u32(round(fx.p0.y));
+    let a = vec2(fx.p0.w, fx.p1.x) / 100.0 * size;
+    let b = vec2(fx.p1.y, fx.p1.z) / 100.0 * size;
+    let len = max(length(b - a), 1.0);
+    let dir = (b - a) / len;
+    // "Up" from the line: its left as it runs (up the frame for a level line drawn left to right).
+    let up = vec2(dir.y, -dir.x);
+    let p = in.uv * size;
+    let u = dot(p - a, dir) / len;
+    var w = dot(p - a, up);
+    let tall = max(fx.p1.w / 100.0 * size.y, 1.0);
+    let mirror = fx.p3.w >= 0.5;
+    if (mirror && display != 3u) {
+        w = abs(w);
+    }
+    let fb = u * f32(n);
+    let i = i32(floor(fb));
+    let inband = fb - floor(fb);
+    let thick = clamp(fx.p2.x / 100.0, 0.01, 1.0);
+    let px = 1.0 / max(len / f32(n), 1e-3);
+    var d = 1e9;
+    // How far (px) from the shape: 0 inside.
+    if (u >= 0.0 && u <= 1.0) {
+        if (display == 0u) {
+            // Bars: centred in their bands, from the line up to the level.
+            let h = av_level(i, n) * tall;
+            let half = thick * 0.5;
+            let dx = max(abs(inband - 0.5) - half, 0.0) * len / f32(n);
+            let dy = max(max(-w, w - h), 0.0);
+            d = select(length(vec2(dx, dy)), 0.0, dx <= 0.0 && dy <= 0.0);
+            if (h < 0.5) {
+                d = max(d, 0.5);
+            }
+        } else if (display == 2u) {
+            // Dots: a round dot at each band's level.
+            let h = av_level(i, n) * tall;
+            let r = thick * 0.5 * len / f32(n);
+            let c = vec2((inband - 0.5) * len / f32(n), w - h);
+            d = max(length(c) - r, 0.0);
+        } else {
+            // A line through the band levels (the waveform's from its middle).
+            let x = clamp(fb - 0.5, 0.0, f32(n - 1));
+            let j = i32(floor(x));
+            let lv = mix(av_level(j, n), av_level(j + 1, n), x - floor(x));
+            var h = lv * tall;
+            if (display == 3u) {
+                h = (lv - 0.5) * 2.0 * tall;
+            }
+            let lw = max(thick * 6.0, 1.0);
+            d = max(abs(w - h) - lw * 0.5, 0.0);
+            if (display == 3u && mirror) {
+                d = min(d, max(abs(w + h) - lw * 0.5, 0.0));
+            }
+        }
+    }
+    let cover = 1.0 - smoothstep(0.0, 1.0, d);
+    let glow = fx.p3.z / 100.0 * exp(-d / max(tall * 0.06, 2.0)) * 0.6;
+    let k = clamp(abs(w) / tall, 0.0, 1.0);
+    let col = mix(lt_rgb(fx.p2.w), lt_rgb(fx.p3.x), k);
+    let alpha = clamp(cover + glow * (1.0 - cover), 0.0, 1.0);
+    let base = src_c * clamp(fx.p4.x / 100.0, 0.0, 1.0);
+    return vec4(col * alpha + base.rgb * (1.0 - alpha), alpha + base.a * (1.0 - alpha));
+}

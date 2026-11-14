@@ -257,6 +257,63 @@ impl ClipVisual {
         }
     }
 
+    /// The channels sharing `ch`'s keys (a position's x and y, a crop's four
+    /// sides): every one, so copying or pasting a key keeps it whole.
+    pub fn channel_parts(&self, ch: Channel) -> Vec<Channel> {
+        match (self.get(ch), ch) {
+            (Some(Ref::Pair(..)), Channel::Transform(p, _)) => (0..2).map(|i| Channel::Transform(p, i)).collect(),
+            (Some(Ref::Quad(..)), Channel::Transform(p, _)) => (0..4).map(|i| Channel::Transform(p, i)).collect(),
+            (Some(_), _) => vec![ch],
+            (None, _) => Vec::new(),
+        }
+    }
+
+    /// Slide several keys (channel, index, the source time each started at)
+    /// by `dt` together, each kept within `lo`–`hi` and `gap` from keys that
+    /// aren't moving. Keys moving later go from the last back, earlier from
+    /// the first on, so they never bump into each other. Returns how far
+    /// they went (less than `dt` if one was stopped).
+    pub fn channel_shift(&mut self, keys: &[(Channel, usize, Time)], dt: Time, lo: Time, hi: Time, gap: Time) -> Time {
+        let mut order: Vec<&(Channel, usize, Time)> = keys.iter().collect();
+        let now = |v: &Self, k: &(Channel, usize, Time)| v.channel_keys(k.0).get(k.1).map(|x| x.0);
+        let later = keys.first().and_then(|k| now(self, k)).is_some_and(|t| k_target(keys[0].2, dt, lo, hi) > t);
+        order.sort_by_key(|k| (k.2, k.1));
+        if later {
+            order.reverse();
+        }
+        let mut moved = dt;
+        for k in order {
+            let Some((_, value, _)) = self.channel_keys(k.0).get(k.1).copied() else { continue };
+            let want = k_target(k.2, dt, lo, hi);
+            let got = self.channel_set_key(k.0, k.1, want, value, gap);
+            if (got - k.2).0.abs() < moved.0.abs() {
+                moved = got - k.2;
+            }
+        }
+        // One was stopped short: all go only as far, so they keep their spacing.
+        if moved != dt && (moved.0 == 0 || moved.0.signum() == dt.0.signum()) {
+            for k in keys {
+                if let Some((_, value, _)) = self.channel_keys(k.0).get(k.1).copied() {
+                    self.channel_set_key(k.0, k.1, k_target(k.2, moved, lo, hi), value, gap);
+                }
+            }
+        }
+        moved
+    }
+
+    /// Paste keys (channel, source time, value, easing): each added at its
+    /// time with its value. Returns how many went in.
+    pub fn channel_paste(&mut self, keys: &[(Channel, Time, f32, Interp)], gap: Time) -> usize {
+        let mut n = 0;
+        for &(ch, at, value, interp) in keys {
+            let Some(i) = self.channel_add_key(ch, at) else { continue };
+            self.channel_set_key(ch, i, at, value, gap);
+            self.channel_set_interp(ch, i, interp);
+            n += 1;
+        }
+        n
+    }
+
     /// Add a key at `at` holding the channel's current value there (for
     /// position/scale, both components keep their current values).
     /// Returns its index.
@@ -295,6 +352,10 @@ enum KeyBase {
     Scalar(f32),
     Pair([f32; 2]),
     Quad([f32; 4]),
+}
+
+fn k_target(from: Time, dt: Time, lo: Time, hi: Time) -> Time {
+    (from + dt).max(lo).min(hi.max(lo))
 }
 
 #[cfg(test)]
@@ -370,6 +431,41 @@ mod tests {
         assert_eq!(t, s(3.0));
         assert_eq!(v.anim.position.0[1].value, [10.0, 120.0], "both components kept");
         assert_eq!(v.anim.eval(&v.transform, s(1.5)).position, [10.0, 70.0], "halfway now at 1.5 s");
+    }
+
+    /// Several keys slid together keep their spacing, stop short of a key
+    /// that isn't moving, and paste back whole (both of a position's parts).
+    #[test]
+    fn keys_move_copy_and_paste_together() {
+        let mut v = ClipVisual::default();
+        let (x, y, o) = (Channel::Transform(Prop::Position, 0), Channel::Transform(Prop::Position, 1), Channel::Transform(Prop::Opacity, 0));
+        for t in [0.0, 1.0, 2.0, 3.0] {
+            v.channel_add_key(x, s(t));
+        }
+        v.channel_set_key(y, 1, s(1.0), 50.0, Time(1));
+        v.channel_add_key(o, s(1.5));
+        assert_eq!(v.channel_parts(x), vec![x, y]);
+        assert_eq!(v.channel_parts(o), vec![o]);
+        let f = Time::from_secs_f64(1.0 / 25.0);
+        // Keys 1 and 2 (and the opacity key) half a second later together.
+        let sel = [(x, 1, s(1.0)), (x, 2, s(2.0)), (o, 0, s(1.5))];
+        let moved = v.channel_shift(&sel, s(0.5), Time::ZERO, s(10.0), f);
+        assert_eq!(moved, s(0.5));
+        let at = |v: &ClipVisual, ch, i: usize| v.channel_keys(ch)[i].0;
+        assert_eq!((at(&v, x, 1), at(&v, x, 2), at(&v, o, 0)), (s(1.5), s(2.5), s(2.0)));
+        assert_eq!(v.channel_keys(y)[1].1, 50.0, "value kept");
+        // Further on, key 2 meets key 3 (not moving): they stop a frame short, together.
+        let moved = v.channel_shift(&sel, s(1.5), Time::ZERO, s(10.0), f);
+        assert_eq!(moved, s(1.0) - f, "stopped by the key at 3 s");
+        assert_eq!(at(&v, x, 2) - at(&v, x, 1), s(1.0), "the others only as far: spacing kept");
+        // Back, in order, without the first bumping the second.
+        v.channel_shift(&sel, s(-0.25), Time::ZERO, s(10.0), f);
+        assert_eq!((at(&v, x, 1), at(&v, x, 2)), (s(0.75), s(1.75)));
+        // Copy key 1 (both parts) and paste it at 5 s.
+        let parts: Vec<(Channel, Time, f32, Interp)> = v.channel_parts(x).into_iter().map(|c| { let k = v.channel_keys(c)[1]; (c, s(5.0), k.1, k.2) }).collect();
+        assert_eq!(v.channel_paste(&parts, f), 2);
+        let k = v.channel_keys(y);
+        assert_eq!((k.last().unwrap().0, k.last().unwrap().1), (s(5.0), 50.0));
     }
 
     #[test]

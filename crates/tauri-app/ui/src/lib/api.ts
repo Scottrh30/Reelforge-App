@@ -583,7 +583,7 @@ export type ControlValue = string | number | [number, number];
 export type ControlTarget = "Text" | "TextColour" | "Opacity" | "Position" | { Param: { effect: number; param: number } };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace" | "LightRays" | "AnamorphicFlare" | "LensDirt" | "NeonPath" | "HslQualifier" | "HueCurves" | "Bulge" | "Twirl" | "Ripple" | "WaveWarp" | "PolarCoordinates" | "Mirror" | "LensDistortion";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace" | "LightRays" | "AnamorphicFlare" | "LensDirt" | "NeonPath" | "HslQualifier" | "HueCurves" | "Bulge" | "Twirl" | "Ripple" | "WaveWarp" | "PolarCoordinates" | "Mirror" | "LensDistortion" | "AudioSpectrum";
 
 /// The Hue curves effect's curves (points x, y in 0–1; y 0.5 is no change).
 export interface HueCurves {
@@ -817,6 +817,20 @@ export type Fit = "Letterbox" | "Crop" | "Stretch";
 export type ColorOut = "Sdr8" | "Sdr10" | "HdrPq" | "HdrHlg";
 export type Size = { Scaled: number } | { Fixed: [number, number] };
 
+/// A keyframe picked out in an expanded track's lane.
+export interface KeyRef {
+  channel: string;
+  index: number;
+  /// Its timeline time when picked (where a drag starts from).
+  at: Ticks;
+}
+export interface CopiedKey {
+  channel: string;
+  at: Ticks;
+  value: number;
+  interp: "Linear" | "Ease" | "Hold" | string;
+}
+
 export interface Spec {
   video: VideoCodec | null;
   size: Size;
@@ -827,6 +841,10 @@ export interface Spec {
   bitrate_kbps: number | null;
   /// A transparent background (codecs with alpha only).
   alpha?: boolean;
+  /// Frames a second to write (null: the sequence's).
+  frame_rate?: { num: number; den: number } | null;
+  /// How footage fills in between its frames throughout (null: as each clip says).
+  between?: "Nearest" | "Blend" | "Flow" | null;
 }
 
 export interface UserPreset {
@@ -1119,6 +1137,8 @@ export const api = {
   rotoPick: (id: number, point: Pt, removal: boolean) => invoke<number | null>("roto_pick", { id, point, removal }),
   /// One click: the clip's background cut away through the whole clip (the subject found by itself). Returns the mask's index.
   removeBackground: (id: number) => invoke<number | null>("remove_background", { id }),
+  /// What goes behind a clip once its background is cut away, on the track below. Returns the new clip.
+  replaceBackground: (id: number, behind: { Color: [number, number, number] } | "Blur" | { Media: number }) => invoke<number | null>("replace_background", { id, behind }),
   rotoPrepare: (id: number) => invoke("roto_prepare", { id }),
   rotoPropagate: (id: number, mask: number, forward: boolean) => invoke("roto_propagate", { id, mask, forward }),
   maskPointAddAt: (id: number, index: number, at: Pt) => invoke<number | null>("mask_point_add_at", { id, index, at }),
@@ -1236,6 +1256,13 @@ export const api = {
   /// Start keyframing a transform property, or stop (every key gone, the value at the playhead kept).
   transformStopwatch: (id: number, prop: string) => invoke("transform_stopwatch", { id, prop }),
   /// Slide a key along the timeline, keeping its value (live; commit ends it). Returns the time used.
+  /// Several keys slid together by dt from where they began (live; commit ends it). Returns how far they went.
+  keysShift: (id: number, keys: KeyRef[], dt: Ticks) => invoke<number | null>("keys_shift", { id, keys, dt: Math.round(dt) }),
+  keysInterp: (id: number, keys: KeyRef[], interp: "Linear" | "Ease" | "Hold") => invoke("keys_interp", { id, keys, interp }),
+  keysDelete: (id: number, keys: KeyRef[]) => invoke("keys_delete", { id, keys }),
+  keysCopy: (id: number, keys: KeyRef[]) => invoke<CopiedKey[]>("keys_copy", { id, keys }),
+  /// Paste copied keys, the first at `at` (timeline). Returns how many went in.
+  keysPaste: (id: number, keys: CopiedKey[], at: Ticks) => invoke<number>("keys_paste", { id, keys, at: Math.round(at) }),
   keyRetime: (id: number, channel: string, index: number, at: Ticks) => invoke<number | null>("key_retime", { id, channel, index, at: Math.round(at) }),
   keyMove: (id: number, channel: string, index: number, at: Ticks, value: number, keepTime: boolean) => invoke<number | null>("key_move", { id, channel, index, at: Math.round(at), value, keepTime }),
   keyInterp: (id: number, channel: string, index: number, interp: Interp) => invoke("key_interp", { id, channel, index, interp }),

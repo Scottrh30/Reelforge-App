@@ -460,6 +460,8 @@ pub struct Editor {
 impl Editor {
     /// An editor with an empty project. `gpu` draws the viewer picture; `audio` plays sound.
     pub fn new(gpu: Option<(reelforge_render::wgpu::Device, reelforge_render::wgpu::Queue)>, audio: Option<AudioEngine>) -> Self {
+        // (The audio visualiser hears sound through the media reader.)
+        reelforge_core::audiovis::set_audio_source(|p, at, n, r| reelforge_media::audio_window(p, at, n, r));
         let fonts = Arc::new(Mutex::new(None));
         let fill = fonts.clone();
         std::thread::spawn(move || {
@@ -5473,6 +5475,41 @@ mod tests {
         e.start_mask_tracking(a, 0, true, reelforge_core::track::MaskMotion::Position);
         assert!(e.tracking.is_none() && e.status.contains("no"), "{}", e.status);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Replacing the background: a colour, or a blur of the shot, goes in on
+    /// the nearest free video track below the clip, over the same stretch of
+    /// time — on a new track just under it when none is free — in one undo step.
+    #[test]
+    fn a_background_goes_behind_on_the_track_below() {
+        use crate::editor::roto::Behind;
+        let mut e = editor();
+        let s = Time::from_secs_f64;
+        let v: Vec<usize> = e.seq().tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Video).map(|(i, _)| i).collect();
+        assert!(v.len() >= 2);
+        let (low, high) = (v[0], v[1]);
+        let id = ClipId(e.project.alloc_id());
+        let mut c = Clip::new(id, MediaId(1), s(1.0), s(0.0), s(3.0), None);
+        c.masks.push(reelforge_core::mask::Mask { name: "Background removal".into(), ..Default::default() });
+        e.project.sequences[0].tracks[high].clips.push(c);
+        // V1 is free under it: a blur of the shot goes there, its masks off.
+        let b = e.replace_background(id, Behind::Blur).unwrap();
+        let (bt, bc) = e.seq().find_clip(b).map(|(t, c)| (t, c.clone())).unwrap();
+        assert_eq!(bt, low);
+        assert!(bc.masks.is_empty() && bc.effects.len() == 1 && bc.effects[0].kind == reelforge_core::EffectKind::Blur);
+        assert_eq!((bc.timeline_start, bc.timeline_end(), bc.source_in), (s(1.0), s(4.0), s(0.0)));
+        assert!(bc.transform.scale[0] > 1.0, "a little bigger, to hide blurred edges");
+        // Now V1 is taken there: a colour goes on a new track just under the clip.
+        let n = e.seq().tracks.len();
+        let col = e.replace_background(id, Behind::Color([10, 200, 30])).unwrap();
+        assert_eq!(e.seq().tracks.len(), n + 1);
+        let (ct, cc) = e.seq().find_clip(col).map(|(t, c)| (t, c.clone())).unwrap();
+        let (clip_track, _) = e.seq().find_clip(id).unwrap();
+        assert_eq!((ct, cc.plane), (clip_track - 1, Some([10, 200, 30, 255])), "just under the clip");
+        assert!(ct > low, "above the blur");
+        e.undo();
+        assert_eq!(e.seq().tracks.len(), n, "one step: the track goes too");
+        assert!(e.seq().find_clip(col).is_none() && e.seq().find_clip(b).is_some());
     }
 
     /// Tracking is watched as it goes: the playhead moves along with each

@@ -1058,6 +1058,48 @@ fn float_layers_keep_linear_light_highlights_and_premultiplied_glow() {
     assert!(px(&img, 16, 10, 8)[0] < ring[0] - 60, "{:?}", px(&img, 16, 10, 8));
 }
 
+/// The audio visualiser draws each band's level: bars up from the line to
+/// their level, a line through the levels, and a waveform about its middle.
+#[test]
+fn the_audio_spectrum_draws_its_levels() {
+    use reelforge_core::effects::audiovis as av;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    let mut key = 700u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, set: &[(usize, f32)], levels: &[f32]| {
+        let mut v = fx(EffectKind::AudioSpectrum, &[&[(av::BANDS, levels.len() as f32), (av::START_X, 0.0), (av::START_Y, 100.0), (av::END_X, 100.0), (av::END_Y, 100.0), (av::HEIGHT, 100.0), (av::GLOW, 0.0), (av::THICKNESS, 80.0), (av::INSIDE, 0xffffff as f32), (av::OUTSIDE, 0xffffff as f32)][..], set].concat());
+        v.table = Some(std::sync::Arc::new(reelforge_core::audiovis::table(levels)));
+        v.gpu = [levels.len() as f32, 0.0, 0.0, 0.0];
+        key += 1;
+        let mut l = full(key, &black, [w, h]);
+        l.effects = vec![v];
+        c.render([w, h], &[l]);
+        c.read_output().unwrap()
+    };
+    let lit = |img: &[u8], x: u32, y: u32| px(img, w, x, y)[0] > 128;
+    // Bars: four bands 40 px wide, a quarter, half, three quarters and all the way up.
+    let bars = draw(&mut c, &[], &[0.25, 0.5, 0.75, 1.0]);
+    for (band, level) in [(0u32, 0.25f32), (1, 0.5), (2, 0.75), (3, 1.0)] {
+        let x = band * 40 + 20;
+        let top = (90.0 * (1.0 - level)) as u32;
+        assert!(lit(&bars, x, (top + 3).min(89)) && lit(&bars, x, 88), "band {band} lit up to its level");
+        if top > 3 {
+            assert!(!lit(&bars, x, top - 3), "band {band} not above its level");
+        }
+    }
+    assert!(!lit(&bars, 40, 88) && !lit(&bars, 1, 88), "gaps between the bars");
+    // Mirrored about a line through the middle: down as well as up.
+    let m = draw(&mut c, &[(av::START_Y, 50.0), (av::END_Y, 50.0), (av::HEIGHT, 50.0), (av::MIRROR, 1.0)], &[0.0, 0.0, 0.0, 1.0]);
+    assert!(lit(&m, 140, 10) && lit(&m, 140, 80) && !lit(&m, 20, 10), "mirrored");
+    // A line: lit along the levels, dark well under it.
+    let line = draw(&mut c, &[(av::DISPLAY, 1.0)], &[0.5, 0.5, 0.5, 0.5]);
+    assert!(lit(&line, 80, 45) && !lit(&line, 80, 80) && !lit(&line, 80, 10), "a line at half height");
+    // Waveform: 0.5 is the middle (the line itself), 1 the top.
+    let wave = draw(&mut c, &[(av::DISPLAY, 3.0), (av::START_Y, 50.0), (av::END_Y, 50.0), (av::HEIGHT, 50.0)], &[0.5, 0.5, 1.0, 1.0]);
+    assert!(lit(&wave, 30, 45) && lit(&wave, 140, 1) && !lit(&wave, 30, 20), "waveform about the middle");
+}
+
 /// The distort pack: each effect reads its pixels from where it should. The
 /// picture encodes where every pixel came from (red: x, green: y), so the
 /// output says which source pixel each one shows.
