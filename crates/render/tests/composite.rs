@@ -1058,6 +1058,89 @@ fn float_layers_keep_linear_light_highlights_and_premultiplied_glow() {
     assert!(px(&img, 16, 10, 8)[0] < ring[0] - 60, "{:?}", px(&img, 16, 10, 8));
 }
 
+/// The distort pack: each effect reads its pixels from where it should. The
+/// picture encodes where every pixel came from (red: x, green: y), so the
+/// output says which source pixel each one shows.
+#[test]
+fn distort_effects_read_from_where_they_should() {
+    use reelforge_core::effects::{distort as ds, lens, mirror as mi, polar as po, ripple as rp, wave as wv};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let coords: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| [(x * 255 / (w - 1)) as u8, (y * 255 / (h - 1)) as u8, 0, 255])).collect();
+    let mut key = 900u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, kind: EffectKind, set: &[(usize, f32)]| {
+        let v = fx(kind, set);
+        key += 1;
+        let mut l = layer(1, &coords, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = coords.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    // Where output pixel (x, y) came from.
+    let from = |img: &[u8], x: u32, y: u32| {
+        let p = px(img, w, x, y);
+        (p[0] as f32 * (w - 1) as f32 / 255.0, p[1] as f32 * (h - 1) as f32 / 255.0)
+    };
+    let near = |(a, b): (f32, f32), (x, y): (f32, f32), tol: f32| (a - x).abs() <= tol && (b - y).abs() <= tol;
+
+    // Bulge: magnified in the middle (reads nearer the centre); a dent reads further out; outside, untouched.
+    let b = draw(&mut c, EffectKind::Bulge, &[]);
+    let (bx, _) = from(&b, 90, 45);
+    assert!(bx > 84.0 && bx < 88.5, "bulge reads nearer the middle: {bx}");
+    assert!(near(from(&b, 130, 45), (130.0, 45.0), 1.5), "outside the circle: {:?}", from(&b, 130, 45));
+    let (dx, _) = from(&draw(&mut c, EffectKind::Bulge, &[(ds::AMOUNT, -60.0)]), 90, 45);
+    assert!(dx > 91.5, "a dent reads further out: {dx}");
+    let (sx, _) = from(&draw(&mut c, EffectKind::Bulge, &[(ds::SHAPE, 1.0), (ds::AMOUNT, 100.0)]), 90, 45);
+    assert!(sx < 89.5 && sx > 82.0, "sphere: {sx}");
+
+    // Twirl: a quarter turn moves a point beside the centre round it; outside, untouched.
+    let t = draw(&mut c, EffectKind::Twirl, &[(ds::AMOUNT, 90.0)]);
+    let (_, ty) = from(&t, 90, 45);
+    assert!((ty - 45.0).abs() > 5.0, "turned: {:?}", from(&t, 90, 45));
+    assert!(near(from(&t, 150, 10), (150.0, 10.0), 1.5));
+
+    // Ripple: at 10 px from the centre, a quarter wave out (sin = 1) at half height (calm middle): 4 px.
+    let r = draw(&mut c, EffectKind::Ripple, &[(rp::HEIGHT, 8.0), (rp::SPACING, 40.0)]);
+    let (rx, ry) = from(&r, 90, 45);
+    assert!((rx - 94.5).abs() < 1.6 && (ry - 45.5).abs() < 1.6, "rippled out: {rx} {ry}");
+    let r2 = draw(&mut c, EffectKind::Ripple, &[(rp::HEIGHT, 8.0), (rp::SPACING, 40.0), (rp::DIRECTION, 1.0)]);
+    let (_, ry2) = from(&r2, 90, 45);
+    assert!((ry2 - 45.5).abs() > 2.5, "sideways: {:?}", from(&r2, 90, 45));
+
+    // Wave warp: sine, 10 px high, 60 wide, pushed sideways; a quarter wave down (y 15) it's 10 px over.
+    let wv0 = draw(&mut c, EffectKind::WaveWarp, &[]);
+    let (wx, _) = from(&wv0, 50, 14);
+    assert!((wx - 60.5).abs() < 1.8, "pushed along: {wx}");
+    let pinned = draw(&mut c, EffectKind::WaveWarp, &[(wv::PIN, 1.0)]);
+    assert!(near(from(&pinned, 50, 0), (50.0, 0.0), 1.5), "pinned edge stays: {:?}", from(&pinned, 50, 0));
+    let sq = draw(&mut c, EffectKind::WaveWarp, &[(wv::SHAPE, 1.0)]);
+    assert!((from(&sq, 50, 8).0 - 60.5).abs() < 1.8, "square: the full height early: {:?}", from(&sq, 50, 8));
+
+    // Polar coordinates: the middle shows the bottom edge, the top middle the top edge's middle.
+    let pl = draw(&mut c, EffectKind::PolarCoordinates, &[]);
+    assert!(from(&pl, 80, 45).1 > 84.0, "middle from the bottom: {:?}", from(&pl, 80, 45));
+    assert!(near(from(&pl, 80, 1), (80.0, 1.0), 3.0), "top middle: {:?}", from(&pl, 80, 1));
+    let half = draw(&mut c, EffectKind::PolarCoordinates, &[(po::AMOUNT, 0.0)]);
+    assert!(near(from(&half, 30, 70), (30.0, 70.0), 1.5), "amount 0: unchanged");
+
+    // Mirror: the right half shows the left, reflected.
+    let m = draw(&mut c, EffectKind::Mirror, &[]);
+    assert!(near(from(&m, 120, 45), (39.0, 45.0), 1.6), "reflected: {:?}", from(&m, 120, 45));
+    assert!(near(from(&m, 30, 45), (30.0, 45.0), 1.5), "the kept side: {:?}", from(&m, 30, 45));
+    let m2 = draw(&mut c, EffectKind::Mirror, &[(mi::ANGLE, 90.0)]);
+    assert!(near(from(&m2, 80, 10), (80.0, 79.0), 1.6), "a level line: the top shows the bottom: {:?}", from(&m2, 80, 10));
+
+    // Lens distortion: barrel reads further out towards the edges; zoom reads nearer the middle.
+    let l = draw(&mut c, EffectKind::LensDistortion, &[(lens::DISTORTION, 100.0)]);
+    assert!(from(&l, 120, 45).0 > 122.5, "barrel: {:?}", from(&l, 120, 45));
+    assert!(near(from(&l, 80, 45), (80.0, 45.0), 1.5), "the middle stays");
+    let z = draw(&mut c, EffectKind::LensDistortion, &[(lens::DISTORTION, 0.0), (lens::ZOOM, 200.0)]);
+    assert!(near(from(&z, 120, 45), (100.0, 45.0), 1.6), "zoomed: {:?}", from(&z, 120, 45));
+    // Transparent edges: zoomed out, the corner shows nothing.
+    let out = draw(&mut c, EffectKind::LensDistortion, &[(lens::DISTORTION, 0.0), (lens::ZOOM, 50.0), (lens::EDGES, 0.0)]);
+    assert!(px(&out, w, 2, 2)[0] < 8 && px(&out, w, 2, 2)[1] < 8, "past the edge: {:?}", px(&out, w, 2, 2));
+}
+
 #[test]
 fn stylise_effects_do_what_they_say() {
     use reelforge_core::effects::{aberration as ab, flare as fl, glitch as gl, grain as gr, leaks as lk, shake as sh};
@@ -2576,3 +2659,4 @@ fn qualifier_and_hue_curves_on_the_gpu_match_the_sums() {
         close(px(&c.read_output().unwrap(), 4, 2, 2), curves.apply(f), "hue curves");
     }
 }
+

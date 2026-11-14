@@ -600,7 +600,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1801,7 +1801,25 @@ impl Compositor {
                         push(if e.kind == EffectKind::MuzzleFlash { "fs_muzzle" } else { "fs_bullet" }, cur, Second::None, o1, u);
                         cur = o1;
                     }
-                    EffectKind::LensFlare | EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::Halftone | EffectKind::Crt | EffectKind::FractalNoise | EffectKind::PatchReplacer | EffectKind::LightRays | EffectKind::LensDirt => {
+                    EffectKind::LensFlare
+                    | EffectKind::CameraShake
+                    | EffectKind::ChromaticAberration
+                    | EffectKind::FilmGrain
+                    | EffectKind::Glitch
+                    | EffectKind::LightLeaks
+                    | EffectKind::Halftone
+                    | EffectKind::Crt
+                    | EffectKind::FractalNoise
+                    | EffectKind::PatchReplacer
+                    | EffectKind::LightRays
+                    | EffectKind::LensDirt
+                    | EffectKind::Bulge
+                    | EffectKind::Twirl
+                    | EffectKind::Ripple
+                    | EffectKind::WaveWarp
+                    | EffectKind::PolarCoordinates
+                    | EffectKind::Mirror
+                    | EffectKind::LensDistortion => {
                         // A number of its own (its place in the stack), the time and the layer's size.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
                         u[13] = e.time;
@@ -1819,6 +1837,13 @@ impl Compositor {
                             EffectKind::PatchReplacer => "fs_patch",
                             EffectKind::LightRays => "fs_rays",
                             EffectKind::LensDirt => "fs_dirt",
+                            EffectKind::Bulge => "fs_bulge",
+                            EffectKind::Twirl => "fs_twirl",
+                            EffectKind::Ripple => "fs_ripple",
+                            EffectKind::WaveWarp => "fs_wave",
+                            EffectKind::PolarCoordinates => "fs_polar",
+                            EffectKind::Mirror => "fs_mirror",
+                            EffectKind::LensDistortion => "fs_lens",
                             _ => "fs_leaks",
                         };
                         push(entry, cur, Second::None, o1, u);

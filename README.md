@@ -589,6 +589,29 @@ What works now:
     quicker jitter), and **Zoom** to hide the edges (or **Edges**: mirror, repeat or
     transparent). Keyframe Amount for an impact. Shake, grain, glitches and leaks change
     with time on their own, so every frame is drawn (and render-cached) separately
+  - **Distort pack** (Distort). Those with a centre show a handle in the Viewer to drag it:
+    - **Bulge**: a round area swelled out like a magnifying glass (**Centre**, **Radius** as a
+      % of the height, **Amount**), pinched in as a **dent** with a negative amount, or
+      **Shape: Sphere** to wrap it on a ball; **Width** makes the circle an ellipse
+    - **Twirl**: turned round a point by **Angle** (up to ten turns either way), most in the
+      middle, fading out **Smooth**ly or **Even**ly to the radius: a twirl, swirl or vortex
+    - **Ripple**: rings spreading out from a point, as on water: **Height**, **Spacing**,
+      **Speed** (rings a second, so it moves on its own), **Phase**, **Fade out at** a
+      distance, and pushed **out and in** or **round**
+    - **Wave warp**: waves across the whole picture — **Sine**, **Square**, **Triangle**,
+      **Sawtooth** or **Wobbly noise** — **Height**, **Width**, pushed in any **Direction**,
+      moving at a **Speed**; **Pin** all edges, left and right or top and bottom to keep the
+      frame still
+    - **Polar coordinates**: **rectangular to polar** bends the picture round into a circle (a
+      "tiny planet" from a wide shot), **polar to rectangular** unrolls one; **Amount** goes
+      between
+    - **Mirror**: one side of a line through the **Centre** at an **Angle** reflected onto the
+      other (add 180° for the other side)
+    - **Lens distortion**: **barrel** (positive) or **pincushion** (negative) distortion, with
+      **Cubic** for the edges and **Zoom** to fill the frame again; add a wide lens's look or
+      take one out
+    - Ripple, Wave warp and Lens distortion choose what shows past the layer's edge:
+      **Transparent**, **Stretch**, **Mirror** or **Repeat**
   - **Particles & simulation** (their own category in the browser, and **Timeline → Particles &
     simulation** for ready-made layers):
     - **Particles**: sparks, embers, fire, smoke, rain, snow, fog, dust, debris, confetti, magic

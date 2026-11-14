@@ -270,6 +270,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::BulletHit => Some("Hit"),
                     EffectKind::Fluid => Some("Source"),
                     EffectKind::LightRays => Some("Source"),
+                    EffectKind::Bulge | EffectKind::Twirl | EffectKind::Ripple | EffectKind::Mirror | EffectKind::LensDistortion => Some("Centre"),
                     EffectKind::LensDirt if fx.params.get(reelforge_core::effects::dirt::LIT_BY).is_some_and(|p| p.value >= 0.5) => Some("Light"),
                     _ => None,
                 } {

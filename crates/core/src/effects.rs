@@ -83,6 +83,20 @@ pub enum EffectKind {
     CameraShake,
     /// Colour fringes: red and blue pulled apart towards the edges or one way.
     ChromaticAberration,
+    /// A round area swelled out (or pinched in: a dent), or wrapped on a sphere.
+    Bulge,
+    /// The picture turned round a point, more in the middle (a vortex).
+    Twirl,
+    /// Rings spreading out from a point, as on water.
+    Ripple,
+    /// Waves across the picture (sine, square, triangle, sawtooth or wobbly).
+    WaveWarp,
+    /// The picture bent into a circle (a "tiny planet") or a circle unrolled.
+    PolarCoordinates,
+    /// One side of a line reflected onto the other.
+    Mirror,
+    /// Barrel or pincushion distortion: add a lens's bend, or take it out.
+    LensDistortion,
     /// Film grain, moving from frame to frame.
     FilmGrain,
     /// Digital glitches: sliced, shifted blocks, colour splits and scan lines.
@@ -854,6 +868,57 @@ pub mod shake {
     pub const EDGES: usize = 5;
     pub const SEED: usize = 6;
 }
+/// Bulge and Twirl: centre (% of the layer), radius (% of its height) and amount.
+pub mod distort {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const RADIUS: usize = 2;
+    pub const AMOUNT: usize = 3;
+    /// Bulge: Bulge or Sphere. Twirl: how it fades out (Smooth or Even).
+    pub const SHAPE: usize = 4;
+    /// Bulge: the circle's width (an ellipse below or above 100 %).
+    pub const WIDTH: usize = 5;
+}
+/// How a distortion fills in where it reaches past the layer.
+pub const EDGES: [&str; 4] = ["Transparent", "Stretch", "Mirror", "Repeat"];
+pub mod ripple {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const HEIGHT: usize = 2;
+    pub const SPACING: usize = 3;
+    pub const SPEED: usize = 4;
+    pub const PHASE: usize = 5;
+    pub const RADIUS: usize = 6;
+    pub const DIRECTION: usize = 7;
+    pub const EDGES: usize = 8;
+}
+pub mod wave {
+    pub const SHAPE: usize = 0;
+    pub const HEIGHT: usize = 1;
+    pub const WIDTH: usize = 2;
+    pub const DIRECTION: usize = 3;
+    pub const SPEED: usize = 4;
+    pub const PHASE: usize = 5;
+    pub const PIN: usize = 6;
+    pub const EDGES: usize = 7;
+}
+pub mod polar {
+    pub const AMOUNT: usize = 0;
+    pub const WAY: usize = 1;
+}
+pub mod mirror {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const ANGLE: usize = 2;
+}
+pub mod lens {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const DISTORTION: usize = 2;
+    pub const CUBIC: usize = 3;
+    pub const ZOOM: usize = 4;
+    pub const EDGES: usize = 5;
+}
 pub mod aberration {
     pub const AMOUNT: usize = 0;
     pub const MODE: usize = 1;
@@ -1462,6 +1527,58 @@ const CAMERA_SHAKE: [ParamSpec; 7] = [
     choice("Edges", &["Mirror", "Repeat the edge", "Transparent"]),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
+/// Edges, starting at Stretch (no gaps).
+const EDGES_STRETCH: ParamSpec = ParamSpec { name: "Edges", default: 1.0, min: 0.0, max: 3.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&EDGES) };
+const BULGE: [ParamSpec; 6] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Radius", 30.0, 0.0, 200.0, " %", 0.2),
+    spec("Amount", 50.0, -100.0, 100.0, " %", 0.5),
+    choice("Shape", &["Bulge", "Sphere"]),
+    spec("Width", 100.0, 10.0, 1000.0, " %", 0.5),
+];
+const TWIRL: [ParamSpec; 5] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Radius", 40.0, 0.0, 200.0, " %", 0.2),
+    spec("Angle", 180.0, -3600.0, 3600.0, "°", 1.0),
+    choice("Falloff", &["Smooth", "Even"]),
+];
+const RIPPLE: [ParamSpec; 9] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Height", 6.0, -200.0, 200.0, " px", 0.1),
+    spec("Spacing", 60.0, 2.0, 2000.0, " px", 0.2),
+    spec("Speed", 1.0, -20.0, 20.0, " rings/s", 0.02),
+    spec("Phase", 0.0, -3600.0, 3600.0, "°", 1.0),
+    spec("Fade out at", 0.0, 0.0, 300.0, " %", 0.5),
+    choice("Push", &["Out and in (water)", "Round (sideways)"]),
+    EDGES_STRETCH,
+];
+const WAVE_WARP: [ParamSpec; 8] = [
+    choice("Wave", &["Sine", "Square", "Triangle", "Sawtooth", "Wobbly noise"]),
+    spec("Height", 10.0, -500.0, 500.0, " px", 0.1),
+    spec("Width", 60.0, 2.0, 4000.0, " px", 0.2),
+    spec("Direction", 0.0, -360.0, 360.0, "°", 0.5),
+    spec("Speed", 1.0, -20.0, 20.0, " waves/s", 0.02),
+    spec("Phase", 0.0, -3600.0, 3600.0, "°", 1.0),
+    choice("Pin", &["Nothing", "All edges", "Left and right", "Top and bottom"]),
+    EDGES_STRETCH,
+];
+const POLAR: [ParamSpec; 2] = [spec("Amount", 100.0, 0.0, 100.0, " %", 0.5), choice("Conversion", &["Rectangular to polar", "Polar to rectangular"])];
+const MIRROR: [ParamSpec; 3] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Angle", 0.0, -360.0, 360.0, "°", 0.5),
+];
+const LENS_DISTORTION: [ParamSpec; 6] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Distortion", 25.0, -100.0, 100.0, " %", 0.2),
+    spec("Cubic", 0.0, -100.0, 100.0, " %", 0.2),
+    spec("Zoom", 100.0, 10.0, 400.0, " %", 0.2),
+    choice("Edges", &EDGES),
+];
 const CHROMATIC: [ParamSpec; 4] = [
     spec("Amount", 6.0, -100.0, 100.0, " px", 0.1),
     choice("Direction", &["From the centre (lens)", "One way"]),
@@ -1636,7 +1753,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 46] = [
+    pub const ALL: [EffectKind; 53] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -1683,6 +1800,13 @@ impl EffectKind {
         EffectKind::Glitch,
         EffectKind::ChromaticAberration,
         EffectKind::CameraShake,
+        EffectKind::Bulge,
+        EffectKind::Twirl,
+        EffectKind::Ripple,
+        EffectKind::WaveWarp,
+        EffectKind::PolarCoordinates,
+        EffectKind::Mirror,
+        EffectKind::LensDistortion,
     ];
 
     pub fn label(self) -> &'static str {
@@ -1715,6 +1839,13 @@ impl EffectKind {
             EffectKind::LensDirt => "Lens dirt",
             EffectKind::NeonPath => "Neon path",
             EffectKind::CameraShake => "Camera shake",
+            EffectKind::Bulge => "Bulge",
+            EffectKind::Twirl => "Twirl",
+            EffectKind::Ripple => "Ripple",
+            EffectKind::WaveWarp => "Wave warp",
+            EffectKind::PolarCoordinates => "Polar coordinates",
+            EffectKind::Mirror => "Mirror",
+            EffectKind::LensDistortion => "Lens distortion",
             EffectKind::ChromaticAberration => "Chromatic aberration",
             EffectKind::FilmGrain => "Film grain",
             EffectKind::Glitch => "Glitch",
@@ -1752,7 +1883,16 @@ impl EffectKind {
             EffectKind::WireRemoval | EffectKind::PatchReplacer | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty => EffectCategory::Repair,
             EffectKind::SkyReplace => EffectCategory::Keying,
             EffectKind::FractalNoise | EffectKind::Lightning => EffectCategory::Generate,
-            EffectKind::CameraShake | EffectKind::ChromaticAberration | EffectKind::Glitch => EffectCategory::Distort,
+            EffectKind::CameraShake
+            | EffectKind::ChromaticAberration
+            | EffectKind::Glitch
+            | EffectKind::Bulge
+            | EffectKind::Twirl
+            | EffectKind::Ripple
+            | EffectKind::WaveWarp
+            | EffectKind::PolarCoordinates
+            | EffectKind::Mirror
+            | EffectKind::LensDistortion => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -1797,6 +1937,13 @@ impl EffectKind {
             EffectKind::AnamorphicFlare => "Long horizontal streaks out of the bright parts of the picture (lamps, headlights, highlights), as an anamorphic lens draws them.",
             EffectKind::LensDirt => "Smudges and specks on the lens that light up where bright light hits them: from the bright parts of the picture, or a light you place.",
             EffectKind::NeonPath => "A glowing neon tube along one of the layer's masks: draw a mask (set its Use to A path) and pick it as the Path, or on a title pick The letters to outline the text itself; then write it on, dash it or make it flicker. Show the layer at 0 % leaves only the tube.",
+            EffectKind::Bulge => "Swell a round area out like a magnifying glass, or pinch it in (a dent) with a negative amount; Sphere wraps it on a ball instead. Drag its centre in the Viewer.",
+            EffectKind::Twirl => "Turn the picture round a point, most in the middle and less towards the edge of the circle: a twirl, a vortex or a whirlpool. Drag its centre in the Viewer.",
+            EffectKind::Ripple => "Rings spreading out from a point, as when a stone drops in water: how high and far apart they are, how fast they travel, and where they fade out. Drag its centre in the Viewer.",
+            EffectKind::WaveWarp => "Waves across the whole picture: sine, square, triangle, sawtooth or a wobbly noise, pushed whichever way, moving at a speed you set; pin the edges to keep the frame still.",
+            EffectKind::PolarCoordinates => "Bend the picture round into a circle (rectangular to polar: a \"tiny planet\" from a wide shot), or unroll a circle into a strip; Amount goes between the two.",
+            EffectKind::Mirror => "Reflect one side of a line onto the other: set where the line goes through and its angle (180° more mirrors the other side). Drag its centre in the Viewer.",
+            EffectKind::LensDistortion => "Barrel (bulging out) or pincushion (pinched in) distortion, as a wide or long lens gives: add it for a look, or take a lens's out with the opposite amount. Cubic shapes the edges; Zoom fills the frame again.",
             EffectKind::CameraShake => "Handheld or impact shake: the picture wanders, turns and zooms a little, smoothly and never the same twice.",
             EffectKind::ChromaticAberration => "Colour fringes: red and blue pulled apart towards the edges, like a cheap lens, or one way for a glitchy look.",
             EffectKind::FilmGrain => "Film grain that changes every frame: fine or coarse, mono or colour, kept out of the highlights.",
@@ -1843,6 +1990,13 @@ impl EffectKind {
             EffectKind::LensDirt => &LENS_DIRT,
             EffectKind::NeonPath => &NEON_PATH,
             EffectKind::CameraShake => &CAMERA_SHAKE,
+            EffectKind::Bulge => &BULGE,
+            EffectKind::Twirl => &TWIRL,
+            EffectKind::Ripple => &RIPPLE,
+            EffectKind::WaveWarp => &WAVE_WARP,
+            EffectKind::PolarCoordinates => &POLAR,
+            EffectKind::Mirror => &MIRROR,
+            EffectKind::LensDistortion => &LENS_DISTORTION,
             EffectKind::ChromaticAberration => &CHROMATIC,
             EffectKind::FilmGrain => &FILM_GRAIN,
             EffectKind::Glitch => &GLITCH,
@@ -1997,6 +2151,13 @@ impl EffectValues {
             EffectKind::LensDirt => v[dirt::AMOUNT] == 0.0,
             EffectKind::NeonPath => v[neonpath::OPACITY] == 0.0 || self.table.is_none(),
             EffectKind::CameraShake => v[shake::AMOUNT] == 0.0 && v[shake::ROTATION] == 0.0 && v[shake::ZOOM] == 100.0,
+            EffectKind::Bulge => v[distort::AMOUNT] == 0.0 || v[distort::RADIUS] <= 0.0,
+            EffectKind::Twirl => v[distort::AMOUNT] == 0.0 || v[distort::RADIUS] <= 0.0,
+            EffectKind::Ripple => v[ripple::HEIGHT] == 0.0,
+            EffectKind::WaveWarp => v[wave::HEIGHT] == 0.0,
+            EffectKind::PolarCoordinates => v[polar::AMOUNT] == 0.0,
+            EffectKind::Mirror => false,
+            EffectKind::LensDistortion => v[lens::DISTORTION] == 0.0 && v[lens::CUBIC] == 0.0 && v[lens::ZOOM] == 100.0,
             EffectKind::ChromaticAberration => v[aberration::AMOUNT] == 0.0,
             EffectKind::FilmGrain => v[grain::AMOUNT] == 0.0,
             EffectKind::Glitch => v[glitch::AMOUNT] == 0.0,

@@ -1955,3 +1955,169 @@ fn fs_patch(in: VsOut) -> @location(0) vec4<f32> {
     }
     return out;
 }
+
+// ---- Distort: Bulge, Twirl, Ripple, Wave warp, Polar coordinates, Mirror, Lens distortion ----
+
+// Where a distortion reads from past the layer: 0 transparent, 1 stretch
+// (the edge pixels), 2 mirror, 3 repeat.
+fn d_edge(uv: vec2<f32>, edges: u32) -> vec2<f32> {
+    if (edges == 2u) {
+        return 1.0 - abs(fract(uv * 0.5) * 2.0 - 1.0);
+    }
+    if (edges == 3u) {
+        return fract(uv);
+    }
+    return clamp(uv, vec2(0.0), vec2(1.0));
+}
+fn d_sample(uv: vec2<f32>, edges: u32) -> vec4<f32> {
+    if (edges == 0u && (any(uv < vec2(-1e-4)) || any(uv > vec2(1.0 + 1e-4)))) {
+        return vec4(0.0);
+    }
+    return textureSampleLevel(src, src_sampler, to_tex(d_edge(uv, edges)), 0.0);
+}
+
+// Bulge: p0 = (centre x %, y %, radius % of height, amount %), p1 = (shape, width %).
+@fragment
+fn fs_bulge(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let c = fx.p0.xy / 100.0 * size;
+    let rad = max(fx.p0.z / 100.0 * size.y, 1e-3);
+    let w = max(fx.p1.y / 100.0, 0.01);
+    var d = in.uv * size - c;
+    d.x = d.x / w;
+    let r = length(d) / rad;
+    if (r >= 1.0) {
+        return d_sample(in.uv, 1u);
+    }
+    let a = clamp(fx.p0.w / 100.0, -1.0, 1.0);
+    var f: f32;
+    if (u32(round(fx.p1.x)) == 1u) {
+        // Wrapped on a ball: the middle magnified (or, below 0, the inside of one).
+        let rs = mix(r, select(sin(r * 1.5707964), asin(r) / 1.5707964, a > 0.0), abs(a));
+        f = rs / max(r, 1e-5);
+    } else {
+        let t = 1.0 - r * r;
+        f = 1.0 - a * 0.9 * t * t;
+    }
+    var s = d * f;
+    s.x = s.x * w;
+    return d_sample((c + s) / size, 1u);
+}
+
+// Twirl: p0 = (centre x %, y %, radius % of height, angle °), p1.x = falloff (smooth, even).
+@fragment
+fn fs_twirl(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let c = fx.p0.xy / 100.0 * size;
+    let rad = max(fx.p0.z / 100.0 * size.y, 1e-3);
+    let d = in.uv * size - c;
+    let r = length(d) / rad;
+    if (r >= 1.0) {
+        return d_sample(in.uv, 1u);
+    }
+    let k = select(1.0 - smoothstep(0.0, 1.0, r), 1.0 - r, u32(round(fx.p1.x)) == 1u);
+    let a = -radians(fx.p0.w) * k;
+    let cs = cos(a);
+    let sn = sin(a);
+    let s = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
+    return d_sample((c + s) / size, 1u);
+}
+
+// Ripple: p0 = (centre x %, y %, height px, spacing px), p1 = (speed rings/s,
+// phase °, fade out at % of height, push), p2.x = edges.
+@fragment
+fn fs_ripple(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let c = fx.p0.xy / 100.0 * size;
+    let p = in.uv * size;
+    let d = p - c;
+    let dist = length(d);
+    let dir = select(vec2(0.0), d / max(dist, 1e-4), dist > 1e-4);
+    let spacing = max(fx.p0.w, 1.0);
+    let ph = 6.2831853 * (dist / spacing - fx.p1.x * fx.extra.y) + radians(fx.p1.y);
+    // Calm at the very middle; fading out towards "Fade out at" when set.
+    var amp = fx.p0.z * smoothstep(0.0, spacing * 0.5, dist);
+    let fade = fx.p1.z / 100.0 * size.y;
+    if (fade > 0.0) {
+        amp = amp * (1.0 - smoothstep(0.0, 1.0, dist / fade));
+    }
+    let v = select(dir, vec2(-dir.y, dir.x), u32(round(fx.p1.w)) == 1u);
+    return d_sample((p + v * sin(ph) * amp) / size, u32(round(fx.p2.x)));
+}
+
+// Wave warp: p0 = (shape, height px, width px, direction °), p1 = (speed
+// waves/s, phase °, pin, edges).
+@fragment
+fn fs_wave(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let a = radians(fx.p0.w);
+    // Pushed along D; the waves run across it (along P).
+    let dv = vec2(cos(a), sin(a));
+    let pv = vec2(-dv.y, dv.x);
+    let u = dot(p, pv) / max(fx.p0.z, 1.0) - fx.p1.x * fx.extra.y + fx.p1.y / 360.0;
+    var w: f32;
+    switch (u32(round(fx.p0.x))) {
+        case 1u: { w = clamp(sin(6.2831853 * u) * 12.0, -1.0, 1.0); }
+        case 2u: { w = 4.0 * abs(fract(u - 0.25) - 0.5) - 1.0; }
+        case 3u: { w = 2.0 * fract(u) - 1.0; }
+        case 4u: { w = vnoise(7u, vec2(u * 2.0, 0.37)) * 2.0 - 1.0; }
+        default: { w = sin(6.2831853 * u); }
+    }
+    // Pinned edges stay put.
+    var g = 1.0;
+    let ex = min(in.uv.x, 1.0 - in.uv.x);
+    let ey = min(in.uv.y, 1.0 - in.uv.y);
+    switch (u32(round(fx.p1.z))) {
+        case 1u: { g = smoothstep(0.0, 0.15, min(ex, ey)); }
+        case 2u: { g = smoothstep(0.0, 0.15, ex); }
+        case 3u: { g = smoothstep(0.0, 0.15, ey); }
+        default: {}
+    }
+    return d_sample((p + dv * w * fx.p0.y * g) / size, u32(round(fx.p1.w)));
+}
+
+// Polar coordinates: p0 = (amount %, conversion: 0 rectangular to polar, 1 polar to rectangular).
+@fragment
+fn fs_polar(in: VsOut) -> @location(0) vec4<f32> {
+    var s: vec2<f32>;
+    if (u32(round(fx.p0.y)) == 0u) {
+        // Round into a circle: the top edge outside, the bottom in the middle.
+        let d = in.uv - 0.5;
+        let r = length(d) / 0.5;
+        let th = atan2(d.x, -d.y);
+        s = vec2(th / 6.2831853 + 0.5, 1.0 - r);
+    } else {
+        // A circle unrolled: its top straight up the middle of the strip.
+        let th = (in.uv.x - 0.5) * 6.2831853;
+        let r = (1.0 - in.uv.y) * 0.5;
+        s = 0.5 + r * vec2(sin(th), -cos(th));
+    }
+    return d_sample(mix(in.uv, s, clamp(fx.p0.x / 100.0, 0.0, 1.0)), 0u);
+}
+
+// Mirror: p0 = (centre x %, y %, angle °): the side the line's normal points to shows the other.
+@fragment
+fn fs_mirror(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let c = fx.p0.xy / 100.0 * size;
+    let a = radians(fx.p0.z);
+    let n = vec2(cos(a), -sin(a));
+    let p = in.uv * size;
+    let k = dot(p - c, n);
+    let q = select(p, p - 2.0 * k * n, k > 0.0);
+    return d_sample(q / size, 1u);
+}
+
+// Lens distortion: p0 = (centre x %, y %, distortion %, cubic %), p1 = (zoom %, edges).
+@fragment
+fn fs_lens(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let c = fx.p0.xy / 100.0 * size;
+    let d = in.uv * size - c;
+    let q = d / (0.5 * length(size));
+    let r2 = dot(q, q);
+    let f = 1.0 + fx.p0.z / 100.0 * 0.5 * r2 + fx.p0.w / 100.0 * 0.5 * r2 * r2;
+    let s = c + d * f / max(fx.p1.x / 100.0, 0.01);
+    return d_sample(s / size, u32(round(fx.p1.y)));
+}
