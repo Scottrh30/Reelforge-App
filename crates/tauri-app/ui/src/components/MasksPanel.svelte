@@ -137,6 +137,15 @@
       {/if}
       <button class="small" onclick={putBehind} title="Put it on the video track below this clip (a new track if that's taken), over the same stretch of time">Put it behind</button>
     </div>
+    {@const bi = ins.masks.findIndex((m) => m.mask.name === "Background removal")}
+    {@const br = ins.masks[bi]?.mask.refine ?? { radius: 8, smooth: 20, shift: 0, decontaminate: 0 }}
+    <!-- How the cut-out's edge sits on what's behind. -->
+    <div class="behind edge" role="group" aria-label="The cut-out's edge">
+      <span class="lbl" title="Chokes the edge in (−) to lose a halo of the old background, or spreads it out (+) to keep more hair">Edge</span>
+      <NumberField label="Edge choke or expand" value={br.shift} min={-100} max={100} step={0.5} digits={0} suffix="%" oninput={(v) => change(bi, (n) => (n.refine = { ...(n.refine ?? br), shift: v }), false)} oncommit={commit} />
+      <span class="lbl" title="Takes the old background's colour out of the part-see-through edge, so no fringe of it shows round hair against what's behind now">Clean fringe</span>
+      <NumberField label="Clean colour fringe" value={br.decontaminate ?? 0} min={0} max={100} step={1} digits={0} suffix="%" oninput={(v) => change(bi, (n) => (n.refine = { ...(n.refine ?? br), decontaminate: v }), false)} oncommit={commit} />
+    </div>
   {/if}
   {#if drawing}
     <p class="note">Click in the Viewer to place points. Click the first point, double-click or press Enter to close; Esc cancels.</p>
@@ -221,7 +230,7 @@
       {#if !m.track_ignore && !m.fill_area && !m.key_keep && !m.text_path}
         <div class="row track">
           <label class="lbl" title="Fits the edge to the picture: within the radius each side of the mask's edge, every pixel's coverage is worked out from where its colour sits between the colours surely inside and surely outside, so hair, fur and motion blur go soft and background the mask took in goes">
-            <input type="checkbox" checked={!!m.refine} onchange={(e) => change(i, (n) => (n.refine = e.currentTarget.checked ? { radius: 8, smooth: 20, shift: 0 } : undefined), true)} />
+            <input type="checkbox" checked={!!m.refine} onchange={(e) => change(i, (n) => (n.refine = e.currentTarget.checked ? { radius: 8, smooth: 20, shift: 0, decontaminate: 0 } : undefined), true)} />
             Refine edge
           </label>
         </div>
@@ -235,6 +244,10 @@
             <div class="field">
               <span class="lbl" title="0: crisp edges; 100: as soft as the picture is">Softness</span>
               <NumberField label="Refine softness" value={r.smooth} min={0} max={100} step={0.5} digits={0} suffix="%" oninput={(v) => change(i, (n) => n.refine && (n.refine.smooth = v), false)} oncommit={commit} />
+            </div>
+            <div class="field">
+              <span class="lbl" title="Takes the colour of what was behind out of the part-see-through edge (a fringe of blue sky round hair goes)">Decontaminate</span>
+              <NumberField label="Refine decontaminate" value={r.decontaminate ?? 0} min={0} max={100} step={1} digits={0} suffix="%" oninput={(v) => change(i, (n) => n.refine && (n.refine.decontaminate = v), false)} oncommit={commit} />
             </div>
             <div class="field">
               <span class="lbl" title="Shrinks (−) or grows (+) the refined edge">Shift</span>
@@ -379,6 +392,9 @@
   .behind select {
     min-width: 0;
     max-width: 14em;
+  }
+  .behind.edge :global(.num) {
+    width: 5em;
   }
   .behind input[type="color"] {
     width: 34px;

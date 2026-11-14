@@ -68,7 +68,7 @@ struct Gathered {
     /// The layer's masks as an alpha image, and its hash.
     mask: Option<(u64, Arc<MaskImage>)>,
     /// Its masks' refined edge (radius, smoothness, shift).
-    refine: Option<[f32; 3]>,
+    refine: Option<[f32; 4]>,
     /// Revealed by a wipe transition.
     wipe: Option<Wipe>,
     /// Stretched over a bending grid (a mesh warp).
@@ -126,6 +126,24 @@ pub struct Scene {
     pub between: Option<reelforge_core::FrameBlend>,
     /// The pixel shape (width ÷ height) of the sequence being drawn.
     par: f32,
+    /// How much finer than its own pixels the sequence being drawn is drawn:
+    /// a composition scaled up in the one it's in is drawn that much finer,
+    /// so the text and shapes in it stay crisp (1 at the top).
+    zoom: f32,
+}
+
+/// The most a composition is drawn finer than its own size (and the most
+/// pixels across it's drawn at).
+const MAX_ZOOM: f32 = 4.0;
+const MAX_ZOOM_PX: f32 = 8192.0;
+
+/// How much finer to draw a `size` composition seen at `scale` inside one
+/// drawn `outer` times finer: as finely as it's scaled up (in quarter
+/// steps of doubling, so a scale animating doesn't redraw at every frame).
+pub fn nested_zoom(scale: [f32; 2], outer: f32, size: [u32; 2]) -> f32 {
+    let want = title_sharpness(scale) * if outer.is_finite() { outer.max(1.0) } else { 1.0 };
+    let fit = MAX_ZOOM_PX / (size[0].max(size[1]).max(1) as f32);
+    want.min(MAX_ZOOM).min(fit).max(1.0)
 }
 
 /// The second frame of a blend has a key of its own (it's another layer for the compositor).
@@ -135,7 +153,7 @@ impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         // (The audio visualiser hears sound through the media reader.)
         reelforge_core::audiovis::set_audio_source(|p, at, n, r| reelforge_media::audio_window(p, at, n, r));
-        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0, out_fps: None, between: None }
+        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0, zoom: 1.0, out_fps: None, between: None }
     }
 
     /// Forget composition renders (e.g. a different project was opened).
@@ -237,7 +255,8 @@ impl Scene {
         let mut items = items;
 
         sort_3d(&mut items);
-        let signature = signature(frame_size, &items);
+        // (Drawn finer is another picture.)
+        let signature = signature(frame_size, &items) ^ (self.zoom.to_bits() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         if unchanged_from == Some(signature) && compositor.output_size().is_some() {
             return Ok(signature);
         }
@@ -343,7 +362,7 @@ impl Scene {
             (_, Some(c)) if !l.clip.adjustment => Some(Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(c.to_vec()), u32::from_le_bytes(c) as u64), size: full, media: MediaId::GENERATED }),
             // An adjustment layer has no picture: it's drawn from the frame below.
             _ if l.clip.adjustment => Some(Picture { frame: VideoFrame::from_rgba(Time::ZERO, 1, 1, Arc::from(vec![0u8; 4]), 0), size: full, media: MediaId::GENERATED }),
-            (Some(inner), _) => self.nested_picture(project, l.clip.id, inner, l.clip.angle, l.source_time, provider, depth)?,
+            (Some(inner), _) => self.nested_picture(project, l.clip.id, inner, l.clip.angle, l.source_time, provider, depth, l.transform.scale)?,
             // A title is laid out on the frame as it's shown (as wide as its
             // pixels make it), then squeezed back into the frame's pixels;
             // drawn as finely as it's scaled up, so it stays crisp.
@@ -353,7 +372,7 @@ impl Scene {
                 // Masks, effects (OpenFX too), corner pins, warps, crops and
                 // 3D need the picture to cover the whole canvas.
                 let whole = mask::any_active(&l.clip.masks) || l.effects.iter().any(|e| !e.is_identity()) || !reelforge_core::ofx::steps(&l.clip.effects, l.clip.source_time(t)).is_empty() || tr.pin.is_some() || tr.three_d || tr.crop.iter().any(|&c| c != 0.0) || l.clip.mesh_at(t).is_some();
-                provider.title(project, l, canvas, title_sharpness(tr.scale), whole)?
+                provider.title(project, l, canvas, (title_sharpness(tr.scale) * self.zoom).min(8.0), whole)?
             }
             (None, _) => provider.picture(project, l, frame_size)?,
         };
@@ -403,7 +422,7 @@ impl Scene {
             // Covers the frame: only opacity and crop of its transform apply.
             let transform = Transform { opacity: l.transform.opacity, crop: l.transform.crop, ..Default::default() };
             let effects = l.effects.iter().filter(|e| !e.is_identity()).cloned().collect();
-            return Ok(Some(Gathered { key: l.clip.id.0, picture, transform, blend: l.blend, effects, mask, refine: mask::refine_of(&l.clip.masks).map(|r| [r.radius, r.smooth, r.shift]), wipe: None, mesh: None, space: None, adjustment: true, solid: None, sort_depth: None }));
+            return Ok(Some(Gathered { key: l.clip.id.0, picture, transform, blend: l.blend, effects, mask, refine: mask::refine_of(&l.clip.masks).map(|r| [r.radius, r.smooth, r.shift, r.decontaminate]), wipe: None, mesh: None, space: None, adjustment: true, solid: None, sort_depth: None }));
         }
         let mesh = l.clip.mesh_at(t);
         let mut effects = l.effects.clone();
@@ -418,7 +437,7 @@ impl Scene {
                 effects.push(EffectValues { kind: reelforge_core::EffectKind::Blur, values, table: None, plugin: None, time: 0.0, prev: None, particles: None, pieces: None, fluid: None, gpu: [0.0; 4], table2: None });
             }
         }
-        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, refine: mask::refine_of(&l.clip.masks).map(|r| [r.radius, r.smooth, r.shift]), wipe: None, mesh, space, adjustment: false, solid: None, sort_depth: None }))
+        Ok(Some(Gathered { key: l.clip.id.0, picture, transform: l.transform, blend: l.blend, effects, mask, refine: mask::refine_of(&l.clip.masks).map(|r| [r.radius, r.smooth, r.shift, r.decontaminate]), wipe: None, mesh, space, adjustment: false, solid: None, sort_depth: None }))
     }
 
     /// The clip's masks at source time `src` as an image (made again only when they change).
@@ -439,12 +458,14 @@ impl Scene {
 
     /// Render composition `inner` at its time `t` and read the picture back.
     #[allow(clippy::too_many_arguments)]
-    fn nested_picture(&mut self, project: &Project, clip: ClipId, inner: usize, angle: Option<reelforge_core::multicam::Angle>, t: Time, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Picture>> {
+    #[allow(clippy::too_many_arguments)]
+    fn nested_picture(&mut self, project: &Project, clip: ClipId, inner: usize, angle: Option<reelforge_core::multicam::Angle>, t: Time, provider: &mut dyn FrameProvider, depth: usize, scale: [f32; 2]) -> Result<Option<Picture>> {
         let Some(s) = project.sequences.get(inner) else { return Ok(None) };
         if depth >= MAX_NESTING {
             return Ok(None);
         }
         let size = [s.width.max(2), s.height.max(2)];
+        let zoom = nested_zoom(scale, self.zoom, size);
         let mut n = match self.nested.remove(&clip) {
             Some(n) => n,
             None => {
@@ -455,9 +476,12 @@ impl Scene {
             }
         };
         n.last_used = self.tick;
-        let outer_par = self.par;
+        let (outer_par, outer_zoom) = (self.par, self.zoom);
+        self.zoom = zoom;
+        n.compositor.output_scale = zoom;
         let result = self.render_at(project, inner, angle, t, &mut n.compositor, provider, n.signature.filter(|_| n.frame.is_some()), depth + 1);
         self.par = outer_par;
+        self.zoom = outer_zoom;
         let sig = match result {
             Ok(sig) => sig,
             Err(e) => {
@@ -936,6 +960,43 @@ mod layer_tests {
         assert_eq!(title_sharpness([1.42, 1.0]), title_sharpness([1.6, 1.0]));
         assert_eq!(title_sharpness([50.0, 1.0]), 8.0);
         assert_eq!(title_sharpness([f32::NAN, 1.0]), 1.0);
+    }
+
+    #[test]
+    fn scaled_up_compositions_are_drawn_finer() {
+        assert_eq!(nested_zoom([1.0, 1.0], 1.0, [1920, 1080]), 1.0);
+        assert_eq!(nested_zoom([0.5, 0.5], 1.0, [1920, 1080]), 1.0);
+        assert_eq!(nested_zoom([2.0, 2.0], 1.0, [1920, 1080]), 2.0);
+        assert_eq!(nested_zoom([2.0, 2.0], 2.0, [640, 360]), 4.0, "inside one drawn finer, finer still");
+        assert_eq!(nested_zoom([20.0, 1.0], 1.0, [640, 360]), MAX_ZOOM);
+        assert_eq!(nested_zoom([4.0, 4.0], 1.0, [3840, 2160]), MAX_ZOOM_PX / 3840.0, "kept to a size the GPU takes");
+        assert_eq!(nested_zoom([f32::NAN, 1.0], f32::INFINITY, [0, 0]), 1.0);
+
+        let Some((device, queue)) = reelforge_render::headless_device() else {
+            eprintln!("no GPU adapter; skipping");
+            return;
+        };
+        let secs = Time::from_secs_f64;
+        // A 32×16 composition with a blue square, its edges on pixels.
+        let mut inner = Sequence::new("Inner", 32, 16, FrameRate::new(25, 1));
+        let mut sq = Clip::new_plane(ClipId(1), Time::ZERO, secs(5.0), [0, 0, 255, 255]);
+        sq.transform.scale = [0.25, 0.25];
+        inner.tracks[0].clips = vec![sq];
+        // Scaled up 4× in a 128×64 one: its edges stay one pixel sharp.
+        let mut main = Sequence::new("Main", 128, 64, FrameRate::new(25, 1));
+        let mut c = Clip::new_nested(ClipId(2), 1, Time::ZERO, secs(5.0), None);
+        c.transform.scale = [4.0, 4.0];
+        main.tracks[0].clips = vec![c];
+        let mut p = Project::new();
+        p.sequences = vec![main, inner];
+        let mut scene = Scene::new(&device, &queue);
+        let mut comp = Compositor::new(&device, &queue);
+        scene.render(&p, 0, secs(1.0), &mut comp, &mut Nothing, None).unwrap();
+        let img = comp.read_output().unwrap();
+        let row: Vec<u8> = (0..128).map(|x| img[(32 * 128 + x) * 4 + 2]).collect();
+        let soft = row.iter().filter(|&&b| b > 30 && b < 225).count();
+        assert!(row[64] > 240 && row[10] < 15, "{row:?}");
+        assert!(soft <= 2, "the square's edges are crisp, not 4 px ramps: {soft} soft pixels in {row:?}");
     }
 
     #[test]

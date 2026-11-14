@@ -369,6 +369,13 @@ What works now:
   - **LUT (.cube)**: load any 3D `.cube` LUT (Resolve, Photoshop, camera LUT packs), sampled
     with full trilinear interpolation, with a Strength mix
   - **Gaussian blur**: radius in pixels (two separable passes, any size)
+  - **Prism blur** (Blur & sharpen): a blur that splits light into its colours as a prism
+    does, red one side and blue the other: **Out from the centre** (drag **Centre X/Y**) or
+    **One way** at an **Angle**; **Amount** (px) and **Colour spread**
+  - **Tilt-shift** (Blur & sharpen): the miniature look. A band of the picture stays sharp
+    (**Focus at**, **Angle**, **Sharp band**) and the rest blurs more and more away from it
+    (**Falloff**, **Blur**, drawn as a lens blurs: round discs), with a touch of extra
+    **Saturation** and **Contrast**, as toy-town shots have
   - **Sharpen**: unsharp mask with amount and radius
   - **Chroma key**: **Pick key colour**, then click the screen in the Viewer (or drag a box
     over it to average a patch: best on an uneven screen) to aim the key at it; for a dull or
@@ -529,6 +536,11 @@ What works now:
     **Streak**, **Ghosts** and **Halo** set each part. Drag the light (☀) in the Viewer, or
     keyframe its position to follow a light in the shot. Light is added (it shows on a
     transparent layer too)
+  - **Lights that follow the shot**: track the lamp, sun, headlight or screen in the **Track**
+    panel, then pick *Lens flare: light*, *Light rays: source*, *Anamorphic flare: light* or
+    *Lens dirt: light* under **Apply to** (on the tracked clip or a layer over it) and
+    **Apply**: the light keeps where it is at the playhead and moves with the tracked points
+    from there, as keyframes (X and Y can be taken on their own; one undo step)
   - **Light rays** (Light & stylize): rays streaming out from a **Source** (drag it in the
     Viewer) through the bright parts of the layer (**Threshold**, **Softness**), or the whole
     layer, like sun through trees or god rays behind a logo. **Length** (how far they reach,
@@ -537,7 +549,10 @@ What works now:
   - **Anamorphic flare** (Light & stylize): long horizontal streaks out of the bright parts
     of the picture — lamps, headlights, highlights — as an anamorphic lens draws them:
     **Threshold**, **Length** (px), **Thickness**, **Brightness**, **Colour** (blue by
-    default), and the layer and its streaks or the streaks only
+    default), and the layer and its streaks or the streaks only. **Streaks from** the bright
+    parts, **A light** you place (**Light X/Y**, dragged in the Viewer, **Light size**) — so
+    a streak can sit on a lamp that isn't bright enough by itself, or be tracked onto one — or
+    **Both**
   - **Lens dirt** (Light & stylize): smudges, smears, specks and dried drops on the lens (made
     up from the **Seed**; **Smudge size**, **Specks**) that show only where light reaches them —
     from the bright parts of the picture round about (**Threshold**, **Spread**), or a light
@@ -584,6 +599,30 @@ What works now:
   - **Film grain** (Light & stylize): grain that changes every frame (**Frame rate**, 0 =
     still), from fine to coarse (**Size**), mono to colour, strongest in the midtones and
     kept out of the highlights unless **In highlights** is raised
+  - **Film look** (Light & stylize), like Resolve's Film Look Creator: a whole film look in one
+    effect. **Stock** (*Neutral*, *Warm* or *Cool print*, *Bleach bypass*, *Teal and orange*,
+    *Faded seventies*, *Black and white*) and **Strength**; **Tone**: **Contrast** (an S-curve),
+    **Lift blacks**, **Highlight roll-off** (highlights ease into white instead of clipping),
+    **Saturation**; **Light**: **Halation** (the red-orange glow film gets round bright edges)
+    and its **size**, **Bloom**; **Texture**: **Grain** and its size, **Vignette** and **Gate
+    weave** (the frame drifting a little in the gate, every frame)
+  - **Film damage** (Light & stylize): old, worn film. **Scratches** running down the frame
+    (their **width**), **Dust** and specks (their size), stray **Hairs**; the projector's
+    **Flicker** and **Jitter**; a **Sepia** tone and a **Vignette**. It changes at the film's
+    own **Frame rate** (18 fps looks hand-cranked); **Seed** makes another reel
+  - **Analogue damage** (Light & stylize): worn videotape. **Colour bleed** and **Colour shift**
+    (the colour smeared and off the picture), **Tracking lines** rolling through, the
+    **Head switching** tear along the bottom, lines that **Wobble**, tape **Noise**,
+    **Dropouts** (white flecks), washed-out **Saturation** and **Softness**; **Amount** for all
+    of it and **Speed** for how fast it moves. Goes with CRT / VHS and Scanlines
+  - **Abstraction** (Light & stylize): footage turned into a painting — flat areas of colour
+    that keep their edges (a Kuwahara filter; **Brush size**), dark **Outlines** round them
+    (and their **width**), fewer **Colour levels** for a cartoon or poster look, and
+    **Saturation**
+  - **Scanlines** (Light & stylize): lines across the picture as on a screen. **Amount**,
+    **Spacing**, **Thickness**, **Softness**, **Angle**, **Roll** (px a second, so they crawl),
+    and **Kind**: *Dark lines* or *Red, green and blue stripes* (a screen's phosphors up
+    close), with **Brighten** to make up for the dark
   - **Glitch** (Distort): slices and blocks jump sideways, colours split and scan lines
     flicker. **Amount** is how much of the picture glitches, **Speed** how often the pattern
     changes; keyframe Amount for bursts
@@ -733,7 +772,7 @@ What works now:
   up/down** on the right-click menu. **Track heights**: drag the bottom edge of a track's
   header to make its row taller or shorter (32–240 px; double-click the edge to reset). Taller
   audio rows give a bigger waveform and volume line to work on. The arrow before a track's
-  name steps it through three views: normal, **expanded** (video tracks; a double arrow) and
+  name steps it through three views: normal, **expanded** (a double arrow) and
   **collapsed** to a thin strip (clips still show, as slim bars). An expanded track works like
   a twirled-open layer in After Effects. Its header shows a clip — the one selected on that
   track, or else the one at the playhead (click its name to select it) — one property a row:
@@ -747,7 +786,12 @@ What works now:
   row's **keyframes as diamonds on the same row**: drag one along to move that keyframe in
   time (its value stays; it snaps to frames, stops a frame short of its neighbours, and
   **Shift** puts it on the playhead when close; one undo step), or click it to go to it
-  (white: at the playhead). The row grows to fit.
+  (white: at the playhead). The row grows to fit. An expanded **audio track** does the same
+  for its clip's sound: **Volume** (dB) and **Pan** (−100 left to 100 right) rows, then each
+  audio effect (on/off, twirl it open for its settings), each with a stopwatch and diamond,
+  and their keyframes as diamonds in the lane to pick, box-select, drag, copy, paste, ease
+  (effect settings) and delete, just as on a video track. The volume keys are the same ones
+  the clip's volume line shows.
   **Show clip properties** on the right-click menu does the same; the menu also collapses or
   expands all video or all audio tracks at once, and **Reset track heights**. Heights,
   expanded and collapsed tracks are saved with the project (they aren't edits, so there's
@@ -1228,7 +1272,11 @@ What works now:
     worked out from where its colour sits between the colours surely inside the mask and those
     surely outside, round it (matting in a band, on the GPU), so hair, fur and motion blur
     go soft, strands reaching past the mask come in, and background the mask took in goes.
-    **Softness** (0 crisp, 100 as soft as the picture is) and **Shift** (shrink or grow).
+    **Softness** (0 crisp, 100 as soft as the picture is), **Decontaminate** and **Shift**
+    (shrink or grow). **Decontaminate** takes the colour of the old background out of the
+    part-see-through edge: a pixel that's part hair, part blue sky has its colour pulled back
+    to the hair's (worked out from the same line between inside and outside colours), so no
+    blue fringe shows once something else is behind it.
     Inside and outside the band the mask is as it was. Best with the roto brush, a tracked
     shape, or any mask drawn roughly round something
   - **Roto brush** (Masks panel → **+ Roto brush**, on footage), like After Effects' Roto Brush:
@@ -1283,7 +1331,11 @@ What works now:
     **Background removal** mask with a **Refine edge** (soft hair and motion blur) and followed
     through the whole clip in the background, forwards to its end and back to its start. Put
     something underneath (a colour, a picture, another shot) to replace the background, or
-    **Invert** the mask to keep the background instead. Where it slipped, paint over that frame
+    **Invert** the mask to keep the background instead. The cut starts with full colour
+    decontamination. Under **Behind it** in the Masks panel, **Edge** chokes the cut-out in (−,
+    to lose a halo of the old background) or spreads it out (+, to keep more hair), and
+    **Clean fringe** sets how much of the old background's colour is taken out of the edge
+    (both live, as you drag). Where it slipped, paint over that frame
     with the roto brush to correct it and carry it on from there
   - **+ Pick object** (Masks): one click on an object in the Viewer picks it out and carries it
     through the rest of the clip by itself (from its last frame, back to the start), in the
@@ -1316,6 +1368,11 @@ What works now:
     playhead** puts a composition into whatever you're editing (compositions can contain
     compositions; one can't contain itself)
   - Empty parts of a shot are transparent, so layers underneath show through
+  - **Crisp when scaled up**: a composition scaled up (say a 1280×720 one at 300 % in a 4K
+    edit, or zoomed in with keyframes) is drawn that much finer, not stretched, so the titles,
+    shapes and planes in it stay sharp, as After Effects' *Collapse Transformations* gives. It
+    goes up in quarter steps of doubling (a slow zoom redraws now and then, not every frame),
+    up to 4× and 8192 pixels across, and carries through compositions inside compositions
   - Exporting while inside a shot exports that shot
 - **Motion tracking** (the **Track** panel, docked next to Controls; for footage clips). It
   works on the selected clip, and keeps working on a tracked clip after you select something
@@ -2223,6 +2280,10 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   cache the image by a hash of the spec, so it's only redrawn when the title changes, and from
   there it's just another layer to the GPU compositor. Installed fonts are found once, in the
   background, by reading each font file's name table.
+  A composition scaled up is drawn finer the same way (`scene::nested_zoom`): its own
+  compositor's `output_scale` goes above 1 (the targets grow, layers keep their places in
+  frame units), and its titles are drawn that much finer again (`Scene::zoom`, multiplied
+  down nested compositions); the zoom is part of its picture's signature.
   A 2D title scaled up is drawn for the size it's shown at, not stretched
   (`text::render_title_sharp`, `scene::title_sharpness`): `TitleSpec::magnified` multiplies
   every length in pixels (size, spacing, outline, shadow, box padding, animator moves, the text
@@ -2444,6 +2505,10 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 - **Volume automation** is stored as `(source time, dB)` keys and interpolated linearly in dB
   (what sounds like an even ramp). `mix_clips` converts keys to sample offsets per clip, so the
   mixer applies them sample-accurately in both playback and export.
+  `core/src/audiokeys.rs` gives a clip's sound the same channel operations as a picture's
+  (`AudioChannel::Volume`, `Pan`, `Effect(i, p)`: values, stopwatch, diamond, move, shift,
+  paste, easing for effect settings), so an expanded audio track's rows and lane use the same
+  key commands as a video track's (channels `a:vol`, `a:pan`, `x:fx:param`).
 - **Crossfades** (`Project::crossfades`) are resolved from each clip's spare media: the overlap
   is centred on the cut when both sides have enough, otherwise it leans on whichever side does.
   `mix_clips` then extends the two clips into that overlap and gives them matching equal-power

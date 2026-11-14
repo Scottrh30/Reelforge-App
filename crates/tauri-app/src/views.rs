@@ -136,12 +136,19 @@ pub struct TrackProps {
     /// The playhead is on the clip (keyframed properties can be changed there).
     pub on_clip: bool,
     pub effects: Vec<TrackEffect>,
+    /// An audio track's clip: its sound (volume, pan and audio effects are
+    /// its rows then, and `props` are Volume and Pan).
+    pub audio: Option<reelforge_core::audio::ClipAudio>,
 }
 
-/// A transform property's keyframes, for its row.
+/// A property's keyframes, for its row.
 #[derive(Serialize)]
 pub struct TrackPropKeys {
     pub prop: &'static str,
+    /// Its keyframe channel (see keys.rs).
+    pub ch: String,
+    /// Its value at the playhead (Volume: dB; Pan: −100 to 100).
+    pub value: f32,
     pub animated: bool,
     pub key_here: bool,
     /// Its keyframes' timeline times.
@@ -150,6 +157,8 @@ pub struct TrackPropKeys {
 
 #[derive(Serialize)]
 pub struct TrackEffect {
+    /// "e" (a picture effect) or "x" (an audio effect): its settings' channels are "{chan}:{index}:{param}".
+    pub chan: &'static str,
     pub index: usize,
     pub label: String,
     pub enabled: bool,
@@ -159,11 +168,24 @@ pub struct TrackEffect {
 
 /// The clip an expanded track shows: the selected one on it, else the one at the playhead.
 fn track_props(e: &Editor, p: &reelforge_core::Project, t: &reelforge_core::project::Track) -> Option<TrackProps> {
-    if !t.expanded || t.collapsed || t.kind != TrackKind::Video {
+    if !t.expanded || t.collapsed {
         return None;
     }
     let ph = e.playback.playhead;
     let c = e.selection.and_then(|id| t.clips.iter().find(|c| c.id == id)).or_else(|| t.clips.iter().find(|c| c.contains(ph)))?;
+    if t.kind == TrackKind::Audio {
+        use reelforge_core::audiokeys::AudioChannel;
+        let (src, on_clip) = e.key_time(c);
+        let a = &c.audio;
+        let timeline = |at: Time| (c.timeline_start + (at - c.source_in)).0;
+        let row = |prop: &'static str, ch: AudioChannel, scale: f32| {
+            let keys: Vec<Time> = a.audio_keys(ch).iter().map(|k| k.0).collect();
+            TrackPropKeys { prop, ch: crate::keys::audio_channel_id(ch), value: a.audio_value(ch, src) * scale, animated: !keys.is_empty(), key_here: on_clip && keys.contains(&src), keys: keys.into_iter().map(timeline).collect() }
+        };
+        let props = vec![row("Volume", AudioChannel::Volume, 1.0), row("Pan", AudioChannel::Pan, 100.0)];
+        let effects = a.effects.iter().enumerate().map(|(index, fx)| TrackEffect { chan: "x", index, label: fx.kind.label().into(), enabled: fx.enabled, params: crate::fx::audio_param_views(fx, c, src, on_clip) }).collect();
+        return Some(TrackProps { clip: c.id.0, name: clip_name(p, c), transform: Transform::default(), props, on_clip, effects, audio: Some(a.clone()) });
+    }
     if c.scene.is_some() {
         return None;
     }
@@ -183,7 +205,7 @@ fn track_props(e: &Editor, p: &reelforge_core::Project, t: &reelforge_core::proj
                 .collect();
             keys.sort_unstable();
             keys.dedup();
-            TrackPropKeys { prop: name, animated: a.prop_animated(prop), key_here: on_clip && a.has_key(prop, src), keys }
+            TrackPropKeys { prop: name, ch: format!("t:{name}:0"), value: 0.0, animated: a.prop_animated(prop), key_here: on_clip && a.has_key(prop, src), keys }
         })
         .collect();
     let effects = c
@@ -193,10 +215,10 @@ fn track_props(e: &Editor, p: &reelforge_core::Project, t: &reelforge_core::proj
         .map(|(index, fx)| {
             let mut n = fx.clone();
             n.normalize();
-            TrackEffect { index, label: fx.label(), enabled: fx.enabled, params: crate::fx::param_views(&n, c, src, on_clip) }
+            TrackEffect { chan: "e", index, label: fx.label(), enabled: fx.enabled, params: crate::fx::param_views(&n, c, src, on_clip) }
         })
         .collect();
-    Some(TrackProps { clip: c.id.0, name: clip_name(p, c), transform: a.eval(&v.transform, src), props, on_clip, effects })
+    Some(TrackProps { clip: c.id.0, name: clip_name(p, c), transform: a.eval(&v.transform, src), props, on_clip, effects, audio: None })
 }
 
 #[derive(Serialize)]
@@ -498,12 +520,16 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
     }
     // Energy blades: on this clip, or (below) on layers over it.
     // (And patch replacers, whose target follows the same way.)
-    let blades = |o: &Clip| -> Vec<usize> { o.effects.iter().enumerate().filter(|(_, f)| matches!(f.kind, reelforge_core::EffectKind::EnergyBlade | reelforge_core::EffectKind::PatchReplacer)).map(|(i, _)| i).collect() };
+    // (And patch replacers, whose target follows the same way, and lights:
+    // a lens flare, light rays, an anamorphic flare's or lens dirt's light.)
+    let blades = |o: &Clip| -> Vec<usize> { o.effects.iter().enumerate().filter(|(_, f)| f.kind == reelforge_core::EffectKind::EnergyBlade || f.kind.tracked_point().is_some()).map(|(i, _)| i).collect() };
     let blade_label = |o: &Clip, list: &[usize], i: usize| {
-        let patch = o.effects[i].kind == reelforge_core::EffectKind::PatchReplacer;
-        let same: Vec<usize> = list.iter().copied().filter(|&j| (o.effects[j].kind == reelforge_core::EffectKind::PatchReplacer) == patch).collect();
-        let name = if patch { "Patch replacer" } else { "Energy blade" };
-        let what = if patch { "target" } else { "hilt and tip" };
+        let kind = o.effects.get(i).map_or(reelforge_core::EffectKind::EnergyBlade, |f| f.kind);
+        let same: Vec<usize> = list.iter().copied().filter(|&j| o.effects.get(j).is_some_and(|f| f.kind == kind)).collect();
+        let (name, what) = match kind.tracked_point() {
+            Some((_, _, what)) => (kind.label(), what),
+            None => ("Energy blade", "hilt and tip"),
+        };
         if same.len() > 1 { format!("{name} {}: {what}", same.iter().position(|&j| j == i).unwrap_or(0) + 1) } else { format!("{name}: {what}") }
     };
     if trk.mode != TrackMode::Mesh {

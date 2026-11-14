@@ -99,6 +99,20 @@ pub enum EffectKind {
     LensDistortion,
     /// The sound as bars, a line, dots or a waveform (an audio visualiser).
     AudioSpectrum,
+    /// A film look in one place, as Resolve's Film Look Creator.
+    FilmLook,
+    /// Old film.
+    FilmDamage,
+    /// Worn videotape.
+    AnalogueDamage,
+    /// Turn footage into a painted, simplified picture.
+    Abstraction,
+    /// A blur that splits light into its colours as a prism does.
+    PrismBlur,
+    /// The miniature look.
+    TiltShift,
+    /// Lines across the picture as on a screen.
+    Scanlines,
     /// Film grain, moving from frame to frame.
     FilmGrain,
     /// Digital glitches: sliced, shifted blocks, colour splits and scan lines.
@@ -820,6 +834,10 @@ pub mod streak {
     pub const COLOR: usize = 4;
     pub const THICKNESS: usize = 5;
     pub const SHOW: usize = 6;
+    pub const FROM: usize = 7;
+    pub const X: usize = 8;
+    pub const Y: usize = 9;
+    pub const LIGHT_SIZE: usize = 10;
 }
 pub mod dirt {
     pub const X: usize = 0;
@@ -875,6 +893,84 @@ pub mod shake {
     pub const ZOOM: usize = 4;
     pub const EDGES: usize = 5;
     pub const SEED: usize = 6;
+}
+pub mod film {
+    pub const STOCK: usize = 0;
+    pub const STRENGTH: usize = 1;
+    pub const CONTRAST: usize = 2;
+    pub const BLACKS: usize = 3;
+    pub const ROLLOFF: usize = 4;
+    pub const SATURATION: usize = 5;
+    pub const HALATION: usize = 6;
+    pub const HALATION_SIZE: usize = 7;
+    pub const BLOOM: usize = 8;
+    pub const GRAIN: usize = 9;
+    pub const GRAIN_SIZE: usize = 10;
+    pub const VIGNETTE: usize = 11;
+    pub const WEAVE: usize = 12;
+    pub const SEED: usize = 13;
+    pub const STOCKS: [&str; 7] = ["Neutral print", "Warm print", "Cool print", "Bleach bypass", "Teal and orange", "Faded seventies", "Black and white"];
+}
+pub mod damage {
+    pub const SCRATCHES: usize = 0;
+    pub const SCRATCH_WIDTH: usize = 1;
+    pub const DUST: usize = 2;
+    pub const DUST_SIZE: usize = 3;
+    pub const HAIRS: usize = 4;
+    pub const FLICKER: usize = 5;
+    pub const JITTER: usize = 6;
+    pub const TINT: usize = 7;
+    pub const VIGNETTE: usize = 8;
+    pub const FRAME_RATE: usize = 9;
+    pub const SEED: usize = 10;
+}
+pub mod analogue {
+    pub const AMOUNT: usize = 0;
+    pub const BLEED: usize = 1;
+    pub const SHIFT: usize = 2;
+    pub const TRACKING: usize = 3;
+    pub const HEAD: usize = 4;
+    pub const WOBBLE: usize = 5;
+    pub const NOISE: usize = 6;
+    pub const DROPOUTS: usize = 7;
+    pub const SATURATION: usize = 8;
+    pub const SOFTNESS: usize = 9;
+    pub const SPEED: usize = 10;
+    pub const SEED: usize = 11;
+}
+pub mod abstraction {
+    pub const SIZE: usize = 0;
+    pub const EDGES: usize = 1;
+    pub const EDGE_WIDTH: usize = 2;
+    pub const LEVELS: usize = 3;
+    pub const SATURATION: usize = 4;
+}
+pub mod prism {
+    pub const AMOUNT: usize = 0;
+    pub const MODE: usize = 1;
+    pub const ANGLE: usize = 2;
+    pub const X: usize = 3;
+    pub const Y: usize = 4;
+    pub const SPREAD: usize = 5;
+}
+pub mod tilt {
+    pub const FOCUS: usize = 0;
+    pub const ANGLE: usize = 1;
+    pub const BAND: usize = 2;
+    pub const FALLOFF: usize = 3;
+    pub const BLUR: usize = 4;
+    pub const SATURATION: usize = 5;
+    pub const CONTRAST: usize = 6;
+}
+pub mod scan {
+    pub const AMOUNT: usize = 0;
+    pub const SPACING: usize = 1;
+    pub const THICKNESS: usize = 2;
+    pub const SOFTNESS: usize = 3;
+    pub const ANGLE: usize = 4;
+    pub const ROLL: usize = 5;
+    pub const MODE: usize = 6;
+    pub const BRIGHTEN: usize = 7;
 }
 /// Audio spectrum: which sound, how it's drawn, along which line.
 pub mod audiovis {
@@ -1507,7 +1603,7 @@ const LIGHT_RAYS: [ParamSpec; 9] = [
     choice("Rays from", &["Bright parts of the layer", "The whole layer"]),
     choice("Show", &["The layer and its rays", "Rays only"]),
 ];
-const ANAMORPHIC: [ParamSpec; 7] = [
+const ANAMORPHIC: [ParamSpec; 11] = [
     spec("Threshold", 85.0, 0.0, 100.0, " %", 0.2),
     spec("Length", 400.0, 0.0, 3000.0, " px", 1.0),
     spec("Brightness", 100.0, 0.0, 500.0, " %", 0.5),
@@ -1515,6 +1611,10 @@ const ANAMORPHIC: [ParamSpec; 7] = [
     color("Colour", 0x5a8cff),
     spec("Thickness", 2.0, 0.0, 60.0, " px", 0.05),
     choice("Show", &["The layer and its streaks", "Streaks only"]),
+    choice("Streaks from", &["Bright parts of the layer", "A light (X, Y)", "Both"]),
+    spec("Light X", 50.0, -100.0, 200.0, " %", 0.1),
+    spec("Light Y", 40.0, -100.0, 200.0, " %", 0.1),
+    spec("Light size", 12.0, 1.0, 400.0, " px", 0.1),
 ];
 const LENS_DIRT: [ParamSpec; 10] = [
     spec("Light X", 50.0, -100.0, 200.0, " %", 0.1),
@@ -1562,6 +1662,83 @@ const CAMERA_SHAKE: [ParamSpec; 7] = [
     spec("Zoom", 104.0, 100.0, 200.0, " %", 0.1),
     choice("Edges", &["Mirror", "Repeat the edge", "Transparent"]),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const FILM_LOOK: [ParamSpec; 14] = [
+    choice("Stock", &film::STOCKS),
+    spec("Strength", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Contrast", 30.0, -100.0, 100.0, " %", 0.5),
+    spec("Lift blacks", 3.0, 0.0, 30.0, " %", 0.1),
+    spec("Highlight roll-off", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Saturation", 100.0, 0.0, 200.0, " %", 0.5),
+    spec("Halation", 25.0, 0.0, 200.0, " %", 0.5),
+    spec("Halation size", 10.0, 1.0, 100.0, " px", 0.1),
+    spec("Bloom", 15.0, 0.0, 200.0, " %", 0.5),
+    spec("Grain", 15.0, 0.0, 200.0, " %", 0.5),
+    spec("Grain size", 1.2, 0.5, 8.0, " px", 0.01),
+    spec("Vignette", 20.0, 0.0, 100.0, " %", 0.5),
+    spec("Gate weave", 0.0, 0.0, 20.0, " px", 0.05),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const FILM_DAMAGE: [ParamSpec; 11] = [
+    spec("Scratches", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Scratch width", 1.5, 0.5, 20.0, " px", 0.05),
+    spec("Dust", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Dust size", 3.0, 0.5, 40.0, " px", 0.05),
+    spec("Hairs", 15.0, 0.0, 100.0, " %", 0.5),
+    spec("Flicker", 25.0, 0.0, 100.0, " %", 0.5),
+    spec("Jitter", 1.5, 0.0, 40.0, " px", 0.05),
+    spec("Sepia", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Vignette", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Frame rate", 18.0, 1.0, 60.0, " fps", 0.1),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const ANALOGUE: [ParamSpec; 12] = [
+    spec("Amount", 75.0, 0.0, 100.0, " %", 0.5),
+    spec("Colour bleed", 8.0, 0.0, 60.0, " px", 0.05),
+    spec("Colour shift", 3.0, -60.0, 60.0, " px", 0.05),
+    spec("Tracking lines", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Head switching", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Wobble", 2.0, 0.0, 40.0, " px", 0.05),
+    spec("Noise", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Dropouts", 25.0, 0.0, 100.0, " %", 0.5),
+    spec("Saturation", 80.0, 0.0, 200.0, " %", 0.5),
+    spec("Softness", 1.5, 0.0, 20.0, " px", 0.05),
+    spec("Speed", 1.0, 0.0, 10.0, "", 0.02),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+];
+const ABSTRACTION: [ParamSpec; 5] = [
+    spec("Brush size", 6.0, 0.0, 40.0, " px", 0.05),
+    spec("Outlines", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Outline width", 1.0, 0.5, 8.0, " px", 0.02),
+    spec("Colour levels", 0.0, 0.0, 32.0, "", 0.1),
+    spec("Saturation", 110.0, 0.0, 200.0, " %", 0.5),
+];
+const PRISM: [ParamSpec; 6] = [
+    spec("Amount", 20.0, 0.0, 300.0, " px", 0.2),
+    choice("Direction", &["Out from the centre", "One way"]),
+    spec("Angle", 0.0, -360.0, 360.0, "°", 0.5),
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Colour spread", 100.0, 0.0, 200.0, " %", 0.5),
+];
+const TILT_SHIFT: [ParamSpec; 7] = [
+    spec("Focus at", 55.0, -50.0, 150.0, " %", 0.2),
+    spec("Angle", 0.0, -180.0, 180.0, "°", 0.5),
+    spec("Sharp band", 12.0, 0.0, 100.0, " %", 0.2),
+    spec("Falloff", 25.0, 1.0, 100.0, " %", 0.2),
+    spec("Blur", 14.0, 0.0, 100.0, " px", 0.1),
+    spec("Saturation", 120.0, 0.0, 200.0, " %", 0.5),
+    spec("Contrast", 108.0, 50.0, 200.0, " %", 0.5),
+];
+const SCANLINES: [ParamSpec; 8] = [
+    spec("Amount", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Spacing", 3.0, 1.0, 100.0, " px", 0.05),
+    spec("Thickness", 50.0, 1.0, 100.0, " %", 0.5),
+    spec("Softness", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Angle", 0.0, -180.0, 180.0, "°", 0.5),
+    spec("Roll", 0.0, -500.0, 500.0, " px/s", 0.5),
+    choice("Kind", &["Dark lines", "Red, green and blue stripes"]),
+    spec("Brighten", 10.0, 0.0, 100.0, " %", 0.5),
 ];
 const AUDIO_VIS: [ParamSpec; 17] = [
     choice("Sound", &audiovis::SOURCES),
@@ -1808,7 +1985,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 54] = [
+    pub const ALL: [EffectKind; 61] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -1863,7 +2040,28 @@ impl EffectKind {
         EffectKind::Mirror,
         EffectKind::LensDistortion,
         EffectKind::AudioSpectrum,
+        EffectKind::FilmLook,
+        EffectKind::FilmDamage,
+        EffectKind::AnalogueDamage,
+        EffectKind::Abstraction,
+        EffectKind::PrismBlur,
+        EffectKind::TiltShift,
+        EffectKind::Scanlines,
     ];
+
+    /// The one point of an effect that a motion tracker can carry (its x
+    /// and y params, % of the layer) and what it is: a patch's target, or
+    /// where a light is.
+    pub fn tracked_point(self) -> Option<(usize, usize, &'static str)> {
+        Some(match self {
+            EffectKind::PatchReplacer => (patch::X, patch::Y, "target"),
+            EffectKind::LensFlare => (flare::X, flare::Y, "light"),
+            EffectKind::LightRays => (rays::X, rays::Y, "source"),
+            EffectKind::LensDirt => (dirt::X, dirt::Y, "light"),
+            EffectKind::AnamorphicFlare => (streak::X, streak::Y, "light"),
+            _ => return None,
+        })
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -1917,6 +2115,14 @@ impl EffectKind {
             EffectKind::Disintegrate => "Disintegrate",
             EffectKind::FractalNoise => "Fractal noise",
             EffectKind::AudioSpectrum => "Audio spectrum",
+            EffectKind::FilmLook => "Film look",
+            EffectKind::FilmDamage => "Film damage",
+            EffectKind::AnalogueDamage => "Analogue damage",
+            EffectKind::Abstraction => "Abstraction",
+            EffectKind::PrismBlur => "Prism blur",
+            EffectKind::TiltShift => "Tilt-shift",
+            EffectKind::Scanlines => "Scanlines",
+
             EffectKind::Lightning => "Lightning",
             EffectKind::PatchReplacer => "Patch replacer",
             EffectKind::ObjectRemoval => "Object removal",
@@ -1940,6 +2146,8 @@ impl EffectKind {
             EffectKind::WireRemoval | EffectKind::PatchReplacer | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty => EffectCategory::Repair,
             EffectKind::SkyReplace => EffectCategory::Keying,
             EffectKind::FractalNoise | EffectKind::Lightning | EffectKind::AudioSpectrum => EffectCategory::Generate,
+            EffectKind::FilmLook | EffectKind::FilmDamage | EffectKind::AnalogueDamage | EffectKind::Abstraction | EffectKind::Scanlines => EffectCategory::Stylize,
+            EffectKind::PrismBlur | EffectKind::TiltShift => EffectCategory::BlurSharpen,
             EffectKind::CameraShake
             | EffectKind::ChromaticAberration
             | EffectKind::Glitch
@@ -1981,6 +2189,13 @@ impl EffectKind {
             EffectKind::MuzzleFlash => "A gun's flash at the barrel (drag it in the Viewer): rifle, pistol, shotgun or side vents, one shot or a burst, lighting the scene round it. Put it on an adjustment layer to light the footage.",
             EffectKind::BulletHit => "A bullet striking a wall, concrete, metal, glass or wood: a flash, sparks and a puff of dust, and the hole or cracks it leaves. Put it on an adjustment layer over the footage.",
             EffectKind::Disintegrate => "The layer breaks up into particles of its own colours, a ragged glowing front sweeping across it in the direction you choose, the pieces drifting away and fading.",
+            EffectKind::FilmLook => "A film look in one place, as Resolve's Film Look Creator: a print stock's colour and contrast (or bleach bypass, teal and orange, faded, black and white), soft highlight roll-off and lifted blacks, red halation round bright edges, bloom, grain, vignette and a little gate weave.",
+            EffectKind::FilmDamage => "Old film: scratches running down the frame, dust and specks, a stray hair, flicker and a jittering frame, sepia toning and a vignette, changing frame to frame at the film's own rate.",
+            EffectKind::AnalogueDamage => "Worn videotape: colour bleeding and shifted off the picture, tracking lines rolling through, the head-switching tear along the bottom, wobbling lines, tape noise, dropouts and washed-out colour.",
+            EffectKind::Abstraction => "Turn footage into a painted, simplified picture: flat areas of colour that keep their edges (a Kuwahara filter), with dark outlines and fewer colours if wanted.",
+            EffectKind::PrismBlur => "A blur that splits light into its colours as a prism does: out from a centre or one way, red one side and blue the other.",
+            EffectKind::TiltShift => "The miniature look: a band of the picture sharp and the rest blurred more and more away from it, at any angle, with a little extra saturation and contrast.",
+            EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
             EffectKind::Lightning => "Jagged, branching bolts of lightning or electricity between two points (drag them in the Viewer) or all round one, struck afresh several times a second, flickering and lighting the layer.",
@@ -1990,10 +2205,10 @@ impl EffectKind {
             EffectKind::SkyReplace => "A new sky behind the footage: the sky in every frame is found by the object model (Find the sky), its edge softened round trees and buildings, the new sky (a picture, or a gradient) moved with the camera, and the footage's light matched to it.",
             EffectKind::Paint => "Paint in the Viewer: clone the picture from somewhere else (Alt-click where to copy from), brush on a colour, or erase strokes. Each stroke lasts a frame, from there on, or the whole clip.",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
-            EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Choose a lens from the library (cinematic sun, anamorphic, hexagon iris, sci-fi and more) and drag the light in the Viewer.",
-            EffectKind::LightRays => "Rays of light streaming out from a point through the bright parts of the layer (or all of it), like sun through trees or a logo's god rays. Drag the source in the Viewer.",
-            EffectKind::AnamorphicFlare => "Long horizontal streaks out of the bright parts of the picture (lamps, headlights, highlights), as an anamorphic lens draws them.",
-            EffectKind::LensDirt => "Smudges and specks on the lens that light up where bright light hits them: from the bright parts of the picture, or a light you place.",
+            EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Choose a lens from the library (cinematic sun, anamorphic, hexagon iris, sci-fi and more) and drag the light in the Viewer. To keep it on a moving lamp or the sun, track that in the Track panel and apply the track to the flare.",
+            EffectKind::LightRays => "Rays of light streaming out from a point through the bright parts of the layer (or all of it), like sun through trees or a logo's god rays. Drag the source in the Viewer, or apply a motion track to it (Track panel) so it stays on what it shines from.",
+            EffectKind::AnamorphicFlare => "Long horizontal streaks out of the bright parts of the picture (lamps, headlights, highlights), as an anamorphic lens draws them, or from a light you place (and can apply a motion track to, in the Track panel).",
+            EffectKind::LensDirt => "Smudges and specks on the lens that light up where bright light hits them: from the bright parts of the picture, or a light you place (which a motion track can carry, from the Track panel).",
             EffectKind::NeonPath => "A glowing neon tube along one of the layer's masks: draw a mask (set its Use to A path) and pick it as the Path, or on a title pick The letters to outline the text itself; then write it on, dash it or make it flicker. Show the layer at 0 % leaves only the tube.",
             EffectKind::Bulge => "Swell a round area out like a magnifying glass, or pinch it in (a dent) with a negative amount; Sphere wraps it on a ball instead. Drag its centre in the Viewer.",
             EffectKind::Twirl => "Turn the picture round a point, most in the middle and less towards the edge of the circle: a twirl, a vortex or a whirlpool. Drag its centre in the Viewer.",
@@ -2070,6 +2285,13 @@ impl EffectKind {
             EffectKind::Disintegrate => &DISINTEGRATE,
             EffectKind::FractalNoise => &FRACTAL,
             EffectKind::AudioSpectrum => &AUDIO_VIS,
+            EffectKind::FilmLook => &FILM_LOOK,
+            EffectKind::FilmDamage => &FILM_DAMAGE,
+            EffectKind::AnalogueDamage => &ANALOGUE,
+            EffectKind::Abstraction => &ABSTRACTION,
+            EffectKind::PrismBlur => &PRISM,
+            EffectKind::TiltShift => &TILT_SHIFT,
+            EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
             EffectKind::ObjectRemoval => &OBJECT_REMOVAL,
@@ -2112,6 +2334,9 @@ impl EffectKind {
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
             EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
             EffectKind::AudioSpectrum => &[(0, "Sound"), (3, "Where"), (7, "Shape"), (11, "Colour")],
+            EffectKind::FilmLook => &[(0, "Stock"), (2, "Tone"), (6, "Light"), (9, "Texture")],
+            EffectKind::FilmDamage => &[(0, "Scratches and dirt"), (5, "Projector"), (7, "Look")],
+            EffectKind::AnalogueDamage => &[(0, "Colour"), (3, "Tape"), (8, "Picture")],
             EffectKind::Paint => &[(0, "Brush"), (5, "Strokes"), (6, "Clone")],
             EffectKind::FaceBeauty => &[(0, "Look"), (5, "Faces")],
             EffectKind::HslQualifier => &[(0, "Hue"), (3, "Saturation"), (6, "Luminance"), (9, "Matte"), (14, "Grade inside")],
@@ -2121,6 +2346,7 @@ impl EffectKind {
             EffectKind::NeonPath => &[(0, "Path"), (5, "Flicker and taper"), (9, "Look"), (15, "Dashes"), (18, "Mix"), (21, "Switch on")],
             EffectKind::LensDirt => &[(0, "Light"), (3, "Dirt")],
             EffectKind::LightRays => &[(0, "Source"), (2, "Rays")],
+            EffectKind::AnamorphicFlare => &[(0, "Streaks"), (7, "Light")],
             EffectKind::PatchReplacer => &[(0, "Target"), (2, "Source"), (4, "Shape"), (9, "Fill")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
@@ -2228,6 +2454,14 @@ impl EffectValues {
             EffectKind::Disintegrate => self.particles.is_none(),
             EffectKind::FractalNoise => v[fractal::OPACITY] == 0.0,
             EffectKind::AudioSpectrum => false,
+            EffectKind::FilmLook => v[film::STRENGTH] == 0.0,
+            EffectKind::FilmDamage => v[damage::SCRATCHES] == 0.0 && v[damage::DUST] == 0.0 && v[damage::HAIRS] == 0.0 && v[damage::FLICKER] == 0.0 && v[damage::JITTER] == 0.0 && v[damage::TINT] == 0.0 && v[damage::VIGNETTE] == 0.0,
+            EffectKind::AnalogueDamage => v[analogue::AMOUNT] == 0.0,
+            EffectKind::Abstraction => v[abstraction::SIZE] <= 0.0 && v[abstraction::EDGES] == 0.0 && v[abstraction::LEVELS] == 0.0,
+            EffectKind::PrismBlur => v[prism::AMOUNT] == 0.0,
+            EffectKind::TiltShift => v[tilt::BLUR] == 0.0 && v[tilt::SATURATION] == 100.0 && v[tilt::CONTRAST] == 100.0,
+            EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
+
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
             EffectKind::PatchReplacer => v[patch::OPACITY] == 0.0,
             EffectKind::ObjectRemoval => v[removal::OPACITY] == 0.0 || self.table.is_none(),
@@ -2271,6 +2505,10 @@ impl EffectValues {
         self.kind.animates_with_time()
             || (self.kind == EffectKind::NeonEdges && v[neon::FLICKER] > 0.0)
             || self.kind == EffectKind::AudioSpectrum
+            || (self.kind == EffectKind::FilmLook && (v[film::GRAIN] > 0.0 || v[film::WEAVE] > 0.0))
+            || self.kind == EffectKind::FilmDamage
+            || self.kind == EffectKind::AnalogueDamage
+            || (self.kind == EffectKind::Scanlines && v[scan::ROLL] != 0.0)
             || (self.kind == EffectKind::FractalNoise && (v[fractal::SPEED] != 0.0 || v[fractal::DRIFT_X] != 0.0 || v[fractal::DRIFT_Y] != 0.0))
             || (self.kind == EffectKind::Crt && (v[crt::WOBBLE] > 0.0 || v[crt::NOISE] > 0.0 || v[crt::TRACKING] > 0.0))
             || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)

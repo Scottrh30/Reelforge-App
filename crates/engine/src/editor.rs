@@ -1642,24 +1642,24 @@ impl Editor {
         self.touch();
     }
 
-    /// The track's arrow: collapsed → normal → (a video track) expanded with
-    /// its clip's effects and properties → collapsed.
+    /// The track's arrow: collapsed → normal → expanded with its clip's
+    /// effects and properties (on an audio track: volume, pan and audio
+    /// effects) → collapsed.
     pub fn cycle_track_view(&mut self, track: usize) {
         let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
-        let video = tr.kind == TrackKind::Video;
         (tr.collapsed, tr.expanded) = match (tr.collapsed, tr.expanded) {
             (true, _) => (false, false),
-            (false, false) if video => (false, true),
+            (false, false) => (false, true),
             _ => (true, false),
         };
         self.status = format!("{} {}", tr.name, if tr.collapsed { "collapsed" } else if tr.expanded { "expanded: its clip's effects and properties" } else { "expanded" });
         self.touch();
     }
 
-    /// Show or hide a video track's clip effects and properties in its header.
+    /// Show or hide a track's clip effects and properties in its header.
     pub fn set_track_properties(&mut self, track: usize, on: bool) {
         let Some(tr) = self.project.sequences[self.active].tracks.get_mut(track) else { return };
-        if tr.kind != TrackKind::Video || tr.expanded == on && !tr.collapsed {
+        if tr.expanded == on && !tr.collapsed {
             return;
         }
         tr.expanded = on;
@@ -3490,14 +3490,14 @@ impl Editor {
         let s = self.seq();
         let (Some((_, a)), Some((_, b))) = (s.find_clip(tracked), s.find_clip(target)) else { return };
         let Some(track) = &a.tracker else { return };
-        let Some(fx) = b.effects.get(index).filter(|f| matches!(f.kind, EffectKind::EnergyBlade | EffectKind::PatchReplacer)) else { return };
-        // A patch replacer's target moves (its source, measured from the target, comes with it).
-        let patch = fx.kind == EffectKind::PatchReplacer;
-        let params = if patch {
-            use reelforge_core::effects::patch as pr;
-            [pr::X, pr::Y, pr::X, pr::Y]
-        } else {
-            [blade::HILT_X, blade::HILT_Y, blade::TIP_X, blade::TIP_Y]
+        let Some(fx) = b.effects.get(index).filter(|f| f.kind == EffectKind::EnergyBlade || f.kind.tracked_point().is_some()) else { return };
+        // One point (a patch replacer's target, whose source, measured from
+        // the target, comes with it; a light) or a blade's two.
+        let one = fx.kind.tracked_point();
+        let patch = one.is_some();
+        let params = match one {
+            Some((x, y, _)) => [x, y, x, y],
+            None => [blade::HILT_X, blade::HILT_Y, blade::TIP_X, blade::TIP_Y],
         };
         if s.is_locked(target) {
             self.status = LOCKED.into();
@@ -3569,8 +3569,12 @@ impl Editor {
                 p.keys.set(*at, val[j]);
             }
         }
-        let what = if patch { "The patch" } else { "The blade" };
-        let name = if same { what.to_string() } else { format!("{what} on {}", b.display_name(&self.project)) };
+        let what = match fx.kind {
+            EffectKind::PatchReplacer => "The patch".to_string(),
+            EffectKind::EnergyBlade => "The blade".to_string(),
+            k => format!("The {}", k.label().to_lowercase()),
+        };
+        let name = if same { what } else { format!("{what} on {}", b.display_name(&self.project)) };
         self.set_visual_live(target, v);
         self.commit_live_edit();
         self.status = format!("{name} now follows the tracked motion ({} keyframes)", keys.len());
@@ -3996,7 +4000,7 @@ mod tests {
     }
 
     /// A track's arrow: collapsed → normal → expanded with its clip's
-    /// properties (video tracks) → collapsed; audio tracks skip that step.
+    /// properties → collapsed, on video and audio tracks alike.
     #[test]
     fn track_arrows_cycle_through_expanded() {
         let mut e = editor();
@@ -4011,9 +4015,10 @@ mod tests {
         e.cycle_track_view(v);
         assert_eq!(st(&e, v), (false, false));
         e.cycle_track_view(a);
-        assert_eq!(st(&e, a), (true, false), "audio: straight to collapsed");
+        assert_eq!(st(&e, a), (false, true), "audio tracks expand too");
+        e.cycle_track_view(a);
         e.set_track_properties(a, true);
-        assert_eq!(st(&e, a), (true, false), "no properties on audio tracks");
+        assert_eq!(st(&e, a), (false, true), "and show their properties");
         e.set_track_properties(v, true);
         e.set_all_tracks(None, true, false);
         assert_eq!(st(&e, v), (true, false), "collapsing all closes them");
@@ -4560,6 +4565,22 @@ mod tests {
             let at = |i, s: f64| fx.value_at(i, Time::from_secs_f64(s));
             assert!((at(pr::X, 0.0) - 50.0).abs() < 0.01 && (at(pr::X, 0.5) - 60.0).abs() < 0.01, "{} {} ({})", at(pr::X, 0.0), at(pr::X, 0.5), e.status);
             assert!(!fx.params[pr::SOURCE_X].keys.is_animated());
+        }
+        // Lights follow the shot: each light effect's position moves 10% with the prop.
+        for kind in [EffectKind::LensFlare, EffectKind::LightRays, EffectKind::AnamorphicFlare, EffectKind::LensDirt] {
+            let (px, py, _) = kind.tracked_point().unwrap();
+            let mut v = e.visual(id).unwrap();
+            v.effects.push(Effect::new(kind));
+            let i = v.effects.len() - 1;
+            e.set_visual_live(id, v);
+            e.commit_live_edit();
+            let start = e.seq().find_clip(id).unwrap().1.effects[i].value_at(px, Time::ZERO);
+            e.apply_track_to_blade(id, id, i, Axes::ALL);
+            let (_, c) = e.seq().find_clip(id).unwrap();
+            let fx = &c.effects[i];
+            let at = |s: f64| fx.value_at(px, Time::from_secs_f64(s));
+            assert!((at(0.0) - start).abs() < 0.01 && (at(0.5) - start - 10.0).abs() < 0.01, "{kind:?}: {} {} ({})", at(0.0), at(0.5), e.status);
+            assert!(fx.params[py].keys.is_animated() && e.status.contains("now follows"), "{kind:?}: {}", e.status);
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

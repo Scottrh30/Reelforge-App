@@ -136,21 +136,30 @@ pub struct ParamView {
 
 /// An effect's settings as seen at source time `src` (`fx` normalised).
 pub fn param_views(fx: &reelforge_core::effects::Effect, c: &Clip, src: Time, in_clip: bool) -> Vec<ParamView> {
-    fx.param_specs()
+    views_of(fx.param_specs(), &fx.params, fx.kind.sections(), |i| fx.value_at(i, src), c, src, in_clip)
+}
+
+/// An audio effect's settings as seen at source time `src`.
+pub fn audio_param_views(fx: &reelforge_core::audiofx::AudioEffect, c: &Clip, src: Time, in_clip: bool) -> Vec<ParamView> {
+    views_of(fx.kind.specs(), &fx.params, &[], |i| fx.value_at(i, src), c, src, in_clip)
+}
+
+fn views_of(specs: &[reelforge_core::effects::ParamSpec], params: &[reelforge_core::effects::Param], sections: &[(usize, &'static str)], value: impl Fn(usize) -> f32, c: &Clip, src: Time, in_clip: bool) -> Vec<ParamView> {
+    specs
         .iter()
         .enumerate()
-        .filter_map(|(i, s)| {
-            let keys = &fx.params.get(i)?.keys;
+        .map(|(i, s)| {
+            let keys = params.get(i).map(|p| &p.keys);
             let (ui, options) = match s.ui {
                 ParamUi::Number => ("number", Vec::new()),
                 ParamUi::Toggle => ("toggle", Vec::new()),
                 ParamUi::Choice(o) => ("choice", o.to_vec()),
                 ParamUi::Color => ("color", Vec::new()),
             };
-            let section = fx.kind.sections().iter().find(|(at, _)| *at == i).map(|(_, h)| *h);
-            Some(ParamView {
+            let section = sections.iter().find(|(at, _)| *at == i).map(|(_, h)| *h);
+            ParamView {
                 name: s.name,
-                value: fx.value_at(i, src),
+                value: value(i),
                 default: s.default,
                 min: s.min,
                 max: s.max,
@@ -160,10 +169,10 @@ pub fn param_views(fx: &reelforge_core::effects::Effect, c: &Clip, src: Time, in
                 ui,
                 section,
                 options,
-                animated: keys.is_animated(),
-                key_here: in_clip && keys.index_at(src).is_some(),
-                keys: keys.0.iter().map(|k| (c.timeline_start + (k.at - c.source_in)).0).collect(),
-            })
+                animated: keys.is_some_and(|k| k.is_animated()),
+                key_here: in_clip && keys.is_some_and(|k| k.index_at(src).is_some()),
+                keys: keys.map_or_else(Vec::new, |k| k.0.iter().map(|k| (c.timeline_start + (k.at - c.source_in)).0).collect()),
+            }
         })
         .collect()
 }
@@ -264,7 +273,9 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     vec![PointView { param: 0, label: "Start".into(), relative: None }, PointView { param: 2, label: "End".into(), relative: None }]
                 } else if fx.kind == EffectKind::PatchReplacer {
                     vec![PointView { param: 0, label: "Target".into(), relative: None }, PointView { param: 2, label: "Source".into(), relative: Some(0) }]
-                } else if let Some(label) = match fx.kind {
+                } else if let Some((param, label)) = match fx.kind {
+                    EffectKind::AnamorphicFlare if fx.params.get(reelforge_core::effects::streak::FROM).is_some_and(|p| p.value >= 0.5) => Some((reelforge_core::effects::streak::X, "Light")),
+                    k => match k {
                     EffectKind::Shatter => Some("Impact"),
                     EffectKind::MuzzleFlash => Some("Barrel"),
                     EffectKind::BulletHit => Some("Hit"),
@@ -273,8 +284,10 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::Bulge | EffectKind::Twirl | EffectKind::Ripple | EffectKind::Mirror | EffectKind::LensDistortion => Some("Centre"),
                     EffectKind::LensDirt if fx.params.get(reelforge_core::effects::dirt::LIT_BY).is_some_and(|p| p.value >= 0.5) => Some("Light"),
                     _ => None,
+                    }
+                    .map(|l| (0, l)),
                 } {
-                    vec![PointView { param: 0, label: label.into(), relative: None }]
+                    vec![PointView { param, label: label.into(), relative: None }]
                 } else {
                     ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label, relative: None }).collect())
                 },

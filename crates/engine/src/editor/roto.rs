@@ -436,7 +436,7 @@ impl Editor {
         if let Some(mut v) = self.visual(id) {
             if let Some(m) = v.masks.get_mut(index) {
                 m.name = "Background removal".into();
-                m.refine = Some(reelforge_core::mask::RefineEdge::default());
+                m.refine = Some(reelforge_core::mask::RefineEdge { decontaminate: 100.0, ..Default::default() });
             }
             self.set_visual_live(id, v);
             self.commit_live_edit();

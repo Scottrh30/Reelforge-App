@@ -1058,6 +1058,71 @@ fn float_layers_keep_linear_light_highlights_and_premultiplied_glow() {
     assert!(px(&img, 16, 10, 8)[0] < ring[0] - 60, "{:?}", px(&img, 16, 10, 8));
 }
 
+/// The Resolve-style looks: each does what it says on a test picture, and
+/// at nothing (strength or amount 0) leaves it be.
+#[test]
+fn film_tape_paint_prism_tilt_and_scanline_looks() {
+    use reelforge_core::effects::{abstraction as ab, analogue as an, damage as dm, film, prism as pr, scan, tilt};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    // A grey picture with a bright white square in the middle and a fine checker at the top.
+    let pic: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| {
+        let v: u8 = if (70..90).contains(&x) && (35..55).contains(&y) { 255 } else if y < 20 { if (x / 2 + y / 2) % 2 == 0 { 230 } else { 30 } } else { 120 };
+        [v, v, v, 255]
+    })).collect();
+    let mut key = 1200u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, kind: EffectKind, set: &[(usize, f32)], t: f64| {
+        let mut e = Effect::new(kind);
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        let v = e.eval(reelforge_core::Time::from_secs_f64(t));
+        key += 1;
+        let mut l = layer(1, &pic, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = 99_000 + key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let plain = draw(&mut c, EffectKind::Scanlines, &[(scan::AMOUNT, 0.0)], 0.0);
+    let same = |a: &[u8], b: &[u8]| a.iter().zip(b).all(|(x, y)| (*x as i32 - *y as i32).abs() <= 2);
+    let differs = |a: &[u8], b: &[u8]| a.iter().zip(b).filter(|(x, y)| (**x as i32 - **y as i32).abs() > 6).count();
+    // Film look: nothing at 0 %; a warm print warms the grey; halation reddens round the square.
+    assert!(same(&draw(&mut c, EffectKind::FilmLook, &[(film::STRENGTH, 0.0)], 0.0), &plain));
+    let warm = draw(&mut c, EffectKind::FilmLook, &[(film::STOCK, 1.0), (film::GRAIN, 0.0), (film::HALATION, 0.0), (film::BLOOM, 0.0), (film::VIGNETTE, 0.0)], 0.0);
+    let g = px(&warm, w, 30, 70);
+    assert!(g[0] > g[2] + 8, "warm: {g:?}");
+    let hal = draw(&mut c, EffectKind::FilmLook, &[(film::HALATION, 200.0), (film::HALATION_SIZE, 8.0), (film::GRAIN, 0.0), (film::VIGNETTE, 0.0), (film::CONTRAST, 0.0), (film::BLOOM, 0.0)], 0.0);
+    let e = px(&hal, w, 67, 45);
+    assert!(e[0] as i32 - e[2] as i32 > 10, "red round a bright edge: {e:?}");
+    // Film damage: frame by frame it changes; sepia browns the grey.
+    let d1 = draw(&mut c, EffectKind::FilmDamage, &[(dm::DUST, 100.0), (dm::SCRATCHES, 100.0), (dm::JITTER, 0.0), (dm::FLICKER, 0.0), (dm::VIGNETTE, 0.0)], 0.0);
+    let d2 = draw(&mut c, EffectKind::FilmDamage, &[(dm::DUST, 100.0), (dm::SCRATCHES, 100.0), (dm::JITTER, 0.0), (dm::FLICKER, 0.0), (dm::VIGNETTE, 0.0)], 0.2);
+    assert!(differs(&d1, &plain) > 20 && differs(&d1, &d2) > 20, "specks and scratches, new each frame");
+    let sep = draw(&mut c, EffectKind::FilmDamage, &[(dm::SCRATCHES, 0.0), (dm::DUST, 0.0), (dm::HAIRS, 0.0), (dm::FLICKER, 0.0), (dm::JITTER, 0.0), (dm::VIGNETTE, 0.0), (dm::TINT, 100.0)], 0.0);
+    let sp = px(&sep, w, 30, 70);
+    assert!(sp[0] > sp[1] && sp[1] > sp[2] + 10, "sepia: {sp:?}");
+    // Analogue damage: nothing at 0; colour shifted off the square at full.
+    assert!(same(&draw(&mut c, EffectKind::AnalogueDamage, &[(an::AMOUNT, 0.0)], 0.0), &plain));
+    let tape = draw(&mut c, EffectKind::AnalogueDamage, &[(an::AMOUNT, 100.0)], 0.3);
+    assert!(differs(&tape, &plain) > 200, "worn tape");
+    // Abstraction: the checker flattened (painted), the square's edge kept sharp.
+    let paint = draw(&mut c, EffectKind::Abstraction, &[(ab::SIZE, 6.0), (ab::EDGES, 0.0), (ab::SATURATION, 100.0)], 0.0);
+    assert!(px(&paint, w, 80, 45)[0] > 230 && px(&paint, w, 60, 45)[0] < 140, "edges kept");
+    // Prism blur one way along x: red one side of the square, blue the other.
+    let pb = draw(&mut c, EffectKind::PrismBlur, &[(pr::AMOUNT, 14.0), (pr::MODE, 1.0), (pr::ANGLE, 0.0)], 0.0);
+    let (l, r) = (px(&pb, w, 64, 45), px(&pb, w, 95, 45));
+    assert!((l[2] as i32 - l[0] as i32) > 8 && (r[0] as i32 - r[2] as i32) > 8 || (l[0] as i32 - l[2] as i32) > 8 && (r[2] as i32 - r[0] as i32) > 8, "split colours: {l:?} {r:?}");
+    // Tilt-shift focused on the checker at the top: kept sharp there, blurred lower down.
+    let ts = draw(&mut c, EffectKind::TiltShift, &[(tilt::FOCUS, 10.0), (tilt::BAND, 20.0), (tilt::BLUR, 20.0), (tilt::SATURATION, 100.0), (tilt::CONTRAST, 100.0)], 0.0);
+    let contrast = |img: &[u8], y: u32| (0..20u32).map(|x| px(img, w, 40 + x, y)[0] as i32).max().unwrap() - (0..20u32).map(|x| px(img, w, 40 + x, y)[0] as i32).min().unwrap();
+    assert!(contrast(&ts, 8) > 120, "sharp in focus: {}", contrast(&ts, 8));
+    assert!(px(&ts, w, 80, 45)[0] < 240 && px(&ts, w, 80, 45)[0] > 130, "the square softened far off: {:?}", px(&ts, w, 80, 45));
+    // Scanlines: every third line dark across the grey.
+    let sl = draw(&mut c, EffectKind::Scanlines, &[(scan::AMOUNT, 100.0), (scan::SPACING, 4.0), (scan::THICKNESS, 50.0), (scan::SOFTNESS, 0.0), (scan::BRIGHTEN, 0.0)], 0.0);
+    let col: Vec<u8> = (60..72u32).map(|y| px(&sl, w, 20, y)[0]).collect();
+    assert!(col.iter().any(|&v| v < 30) && col.iter().any(|&v| v > 100), "dark lines between: {col:?}");
+}
+
 /// The audio visualiser draws each band's level: bars up from the line to
 /// their level, a line through the levels, and a waveform about its middle.
 #[test]
@@ -2355,7 +2420,7 @@ fn refine_edge_fits_a_mask_to_the_picture() {
     let mask: Vec<u8> = (0..w * h).map(|i| if i % w < 40 { 255 } else { 0 }).collect();
     let keep: Vec<u8> = Vec::new();
     let mut n = 7300;
-    let mut draw = |c: &mut Compositor, refine: Option<[f32; 3]>| {
+    let mut draw = |c: &mut Compositor, refine: Option<[f32; 4]>| {
         n += 1;
         let mut fg = layer(n, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
         fg.mask = Some(reelforge_render::MaskInput { content_id: n, pixels: &mask, size: [w, h], keep: &keep, refine });
@@ -2364,10 +2429,53 @@ fn refine_edge_fits_a_mask_to_the_picture() {
     };
     let plain = draw(&mut c, None);
     assert!(near(px(&plain, w, 36, 16), [20, 20, 20]), "the dark strip shows: {:?}", px(&plain, w, 36, 16));
-    let fine = draw(&mut c, Some([12.0, 10.0, 0.0]));
+    let fine = draw(&mut c, Some([12.0, 10.0, 0.0, 0.0]));
     assert!(near(px(&fine, w, 36, 16), [255, 0, 0]), "refined, it's gone: {:?}", px(&fine, w, 36, 16));
     assert!(near(px(&fine, w, 20, 16), [230, 230, 230]), "the subject stays: {:?}", px(&fine, w, 20, 16));
     assert!(near(px(&fine, w, 50, 16), [255, 0, 0]));
+}
+
+/// Colour decontamination: a soft orange edge blended into a blue
+/// background keeps none of the blue once cut out and put on black.
+#[test]
+fn refine_edge_takes_the_old_background_out_of_the_fringe() {
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (64u32, 16u32);
+    let black = solid(1, 1, [0, 0, 0, 255]);
+    let (or, bl) = ([240.0f32, 140.0, 20.0], [20.0f32, 60.0, 230.0]);
+    // Orange to x = 24, a soft ramp to blue over 24–40 (hair), then blue.
+    let img: Vec<u8> = (0..w * h)
+        .flat_map(|i| {
+            let x = (i % w) as f32;
+            let t = ((x - 24.0) / 16.0).clamp(0.0, 1.0);
+            let p = |k: usize| (or[k] * (1.0 - t) + bl[k] * t).round() as u8;
+            [p(0), p(1), p(2), 255]
+        })
+        .collect();
+    let mask: Vec<u8> = (0..w * h).map(|i| if i % w < 32 { 255 } else { 0 }).collect();
+    let keep: Vec<u8> = Vec::new();
+    let mut n = 7400;
+    let mut draw = |c: &mut Compositor, dc: f32| {
+        n += 1;
+        let mut fg = layer(n, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        fg.mask = Some(reelforge_render::MaskInput { content_id: n, pixels: &mask, size: [w, h], keep: &keep, refine: Some([14.0, 100.0, 0.0, dc]) });
+        c.render([w, h], &[full(1, &black, [w, h]), fg]);
+        c.read_output().unwrap()
+    };
+    let plain = draw(&mut c, 0.0);
+    let clean = draw(&mut c, 100.0);
+    // Blue against red in the fringe: with the blue taken out, red leads.
+    let blueness = |o: &[u8], x: u32| {
+        let p = px(o, w, x, 8);
+        p[2] as f32 - p[0] as f32
+    };
+    for x in [30u32, 33] {
+        let (a, b) = (px(&plain, w, x, 8), px(&clean, w, x, 8));
+        assert!(blueness(&clean, x) < blueness(&plain, x) - 20.0, "x {x}: plain {a:?}, cleaned {b:?}");
+        assert!(b[0] > b[2], "x {x}: orange-ish, not blue: {b:?}");
+    }
+    // The solid subject is untouched.
+    assert!(near(px(&clean, w, 8, 8), [240, 140, 20]), "{:?}", px(&clean, w, 8, 8));
 }
 
 /// Paint: a clone stroke copies the red half over the blue, a brush stroke
@@ -2540,6 +2648,28 @@ fn anamorphic_flare_streaks_sideways() {
     let below = px(&out, 160, 80, 80);
     assert!(sum3(side) > 40 && side[2] > side[0], "a blue streak to the side: {side:?}");
     assert!(sum3(below) < 15, "nothing below: {below:?}");
+}
+
+/// An anamorphic flare from a light placed at (X, Y), on a dark picture
+/// with no bright parts: a streak through the light's row, none elsewhere.
+#[test]
+fn anamorphic_flare_streaks_from_a_placed_light() {
+    let Some(mut c) = setup() else { return };
+    use reelforge_core::effects::streak;
+    let dark = solid(1, 1, [10, 10, 10, 255]);
+    let mut l = full(74, &dark, [160, 90]);
+    l.effects = vec![fx(EffectKind::AnamorphicFlare, &[(streak::LENGTH, 120.0), (streak::BRIGHTNESS, 200.0), (streak::FROM, 1.0), (streak::X, 25.0), (streak::Y, 30.0), (streak::LIGHT_SIZE, 10.0)])];
+    c.render([160, 90], &[l]);
+    let out = c.read_output().unwrap();
+    let row = px(&out, 160, 90, 27);
+    let off = px(&out, 160, 90, 70);
+    assert!(sum3(row) > 60 && row[2] > row[0], "a blue streak along the light's row: {row:?}");
+    assert!(sum3(off) < 45, "nothing away from it: {off:?}");
+    // From the bright parts only (the default), the dark picture has none.
+    let mut l = full(75, &dark, [160, 90]);
+    l.effects = vec![fx(EffectKind::AnamorphicFlare, &[(streak::LENGTH, 120.0), (streak::BRIGHTNESS, 200.0), (streak::X, 25.0), (streak::Y, 30.0)])];
+    c.render([160, 90], &[l]);
+    assert!(sum3(px(&c.read_output().unwrap(), 160, 90, 27)) < 45);
 }
 
 /// Lens dirt shows where the light is and not elsewhere; at zero it's nothing.

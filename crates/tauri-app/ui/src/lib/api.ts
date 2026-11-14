@@ -157,9 +157,13 @@ export interface TrackProps {
   name: string;
   transform: Transform;
   /// Opacity, Position, Scale, Anchor and Rotation, in that order.
-  props: { prop: "Opacity" | "Position" | "Scale" | "Anchor" | "Rotation"; animated: boolean; key_here: boolean; keys: Ticks[] }[];
+  /// Opacity … Rotation; on an audio track, Volume (dB) and Pan (−100 to 100, `value`).
+  props: { prop: "Opacity" | "Position" | "Scale" | "Anchor" | "Rotation" | "Volume" | "Pan"; ch: string; value: number; animated: boolean; key_here: boolean; keys: Ticks[] }[];
   on_clip: boolean;
-  effects: { index: number; label: string; enabled: boolean; params: ParamView[] }[];
+  /// `chan` "e" (picture effects) or "x" (audio effects).
+  effects: { chan: "e" | "x"; index: number; label: string; enabled: boolean; params: ParamView[] }[];
+  /// An audio track's clip: its sound.
+  audio: ClipAudio | null;
 }
 
 export interface SeqView {
@@ -408,7 +412,7 @@ export interface Mask {
   fill_area?: boolean;
   /** A path for the clip's title text to run along (it doesn't cut the layer). */
   text_path?: boolean;
-  refine?: { radius: number; smooth: number; shift: number };
+  refine?: { radius: number; smooth: number; shift: number; decontaminate?: number };
   roto?: { at: number; stroke: { fg: boolean; radius: number; points: Pt[] } }[];
 }
 
@@ -583,7 +587,7 @@ export type ControlValue = string | number | [number, number];
 export type ControlTarget = "Text" | "TextColour" | "Opacity" | "Position" | { Param: { effect: number; param: number } };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace" | "LightRays" | "AnamorphicFlare" | "LensDirt" | "NeonPath" | "HslQualifier" | "HueCurves" | "Bulge" | "Twirl" | "Ripple" | "WaveWarp" | "PolarCoordinates" | "Mirror" | "LensDistortion" | "AudioSpectrum";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace" | "LightRays" | "AnamorphicFlare" | "LensDirt" | "NeonPath" | "HslQualifier" | "HueCurves" | "Bulge" | "Twirl" | "Ripple" | "WaveWarp" | "PolarCoordinates" | "Mirror" | "LensDistortion" | "AudioSpectrum" | "FilmLook" | "FilmDamage" | "AnalogueDamage" | "Abstraction" | "PrismBlur" | "TiltShift" | "Scanlines";
 
 /// The Hue curves effect's curves (points x, y in 0–1; y 0.5 is no change).
 export interface HueCurves {
@@ -1100,6 +1104,9 @@ export const api = {
   setTrackMatte: (id: number, matte: TrackMatte | null) => invoke("set_track_matte", { id, matte }),
   setTitle: (id: number, spec: TitleSpec) => invoke("set_title", { id, spec }),
   setClipAudio: (id: number, audio: ClipAudio) => invoke("set_clip_audio", { id, audio }),
+  audioChannelValue: (id: number, channel: string, value: number) => invoke("audio_channel_value", { id, channel, value }),
+  audioStopwatch: (id: number, channel: string) => invoke("audio_stopwatch", { id, channel }),
+  audioKey: (id: number, channel: string) => invoke("audio_key", { id, channel }),
   setSpeed: (id: number, speed: number, reverse: boolean) => invoke("set_speed", { id, speed, reverse }),
   timeRemap: (id: number, on: boolean) => invoke("time_remap", { id, on }),
   timeRemapValue: (id: number, secs: number) => invoke("time_remap_value", { id, secs }),

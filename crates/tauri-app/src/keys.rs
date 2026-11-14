@@ -3,6 +3,7 @@
 //! and effect setting), with their keys and sampled curves.
 
 use crate::{ed, Res};
+use reelforge_core::audiokeys::AudioChannel;
 use reelforge_core::{Channel, Clip, ClipId, Interp, Prop, Time, Transform};
 use reelforge_engine::editor::Editor;
 use serde::Serialize;
@@ -33,6 +34,35 @@ fn channel_id(ch: Channel) -> String {
         Channel::Transform(p, c) => format!("t:{}:{c}", PROPS.iter().find(|(q, _)| *q == p).map_or("Pin", |(_, n)| n)),
         Channel::Effect(e, p) => format!("e:{e}:{p}"),
     }
+}
+
+/// A key's channel: a picture's (above) or the clip's sound's: "a:vol:0",
+/// "a:pan:0" or "x:2:1" (audio effect 2, setting 1).
+enum AnyChannel {
+    Visual(Channel),
+    Audio(AudioChannel),
+}
+
+pub(crate) fn audio_channel_id(ch: AudioChannel) -> String {
+    match ch {
+        AudioChannel::Volume => "a:vol:0".into(),
+        AudioChannel::Pan => "a:pan:0".into(),
+        AudioChannel::Effect(e, p) => format!("x:{e}:{p}"),
+    }
+}
+
+pub(crate) fn parse_audio_channel(s: &str) -> Option<AudioChannel> {
+    let mut it = s.split(':');
+    match (it.next()?, it.next()?, it.next()?) {
+        ("a", "vol", _) => Some(AudioChannel::Volume),
+        ("a", "pan", _) => Some(AudioChannel::Pan),
+        ("x", e, p) => Some(AudioChannel::Effect(e.parse().ok()?, p.parse().ok()?)),
+        _ => None,
+    }
+}
+
+fn parse_any(s: &str) -> Option<AnyChannel> {
+    parse_audio_channel(s).map(AnyChannel::Audio).or_else(|| parse_channel(s).map(AnyChannel::Visual))
 }
 
 fn parse_channel(s: &str) -> Option<Channel> {
@@ -370,10 +400,27 @@ pub fn keys_shift(id: u64, keys: Vec<KeyRef>, dt: i64) -> Res<Option<i64>> {
         let rate = e.seq().frame_rate;
         let (_, c) = e.seq().find_clip(cid)?;
         let c = c.clone();
-        let picked: Vec<(reelforge_core::Channel, usize, Time)> = keys.iter().filter_map(|k| Some((parse_channel(&k.channel)?, k.index, c.source_time(Time(k.at))))).collect();
         let dt = Time(dt).snap(rate);
+        let (lo, hi, gap) = (c.source_in, c.source_in + c.duration, rate.frame_duration());
+        let mut picked = Vec::new();
+        let mut sound = Vec::new();
+        for k in &keys {
+            match parse_any(&k.channel) {
+                Some(AnyChannel::Visual(ch)) => picked.push((ch, k.index, c.source_time(Time(k.at)))),
+                Some(AnyChannel::Audio(ch)) => sound.push((ch, k.index, c.source_time(Time(k.at)))),
+                None => {}
+            }
+        }
+        if !sound.is_empty() {
+            let mut a = c.audio.clone();
+            let moved = a.audio_shift(&sound, dt, lo, hi, gap);
+            e.set_clip_audio_live(cid, a);
+            if picked.is_empty() {
+                return Some(moved.0);
+            }
+        }
         let mut v = e.visual(cid)?;
-        let moved = v.channel_shift(&picked, dt, c.source_in, c.source_in + c.duration, rate.frame_duration());
+        let moved = v.channel_shift(&picked, dt, lo, hi, gap);
         e.set_visual_live(cid, v);
         Some(moved.0)
     })
@@ -383,6 +430,13 @@ pub fn keys_shift(id: u64, keys: Vec<KeyRef>, dt: i64) -> Res<Option<i64>> {
 #[tauri::command]
 pub fn keys_interp(id: u64, keys: Vec<KeyRef>, interp: Interp) -> Res<()> {
     let picked: Vec<_> = keys.iter().filter_map(|k| Some((parse_channel(&k.channel)?, k.index))).collect();
+    let sound: Vec<_> = keys.iter().filter_map(|k| Some((parse_audio_channel(&k.channel)?, k.index))).collect();
+    if !sound.is_empty() {
+        audio_step(id, |a| sound.iter().for_each(|(ch, i)| a.audio_set_interp(*ch, *i, interp)))?;
+    }
+    if picked.is_empty() {
+        return Ok(());
+    }
     one_step(id, |v| {
         for (ch, i) in &picked {
             v.channel_set_interp(*ch, *i, interp);
@@ -394,8 +448,16 @@ pub fn keys_interp(id: u64, keys: Vec<KeyRef>, interp: Interp) -> Res<()> {
 #[tauri::command]
 pub fn keys_delete(id: u64, keys: Vec<KeyRef>) -> Res<()> {
     let mut picked: Vec<_> = keys.iter().filter_map(|k| Some((parse_channel(&k.channel)?, k.index))).collect();
+    let mut sound: Vec<_> = keys.iter().filter_map(|k| Some((parse_audio_channel(&k.channel)?, k.index))).collect();
     // Last first, so the others' places stay put.
     picked.sort_by(|a, b| b.1.cmp(&a.1));
+    sound.sort_by(|a, b| b.1.cmp(&a.1));
+    if !sound.is_empty() {
+        audio_step(id, |a| sound.iter().for_each(|(ch, i)| a.audio_remove_key(*ch, *i)))?;
+    }
+    if picked.is_empty() {
+        return Ok(());
+    }
     one_step(id, |v| {
         for (ch, i) in &picked {
             v.channel_remove_key(*ch, *i);
@@ -410,8 +472,14 @@ pub fn keys_copy(id: u64, keys: Vec<KeyRef>) -> Res<Vec<CopiedKey>> {
         let cid = ClipId(id);
         let Some((_, c)) = e.seq().find_clip(cid) else { return Vec::new() };
         let c = c.clone();
-        let Some(v) = e.visual(cid) else { return Vec::new() };
         let mut out: Vec<CopiedKey> = Vec::new();
+        for k in &keys {
+            let Some(ch) = parse_audio_channel(&k.channel) else { continue };
+            if let Some(&(at, value, interp)) = c.audio.audio_keys(ch).get(k.index) {
+                out.push(CopiedKey { channel: audio_channel_id(ch), at: timeline_of(&c, at).0, value, interp });
+            }
+        }
+        let Some(v) = e.visual(cid) else { return out };
         for k in &keys {
             let Some(ch) = parse_channel(&k.channel) else { continue };
             for part in v.channel_parts(ch) {
@@ -439,7 +507,19 @@ pub fn keys_paste(id: u64, keys: Vec<CopiedKey>, at: i64) -> Res<usize> {
         let Some((_, c)) = e.seq().find_clip(cid) else { return 0 };
         let c = c.clone();
         let Some(first) = keys.iter().map(|k| k.at).min() else { return 0 };
-        let Some(mut v) = e.visual(cid) else { return 0 };
+        let on = |k: &CopiedKey| {
+            let t = Time(at + (k.at - first)).snap(rate);
+            (t >= c.timeline_start && t < c.timeline_end()).then(|| c.source_time(t))
+        };
+        let sound: Vec<_> = keys.iter().filter_map(|k| Some((parse_audio_channel(&k.channel)?, on(k)?, k.value, k.interp))).collect();
+        let mut n = 0;
+        if !sound.is_empty() {
+            let mut a = c.audio.clone();
+            n += a.audio_paste(&sound, rate.frame_duration());
+            e.set_clip_audio_live(cid, a);
+            e.commit_live_edit();
+        }
+        let Some(mut v) = e.visual(cid) else { return n };
         let items: Vec<_> = keys
             .iter()
             .filter_map(|k| {
@@ -447,8 +527,10 @@ pub fn keys_paste(id: u64, keys: Vec<CopiedKey>, at: i64) -> Res<usize> {
                 (t >= c.timeline_start && t < c.timeline_end()).then(|| Some((parse_channel(&k.channel)?, c.source_time(t), k.value, k.interp))).flatten()
             })
             .collect();
-        let n = v.channel_paste(&items, rate.frame_duration());
-        e.set_visual_live(cid, v);
+        let n = n + if items.is_empty() { 0 } else { v.channel_paste(&items, rate.frame_duration()) };
+        if !items.is_empty() {
+            e.set_visual_live(cid, v);
+        }
         e.commit_live_edit();
         e.status = match n {
             0 => "Nothing pasted: the keys would fall off the clip, or it has no such settings".into(),
@@ -456,6 +538,56 @@ pub fn keys_paste(id: u64, keys: Vec<CopiedKey>, at: i64) -> Res<usize> {
         };
         n
     })
+}
+
+/// Change clip `id`'s sound with `f`, as one undo step.
+fn audio_step(id: u64, f: impl FnOnce(&mut reelforge_core::audio::ClipAudio)) -> Res<()> {
+    ed(|e| {
+        e.commit_live_edit();
+        let cid = ClipId(id);
+        if let Some(mut a) = e.clip_audio(cid) {
+            f(&mut a);
+            e.set_clip_audio_live(cid, a);
+            e.commit_live_edit();
+        }
+    })
+}
+
+/// An expanded audio track's row: its value at the playhead (a key there if
+/// it's keyframed). Live: `commit` ends it.
+#[tauri::command]
+pub fn audio_channel_value(id: u64, channel: String, value: f32) -> Res<()> {
+    let ch = parse_audio_channel(&channel).ok_or("unknown channel")?;
+    ed(|e| {
+        let cid = ClipId(id);
+        let Some((_, c)) = e.seq().find_clip(cid) else { return };
+        let (src, on_clip) = e.key_time(c);
+        let mut a = c.audio.clone();
+        if a.audio_animated(ch) && !on_clip {
+            e.status = "Move the playhead onto the clip to set a keyframe".into();
+            return;
+        }
+        a.audio_set_value(ch, src, value);
+        e.set_clip_audio_live(cid, a);
+    })
+}
+
+/// An audio row's stopwatch: start keyframing it, or stop (keeping the value here).
+#[tauri::command]
+pub fn audio_stopwatch(id: u64, channel: String) -> Res<()> {
+    let ch = parse_audio_channel(&channel).ok_or("unknown channel")?;
+    let t = ed(|e| e.seq().find_clip(ClipId(id)).map(|(_, c)| e.key_time(c).0))?;
+    let Some(t) = t else { return Ok(()) };
+    audio_step(id, |a| a.audio_stopwatch(ch, t))
+}
+
+/// An audio row's diamond: a keyframe at the playhead, or take away the one there.
+#[tauri::command]
+pub fn audio_key(id: u64, channel: String) -> Res<()> {
+    let ch = parse_audio_channel(&channel).ok_or("unknown channel")?;
+    let t = ed(|e| e.seq().find_clip(ClipId(id)).filter(|(_, c)| c.contains(e.playback.playhead)).map(|(_, c)| e.key_time(c).0))?;
+    let Some(t) = t else { return Err("Move the playhead onto the clip to set a keyframe".into()) };
+    audio_step(id, |a| a.audio_toggle_key(ch, t))
 }
 
 fn one_step(id: u64, f: impl FnOnce(&mut reelforge_core::ClipVisual)) -> Res<()> {

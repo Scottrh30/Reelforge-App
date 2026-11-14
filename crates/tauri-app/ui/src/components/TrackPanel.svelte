@@ -455,6 +455,8 @@
           </div>
           {#if toPoint}
             <p class="note">The point keeps where it is at the start of the track and moves with it from there. Every layer, camera and light parented to the point follows too (Controls → Layer → Parent).{#if t.mode !== "Position" && t.mode !== "Transform"} A point can't take perspective: it gets the surface's move, turn and scale.{/if}</p>
+          {:else if toBlade && chosen && !chosen.label.startsWith("Energy blade")}
+            <p class="note">It keeps where it is at the playhead and moves with the tracked points from there, as keyframes: a light stays on the lamp, the sun or the screen it sits on.</p>
           {:else if toBlade}
             <p class="note">The blade keeps where its hilt and tip are at the playhead and moves with the tracked points from there. For a prop with two markers, a two-point track also turns and stretches it.</p>
           {:else if t.mode === "Mesh" && chosen && chosen.clip !== ins.id}

@@ -715,7 +715,7 @@
       { label: tr.locked ? "Unlock track" : "Lock track", run: () => run(api.trackOp(tr.index, "lock")) },
       { separator: true },
       { label: tr.collapsed ? "Expand track" : "Collapse track", run: () => run(api.trackOp(tr.index, "collapse")) },
-      ...(tr.kind === "video" ? [{ label: tr.expanded ? "Hide clip properties" : "Show clip properties (effects, opacity, position…)", run: () => run(api.trackOp(tr.index, tr.expanded ? "properties_off" : "properties_on")) }] : []),
+      { label: tr.expanded ? "Hide clip properties" : tr.kind === "audio" ? "Show clip properties (volume, pan, audio effects)" : "Show clip properties (effects, opacity, position…)", run: () => run(api.trackOp(tr.index, tr.expanded ? "properties_off" : "properties_on")) },
       ...(tr.kind === "video"
         ? [
             {
@@ -1369,7 +1369,7 @@
         <div class="hstack" style="transform: translateY({-view.vscroll}px)">
           {#each rows as tr (tr.index)}
             {@const lv = app.live?.tracks[tr.index]}
-            {@const foldTip = tr.collapsed ? "Expand track" : tr.expanded || tr.kind !== "video" ? "Collapse track" : "Expand further: show the clip's effects, opacity, position, anchor and rotation"}
+            {@const foldTip = tr.collapsed ? "Expand track" : tr.expanded ? "Collapse track" : tr.kind === "audio" ? "Expand further: show the clip's volume, pan and audio effects, with keyframes" : "Expand further: show the clip's effects, opacity, position, anchor and rotation"}
             <div
               class="th"
               class:sel-track={litTrack === tr.index}
@@ -1460,7 +1460,7 @@
                 <!-- The expanded clip's keyframes, on the same rows as its properties in the header. -->
                 {@const kp = tr.props}
                 {@const krowsAll = trackRows(kp)}
-                {@const krowKeys = krowsAll.map((r) => ({ ch: r.kind === "prop" ? `t:${r.prop.prop}:0` : r.kind === "param" ? `e:${r.fx.index}:${r.pi}` : "", keys: r.kind === "prop" ? r.prop.keys : r.kind === "param" ? r.param.keys : null }))}
+                {@const krowKeys = krowsAll.map((r) => ({ ch: r.kind === "prop" ? r.prop.ch : r.kind === "param" ? `${r.fx.chan}:${r.fx.index}:${r.pi}` : "", keys: r.kind === "prop" ? r.prop.keys : r.kind === "param" ? r.param.keys : null }))}
                 <div class="krows" style="top:{EXPANDED_TOP}px">
                   <!-- Drag over the rows for a box picking the diamonds in it. -->
                   <div class="karea" role="presentation" onpointerdown={(e) => kboxDown(e, tr.index, kp.clip, krowKeys)}></div>

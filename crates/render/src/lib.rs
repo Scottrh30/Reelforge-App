@@ -254,8 +254,8 @@ pub struct MaskInput<'a> {
     /// Where keys must keep the layer (garbage mattes), the same size as
     /// `pixels`; empty when there are none.
     pub keep: &'a [u8],
-    /// Refine edge: (radius in layer pixels, smoothness 0–100, shift −100 to 100).
-    pub refine: Option<[f32; 3]>,
+    /// Refine edge: (radius in layer pixels, smoothness 0–100, shift −100 to 100, decontamination 0–100).
+    pub refine: Option<[f32; 4]>,
 }
 
 /// Masks of a layer's key garbage mattes are kept under the layer's key with this bit flipped.
@@ -353,8 +353,9 @@ pub struct Compositor {
     /// Render over transparency and keep the alpha in the output (for composite
     /// shots, which are layered again), instead of over opaque black.
     pub transparent: bool,
-    /// Draw at this fraction of the frame size (the Viewer's playback
-    /// quality: 1, ½ or ¼); layers, effects and wipes keep their places.
+    /// Draw at this multiple of the frame size (the Viewer's playback
+    /// quality: 1, ½ or ¼; up to 8 for a composition drawn finer); layers,
+    /// effects and wipes keep their places.
     pub output_scale: f32,
     texture_layout: wgpu::BindGroupLayout,
     output_layout: wgpu::BindGroupLayout,
@@ -600,7 +601,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens"]
+        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1187,10 +1188,11 @@ impl Compositor {
                 ],
             });
         }
-        // The picture's pixels: the frame, or a fraction of it (playback quality).
-        // Layers are placed in frame units, so only the targets shrink.
-        let k = if self.output_scale > 0.0 && self.output_scale < 1.0 { self.output_scale } else { 1.0 };
-        let target = frame_size.map(|v| ((v as f32 * k).round() as u32).max(2));
+        // The picture's pixels: the frame, a fraction of it (playback quality)
+        // or more (a composition drawn finer, as it's scaled up). Layers are
+        // placed in frame units, so only the targets change.
+        let k = if self.output_scale.is_finite() && self.output_scale > 0.0 { self.output_scale.min(8.0) } else { 1.0 };
+        let target = frame_size.map(|v| ((v as f32 * k).round() as u32).clamp(2, 8192));
         self.ensure_targets(target);
         let frame = [frame_size[0] as f32, frame_size[1] as f32];
         let target_px = [target[0] as f32, target[1] as f32];
@@ -1375,6 +1377,7 @@ impl Compositor {
                 push("fs_refine_line", 1, Second::Scratch(2), 0, [0.0; FX_FLOATS]);
                 v[0] = r[1];
                 v[1] = r[2];
+                v[2] = r[3];
                 push("fs_refine_apply", 3, Second::Scratch(0), 1, uniform(&v, [0.0; 2]));
                 cur = 1;
             } else if masked {
@@ -1768,7 +1771,10 @@ impl Compositor {
                         // Bright parts → stretched sideways (long), then a little
                         // up and down (thickness) → tinted and added back as light.
                         use reelforge_core::effects::streak;
-                        push("fs_bright", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
+                        let mut u = uniform(&e.values, [0.0; 2]);
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        push("fs_streak_src", cur, Second::None, o1, u);
                         let mut vx = [0.0; reelforge_core::effects::MAX_PARAMS];
                         vx[0] = e.values[streak::LENGTH] * 0.5 * kx;
                         push("fs_blur", o1, Second::None, o2, uniform(&vx, [1.0, 0.0]));
@@ -1832,7 +1838,14 @@ impl Compositor {
                     | EffectKind::WaveWarp
                     | EffectKind::PolarCoordinates
                     | EffectKind::Mirror
-                    | EffectKind::LensDistortion => {
+                    | EffectKind::LensDistortion
+                    | EffectKind::FilmLook
+                    | EffectKind::FilmDamage
+                    | EffectKind::AnalogueDamage
+                    | EffectKind::Abstraction
+                    | EffectKind::PrismBlur
+                    | EffectKind::TiltShift
+                    | EffectKind::Scanlines => {
                         // A number of its own (its place in the stack), the time and the layer's size.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
                         u[13] = e.time;
@@ -1857,6 +1870,13 @@ impl Compositor {
                             EffectKind::PolarCoordinates => "fs_polar",
                             EffectKind::Mirror => "fs_mirror",
                             EffectKind::LensDistortion => "fs_lens",
+                            EffectKind::FilmLook => "fs_film_look",
+                            EffectKind::FilmDamage => "fs_film_damage",
+                            EffectKind::AnalogueDamage => "fs_analogue",
+                            EffectKind::Abstraction => "fs_abstraction",
+                            EffectKind::PrismBlur => "fs_prism",
+                            EffectKind::TiltShift => "fs_tilt_shift",
+                            EffectKind::Scanlines => "fs_scanlines",
                             _ => "fs_leaks",
                         };
                         push(entry, cur, Second::None, o1, u);

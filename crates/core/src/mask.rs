@@ -140,11 +140,15 @@ pub struct RefineEdge {
     pub smooth: f32,
     /// −100 to 100: shrinks or grows the edge.
     pub shift: f32,
+    /// 0–100: how much of the old background's colour is taken out of the
+    /// part-see-through edge (hair against a blue sky goes blue-free).
+    #[serde(default)]
+    pub decontaminate: f32,
 }
 
 impl Default for RefineEdge {
     fn default() -> Self {
-        RefineEdge { radius: 8.0, smooth: 20.0, shift: 0.0 }
+        RefineEdge { radius: 8.0, smooth: 20.0, shift: 0.0, decontaminate: 0.0 }
     }
 }
 
@@ -670,7 +674,7 @@ pub fn mask_hash(masks: &[Mask], t: Time, layer: [f32; 2]) -> u64 {
         for f in [m.feather, m.expansion, m.opacity] {
             f.to_bits().hash(&mut h);
         }
-        m.refine.map(|r| [r.radius, r.smooth, r.shift].map(f32::to_bits)).hash(&mut h);
+        m.refine.map(|r| [r.radius, r.smooth, r.shift, r.decontaminate].map(f32::to_bits)).hash(&mut h);
         for p in m.points_at(t) {
             p[0].to_bits().hash(&mut h);
             p[1].to_bits().hash(&mut h);

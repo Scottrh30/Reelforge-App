@@ -481,7 +481,10 @@ fn fs_refine_line(in: VsOut) -> @location(0) vec4<f32> {
     return vec4(d, dot(bc, d));
 }
 
-// The layer with its refined alpha. p0.x = softness 0–100, p0.y = shift −100–100.
+// The layer with its refined alpha. p0.x = softness 0–100, p0.y = shift
+// −100–100, p0.z = colour decontamination 0–100: where a pixel is part
+// subject, part old background (c ≈ bc + m·(fc − bc)), its colour is taken
+// back to the subject's, so no fringe of the old background shows.
 @fragment
 fn fs_refine_apply(in: VsOut) -> @location(0) vec4<f32> {
     let v = textureSample(src, src_sampler, to_tex(in.uv));
@@ -490,6 +493,7 @@ fn fs_refine_apply(in: VsOut) -> @location(0) vec4<f32> {
     let a = clamp(v.a - 4.0 * z, 0.0, 1.0);
     let c = vec4(v.rgb, a);
     var m = 0.0;
+    var clean = false;
     if (z > 1.5) {
         m = 1.0;
     } else if (z > 0.5) {
@@ -503,11 +507,20 @@ fn fs_refine_apply(in: VsOut) -> @location(0) vec4<f32> {
             // Softness: 0 crisp, 100 as soft as found.
             let k = mix(2.5, 1.0, clamp(fx.p0.x / 100.0, 0.0, 1.0));
             m = (m - 0.5) * k + 0.5 + fx.p0.y / 200.0;
+            clean = true;
         } else {
             m = 0.5;
         }
     }
-    return c * clamp(m, 0.0, 1.0);
+    m = clamp(m, 0.0, 1.0);
+    let dc = clamp(fx.p0.z / 100.0, 0.0, 1.0);
+    if (clean && dc > 0.0 && m > 0.0) {
+        let s = refine_straight(c);
+        // Unmix: the colour moved along the line as far as the background showed.
+        let fg = clamp(s + (1.0 - m) * line.rgb, vec3(0.0), vec3(1.0));
+        return vec4(mix(s, fg, dc) * a * m, a * m);
+    }
+    return c * m;
 }
 
 // Paint (see core paint.rs): the second texture holds the strokes showing

@@ -481,6 +481,28 @@ fn fs_bright(in: VsOut) -> @location(0) vec4<f32> {
     return c * smoothstep(t - s * 0.5, t + s * 0.5, y);
 }
 
+// Anamorphic flare, step 1: what streaks. The bright parts (as fs_bright),
+// a light at (p2.x, p2.y) % of the layer p2.z px across, or both (p1.w 0, 1, 2).
+@fragment
+fn fs_streak_src(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    var out = vec4(0.0);
+    if (fx.p1.w < 0.5 || fx.p1.w > 1.5) {
+        let y = dot(to_display(unpremul(c)), LUMA);
+        let t = fx.p0.x / 100.0;
+        let s = max(fx.p0.w / 100.0, 0.001);
+        out = c * smoothstep(t - s * 0.5, t + s * 0.5, y);
+    }
+    if (fx.p1.w > 0.5) {
+        let size = fx.extra.zw;
+        let r = max(fx.p2.z, 0.5) * 0.5;
+        let d = length(in.uv * size - fx.p2.xy / 100.0 * size);
+        let k = 1.0 - smoothstep(r * 0.3, r, d);
+        out = out + vec4(vec3(4.0 * k), k) * (1.0 - out.a);
+    }
+    return out;
+}
+
 // Drop shadow, step 1: the layer's shape, moved. p0 = (offset x texels, offset y texels, -, opacity %).
 @fragment
 fn fs_shadow(in: VsOut) -> @location(0) vec4<f32> {
@@ -2120,4 +2142,385 @@ fn fs_lens(in: VsOut) -> @location(0) vec4<f32> {
     let f = 1.0 + fx.p0.z / 100.0 * 0.5 * r2 + fx.p0.w / 100.0 * 0.5 * r2 * r2;
     let s = c + d * f / max(fx.p1.x / 100.0, 0.01);
     return d_sample(s / size, u32(round(fx.p1.y)));
+}
+
+// ---- Film look, Film damage, Analogue damage, Abstraction, Prism blur, Tilt-shift, Scanlines ----
+
+fn s_at(uv: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(src, src_sampler, to_tex(clamp(uv, vec2(0.0), vec2(1.0))), 0.0);
+}
+
+// Film look: p0 = (stock, strength %, contrast %, lift blacks %), p1 =
+// (roll-off %, saturation %, halation %, halation px), p2 = (bloom %, grain %,
+// grain px, vignette %), p3 = (gate weave px, seed).
+@fragment
+fn fs_film_look(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let t = fx.extra.y;
+    let seed = seed_of(fx.p3.y);
+    // Gate weave: the frame drifting a little in the gate, 24 times a second.
+    let fr = floor(t * 24.0);
+    let weave = (vec2(vnoise(seed + 3u, vec2(fr * 0.15, 0.0)), vnoise(seed + 9u, vec2(fr * 0.15, 5.0))) - 0.5) * 2.0 * fx.p3.x;
+    let uv = in.uv + weave / size;
+    let c0 = s_at(uv);
+    if (c0.a <= 1e-5) {
+        return c0;
+    }
+    let src_d = to_display(c0.rgb / c0.a);
+    var d = src_d;
+    // Halation and bloom: what's bright round about (a ring of taps).
+    let hr = max(fx.p1.w, 1.0) / size;
+    var glow = vec3(0.0);
+    for (var i = 0; i < 12; i++) {
+        let a = f32(i) * 0.5235988;
+        for (var k = 1; k <= 2; k++) {
+            let o = vec2(cos(a), sin(a)) * hr * f32(k) * 0.5;
+            let s = s_at(uv + o);
+            let sd = to_display(unpremul(s));
+            glow += max(sd - 0.7, vec3(0.0)) / 0.3;
+        }
+    }
+    glow /= 24.0;
+    // Stock: colour and contrast.
+    let stock = u32(round(fx.p0.x));
+    let l = dot(d, LUMA);
+    switch (stock) {
+        case 1u: { d = d * vec3(1.06, 1.0, 0.88) + vec3(0.02, 0.01, 0.0); }
+        case 2u: { d = d * vec3(0.92, 1.0, 1.08) + vec3(0.0, 0.005, 0.02); }
+        case 3u: { d = mix(d, vec3(l), 0.55); }
+        case 4u: {
+            let warm = vec3(1.08, 0.98, 0.84);
+            let teal = vec3(0.82, 1.0, 1.08);
+            d = d * mix(teal, warm, smoothstep(0.2, 0.75, l));
+        }
+        case 5u: { d = mix(d, vec3(l), 0.25) * vec3(1.04, 1.0, 0.9) + vec3(0.04, 0.03, 0.02); }
+        case 6u: { d = vec3(dot(d, vec3(0.3, 0.59, 0.11))); }
+        default: {}
+    }
+    // Contrast as an S-curve about the middle; bleach bypass adds more.
+    let con = fx.p0.z / 100.0 + select(0.0, 0.35, stock == 3u);
+    let sc = d * d * (3.0 - 2.0 * d);
+    d = select(mix(d, sc, clamp(con, 0.0, 1.0)), mix(d, vec3(0.5) + (d - 0.5) * 0.7, clamp(-con, 0.0, 1.0)), con < 0.0);
+    // Saturation.
+    let ld = dot(d, LUMA);
+    d = mix(vec3(ld), d, fx.p1.y / 100.0);
+    // Highlights rolling off softly instead of clipping; blacks lifted.
+    let ro = fx.p1.x / 100.0;
+    let knee = 1.0 - 0.45 * ro;
+    let over = max(d - knee, vec3(0.0));
+    d = min(d, vec3(knee)) + over / (1.0 + over / max(1.0 - knee, 1e-3));
+    let lift = fx.p0.w / 100.0 + select(0.0, 0.06, stock == 5u);
+    d = lift + d * (1.0 - lift);
+    // Halation (red-orange) and bloom (its own colour).
+    d += glow * vec3(1.0, 0.35, 0.12) * fx.p1.z / 100.0 * 0.6;
+    d += glow * fx.p2.x / 100.0 * 0.35;
+    // Vignette.
+    let r = length((in.uv - 0.5) * vec2(size.x / size.y, 1.0));
+    d *= 1.0 - fx.p2.w / 100.0 * smoothstep(0.35, 1.0, r) * 0.7;
+    // Grain.
+    if (fx.p2.y > 0.0) {
+        let g = in.uv * size / max(fx.p2.z, 0.25);
+        let gs = seed + ibits(fr) * 2654435761u;
+        let n = (vnoise(gs, g) + vnoise(gs + 5u, g * 2.1 + 3.7) * 0.6 - 0.8) / 0.8;
+        let w = 0.45 + 0.55 * smoothstep(0.0, 0.25, ld) * (1.0 - 0.6 * smoothstep(0.6, 1.0, ld));
+        d += vec3(n) * fx.p2.y / 100.0 * 0.12 * w;
+    }
+    d = mix(src_d, d, clamp(fx.p0.y / 100.0, 0.0, 1.0));
+    return vec4(to_linear(max(d, vec3(0.0))) * c0.a, c0.a);
+}
+
+// Film damage: p0 = (scratches %, scratch px, dust %, dust px), p1 = (hairs %,
+// flicker %, jitter px, sepia %), p2 = (vignette %, frame rate, seed).
+@fragment
+fn fs_film_damage(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let fr = floor(fx.extra.y * max(fx.p2.y, 1.0) + 1e-3);
+    let seed = seed_of(fx.p2.z);
+    let fs = seed + ibits(fr) * 2654435761u;
+    // The frame jittering in the projector.
+    let jit = (vec2(rnd3(fs, 1u, 2u), rnd3(fs, 3u, 4u)) - 0.5) * 2.0 * fx.p1.z;
+    let uv = in.uv + jit / size;
+    let c0 = s_at(uv);
+    if (c0.a <= 1e-5) {
+        return c0;
+    }
+    var d = to_display(c0.rgb / c0.a);
+    let p = uv * size;
+    // Scratches: a few lines down the frame, each lasting several frames and wandering.
+    var dark = 0.0;
+    var light = 0.0;
+    let ns = i32(round(fx.p0.x / 100.0 * 6.0));
+    for (var i = 0; i < 6; i++) {
+        if (i >= ns) {
+            break;
+        }
+        let life = floor(fr / (3.0 + f32(i)));
+        let ls = seed + u32(i) * 977u + ibits(life) * 7919u;
+        if (rnd3(ls, 11u, 0u) < 0.35) {
+            continue;
+        }
+        let x = rnd3(ls, 12u, 0u) * size.x + (vnoise(ls, vec2(p.y / size.y * 3.0, fr * 0.3)) - 0.5) * 12.0;
+        let w = fx.p0.y * (0.6 + rnd3(ls, 13u, 0u));
+        let k = 1.0 - smoothstep(w * 0.5, w * 0.5 + 1.0, abs(p.x - x));
+        // Broken up along its length.
+        let along = smoothstep(0.3, 0.5, vnoise(ls + 1u, vec2(p.y / 40.0, 0.0)));
+        if (rnd3(ls, 14u, 0u) < 0.5) {
+            dark = max(dark, k * along);
+        } else {
+            light = max(light, k * along);
+        }
+    }
+    // Dust: specks in a grid of cells, a new set every frame.
+    if (fx.p0.z > 0.0) {
+        let cell = max(fx.p0.w * 18.0, 16.0);
+        let ci = floor(p / cell);
+        for (var oy = -1; oy <= 1; oy++) {
+            for (var ox = -1; ox <= 1; ox++) {
+                let cc = ci + vec2(f32(ox), f32(oy));
+                let cs = fs ^ (ibits(cc.x) * 73856093u) ^ (ibits(cc.y) * 19349663u);
+                if (rnd3(cs, 21u, 0u) > fx.p0.z / 100.0 * 0.35) {
+                    continue;
+                }
+                let at = (cc + vec2(rnd3(cs, 22u, 0u), rnd3(cs, 23u, 0u))) * cell;
+                let rr = fx.p0.w * (0.4 + rnd3(cs, 24u, 0u));
+                // A ragged blob.
+                let q = p - at;
+                let rag = 1.0 + (vnoise(cs, q / max(rr, 0.5) * 1.5) - 0.5) * 0.8;
+                let k = 1.0 - smoothstep(rr * rag, rr * rag + 1.0, length(q));
+                if (rnd3(cs, 25u, 0u) < 0.7) {
+                    dark = max(dark, k);
+                } else {
+                    light = max(light, k);
+                }
+            }
+        }
+    }
+    // A stray hair now and then: a thin curling line.
+    if (fx.p1.x > 0.0) {
+        let hs = seed + ibits(floor(fr / 6.0)) * 31337u;
+        if (rnd3(hs, 31u, 0u) < fx.p1.x / 100.0) {
+            let o = vec2(rnd3(hs, 32u, 0u), rnd3(hs, 33u, 0u)) * size;
+            let q = (p - o) / (size.y * 0.15);
+            let curve = q.y - 0.6 * sin(q.x * 2.2 + rnd3(hs, 34u, 0u) * 6.0) * smoothstep(1.6, 0.0, abs(q.x));
+            let k = (1.0 - smoothstep(0.004, 0.012, abs(curve))) * (1.0 - smoothstep(1.2, 1.6, abs(q.x)));
+            dark = max(dark, k);
+        }
+    }
+    d = d * (1.0 - 0.8 * dark) + light * 0.6 * (1.0 - d);
+    // Flicker: the whole frame a little brighter or darker each frame.
+    d *= 1.0 + (rnd3(fs, 41u, 0u) - 0.5) * 0.5 * fx.p1.y / 100.0;
+    // Sepia.
+    let l = dot(d, LUMA);
+    d = mix(d, l * vec3(1.07, 0.92, 0.72), fx.p1.w / 100.0);
+    // Vignette, uneven like an old lens.
+    let r = length((in.uv - 0.5) * vec2(size.x / size.y, 1.0));
+    d *= 1.0 - fx.p2.x / 100.0 * smoothstep(0.3, 0.95, r + (vnoise(seed, in.uv * 3.0) - 0.5) * 0.1) * 0.8;
+    return vec4(to_linear(clamp(d, vec3(0.0), vec3(1.0))) * c0.a, c0.a);
+}
+
+// Analogue damage: p0 = (amount %, colour bleed px, colour shift px, tracking
+// lines %), p1 = (head switching %, wobble px, noise %, dropouts %), p2 =
+// (saturation %, softness px, speed, seed).
+@fragment
+fn fs_analogue(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let amt = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let t = fx.extra.y * max(fx.p2.z, 0.0);
+    let seed = seed_of(fx.p2.w);
+    let fr = floor(fx.extra.y * 30.0);
+    let p = in.uv * size;
+    let line = floor(p.y);
+    // Each line wobbling sideways; the bottom lines torn by head switching.
+    var dx = (vnoise(seed, vec2(line * 0.05, t * 4.0)) - 0.5) * 2.0 * fx.p1.y * amt;
+    let head = smoothstep(0.93, 1.0, in.uv.y) * fx.p1.x / 100.0 * amt;
+    dx += head * (20.0 + 40.0 * vnoise(seed + 7u, vec2(line * 0.3, fr))) ;
+    // Tracking lines: a band of noise rolling up the picture.
+    let band_y = fract(t * 0.08 + rnd3(seed, 5u, 0u));
+    let band = (1.0 - smoothstep(0.0, 0.035, abs(in.uv.y - band_y))) * fx.p0.w / 100.0 * amt;
+    dx += band * (vnoise(seed + 3u, vec2(p.x * 0.05, line + fr)) - 0.5) * 30.0;
+    let uv = in.uv + vec2(dx, 0.0) / size;
+    // Soft along the lines (a few taps sideways), colour bleeding further than brightness.
+    let soft = max(fx.p2.y * amt, 0.0) / size.x;
+    let bleed = max(fx.p0.y * amt, 0.0) / size.x;
+    var y = 0.0;
+    var chroma = vec3(0.0);
+    var a = 0.0;
+    for (var i = -3; i <= 3; i++) {
+        let f = f32(i) / 3.0;
+        let sy = s_at(uv + vec2(f * soft, 0.0));
+        y += dot(to_display(unpremul(sy)), LUMA) / 7.0;
+        let sc = s_at(uv + vec2(f * bleed + fx.p0.z * amt / size.x, 0.0));
+        let dc = to_display(unpremul(sc));
+        chroma += (dc - dot(dc, LUMA)) / 7.0;
+        a += sy.a / 7.0;
+    }
+    if (a <= 1e-5) {
+        return vec4(0.0);
+    }
+    var d = vec3(y) + chroma * mix(1.0, fx.p2.x / 100.0, amt);
+    // Tape noise, more in the tracking band; dropouts as short white streaks.
+    let n = rnd3(seed + ibits(fr) * 2654435761u, ibits(p.x * 0.5), ibits(line)) - 0.5;
+    d += n * (fx.p1.z / 100.0 * 0.25 + band * 0.6) * amt;
+    let ds = seed + ibits(fr) * 97u + ibits(line) * 131u;
+    if (rnd3(ds, 61u, 0u) < fx.p1.w / 100.0 * 0.02 * amt) {
+        let x0 = rnd3(ds, 62u, 0u) * size.x;
+        let len = 20.0 + rnd3(ds, 63u, 0u) * 120.0;
+        if (p.x > x0 && p.x < x0 + len) {
+            d = mix(d, vec3(0.95), 0.85);
+        }
+    }
+    d = mix(to_display(unpremul(s_at(in.uv))), d, amt);
+    return vec4(to_linear(clamp(d, vec3(0.0), vec3(1.0))) * a, a);
+}
+
+// Abstraction: p0 = (brush size px, outlines %, outline px, colour levels), p1.x = saturation %.
+@fragment
+fn fs_abstraction(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let c0 = s_at(in.uv);
+    if (c0.a <= 1e-5) {
+        return c0;
+    }
+    let r = max(fx.p0.x, 0.0);
+    var d = to_display(c0.rgb / c0.a);
+    if (r >= 0.5) {
+        // Kuwahara: of the four squares round the pixel, the flattest one's mean.
+        let st = r / 3.0 / size;
+        var best = d;
+        var low = 1e9;
+        for (var q = 0; q < 4; q++) {
+            let sx = select(-1.0, 1.0, q == 1 || q == 3);
+            let sy = select(-1.0, 1.0, q >= 2);
+            var m = vec3(0.0);
+            var m2 = vec3(0.0);
+            for (var j = 0; j <= 3; j++) {
+                for (var i = 0; i <= 3; i++) {
+                    let s = to_display(unpremul(s_at(in.uv + vec2(sx * f32(i), sy * f32(j)) * st)));
+                    m += s;
+                    m2 += s * s;
+                }
+            }
+            m /= 16.0;
+            let v = dot(m2 / 16.0 - m * m, vec3(1.0));
+            if (v < low) {
+                low = v;
+                best = m;
+            }
+        }
+        d = best;
+    }
+    // Fewer colours.
+    let lv = round(fx.p0.w);
+    if (lv >= 2.0) {
+        d = floor(d * lv + 0.5) / lv;
+    }
+    let l = dot(d, LUMA);
+    d = mix(vec3(l), d, fx.p1.x / 100.0);
+    // Dark outlines where the brightness changes sharply.
+    if (fx.p0.y > 0.0) {
+        let e = max(fx.p0.z, 0.5) / size;
+        let gx = dot(to_display(unpremul(s_at(in.uv + vec2(e.x, 0.0)))) - to_display(unpremul(s_at(in.uv - vec2(e.x, 0.0)))), LUMA);
+        let gy = dot(to_display(unpremul(s_at(in.uv + vec2(0.0, e.y)))) - to_display(unpremul(s_at(in.uv - vec2(0.0, e.y)))), LUMA);
+        let edge = smoothstep(0.08, 0.3, length(vec2(gx, gy)));
+        d *= 1.0 - edge * fx.p0.y / 100.0;
+    }
+    return vec4(to_linear(clamp(d, vec3(0.0), vec3(1.0))) * c0.a, c0.a);
+}
+
+// Prism blur: p0 = (amount px, direction: 0 out from the centre, 1 one way,
+// angle °, centre x %), p1 = (centre y %, colour spread %).
+@fragment
+fn fs_prism(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    var dir: vec2<f32>;
+    var reach = fx.p0.x;
+    if (u32(round(fx.p0.y)) == 0u) {
+        let c = vec2(fx.p0.w, fx.p1.x) / 100.0 * size;
+        let d = p - c;
+        dir = select(vec2(0.0), normalize(d), length(d) > 1e-3);
+        // More the further out.
+        reach = fx.p0.x * min(length(d) / (0.5 * length(size)), 1.5);
+    } else {
+        let a = radians(fx.p0.z);
+        dir = vec2(cos(a), sin(a));
+    }
+    let spread = fx.p1.y / 100.0;
+    var acc = vec3(0.0);
+    var wsum = vec3(0.0);
+    var a_acc = 0.0;
+    for (var i = 0; i < 16; i++) {
+        let f = f32(i) / 15.0 * 2.0 - 1.0;
+        let s = s_at((p + dir * reach * f) / size);
+        // Red at one end, green in the middle, blue at the other (a spectrum).
+        let w = mix(vec3(1.0), clamp(vec3(1.0 - abs(f + 0.66) * 1.5, 1.0 - abs(f) * 1.5, 1.0 - abs(f - 0.66) * 1.5), vec3(0.0), vec3(1.0)), clamp(spread, 0.0, 1.0)) + 0.02;
+        acc += s.rgb * w;
+        wsum += w;
+        a_acc += s.a;
+    }
+    return vec4(acc / wsum, a_acc / 16.0);
+}
+
+// Tilt-shift: p0 = (focus at %, angle °, sharp band %, falloff %), p1 = (blur px, saturation %, contrast %).
+@fragment
+fn fs_tilt_shift(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let a = radians(fx.p0.y);
+    let n = vec2(-sin(a), cos(a));
+    let c = vec2(0.5, fx.p0.x / 100.0) * size;
+    let dist = abs(dot(in.uv * size - c, n)) / size.y;
+    let band = fx.p0.z / 200.0;
+    let k = smoothstep(band, band + max(fx.p0.w / 100.0, 0.01), dist);
+    let r = fx.p1.x * k;
+    var acc = vec4(0.0);
+    if (r < 0.5) {
+        acc = s_at(in.uv);
+    } else {
+        // A disc of taps (a golden-angle spiral), like a lens's blur.
+        for (var i = 0; i < 32; i++) {
+            let f = (f32(i) + 0.5) / 32.0;
+            let ang = f32(i) * 2.3999632;
+            let o = vec2(cos(ang), sin(ang)) * sqrt(f) * r / size;
+            acc += s_at(in.uv + o);
+        }
+        acc /= 32.0;
+    }
+    if (acc.a <= 1e-5) {
+        return acc;
+    }
+    var d = to_display(acc.rgb / acc.a);
+    d = vec3(0.5) + (d - 0.5) * fx.p1.z / 100.0;
+    let l = dot(d, LUMA);
+    d = mix(vec3(l), d, fx.p1.y / 100.0);
+    return vec4(to_linear(clamp(d, vec3(0.0), vec3(1.0))) * acc.a, acc.a);
+}
+
+// Scanlines: p0 = (amount %, spacing px, thickness %, softness %), p1 = (angle °, roll px/s, kind, brighten %).
+@fragment
+fn fs_scanlines(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let c0 = s_at(in.uv);
+    if (c0.a <= 1e-5) {
+        return c0;
+    }
+    let a = radians(fx.p1.x);
+    let n = vec2(-sin(a), cos(a));
+    let sp = max(fx.p0.y, 1.0);
+    let v = dot(in.uv * size, n) + fx.p1.y * fx.extra.y;
+    let f = fract(v / sp);
+    let th = clamp(fx.p0.z / 100.0, 0.01, 1.0);
+    let soft = max(fx.p0.w / 100.0 * 0.5, 0.5 / sp);
+    // 1 on a line, 0 between.
+    let on = 1.0 - smoothstep(th * 0.5, th * 0.5 + soft, abs(f - 0.5));
+    let amt = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    var d = to_display(c0.rgb / c0.a) * (1.0 + fx.p1.w / 100.0 * amt);
+    if (u32(round(fx.p1.z)) == 1u) {
+        // Red, green and blue stripes in turn.
+        let k = u32(floor(v / sp)) % 3u;
+        let m = select(select(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), k == 1u), vec3(1.0, 0.0, 0.0), k == 0u);
+        d = mix(d, d * mix(vec3(0.35), vec3(1.0), m) * 1.6, amt);
+    } else {
+        d *= 1.0 - on * amt;
+    }
+    return vec4(to_linear(clamp(d, vec3(0.0), vec3(1.0))) * c0.a, c0.a);
 }

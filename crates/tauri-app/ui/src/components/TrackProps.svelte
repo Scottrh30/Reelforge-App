@@ -6,7 +6,8 @@
   // its effects (on/off; twirl one open for its settings). Each property has
   // a stopwatch (start or stop keyframing) and, once keyframed, a diamond to
   // add or remove the key at the playhead. Values are as seen at the
-  // playhead; changing a keyframed one sets a key there.
+  // playhead; changing a keyframed one sets a key there. An audio track's
+  // clip has the same rows for its sound: volume, pan, then its audio effects.
   import { api, type ParamView, type TrackProps, type Transform } from "../lib/api";
   import { run } from "../lib/session.svelte";
   import { trackRows, twirlKey, twirls } from "../lib/trackrows.svelte";
@@ -17,6 +18,8 @@
   let draft = $state<Transform | null>(null);
   // Effect settings being dragged ("index:param" → value), until the next state.
   let fxDraft = $state<Record<string, number>>({});
+  // Audio rows being dragged (channel → value), until the next commit.
+  let aDraft = $state<Record<string, number>>({});
   let shownId = -1;
   $effect(() => {
     const id = props?.clip ?? -1;
@@ -24,9 +27,30 @@
       shownId = id;
       draft = null;
       fxDraft = {};
+      aDraft = {};
     }
   });
   const t = $derived(draft ?? props?.transform ?? null);
+  const sound = $derived(!!props?.audio);
+  function setA(ch: string, v: number) {
+    if (!props) return;
+    aDraft[ch] = v;
+    api.audioChannelValue(props.clip, ch, v);
+  }
+  async function setANow(ch: string, v: number) {
+    if (!props) return;
+    await api.audioChannelValue(props.clip, ch, v);
+    await commit();
+  }
+  /// An audio effect on or off.
+  function toggleAudioFx(index: number) {
+    if (!props?.audio) return;
+    const a = structuredClone($state.snapshot(props.audio)) as NonNullable<TrackProps["audio"]>;
+    const fx = a.effects?.[index];
+    if (!fx) return;
+    fx.enabled = !fx.enabled;
+    api.setClipAudio(props.clip, a).then(commit);
+  }
   const rows = $derived(trackRows(props));
 
   function setT(f: (t: Transform) => void) {
@@ -40,19 +64,25 @@
     await run(api.commit());
     draft = null;
     fxDraft = {};
+    aDraft = {};
   }
   function setP(index: number, pi: number, v: number) {
     if (!props) return;
+    if (sound) return setA(`x:${index}:${pi}`, v);
     fxDraft[`${index}:${pi}`] = v;
     api.effectParam(props.clip, index, pi, v);
   }
   // A click-and-done setting (a toggle, a menu, a colour): set and commit.
   async function setNow(index: number, pi: number, v: number) {
     if (!props) return;
+    if (sound) return setANow(`x:${index}:${pi}`, v);
     await api.effectParam(props.clip, index, pi, v);
     await commit();
   }
-  const pval = (index: number, pi: number, p: ParamView) => fxDraft[`${index}:${pi}`] ?? p.value;
+  const pval = (index: number, pi: number, p: ParamView) => (sound ? aDraft[`x:${index}:${pi}`] : fxDraft[`${index}:${pi}`]) ?? p.value;
+  // Stopwatch and diamond of an effect setting, picture or sound.
+  const fxWatch = (ix: number, pi: number) => run(sound ? api.audioStopwatch(props!.clip, `x:${ix}:${pi}`) : api.effectStopwatch(props!.clip, ix, pi));
+  const fxKey = (ix: number, pi: number) => run(sound ? api.audioKey(props!.clip, `x:${ix}:${pi}`) : api.effectKey(props!.clip, ix, pi));
   const hex = (v: number) => "#" + (Math.round(v) & 0xffffff).toString(16).padStart(6, "0");
   const select = () => props && run(api.select(props.clip, "only"));
   function twirl(index: number) {
@@ -87,6 +117,19 @@
     {#each rows as r}
       {#if r.kind === "name"}
         <button class="clipname" onclick={select} title="Select {props.name}">{props.name}</button>
+      {:else if r.kind === "prop" && sound}
+        {@const pr = r.prop}
+        {@const v = aDraft[pr.ch] ?? pr.value}
+        <div class="row">
+          {@render watch(pr.animated, pr.prop.toLowerCase(), () => run(api.audioStopwatch(props!.clip, pr.ch)))}
+          <span class="lbl" class:anim={pr.animated}>{pr.prop}</span>
+          {#if pr.prop === "Volume"}
+            <NumberField label="Volume" value={Math.round(v * 10) / 10} min={-60} max={12} step={0.1} digits={1} suffix=" dB" oninput={(x) => setA(pr.ch, x)} oncommit={commit} />
+          {:else}
+            <NumberField label="Pan" value={Math.round(v)} min={-100} max={100} step={0.5} digits={0} oninput={(x) => setA(pr.ch, x / 100)} oncommit={commit} />
+          {/if}
+          {@render keyBtn(pr.animated, pr.key_here, () => run(api.audioKey(props!.clip, pr.ch)))}
+        </div>
       {:else if r.kind === "prop"}
         {@const pr = r.prop}
         <div class="row" class:two={pr.prop !== "Opacity" && pr.prop !== "Rotation"}>
@@ -112,7 +155,7 @@
           <button class="twirl" class:open={r.open} onclick={() => twirl(fx.index)} title={r.open ? "Hide its settings" : "Show its settings"} aria-label="{fx.label} settings" aria-expanded={r.open} disabled={!fx.params.length}>
             <svg viewBox="0 0 10 10" width="8" height="8" aria-hidden="true"><path d="M3 1.5 7 5 3 8.5" /></svg>
           </button>
-          <input type="checkbox" checked={fx.enabled} disabled={locked} onchange={() => run(api.effectOp(props!.clip, fx.index, "toggle"))} aria-label="{fx.label} on" title="Turn {fx.label} on or off" />
+          <input type="checkbox" checked={fx.enabled} disabled={locked} onchange={() => (sound ? toggleAudioFx(fx.index) : run(api.effectOp(props!.clip, fx.index, "toggle")))} aria-label="{fx.label} on" title="Turn {fx.label} on or off" />
           <span class="fxname" title={fx.label}>{fx.label}{#if fx.params.some((p) => p.animated)}<span class="dot" title="Keyframed"></span>{/if}</span>
         </div>
       {:else}
@@ -120,7 +163,7 @@
         {@const ix = r.fx.index}
         {@const v = pval(ix, r.pi, p)}
         <div class="row param">
-          {@render watch(p.animated, p.name, () => run(api.effectStopwatch(props!.clip, ix, r.pi)))}
+          {@render watch(p.animated, p.name, () => fxWatch(ix, r.pi))}
           <span class="lbl" class:anim={p.animated} title={p.name}>{p.name}</span>
           {#if p.ui === "toggle"}
             <input type="checkbox" class="ptoggle" checked={v >= 0.5} disabled={locked} onchange={(e) => setNow(ix, r.pi, e.currentTarget.checked ? 1 : 0)} aria-label={p.name} />
@@ -133,7 +176,7 @@
           {:else}
             <NumberField label={p.name} value={v} min={p.min} max={p.max} step={p.step} digits={p.decimals} suffix={p.suffix} oninput={(x) => setP(ix, r.pi, x)} oncommit={commit} />
           {/if}
-          {@render keyBtn(p.animated, p.key_here, () => run(api.effectKey(props!.clip, ix, r.pi)))}
+          {@render keyBtn(p.animated, p.key_here, () => fxKey(ix, r.pi))}
         </div>
       {/if}
     {/each}

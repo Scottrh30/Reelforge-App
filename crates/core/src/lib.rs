@@ -10,6 +10,7 @@ pub mod anim;
 pub mod attrs;
 pub mod audio;
 pub mod audiofx;
+pub mod audiokeys;
 pub mod camtrack;
 pub mod camtrack_io;
 pub mod duck;
