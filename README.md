@@ -1643,8 +1643,9 @@ way round, each turned to match the last) and smoothed over about a frame and a 
 way, the frame it started from kept as painted. Lined up like that, **Smooth** in the Masks
 panel can smooth them further.
 
-Edit → Preferences: label colours (clips on the timeline by kind, and their names, with
-ready-made sets, and the playhead's colour: any colour, or blue, red, orange, green, purple
+Edit → Preferences: label colours (how clips look on the timeline — **Solid color** or
+**Pictures from the clip**, a filmstrip or the first frame as Settings → Clip pictures has it
+— their colours by kind, and their names, with ready-made sets, and the playhead's colour: any colour, or blue, red, orange, green, purple
 or white with one click), interface colours (panels, wells, lines, text, highlight; five schemes),
 button colours (ordinary and main buttons, corner roundness) and fonts (any installed
 family for the interface and for figures, text size 80–140%). Changes show at once;

@@ -3,6 +3,7 @@
   // colours and fonts. Changes show at once; Cancel puts back what was there.
   import { untrack } from "svelte";
   import { api } from "../lib/api";
+  import { app, run } from "../lib/session.svelte";
   import { look, DEFAULTS, UI_SCHEMES, LABEL_SETS, PLAYHEAD_SWATCHES, prefsDialog, save, snapshot, restore, type Look } from "../lib/prefs.svelte";
   import ColorRow from "./ColorRow.svelte";
 
@@ -15,13 +16,31 @@
 
   // What was there when the window opened, for Cancel.
   let before: Look | null = null;
+  let picsBefore: boolean | null = null;
   $effect(() => {
-    if (prefsDialog.open) untrack(() => (before = snapshot()));
+    if (prefsDialog.open)
+      untrack(() => {
+        before = snapshot();
+        picsBefore = app.s?.prefs.timeline_thumbnails !== false;
+      });
   });
+
+  // How clips look on the timeline: a solid colour, or pictures from the
+  // clip (a filmstrip or its first frame, as Settings has it). It's a
+  // setting kept with the others, so it shows at once.
+  const pics = $derived(app.s?.prefs.timeline_thumbnails !== false);
+  async function setPics(on: boolean) {
+    const p = app.s?.prefs;
+    if (!p || (p.timeline_thumbnails !== false) === on) return;
+    await run(api.setPrefs({ ...$state.snapshot(p), timeline_thumbnails: on }));
+  }
 
   function close(keep: boolean) {
     if (keep) save();
-    else if (before) restore(before);
+    else {
+      if (before) restore(before);
+      if (picsBefore !== null) setPics(picsBefore);
+    }
     prefsDialog.open = false;
   }
   function resetPage() {
@@ -68,6 +87,13 @@
         <section class="page">
           {#if prefsDialog.page === "labels"}
             <p class="lead">The colours of clips on the timeline, by kind, and of their names.</p>
+            <div class="pick">
+              <span>Clips show</span>
+              <div class="seg" role="radiogroup" aria-label="How clips look on the timeline">
+                <button role="radio" aria-checked={!pics} class:on={!pics} onclick={() => setPics(false)} title="Each clip filled with its label colour, no pictures">Solid color</button>
+                <button role="radio" aria-checked={pics} class:on={pics} onclick={() => setPics(true)} title="Pictures from the clip behind its name: a filmstrip along it, or just its first frame (Settings, Clip pictures, chooses which)">Pictures from the clip</button>
+              </div>
+            </div>
             <label class="pick">
               <span>Color set</span>
               <select
@@ -267,6 +293,27 @@
     align-items: center;
     gap: 8px;
     padding: 4px 0 8px;
+  }
+  .seg {
+    display: inline-flex;
+    justify-self: start;
+    border: 1px solid var(--btn-border);
+    border-radius: var(--btn-radius, 4px);
+    overflow: hidden;
+  }
+  .seg button {
+    border: none;
+    border-radius: 0;
+    padding: 4px 12px;
+    background: var(--btn);
+    color: var(--muted);
+  }
+  .seg button + button {
+    border-left: 1px solid var(--btn-border);
+  }
+  .seg button.on {
+    background: var(--accent);
+    color: var(--base, #111);
   }
   .slider {
     display: flex;
