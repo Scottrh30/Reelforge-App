@@ -189,6 +189,61 @@ impl Default for Mask {
 /// Points per ellipse when it's turned into a polygon.
 const ELLIPSE_SEGMENTS: usize = 96;
 
+/// Outlines cut frame by frame (the roto brush's) made to match up, so they
+/// can be smoothed over time: each the same way round, cut into `n` points
+/// evenly along it, and turned so its points line up with the previous
+/// outline's (the first starts at its top).
+pub fn conform_outlines(shapes: &mut [(Time, Vec<[f32; 2]>)], n: usize) {
+    let n = n.clamp(8, 1024);
+    let mut prev: Option<Vec<[f32; 2]>> = None;
+    for (_, pts) in shapes.iter_mut() {
+        if pts.len() < 3 {
+            continue;
+        }
+        let area: f32 = (0..pts.len()).map(|j| { let (a, b) = (pts[j], pts[(j + 1) % pts.len()]); a[0] * b[1] - b[0] * a[1] }).sum();
+        if area < 0.0 {
+            pts.reverse();
+        }
+        let even = resample_closed(pts, n);
+        let shift = match &prev {
+            // The turn that puts its points nearest the last outline's.
+            Some(p) => (0..n)
+                .min_by(|&a, &b| {
+                    let d = |r: usize| (0..n).map(|i| { let (q, o) = (even[(i + r) % n], p[i]); (q[0] - o[0]).powi(2) + (q[1] - o[1]).powi(2) }).sum::<f32>();
+                    d(a).total_cmp(&d(b))
+                })
+                .unwrap_or(0),
+            None => (0..n).min_by(|&a, &b| even[a][1].total_cmp(&even[b][1]).then(even[a][0].total_cmp(&even[b][0]))).unwrap_or(0),
+        };
+        let turned: Vec<[f32; 2]> = (0..n).map(|i| even[(i + shift) % n]).collect();
+        prev = Some(turned.clone());
+        *pts = turned;
+    }
+}
+
+/// A closed polygon cut into `n` points evenly spaced along it.
+fn resample_closed(pts: &[[f32; 2]], n: usize) -> Vec<[f32; 2]> {
+    let m = pts.len();
+    let seg = |j: usize| { let (a, b) = (pts[j], pts[(j + 1) % m]); ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt() };
+    let total: f32 = (0..m).map(seg).sum();
+    if !(total > 0.0) {
+        return vec![pts[0]; n];
+    }
+    let mut out = Vec::with_capacity(n);
+    let (mut j, mut acc) = (0usize, 0.0f32);
+    for i in 0..n {
+        let want = total * i as f32 / n as f32;
+        while j < m - 1 && acc + seg(j) < want {
+            acc += seg(j);
+            j += 1;
+        }
+        let (a, b) = (pts[j], pts[(j + 1) % m]);
+        let k = ((want - acc) / seg(j).max(1e-6)).clamp(0.0, 1.0);
+        out.push([a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k]);
+    }
+    out
+}
+
 impl Mask {
     /// Move and scale it with its layer's picture: every point (and key,
     /// and roto brush stroke) from around `from` to around `to`, scaled by
@@ -816,6 +871,57 @@ mod tests {
     /// Area inside a polygon (shoelace).
     fn area(p: &[[f32; 2]]) -> f32 {
         (0..p.len()).map(|i| { let (a, b) = (p[i], p[(i + 1) % p.len()]); a[0] * b[1] - b[0] * a[1] }).sum::<f32>().abs() / 2.0
+    }
+
+    /// Roto outlines cut afresh each frame — different point counts, starts
+    /// and directions — line up once conformed, so smoothing takes their
+    /// boiling out while the shape keeps moving.
+    #[test]
+    fn boiling_outlines_line_up_and_smooth() {
+        let mut seed = 3u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+        };
+        let fps = 25.0;
+        let mut shapes: Vec<(Time, Vec<[f32; 2]>)> = (0..40)
+            .map(|f| {
+                let n = 30 + (f * 7) % 23;
+                let start = (f * 5) % n;
+                let cx = 100.0 + f as f32 * 2.0;
+                let mut pts: Vec<[f32; 2]> = (0..n)
+                    .map(|i| {
+                        let a = (i + start) as f32 / n as f32 * std::f32::consts::TAU;
+                        let r = 40.0 + rnd() * 4.0;
+                        [cx + r * a.cos(), 80.0 + r * a.sin()]
+                    })
+                    .collect();
+                if f % 3 == 0 {
+                    pts.reverse();
+                }
+                (Time::from_secs_f64(f as f64 / fps), pts)
+            })
+            .collect();
+        conform_outlines(&mut shapes, 64);
+        assert!(shapes.iter().all(|s| s.1.len() == 64));
+        // Lined up: point 0 stays near the same place on the circle (its top).
+        for s in &shapes {
+            let cx = s.1.iter().map(|p| p[0]).sum::<f32>() / 64.0;
+            assert!((s.1[0][0] - cx).abs() < 8.0 && s.1[0][1] < 50.0, "{:?} (centre {cx})", s.1[0]);
+        }
+        // Jitter: how far each point wanders from its neighbours in time.
+        let wobble = |m: &Mask| -> f32 {
+            let k = &m.keys;
+            (1..k.len() - 1).map(|i| (0..64).map(|j| { let e = [(k[i - 1].points[j][0] + k[i + 1].points[j][0]) / 2.0 - k[i].points[j][0], (k[i - 1].points[j][1] + k[i + 1].points[j][1]) / 2.0 - k[i].points[j][1]]; (e[0] * e[0] + e[1] * e[1]).sqrt() }).sum::<f32>() / 64.0).sum::<f32>() / (k.len() - 2) as f32
+        };
+        let mut m = Mask { keys: shapes.iter().map(|(at, p)| ShapeKey::new(*at, p.clone())).collect(), ..Mask::default() };
+        let before = wobble(&m);
+        assert_eq!(m.smooth_keys(1.5 / fps), 40);
+        let after = wobble(&m);
+        assert!(after < before * 0.5, "boiling {before} → {after}");
+        // Still moving: the centre goes on 2 px a frame.
+        let c = |k: &ShapeKey| k.points.iter().map(|p| p[0]).sum::<f32>() / 64.0;
+        assert!((c(&m.keys[30]) - c(&m.keys[10]) - 40.0).abs() < 2.0);
     }
 
     #[test]

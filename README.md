@@ -1631,6 +1631,18 @@ one: mesh tracking, warping another layer over the tracked grid), tracked forwar
 applied to another layer (follow it, or corner-pin into the points), to one of the clip's
 masks, or to the clip itself (stabilise, with smoothing).
 
+Tracking is watched as it goes: while a point, planar or mesh tracker, a tracked mask or
+the roto brush works through a clip, the playhead moves along with it, so the Viewer shows
+each frame as it's tracked with the points (and their path so far) or the mask's outline
+on it; it's left on the last frame tracked. Tracked motion is smoothed against jitter: a new
+tracker starts with a frame's **Smoothing** (a trend-keeping Gaussian, so steady movement
+isn't dragged behind; set it to 0 for the raw track), a tracked mask's keys get a frame's
+smoothing over the tracked span, and the roto brush's outlines — cut afresh each frame, so
+their edges would boil — are lined up point for point (the same number of points, the same
+way round, each turned to match the last) and smoothed over about a frame and a half either
+way, the frame it started from kept as painted. Lined up like that, **Smooth** in the Masks
+panel can smooth them further.
+
 Edit → Preferences: label colours (clips on the timeline by kind, and their names, with
 ready-made sets, and the playhead's colour: any colour, or blue, red, orange, green, purple
 or white with one click), interface colours (panels, wells, lines, text, highlight; five schemes),

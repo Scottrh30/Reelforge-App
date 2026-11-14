@@ -106,7 +106,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::AiDone(r));
             })
             .expect("find faces thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: Some(index) });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: Some(index), live: Vec::new(), live_shape: None });
         self.status = "Finding faces…".into();
     }
 
@@ -166,7 +166,7 @@ impl Editor {
                 let _ = tx.send(TrackMsg::AiDone(r));
             })
             .expect("find the sky thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: Some(index) });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: Some(index), live: Vec::new(), live_shape: None });
         self.status = if sam::gpu().is_some() { "Finding the sky…" } else { "Finding the sky (on the CPU: a second or two a frame)…" }.into();
     }
 

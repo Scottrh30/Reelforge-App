@@ -468,7 +468,9 @@ fn matrix(m: &LayerMap) -> [f64; 9] {
 }
 
 fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
-    let trk = c.tracker.as_ref()?;
+    // While it's being tracked: with what's been tracked so far, so it's seen going.
+    let live = e.live_tracker(c);
+    let trk = live.as_ref().or(c.tracker.as_ref())?;
     let s = e.seq();
     let src = e.track_time(c);
     let frames = trk.frames();
@@ -764,7 +766,12 @@ pub fn state(e: &Editor) -> State {
         let masks = c
             .masks
             .iter()
-            .map(|m| MaskView { mask: m.clone(), outline: m.outline(mt), handles: m.points_at(mt), curves: m.curves_at(mt), key_here: m.keys.iter().any(|k| k.at == mt) })
+            .enumerate()
+            .map(|(i, m)| match e.live_mask(c, i) {
+                // Being tracked or carried on by the roto brush: the outline at the frame just done.
+                Some(live) => MaskView { mask: m.clone(), outline: live.clone(), handles: live, curves: Vec::new(), key_here: false },
+                None => MaskView { mask: m.clone(), outline: m.outline(mt), handles: m.points_at(mt), curves: m.curves_at(mt), key_here: m.keys.iter().any(|k| k.at == mt) },
+            })
             .collect();
         let footage = c.title.is_none() && c.nested.is_none() && p.media(c.media).is_some_and(|m| m.info.video.is_some() && m.info.duration > Time::ZERO);
         let job = e.tracking.as_ref().map(|j| (j.clip, j.progress));

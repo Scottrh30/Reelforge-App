@@ -278,6 +278,10 @@ impl Editor {
 /// Messages from a tracking run.
 enum TrackMsg {
     Progress(f32),
+    /// Progress, with the frame just tracked (a sample a point or corner), to watch it go.
+    Live(f32, Vec<reelforge_core::track::TrackSample>),
+    /// Progress, with the roto brush's outline (layer pixels) at source time `.1`.
+    LiveShape(f32, Time, Vec<[f32; 2]>),
     Done(Result<(Vec<Vec<reelforge_core::track::TrackSample>>, reelforge_media::TrackEnd), String>),
     /// A 3D camera solve (`None`: stopped).
     CameraDone(Result<Option<reelforge_core::camtrack::CameraTrack>, String>),
@@ -332,6 +336,10 @@ pub struct TrackJob {
     pub roto: Option<usize>,
     /// Finding the faces or the sky for effect `.0`.
     pub ai: Option<usize>,
+    /// What's been tracked so far (a list a point or corner), shown as it goes.
+    pub live: Vec<Vec<reelforge_core::track::TrackSample>>,
+    /// The roto brush's outline so far (source time, layer pixels).
+    pub live_shape: Option<(Time, Vec<[f32; 2]>)>,
 }
 
 /// An interactive edit in progress: what's being changed and its value before the gesture.
@@ -3096,13 +3104,13 @@ impl Editor {
             .name("tracker".into())
             .spawn(move || {
                 let progress_tx = tx.clone();
-                let r = reelforge_media::track_points(&media.path, &media.info, &track, from, until, &stop, |p| {
-                    let _ = progress_tx.send(TrackMsg::Progress(p));
+                let r = reelforge_media::track_points_live(&media.path, &media.info, &track, from, until, &stop, |p, now| {
+                    let _ = progress_tx.send(TrackMsg::Live(p, now.to_vec()));
                 });
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: None, live: Vec::new(), live_shape: None });
         self.status = "Tracking…".into();
     }
 
@@ -3168,13 +3176,13 @@ impl Editor {
             .spawn(move || {
                 let progress_tx = tx.clone();
                 let grid = (motion == reelforge_core::track::MaskMotion::Bend).then(|| reelforge_core::track::mask_grid(quad));
-                let r = reelforge_media::track_outline(&media.path, &media.info, quad, grid, outline, search, from, until, &stop, |p| {
-                    let _ = progress_tx.send(TrackMsg::Progress(p));
+                let r = reelforge_media::track_outline_live(&media.path, &media.info, quad, grid, outline, search, from, until, &stop, |p, now| {
+                    let _ = progress_tx.send(TrackMsg::Live(p, now.to_vec()));
                 });
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
             .expect("mask tracker thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id), camera: false, fill: None, roto: None, ai: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id), camera: false, fill: None, roto: None, ai: None, live: Vec::new(), live_shape: None });
         self.status = if own { format!("Tracking {name}…") } else { format!("Tracking {name} through the footage below ({src_name})…") };
     }
 
@@ -3219,6 +3227,57 @@ impl Editor {
         })
     }
 
+    /// While tracking, the playhead goes along with it, so the Viewer shows
+    /// each frame as it's tracked (the points, or the outline, on it).
+    fn follow_tracking(&mut self) {
+        let Some(job) = &self.tracking else { return };
+        let Some((_, c)) = self.project.sequences.get(job.seq).and_then(|s| s.find_clip(job.clip)) else { return };
+        let at = if let Some((src, _)) = &job.live_shape {
+            Some(c.timeline_start + (*src - c.source_in))
+        } else {
+            let media = job.live.first().and_then(|l| l.last()).map(|s| s.at);
+            // Tracked through the footage below: its time on the timeline.
+            let by = job.through.and_then(|b| self.project.sequences.get(job.seq).and_then(|s| s.find_clip(b))).map_or(c, |(_, b)| b);
+            media.and_then(|m| by.timeline_of_media(m))
+        };
+        if let Some(t) = at.filter(|t| *t != self.playback.playhead) {
+            let rate = self.seq().frame_rate;
+            self.playback.seek(t.max(Time::ZERO).snap(rate));
+        }
+    }
+
+    /// Clip `c`'s tracker with what the run going on has tracked so far
+    /// merged in (to show it as it goes); `None` if it isn't being tracked.
+    pub fn live_tracker(&self, c: &Clip) -> Option<Tracker> {
+        let job = self.tracking.as_ref().filter(|j| j.clip == c.id && j.mask.is_none() && j.roto.is_none() && !j.camera && j.fill.is_none() && j.ai.is_none() && !j.live.is_empty())?;
+        let mut t = c.tracker.clone()?;
+        for (p, s) in t.points.iter_mut().zip(&job.live) {
+            p.merge(s.clone());
+        }
+        Some(t)
+    }
+
+    /// Mask `index` of clip `c`'s outline at the frame just tracked (layer
+    /// pixels), while a roto brush or mask tracking run on it goes on.
+    pub fn live_mask(&self, c: &Clip, index: usize) -> Option<Vec<[f32; 2]>> {
+        let job = self.tracking.as_ref().filter(|j| j.clip == c.id)?;
+        if job.roto == Some(index) {
+            return job.live_shape.as_ref().map(|s| s.1.clone());
+        }
+        let (i, motion) = job.mask?;
+        if i != index || job.through.is_some() {
+            return None;
+        }
+        // The region from its first frame to the latest, as the finished run would make it.
+        let ends: Vec<Vec<reelforge_core::track::TrackSample>> = job.live.iter().map(|l| l.first().into_iter().chain(l.last()).copied().collect()).collect();
+        if ends.first().is_none_or(|l| l.len() < 2) {
+            return None;
+        }
+        let m = reelforge_core::track::mask_from_region(c, c.masks.get(index)?, &ends, motion)?;
+        let at = c.clip_time_of_media(ends[0][1].at)?;
+        Some(m.points_at(at))
+    }
+
     pub fn cancel_tracking(&mut self) {
         if let Some(j) = &self.tracking {
             j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -3232,15 +3291,34 @@ impl Editor {
         let mut fill = None;
         let mut roto = None;
         let mut ai = None;
+        let mut moved = false;
         while let Ok(m) = job.rx.try_recv() {
             match m {
                 TrackMsg::Progress(p) => job.progress = p,
+                TrackMsg::Live(p, now) => {
+                    job.progress = p;
+                    if job.live.len() < now.len() {
+                        job.live.resize(now.len(), Vec::new());
+                    }
+                    for (l, s) in job.live.iter_mut().zip(now) {
+                        l.push(s);
+                    }
+                    moved = true;
+                }
+                TrackMsg::LiveShape(p, at, poly) => {
+                    job.progress = p;
+                    job.live_shape = Some((at, poly));
+                    moved = true;
+                }
                 TrackMsg::Done(r) => done = Some(r),
                 TrackMsg::CameraDone(r) => camera = Some(r),
                 TrackMsg::FillDone(r) => fill = Some(r),
                 TrackMsg::RotoDone(r) => roto = Some(r),
                 TrackMsg::AiDone(r) => ai = Some(r),
             }
+        }
+        if moved && done.is_none() && roto.is_none() {
+            self.follow_tracking();
         }
         if let Some(r) = ai {
             let job = self.tracking.take().unwrap();
@@ -3326,10 +3404,27 @@ impl Editor {
                 out
             }
         };
-        let Some(m) = reelforge_core::track::mask_from_region(c, mask, &corners, motion) else {
+        let Some(mut m) = reelforge_core::track::mask_from_region(c, mask, &corners, motion) else {
             self.status = "Couldn't follow the mask: what's inside it turned too far".into();
             return;
         };
+        // A frame's smoothing of the tracked span (its jitter out, its movement kept).
+        let span: Vec<Time> = corners[0].iter().filter_map(|s| c.clip_time_of_media(s.at)).collect();
+        if let (Some(&lo), Some(&hi)) = (span.iter().min(), span.iter().max()) {
+            let mut run = reelforge_core::mask::Mask { keys: m.keys.iter().filter(|k| k.at >= lo && k.at <= hi).cloned().collect(), ..reelforge_core::mask::Mask::default() };
+            let first = run.keys.iter().find(|k| k.at == span[0]).cloned();
+            run.smooth_keys(1.0 / rate.fps().max(1.0));
+            if let Some(f) = first {
+                if let Some(k) = run.keys.iter_mut().find(|k| k.at == f.at) {
+                    *k = f;
+                }
+            }
+            for k in &mut m.keys {
+                if let Some(s) = run.keys.iter().find(|r| r.at == k.at) {
+                    *k = s.clone();
+                }
+            }
+        }
         let name = m.name.clone();
         let old = c.visual();
         let mut new = old.clone();
@@ -5377,6 +5472,76 @@ mod tests {
         e.project.sequences[0].tracks[0].clips.clear();
         e.start_mask_tracking(a, 0, true, reelforge_core::track::MaskMotion::Position);
         assert!(e.tracking.is_none() && e.status.contains("no"), "{}", e.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tracking is watched as it goes: the playhead moves along with each
+    /// frame tracked, and the tracker as shown carries what's tracked so far
+    /// (on the block, 4 px a frame); then the run's result lands as usual.
+    #[test]
+    fn tracking_is_watched_as_it_goes() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("rf-engine-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("block.mp4");
+        let child = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", "320x180", "-r", "25", "-i", "-", "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .spawn();
+        let Ok(mut child) = child else { return };
+        let mut stdin = child.stdin.take().unwrap();
+        let hash = |x: i32, y: i32| (((x * 73856093) ^ (y * 19349663)) as u32 % 160) as u8 + 50;
+        for k in 0..40 {
+            let x0 = 60 + 4 * k;
+            let mut img = vec![120u8; 320 * 180];
+            for y in 60..120 {
+                for x in x0..x0 + 60 {
+                    img[y as usize * 320 + x as usize] = hash((x - x0) / 3, y / 3);
+                }
+            }
+            stdin.write_all(&img).unwrap();
+        }
+        drop(stdin);
+        if !child.wait().is_ok_and(|s| s.success()) {
+            return;
+        }
+        let mut e = editor();
+        e.new_project_with(320, 180, FrameRate::new(25, 1));
+        let info = reelforge_media::probe(&path).unwrap();
+        e.project.media.push(MediaAsset { id: MediaId(1), path: path.clone(), name: "block.mp4".into(), info, conform: None });
+        let id = ClipId(e.project.alloc_id());
+        e.project.sequences[0].tracks[0].clips.push(Clip::new(id, MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(1.6), None));
+        e.add_tracker(id, TrackMode::Position);
+        let s = &mut e.project.sequences[0];
+        let c = s.tracks[0].clips.iter_mut().find(|c| c.id == id).unwrap();
+        c.tracker.as_mut().unwrap().points[0].point = [90.0, 90.0];
+        e.playback.playhead = Time::ZERO;
+        e.start_tracking(id, true);
+        assert!(e.tracking.is_some(), "{}", e.status);
+        let mut seen: Vec<Time> = Vec::new();
+        let mut on_block = 0;
+        let t0 = std::time::Instant::now();
+        while e.tracking.is_some() && t0.elapsed().as_secs() < 60 {
+            e.poll_tracking();
+            let ph = e.playback.playhead;
+            if e.tracking.is_some() && seen.last() != Some(&ph) {
+                seen.push(ph);
+                let c = e.seq().find_clip(id).unwrap().1.clone();
+                if let Some(t) = e.live_tracker(&c) {
+                    let k = (ph.as_secs_f64() * 25.0).round() as f32;
+                    let x = t.points[0].pos_at(c.media_at(ph)).unwrap()[0];
+                    assert!((x - (90.0 + 4.0 * k)).abs() < 1.5, "live at frame {k}: {x}");
+                    on_block += 1;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(seen.len() >= 4 && seen.windows(2).all(|w| w[1] > w[0]), "the playhead went along: {seen:?}");
+        assert!(on_block >= 4);
+        let c = e.seq().find_clip(id).unwrap().1.clone();
+        assert!(c.tracker.as_ref().unwrap().points[0].path.len() >= 39, "{}", e.status);
+        assert!(e.playback.playhead >= Time::from_secs_f64(1.5), "left on the last frame tracked");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

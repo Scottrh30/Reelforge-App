@@ -617,7 +617,9 @@ impl Tracker {
     /// of a `layer`-sized picture.
     pub fn new(mode: TrackMode, centre: [f32; 2], layer: [f32; 2], start: Time) -> Self {
         let first = PointTrack { point: centre, start, ..Default::default() };
-        let mut t = Tracker { mode: TrackMode::Position, points: vec![first], grid: [0, 0], smooth: 0.0 };
+        // A frame's smoothing to start with: it takes out the tracking's
+        // jitter without dragging behind real movement (and can be changed).
+        let mut t = Tracker { mode: TrackMode::Position, points: vec![first], grid: [0, 0], smooth: 1.0 };
         t.set_mode(mode, layer, start);
         if mode == TrackMode::Mesh {
             // A grid filling the box around the centre.
@@ -1592,7 +1594,12 @@ mod tests {
         let mut path: Vec<TrackSample> = (0..60).map(|k| TrackSample { at: s(k), pos: [3.0 * k as f32 + if k % 2 == 0 { 2.0 } else { -2.0 }, 50.0], score: 1.0 }).collect();
         path.extend((80..100).map(|k| TrackSample { at: s(k), pos: [500.0, 50.0], score: 1.0 }));
         t.points[0].path = path;
-        assert_eq!(t.frames(), t.raw_frames(), "no smoothing by default");
+        // A new tracker starts with a frame's smoothing; at 0 it's the raw track.
+        assert_eq!(t.smooth, 1.0);
+        let light = t.frames();
+        assert!((light[30].1[0][0] - 90.0).abs() < 1.6 && light[30].1[0][0] != t.raw_frames()[30].1[0][0], "lightly smoothed: {:?}", light[30]);
+        t.smooth = 0.0;
+        assert_eq!(t.frames(), t.raw_frames(), "no smoothing at 0");
         t.smooth = 4.0;
         let f = t.frames();
         let x = |k: usize| f[k].1[0][0];

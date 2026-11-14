@@ -171,7 +171,10 @@ export async function refresh(force = false) {
   // (So do expanded tracks' clip properties, and which clip they show.)
   const keyed = (!!ins && (ins.effects.some((f) => f.animated) || ins.masks.some((m) => m.mask.keys.length > 0) || !!ins.keys)) || !!app.s?.seq.tracks.some((t) => t.expanded);
   const now = performance.now();
-  const moved = keyed && live.playhead !== lastPlayhead && (!live.playing || now - lastPlayheadFetch > 250);
+  const moved =
+    (keyed && live.playhead !== lastPlayhead && (!live.playing || now - lastPlayheadFetch > 250)) ||
+    // While tracking, the points or outline as tracked so far, as the playhead goes along with it.
+    (!!live.tracking && live.playhead !== lastPlayhead && now - lastPlayheadFetch > 90);
   // A title's outline is known once it has been drawn: fetch it then.
   const outline = !!ins?.visual && !ins.gizmo && !live.playing && live.picture_rev !== lastPicture;
   lastPicture = live.picture_rev;

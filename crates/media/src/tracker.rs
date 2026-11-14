@@ -36,6 +36,25 @@ pub fn track_points(
     cancel: &AtomicBool,
     mut progress: impl FnMut(f32),
 ) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
+    track_points_live(path, info, tracker, from, until, cancel, |p, _| progress(p))
+}
+
+/// [`track_points`], also handing over each frame's samples (one a point) as
+/// they're found, so the run can be watched.
+#[allow(clippy::too_many_arguments)]
+pub fn track_points_live(
+    path: &Path,
+    info: &MediaInfo,
+    tracker: &Tracker,
+    from: Time,
+    until: Time,
+    cancel: &AtomicBool,
+    mut report: impl FnMut(f32, &[TrackSample]),
+) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
+    let mut progress = |p: f32, out: &[Vec<TrackSample>]| {
+        let now: Vec<TrackSample> = out.iter().filter_map(|o| o.last().copied()).collect();
+        report(p, &now);
+    };
     let v = info.video.as_ref().ok_or_else(|| anyhow!("this clip has no video to track"))?;
     let step = v.frame_rate.frame_duration();
     let mut src = FrameSource::open(path, None)?;
@@ -114,7 +133,7 @@ pub fn track_points(
             o.push(s);
         }
         n += 1.0;
-        progress((n / total).min(1.0));
+        progress((n / total).min(1.0), &out);
     }
 }
 
@@ -145,7 +164,7 @@ fn track_plane(
     until: Time,
     cancel: &AtomicBool,
     grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
-    progress: &mut impl FnMut(f32),
+    progress: &mut impl FnMut(f32, &[Vec<TrackSample>]),
 ) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
     let start: Vec<[f32; 2]> = tracker.points.iter().map(|p| p.shown_at(from)).collect();
     let quad: [[f32; 2]; 4] = std::array::from_fn(|i| start[i]);
@@ -170,7 +189,7 @@ fn follow_region(
     until: Time,
     cancel: &AtomicBool,
     grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
-    progress: &mut impl FnMut(f32),
+    progress: &mut impl FnMut(f32, &[Vec<TrackSample>]),
 ) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
     let (sx, sy) = (w as f32 / mw as f32, h as f32 / mh as f32);
     let start = quad;
@@ -198,7 +217,7 @@ fn follow_region(
             o.push(TrackSample { at: t, pos: [c[0] / sx, c[1] / sy], score });
         }
         n += 1.0;
-        progress((n / total).min(1.0));
+        progress((n / total).min(1.0), &out);
     }
 }
 
@@ -221,6 +240,28 @@ pub fn track_outline(
     cancel: &AtomicBool,
     mut progress: impl FnMut(f32),
 ) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
+    track_outline_live(path, info, quad, grid, outline, search, from, until, cancel, |p, _| progress(p))
+}
+
+/// [`track_outline`], also handing over each frame's corners (or grid
+/// points) as they're found, so the run can be watched.
+#[allow(clippy::too_many_arguments)]
+pub fn track_outline_live(
+    path: &Path,
+    info: &MediaInfo,
+    quad: [[f32; 2]; 4],
+    grid: Option<MeshShape>,
+    outline: Vec<[f32; 2]>,
+    search: f32,
+    from: Time,
+    until: Time,
+    cancel: &AtomicBool,
+    mut report: impl FnMut(f32, &[TrackSample]),
+) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
+    let mut progress = |p: f32, out: &[Vec<TrackSample>]| {
+        let now: Vec<TrackSample> = out.iter().filter_map(|o| o.last().copied()).collect();
+        report(p, &now);
+    };
     let v = info.video.as_ref().ok_or_else(|| anyhow!("this clip has no video to track"))?;
     let step = v.frame_rate.frame_duration();
     let mut src = FrameSource::open(path, None)?;
@@ -255,7 +296,7 @@ fn track_mesh(
     until: Time,
     cancel: &AtomicBool,
     grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
-    progress: &mut impl FnMut(f32),
+    progress: &mut impl FnMut(f32, &[Vec<TrackSample>]),
 ) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
     let start: Vec<[f32; 2]> = tracker.points.iter().map(|p| p.shown_at(from)).collect();
     let grid = MeshShape { cols: tracker.grid[0], rows: tracker.grid[1], points: start };
@@ -280,7 +321,7 @@ fn follow_grid(
     until: Time,
     cancel: &AtomicBool,
     grab: &mut impl FnMut(Time) -> Result<(Pyramid, usize, usize)>,
-    progress: &mut impl FnMut(f32),
+    progress: &mut impl FnMut(f32, &[Vec<TrackSample>]),
 ) -> Result<(Vec<Vec<TrackSample>>, TrackEnd)> {
     let (sx, sy) = (w as f32 / mw as f32, h as f32 / mh as f32);
     let scaled = |p: &[f32; 2]| [p[0] * sx, p[1] * sy];
@@ -313,7 +354,7 @@ fn follow_grid(
             o.push(TrackSample { at: t, pos: [p[0] / sx, p[1] / sy], score });
         }
         n += 1.0;
-        progress((n / total).min(1.0));
+        progress((n / total).min(1.0), &out);
     }
 }
 

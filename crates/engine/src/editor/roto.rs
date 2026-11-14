@@ -547,14 +547,14 @@ impl Editor {
                             shapes.push((*s_t, poly.clone()));
                         }
                         prev = Some((luma, w, h));
-                        let _ = tx.send(TrackMsg::Progress((i + 1) as f32 / n as f32));
+                        let _ = tx.send(TrackMsg::LiveShape((i + 1) as f32 / n as f32, *s_t, poly.clone()));
                     }
                     Ok(Some(RotoRun { mask: index, shapes, lost }))
                 })();
                 let _ = tx.send(TrackMsg::RotoDone(r));
             })
             .expect("roto brush thread");
-        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: Some(index), ai: None });
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: Some(index), ai: None, live: Vec::new(), live_shape: None });
         self.status = format!("Carrying {} {}…", m.name, if forward { "forwards" } else { "backwards" });
     }
 
@@ -582,11 +582,22 @@ impl Editor {
                 let mut new = old.clone();
                 let Some(m) = new.masks.get_mut(run.mask) else { return };
                 let (Some(lo), Some(hi)) = (run.shapes.iter().map(|s| s.0).min(), run.shapes.iter().map(|s| s.0).max()) else { return };
+                // Each frame's outline is cut afresh, so it boils (edges
+                // creeping frame to frame): line their points up and smooth
+                // them over time (about a frame and a half either way), the
+                // frame it started from kept as painted.
+                let mut shapes = run.shapes.clone();
+                let n = shapes.iter().map(|s| s.1.len()).max().unwrap_or(0).clamp(48, 160);
+                reelforge_core::mask::conform_outlines(&mut shapes, n);
+                let mut smooth = Mask { keys: shapes.iter().map(|(at, p)| ShapeKey::new(*at, p.clone())).collect(), ..Mask::default() };
+                let fps = self.project.sequences.get(job.seq).map_or(25.0, |s| s.frame_rate.fps());
+                smooth.smooth_keys(1.5 / fps.max(1.0));
+                if let (Some(k), Some(first)) = (smooth.keys.iter_mut().find(|k| k.at == run.shapes[0].0), shapes.first()) {
+                    k.points = first.1.clone();
+                }
                 // The run's shapes replace the keys over its span.
                 m.keys.retain(|k| k.at < lo || k.at > hi);
-                for (at, pts) in &run.shapes {
-                    m.keys.push(ShapeKey::new(*at, pts.clone()));
-                }
+                m.keys.extend(smooth.keys);
                 m.keys.sort_by_key(|k| k.at);
                 m.curves.clear();
                 let (name, n) = (m.name.clone(), run.shapes.len() - 1);
