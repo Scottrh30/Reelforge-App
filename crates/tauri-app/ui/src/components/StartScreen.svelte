@@ -90,6 +90,11 @@
     await run(api.openDialog());
     if ((await api.startView()).recent.some((r) => r.open)) app.startOpen = false;
   }
+  async function openAdobe() {
+    if (!(await checkUnsaved())) return;
+    await run(api.openAdobeDialog());
+    if ((await api.state()).import_report) app.startOpen = false;
+  }
   async function forget(e: Event, path: string | null) {
     e.stopPropagation();
     if (path === null && (await question("Clear the recent list?", "Your projects stay where they are; only the list is cleared.", ["Clear", "Cancel"])) !== "Clear") return;
@@ -151,6 +156,7 @@
         </div>
         <span class="grow"></span>
         <button onclick={openOther}>Open a project…</button>
+        <button onclick={openAdobe} title="A Premiere Pro (.prproj) or After Effects (.aep) project, opened as a new Reelforge project">From Premiere or After Effects…</button>
         <button class="ghost close" onclick={() => (app.startOpen = false)} title={view.has_project ? "Back to the project that's open" : "Start with an empty 1080p project"} aria-label="Close the start screen">✕</button>
       </header>
 

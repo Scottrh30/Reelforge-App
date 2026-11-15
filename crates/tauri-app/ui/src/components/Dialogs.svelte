@@ -196,6 +196,26 @@
   </div>
 {/if}
 
+{#if app.s?.import_report}
+  {@const r = app.s.import_report}
+  <div class="scrim">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="imp-title">
+      <h2 id="imp-title">Opened from {r.from}</h2>
+      <p><b>{r.name}</b>: {r.summary}.{#if r.missing} {r.missing} media file{r.missing === 1 ? "" : "s"} aren't where the project says: relink {r.missing === 1 ? "it" : "them"} in the Media panel.{/if}</p>
+      {#if r.notes.length}
+        <p class="muted">Not everything has a match in Reelforge. Left out or changed:</p>
+        <ul class="notes">
+          {#each r.notes as n}<li>{n}</li>{/each}
+        </ul>
+      {:else}
+        <p class="muted">Everything came across.</p>
+      {/if}
+      <p class="muted">It's a new project: save it to keep it. The original is untouched.</p>
+      <div class="buttons"><button class="primary" onclick={() => run(api.dismissImportReport())}>OK</button></div>
+    </div>
+  </div>
+{/if}
+
 {#if (app.s?.recoveries.length ?? 0) > 0}
   <div class="scrim">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="rec-title">
@@ -213,6 +233,17 @@
 {/if}
 
 <style>
+  .notes {
+    margin: 0;
+    padding-left: 18px;
+    max-height: 40vh;
+    overflow: auto;
+    font-size: calc(12px * var(--text-scale));
+  }
+  .muted {
+    color: var(--muted);
+    margin: 0;
+  }
   .scrim {
     position: fixed;
     inset: 0;

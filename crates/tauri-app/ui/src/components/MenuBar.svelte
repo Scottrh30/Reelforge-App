@@ -46,6 +46,7 @@
     { label: "New project", hint: "Ctrl+N", run: actions.newProject },
     { label: "Start screen…", hint: "Ctrl+Shift+N", run: () => (app.startOpen = true) },
     { label: "Open…", hint: "Ctrl+O", run: actions.open },
+    { label: "Open a Premiere Pro or After Effects project…", hint: ".prproj, .aep", run: actions.openAdobe },
     {
       label: "Open recent",
       disabled: !recent.length,

@@ -1037,6 +1037,32 @@ What works now:
   Effects, colour, masks, keyframes and titles stay in Reelforge; titles, solids and
   compositions become named gaps. All four have been read back with OpenTimelineIO's own
   readers. AAF isn't written yet
+- **Open Premiere Pro and After Effects projects** (**File > Open a Premiere Pro or After
+  Effects project…**, **From Premiere or After Effects…** on the start screen, or drop a
+  `.prproj` or `.aep` on the window): the project opens as a new, unsaved Reelforge project
+  (the original is untouched), and a report lists what came across and what didn't.
+  - From **Premiere Pro**: every sequence (the longest edit first; nests as compositions),
+    its tracks (names, locked, muted), every clip's place, in and out points and speed, linked
+    picture and sound, Motion (position, scale and scale width, rotation, anchor point, crop)
+    and Opacity (and blend mode), keyframes on them (linear, hold, Bézier as ease), the
+    Transform effect when Motion is left alone, Gaussian Blur, clip volume and its keyframes,
+    cross dissolves and dips to black or white, audio fades and crossfades, sequence markers
+    (name, comment, colour), text graphics as titles with their words, adjustment layers,
+    black video, and all the media in the project's bins, used or not
+  - From **After Effects**: every composition (precomps as compositions inside it), one track
+    per layer in the same stacking order, each layer's in and out points, start time and time
+    stretch (reversed too), footage, solids (their colour and size) and adjustment layers,
+    blend modes, track mattes, 3D layers, position (split too), anchor point, scale, rotation,
+    orientation and opacity with their keyframes, footage sound as linked audio, and
+    **parenting**: each parent (a null or any layer) becomes a point the children follow, at
+    its anchor point, turned and scaled as it is, keyed every frame where it turns or scales,
+    and parents of parents nest
+  - Media is found where the project saved it, or (moved with the project) beside it or in a
+    *media* or *footage* folder next to it; whatever isn't is listed to relink. Each file found
+    is looked at again, so its details are exactly right
+  - Left out, and listed: most effects (by name), masks, shape layers, cameras and lights,
+    expressions, time remapping (the layer's or clip's plain timing is kept), and text styling
+    (the words come across; font, size and animators are Reelforge's defaults)
 - **Project versions** (**File > Project versions…**, or **Save version…** / Ctrl+Alt+S): keep
   the project as it is now under a name and a note (*Rough cut for the client*), in a
   "*project* versions" folder beside the project file. Every Save also keeps one by itself when
@@ -2560,6 +2586,29 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 - **Playback clock** (`engine/src/playback.rs`) reads that position, so video is slaved to audio.
   With no device, or if audio fails to start within 500 ms, it falls back to wall-clock time.
   The status bar shows which clock is in use.
+
+### Opening Adobe projects (`core/src/adobe`)
+
+`adobe::import(path)` reads a project into an `Imported { project, notes, summary }`; the
+editor's `import_adobe_project` probes the media that exists and installs it as a new, unsaved
+project with an `ImportReport` for the UI. Both readers treat the file as hostile: sizes,
+counts, times and nesting depth are checked, unpacking is capped, and a damaged file is an
+error, never a panic (tested by cutting and scrambling sample files).
+
+- `prproj.rs`: a `.prproj` is gzipped XML (`roxmltree`, `flate2`): objects with an
+  `ObjectID`/`ObjectUID`, referenced by `ObjectRef`/`ObjectURef`. Sequence → track groups →
+  tracks → track items → subclip → clip (`InPoint`, `OutPoint`, `PlaybackSpeed`, source:
+  media or a sequence). Times are ticks (254 016 000 000 a second, 360 of ours each). Motion
+  positions are fractions of the frame, anchors fractions of the clip, scale %, volume a gain
+  where 1.0 is +15 dB; keyframes are `time,value,interpolation,…;` in source time. Blend
+  mode and keyframe codes come from projects Premiere saved.
+- `aep.rs`: an `.aep` is a big-endian RIFF ("RIFX", `Egg!`). Items (`idta`: folder,
+  composition, footage) sit in `LIST Fold`; footage in `LIST Pin ` (`sspc`, `opti` for solids,
+  `alas` JSON for the path); a composition's `cdta` and one `LIST Layr` per layer (`ldta`:
+  times as dividend/divisor seconds, stretch, switches, source, blend, matte, type, parent);
+  properties are `tdmn` match names with `tdbs` values (`tdb4`, `cdat` doubles) and keyframes
+  (`lhd3`, `ldat`). Transform properties at their defaults aren't written. Values were checked
+  against After Effects' own scripting output for 71 compositions.
 
 ## Roadmap
 

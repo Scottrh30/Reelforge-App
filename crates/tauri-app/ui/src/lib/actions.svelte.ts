@@ -58,6 +58,9 @@ export const actions = {
   async open() {
     if (await checkUnsaved()) await run(api.openDialog());
   },
+  async openAdobe() {
+    if (await checkUnsaved()) await run(api.openAdobeDialog());
+  },
   async openAutosave() {
     if (await checkUnsaved()) await run(api.openAutosaveDialog());
   },

@@ -335,6 +335,19 @@ fn open_dialog() -> Res<()> {
     ed(|e| e.open_project_path(path))
 }
 
+/// File > Open a Premiere Pro or After Effects project…: it becomes a new, unsaved project.
+#[tauri::command]
+fn open_adobe_dialog() -> Res<()> {
+    let Some(path) = rfd::FileDialog::new().add_filter("Premiere Pro or After Effects project", &["prproj", "aep"]).add_filter("Premiere Pro project", &["prproj"]).add_filter("After Effects project", &["aep"]).pick_file() else { return Ok(()) };
+    ed(|e| e.import_adobe_project(&path))
+}
+
+/// Close the report of what an opened Adobe project brought across.
+#[tauri::command]
+fn dismiss_import_report() -> Res<()> {
+    ed(|e| e.dismiss_import_report())
+}
+
 /// File > Open an autosave…: pick one from the autosave folder and open it unsaved.
 #[tauri::command]
 fn open_autosave_dialog() -> Res<()> {
@@ -393,6 +406,11 @@ fn import_paths(paths: Vec<String>) -> Res<Vec<u64>> {
         let rf: Vec<&PathBuf> = paths.iter().filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("rfproj"))).collect();
         if let Some(p) = rf.first() {
             e.open_project_path((*p).clone());
+            return Vec::new();
+        }
+        // A Premiere Pro or After Effects project dropped: opened as a new project.
+        if let Some(p) = paths.iter().find(|p| reelforge_core::adobe::is_adobe_project(p)) {
+            e.import_adobe_project(p);
             return Vec::new();
         }
         e.import(&paths);
@@ -2009,6 +2027,8 @@ fn main() {
             viewer::viewer_drag,
             viewer::viewer_release,
             open_autosave_dialog,
+            open_adobe_dialog,
+            dismiss_import_report,
             rendered_runs,
             ops::paste_attributes,
             ops::marker_add,

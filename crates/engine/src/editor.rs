@@ -307,6 +307,20 @@ mod interchange;
 pub mod magnetic;
 pub mod simulate;
 pub use multicam::MulticamAt;
+
+/// What opening a Premiere Pro or After Effects project brought across.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ImportReport {
+    /// "Premiere Pro" or "After Effects".
+    pub from: String,
+    /// The project file's name.
+    pub name: String,
+    pub summary: String,
+    /// What was left out or came across only partly.
+    pub notes: Vec<String>,
+    /// Media files not found where the project says (to relink).
+    pub missing: usize,
+}
 mod replace;
 mod aifx;
 pub mod upscale;
@@ -430,6 +444,9 @@ pub struct Editor {
     /// Space running short where the app writes (shown until dismissed), when last looked, and below what it counts as low.
     pub disk_low: Option<crate::disk::DiskLow>,
     pub disk_dismissed: bool,
+    /// What the last Premiere Pro or After Effects project opened brought
+    /// across and left out (shown until dismissed).
+    pub import_report: Option<ImportReport>,
     disk_checked: Option<std::time::Instant>,
     pub disk_low_at: u64,
     /// Camera solves' fit per frame, by clip (and which solve it was for).
@@ -509,6 +526,7 @@ impl Editor {
             proxied_rev: 0,
             disk_low: None,
             disk_dismissed: false,
+            import_report: None,
             disk_checked: None,
             // (Tests don't depend on the machine's free space; the disk test sets it.)
             disk_low_at: if cfg!(test) { 0 } else { crate::disk::LOW },
@@ -3768,6 +3786,43 @@ impl Editor {
         }
     }
 
+    /// File → Open a Premiere Pro or After Effects project: it becomes a new,
+    /// unsaved Reelforge project (see `reelforge_core::adobe`). Each media
+    /// file that's there is looked at again, so its details are exactly
+    /// right; what couldn't come across is listed in `import_report`.
+    pub fn import_adobe_project(&mut self, path: &Path) {
+        let mut im = match reelforge_core::adobe::import(path) {
+            Ok(im) => im,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        for m in &mut im.project.media {
+            if m.path.exists() {
+                if let Ok(info) = reelforge_media::probe(&m.path) {
+                    m.info = info;
+                }
+            }
+        }
+        let from = match reelforge_core::adobe::kind_of(path, b"") {
+            Some(reelforge_core::adobe::Kind::AfterEffects) => "After Effects",
+            _ => "Premiere Pro",
+        };
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let missing = im.project.media.iter().filter(|m| !m.path.exists()).count();
+        self.replace_project(im.project, None);
+        // A new project: nothing saved yet.
+        self.saved_rev = self.rev.wrapping_sub(1);
+        self.after_load();
+        self.status = format!("Opened the {from} project {name}: {}{}", im.summary, if missing > 0 { format!(" ({missing} media file{} to relink)", if missing == 1 { "" } else { "s" }) } else { String::new() });
+        self.import_report = Some(ImportReport { from: from.into(), name, summary: im.summary, notes: im.notes, missing });
+    }
+
+    pub fn dismiss_import_report(&mut self) {
+        self.import_report = None;
+    }
+
     /// Load crashed session `i`'s autosave as an unsaved project.
     pub fn recover(&mut self, i: usize) {
         if i >= self.recoveries.len() {
@@ -4001,6 +4056,48 @@ mod tests {
 
     /// A track's arrow: collapsed → normal → expanded with its clip's
     /// properties → collapsed, on video and audio tracks alike.
+    /// A Premiere project opens as a new, unsaved project, with a report of
+    /// what came across; a file that isn't one leaves the project alone.
+    #[test]
+    fn premiere_and_after_effects_projects_open_as_new_projects() {
+        let dir = std::env::temp_dir().join(format!("rf-adobe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" ?>
+<PremiereData Version="3">
+	<Sequence ObjectUID="s1"><Name>Cut</Name><TrackGroups><TrackGroup Index="0"><Second ObjectRef="10"/></TrackGroup></TrackGroups></Sequence>
+	<VideoTrackGroup ObjectID="10"><TrackGroup><Tracks><Track Index="0" ObjectURef="t1"/></Tracks><FrameRate>10160640000</FrameRate></TrackGroup><FrameRect>0,0,1280,720</FrameRect></VideoTrackGroup>
+	<VideoClipTrack ObjectUID="t1"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem Index="0" ObjectRef="20"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack>
+	<VideoClipTrackItem ObjectID="20"><ClipTrackItem><TrackItem><End>508032000000</End></TrackItem><SubClip ObjectRef="30"/></ClipTrackItem></VideoClipTrackItem>
+	<SubClip ObjectID="30"><Clip ObjectRef="40"/></SubClip>
+	<VideoClip ObjectID="40"><Clip><Source ObjectRef="50"/><InPoint>0</InPoint></Clip></VideoClip>
+	<VideoMediaSource ObjectID="50"><MediaSource><Media ObjectURef="m1"/></MediaSource></VideoMediaSource>
+	<Media ObjectUID="m1"><VideoStream ObjectRef="60"/><FilePath>/nowhere/shot.mov</FilePath><Title>shot.mov</Title></Media>
+	<VideoStream ObjectID="60"><FrameRate>10160640000</FrameRate><Duration>2540160000000</Duration><FrameRect>0,0,1280,720</FrameRect></VideoStream>
+</PremiereData>
+"#;
+        let path = dir.join("Edit.prproj");
+        std::fs::write(&path, xml).unwrap();
+        let mut e = editor();
+        e.import_adobe_project(&path);
+        assert_eq!(e.project.sequences.len(), 1, "{}", e.status);
+        let s = e.seq();
+        assert_eq!((s.name.as_str(), s.width, s.frame_rate), ("Cut", 1280, FrameRate::new(25, 1)));
+        assert_eq!(s.tracks[0].clips.len(), 1);
+        assert!(e.is_dirty() && e.project_path.is_none(), "a new, unsaved project");
+        let r = e.import_report.clone().unwrap();
+        assert_eq!((r.from.as_str(), r.name.as_str(), r.missing), ("Premiere Pro", "Edit.prproj", 1));
+        assert!(e.status.contains("Premiere Pro") && e.status.contains("relink"), "{}", e.status);
+        e.dismiss_import_report();
+        assert!(e.import_report.is_none());
+        // Not a project: an error, and the project stays.
+        let junk = dir.join("junk.aep");
+        std::fs::write(&junk, b"not a project").unwrap();
+        e.import_adobe_project(&junk);
+        assert_eq!(e.seq().name, "Cut");
+        assert!(e.status.contains("After Effects") && e.import_report.is_none(), "{}", e.status);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn track_arrows_cycle_through_expanded() {
         let mut e = editor();

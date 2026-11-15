@@ -925,6 +925,8 @@ export interface State {
   inspector: Inspector | null;
   trackers: TrackSource[];
   recoveries: string[];
+  /// What an opened Premiere Pro or After Effects project brought across (until dismissed).
+  import_report: { from: string; name: string; summary: string; notes: string[]; missing: number } | null;
   /// The Viewer's view (see viewSet).
   view: ViewMode;
   prefs: Prefs;
@@ -1040,6 +1042,8 @@ export const api = {
   effectThumb: (id: number, kind: EffectKind, plugin: string | null, step = 0) => invoke<ArrayBuffer>("effect_thumb", { id, kind, plugin, step }),
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),
+  openAdobeDialog: () => invoke("open_adobe_dialog"),
+  dismissImportReport: () => invoke("dismiss_import_report"),
   colorMatch: (targets: number[], from: "clip" | "media" | "file", id: number, path: string | null, tone: boolean, color: boolean) => invoke("color_match", { targets, from, id, path, tone, color }),
   colorMatchCancel: () => invoke("color_match_cancel"),
   colorMatchPick: () => invoke<string | null>("color_match_pick"),

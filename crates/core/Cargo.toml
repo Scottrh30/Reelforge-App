@@ -12,3 +12,6 @@ log.workspace = true
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 # Camera solves to and from other applications (camtrack_io).
 serde_json.workspace = true
+# Opening Premiere Pro projects (gzipped XML).
+roxmltree = "0.20"
+flate2 = "1"
