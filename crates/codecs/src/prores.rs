@@ -179,6 +179,10 @@ fn frame_header(buf: &[u8]) -> Result<(FrameHeader, usize)> {
     if width == 0 || height == 0 {
         return invalid("ProRes: empty picture");
     }
+    // ProRes goes up to 8K: anything larger is a damaged header, not a picture to allocate
+    if width > 8192 || height > 8192 {
+        return invalid("ProRes: picture too large");
+    }
     Ok((FrameHeader { width, height, chroma_444, frame_type, alpha, matrix, qmat_luma, qmat_chroma }, hdr_size))
 }
 
@@ -517,8 +521,9 @@ pub fn decode_frame(data: &[u8]) -> Result<Picture> {
     copy(&pl.y, pl.w, &mut pic.planes[0], pw as usize, ph as usize);
     copy(&pl.u, pl.cw, &mut pic.planes[1], cols_c as usize, ph as usize);
     copy(&pl.v, pl.cw, &mut pic.planes[2], cols_c as usize, ph as usize);
-    if alpha {
-        copy(&pl.a, pl.w, &mut pic.planes[3], pw as usize, ph as usize);
+    // (alpha exists in 4:4:4 only; a 4:2:2 header claiming it has no plane for it)
+    if let (true, Some(a)) = (alpha, pic.planes.get_mut(3)) {
+        copy(&pl.a, pl.w, a, pw as usize, ph as usize);
     }
     pic.matrix = hdr.matrix;
     pic.interlaced = hdr.frame_type != 0;

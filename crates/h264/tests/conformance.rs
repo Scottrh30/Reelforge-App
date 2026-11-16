@@ -21,6 +21,8 @@ fixture_tests!(
     mbaff_i_cavlc_nodbk,
     mbaff_high_720,
     mbaff_bff,
+    mbaff_temporal,
+    mbaff_temporal_cavlc,
     mbaff_odd,
     mbaff_weightb,
     mbaff_slices,

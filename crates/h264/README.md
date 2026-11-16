@@ -201,10 +201,14 @@ file; `H264_BENCH_ITERS=n` (and `H264_THREADS=t`, `H264_DRAFT=1`) turns it into 
 
 ## Known gaps
 
-- Interlaced coding (field pictures, PAFF, MBAFF): streams with `frame_mbs_only_flag = 0` return
-  `Error::Unsupported`.
-- Only 8-bit 4:2:0. High 10 / 4:2:2 / 4:4:4 / monochrome and lossless
-  (`qpprime_y_zero_transform_bypass`) return `Error::Unsupported`.
+- Interlaced coding is supported: MBAFF frames and field pictures (PAFF), alone or mixed. A
+  field picture decodes into a picture of its own (half the frame's height); when its second
+  field is done, the frame's rows are put together from both (the motion kept as an MBAFF
+  frame of field pairs keeps it, so later pictures find co-located motion the same way either
+  way). The DPB marks references per field (`dpb.rs`). Tested against FFmpeg on JM-encoded
+  streams in `tests/data/jm` (`tests/jm_interlaced.rs`).
+- 4:4:4, monochrome, lossless (`qpprime_y_zero_transform_bypass`) and constrained intra
+  prediction in MBAFF frames return `Error::Unsupported`.
 - FMO (slice groups), SP/SI slices, data partitioning (Extended profile), MVC/SVC NAL units.
 - Error concealment is minimal: undecodable slices leave the prediction/previous content; missing
   references are replaced by other references.

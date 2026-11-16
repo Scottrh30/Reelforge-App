@@ -1,0 +1,101 @@
+# Coverage-guided fuzzing of Reelforge's own decoders (libFuzzer through cargo-fuzz).
+# Not part of the main workspace. See README.md here.
+[package]
+name = "reelforge-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+reelforge-codecs = { path = "../crates/codecs" }
+
+[lib]
+path = "src/lib.rs"
+
+# Its own workspace, so it never joins (or breaks) the main one.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "mjpeg"
+path = "fuzz_targets/mjpeg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "prores"
+path = "fuzz_targets/prores.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnxhd"
+path = "fuzz_targets/dnxhd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mpeg2"
+path = "fuzz_targets/mpeg2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h264"
+path = "fuzz_targets/h264.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hevc"
+path = "fuzz_targets/hevc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vp8"
+path = "fuzz_targets/vp8.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vp9"
+path = "fuzz_targets/vp9.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "av1"
+path = "fuzz_targets/av1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cineform"
+path = "fuzz_targets/cineform.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "exr"
+path = "fuzz_targets/exr.rs"
+test = false
+doc = false
+bench = false

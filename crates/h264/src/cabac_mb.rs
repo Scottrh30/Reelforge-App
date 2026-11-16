@@ -445,7 +445,7 @@ impl<P: Pel> SliceDecoder<'_, P> {
             return 0;
         }
         // field macroblocks have their own significance contexts (ctxIdx 277.., 338.., 436.., 451..)
-        let field = self.field;
+        let field = self.coded_field();
         let (sig_base, last_base, abs_base) = match (cat, field) {
             (5, false) => (402, 417, 426),
             (5, true) => (436, 451, 426),

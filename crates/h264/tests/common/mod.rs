@@ -49,6 +49,8 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture { name: "mbaff_p_dbk", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=0:ref=3"] },
     Fixture { name: "mbaff_main", source: "testsrc2", width: 352, height: 288, frames: 20, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=3:ref=3"] },
     Fixture { name: "mbaff_high_720", source: "mandelbrot", width: 1280, height: 720, frames: 8, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=2:ref=2"] },
+    Fixture { name: "mbaff_temporal", source: "testsrc2", width: 352, height: 288, frames: 16, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=3:direct=temporal:ref=3"] },
+    Fixture { name: "mbaff_temporal_cavlc", source: "mandelbrot", width: 352, height: 288, frames: 12, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=2:direct=temporal:cabac=0:bff=1"] },
     Fixture { name: "mbaff_bff", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=2:bff=1"] },
     Fixture { name: "mbaff_odd", source: "testsrc2", width: 318, height: 236, frames: 8, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=2"] },
     Fixture { name: "mbaff_weightb", source: "testsrc2", width: 352, height: 288, frames: 16, filter: "noise=alls=12:allf=t+u,fade=in:0:12", args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=3:weightb=1"] },

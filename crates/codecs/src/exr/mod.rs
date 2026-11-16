@@ -154,10 +154,10 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn bytes(&mut self, n: usize) -> Result<&'a [u8]> {
-        if self.p + n > self.d.len() {
+        // (lengths and offsets come from the file: no wrapping past the end)
+        let Some(s) = self.p.checked_add(n).and_then(|end| self.d.get(self.p..end)) else {
             return fail("file cut short");
-        }
-        let s = &self.d[self.p..self.p + n];
+        };
         self.p += n;
         Ok(s)
     }

@@ -654,6 +654,8 @@ mod tests {
             // interlaced (MBAFF), as AVCHD camcorders record
             ("h264_mbaff.mkv", "352x288", 25, x("yuv420p", "high", &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=3"])),
             ("h264_mbaff_bff.mp4", "320x180", 25, x("yuv420p", "high", &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bff=1:cabac=0"])),
+            // temporal direct prediction in MBAFF frames
+            ("h264_mbaff_temporal.mp4", "320x180", 25, x("yuv420p", "high", &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:direct=temporal:bframes=2"])),
         ];
         let mut ran = 0;
         let mut bad = Vec::new();
@@ -784,8 +786,6 @@ mod tests {
     #[test]
     fn unsupported_h264_is_reported() {
         for (name, args) in [
-            // temporal direct in an MBAFF frame: still FFmpeg's
-            ("temporal_mbaff.mp4", vec!["-c:v", "libx264", "-flags", "+ildct+ilme", "-x264-params", "interlaced=1:direct=temporal:bframes=2"]),
             // High 4:4:4 Predictive (lossless): still FFmpeg's.
             ("lossless444.mp4", vec!["-c:v", "libx264", "-pix_fmt", "yuv444p", "-qp", "0"]),
         ] {
@@ -804,6 +804,25 @@ mod tests {
             }
             assert!(failed, "{name} should be refused");
         }
+    }
+
+    /// Field-coded H.264 (PAFF: field pictures, and frames and fields mixed, with MBAFF and
+    /// temporal direct) through the app's decoder: JM-encoded streams, as FFmpeg decodes them.
+    #[test]
+    fn h264_field_pictures_match_ffmpeg() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../h264/tests/data/jm");
+        let mut bad = Vec::new();
+        for name in ["fields_temporal_cabac", "fields_spatial_cavlc", "paff_mbaff_temporal", "paff_mbaff_bref_cavlc"] {
+            if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+                return;
+            }
+            let (n, psnr) = compare_with_ffmpeg(&dir.join(format!("{name}.264")));
+            eprintln!("{name}: {n} frames, worst {psnr:.1} dB");
+            if n < 10 || psnr < 99.0 {
+                bad.push(format!("{name}: {n} frames, {psnr:.1} dB"));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
     }
 
     /// Field pictures, same-frame field references, 16×8 and dual-prime motion

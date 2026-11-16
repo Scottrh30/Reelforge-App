@@ -809,10 +809,12 @@ fn write_mb(cur: &mut Frame, structure: u32, (cw, ch): (usize, usize), (mb_x, mb
                 None => y0 + k,
                 Some(p) => p + 2 * (y0 + k),
             };
-            if line >= lines {
+            if line >= lines || x0 + w > stride {
                 break;
             }
-            plane[line * stride + x0..line * stride + x0 + w].copy_from_slice(&src[k * 16..k * 16 + w]);
+            // (a picture whose size disagrees with the frame's is clipped, not a crash)
+            let (Some(d), Some(s)) = (plane.get_mut(line * stride + x0..line * stride + x0 + w), src.get(k * 16..k * 16 + w)) else { break };
+            d.copy_from_slice(s);
         }
     };
     let (ys, yl) = (cur.strides[0], cur.heights[0]);
@@ -991,8 +993,11 @@ impl Mpeg2Decoder {
             let (pw, ph) = format.plane_size(p, w, h);
             let dst = &mut pic.planes[p];
             for y in 0..ph as usize {
-                let s = &f.planes[p][y * f.strides[p]..y * f.strides[p] + pw as usize];
-                dst.data[y * dst.stride..y * dst.stride + pw as usize].copy_from_slice(s);
+                // (a frame decoded before a size change is smaller than the new size: what it
+                // has is copied, the rest stays black)
+                let n = (pw as usize).min(f.strides[p]);
+                let (Some(s), Some(d)) = (f.planes[p].get(y * f.strides[p]..y * f.strides[p] + n), dst.data.get_mut(y * dst.stride..y * dst.stride + n)) else { break };
+                d.copy_from_slice(s);
             }
         }
         pic.pts = f.pts;

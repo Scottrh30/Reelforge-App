@@ -44,6 +44,8 @@ pub struct PicState<P: Pel = u8> {
     pub skip_deblock: bool,
     /// An MBAFF frame: deblocked by macroblock pairs.
     pub mbaff: bool,
+    /// A field picture (deblocked as field macroblocks).
+    pub field_pic: bool,
 }
 
 impl<P: Pel> PicState<P> {
@@ -64,6 +66,7 @@ impl<P: Pel> PicState<P> {
             rows_published: 0,
             skip_deblock: false,
             mbaff: false,
+            field_pic: false,
         }
     }
 
@@ -84,6 +87,7 @@ impl<P: Pel> PicState<P> {
         self.rows_published = 0;
         self.skip_deblock = false;
         self.mbaff = false;
+        self.field_pic = false;
     }
 
     /// Record a decoded macroblock and deblock / publish rows that became final.
@@ -134,10 +138,15 @@ impl<P: Pel> PicState<P> {
         while self.rows_published < publish_limit {
             let r = self.rows_published;
             let slices = &self.slices;
-            // (field macroblocks: the frame of the reference field)
-            let ids = |st: &MbState, l: usize, ri: i8| {
-                let ri = if st.field { ri >> 1 } else { ri };
-                slices.get(st.slice_num as usize).and_then(|s| s.ref_ids[l].get(ri as usize).copied()).unwrap_or(u32::MAX)
+            // (field macroblocks of MBAFF frames: field ri & 1 of frame ri / 2, the same parity
+            // as the macroblock (row r) for even indices)
+            let ids = |st: &MbState, r: usize, l: usize, ri: i8| {
+                let s = slices.get(st.slice_num as usize);
+                if st.field {
+                    s.and_then(|s| s.ref_ids[l].get((ri >> 1) as usize)).map_or(u32::MAX, |k| key_field(*k, (r & 1) ^ (ri & 1) as usize))
+                } else {
+                    s.and_then(|s| s.ref_ids[l].get(ri as usize).copied()).unwrap_or(u32::MAX)
+                }
             };
             let row = Frame::make_row(&self.planes, r, &self.mbs, &ids);
             self.frame.publish(r, row);
@@ -239,8 +248,10 @@ pub struct SliceDecoder<'a, P: Pel = u8> {
     pub cur: MbCur,
     pub s: Box<Scratch<P>>,
     weights: Weights,
-    /// Temporal direct: DistScaleFactor per refIdxL0, and whether pic0 is long-term.
+    /// Temporal direct: DistScaleFactor per refIdxL0, and whether pic0 is long-term; for the
+    /// field macroblocks of MBAFF frames (per parity) by field reference index.
     tdirect: Vec<(i32, bool)>,
+    tdirect_field: [Vec<(i32, bool)>; 2],
     /// CABAC: previous MB in decoding order had a non-zero mb_qp_delta.
     pub prev_qp_delta_nz: bool,
     /// MBAFF frame (macroblock pairs, each frame or field coded).
@@ -249,22 +260,24 @@ pub struct SliceDecoder<'a, P: Pel = u8> {
     /// current pair.
     pub field: bool,
     pub pair_field: bool,
+    /// A field picture: its parity (0 top, 1 bottom).
+    pub pic_par: Option<usize>,
 }
 
 /// Interpolate a bw x bh luma block at (px, py) with motion vector `mv` from reference `f` into `y`,
 /// and the corresponding chroma blocks into `c` (stride `cs`).
+/// `read`: the field of `f` to read (field macroblocks, fields of frame-coded pictures;
+/// positions are then field positions). `coff`: the 4:2:0 chroma offset (quarter samples)
+/// between fields of different parity.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-/// `field`: for field macroblocks, the parity of the reference field and of the macroblock
-/// (positions are then field positions).
-#[allow(clippy::too_many_arguments)]
-fn predict_block<P: Pel>(f: &Frame<P>, field: Option<(usize, usize)>, mv: [i16; 2], px: usize, py: usize, bw: usize, bh: usize, y: (&mut [P], usize), c: [&mut [P]; 2], cs: usize) {
+fn predict_block<P: Pel>(f: &Frame<P>, read: Option<usize>, coff: i32, mv: [i16; 2], px: usize, py: usize, bw: usize, bh: usize, y: (&mut [P], usize), c: [&mut [P]; 2], cs: usize) {
     const LW: usize = 24;
     let mut win = [P::default(); LW * 21];
     let ix = px as i32 + (mv[0] as i32 >> 2);
     let iy = py as i32 + (mv[1] as i32 >> 2);
-    match field {
-        Some((par, _)) => f.luma_window_field(par, ix - 2, iy - 2, bw + 5, bh + 5, &mut win, LW),
+    match read {
+        Some(par) => f.luma_window_field(par, ix - 2, iy - 2, bw + 5, bh + 5, &mut win, LW),
         None => f.luma_window(ix - 2, iy - 2, bw + 5, bh + 5, &mut win, LW),
     }
     inter::mc_luma_win(&win, LW, (mv[0] & 3) as u32, (mv[1] & 3) as u32, bw, bh, y.0, y.1, f.fmt.max_y());
@@ -276,15 +289,14 @@ fn predict_block<P: Pel>(f: &Frame<P>, field: Option<(usize, usize)>, mv: [i16; 
     } else {
         // 4:2:0 field prediction from the other parity: chroma sits a quarter sample
         // higher or lower (Table 8-10)
-        let off = field.map_or(0, |(rp, cp)| 2 * (cp as i32 - rp as i32));
-        let my = mv[1] as i32 + off;
+        let my = mv[1] as i32 + coff;
         ((py / 2) as i32 + (my >> 3), bh / 2, (my & 7) as u32)
     };
     let cw = bw / 2;
     for (comp, out) in c.into_iter().enumerate() {
         let mut w = [P::default(); 16 * 17];
-        match field {
-            Some((par, _)) => f.chroma_window_field(comp, par, cx, cy, cw + 1, ch + 1, &mut w, 16),
+        match read {
+            Some(par) => f.chroma_window_field(comp, par, cx, cy, cw + 1, ch + 1, &mut w, 16),
             None => f.chroma_window(comp, cx, cy, cw + 1, ch + 1, &mut w, 16),
         }
         inter::mc_chroma_win(&w, 16, fx, fy, cw, ch, out, cs);
@@ -299,6 +311,45 @@ fn ref_field_of<P: Pel>(refs: &[Vec<RefPic<P>>; 2], cur_par: Option<usize>, l: u
         Some(c) => Some((refs[l].get((r >> 1) as usize)?, c ^ (r & 1) as usize)),
         None => Some((refs[l].get(r as usize)?, 0)),
     }
+}
+
+/// The reference block source for reference index `r` of list `l`: the picture, the field of
+/// it to read and the chroma offset (see [`predict_block`]). `mbaff_par`: the parity of a
+/// field macroblock of an MBAFF frame; `pic_par`: of a field picture.
+#[inline]
+fn ref_src_of<P: Pel>(refs: &[Vec<RefPic<P>>; 2], mbaff_par: Option<usize>, pic_par: Option<usize>, l: usize, r: i8) -> Option<(&RefPic<P>, Option<usize>, i32)> {
+    match mbaff_par {
+        Some(c) => {
+            let rp = refs[l].get((r >> 1) as usize)?;
+            let par = c ^ (r & 1) as usize;
+            Some((rp, Some(par), 2 * (c as i32 - par as i32)))
+        }
+        None => {
+            let rp = refs[l].get(r as usize)?;
+            let off = match (pic_par, rp.parity) {
+                (Some(c), Some(p)) => 2 * (c as i32 - p as i32),
+                _ => 0,
+            };
+            Some((rp, rp.read_par, off))
+        }
+    }
+}
+
+/// Vertical motion scaling from the co-located picture (Table 8-8).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VScale {
+    One,
+    FrmToFld,
+    FldToFrm,
+}
+
+/// Co-located motion: mvCol, refIdxCol and the key of the picture it refers to.
+#[derive(Clone, Copy)]
+struct Col {
+    mv: [i16; 2],
+    ref_idx: i8,
+    key: u32,
+    scale: VScale,
 }
 
 #[inline(always)]
@@ -320,17 +371,32 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         });
         let weights = Self::build_weights(sh, pps, refs, pic.poc, fmt);
         pic.mbaff = sps.mb_adaptive_frame_field && !sh.field_pic;
+        pic.field_pic = sh.field_pic;
         let mut tdirect = Vec::new();
+        let mut tdirect_field = [Vec::new(), Vec::new()];
+        let dsf = |cur: i32, poc0: i32, poc1: i32, long: bool| {
+            let tb = cur.saturating_sub(poc0).clamp(-128, 127);
+            let td = poc1.saturating_sub(poc0).clamp(-128, 127);
+            if td == 0 || long {
+                (256, true)
+            } else {
+                let tx = (16384 + (td / 2).abs()) / td;
+                (((tb * tx + 32) >> 6).clamp(-1024, 1023), false)
+            }
+        };
         if sh.slice_type == SliceType::B && !sh.direct_spatial_mv_pred && !refs[1].is_empty() {
-            let poc1 = refs[1][0].poc();
+            let r1 = &refs[1][0];
             for r0 in refs[0].iter() {
-                let tb = (pic.poc - r0.poc()).clamp(-128, 127);
-                let td = (poc1 - r0.poc()).clamp(-128, 127);
-                if td == 0 || r0.long_term {
-                    tdirect.push((256, true));
-                } else {
-                    let tx = (16384 + (td / 2).abs()) / td;
-                    tdirect.push((((tb * tx + 32) >> 6).clamp(-1024, 1023), false));
+                tdirect.push(dsf(pic.poc, r0.poc(), r1.poc(), r0.long_term));
+            }
+            if pic.mbaff {
+                // field macroblocks: the fields of the current frame and of RefPicList1[0] of
+                // the macroblock's parity, and field refIdxL0 (8.4.1.2.3)
+                for (p, t) in tdirect_field.iter_mut().enumerate() {
+                    for i in 0..2 * refs[0].len() {
+                        let r0 = &refs[0][i >> 1];
+                        t.push(dsf(pic.frame.field_poc[p], r0.field_poc[p ^ (i & 1)], r1.field_poc[p], r0.long_term));
+                    }
                 }
             }
         }
@@ -361,10 +427,12 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
             s: Scratch::new(),
             weights,
             tdirect,
+            tdirect_field,
             prev_qp_delta_nz: false,
             mbaff: sps.mb_adaptive_frame_field && !sh.field_pic,
             field: false,
             pair_field: false,
+            pic_par: sh.field_pic.then_some(sh.bottom_field as usize),
         })
     }
 
@@ -737,68 +805,72 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
     // Direct prediction (8.4.1.2)
     // ------------------------------------------------------------------------------------------
 
-    /// Co-located (mvCol, refIdxCol, referenced picture id) for 4x4 block `raster` of the current MB.
-    fn colocated(&self, raster: usize) -> ([i16; 2], i8, u32) {
-        let Some(col) = self.refs[1].first() else { return ([0, 0], -1, u32::MAX) };
-        let raster = if self.sps.direct_8x8_inference {
-            let (bx, by) = (raster & 3, raster >> 2);
-            (if by >= 2 { 12 } else { 0 }) + if bx >= 2 { 3 } else { 0 }
-        } else {
-            raster
-        };
-        if col.frame.mb_w != self.mb_w || self.mb_y >= col.frame.mb_h() {
-            return ([0, 0], -1, u32::MAX);
-        }
-        let m = col.frame.row(self.mb_y);
-        let mb = self.mb_x;
-        if m.intra[mb] {
-            return ([0, 0], -1, u32::MAX);
-        }
-        let b8 = mb * 4 + (raster >> 3) * 2 + ((raster & 3) >> 1);
-        let l = if m.ref_idx[0][b8] >= 0 { 0 } else { 1 };
-        (m.mv[l][mb * 16 + raster], m.ref_idx[l][b8], m.ref_id[l][b8])
-    }
-
-    /// MBAFF spatial direct, the current and co-located macroblocks coded differently (one a
-    /// field macroblock, the other not): colZeroFlag of 8x8 block `b8` from the co-located
-    /// field or frame macroblock the block lies over. None when they're coded alike (the usual
-    /// derivation applies).
-    fn col_zero_mbaff(&self, b8: usize) -> Option<bool> {
-        let col = self.refs[1].first()?;
+    /// The co-located motion for 4x4 block `raster` of the current macroblock (8.4.1.2.1):
+    /// from the first entry of RefPicList1 (the field or frame, Table 8-6) at the macroblock
+    /// and block Table 8-8 gives, with the vertical scaling between them.
+    fn colocated(&self, raster: usize) -> Col {
+        const NONE: Col = Col { mv: [0, 0], ref_idx: -1, key: u32::MAX, scale: VScale::One };
+        let Some(col) = self.refs[1].first() else { return NONE };
+        let (bx, by) = (raster & 3, raster >> 2);
+        // direct_8x8_inference: the corner block of the 8x8 (in 4x4 blocks)
+        let (xc, yc) = if self.sps.direct_8x8_inference { (if bx >= 2 { 3 } else { 0 }, if by >= 2 { 3 } else { 0 }) } else { (bx, by) };
         let f = &col.frame;
-        if f.mb_w != self.mb_w || self.mb_y >= f.mb_h() {
-            return Some(false);
+        if f.mb_w != self.mb_w {
+            return NONE;
         }
-        let (x, pair_row) = (self.mb_x, self.mb_y & !1);
-        let col_field = f.row(self.mb_y).field[x];
-        if col_field == self.field {
-            return None;
-        }
-        let (x8, y8) = (b8 & 1, b8 >> 1);
-        let (row, blk8, r4) = if col_field {
-            // frame MB over a field pair: the co-located field nearer in POC (8.4.1.2.1), the
-            // half of it level with this MB
-            let cur = self.pic.frame.poc as i64;
-            let [t, b] = f.field_poc.map(|p| p as i64);
-            let par = ((t - cur).abs() >= (b - cur).abs()) as usize;
-            let half = self.mb_y & 1;
-            (pair_row + par, 2 * half + x8, 2 * half + y8)
-        } else {
-            // field MB over a frame pair: its top MB for the upper half, bottom for the lower
-            (pair_row + y8, 2 * y8 + x8, 2 * y8)
+        let x = self.mb_x;
+        let pair_field = |row: usize| row < f.mb_h() && f.row(row).field[x];
+        // (macroblock row in the co-located picture, 4x4 row in it, scaling)
+        let (row, ym, scale) = match (self.pic_par, self.field) {
+            (Some(_), _) if col.read_par.is_none() && col.parity.is_some() => (self.mb_y, yc, VScale::One),
+            (Some(p), _) => {
+                // a field of a frame-coded picture: the macroblock pair at this field row
+                let pair = 2 * self.mb_y;
+                if pair_field(pair) { (pair + p, yc, VScale::One) } else { (pair + yc / 2, (2 * yc) % 4, VScale::FrmToFld) }
+            }
+            (None, true) => {
+                let pair = self.mb_y & !1;
+                if pair_field(pair) { (self.mb_y, yc, VScale::One) } else { (pair + yc / 2, (2 * yc) % 4, VScale::FrmToFld) }
+            }
+            (None, false) => {
+                if pair_field(self.mb_y) {
+                    // over a field pair (or a frame coded as two fields): the field nearer in POC
+                    let cur = self.pic.frame.poc as i64;
+                    let [t, b] = col.field_poc.map(|p| p as i64);
+                    let q = ((t - cur).abs() >= (b - cur).abs()) as usize;
+                    ((self.mb_y & !1) + q, 2 * (self.mb_y & 1) + yc / 2, VScale::FldToFrm)
+                } else {
+                    (self.mb_y, yc, VScale::One)
+                }
+            }
         };
-        if row >= f.mb_h() || col.long_term {
-            return Some(false);
+        if row >= f.mb_h() {
+            return NONE;
         }
         let m = f.row(row);
         if m.intra[x] {
-            return Some(false);
+            return NONE;
         }
-        let b = x * 4 + blk8;
-        let r = x * 16 + r4 * 4 + x8 * 3;
-        let small = |v: [i16; 2]| (-1..=1).contains(&v[0]) && (-1..=1).contains(&v[1]);
-        let (r0, r1) = (m.ref_idx[0][b], m.ref_idx[1][b]);
-        Some((r0 == 0 && small(m.mv[0][r])) || (r0 < 0 && r1 == 0 && small(m.mv[1][r])))
+        let b8 = x * 4 + (ym >> 1) * 2 + (xc >> 1);
+        let l = if m.ref_idx[0][b8] >= 0 { 0 } else { 1 };
+        Col { mv: m.mv[l][x * 16 + ym * 4 + xc], ref_idx: m.ref_idx[l][b8], key: m.ref_id[l][b8], scale }
+    }
+
+    /// Temporal direct: the lowest index into RefPicList0 of the picture the co-located block
+    /// refers to (`key`), as a field for field macroblocks and field pictures, else the frame
+    /// (8.4.1.2.3). 0 when it isn't in the list.
+    fn map_col_to_list0(&self, key: u32) -> i8 {
+        let found = if let Some(c) = self.field.then_some(self.mb_y & 1) {
+            let target = if key & 3 == 3 { key_field(key, c) } else { key };
+            (0..2 * self.refs[0].len()).find(|&i| key_field(self.refs[0][i >> 1].key, c ^ (i & 1)) == target)
+        } else if let Some(c) = self.pic_par {
+            let target = if key & 3 == 3 { key_field(key, c) } else { key };
+            self.refs[0].iter().position(|r| r.key == target)
+        } else {
+            let target = key_frame(key);
+            self.refs[0].iter().position(|r| r.key == target)
+        };
+        found.map_or(0, |i| i as i8)
     }
 
     /// Spatial direct: MB-level reference indices, predicted mvs and directZeroPrediction (8.4.1.2.2).
@@ -837,12 +909,9 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
             for sub in (0..4).filter(|s| unit == 1 || *s == 0) {
                 let (x, y) = (x8 + (sub & 1), y8 + (sub >> 1));
                 let raster = y * 4 + x;
-                let (mv_col, ref_col, id_col) = self.colocated(raster);
+                let col = self.colocated(raster);
                 let (refs, mvs) = if spatial {
-                    let col_zero = match self.mbaff.then(|| self.col_zero_mbaff(b8)).flatten() {
-                        Some(z) => z,
-                        None => col_short_term && ref_col == 0 && (-1..=1).contains(&mv_col[0]) && (-1..=1).contains(&mv_col[1]),
-                    };
+                    let col_zero = col_short_term && col.ref_idx == 0 && (-1..=1).contains(&col.mv[0]) && (-1..=1).contains(&col.mv[1]);
                     let mut mvs = base_mvs;
                     for l in 0..2 {
                         if direct_zero || base_refs[l] < 0 || (base_refs[l] == 0 && col_zero) {
@@ -851,15 +920,14 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
                     }
                     (base_refs, mvs)
                 } else {
-                    let ref0 = if ref_col < 0 {
-                        0
-                    } else {
-                        match self.refs[0].iter().position(|r| r.id() == id_col) {
-                            Some(i) => i as i8,
-                            None => 0,
-                        }
+                    let ref0 = if col.ref_idx < 0 { 0 } else { self.map_col_to_list0(col.key) };
+                    let mv_col = match col.scale {
+                        VScale::One => col.mv,
+                        VScale::FrmToFld => [col.mv[0], col.mv[1] / 2],
+                        VScale::FldToFrm => [col.mv[0], col.mv[1].saturating_mul(2)],
                     };
-                    let (dsf, ltr) = self.tdirect.get(ref0 as usize).copied().unwrap_or((256, true));
+                    let table = if self.field { &self.tdirect_field[self.mb_y & 1] } else { &self.tdirect };
+                    let (dsf, ltr) = table.get(ref0 as usize).copied().unwrap_or((256, true));
                     let (mv0, mv1) = if ltr {
                         (mv_col, [0, 0])
                     } else {
@@ -960,6 +1028,12 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
     // Inter prediction
     // ------------------------------------------------------------------------------------------
 
+    /// Field macroblocks and the macroblocks of field pictures use field scans and contexts.
+    #[inline(always)]
+    pub fn coded_field(&self) -> bool {
+        self.field || self.pic_par.is_some()
+    }
+
     /// The reference frame and field parity (0 top, 1 bottom) a reference index names: a frame
     /// for frame macroblocks; for field macroblocks of MBAFF frames index / 2, the same parity
     /// as the macroblock for even indices and the other for odd ones (8.4.2.1).
@@ -976,7 +1050,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         }
         let (Some((r0, p0)), Some((r1, p1))) = (self.ref_field(0, refs[0]), self.ref_field(1, refs[1])) else { return (32, 32) };
         let cur = self.pic.frame.field_poc[self.mb_y & 1];
-        let (poc0, poc1) = (r0.frame.field_poc[p0], r1.frame.field_poc[p1]);
+        let (poc0, poc1) = (r0.field_poc[p0], r1.field_poc[p1]);
         let tb = (cur - poc0).clamp(-128, 127);
         let td = (poc1 - poc0).clamp(-128, 127);
         if td == 0 || r0.long_term || r1.long_term {
@@ -1033,30 +1107,29 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         let (ystart, ys, x0, y0) = self.view(0);
         let (cstart, cs, _, _) = self.view(1);
         let (px, py) = (x0 + x4 * 4, y0 + y4 * 4);
-        let use0 = refs[0] >= 0 && self.ref_field(0, refs[0]).is_some();
-        let use1 = refs[1] >= 0 && self.ref_field(1, refs[1]).is_some();
+        let mbaff_par = self.field.then_some(self.mb_y & 1);
+        let pic_par = self.pic_par;
+        let use0 = refs[0] >= 0 && ref_src_of(self.refs, mbaff_par, pic_par, 0, refs[0]).is_some();
+        let use1 = refs[1] >= 0 && ref_src_of(self.refs, mbaff_par, pic_par, 1, refs[1]).is_some();
         let c422 = self.fmt.cf == 2;
         let (cx, cy, cbh) = if c422 { (px / 2, py, bh) } else { (px / 2, py / 2, bh / 2) };
         let (max_y, max_c) = (self.fmt.max_y(), self.fmt.max_c());
-        // field macroblocks: the field parity of the macroblock (for the chroma offset)
-        let cur_par = self.field.then_some(self.mb_y & 1);
         if use0 != use1 && wts.iter().all(|w| *w == Weight::Default) {
             // single-list unweighted prediction: interpolate straight into the picture
             let l = if use0 { 0 } else { 1 };
-            let Some((rp, par)) = ref_field_of(self.refs, cur_par, l, refs[l]) else { return };
-            let field = cur_par.map(|c| (par, c));
+            let Some((rp, read, coff)) = ref_src_of(self.refs, mbaff_par, pic_par, l, refs[l]) else { return };
             let planes = &mut self.pic.planes;
-            predict_block(&rp.frame, field, mvs[l], px, py, bw, bh, (&mut planes.y[ystart + py * ys + px..], ys), [&mut planes.cb[cstart + cy * cs + cx..], &mut planes.cr[cstart + cy * cs + cx..]], cs);
+            predict_block(&rp.frame, read, coff, mvs[l], px, py, bw, bh, (&mut planes.y[ystart + py * ys + px..], ys), [&mut planes.cb[cstart + cy * cs + cx..], &mut planes.cr[cstart + cy * cs + cx..]], cs);
             return;
         }
         for l in 0..2 {
             if refs[l] < 0 {
                 continue;
             }
-            let Some((rp, par)) = ref_field_of(self.refs, cur_par, l, refs[l]) else { continue };
+            let Some((rp, read, coff)) = ref_src_of(self.refs, mbaff_par, pic_par, l, refs[l]) else { continue };
             let s = &mut *self.s;
             let [pc0, pc1] = &mut s.pred_c[l];
-            predict_block(&rp.frame, cur_par.map(|c| (par, c)), mvs[l], px, py, bw, bh, (&mut s.pred[l][..], 16), [&mut pc0[..], &mut pc1[..]], 8);
+            predict_block(&rp.frame, read, coff, mvs[l], px, py, bw, bh, (&mut s.pred[l][..], 16), [&mut pc0[..], &mut pc1[..]], 8);
         }
         let s = &mut *self.s;
         inter::weighted_store(
@@ -1415,7 +1488,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         let ls = &self.ls.ls4[self.luma_list4()][(qp % 6) as usize];
         let blk = &mut self.s.coef[raster * 16..raster * 16 + 16];
         let mut any = false;
-        let scan = if self.field { &FIELD4 } else { &ZIGZAG4 };
+        let scan = if self.field || self.pic_par.is_some() { &FIELD4 } else { &ZIGZAG4 };
         for (k, &lv) in levels.iter().enumerate().skip(ac_only as usize) {
             if lv != 0 {
                 let p = scan[k] as usize;
@@ -1436,7 +1509,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         let ls = &self.ls.ls8[list][(qp % 6) as usize];
         let blk = &mut self.s.coef[b8 * 64..b8 * 64 + 64];
         let mut any = false;
-        let scan = if self.field { &FIELD8 } else { &ZIGZAG8 };
+        let scan = if self.field || self.pic_par.is_some() { &FIELD8 } else { &ZIGZAG8 };
         for (k, &lv) in levels.iter().enumerate() {
             if lv != 0 {
                 let p = scan[k] as usize;
@@ -1455,7 +1528,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
     /// Intra16x16 DC levels in scan order -> scaled DC of each 4x4 block.
     pub fn put_luma_dc(&mut self, levels: &[i32; 16]) {
         let mut c = [0i32; 16];
-        let scan = if self.field { &FIELD4 } else { &ZIGZAG4 };
+        let scan = if self.field || self.pic_par.is_some() { &FIELD4 } else { &ZIGZAG4 };
         for (k, &lv) in levels.iter().enumerate() {
             c[scan[k] as usize] = lv;
         }
@@ -1508,7 +1581,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         let ls = &self.ls.ls4[list][(qpc % 6) as usize];
         let blk = &mut self.s.coef_c[c][b * 16..b * 16 + 16];
         let mut any = false;
-        let scan = if self.field { &FIELD4 } else { &ZIGZAG4 };
+        let scan = if self.field || self.pic_par.is_some() { &FIELD4 } else { &ZIGZAG4 };
         for (k, &lv) in levels.iter().enumerate().skip(1) {
             if lv != 0 {
                 let p = scan[k] as usize;

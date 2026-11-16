@@ -329,7 +329,7 @@ impl<P: Pel> Frame<P> {
     }
 
     /// Build a published row from a contiguous plane set (rows of MB row `r`) and motion data.
-    pub fn make_row(planes: &Planes<P>, r: usize, mbs: &[MbState], ref_ids: &dyn Fn(&MbState, usize, i8) -> u32) -> FrameRow<P> {
+    pub fn make_row(planes: &Planes<P>, r: usize, mbs: &[MbState], ref_ids: &dyn Fn(&MbState, usize, usize, i8) -> u32) -> FrameRow<P> {
         let w = planes.width;
         let cw = planes.cwidth;
         let mb_w = w / 16;
@@ -355,7 +355,7 @@ impl<P: Pel> Frame<P> {
                     let ri = st.ref_idx[l][b];
                     ref_idx[l][x * 4 + b] = ri;
                     if ri >= 0 {
-                        ref_id[l][x * 4 + b] = ref_ids(st, l, ri);
+                        ref_id[l][x * 4 + b] = ref_ids(st, r, l, ri);
                     }
                 }
             }
@@ -373,9 +373,57 @@ impl<P: Pel> Frame<P> {
         let f = Frame::new(id, poc, mb_w, mb_h, fmt);
         let blank = vec![MbState::default(); mb_w * mb_h];
         for r in 0..mb_h {
-            f.publish(r, Frame::make_row(planes, r, &blank, &|_, _, _| u32::MAX));
+            f.publish(r, Frame::make_row(planes, r, &blank, &|_, _, _, _| u32::MAX));
         }
         f
+    }
+
+    /// Publish the rows of a frame coded as two field pictures from the pictures its fields
+    /// were decoded into (top, bottom; the same one twice for a field without a pair): the
+    /// lines interleaved, and the fields' motion kept as an MBAFF frame of field macroblock
+    /// pairs keeps it (row 2y + p is row y of field p), all field macroblocks.
+    pub fn publish_from_fields(&self, fields: [&Frame<P>; 2]) {
+        let (w, cw, mbch) = (self.width, self.cwidth, 1usize << self.mbch_log2);
+        let ok = fields.iter().all(|f| f.width == w && f.cwidth == cw && f.mbch_log2 == self.mbch_log2 && f.mb_h() * 2 >= self.mb_h());
+        for r in 0..self.mb_h() {
+            if self.is_published(r) {
+                continue;
+            }
+            if !ok {
+                let gray = Planes::gray(w, 16 * self.mb_h(), self.fmt);
+                let blank = vec![MbState::default(); self.mb_w * self.mb_h()];
+                self.publish(r, Frame::make_row(&gray, r, &blank, &|_, _, _, _| u32::MAX));
+                continue;
+            }
+            let lines = |n: usize, per: usize, plane: fn(&FrameRow<P>) -> &[P], width: usize| {
+                let mut v = Vec::with_capacity(n * width);
+                for i in 0..n {
+                    let line = n * r + i;
+                    let (f, fl) = (fields[line & 1], line >> 1);
+                    let row = f.row(fl / per);
+                    let o = (fl % per) * width;
+                    v.extend_from_slice(&plane(row)[o..o + width]);
+                }
+                v.into_boxed_slice()
+            };
+            let y = lines(16, 16, |r| &r.y, w);
+            let cb = lines(mbch, mbch, |r| &r.cb, cw);
+            let cr = lines(mbch, mbch, |r| &r.cr, cw);
+            let src = fields[r & 1].row(r >> 1);
+            self.publish(
+                r,
+                FrameRow {
+                    y,
+                    cb,
+                    cr,
+                    mv: src.mv.clone(),
+                    ref_idx: src.ref_idx.clone(),
+                    ref_id: src.ref_id.clone(),
+                    intra: src.intra.clone(),
+                    field: vec![true; self.mb_w].into_boxed_slice(),
+                },
+            );
+        }
     }
 
     /// Copy the w x h luma window at (x0, y0) (clamped to the picture) into `out` (stride `os`).
@@ -541,18 +589,53 @@ impl AnyFrame {
     }
 }
 
-/// An entry of RefPicList0/1 for the current slice.
+/// An entry of RefPicList0/1 for the current slice: a frame, or a field (field pictures).
 #[derive(Clone)]
 pub struct RefPic<P: Pel = u8> {
+    /// The picture the samples come from: the frame, or the picture a field was decoded into.
     pub frame: FrameRef<P>,
     pub long_term: bool,
+    /// Read field `p` of `frame`'s interleaved lines (a field of a frame-coded picture).
+    pub read_par: Option<usize>,
+    /// The field this reference is (0 top, 1 bottom); None for a frame.
+    pub parity: Option<usize>,
+    /// PicOrderCnt of the reference (the field's, for a field) and of the frame's two fields.
+    pub poc: i32,
+    pub field_poc: [i32; 2],
+    /// Identity of the referenced frame or field ([`frame_key`] / [`field_key`]).
+    pub key: u32,
 }
 
 impl<P: Pel> RefPic<P> {
     pub fn poc(&self) -> i32 {
-        self.frame.poc
+        self.poc
     }
     pub fn id(&self) -> u32 {
-        self.frame.id
+        self.key
     }
+}
+
+/// The identity of frame `id` as a reference picture (frames' ids are unique; fields of a
+/// frame share its id).
+#[inline]
+pub fn frame_key(id: u32) -> u32 {
+    id.wrapping_mul(4) | 3
+}
+
+/// The identity of field `par` (0 top, 1 bottom) of frame `id`.
+#[inline]
+pub fn field_key(id: u32, par: usize) -> u32 {
+    id.wrapping_mul(4) | (1 + (par as u32 & 1))
+}
+
+/// The field `par` of the frame or field a key names.
+#[inline]
+pub fn key_field(key: u32, par: usize) -> u32 {
+    (key & !3) | (1 + (par as u32 & 1))
+}
+
+/// The frame a key names (of a field: the frame it belongs to).
+#[inline]
+pub fn key_frame(key: u32) -> u32 {
+    key | 3
 }

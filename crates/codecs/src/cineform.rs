@@ -405,7 +405,8 @@ impl CineformDecoder {
                     if !started || channel >= self.planes.len() || actual == 0 || actual >= nbands {
                         return invalid(format!("CineForm: band {actual} of channel {channel} out of place"));
                     }
-                    if bw < 3 || bh < 3 {
+                    // (a band is at most half the picture: 8K pictures have 4096-wide bands)
+                    if bw < 3 || bh < 3 || bw > 8192 || bh > 8192 {
                         return invalid("CineForm: bad band size");
                     }
                     if codebook == 0 && nbands == BANDS_GROUP && actual == 7 {
@@ -661,7 +662,11 @@ fn decode_band(t: &Tables, data: &[u8], b: &mut Band, codebook: u16, quant: i32,
             return invalid("CineForm: bad code in a band");
         };
         if run == 1 && !second {
-            // The usual case: one coefficient.
+            // The usual case: one coefficient (reading past the data ends the band: every
+            // code takes a bit, so the work stays in step with the sample's size).
+            if r.overrun {
+                return invalid("CineForm: band runs past the sample");
+            }
             let Some(v) = out.get_mut(count) else {
                 return invalid("CineForm: band runs past its end");
             };

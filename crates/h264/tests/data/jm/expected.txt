@@ -1,0 +1,9 @@
+# JM-encoded interlaced streams (176x144): name, frames, FNV-1a 64 of FFmpeg's yuv420p decode
+fields_implicit_8x8 16 0efcb4055a28c80d
+fields_slices 11 51ed00826f8c8bb6
+fields_spatial_cavlc 16 1f9bbed53fa94118
+fields_temporal_cabac 11 be26490ca354bbf4
+fields_weighted 11 c1bb4f364933354a
+mbaff_temporal 11 51108bc63c18f624
+paff_mbaff_bref_cavlc 16 fe95eb1bff11a70d
+paff_mbaff_temporal 11 d64f504fae983b0d

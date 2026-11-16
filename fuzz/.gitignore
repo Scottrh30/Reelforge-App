@@ -1,0 +1,7 @@
+target
+corpus
+artifacts
+logs
+coverage
+old-artifacts
+round*.out

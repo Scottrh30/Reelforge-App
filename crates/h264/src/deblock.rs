@@ -12,6 +12,13 @@ struct Motion {
     count: u8,
 }
 
+/// The slice a macroblock belongs to; an empty one for a macroblock that wasn't decoded
+/// (damaged streams: a pair's other macroblock missing).
+fn slice_of(slices: &[SliceInfo], n: u32) -> &SliceInfo {
+    static NONE: SliceInfo = SliceInfo { disable_deblocking_filter_idc: 0, alpha_offset: 0, beta_offset: 0, ref_ids: [Vec::new(), Vec::new()] };
+    slices.get(n as usize).unwrap_or(&NONE)
+}
+
 /// Referenced picture ids per 8x8 block and list (u32::MAX = list unused).
 fn ref_ids8(st: &MbState, sl: &SliceInfo) -> [[u32; 2]; 4] {
     std::array::from_fn(|b8| {
@@ -42,11 +49,6 @@ fn block_motion(st: &MbState, ids8: &[[u32; 2]; 4], raster: usize) -> Motion {
 #[inline(always)]
 fn mv_far_lim(a: [i16; 2], b: [i16; 2], lim: i32) -> bool {
     (a[0] as i32 - b[0] as i32).abs() >= 4 || (a[1] as i32 - b[1] as i32).abs() >= lim
-}
-
-#[inline]
-fn motion_bs(p: &Motion, q: &Motion) -> u8 {
-    motion_bs_lim(p, q, 4)
 }
 
 #[inline]
@@ -303,7 +305,7 @@ pub fn deblock_mb<P: Pel>(pic: &mut PicState<P>, addr: usize, mb_w: usize) {
     if q.slice_num == u32::MAX {
         return;
     }
-    let sq = &pic.slices[q.slice_num as usize];
+    let sq = slice_of(&pic.slices, q.slice_num);
     if sq.disable_deblocking_filter_idc == 1 {
         return;
     }
@@ -328,10 +330,15 @@ pub fn deblock_mb<P: Pel>(pic: &mut PicState<P>, addr: usize, mb_w: usize) {
     let skip_odd = |dir: usize, e: usize| t8 && e % 2 == 1 && !(c422 && dir == 1);
     // bS[dir][edge][segment]; dir 0 = vertical edges (x), 1 = horizontal edges (y)
     let mut bs = [[[0u8; 4]; 4]; 2];
+    // field pictures: horizontal macroblock edges of intra macroblocks get bS 3, and vertical
+    // motion counts in field units (8.7.2.1)
+    let field = pic.field_pic;
+    let intra_edge = |dir: usize| if field && dir == 1 { 3 } else { 4 };
+    let lim = if field { 2 } else { 4 };
     if q.kind.is_intra() {
         for dir in 0..2 {
             if (if dir == 0 { left } else { top }).is_some() {
-                bs[dir][0] = [4; 4];
+                bs[dir][0] = [intra_edge(dir); 4];
             }
             for e in 1..4 {
                 if !skip_odd(dir, e) {
@@ -351,13 +358,13 @@ pub fn deblock_mb<P: Pel>(pic: &mut PicState<P>, addr: usize, mb_w: usize) {
             if let Some(n) = neighbor {
                 let p = &pic.mbs[n];
                 if p.kind.is_intra() {
-                    bs[dir][0] = [4; 4];
+                    bs[dir][0] = [intra_edge(dir); 4];
                 } else {
-                    let pids = ref_ids8(p, &pic.slices[p.slice_num as usize]);
+                    let pids = ref_ids8(p, slice_of(&pic.slices, p.slice_num));
                     for k in 0..4 {
                         let (rq, rp) = if dir == 0 { (k * 4, k * 4 + 3) } else { (k, 12 + k) };
                         bs[dir][0][k] =
-                            if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&block_motion(p, &pids, rp), &qm[rq]) };
+                            if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs_lim(&block_motion(p, &pids, rp), &qm[rq], lim) };
                     }
                 }
             }
@@ -371,7 +378,7 @@ pub fn deblock_mb<P: Pel>(pic: &mut PicState<P>, addr: usize, mb_w: usize) {
                 }
                 for k in 0..4 {
                     let (rq, rp) = if dir == 0 { (k * 4 + e, k * 4 + e - 1) } else { (e * 4 + k, e * 4 + k - 4) };
-                    bs[dir][e][k] = if (q.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&qm[rp], &qm[rq]) };
+                    bs[dir][e][k] = if (q.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs_lim(&qm[rp], &qm[rq], lim) };
                 }
             }
         }
@@ -541,7 +548,7 @@ pub fn deblock_mb_mbaff<P: Pel>(pic: &mut PicState<P>, idx: usize, mb_w: usize) 
             if q_intra || p.kind.is_intra() {
                 bs[0][0] = [4; 4];
             } else {
-                let pids = ref_ids8(&p, &pic.slices[p.slice_num as usize]);
+                let pids = ref_ids8(&p, slice_of(&pic.slices, p.slice_num));
                 for k in 0..4 {
                     let (rq, rp) = (k * 4, k * 4 + 3);
                     bs[0][0][k] = if nz(&p, rp) || nz(&q, rq) { 2 } else { motion_bs_lim(&block_motion(&p, &pids, rp), &qm[rq], lim) };
@@ -576,7 +583,7 @@ pub fn deblock_mb_mbaff<P: Pel>(pic: &mut PicState<P>, idx: usize, mb_w: usize) 
         if q_intra || p.kind.is_intra() {
             bs[1][0] = if qf || p.field { [3; 4] } else { [4; 4] };
         } else {
-            let pids = ref_ids8(&p, &pic.slices[p.slice_num as usize]);
+            let pids = ref_ids8(&p, slice_of(&pic.slices, p.slice_num));
             for k in 0..4 {
                 let (rq, rp) = (k, 12 + k);
                 bs[1][0][k] = if nz(&p, rp) || nz(&q, rq) {

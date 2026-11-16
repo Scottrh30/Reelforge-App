@@ -164,6 +164,10 @@ fn header(buf: &[u8]) -> Result<Header> {
     if width == 0 || height == 0 {
         return invalid("DNxHD: empty picture");
     }
+    // DNxHR goes up to 8K: anything larger is a damaged header, not a picture to allocate
+    if width > 8192 || height > 8192 {
+        return invalid("DNxHD: picture too large");
+    }
     Ok(Header { cid, width, height, bit_depth, is_444, act, interlaced, field, mbaff, mb_width, mb_height, matrix, data_offset, row_offsets, rule })
 }
 
