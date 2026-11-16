@@ -20,6 +20,13 @@ fn gcd(a: u32, b: u32) -> u32 {
 /// Open a file just long enough to read its streams and duration.
 pub fn probe(path: &Path) -> Result<MediaInfo> {
     init();
+    match crate::camraw::kind(path) {
+        Some(crate::camraw::RawKind::Braw) => return crate::camraw::braw_info(path),
+        Some(k) if crate::camraw::stand_in(path).is_none() => {
+            anyhow::bail!("{} is {} footage: it's converted with {} before it can be opened", path.display(), k.label(), crate::camraw::tool_for(k).map(|t| t.name.to_string()).unwrap_or_else(|| crate::camraw::what_to_install(k).to_string()))
+        }
+        _ => {}
+    }
     let ictx = crate::open_input(path).with_context(|| format!("cannot open {}", path.display()))?;
 
     let video = match ictx.streams().best(ff::media::Type::Video) {

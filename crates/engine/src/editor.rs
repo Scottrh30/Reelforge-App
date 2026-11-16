@@ -32,7 +32,7 @@ pub const WAVEFORM_RATE: u32 = 100;
 pub const LOCKED: &str = "That clip is on a locked track (or linked to one). Unlock the track to edit it";
 
 /// File types offered when importing.
-pub const MEDIA_EXTENSIONS: [&str; 23] = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "mxf", "mts", "png", "jpg", "jpeg", "gif", "exr", "dpx", "tif", "tiff", "tga", "bmp", "wav", "mp3", "aac", "flac", "ogg"];
+pub const MEDIA_EXTENSIONS: [&str; 27] = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "mxf", "mts", "braw", "r3d", "ari", "arx", "png", "jpg", "jpeg", "gif", "exr", "dpx", "tif", "tiff", "tga", "bmp", "wav", "mp3", "aac", "flac", "ogg"];
 
 /// Choices that change how the editor behaves (kept with the app's settings).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -447,6 +447,8 @@ pub struct Editor {
     fonts: Arc<Mutex<Option<Arc<Vec<FontEntry>>>>>,
     pub prefs: Prefs,
     pub proxies: crate::proxies::Proxies,
+    /// R3D and ARRIRAW footage being converted with its maker's tool.
+    pub conversions: crate::camraw::Conversions,
     proxied_rev: u64,
     /// Space running short where the app writes (shown until dismissed), when last looked, and below what it counts as low.
     pub disk_low: Option<crate::disk::DiskLow>,
@@ -532,6 +534,7 @@ impl Editor {
             fonts,
             prefs,
             proxies: Default::default(),
+            conversions: Default::default(),
             proxied_rev: 0,
             disk_low: None,
             disk_dismissed: false,
@@ -764,9 +767,22 @@ impl Editor {
                 items.push(item);
             }
         }
+        let mut converting = 0;
         for (path, name) in &items {
             let (path, name) = (path, name.clone());
             if self.project.media.iter().any(|m| m.path == *path) {
+                continue;
+            }
+            // R3D and ARRIRAW are converted first (in the background), then added.
+            if let Some(kind) = reelforge_media::camraw::needs_conversion(path) {
+                match reelforge_media::camraw::tool_for(kind) {
+                    Some(tool) => {
+                        self.conversions.request(path, true);
+                        converting += 1;
+                        self.status = format!("Converting {name} with {} in the background: it's added to the project when it's ready", tool.name);
+                    }
+                    None => self.status = format!("{name} is {} footage: install {} to open it", kind.label(), reelforge_media::camraw::what_to_install(kind)),
+                }
                 continue;
             }
             match reelforge_media::probe(path) {
@@ -780,8 +796,36 @@ impl Editor {
                 Err(e) => self.status = format!("Could not import {}: {e:#}", path.display()),
             }
         }
-        if ok > 0 {
+        if ok > 0 && converting > 0 {
+            self.status = format!("Imported {ok} file(s); converting {converting} camera RAW clip(s) in the background");
+        } else if ok > 0 {
             self.status = if sequences > 0 { format!("Imported {ok} item(s), including image sequences at {:.3} fps", self.seq().frame_rate.fps()).replace(".000 fps", " fps") } else { format!("Imported {ok} file(s)") };
+        }
+    }
+
+    /// Camera RAW conversions: progress in the status line; finished ones are added to the
+    /// project (when an import asked for them) or start being used.
+    fn poll_conversions(&mut self) {
+        for f in self.conversions.poll() {
+            let name = f.src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            match f.result {
+                Ok(_) if f.import => {
+                    self.import(std::slice::from_ref(&f.src));
+                    self.status = format!("{name} is converted and in the project");
+                }
+                Ok(_) => {
+                    self.status = format!("{name} is converted: the viewer uses it now");
+                    self.touch();
+                }
+                Err(e) => self.status = format!("Couldn't convert {name}: {e}"),
+            }
+        }
+        if let Some((src, p)) = self.conversions.current() {
+            let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let msg = if p > 0.0 { format!("Converting {name}: {:.0}%", p * 100.0) } else { format!("Converting {name}…") };
+            if self.status.starts_with("Converting ") || self.status.is_empty() {
+                self.status = msg;
+            }
         }
     }
 
@@ -3910,11 +3954,13 @@ impl Editor {
         if self.rev != self.proxied_rev {
             // (Not started by themselves while the drive is nearly full.)
             self.proxies.refresh(&self.project, self.prefs.auto_proxies && self.disk_low.is_none());
+            self.conversions.refresh(&self.project);
             self.proxied_rev = self.rev;
         }
         if self.proxies.poll() {
             self.status = "A proxy is ready: the viewer uses it now".into();
         }
+        self.poll_conversions();
         // (Not while a preset is only being previewed.)
         if let Some(s) = self.session.as_mut().filter(|_| self.preset_preview.is_none()) {
             if let Some(msg) = s.tick(&self.project, self.rev, self.prefs.autosave_minutes) {
@@ -4565,6 +4611,54 @@ mod tests {
         // Not edits: nothing to undo.
         e.undo();
         assert_eq!(e.status, "Nothing to undo");
+    }
+
+    /// ARRIRAW (or R3D) footage: importing it starts its maker's converter in the background
+    /// and the footage joins the project when that's done, decoding from the converted file.
+    /// A script stands in for ARRI Reference Tool here.
+    #[cfg(unix)]
+    #[test]
+    fn camera_raw_is_converted_then_imported() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(ff) = ["/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].iter().map(std::path::PathBuf::from).find(|p| p.exists()) else { return };
+        let dir = std::env::temp_dir().join(format!("rf_camraw_import_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("A001")).unwrap();
+        let src = dir.join("A001").join("A001C003_250807_R1ZA.0000001.ari");
+        std::fs::write(&src, b"ARRI frame").unwrap();
+        let fake = dir.join("art-cmd");
+        // As art-cmd: `process --input <clip folder> ... --output <dir>/` writes an MXF there.
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = process ] || exit 2\nwhile [ $# -gt 0 ]; do case \"$1\" in --input) in=\"$2\"; shift;; --output) out=\"$2\"; shift;; --video-codec) vc=\"$2\"; shift;; esac; shift; done\n[ -d \"$in\" ] && [ \"$vc\" = prores4444xq ] || exit 3\necho 'frame 1 of 12 (8%)'\n{} -loglevel error -f lavfi -i testsrc2=size=256x144:rate=25:duration=0.48 -c:v prores_ks -profile:v 5 \"${{out}}A001C003.mxf\" || exit 1\n",
+                ff.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // SAFETY: only this test reads the variable.
+        unsafe { std::env::set_var("REELFORGE_ART_CMD", &fake) };
+        let mut e = editor();
+        e.import(std::slice::from_ref(&src));
+        assert!(e.project.media.is_empty() && e.status.contains("ARRI Reference Tool"), "{}", e.status);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while e.project.media.is_empty() && std::time::Instant::now() < deadline {
+            e.poll_conversions();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        unsafe { std::env::remove_var("REELFORGE_ART_CMD") };
+        assert_eq!(e.project.media.len(), 1, "{}", e.status);
+        let m = e.project.media[0].clone();
+        // The project keeps the original; the picture comes from the converted file.
+        assert_eq!(m.path, std::path::absolute(&src).unwrap());
+        let v = m.info.video.clone().unwrap();
+        assert_eq!((v.width, v.height, v.codec.as_str()), (256, 144, "prores"));
+        assert_eq!(m.info.duration.to_frame(reelforge_core::FrameRate::new(25, 1)), 12);
+        let mut fs = reelforge_media::FrameSource::open(&m.path, None).unwrap();
+        assert!(fs.frame_at_blocking(Time::ZERO, std::time::Duration::from_secs(5)).is_some());
+        let _ = reelforge_media::camraw::stand_in(&m.path).map(std::fs::remove_file);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

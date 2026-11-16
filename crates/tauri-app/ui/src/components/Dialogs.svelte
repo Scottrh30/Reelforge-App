@@ -74,6 +74,7 @@
       {#if info}<p class="info">Zero-copy: {info.zero_copy_status}</p>{/if}
       <label class="check" title="Reelforge's own decoders, written in Rust. If one can't read a file, FFmpeg takes over by itself. For H.264, HEVC, VP9 and AV1, hardware decoding (when on and supported by the graphics card) is used first."><input type="checkbox" bind:checked={prefs.native_decoders} /> Use Reelforge's own decoders</label>
       {#if info}<p class="info">{info.native.length ? `For ${info.native.join(", ")}; FFmpeg decodes everything else` : "None yet"}</p>{/if}
+      {#if info}<p class="info" title="Camera RAW opens through the makers' own software: Blackmagic RAW through Blackmagic's SDK; R3D and ARRIRAW are converted once, in the background, to ProRes 4444 XQ in Rec.709 (kept with the proxies), which is what's edited and exported.">Camera RAW: {#each info.camera_raw as line, i}{#if i > 0}<br />{/if}{line}{/each}</p>{/if}
       <label class="check"><input type="checkbox" bind:checked={prefs.scrub_audio} /> Audio scrubbing: hear the sound under the playhead while dragging it or stepping frames</label>
       <label class="field" title="Pictures on video clips in the timeline. A filmstrip shows frames all along each clip (taller video tracks give bigger pictures: drag a track's lower edge)">
         <span>Clip pictures</span>

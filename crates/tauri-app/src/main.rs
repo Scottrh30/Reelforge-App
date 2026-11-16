@@ -481,6 +481,8 @@ struct SettingsInfo {
     media_cache_dir: String,
     /// The codecs Reelforge decodes itself.
     native: Vec<&'static str>,
+    /// What opens Blackmagic RAW, R3D and ARRIRAW here.
+    camera_raw: Vec<String>,
 }
 
 #[tauri::command]
@@ -521,6 +523,7 @@ fn settings_info() -> Res<SettingsInfo> {
             autosave_bytes,
             media_cache_dir: reelforge_media::proxy::media_cache_dir().display().to_string(),
             native: reelforge_media::codecs::Codec::ALL.into_iter().filter(|c| c.available()).map(|c| c.label()).collect(),
+            camera_raw: reelforge_media::camraw::status(),
         }
     })
 }

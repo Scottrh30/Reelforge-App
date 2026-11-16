@@ -15,6 +15,8 @@ log.workspace = true
 serde.workspace = true
 # Names the shared decode worker pool (see `init`).
 rayon = "1"
+# Camera RAW: the Blackmagic RAW SDK, opened at run time when installed.
+libloading = "0.8"
 
 # Zero-copy video: sharing D3D11VA frames with the compositor.
 [target.'cfg(windows)'.dependencies]

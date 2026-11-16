@@ -2015,6 +2015,35 @@ own threads. A decoder that crashes is treated as a decode error: the clip carri
 FFmpeg. With 14 clips open on 2 cores this cut the threads from 58 to 41; on an 8- or 16-core
 PC, where each clip used to get up to 16, far more.
 
+## Camera RAW (Blackmagic RAW, RED R3D, ARRIRAW)
+
+Camera RAW opens through the camera makers' own software, found on your computer when it's
+there (Settings → Playback lists what was found):
+
+- **Blackmagic RAW** (`.braw`) decodes through Blackmagic's SDK, loaded when a `.braw` file is
+  opened. It comes with Blackmagic RAW Player and DaVinci Resolve (both free); Reelforge
+  looks where they install it, or in the folder `REELFORGE_BRAW_DIR` names. Frames come
+  straight from the SDK at the clip's own settings (as Blackmagic RAW Player shows them), in
+  16-bit colour, at half, quarter or eighth size for the viewer when that's enough. Its sound
+  isn't read yet.
+- **RED R3D** (`.r3d`) and **ARRIRAW** (`.ari`/`.arx` frames, ARRIRAW `.mxf`) have no SDK
+  that can be loaded like that (RED's and ARRI's are C++ libraries that have to be built into
+  a program, and ARRI's is for its partners only), so their free command-line converters do
+  it: **REDline** (part of REDCINE-X PRO) and **ARRI Reference Tool CMD** (`art-cmd`).
+  Importing such a clip converts it once, in the background, to Apple ProRes 4444 XQ in
+  Rec.709 (REDline: IPP2 with the clip's own ISO, white balance and look; Avid DNxHR 444 if
+  REDline can't write ProRes), with progress in the status line; the clip joins the project
+  when it's done. The converted file is kept in the media cache folder (`camera-raw`), named
+  after the original, and is what the viewer, proxies and export read; the project keeps
+  pointing at the original, so it's converted again on a computer that doesn't have the file
+  yet. `REELFORGE_REDLINE` and `REELFORGE_ART_CMD` point at the tools if they're somewhere
+  unusual.
+
+None of this could be tried with real camera files or the makers' software while it was
+written: the code follows Blackmagic's SDK manual and RED's and ARRI's command-line
+documentation, and is tested with a fake SDK in the same layout and with scripts standing in
+for the converters (`cargo test -p reelforge-media camraw`).
+
 ## When something goes wrong
 
 **Help → About & diagnostics** has three tabs:

@@ -5,6 +5,7 @@
 //! The app (`crates/tauri-app`, the `reelforge` program) is built on these.
 
 pub mod audio;
+pub mod camraw;
 pub mod collect;
 pub mod disk;
 pub mod svg;

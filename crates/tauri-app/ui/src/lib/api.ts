@@ -519,6 +519,8 @@ export interface SettingsInfo {
   autosave_bytes: number;
   media_cache_dir: string;
   native: string[];
+  /** What opens Blackmagic RAW, R3D and ARRIRAW here, one line each. */
+  camera_raw: string[];
 }
 
 export type GizmoHandle = { kind: "corner" | "edge"; index: number } | { kind: "rotate" | "anchor" };

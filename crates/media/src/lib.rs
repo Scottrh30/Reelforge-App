@@ -6,6 +6,7 @@
 pub mod audio;
 pub mod audiofx;
 pub mod cache;
+pub mod camraw;
 pub mod color;
 pub mod decoder;
 pub mod encode;
@@ -38,6 +39,10 @@ use std::sync::Once;
 /// `reelforge_core::imageseq`), read with FFmpeg's image-sequence reader from
 /// its first frame at its rate.
 pub fn open_input(path: &std::path::Path) -> Result<ffmpeg_next::format::context::Input, ffmpeg_next::Error> {
+    // R3D and ARRIRAW are read through the file their maker's tool converted them to.
+    if let Some(converted) = camraw::stand_in(path) {
+        return ffmpeg_next::format::input(&converted);
+    }
     if reelforge_core::imageseq::is_sequence(path) {
         let Some(seq) = reelforge_core::imageseq::parse(path) else { return Err(ffmpeg_next::Error::Other { errno: 2 }) };
         let mut opts = ffmpeg_next::Dictionary::new();

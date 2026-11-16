@@ -104,6 +104,11 @@ impl DecoderHandle {
         let thread = std::thread::Builder::new()
             .name(format!("decode:{}", path.file_name().unwrap_or_default().to_string_lossy()))
             .spawn(move || {
+                // Blackmagic RAW: frames come from Blackmagic's SDK, not FFmpeg.
+                if crate::camraw::kind(&owned) == Some(crate::camraw::RawKind::Braw) {
+                    run_braw(&owned, max_size, cmd_rx, frame_tx, eof_thread, ready_tx);
+                    return;
+                }
                 let state = match DecodeState::open(&owned, max_size, eof_thread) {
                     Ok(mut s) => {
                         s.gpu_frames = gpu_frames;
@@ -141,6 +146,86 @@ impl Drop for DecoderHandle {
         while self.frames.try_recv().is_ok() {}
         if let Some(t) = self.thread.take() {
             let _ = t.join();
+        }
+    }
+}
+
+/// The decode loop for a Blackmagic RAW clip: frame by frame from the SDK, answering seeks and
+/// stopping like the FFmpeg loop.
+fn run_braw(path: &Path, max_size: Option<(u32, u32)>, cmds: Receiver<Cmd>, out: Sender<VideoFrame>, eof: Arc<AtomicU64>, ready: Sender<Result<Time>>) {
+    let clip = match crate::camraw::braw::Clip::open(path) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = ready.send(Err(e));
+            return;
+        }
+    };
+    let rate = reelforge_core::adobe::rate_of(f64::from(clip.fps));
+    let _ = ready.send(Ok(Time::from_frame(1, rate)));
+    let mut generation = 0u64;
+    let mut next: u64 = 0;
+    let mut failed = false;
+    let handle = |cmd: Cmd, generation: &mut u64, next: &mut u64| -> bool {
+        match cmd {
+            Cmd::Stop => false,
+            Cmd::Seek { to, generation: g } => {
+                *generation = g;
+                *next = to.to_frame(rate).max(0) as u64;
+                true
+            }
+        }
+    };
+    loop {
+        while let Ok(cmd) = cmds.try_recv() {
+            if !handle(cmd, &mut generation, &mut next) {
+                return;
+            }
+        }
+        if next >= clip.frames {
+            // Seeked past the end: the last frame, then wait.
+            if clip.frames > 0 && next > clip.frames {
+                next = clip.frames - 1;
+                continue;
+            }
+            eof.store(generation, Ordering::Release);
+            match cmds.recv() {
+                Ok(cmd) => {
+                    if !handle(cmd, &mut generation, &mut next) {
+                        return;
+                    }
+                    continue;
+                }
+                Err(_) => return,
+            }
+        }
+        let frame = match clip.decode(next, max_size) {
+            Ok((w, h, data)) => {
+                failed = false;
+                let f = rgba64_to_float(&data, w as usize * 8, w, h);
+                VideoFrame { pts: Time::from_frame(next as i64, rate), width: w, height: h, pixels: Pixels::Float(Arc::new(f)), generation }
+            }
+            Err(e) => {
+                if !failed {
+                    log::warn!("{}: {e:#}", path.display());
+                }
+                failed = true;
+                next += 1;
+                continue;
+            }
+        };
+        // Block until the frame is taken, but answer commands meanwhile (a seek drops it).
+        let taken: Option<Result<Cmd, ()>> = select! {
+            send(out, frame) -> r => if r.is_err() { Some(Err(())) } else { None },
+            recv(cmds) -> cmd => Some(cmd.map_err(drop)),
+        };
+        match taken {
+            None => next += 1,
+            Some(Ok(c)) => {
+                if !handle(c, &mut generation, &mut next) {
+                    return;
+                }
+            }
+            Some(Err(())) => return,
         }
     }
 }
