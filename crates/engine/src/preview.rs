@@ -168,6 +168,20 @@ impl Preview {
         Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1, full_when_paused: false, active: 1, auto: AutoQuality::default() }
     }
 
+    /// Draw with another device (the GPU or the CPU): its compositor and
+    /// scene are made afresh, and what was drawn or decoded on the old one
+    /// is let go; the playback settings stay.
+    pub fn replace_gpu(&mut self, gpu: Option<(wgpu::Device, wgpu::Queue)>) {
+        let fresh = Preview::new(gpu);
+        self.gpu = fresh.gpu;
+        self.slots.clear();
+        self.titles.clear();
+        self.last_signature = 0;
+        self.shown_cached = None;
+        self.picture_rev = self.picture_rev.wrapping_add(1);
+        self.error = None;
+    }
+
     /// Playback quality: draw the Viewer's picture at 1/`q` of full
     /// resolution (1, 2 or 4), decoding footage that much smaller too, so big
     /// or heavy projects play smoothly. Renders for the render cache stay full.

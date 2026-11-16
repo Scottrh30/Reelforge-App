@@ -481,6 +481,8 @@ export interface Prefs {
   /// …but the paused picture at full resolution.
   full_when_paused: boolean;
   viewer_snapping: boolean;
+  /// What draws the pictures (the Viewer and exports).
+  renderer: "gpu" | "cpu";
   hw_decode: boolean;
   cache_mb: number;
   native_decoders: boolean;
@@ -1043,6 +1045,7 @@ export const api = {
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),
   openAdobeDialog: () => invoke("open_adobe_dialog"),
+  renderers: () => invoke<{ available: { kind: "gpu" | "cpu"; name: string }[]; active: "gpu" | "cpu"; device: string | null }>("renderers"),
   dismissImportReport: () => invoke("dismiss_import_report"),
   colorMatch: (targets: number[], from: "clip" | "media" | "file", id: number, path: string | null, tone: boolean, color: boolean) => invoke("color_match", { targets, from, id, path, tone, color }),
   colorMatchCancel: () => invoke("color_match_cancel"),

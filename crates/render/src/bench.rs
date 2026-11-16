@@ -71,7 +71,7 @@ fn time(n: usize, mut f: impl FnMut()) -> f64 {
 
 /// Run every measurement on `device` (a few seconds to half a minute).
 pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> BenchReport {
-    let adapter = crate::adapter_info().unwrap_or("(unknown)").to_string();
+    let adapter = crate::adapter_info().unwrap_or_else(|| "(unknown)".to_string());
     let (w, h) = (1920u32, 1080u32);
     let mut lines = Vec::new();
     let a = frame(w, h, 700);

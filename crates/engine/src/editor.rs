@@ -38,6 +38,9 @@ pub const MEDIA_EXTENSIONS: [&str; 23] = ["mp4", "mov", "mkv", "avi", "webm", "m
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Prefs {
+    /// What draws the pictures, for the Viewer and for exports: the
+    /// graphics card, or the processor (slower; the same picture).
+    pub renderer: reelforge_render::RenderDevice,
     /// Decode proxies in the viewer when they're ready.
     pub use_proxies: bool,
     /// Make proxies for big footage by themselves.
@@ -133,6 +136,7 @@ fn small_jpeg(rgba: &[u8], w: u32, h: u32, width: u32) -> Option<Vec<u8>> {
 impl Default for Prefs {
     fn default() -> Self {
         Self {
+            renderer: Default::default(),
             use_proxies: true,
             auto_proxies: true,
             proxy_format: Default::default(),
@@ -206,6 +210,9 @@ impl Editor {
         if !cfg!(test) {
             self.disk_low_at = (self.prefs.disk_warn_gb.max(0.0) as f64 * (1u64 << 30) as f64) as u64;
             self.disk_checked = None;
+        }
+        if self.prefs.renderer != self.renderer && !cfg!(test) {
+            self.use_renderer(self.prefs.renderer);
         }
         reelforge_media::hw::set_enabled(self.prefs.hw_decode);
         reelforge_media::codecs::set_enabled(self.prefs.native_decoders);
@@ -447,6 +454,8 @@ pub struct Editor {
     /// What the last Premiere Pro or After Effects project opened brought
     /// across and left out (shown until dismissed).
     pub import_report: Option<ImportReport>,
+    /// What's drawing the pictures now (see `Prefs::renderer`).
+    pub renderer: reelforge_render::RenderDevice,
     disk_checked: Option<std::time::Instant>,
     pub disk_low_at: u64,
     /// Camera solves' fit per frame, by clip (and which solve it was for).
@@ -527,6 +536,7 @@ impl Editor {
             disk_low: None,
             disk_dismissed: false,
             import_report: None,
+            renderer: Default::default(),
             disk_checked: None,
             // (Tests don't depend on the machine's free space; the disk test sets it.)
             disk_low_at: if cfg!(test) { 0 } else { crate::disk::LOW },
@@ -3337,7 +3347,9 @@ impl Editor {
                 TrackMsg::AiDone(r) => ai = Some(r),
             }
         }
-        if moved && done.is_none() && roto.is_none() {
+        // (Even when the last frames and the end arrive together: the
+        // playhead is left on the last frame tracked.)
+        if moved && roto.is_none() {
             self.follow_tracking();
         }
         if let Some(r) = ai {
@@ -3786,6 +3798,32 @@ impl Editor {
         }
     }
 
+    /// Draw on `kind` (the GPU or the CPU) from now on: the Viewer at once,
+    /// and exports started after. With no such device here, nothing
+    /// changes and the status says so (the preference stays, for a
+    /// computer that has one).
+    pub fn use_renderer(&mut self, kind: reelforge_render::RenderDevice) {
+        self.use_device(kind, reelforge_render::device_for(kind));
+    }
+
+    /// (`use_renderer` with the device already made, or not found.)
+    pub fn use_device(&mut self, kind: reelforge_render::RenderDevice, gpu: Option<(reelforge_render::wgpu::Device, reelforge_render::wgpu::Queue)>) {
+        use reelforge_render::RenderDevice;
+        let Some(gpu) = gpu else {
+            self.status = match kind {
+                RenderDevice::Cpu => "This computer has no software renderer to draw on the CPU with: still drawing on the GPU".into(),
+                RenderDevice::Gpu => "No graphics card could be opened: still drawing on the CPU".into(),
+            };
+            return;
+        };
+        self.preview.replace_gpu(Some(gpu));
+        self.renderer = kind;
+        self.status = match kind {
+            RenderDevice::Cpu => format!("Drawing on the CPU ({}): slower, the same picture", reelforge_render::adapter_info().unwrap_or_default()),
+            RenderDevice::Gpu => format!("Drawing on the GPU ({})", reelforge_render::adapter_info().unwrap_or_default()),
+        };
+    }
+
     /// File → Open a Premiere Pro or After Effects project: it becomes a new,
     /// unsaved Reelforge project (see `reelforge_core::adobe`). Each media
     /// file that's there is looked at again, so its details are exactly
@@ -4058,6 +4096,30 @@ mod tests {
     /// properties → collapsed, on video and audio tracks alike.
     /// A Premiere project opens as a new, unsaved project, with a report of
     /// what came across; a file that isn't one leaves the project alone.
+    /// Switching what draws: the Viewer gets a new device and keeps drawing;
+    /// with none of that kind, nothing changes.
+    #[test]
+    fn rendering_moves_between_the_gpu_and_the_cpu() {
+        use reelforge_render::RenderDevice;
+        let mut e = editor();
+        e.use_device(RenderDevice::Cpu, None);
+        assert_eq!(e.renderer, RenderDevice::Gpu);
+        assert!(e.status.contains("no software renderer"), "{}", e.status);
+        let Some(gpu) = reelforge_render::headless_device() else { return };
+        let before = e.preview.picture_rev;
+        e.use_device(RenderDevice::Cpu, Some(gpu));
+        assert_eq!(e.renderer, RenderDevice::Cpu);
+        assert!(e.preview.gpu().is_some() && e.preview.picture_rev != before);
+        assert!(e.status.starts_with("Drawing on the CPU"), "{}", e.status);
+        // The preference is kept with the settings.
+        let mut p = e.prefs.clone();
+        p.renderer = RenderDevice::Cpu;
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.renderer, RenderDevice::Cpu);
+        let old: Prefs = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.renderer, RenderDevice::Gpu, "settings from before it existed: the GPU");
+    }
+
     #[test]
     fn premiere_and_after_effects_projects_open_as_new_projects() {
         let dir = std::env::temp_dir().join(format!("rf-adobe-{}", std::process::id()));

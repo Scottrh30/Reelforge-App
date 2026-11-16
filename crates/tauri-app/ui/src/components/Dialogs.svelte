@@ -7,12 +7,15 @@
 
   let prefs = $state<Prefs | null>(null);
   let info = $state<SettingsInfo | null>(null);
+  let rend = $state<Awaited<ReturnType<typeof api.renderers>> | null>(null);
   $effect(() => {
     if (app.settingsOpen && app.s) {
       prefs = { ...app.s.prefs };
       api.settingsInfo().then((i) => (info = i));
+      api.renderers().then((r) => (rend = r)).catch(() => (rend = null));
     }
   });
+  const rname = (k: "gpu" | "cpu") => rend?.available.find((r) => r.kind === k)?.name;
 
   // Proxy formats, as the Media panel names them.
   const formatLabels: Record<string, string> = { ProResProxy: "ProRes 422 Proxy", DnxhrLb: "DNxHR LB", H264: "H.264 (all keyframes)" };
@@ -55,6 +58,15 @@
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="set-title">
       <h2 id="set-title">Settings</h2>
       <label class="check" title="New projects from presets and your templates, and your recent projects, when Reelforge opens. File > Start screen shows it any time."><input type="checkbox" bind:checked={prefs.start_screen} /> Show the start screen when Reelforge opens</label>
+      <label class="field" title="What draws the pictures, in the Viewer and in exports. The GPU (the graphics card) is fastest. The CPU runs the very same effects in software (WARP on Windows, lavapipe or llvmpipe on Linux): much slower, but the same picture, for a computer whose graphics card is missing, too old, out of memory or giving wrong results. The Viewer switches at once; exports started from now on use it.">
+        <span>Render with</span>
+        <select bind:value={prefs.renderer}>
+          <option value="gpu" disabled={!!rend && !rname("gpu")}>GPU{rname("gpu") ? ` · ${rname("gpu")}` : rend ? " · none found" : ""}</option>
+          <option value="cpu" disabled={!!rend && !rname("cpu")}>CPU (slower){rname("cpu") ? ` · ${rname("cpu")}` : rend ? " · none on this computer" : ""}</option>
+        </select>
+      </label>
+      {#if rend?.device}<p class="info">Drawing on: {rend.device}</p>{/if}
+
       <h3>Playback</h3>
       <label class="check" title="Decode on the graphics card. Falls back to software by itself if it doesn't work. Applies to clips opened from now on."><input type="checkbox" bind:checked={prefs.hw_decode} /> Hardware video decoding{info ? ` (${info.hw_api})` : ""}</label>
       {#if info}<p class="info">Status: {info.hw_status}</p>{/if}

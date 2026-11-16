@@ -113,7 +113,7 @@ struct ViewerInfo {
     /// Hardware decoding: "on", "off", or why it isn't used.
     decode: String,
     /// The graphics card drawing the picture.
-    gpu: Option<&'static str>,
+    gpu: Option<String>,
     /// The picture is drawn at 1/this of full resolution now.
     quality: u32,
 }
@@ -333,6 +333,20 @@ fn new_project() -> Res<()> {
 fn open_dialog() -> Res<()> {
     let Some(path) = rfd::FileDialog::new().add_filter("Reelforge project", &["rfproj"]).pick_file() else { return Ok(()) };
     ed(|e| e.open_project_path(path))
+}
+
+/// The renderers this computer has, for Preferences (GPU, CPU), and which draws now.
+#[derive(Serialize)]
+struct Renderers {
+    available: Vec<reelforge_render::RendererInfo>,
+    active: reelforge_render::RenderDevice,
+    device: Option<String>,
+}
+
+#[tauri::command]
+fn renderers() -> Res<Renderers> {
+    let available = reelforge_render::renderers();
+    ed(|e| Renderers { available, active: e.renderer, device: reelforge_render::adapter_info() })
 }
 
 /// File > Open a Premiere Pro or After Effects project…: it becomes a new, unsaved project.
@@ -1733,7 +1747,8 @@ fn main() {
     let app = tauri::Builder::default()
         .setup(|app| {
             use tauri::Manager;
-            let gpu = reelforge_render::headless_device();
+            // The graphics card (the settings may then ask for the CPU instead).
+            let gpu = reelforge_render::device_for(reelforge_render::RenderDevice::Gpu).or_else(reelforge_render::headless_device);
             if gpu.is_none() {
                 log::warn!("no graphics device: the viewer stays blank");
             }
@@ -2028,6 +2043,7 @@ fn main() {
             viewer::viewer_release,
             open_autosave_dialog,
             open_adobe_dialog,
+            renderers,
             dismiss_import_report,
             rendered_runs,
             ops::paste_attributes,

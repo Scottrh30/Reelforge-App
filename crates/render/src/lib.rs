@@ -2657,20 +2657,120 @@ mod half_tests {
 /// Effects' second tables are kept beside their first, by effect index with this bit set.
 const TABLE2: usize = 1 << 20;
 
-/// A device/queue without a window, for offline rendering and tests.
-pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    let i = adapter.get_info();
-    let _ = ADAPTER.set(format!("{} ({:?}, {:?}; driver {} {})", i.name, i.backend, i.device_type, i.driver, i.driver_info).replace(" ; driver  )", ")"));
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+/// What draws the pictures: the graphics card, or the processor running
+/// the same shaders in software (WARP on Windows, lavapipe or llvmpipe on
+/// Linux), so a machine with a missing, old or misbehaving graphics card
+/// still renders the same picture, only slower.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RenderDevice {
+    #[default]
+    Gpu,
+    Cpu,
 }
 
-static ADAPTER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+impl RenderDevice {
+    pub fn label(self) -> &'static str {
+        match self {
+            RenderDevice::Gpu => "GPU",
+            RenderDevice::Cpu => "CPU",
+        }
+    }
+}
 
-/// The graphics card the compositor got (name, API, kind, driver), once one was opened.
-pub fn adapter_info() -> Option<&'static str> {
-    ADAPTER.get().map(String::as_str)
+/// One of the renderers on this computer.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RendererInfo {
+    pub kind: RenderDevice,
+    /// "NVIDIA GeForce RTX 4070 (Vulkan)", "Microsoft Basic Render Driver (Dx12)".
+    pub name: String,
+}
+
+fn instance() -> wgpu::Instance {
+    wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env())
+}
+
+fn describe(a: &wgpu::Adapter) -> String {
+    let i = a.get_info();
+    format!("{} ({:?}, {:?}; driver {} {})", i.name, i.backend, i.device_type, i.driver, i.driver_info).replace(" ; driver  )", ")").replace("; driver  )", ")")
+}
+
+fn short(a: &wgpu::Adapter) -> String {
+    let i = a.get_info();
+    format!("{} ({:?})", i.name, i.backend)
+}
+
+/// The adapter for `kind`: for the GPU the fastest graphics card (or, with
+/// none, whatever there is); for the CPU a software one, or none.
+fn adapter_for(kind: RenderDevice) -> Option<wgpu::Adapter> {
+    let inst = instance();
+    match kind {
+        RenderDevice::Gpu => {
+            let all = pollster::block_on(inst.enumerate_adapters(wgpu::Backends::all()));
+            let rank = |a: &wgpu::Adapter| match a.get_info().device_type {
+                wgpu::DeviceType::DiscreteGpu => 0,
+                wgpu::DeviceType::IntegratedGpu => 1,
+                wgpu::DeviceType::VirtualGpu => 2,
+                wgpu::DeviceType::Other => 3,
+                wgpu::DeviceType::Cpu => 4,
+            };
+            // The system's own choice first (it knows the backend that works), else the best kind.
+            let preferred = pollster::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() })).ok();
+            match preferred {
+                Some(a) if a.get_info().device_type != wgpu::DeviceType::Cpu || all.iter().all(|b| b.get_info().device_type == wgpu::DeviceType::Cpu) => Some(a),
+                p => all.into_iter().filter(|a| a.get_info().device_type != wgpu::DeviceType::Cpu).min_by_key(rank).or(p),
+            }
+        }
+        RenderDevice::Cpu => {
+            let all = pollster::block_on(inst.enumerate_adapters(wgpu::Backends::all()));
+            all.into_iter().find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu).or_else(|| pollster::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter: true, ..Default::default() })).ok().filter(|a| a.get_info().device_type == wgpu::DeviceType::Cpu))
+        }
+    }
+}
+
+/// The renderers this computer has (a graphics card, a software one), for
+/// choosing between them.
+pub fn renderers() -> Vec<RendererInfo> {
+    [RenderDevice::Gpu, RenderDevice::Cpu]
+        .into_iter()
+        .filter_map(|kind| {
+            let a = adapter_for(kind)?;
+            // "GPU" that's really software (no graphics card) isn't a second choice.
+            (kind == RenderDevice::Cpu || a.get_info().device_type != wgpu::DeviceType::Cpu).then(|| RendererInfo { kind, name: short(&a) })
+        })
+        .collect()
+}
+
+/// A device and queue on `kind`, without a window. None when this computer
+/// hasn't one of that kind.
+pub fn device_for(kind: RenderDevice) -> Option<(wgpu::Device, wgpu::Queue)> {
+    let adapter = adapter_for(kind)?;
+    let (d, q) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+    if let Ok(mut g) = ADAPTER.lock() {
+        *g = Some(describe(&adapter));
+    }
+    Some((d, q))
+}
+
+/// A device/queue without a window, for offline rendering and tests.
+pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let instance = instance();
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    let dev = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+    if let Ok(mut g) = ADAPTER.lock() {
+        if g.is_none() {
+            *g = Some(describe(&adapter));
+        }
+    }
+    Some(dev)
+}
+
+static ADAPTER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The graphics card (or software renderer) the compositor got last (name,
+/// API, kind, driver), once one was opened.
+pub fn adapter_info() -> Option<String> {
+    ADAPTER.lock().ok().and_then(|g| g.clone())
 }
 
 /// The resolution a layer's effects and mask run at (see the call).

@@ -207,7 +207,7 @@ pub fn report(e: &reelforge_engine::editor::Editor, extra: &[(&str, String)]) ->
     line("Report made", now_utc());
     line("System", os_name());
     line("Processor", cpu());
-    line("Graphics", reelforge_render::adapter_info().unwrap_or("none found: the viewer stays blank").to_string());
+    line("Graphics", reelforge_render::adapter_info().unwrap_or_else(|| "none found: the viewer stays blank".to_string()));
     line("Hardware decoding", format!("{} — {}", reelforge_media::hw::api_name(), reelforge_media::hw::status()));
     line("Zero-copy video", reelforge_core::frame::zero_copy::status().to_string());
     line("FFmpeg", reelforge_media::ffmpeg_version());

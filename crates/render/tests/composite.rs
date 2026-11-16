@@ -2832,3 +2832,32 @@ fn qualifier_and_hue_curves_on_the_gpu_match_the_sums() {
     }
 }
 
+
+/// The CPU draws what the GPU draws: the same layers, effects and blends on
+/// each renderer this computer has, within a level or two (rounding).
+#[test]
+fn the_cpu_and_the_gpu_draw_the_same_picture() {
+    use reelforge_render::{device_for, renderers, RenderDevice};
+    let have = renderers();
+    eprintln!("renderers: {have:?}");
+    let draw = |kind: RenderDevice| -> Option<Vec<u8>> {
+        let (d, q) = device_for(kind)?;
+        let mut c = Compositor::new(&d, &q);
+        let img: Vec<u8> = (0..64u32 * 32).flat_map(|i| [(i % 64 * 4) as u8, (i / 64 * 8) as u8, 120, 255]).collect();
+        let mut l = layer(1, &img, [64, 32], [64.0, 32.0], Transform { rotation: 10.0, scale: [1.2, 1.2], ..Default::default() }, BlendMode::Screen);
+        l.effects = vec![fx(EffectKind::Blur, &[(0, 3.0)])];
+        let back = solid(1, 1, [40, 80, 160, 255]);
+        c.render([96, 48], &[full(2, &back, [96, 48]), l]);
+        c.read_output()
+    };
+    let cpu = draw(RenderDevice::Cpu);
+    let gpu = draw(RenderDevice::Gpu);
+    // Every machine draws on something.
+    assert!(cpu.is_some() || gpu.is_some());
+    if let (Some(a), Some(b)) = (&cpu, &gpu) {
+        let worst = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+        assert!(worst <= 3, "the CPU and the GPU differ by {worst} levels");
+    }
+    // The list names a CPU renderer exactly when one opens.
+    assert_eq!(have.iter().any(|r| r.kind == RenderDevice::Cpu), cpu.is_some());
+}

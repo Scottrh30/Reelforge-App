@@ -1116,6 +1116,13 @@ What works now:
   line up. Exports and rendered previews are always of the edit, never the grid
 - **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, render cache size,
   proxies, autosave interval, and the proxy/autosave folders
+- **Render with: GPU or CPU** (Settings): what draws the pictures, in the Viewer and in exports.
+  The **GPU** (the graphics card, the fastest one there is) is the default. The **CPU** runs the
+  very same shaders in software (WARP, which comes with Windows; lavapipe or llvmpipe on Linux;
+  macOS has none, so the choice is greyed out there): much slower, but the same picture, for a
+  computer whose graphics card is missing, too old, short of memory or drawing something wrong.
+  Each choice shows the device it would use, the Viewer switches at once, and exports started
+  afterwards use it; the device drawing now is also in the diagnostics report
 - **Speed** (Controls panel, any footage or composition clip): 1–2000%, with one-click 25/50/
   100/200/400%, and **Reverse**. The clip keeps playing the same stretch of footage, so slow
   motion makes it longer (clips after it on its tracks move along) and fast motion shorter;
@@ -2586,6 +2593,17 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
 - **Playback clock** (`engine/src/playback.rs`) reads that position, so video is slaved to audio.
   With no device, or if audio fails to start within 500 ms, it falls back to wall-clock time.
   The status bar shows which clock is in use.
+
+### GPU or CPU rendering
+
+`reelforge_render::device_for(RenderDevice)` opens a device of the kind asked for: for `Gpu`
+the system's high-performance adapter (a discrete card before an integrated one; a software
+one only when there is nothing else), for `Cpu` an adapter whose type is `Cpu` (WARP through
+Direct3D 12, lavapipe through Vulkan, llvmpipe through GL), else none. `renderers()` lists
+what there is for Settings. The editor's `use_renderer` makes the Viewer's compositor and
+scene afresh on the new device (`Preview::replace_gpu`; decoders and title caches let go);
+exports take their device from the Viewer when they start. A render test draws the same
+layers, blur and blend on both and requires them to agree within 3 levels.
 
 ### Opening Adobe projects (`core/src/adobe`)
 
