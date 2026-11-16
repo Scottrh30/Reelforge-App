@@ -169,7 +169,9 @@ fn effect(uv: vec2<f32>) -> vec4<f32> {
     let cblur = max(param(9), 0.0);
     let cw = w * clamp(param(8) / 100.0, 0.0, 1.0);
     let core = (1.0 - smoothstep(cw * 0.5 - 0.75 - cblur, cw * 0.5 + 0.75 + cblur, d)) * clamp(cw, 0.0, 1.0) * depth;
-    let body = (1.0 - smoothstep(w * 0.5 - 0.75 - cblur * 0.5, w * 0.5 + 0.75 + cblur * 0.5, d)) * clamp(w, 0.0, 1.0);
+    // The outer core's edge: softened with the inner core, plus its own blur.
+    let oblur = cblur * 0.5 + max(param(25), 0.0);
+    let body = (1.0 - smoothstep(w * 0.5 - 0.75 - oblur, w * 0.5 + 0.75 + oblur, d)) * clamp(w, 0.0, 1.0);
     // Pulses brighten the beam and its glow, not the faint haze far away.
     let near = exp(-edge / (max(param(10), 1.0) * 1.5 + w0));
     let bright = (1.0 + pulse * near) * flick * depth;
@@ -193,7 +195,7 @@ fn effect(uv: vec2<f32>) -> vec4<f32> {
     }
 
     let light = param_color(7) * 1.6 * core * flick * (1.0 + 0.5 * pulse)
-        + colour * 1.3 * max(body - core, 0.0) * bright
+        + select(colour * 1.3, param_color(24), param(24) > 0.5) * max(body - core, 0.0) * bright
         + colour * glow * (1.0 - body) * bright
         + warm * halation * flick
         + mix(colour, vec3(1.0), 0.6) * (src * 1.2 + sparks * 1.5) * flick;

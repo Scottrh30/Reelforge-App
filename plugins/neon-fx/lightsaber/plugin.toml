@@ -80,8 +80,8 @@ options = ["Rounded", "Pointed", "Flat"]
 default = 0
 
 [[param]]                     # 8
-section = "Core"
-name = "Core colour"
+section = "Inner core"
+name = "Inner core colour"
 type = "color"
 default = 0xf2f7ff
 
@@ -93,7 +93,7 @@ max = 100
 suffix = " % of blade"
 
 [[param]]                     # 10
-name = "Core blur"
+name = "Inner core blur"
 default = 1.5
 min = 0
 max = 50
@@ -191,3 +191,20 @@ suffix = " %"
 name = "Blade only"
 type = "toggle"
 default = 0
+
+# The outer core: the coloured band of the blade round the inner core. (At the end, so
+# effects saved before keep their settings.)
+[[param]]                     # 24
+section = "Outer core"
+# Black: the blade colour, a little brighter (as before these settings existed).
+name = "Outer core colour"
+type = "color"
+default = 0x000000
+
+[[param]]                     # 25
+name = "Outer core blur"
+default = 0
+min = 0
+max = 50
+suffix = " px"
+step = 0.05

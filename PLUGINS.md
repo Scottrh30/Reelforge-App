@@ -88,7 +88,7 @@ type = "color"                # a colour picker; read it with param_color(3)
 default = 0x1f6bff            # 0xRRGGBB
 ```
 
-* Up to **24** parameters. Every one can be keyframed. Toggles and choices change at
+* Up to **32** parameters. Every one can be keyframed. Toggles and choices change at
   keyframes rather than sliding through in-between values; colours blend channel by
   channel.
 * Parameters are numbered in the order they're listed, from 0.
@@ -252,7 +252,9 @@ Each plugin in a pack still needs its own unique `id`.
 
 **Neon FX** (which comes with Reelforge, in `plugins/neon-fx`) is a pack of seven effects:
 Lightsaber, Laser Beam, Twin Laser, Laser Blast, Neon Glow, Neon Outline and Neon Mask. The
-lightsaber and lasers show off points, colours and sections.
+lightsaber and lasers show off points, colours and sections. Settings added to a plugin later
+go at the end of its list (Outer core colour and Outer core blur in the lightsaber and lasers),
+so effects saved before keep their settings: a project stores a plugin's values in order.
 
 ## Alpha
 

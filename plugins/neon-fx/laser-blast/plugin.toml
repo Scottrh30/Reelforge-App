@@ -79,7 +79,7 @@ max = 100
 suffix = " % of bolt"
 
 [[param]]                     # 8
-name = "Core blur"
+name = "Inner core blur"
 default = 1
 min = 0
 max = 50
@@ -92,7 +92,7 @@ type = "color"
 default = 0xff2a1a
 
 [[param]]                     # 10
-name = "Core colour"
+name = "Inner core colour"
 type = "color"
 default = 0xfff2ee
 
@@ -183,3 +183,19 @@ min = 0
 max = 100
 suffix = " %"
 
+# The outer core: the coloured band of the bolt round the inner core. (At the end, so
+# effects saved before keep their settings.)
+[[param]]                     # 23
+section = "Outer core"
+# Black: the bolt colour, a little brighter (as before these settings existed).
+name = "Outer core colour"
+type = "color"
+default = 0x000000
+
+[[param]]                     # 24
+name = "Outer core blur"
+default = 0
+min = 0
+max = 50
+suffix = " px"
+step = 0.05

@@ -27,6 +27,8 @@ struct RfFx {
     // Where the layer sits in the target: layer uv = target uv × xy + zw.
     map: vec4<f32>,
     p5: vec4<f32>,
+    p6: vec4<f32>,
+    p7: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> rf: RfFx;
 @group(1) @binding(0) var rf_src: texture_2d<f32>;
@@ -58,8 +60,8 @@ fn rf_unpremul(c: vec4<f32>) -> vec4<f32> {
 
 // Parameter i (0-based, in plugin.toml order).
 fn param(i: i32) -> f32 {
-    var all = array<vec4<f32>, 6>(rf.p0, rf.p1, rf.p2, rf.p3, rf.p4, rf.p5);
-    let k = clamp(i, 0, 23);
+    var all = array<vec4<f32>, 8>(rf.p0, rf.p1, rf.p2, rf.p3, rf.p4, rf.p5, rf.p6, rf.p7);
+    let k = clamp(i, 0, 31);
     return all[k / 4][k % 4];
 }
 // A toggle parameter as true/false.

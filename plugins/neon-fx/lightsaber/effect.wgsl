@@ -109,7 +109,9 @@ fn effect(uv: vec2<f32>) -> vec4<f32> {
     let cblur = max(param(10), 0.0);
     let cw = w * clamp(param(9) / 100.0, 0.0, 1.0);
     let core = (1.0 - smoothstep(cw * 0.5 - 0.75 - cblur, cw * 0.5 + 0.75 + cblur, d)) * clamp(cw, 0.0, 1.0);
-    let body = (1.0 - smoothstep(w * 0.5 - 0.75 - cblur * 0.5, w * 0.5 + 0.75 + cblur * 0.5, d)) * clamp(w, 0.0, 1.0);
+    // The outer core's edge: softened with the inner core, plus its own blur.
+    let oblur = cblur * 0.5 + max(param(25), 0.0);
+    let body = (1.0 - smoothstep(w * 0.5 - 0.75 - oblur, w * 0.5 + 0.75 + oblur, d)) * clamp(w, 0.0, 1.0);
 
     // Halo (a tight band round the blade), glow, and halation (a wide warm haze).
     let colour = param_color(11);
@@ -122,8 +124,10 @@ fn effect(uv: vec2<f32>) -> vec4<f32> {
     let warm = mix(colour, from_srgb(vec3(1.0, 0.4, 0.25)) * nfx_max3(colour), 0.35);
 
     let hot = param_color(8) * 1.6 * (0.85 + 0.15 * flick);
+    // The outer core: its own colour, or (black) the blade colour made brighter.
+    let outer = select(colour * 1.3, param_color(24), param(24) > 0.5);
     let light = hot * core
-        + colour * 1.3 * max(body - core, 0.0) * flick
+        + outer * max(body - core, 0.0) * flick
         + colour * (halo * 0.9 + glow) * (1.0 - body) * flick
         + warm * halation * flick;
 

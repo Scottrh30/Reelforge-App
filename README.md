@@ -1182,7 +1182,7 @@ What works now:
   linked to each other, not to the originals). Paste into a composition works too: missing
   tracks are added
 - **Effect plugins** (**Edit → Plugins…**): write your own GPU effects and install them without
-  rebuilding Reelforge. A plugin is a folder with a `plugin.toml` (name, category, up to 24
+  rebuilding Reelforge. A plugin is a folder with a `plugin.toml` (name, category, up to 32
   parameters: numbers, checkboxes, menus and colours, in sections, plus points to drag in the
   Viewer) and a WGSL shader; it appears in the effects
   browser beside the built-in effects and gets keyframes, undo, paste attributes and export
@@ -1193,9 +1193,10 @@ What works now:
   still opens; that effect is skipped and keeps its settings. Several plugins can come as one
   **pack** that installs and removes together. Five examples ship in `plugins/` (RGB Split,
   Film Grain, Mosaic, Bloom, Wave Warp), and so does the **Neon FX** pack: **Lightsaber**
-  (hilt and tip dragged in the Viewer; core width and blur, glow, halo and halation, colour,
-  flicker, pulse, waviness, particles and heat distortion), **Laser Beam**, **Twin Laser**
-  (two strands twisted together, each its own colour), **Laser Blast** (blaster bolts),
+  (hilt and tip dragged in the Viewer; inner and outer core colour and blur, core width, glow,
+  halo and halation, blade colour, flicker, pulse, waviness, particles and heat distortion),
+  **Laser Beam**, **Laser Blast** (blaster bolts; it and Laser Beam have the same inner and
+  outer core settings), **Twin Laser** (two strands twisted together, each its own colour),
   **Neon Glow**, **Neon Outline** and **Neon Mask**. **See [PLUGINS.md](PLUGINS.md) for how to
   write one**
 - **OpenFX plugins**: Reelforge hosts OpenFX image effects (`.ofx.bundle`, the plugin format of

@@ -483,24 +483,27 @@ default = 1
     }
 
     #[test]
-    fn colours_points_sections_and_24_parameters() {
+    fn colours_points_sections_and_32_parameters() {
         let src = "fn effect(uv: vec2<f32>) -> vec4<f32> { return sample(uv); }";
         let mut m = String::from("id = \"t.full\"\nname = \"Full\"\n[[point]]\nname = \"Start\"\nx = 0\nline_to = 2\n[[point]]\nname = \"End\"\nx = 2\n");
-        for i in 0..24 {
+        for i in 0..32 {
             m += &format!("[[param]]\nname = \"p{i}\"\n");
             if i == 4 {
                 m += "type = \"color\"\ndefault = 0x1f6bff\nsection = \"Look\"\n";
             }
         }
         let d = parse(&m, src, Path::new("/x")).unwrap();
-        assert_eq!(d.params.len(), 24);
+        assert_eq!(d.params.len(), 32);
         assert_eq!(d.params[4].ui, ParamUi::Color);
         assert_eq!(d.params[4].default, 0x1f6bff as f32);
         assert_eq!(d.sections, &[(4, "Look")]);
         assert_eq!(d.points, vec![PluginPoint { name: "Start".into(), x: 0, line_to: Some(2) }, PluginPoint { name: "End".into(), x: 2, line_to: None }]);
         let bad = m.replace("line_to = 2", "line_to = 7");
         assert!(parse(&bad, src, Path::new("/x")).unwrap_err().contains("no point has x = 7"));
-        let bad = m.replace("x = 2\n", "x = 23\n").replace("line_to = 2", "line_to = 23");
-        assert!(parse(&bad, src, Path::new("/x")).unwrap_err().contains("only 24"));
+        let bad = m.replace("x = 2\n", "x = 31\n").replace("line_to = 2", "line_to = 31");
+        assert!(parse(&bad, src, Path::new("/x")).unwrap_err().contains("only 32"));
+        // One more than the most is refused.
+        let over = format!("{m}[[param]]\nname = \"p32\"\n");
+        assert!(parse(&over, src, Path::new("/x")).unwrap_err().contains("32"));
     }
 }

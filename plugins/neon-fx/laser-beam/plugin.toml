@@ -70,7 +70,7 @@ type = "color"
 default = 0xff2a1a
 
 [[param]]                     # 7
-name = "Core colour"
+name = "Inner core colour"
 type = "color"
 default = 0xfff2ee
 
@@ -82,7 +82,7 @@ max = 100
 suffix = " % of beam"
 
 [[param]]                     # 9
-name = "Core blur"
+name = "Inner core blur"
 default = 1
 min = 0
 max = 50
@@ -194,3 +194,19 @@ min = 0
 max = 100
 suffix = " %"
 
+# The outer core: the coloured band of the beam round the inner core. (At the end, so
+# effects saved before keep their settings.)
+[[param]]                     # 24
+section = "Outer core"
+# Black: the beam colour, a little brighter (as before these settings existed).
+name = "Outer core colour"
+type = "color"
+default = 0x000000
+
+[[param]]                     # 25
+name = "Outer core blur"
+default = 0
+min = 0
+max = 50
+suffix = " px"
+step = 0.05

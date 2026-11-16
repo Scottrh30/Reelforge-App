@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Most parameters any effect has (the GPU uniform holds this many).
-pub const MAX_PARAMS: usize = 24;
+pub const MAX_PARAMS: usize = 32;
 /// Most parameters a plugin may have (its shader sees all of them).
 pub const PLUGIN_MAX_PARAMS: usize = MAX_PARAMS;
 

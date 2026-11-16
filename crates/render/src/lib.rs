@@ -176,10 +176,13 @@ const MAX_FX_PASSES: usize = 256;
 /// 10 × vec4: params 0–7, texel/direction, extra (aspect, time, layer size),
 /// params 8–15, extra2 (texture size, pass, pass count), params 16–19, the
 /// map from the target's uv to the layer's (the target can have a margin),
-/// and params 20–23 (only the particle shader reads those).
-const FX_UNIFORM_SIZE: u64 = 160;
+/// params 20–23 (the particle shader and plugins read those), then params 24–31
+/// (plugins only).
+const FX_UNIFORM_SIZE: u64 = 192;
 /// Where params 20–23 sit.
 const FX_P5: usize = 36;
+/// Where params 24–31 sit.
+const FX_P6: usize = 40;
 /// Where `map` sits in an effect pass's uniform.
 const FX_MAP: usize = 32;
 /// The layer exactly fills its effect targets.
@@ -1895,6 +1898,7 @@ impl Compositor {
                             let mut u = uniform(&e.values, [0.0; 2]);
                             u[28..32].copy_from_slice(&e.values[16..20]);
                             u[FX_P5..FX_P5 + 4].copy_from_slice(&e.values[20..24]);
+                            u[FX_P6..FX_P6 + 8].copy_from_slice(&e.values[24..32]);
                             u[13] = e.time;
                             u[14] = l.layer_size[0];
                             u[15] = l.layer_size[1];
