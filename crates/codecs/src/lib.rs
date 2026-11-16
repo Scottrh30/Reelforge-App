@@ -11,7 +11,7 @@
 //! | Motion JPEG | [`mjpeg`] | baseline and progressive JPEG per frame (zune-jpeg), AVI-style frames without Huffman tables |
 //! | DNxHD / DNxHR | [`dnxhd`] | every compression ID: DNxHD 8/10-bit, DNxHR LB/SQ/HQ/HQX/444, interlaced and adaptive-interlace; Reelforge's own |
 //! | MPEG-2 | [`mpeg2`] | Main and 4:2:2 profiles: I/P/B, frame and field pictures, all motion types; Reelforge's own |
-//! | H.264, HEVC, VP9, AV1 | `external` | pure-Rust decoder libraries: H.264 progressive 4:2:0/4:2:2 at 8–12 bits (Baseline/Main/High/High 10/High 4:2:2), HEVC Main/Main 10/Main 4:2:2 10/Main 4:4:4, VP9 profiles 0–3, AV1 Main/High/Professional |
+//! | H.264, HEVC, VP9, AV1 | `external` | pure-Rust decoder libraries: H.264 progressive and MBAFF 4:2:0/4:2:2 at 8–12 bits (Baseline/Main/High/High 10/High 4:2:2), HEVC Main/Main 10/Main 4:2:2 10/Main 4:4:4, VP9 profiles 0–3, AV1 Main/High/Professional |
 //! | Apple ProRes | [`prores`] | 422 Proxy/LT/Standard/HQ, 4444/XQ with alpha, progressive and interlaced; Reelforge's own |
 //! | OpenEXR | [`exr`] | scanline and tiled, single and multi-part, none/RLE/ZIPS/ZIP/PIZ/PXR24/B44/B44A, half/float/uint; float output; Reelforge's own |
 //! | GoPro CineForm | [`cineform`] | YUV 4:2:2 10-bit, RGB and RGBA 12-bit, RAW (Bayer mosaic), intra and two-frame groups, progressive and interlaced; Reelforge's own |

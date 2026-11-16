@@ -521,9 +521,8 @@ impl Sps {
     }
 
     pub fn check_supported(&self) -> Result<()> {
-        if !self.frame_mbs_only {
-            return unsupported("interlaced (field / MBAFF) coding");
-        }
+        // Interlaced streams: frame pictures (MBAFF or all-frame) are decoded here; field
+        // pictures are refused per slice.
         if !matches!(self.chroma_array_type(), 1 | 2) {
             return unsupported(format!("chroma_format_idc {} (4:2:0 and 4:2:2 are implemented)", self.chroma_format_idc));
         }

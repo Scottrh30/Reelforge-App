@@ -35,6 +35,27 @@ impl Fixture {
 }
 
 pub const FIXTURES: &[Fixture] = &[
+    // Interlaced (MBAFF) streams, from intra-only CAVLC without deblocking up to every tool
+    Fixture { name: "mbaff_i_cavlc_nodbk", source: "testsrc2", width: 352, height: 288, frames: 2, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:keyint=1:cabac=0:8x8dct=0:no-deblock=1"] },
+    Fixture { name: "mbaff_i_cabac_nodbk", source: "testsrc2", width: 352, height: 288, frames: 2, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:keyint=1:8x8dct=0:no-deblock=1"] },
+    Fixture { name: "mbaff_i_8x8_nodbk", source: "testsrc2", width: 352, height: 288, frames: 2, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:keyint=1:no-deblock=1"] },
+    Fixture { name: "mbaff_i_cavlc_8x8_nodbk", source: "testsrc2", width: 352, height: 288, frames: 2, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:keyint=1:cabac=0:no-deblock=1"] },
+    Fixture { name: "mbaff_p_cavlc_nodbk", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=0:cabac=0:8x8dct=0:no-deblock=1:ref=3"] },
+    Fixture { name: "mbaff_p_cabac_nodbk", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=0:no-deblock=1:ref=3"] },
+    Fixture { name: "mbaff_b_cabac_nodbk", source: "testsrc2", width: 352, height: 288, frames: 16, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=3:no-deblock=1:ref=3:b-pyramid=normal"] },
+    Fixture { name: "mbaff_b_cavlc_nodbk", source: "mandelbrot", width: 352, height: 288, frames: 12, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=2:cabac=0:no-deblock=1"] },
+    Fixture { name: "mbaff_i_dbk", source: "testsrc2", width: 352, height: 288, frames: 2, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:keyint=1"] },
+    Fixture { name: "mbaff_i_cavlc_dbk", source: "testsrc2", width: 352, height: 288, frames: 2, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:keyint=1:cabac=0:8x8dct=0"] },
+    Fixture { name: "mbaff_p_dbk", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=0:ref=3"] },
+    Fixture { name: "mbaff_main", source: "testsrc2", width: 352, height: 288, frames: 20, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=3:ref=3"] },
+    Fixture { name: "mbaff_high_720", source: "mandelbrot", width: 1280, height: 720, frames: 8, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=2:ref=2"] },
+    Fixture { name: "mbaff_bff", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=2:bff=1"] },
+    Fixture { name: "mbaff_odd", source: "testsrc2", width: 318, height: 236, frames: 8, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=2"] },
+    Fixture { name: "mbaff_weightb", source: "testsrc2", width: 352, height: 288, frames: 16, filter: "noise=alls=12:allf=t+u,fade=in:0:12", args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=3:weightb=1"] },
+    Fixture { name: "mbaff_slices", source: "testsrc2", width: 352, height: 288, frames: 8, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=2:slices=4"] },
+    Fixture { name: "mbaff_10bit", source: "testsrc2", width: 352, height: 288, frames: 8, filter: NOISE, args: &["-flags", "+ildct+ilme", "-pix_fmt", "yuv420p10le", "-profile:v", "high10", "-x264-params", "interlaced=1:bframes=2"] },
+    Fixture { name: "mbaff_422", source: "testsrc2", width: 352, height: 288, frames: 8, filter: NOISE, args: &["-flags", "+ildct+ilme", "-pix_fmt", "yuv422p10le", "-profile:v", "high422", "-x264-params", "interlaced=1:bframes=2"] },
+
     // High 10, High 4:2:2 and High 4:4:4 Predictive-coded 4:2:2 / 10-bit streams
     Fixture { name: "hi10_intra", source: "testsrc2", width: 352, height: 288, frames: 6, filter: NOISE, args: &["-pix_fmt", "yuv420p10le", "-profile:v", "high10", "-x264-params", "keyint=1"] },
     Fixture { name: "hi10_cabac_b", source: "testsrc2", width: 352, height: 288, frames: 20, filter: NOISE, args: &["-pix_fmt", "yuv420p10le", "-profile:v", "high10", "-bf", "3"] },

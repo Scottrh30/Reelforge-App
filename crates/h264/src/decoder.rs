@@ -356,6 +356,14 @@ impl Decoder {
         if sh.field_pic {
             return unsupported("field pictures");
         }
+        if sps.mb_adaptive_frame_field {
+            if pps.constrained_intra_pred {
+                return unsupported("constrained intra prediction in MBAFF frames");
+            }
+            if sh.slice_type.is_b() && !sh.direct_spatial_mv_pred {
+                return unsupported("temporal direct prediction in MBAFF frames");
+            }
+        }
         if matches!(sh.slice_type, SliceType::Sp | SliceType::Si) {
             return unsupported("SP/SI slices");
         }
@@ -468,10 +476,11 @@ impl Decoder {
         let frame_poc = if sh.has_mmco5() { 0 } else { poc.frame() };
         let id = self.next_id;
         self.next_id += 1;
+        let field_poc = if sh.has_mmco5() { [poc.top - poc.frame(), poc.bottom - poc.frame()] } else { [poc.top, poc.bottom] };
         let frame = if fmt.deep() {
-            AnyFrame::Deep(Arc::new(Frame::new(id, frame_poc, mb_w, mb_h, fmt)))
+            AnyFrame::Deep(Arc::new(Frame::new(id, frame_poc, mb_w, mb_h, fmt).with_field_poc(field_poc)))
         } else {
-            AnyFrame::Eight(Arc::new(Frame::new(id, frame_poc, mb_w, mb_h, fmt)))
+            AnyFrame::Eight(Arc::new(Frame::new(id, frame_poc, mb_w, mb_h, fmt).with_field_poc(field_poc)))
         };
         self.pending = Some(PendingPic { frame, sps: sps.clone(), first: sh.clone(), poc, pts, key: sh.idr, slices: Vec::new() });
         Ok(())

@@ -196,6 +196,8 @@ pub struct MbState {
     pub mvd: [[[u8; 2]; 16]; 2],
     /// Bit per 8x8 block predicted in direct mode.
     pub direct8x8: u8,
+    /// A field macroblock (MBAFF frames).
+    pub field: bool,
 }
 
 impl MbState {
@@ -224,6 +226,7 @@ impl Default for MbState {
             mv: [[[0; 2]; 16]; 2],
             mvd: [[[0; 2]; 16]; 2],
             direct8x8: 0,
+            field: false,
         }
     }
 }
@@ -243,6 +246,8 @@ pub struct FrameRow<P: Pel = u8> {
     /// Unique id of the referenced picture per 8x8 block (u32::MAX = none).
     pub ref_id: [Box<[u32]>; 2],
     pub intra: Box<[bool]>,
+    /// Field macroblocks (MBAFF), per MB.
+    pub field: Box<[bool]>,
 }
 
 /// A decoded (or in-progress) frame as stored in the DPB and referenced by later pictures.
@@ -258,6 +263,9 @@ pub struct Frame<P: Pel = u8> {
     pub cheight: usize,
     pub mb_w: usize,
     pub fmt: Fmt,
+    /// TopFieldOrderCnt and BottomFieldOrderCnt (field macroblocks of MBAFF frames weight
+    /// and predict by fields).
+    pub field_poc: [i32; 2],
     /// log2 of the chroma lines per MB row (3 or 4).
     mbch_log2: u32,
     rows: Box<[OnceLock<FrameRow<P>>]>,
@@ -267,7 +275,24 @@ impl<P: Pel> Frame<P> {
     pub fn new(id: u32, poc: i32, mb_w: usize, mb_h: usize, fmt: Fmt) -> Self {
         let mbch = fmt.mbch();
         let mbch_log2 = mbch.trailing_zeros();
-        Frame { id, poc, width: mb_w * 16, height: mb_h * 16, cwidth: mb_w * 8, cheight: mb_h * mbch, mb_w, fmt, mbch_log2, rows: (0..mb_h).map(|_| OnceLock::new()).collect() }
+        Frame {
+            id,
+            poc,
+            width: mb_w * 16,
+            height: mb_h * 16,
+            cwidth: mb_w * 8,
+            cheight: mb_h * mbch,
+            mb_w,
+            fmt,
+            field_poc: [poc, poc],
+            mbch_log2,
+            rows: (0..mb_h).map(|_| OnceLock::new()).collect(),
+        }
+    }
+
+    pub fn with_field_poc(mut self, field_poc: [i32; 2]) -> Self {
+        self.field_poc = field_poc;
+        self
     }
 
     pub fn mb_h(&self) -> usize {
@@ -317,11 +342,13 @@ impl<P: Pel> Frame<P> {
         let mut ref_idx = [vec![-1i8; mb_w * 4], vec![-1i8; mb_w * 4]];
         let mut ref_id = [vec![u32::MAX; mb_w * 4], vec![u32::MAX; mb_w * 4]];
         let mut intra = vec![true; mb_w];
+        let mut field = vec![false; mb_w];
         for (x, st) in row_mbs.iter().enumerate() {
             if st.slice_num == u32::MAX {
                 continue;
             }
             intra[x] = st.kind.is_intra();
+            field[x] = st.field;
             for l in 0..2 {
                 mv[l][x * 16..x * 16 + 16].copy_from_slice(&st.mv[l]);
                 for b in 0..4 {
@@ -336,7 +363,7 @@ impl<P: Pel> Frame<P> {
         let [mv0, mv1] = mv;
         let [ri0, ri1] = ref_idx;
         let [id0, id1] = ref_id;
-        FrameRow { y, cb, cr, mv: [mv0.into(), mv1.into()], ref_idx: [ri0.into(), ri1.into()], ref_id: [id0.into(), id1.into()], intra: intra.into() }
+        FrameRow { y, cb, cr, mv: [mv0.into(), mv1.into()], ref_idx: [ri0.into(), ri1.into()], ref_id: [id0.into(), id1.into()], intra: intra.into(), field: field.into() }
     }
 
     /// A frame with every row published from `planes` and no motion (intra), e.g. "non-existing"
@@ -360,6 +387,32 @@ impl<P: Pel> Frame<P> {
             let row = self.row(yy >> 4);
             let line = &row.y[(yy & 15) * width..(yy & 15) * width + width];
             copy_line::<24, P>(line, x0, &mut out[r * os..], w);
+        }
+    }
+
+    /// Copy the w x h luma window at (x0, y0) of the field of parity `par` (0 top, 1 bottom;
+    /// clamped to the field) into `out` (stride `os`).
+    pub fn luma_window_field(&self, par: usize, x0: i32, y0: i32, w: usize, h: usize, out: &mut [P], os: usize) {
+        let (width, fh) = (self.width, self.height / 2);
+        for r in 0..h {
+            let yy = 2 * (y0 + r as i32).clamp(0, fh as i32 - 1) as usize + par;
+            let row = self.row(yy >> 4);
+            let line = &row.y[(yy & 15) * width..(yy & 15) * width + width];
+            copy_line::<24, P>(line, x0, &mut out[r * os..], w);
+        }
+    }
+
+    /// The same for chroma component `c`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn chroma_window_field(&self, c: usize, par: usize, x0: i32, y0: i32, w: usize, h: usize, out: &mut [P], os: usize) {
+        let (cw, fh) = (self.cwidth, self.cheight / 2);
+        for r in 0..h {
+            let yy = 2 * (y0 + r as i32).clamp(0, fh as i32 - 1) as usize + par;
+            let row = self.row(yy >> self.mbch_log2);
+            let plane = if c == 0 { &row.cb } else { &row.cr };
+            let o = (yy & ((1 << self.mbch_log2) - 1)) * cw;
+            let line = &plane[o..o + cw];
+            copy_line::<16, P>(line, x0, &mut out[r * os..], w);
         }
     }
 

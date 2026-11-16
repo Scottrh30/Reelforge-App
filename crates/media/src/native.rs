@@ -650,6 +650,9 @@ mod tests {
             ("h264_422_10.mxf", "320x180", 25, x("yuv422p10le", "high422", &["-bf", "2"])),
             ("h264_422_10_intra.mkv", "320x180", 25, x("yuv422p10le", "high422", &["-g", "1"])),
             ("h264_10_cavlc.mkv", "250x142", 25, x("yuv420p10le", "high10", &["-x264-params", "cabac=0"])),
+            // interlaced (MBAFF), as AVCHD camcorders record
+            ("h264_mbaff.mkv", "352x288", 25, x("yuv420p", "high", &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bframes=3"])),
+            ("h264_mbaff_bff.mp4", "320x180", 25, x("yuv420p", "high", &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bff=1:cabac=0"])),
         ];
         let mut ran = 0;
         let mut bad = Vec::new();
@@ -749,7 +752,8 @@ mod tests {
     #[test]
     fn unsupported_h264_is_reported() {
         for (name, args) in [
-            ("interlaced264.mp4", vec!["-c:v", "libx264", "-flags", "+ildct+ilme", "-x264-params", "interlaced=1"]),
+            // temporal direct in an MBAFF frame: still FFmpeg's
+            ("temporal_mbaff.mp4", vec!["-c:v", "libx264", "-flags", "+ildct+ilme", "-x264-params", "interlaced=1:direct=temporal:bframes=2"]),
             // High 4:4:4 Predictive (lossless): still FFmpeg's.
             ("lossless444.mp4", vec!["-c:v", "libx264", "-pix_fmt", "yuv444p", "-qp", "0"]),
         ] {
