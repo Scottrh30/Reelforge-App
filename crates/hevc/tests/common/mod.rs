@@ -31,6 +31,24 @@ macro_rules! fx {
 }
 
 pub const FIXTURES: &[Fixture] = &[
+    // Main 4:2:2 10, Main 4:4:4 (8 and 10 bits): RExt profiles without the RExt coding tools
+    fx!("intra_422_10", "testsrc2", 352, 288, 3, NOISE, 10, ["-pix_fmt", "yuv422p10le", "-x265-params", "keyint=1:log-level=error"]),
+    fx!("medium_422_10", "testsrc2", 352, 288, 20, NOISE, 10, ["-pix_fmt", "yuv422p10le", "-preset", "medium", "-x265-params", "log-level=error"]),
+    fx!("slow_422_10", "mandelbrot", 352, 288, 12, NOISE, 10, ["-pix_fmt", "yuv422p10le", "-preset", "slow", "-x265-params", "log-level=error"]),
+    fx!("bframes_422_8", "testsrc2", 352, 288, 20, NOISE, 8, ["-pix_fmt", "yuv422p", "-x265-params", "bframes=4:ref=3:log-level=error"]),
+    fx!("weightp_422_10", "testsrc2", 352, 288, 20, "fade=in:0:18", 10, ["-pix_fmt", "yuv422p10le", "-x265-params", "weightp=1:weightb=1:log-level=error"]),
+    fx!("tskip_422_10", "testsrc2", 176, 144, 8, NOISE, 10, ["-pix_fmt", "yuv422p10le", "-x265-params", "tskip=1:log-level=error"]),
+    fx!("lossless_422", "testsrc2", 176, 144, 4, NOISE, 8, ["-pix_fmt", "yuv422p", "-x265-params", "lossless=1:log-level=error"]),
+    fx!("odd_422_10", "testsrc2", 200, 120, 8, NOISE, 10, ["-pix_fmt", "yuv422p10le", "-x265-params", "log-level=error"]),
+    fx!("intra_444", "testsrc2", 352, 288, 3, NOISE, 8, ["-pix_fmt", "yuv444p", "-x265-params", "keyint=1:log-level=error"]),
+    fx!("medium_444", "testsrc2", 352, 288, 20, NOISE, 8, ["-pix_fmt", "yuv444p", "-preset", "medium", "-x265-params", "log-level=error"]),
+    fx!("slow_444_10", "mandelbrot", 352, 288, 12, NOISE, 10, ["-pix_fmt", "yuv444p10le", "-preset", "slow", "-x265-params", "log-level=error"]),
+    fx!("intra_444_10", "mandelbrot", 352, 288, 3, NOISE, 10, ["-pix_fmt", "yuv444p10le", "-x265-params", "keyint=1:log-level=error"]),
+    fx!("weightp_444", "testsrc2", 352, 288, 20, "fade=in:0:18", 8, ["-pix_fmt", "yuv444p", "-x265-params", "weightp=1:weightb=1:log-level=error"]),
+    fx!("tskip_444", "testsrc2", 176, 144, 8, NOISE, 8, ["-pix_fmt", "yuv444p", "-x265-params", "tskip=1:log-level=error"]),
+    fx!("lossless_444", "testsrc2", 176, 144, 4, NOISE, 8, ["-pix_fmt", "yuv444p", "-x265-params", "lossless=1:log-level=error"]),
+    fx!("no_sao_444_10", "testsrc2", 176, 144, 8, NOISE, 10, ["-pix_fmt", "yuv444p10le", "-x265-params", "no-sao=1:log-level=error"]),
+    fx!("odd_444", "testsrc2", 200, 120, 8, NOISE, 8, ["-pix_fmt", "yuv444p", "-x265-params", "log-level=error"]),
     // intra only
     fx!("intra_main", "testsrc2", 352, 288, 3, NOISE, 8, ["-x265-params", "keyint=1:log-level=error"]),
     fx!("intra_main10", "testsrc2", 352, 288, 3, NOISE, 10, ["-x265-params", "keyint=1:log-level=error"]),
@@ -108,6 +126,14 @@ fn run(cmd: &mut Command) -> bool {
     }
 }
 
+impl Fixture {
+    /// The pixel format: `-pix_fmt` in the arguments (4:2:2 / 4:4:4 fixtures), else 4:2:0 at
+    /// the fixture's bit depth.
+    pub fn pix(&self) -> &'static str {
+        self.args.iter().position(|a| *a == "-pix_fmt").and_then(|i| self.args.get(i + 1)).copied().unwrap_or(pix_fmt(self.bit_depth))
+    }
+}
+
 pub fn pix_fmt(bd: u32) -> &'static str {
     if bd > 8 { "yuv420p10le" } else { "yuv420p" }
 }
@@ -121,7 +147,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
     let yuv = dir.join(format!("{}.yuv", f.name));
     if !hevc.exists() {
         let tmp = reelforge_testkit::temp_path(&hevc);
-        let mut vf = format!("{}=size={}x{}:rate=25,format={}", f.source, f.width, f.height, pix_fmt(f.bit_depth));
+        let mut vf = format!("{}=size={}x{}:rate=25,format={}", f.source, f.width, f.height, f.pix());
         if !f.filter.is_empty() {
             vf.push(',');
             vf.push_str(f.filter);
@@ -132,7 +158,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
         if !f.args.contains(&"-c:v") {
             c.args(["-c:v", "libx265"]);
         }
-        c.args(["-pix_fmt", pix_fmt(f.bit_depth)]);
+        c.args(["-pix_fmt", f.pix()]);
         c.args(f.args);
         c.args(["-f", "hevc"]).arg(&tmp);
         if !run(&mut c) {
@@ -148,7 +174,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
         let tmp = reelforge_testkit::temp_path(&yuv);
         let mut c = Command::new(&ff);
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&hevc);
-        c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt(f.bit_depth)]).arg(&tmp);
+        c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", f.pix()]).arg(&tmp);
         assert!(run(&mut c), "reference decode failed for {}", f.name);
         std::fs::rename(&tmp, &yuv).unwrap();
     }
@@ -229,7 +255,9 @@ pub fn decode_file_opts(path: &Path, threads: usize, draft: bool) -> Result<Vec<
 /// first mismatch (frame, plane, sample position, CTB (64x64) and 8x8 block).
 pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize, bd: u32) -> Result<(), String> {
     let bps = if bd > 8 { 2 } else { 1 };
-    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    // chroma size as the pictures have it (4:2:0, 4:2:2 or 4:4:4)
+    let (cw, ch) = pics.first().map_or((w.div_ceil(2), h.div_ceil(2)), |p| (p.chroma_width as usize, p.chroma_height as usize));
+    let (subx, suby) = (w.div_ceil(cw.max(1)), h.div_ceil(ch.max(1)));
     let fsize = (w * h + 2 * cw * ch) * bps;
     let nref = reference.len() / fsize;
     for (i, p) in pics.iter().enumerate() {
@@ -242,8 +270,8 @@ pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize, bd: u32) 
         let f = &reference[i * fsize..(i + 1) * fsize];
         let sample = |buf: &[u8], k: usize| if bps == 2 { u16::from_le_bytes([buf[2 * k], buf[2 * k + 1]]) } else { buf[k] as u16 };
         let (ys, cs) = (w * h * bps, cw * ch * bps);
-        let planes = [("Y", &p.y, &f[..ys], w, h, 1), ("U", &p.u, &f[ys..ys + cs], cw, ch, 2), ("V", &p.v, &f[ys + cs..], cw, ch, 2)];
-        for (name, got, exp, pw, ph, sub) in planes {
+        let planes = [("Y", &p.y, &f[..ys], w, h, (1, 1)), ("U", &p.u, &f[ys..ys + cs], cw, ch, (subx, suby)), ("V", &p.v, &f[ys + cs..], cw, ch, (subx, suby))];
+        for (name, got, exp, pw, ph, (sx, sy)) in planes {
             let mut first = None;
             let mut count = 0usize;
             let mut maxd = 0i32;
@@ -260,7 +288,7 @@ pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize, bd: u32) 
                 }
             }
             if let Some((x, y, a, b)) = first {
-                let (lx, ly) = (x * sub, y * sub);
+                let (lx, ly) = (x * sx, y * sy);
                 return Err(format!(
                     "frame {i} (poc {}, pts {}) plane {name}: first mismatch at ({x},{y}) [luma ({lx},{ly}), CTB64 ({},{}), 8x8 ({},{})]: got {a} want {b}; {count} samples differ, max diff {maxd}",
                     p.poc,

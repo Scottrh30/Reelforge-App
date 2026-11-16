@@ -130,6 +130,11 @@ pub struct Frame {
     pub log2_ctb: u32,
     pub bit_depth: u32,
     pub bit_depth_c: u32,
+    /// chroma_format_idc (1 = 4:2:0, 2 = 4:2:2, 3 = 4:4:4) and its log2 subsampling
+    /// horizontally / vertically.
+    pub chroma_format: u32,
+    pub csw: u32,
+    pub csh: u32,
     rows: Rows,
 }
 
@@ -147,13 +152,22 @@ fn wait<T>(cell: &OnceLock<T>) -> Option<&T> {
 }
 
 impl Frame {
+    #[cfg(test)]
     pub fn new(id: u32, poc: i32, width: usize, height: usize, log2_ctb: u32, bit_depth: u32, bit_depth_c: u32) -> Self {
+        Self::new_cf(id, poc, width, height, log2_ctb, bit_depth, bit_depth_c, 1)
+    }
+
+    /// A frame of chroma format `cf` (1 = 4:2:0, 2 = 4:2:2, 3 = 4:4:4).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_cf(id: u32, poc: i32, width: usize, height: usize, log2_ctb: u32, bit_depth: u32, bit_depth_c: u32, cf: u32) -> Self {
         let n = height.div_ceil(1 << log2_ctb);
         fn cells<S: Sample>(n: usize) -> Rows {
             S::wrap_rows((0..n).map(|_| OnceLock::new()).collect())
         }
         let rows = if stores_u8(bit_depth, bit_depth_c) { cells::<u8>(n) } else { cells::<u16>(n) };
-        Frame { id, poc, width, height, cwidth: width / 2, cheight: height / 2, log2_ctb, bit_depth, bit_depth_c, rows }
+        let cf = cf.clamp(1, 3);
+        let (csw, csh) = (u32::from(cf < 3), u32::from(cf == 1));
+        Frame { id, poc, width, height, cwidth: width >> csw, cheight: height >> csh, log2_ctb, bit_depth, bit_depth_c, chroma_format: cf, csw, csh, rows }
     }
 
     pub fn num_rows(&self) -> usize {
@@ -238,7 +252,7 @@ impl Frame {
     /// Copy a w x h window of chroma component `c` (0 = Cb, 1 = Cr) with edge replication.
     pub fn chroma_window<S: Sample>(&self, c: usize, x0: i32, y0: i32, w: usize, h: usize, out: &mut [i16], os: usize) {
         let (cw, ch) = (self.cwidth as i32, self.cheight as i32);
-        let sh = self.log2_ctb - 1;
+        let sh = self.log2_ctb - self.csh;
         let mask = (1i32 << sh) - 1;
         for r in 0..h {
             let yy = (y0 + r as i32).clamp(0, ch - 1);
@@ -254,7 +268,7 @@ impl Frame {
     /// (8-228, 8-229): the reference window of a prediction block without copying it. False (and
     /// `rows` partly filled) when the runs are not inside the picture horizontally.
     pub fn window_rows<'f, S: Sample>(&'f self, c: usize, x0: i32, y0: i32, w: usize, rows: &mut [&'f [S]]) -> bool {
-        let (pw, ph, sh) = if c == 0 { (self.width, self.height, self.log2_ctb) } else { (self.cwidth, self.cheight, self.log2_ctb - 1) };
+        let (pw, ph, sh) = if c == 0 { (self.width, self.height, self.log2_ctb) } else { (self.cwidth, self.cheight, self.log2_ctb - self.csh) };
         let Some(x) = usize::try_from(x0).ok().filter(|&x| x.saturating_add(w) <= pw) else { return false };
         let mask = (1usize << sh) - 1;
         let max_y = ph as i32 - 1;
@@ -285,7 +299,7 @@ impl Frame {
     /// (stride `ds`), samples outside the picture replicated from its edges (8-228, 8-229).
     #[allow(clippy::too_many_arguments)]
     pub fn copy_block<S: Sample>(&self, c: usize, x0: i32, y0: i32, w: usize, h: usize, dst: &mut [S], ds: usize) {
-        let (pw, ph, sh) = if c == 0 { (self.width, self.height, self.log2_ctb) } else { (self.cwidth, self.cheight, self.log2_ctb - 1) };
+        let (pw, ph, sh) = if c == 0 { (self.width, self.height, self.log2_ctb) } else { (self.cwidth, self.cheight, self.log2_ctb - self.csh) };
         let inside = usize::try_from(x0).ok().filter(|&x| x.saturating_add(w) <= pw);
         for (r, d) in dst.chunks_mut(ds).take(h).enumerate() {
             let yy = y0.saturating_add(r as i32).min(ph as i32 - 1).max(0) as usize;
@@ -342,8 +356,9 @@ impl Frame {
             let Some(row) = self.row::<S>(r / ctb) else { break };
             put(&mut y, &row.y, (r % ctb) * self.width + cx, cw);
         }
-        let (ccx, ccy, ccw, cch) = (cx / 2, cy / 2, cw.div_ceil(2), ch.div_ceil(2));
-        let cctb = ctb / 2;
+        let (ccx, ccy) = (cx >> self.csw, cy >> self.csh);
+        let (ccw, cch) = (cw.div_ceil(1 << self.csw), ch.div_ceil(1 << self.csh));
+        let cctb = ctb >> self.csh;
         u.reserve_exact(ccw.saturating_mul(cch));
         v.reserve_exact(ccw.saturating_mul(cch));
         for r in ccy..ccy.saturating_add(cch) {
@@ -366,7 +381,7 @@ impl Frame {
                     continue;
                 }
                 let lines = f.row_lines(r);
-                let clines = lines.div_ceil(2);
+                let clines = lines.div_ceil(1 << f.csh);
                 f.publish(
                     r,
                     FrameRow::<S> {
@@ -386,7 +401,7 @@ impl Frame {
 
     /// A mid-grey frame with the geometry of `like`.
     pub fn gray(id: u32, poc: i32, like: &Frame) -> Frame {
-        let f = Frame::new(id, poc, like.width, like.height, like.log2_ctb, like.bit_depth, like.bit_depth_c);
+        let f = Frame::new_cf(id, poc, like.width, like.height, like.log2_ctb, like.bit_depth, like.bit_depth_c, like.chroma_format);
         f.publish_gray();
         f
     }

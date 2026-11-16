@@ -19,6 +19,23 @@ macro_rules! fixture_tests {
 }
 
 fixture_tests!(
+    intra_422_10,
+    medium_422_10,
+    slow_422_10,
+    bframes_422_8,
+    weightp_422_10,
+    tskip_422_10,
+    lossless_422,
+    odd_422_10,
+    intra_444,
+    medium_444,
+    slow_444_10,
+    intra_444_10,
+    weightp_444,
+    tskip_444,
+    lossless_444,
+    no_sao_444_10,
+    odd_444,
     intra_main,
     intra_main10,
     intra_nosao_nodbk,

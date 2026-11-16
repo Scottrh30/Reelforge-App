@@ -606,6 +606,37 @@ mod tests {
     }
 
     /// H.264, HEVC, VP9 and AV1 through the pure-Rust decoder libraries.
+    /// HEVC Main 4:2:2 10 and Main 4:4:4 (8/10-bit), as cameras and intermediates record them,
+    /// through the app's own decoder, as FFmpeg decodes them.
+    #[test]
+    fn hevc_422_and_444_match_ffmpeg() {
+        let x = |pix: &'static str, extra: &[&'static str]| -> Vec<&'static str> {
+            [vec!["-c:v", "libx265", "-preset", "veryfast", "-pix_fmt", pix, "-x265-params", "log-level=error"], extra.to_vec()].concat()
+        };
+        let cases: Vec<(&str, &str, u32, Vec<&str>)> = vec![
+            ("hevc_422_10.mp4", "320x180", 25, x("yuv422p10le", &[])),
+            ("hevc_422.mkv", "320x180", 25, x("yuv422p", &[])),
+            ("hevc_444.mp4", "320x180", 25, x("yuv444p", &[])),
+            ("hevc_444_10.mkv", "250x142", 25, x("yuv444p10le", &[])),
+        ];
+        let mut ran = 0;
+        let mut bad = Vec::new();
+        for (name, size, rate, args) in cases {
+            let Some(p) = clip_at(name, size, rate, &args) else {
+                eprintln!("{name}: ffmpeg couldn't make it, skipped");
+                continue;
+            };
+            ran += 1;
+            let (n, psnr) = compare_with_ffmpeg(&p);
+            eprintln!("{name}: {n} frames, worst {psnr:.1} dB");
+            if n < 25 || psnr < 50.0 {
+                bad.push(format!("{name}: {n} frames, {psnr:.1} dB"));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+        assert!(ran >= 3 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
     /// H.264 High 10 and High 4:2:2 (pro cameras, broadcast and intermediates) through the
     /// app's own decoder, as FFmpeg decodes them.
     #[test]

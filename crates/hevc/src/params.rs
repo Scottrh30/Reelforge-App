@@ -634,8 +634,8 @@ impl Sps {
 
     /// Features this decoder does not handle yet.
     pub fn check_supported(&self) -> Result<()> {
-        if self.chroma_format_idc != 1 {
-            return unsupported(format!("chroma_format_idc {} (only 4:2:0)", self.chroma_format_idc));
+        if !(1..=3).contains(&self.chroma_format_idc) || self.separate_colour_plane {
+            return unsupported(format!("chroma_format_idc {} (4:2:0, 4:2:2 and 4:4:4 are implemented)", self.chroma_format_idc));
         }
         if self.bit_depth_luma > 12 || self.bit_depth_chroma > 12 {
             return unsupported(format!("bit depth {}/{}", self.bit_depth_luma, self.bit_depth_chroma));

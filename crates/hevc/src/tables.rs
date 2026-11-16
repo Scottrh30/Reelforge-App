@@ -58,6 +58,11 @@ pub fn scan_diag(log2: u32) -> &'static [(u8, u8)] {
 
 /// Table 8-10: QpC as a function of qPi (ChromaArrayType 1).
 #[inline]
+/// QpC for ChromaArrayType `cf`: Table 8-10 for 4:2:0, else Min(qPi, 51).
+pub fn qpc(cf: u32, qpi: i32) -> i32 {
+    if cf == 1 { qpc_420(qpi) } else { qpi.min(51) }
+}
+
 pub fn qpc_420(qpi: i32) -> i32 {
     if qpi < 30 {
         qpi

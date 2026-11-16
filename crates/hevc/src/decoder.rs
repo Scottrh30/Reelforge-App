@@ -394,6 +394,7 @@ impl Decoder {
                     || a.height != sps.height
                     || a.bit_depth_luma != sps.bit_depth_luma
                     || a.bit_depth_chroma != sps.bit_depth_chroma
+                    || a.chroma_format_idc != sps.chroma_format_idc
                     || a.log2_ctb != sps.log2_ctb
             }
         };
@@ -419,7 +420,7 @@ impl Decoder {
         let max_lsb = sps.max_poc_lsb();
         let poc = self.poc_state.compute(sh, max_lsb, irap_no_rasl);
         let (w, h) = (sps.width as usize, sps.height as usize);
-        let template = Frame::new(0, 0, w, h, sps.log2_ctb, sps.bit_depth_luma, sps.bit_depth_chroma);
+        let template = Frame::new_cf(0, 0, w, h, sps.log2_ctb, sps.bit_depth_luma, sps.bit_depth_chroma, sps.chroma_format_idc);
         let next_id = &mut self.next_id;
         let mut missing = 0u64;
         let mut make_missing = |p: i32| -> FrameRef {
@@ -446,7 +447,7 @@ impl Decoder {
         let _ = scaling;
         let id = self.next_id;
         self.next_id += 1;
-        let frame = Arc::new(Frame::new(id, poc, w, h, sps.log2_ctb, sps.bit_depth_luma, sps.bit_depth_chroma));
+        let frame = Arc::new(Frame::new_cf(id, poc, w, h, sps.log2_ctb, sps.bit_depth_luma, sps.bit_depth_chroma, sps.chroma_format_idc));
         let output = sh.pic_output && !(hdr.is_rasl() && self.skip_rasl);
         // Draft mode: a sub-layer non-reference picture of the highest sub-layer is never used
         // for prediction, so its in-loop filters can be left out without changing anything else.
@@ -612,7 +613,8 @@ fn output_meta(sps: &Sps, pts: i64, key: bool, draft: bool) -> OutputMeta {
 fn make_picture(o: &Output<FrameRef>) -> Picture {
     let (cx, cy, cw, ch) = o.meta.crop;
     let (cx, cy, cw, ch) = (cx as usize, cy as usize, cw as usize, ch as usize);
-    let (ccw, cch) = (cw.div_ceil(2), ch.div_ceil(2));
+    let (csw, csh) = (o.frame.csw, o.frame.csh);
+    let (ccw, cch) = (cw.div_ceil(1 << csw), ch.div_ceil(1 << csh));
     let bd = o.meta.bit_depth;
     let (y, u, v) = o.frame.cropped_planes((cx, cy, cw, ch), bd <= 8);
     Picture {
