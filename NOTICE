@@ -8,5 +8,8 @@ Reelforge's video decoders (crates/h264, hevc, vp9, av1, bitstream and
 testkit) are adapted from FilmCraft, Copyright (c) 2026 ArtCraft Team and the
 FilmCraft contributors, used under its MIT / Apache-2.0 licence (see
 licenses/FilmCraft-LICENSE-MIT.txt and licenses/FilmCraft-LICENSE-APACHE.txt).
+The VP8 decoder's constant tables (crates/vp8/src/tables.rs) come from libvpx,
+Copyright (c) 2010, The WebM Project authors, under the BSD 3-Clause licence
+(licenses/libvpx-LICENSE-BSD3.txt).
 Every other library built into the program is listed with its licence in
 THIRD-PARTY-NOTICES.txt.

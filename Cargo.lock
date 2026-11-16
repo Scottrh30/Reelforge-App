@@ -3621,6 +3621,7 @@ dependencies = [
  "reelforge-av1",
  "reelforge-h264",
  "reelforge-hevc",
+ "reelforge-vp8",
  "reelforge-vp9",
  "zune-core",
  "zune-jpeg",
@@ -3780,6 +3781,13 @@ name = "reelforge-testkit"
 version = "0.9.0"
 dependencies = [
  "png 0.18.1",
+]
+
+[[package]]
+name = "reelforge-vp8"
+version = "0.9.0"
+dependencies = [
+ "reelforge-testkit",
 ]
 
 [[package]]

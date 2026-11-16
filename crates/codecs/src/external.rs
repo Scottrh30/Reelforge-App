@@ -242,6 +242,47 @@ impl Decoder for HevcDecoder {
     }
 }
 
+// ---- VP8 ----------------------------------------------------------------------------
+
+pub struct Vp8Decoder {
+    dec: reelforge_vp8::Decoder,
+    out: Output,
+}
+
+impl Vp8Decoder {
+    pub fn new(_info: &StreamInfo) -> Self {
+        Vp8Decoder { dec: reelforge_vp8::Decoder::new(), out: Output::default() }
+    }
+}
+
+impl Decoder for Vp8Decoder {
+    fn send(&mut self, packet: &[u8], pts: i64) -> Result<()> {
+        // A zero-length packet is a dropped frame: nothing to show.
+        if packet.is_empty() {
+            return Ok(());
+        }
+        let pic = self.dec.decode(packet, pts).map_err(|e| Error::Unsupported(format!("VP8: {e}")))?;
+        if let Some(p) = pic {
+            let planes = [
+                Some(Src { samples: Samples::U8(&p.y), stride: p.y_stride }),
+                Some(Src { samples: Samples::U8(&p.u), stride: p.uv_stride }),
+                Some(Src { samples: Samples::U8(&p.v), stride: p.uv_stride }),
+            ];
+            // VP8 is always BT.601 limited range.
+            self.out.push(picture(p.width, p.height, 8, Some((1, 1)), planes, Matrix::Bt601, false, p.pts)?);
+        }
+        Ok(())
+    }
+    fn receive(&mut self) -> Option<Picture> {
+        self.out.pop()
+    }
+    fn flush(&mut self) {
+        self.dec.reset();
+        self.out.clear();
+    }
+    fn finish(&mut self) {}
+}
+
 // ---- VP9 ----------------------------------------------------------------------------
 
 fn vp9_samples(p: &reelforge_vp9::Plane) -> Samples<'_> {

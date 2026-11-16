@@ -1,0 +1,14 @@
+[package]
+name = "reelforge-vp8"
+description = "Pure-Rust VP8 decoder (RFC 6386)"
+version = "0.9.0"
+edition = "2024"
+license.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+
+[dev-dependencies]
+reelforge-testkit = { path = "../testkit" }

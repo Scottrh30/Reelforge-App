@@ -16,6 +16,7 @@ pub fn codec_of(id: ff::codec::Id) -> Option<Codec> {
         Id::MPEG2VIDEO => Codec::Mpeg2,
         Id::H264 => Codec::H264,
         Id::HEVC => Codec::Hevc,
+        Id::VP8 => Codec::Vp8,
         Id::VP9 => Codec::Vp9,
         Id::AV1 => Codec::Av1,
         Id::CFHD => Codec::Cineform,
@@ -46,15 +47,15 @@ fn open_codec(codec: Codec) -> Option<NativeVideo> {
 pub struct NativeVideo {
     dec: Box<dyn Decoder>,
     pub codec: Codec,
-    /// VP9 with transparency (WebM): the alpha channel is a second VP9
-    /// stream carried beside each frame (Matroska BlockAdditional 1),
+    /// VP8 or VP9 with transparency (WebM): the alpha channel is a second
+    /// stream of the same codec carried beside each frame (Matroska BlockAdditional 1),
     /// decoded by a decoder of its own; its pictures wait here.
     alpha: Option<Box<dyn Decoder>>,
     alphas: std::collections::VecDeque<Picture>,
 }
 
-/// The alpha-channel VP9 frame carried with a WebM packet, if any.
-fn vp9_alpha(packet: &ff::Packet) -> Option<Vec<u8>> {
+/// The alpha-channel VP8 / VP9 frame carried with a WebM packet, if any.
+fn webm_alpha(packet: &ff::Packet) -> Option<Vec<u8>> {
     packet.side_data().find_map(|sd| {
         let d = sd.data();
         // 8 bytes of BlockAddID (big-endian; 1 = alpha), then the frame.
@@ -69,10 +70,10 @@ impl NativeVideo {
 
     pub fn send_packet(&mut self, packet: &ff::Packet) -> Result<(), reelforge_codecs::Error> {
         let pts = packet.pts().or(packet.dts()).unwrap_or(ff::ffi::AV_NOPTS_VALUE);
-        if self.codec == Codec::Vp9 {
-            if let Some(a) = vp9_alpha(packet) {
+        if matches!(self.codec, Codec::Vp8 | Codec::Vp9) {
+            if let Some(a) = webm_alpha(packet) {
                 if self.alpha.is_none() {
-                    self.alpha = reelforge_codecs::open(Codec::Vp9, &StreamInfo::default());
+                    self.alpha = reelforge_codecs::open(self.codec, &StreamInfo::default());
                 }
                 if let Some(dec) = self.alpha.as_mut() {
                     // A bad alpha frame costs the transparency of that frame, not the clip.
@@ -745,6 +746,37 @@ mod tests {
         }
         assert!(bad.is_empty(), "{bad:#?}");
         assert!(ran >= 8 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
+    /// VP8 (older WebM, web and screen recordings) through the app's own decoder, as FFmpeg
+    /// decodes it.
+    #[test]
+    fn vp8_matches_ffmpeg() {
+        let vpx = |extra: &[&'static str]| -> Vec<&'static str> { [vec!["-c:v", "libvpx", "-b:v", "600k"], extra.to_vec()].concat() };
+        let cases: Vec<(&str, &str, u32, Vec<&str>)> = vec![
+            ("vp8.webm", "320x180", 25, vpx(&[])),
+            ("vp8_rt.webm", "320x180", 25, vpx(&["-deadline", "realtime", "-cpu-used", "8"])),
+            ("vp8_altref.webm", "320x180", 25, vpx(&["-auto-alt-ref", "1", "-lag-in-frames", "10"])),
+            ("vp8_parts.mkv", "352x288", 25, vpx(&["-slices", "4"])),
+            ("vp8_profile3.webm", "320x180", 25, vpx(&["-profile:v", "3"])),
+            ("vp8_odd.webm", "250x142", 25, vpx(&[])),
+        ];
+        let mut ran = 0;
+        let mut bad = Vec::new();
+        for (name, size, rate, args) in cases {
+            let Some(p) = clip_at(name, size, rate, &args) else {
+                eprintln!("{name}: ffmpeg couldn't make it, skipped");
+                continue;
+            };
+            ran += 1;
+            let (n, psnr) = compare_with_ffmpeg(&p);
+            eprintln!("{name}: {n} frames, worst {psnr:.1} dB");
+            if n < 25 || psnr < 99.0 {
+                bad.push(format!("{name}: {n} frames, {psnr:.1} dB"));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+        assert!(ran >= 4 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
     }
 
     /// What the libraries don't decode (interlaced or 10-bit H.264) is reported as an

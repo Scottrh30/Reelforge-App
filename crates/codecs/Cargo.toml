@@ -12,6 +12,7 @@ zune-core = "0.5"
 miniz_oxide = "0.9"
 reelforge-h264 = { path = "../h264" }
 reelforge-hevc = { path = "../hevc" }
+reelforge-vp8 = { path = "../vp8" }
 reelforge-vp9 = { path = "../vp9" }
 reelforge-av1 = { path = "../av1" }
 log = { workspace = true }

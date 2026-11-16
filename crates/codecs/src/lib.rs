@@ -11,7 +11,7 @@
 //! | Motion JPEG | [`mjpeg`] | baseline and progressive JPEG per frame (zune-jpeg), AVI-style frames without Huffman tables |
 //! | DNxHD / DNxHR | [`dnxhd`] | every compression ID: DNxHD 8/10-bit, DNxHR LB/SQ/HQ/HQX/444, interlaced and adaptive-interlace; Reelforge's own |
 //! | MPEG-2 | [`mpeg2`] | Main and 4:2:2 profiles: I/P/B, frame and field pictures, all motion types; Reelforge's own |
-//! | H.264, HEVC, VP9, AV1 | `external` | pure-Rust decoder libraries: H.264 progressive and MBAFF 4:2:0/4:2:2 at 8–12 bits (Baseline/Main/High/High 10/High 4:2:2), HEVC Main/Main 10/Main 4:2:2 10/Main 4:4:4, VP9 profiles 0–3, AV1 Main/High/Professional |
+//! | H.264, HEVC, VP8, VP9, AV1 | `external` | pure-Rust decoder libraries: H.264 progressive and MBAFF 4:2:0/4:2:2 at 8–12 bits (Baseline/Main/High/High 10/High 4:2:2), HEVC Main/Main 10/Main 4:2:2 10/Main 4:4:4, VP8 versions 0–3, VP9 profiles 0–3, AV1 Main/High/Professional |
 //! | Apple ProRes | [`prores`] | 422 Proxy/LT/Standard/HQ, 4444/XQ with alpha, progressive and interlaced; Reelforge's own |
 //! | OpenEXR | [`exr`] | scanline and tiled, single and multi-part, none/RLE/ZIPS/ZIP/PIZ/PXR24/B44/B44A, half/float/uint; float output; Reelforge's own |
 //! | GoPro CineForm | [`cineform`] | YUV 4:2:2 10-bit, RGB and RGBA 12-bit, RAW (Bayer mosaic), intra and two-frame groups, progressive and interlaced; Reelforge's own |
@@ -24,7 +24,7 @@ mod cineform_tables;
 pub mod dnxhd;
 pub mod exr;
 mod external;
-pub use external::{Av1Decoder, H264Decoder, HevcDecoder, Vp9Decoder};
+pub use external::{Av1Decoder, H264Decoder, HevcDecoder, Vp8Decoder, Vp9Decoder};
 mod dnxhd_tables;
 pub mod idct;
 pub mod mjpeg;
@@ -45,6 +45,7 @@ pub enum Codec {
     Mpeg2,
     H264,
     Hevc,
+    Vp8,
     Vp9,
     Av1,
     Cineform,
@@ -52,7 +53,7 @@ pub enum Codec {
 }
 
 impl Codec {
-    pub const ALL: [Codec; 10] = [Codec::Mjpeg, Codec::ProRes, Codec::Dnxhd, Codec::Cineform, Codec::Exr, Codec::Mpeg2, Codec::H264, Codec::Hevc, Codec::Vp9, Codec::Av1];
+    pub const ALL: [Codec; 11] = [Codec::Mjpeg, Codec::ProRes, Codec::Dnxhd, Codec::Cineform, Codec::Exr, Codec::Mpeg2, Codec::H264, Codec::Hevc, Codec::Vp8, Codec::Vp9, Codec::Av1];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -62,6 +63,7 @@ impl Codec {
             Codec::Mpeg2 => "MPEG-2",
             Codec::H264 => "H.264",
             Codec::Hevc => "HEVC (H.265)",
+            Codec::Vp8 => "VP8",
             Codec::Vp9 => "VP9",
             Codec::Av1 => "AV1",
             Codec::Cineform => "GoPro CineForm",
@@ -314,6 +316,7 @@ pub fn open(codec: Codec, info: &StreamInfo) -> Option<Box<dyn Decoder>> {
         Codec::Mpeg2 => Some(Box::new(mpeg2::Mpeg2Decoder::new(info))),
         Codec::H264 => Some(Box::new(H264Decoder::new(info))),
         Codec::Hevc => Some(Box::new(HevcDecoder::new(info))),
+        Codec::Vp8 => Some(Box::new(Vp8Decoder::new(info))),
         Codec::Vp9 => Some(Box::new(Vp9Decoder::new(info))),
         Codec::Av1 => Some(Box::new(Av1Decoder::new(info))),
         Codec::Cineform => Some(Box::new(cineform::CineformDecoder::new(info))),

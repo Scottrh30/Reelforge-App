@@ -188,6 +188,39 @@ fn proxies_are_small_all_keyframe_and_line_up_with_the_original() {
     assert!(proxy::existing_proxy(&path).is_some_and(|p| proxy::format_of(&p) != Some(proxy::format())));
 }
 
+/// Transparent WebM (VP8 and VP9 with an alpha stream beside each frame, as browsers and
+/// screen tools make overlays) opens with its transparency.
+#[test]
+fn transparent_webm_opens_with_alpha() {
+    let dir = std::env::temp_dir().join(format!("rf-webm-alpha-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = FrameRate::new(24, 1);
+    for (name, codec) in [("vp8a.webm", "libvpx"), ("vp9a.webm", "libvpx-vp9")] {
+        let p = dir.join(name);
+        let ok = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24:duration=0.5"])
+            .args(["-vf", "format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,160),255,0)'", "-c:v", codec, "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", "-b:v", "1M"])
+            .arg(&p)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("{name}: ffmpeg couldn't make it, skipped");
+            continue;
+        }
+        let mut src = FrameSource::open(&p, None).unwrap();
+        // WebM keeps milliseconds: frames 0, 3, 6, 9 at 24 fps have exact times.
+        for f in [0, 6, 3, 9] {
+            let frame = src.frame_at_blocking(Time::from_frame(f, rate), Duration::from_secs(5)).expect("frame");
+            assert_eq!(frame.pts.to_frame(rate), f, "{name}");
+            let px = frame.rgba();
+            let a = |x: usize| px[(90 * 320 + x) * 4 + 3];
+            let (left, right) = (a(40), a(280));
+            assert!(left >= 250 && right <= 5, "{name} frame {f}: alpha {left}, {right}");
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// GoPro CineForm, 4:2:2 10-bit and 4:4:4:4 RGBA (with alpha), made with the ffmpeg CLI.
 #[test]
 fn cineform_opens_with_alpha() {

@@ -1946,15 +1946,17 @@ decoders take those codecs when it's off or the card can't.
 | MPEG-2 video | done, Reelforge's own: Main and 4:2:2 profiles (4:2:0/4:2:2/4:4:4), I/P/B pictures, frame and field pictures, frame/field/16×8/dual-prime motion, field DCT, alternate scan, custom quantiser matrices, any size (incl. >2800 lines); slices on all cores. Covers DVD/broadcast/HDV/XDCAM/IMX in MPG, TS, VOB, MXF, MP4. MPEG-1 video is left to FFmpeg |
 | H.264 | done, Reelforge's own: Baseline/Main/High, High 10 and High 4:2:2 (as Sony XAVC/XAVC S, Panasonic AVC-Intra and Canon cameras record), CAVLC and CABAC, B-frames, weighted prediction, 8×8 transforms, multiple slices; progressive 4:2:0 and 4:2:2 at 8, 10 (and 12) bits, checked bit for bit against FFmpeg's decoder. 8-bit pictures keep their own 8-bit code path, so they decode as fast as before. Interlaced H.264 coded as MBAFF frames (each macroblock pair frame or field coded, as AVCHD camcorders and x264 make it) decodes here too, deblocking included, checked bit for bit on 19 interlaced streams (top and bottom field first, CAVLC and CABAC, B-frames, weighted prediction, slices, 10-bit and 4:2:2). Field-coded pictures (PAFF), temporal direct prediction in MBAFF frames and lossless (High 4:4:4 Predictive) still go to FFmpeg |
 | HEVC (H.265) | done, Reelforge's own: Main, Main 10, Main 4:2:2 10 and Main 4:4:4 (4:2:0, 4:2:2 and 4:4:4 at 8, 10 and 12 bits, as Sony, Canon, Panasonic and DJI cameras and screen recorders make), tiles, WPP, lossless and transform-skip blocks; each checked bit for bit against FFmpeg's decoder on 17 new 4:2:2 and 4:4:4 streams. Streams that switch on the range extension's extra coding tools (rare outside test suites) go to FFmpeg |
+| VP8 | done, Reelforge's own (`crates/vp8`, written from the VP8 standard, RFC 6386): every VP8 stream: versions (profiles) 0–3, golden and alternate reference frames (hidden frames too), segmentation, loop filter deltas, normal and simple loop filters, multiple token partitions, odd sizes; WebM transparency (the alpha stream beside each frame, which FFmpeg's own VP8 decoder ignores). Checked bit for bit against FFmpeg's and libvpx's decoders on 24 libvpx encoder configurations. About 110 fps for 720p on one core |
 | VP9 | done, via a pure-Rust decoder library: profiles 0–3 (8/10/12-bit, 4:2:0 to 4:4:4); WebM transparency (the alpha stream beside each frame) |
 | AV1 | done, via a pure-Rust decoder library: Main, High and Professional profiles (8/10/12-bit; 4:2:0, 4:2:2, 4:4:4 and monochrome), film grain. Each checked bit for bit against FFmpeg's decoder on libaom files |
 | OpenEXR | done, Reelforge's own: scanline and tiled, single and multi-part, compression none, RLE, ZIPS, ZIP, PIZ, PXR24, B44 and B44A; half, float and uint channels; RGB(A) or Y, of the unnamed layer or the first named one (`beauty.R`…); the data window placed in the display window. Output is floating point (see above). Chunks decode on all cores, with SSE2 for ZIP's predictor. DWAA, DWAB and HTJ2K files go to FFmpeg's decoder. Checked bit for bit against the OpenEXR reference library (`tools/exr/make_fixtures.py` makes the test files and the library's own reading of them, in `crates/codecs/tests/data/exr`). On 2 cores, a 1080p half-float RGBA frame takes about 7 ms uncompressed, 40 ms ZIP, 50 ms PIZ and 15–25 ms B44A, against FFmpeg's 14, 79, (fails on that PIZ file) and 33 ms |
 | GoPro CineForm | done, Reelforge's own: 4:2:2 10-bit YUV, 12-bit RGB and RGBA, CineForm RAW (Bayer: the sensor mosaic, demosaiced like FFmpeg's), intra frames and two-frame groups (which FFmpeg can't decode), progressive and interlaced, peak tables; channels on all cores, AVX2 wavelet filters. Written from GoPro's CineForm SDK (MIT OR Apache-2.0; code tables in `crates/codecs/src/cineform_tables.rs`) |
 
-The H.264, HEVC, VP9 and AV1 decoders live in this repository (`crates/h264`, `crates/hevc`,
-`crates/vp9`, `crates/av1`, with `crates/bitstream` for reading bits and `crates/testkit` for
-their tests), so building needs nothing beyond this repo. They're adapted from FilmCraft
-(MIT OR Apache-2.0): see `THIRD-PARTY-NOTICES.txt`, which has to ship with the program and
+The H.264, HEVC, VP8, VP9 and AV1 decoders live in this repository (`crates/h264`, `crates/hevc`,
+`crates/vp8`, `crates/vp9`, `crates/av1`, with `crates/bitstream` for reading bits and `crates/testkit` for
+their tests), so building needs nothing beyond this repo. H.264, HEVC, VP9 and AV1 are adapted from FilmCraft
+(MIT OR Apache-2.0); VP8 is Reelforge's own, with the standard's constant tables taken from
+libvpx (BSD-3-Clause): see `THIRD-PARTY-NOTICES.txt`, which has to ship with the program and
 any copy of the source.
 
 **Reelforge's licence:** Copyright (c) 2026 Reelforge - SRH. Reelforge is licensed under
@@ -1972,12 +1974,12 @@ The file goes in the download beside the exe and is built into the program, unde
 **Help → Third-party notices**. Compile-time-only crates (macros, build tools) aren't in the
 program and aren't listed; FFmpeg is fetched separately by `Get FFmpeg.bat` and has its own
 GPL licence in `licenses/`. Each has its own tests: `cargo test -p reelforge-h264` (and `-hevc`,
-`-vp9`, `-av1`).
+`-vp8`, `-vp9`, `-av1`).
 
 Every decoder is tested against FFmpeg's output (`cargo test -p reelforge-media native`):
 each frame of generated test clips is converted to RGBA both ways and must match closely
 (ProRes: 65–73 dB PSNR in every profile; DNxHD/DNxHR: 64–81 dB; MPEG-2: 62–70 dB; i.e. off by
-at most a rounding step of the IDCT; H.264, HEVC, VP9 and AV1 come out identical to FFmpeg's,
+at most a rounding step of the IDCT; H.264, HEVC, VP8, VP9 and AV1 come out identical to FFmpeg's,
 across 14 encoder configurations). FFmpeg's CineForm encoder only makes intra frames and FFmpeg can't decode GoPro's two-frame
 groups, so small clips from GoPro's own encoder (`crates/media/tests/data/cineform`, made with
 `tools/cineform`) check that each group decodes to the same pictures as intra frames of the
