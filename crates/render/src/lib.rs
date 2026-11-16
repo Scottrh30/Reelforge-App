@@ -1893,6 +1893,8 @@ impl Compositor {
                         let (mut read, mut write) = (cur, o1);
                         for k in 0..n {
                             let mut u = uniform(&e.values, [0.0; 2]);
+                            u[28..32].copy_from_slice(&e.values[16..20]);
+                            u[FX_P5..FX_P5 + 4].copy_from_slice(&e.values[20..24]);
                             u[13] = e.time;
                             u[14] = l.layer_size[0];
                             u[15] = l.layer_size[1];
@@ -2807,6 +2809,14 @@ fn effect_margin(effects: &[EffectValues], px: [u32; 2], layer: [f32; 2]) -> [u3
                 let r = 1.5 * e.values[neon::GLOW_RADIUS].max(0.0) + e.values[neon::WIDTH].max(0.0);
                 x += r * kx;
                 y += r * ky;
+            }
+            // A plugin says how far it reaches (its manifest's `spread`).
+            EffectKind::Plugin => {
+                if let Some(p) = &e.plugin {
+                    let r = p.spread_px(&e.values);
+                    x += r * kx;
+                    y += r * ky;
+                }
             }
             EffectKind::DropShadow => {
                 let (d, a) = (e.values[0].max(0.0), e.values[1].to_radians());

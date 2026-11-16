@@ -25,6 +25,10 @@ use std::sync::{Arc, Mutex, RwLock};
 /// The manifest file in every plugin folder.
 pub const MANIFEST: &str = "plugin.toml";
 
+/// The manifest of a plugin pack: a folder of plugin folders installed and
+/// removed together.
+pub const PACK_MANIFEST: &str = "pack.toml";
+
 /// Which plugin an effect uses (stored in the project).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PluginRef {
@@ -55,6 +59,34 @@ pub struct PluginDef {
     /// Unique per load: changes whenever the plugin is (re)loaded, so caches
     /// (compiled shaders, rendered frames) know to refresh.
     pub revision: u64,
+    /// How far (layer pixels) the effect reaches past the layer's edges: the
+    /// sum of these parameters' values, times `spread_scale`. Empty for an
+    /// effect that stays inside the layer.
+    pub spread: Vec<usize>,
+    pub spread_scale: f32,
+    /// Headings shown above some parameters, as (first parameter, heading).
+    pub sections: &'static [(usize, &'static str)],
+    /// Points dragged in the Viewer: each is two parameters (x, y in % of
+    /// the layer, y down).
+    pub points: Vec<PluginPoint>,
+}
+
+/// A point of a plugin that's dragged in the Viewer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginPoint {
+    pub name: String,
+    /// Its x parameter; y is the next one.
+    pub x: usize,
+    /// Draw a guide line to the point whose x parameter is this.
+    pub line_to: Option<usize>,
+}
+
+impl PluginDef {
+    /// How far the effect reaches past the layer's edges (layer pixels), for
+    /// these parameter values.
+    pub fn spread_px(&self, values: &[f32]) -> f32 {
+        self.spread.iter().map(|&i| values.get(i).copied().unwrap_or(0.0).max(0.0)).sum::<f32>() * self.spread_scale.max(0.0)
+    }
 }
 
 // ---- The manifest ------------------------------------------------------------
@@ -80,6 +112,16 @@ struct Manifest {
     premultiplied: bool,
     #[serde(default, rename = "param")]
     params: Vec<ManifestParam>,
+    #[serde(default)]
+    spread: Vec<usize>,
+    #[serde(default = "one")]
+    spread_scale: f32,
+    #[serde(default, rename = "point")]
+    points: Vec<ManifestPoint>,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 fn default_shader() -> String {
@@ -90,7 +132,7 @@ fn default_shader() -> String {
 #[serde(deny_unknown_fields)]
 struct ManifestParam {
     name: String,
-    /// "number" (the default), "toggle" or "choice".
+    /// "number" (the default), "toggle", "choice" or "color".
     #[serde(default, rename = "type")]
     kind: String,
     #[serde(default)]
@@ -103,6 +145,35 @@ struct ManifestParam {
     step: Option<f32>,
     #[serde(default)]
     options: Vec<String>,
+    /// A heading shown above this parameter.
+    #[serde(default)]
+    section: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestPoint {
+    name: String,
+    x: usize,
+    #[serde(default)]
+    line_to: Option<usize>,
+}
+
+/// The headings above parameters, kept for the life of the program (like
+/// parameter names: reloading the same plugin reuses them).
+fn intern_sections(params: &[ManifestParam]) -> &'static [(usize, &'static str)] {
+    static CACHE: Mutex<Vec<(Vec<(usize, String)>, &'static [(usize, &'static str)])>> = Mutex::new(Vec::new());
+    let want: Vec<(usize, String)> = params.iter().enumerate().filter(|(_, p)| !p.section.trim().is_empty()).map(|(i, p)| (i, p.section.trim().to_string())).collect();
+    if want.is_empty() {
+        return &[];
+    }
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((_, s)) = cache.iter().find(|(w, _)| *w == want) {
+        return s;
+    }
+    let made: &'static [(usize, &'static str)] = Box::leak(want.iter().map(|(i, h)| (*i, &*Box::leak(h.clone().into_boxed_str()))).collect::<Vec<_>>().into_boxed_slice());
+    cache.push((want, made));
+    made
 }
 
 /// Category names a manifest may use (case and spacing don't matter).
@@ -151,7 +222,8 @@ fn intern_params(params: &[ManifestParam]) -> Result<&'static [ParamSpec], Strin
                 let n = opts.len() as f32;
                 ParamSpec { name: leak(&p.name), default: p.default.round().clamp(0.0, n - 1.0), min: 0.0, max: n - 1.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(Box::leak(opts.into_boxed_slice())) }
             }
-            other => return Err(format!("{what}: unknown type \"{other}\" (use number, toggle or choice)")),
+            "color" | "colour" => ParamSpec { name: leak(&p.name), default: p.default.round().clamp(0.0, 16_777_215.0), min: 0.0, max: 16_777_215.0, suffix: "", speed: 1.0, ui: ParamUi::Color },
+            other => return Err(format!("{what}: unknown type \"{other}\" (use number, toggle, choice or color)")),
         };
         out.push(spec);
     }
@@ -193,6 +265,21 @@ pub fn parse(manifest: &str, source: &str, folder: &Path) -> Result<PluginDef, S
     if let Some(bad) = passes.iter().find(|p| !is_ident(p)) {
         return Err(format!("{MANIFEST}: pass \"{bad}\" isn't a usable function name (letters, digits and _, not starting with rf_)"));
     }
+    if let Some(bad) = m.spread.iter().find(|&&i| i >= m.params.len()) {
+        return Err(format!("{MANIFEST}: spread names parameter {bad}, but there are only {} (numbered from 0)", m.params.len()));
+    }
+    for p in &m.points {
+        let ok = |x: usize| x + 1 < m.params.len();
+        if !ok(p.x) {
+            return Err(format!("{MANIFEST}: point \"{}\" uses parameters {} and {}, but there are only {} (numbered from 0)", p.name, p.x, p.x + 1, m.params.len()));
+        }
+        if let Some(t) = p.line_to.filter(|&t| !m.points.iter().any(|q| q.x == t)) {
+            return Err(format!("{MANIFEST}: point \"{}\" has line_to = {t}, but no point has x = {t}", p.name));
+        }
+    }
+    if !m.spread_scale.is_finite() || m.spread_scale < 0.0 {
+        return Err(format!("{MANIFEST}: spread_scale should be 0 or more"));
+    }
     let params = intern_params(&m.params).map_err(|e| format!("{MANIFEST}: {e}"))?;
     Ok(PluginDef {
         id,
@@ -208,6 +295,10 @@ pub fn parse(manifest: &str, source: &str, folder: &Path) -> Result<PluginDef, S
         shader_file: folder.join(&m.shader),
         folder: folder.to_path_buf(),
         revision: next_revision(),
+        sections: intern_sections(&m.params),
+        points: m.points.into_iter().map(|p| PluginPoint { name: p.name, x: p.x, line_to: p.line_to }).collect(),
+        spread: m.spread,
+        spread_scale: m.spread_scale,
     })
 }
 
@@ -218,6 +309,42 @@ pub fn load_folder(folder: &Path) -> Result<PluginDef, String> {
     let shader = toml::from_str::<toml::Table>(&manifest).ok().and_then(|t| t.get("shader").and_then(|s| s.as_str().map(String::from))).unwrap_or_else(default_shader);
     let source = std::fs::read_to_string(folder.join(&shader)).map_err(|e| format!("can't read the shader {shader}: {e}"))?;
     parse(&manifest, &source, folder)
+}
+
+// ---- Packs ---------------------------------------------------------------------
+
+/// A plugin pack's own details (its pack.toml).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackDef {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Read a pack.toml's text.
+pub fn parse_pack(manifest: &str) -> Result<PackDef, String> {
+    let mut p: PackDef = toml::from_str(manifest).map_err(|e| format!("{PACK_MANIFEST}: {}", e.to_string().trim()))?;
+    p.id = p.id.trim().to_string();
+    p.name = p.name.trim().to_string();
+    if p.id.is_empty() || !p.id.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+        return Err(format!("{PACK_MANIFEST}: id \"{}\" should be letters, digits, dots, dashes or underscores", p.id));
+    }
+    if p.name.is_empty() {
+        return Err(format!("{PACK_MANIFEST}: name is empty"));
+    }
+    Ok(p)
+}
+
+/// Read the pack in `folder` (its pack.toml).
+pub fn load_pack(folder: &Path) -> Result<PackDef, String> {
+    let text = std::fs::read_to_string(folder.join(PACK_MANIFEST)).map_err(|e| format!("can't read {PACK_MANIFEST}: {e}"))?;
+    parse_pack(&text)
 }
 
 // ---- The registry --------------------------------------------------------------
@@ -314,7 +441,7 @@ default = 1
         assert!(p("id = \"has space\"\nname = \"x\"").contains("id \"has space\""));
         assert!(p("id = \"a\"\nname = \"x\"\n[[param]]\nname = \"n\"\nmin = 5\nmax = 1").contains("min (5) must be less than max (1)"));
         assert!(p("id = \"a\"\nname = \"x\"\n[[param]]\nname = \"n\"\ntype = \"choice\"").contains("needs options"));
-        assert!(p("id = \"a\"\nname = \"x\"\n[[param]]\nname = \"n\"\ntype = \"colour\"").contains("unknown type \"colour\""));
+        assert!(p("id = \"a\"\nname = \"x\"\n[[param]]\nname = \"n\"\ntype = \"colr\"").contains("unknown type \"colr\""));
         assert!(p("id = \"a\"\nname = \"x\"\npasses = [\"rf_x\"]").contains("pass \"rf_x\""));
         assert!(p("id = \"a\"\nname = \"x\"\nsize = 3").contains("unknown field `size`"));
         assert!(p("id = \"a\"\nname = \"x\"\nname = \"y\"").contains("plugin.toml"));
@@ -353,5 +480,27 @@ default = 1
         assert!(eval_stack(&[gone], Time::ZERO).is_empty());
         // Built-in effects aren't affected.
         assert_eq!(Effect::new(EffectKind::Blur).label(), "Gaussian blur");
+    }
+
+    #[test]
+    fn colours_points_sections_and_24_parameters() {
+        let src = "fn effect(uv: vec2<f32>) -> vec4<f32> { return sample(uv); }";
+        let mut m = String::from("id = \"t.full\"\nname = \"Full\"\n[[point]]\nname = \"Start\"\nx = 0\nline_to = 2\n[[point]]\nname = \"End\"\nx = 2\n");
+        for i in 0..24 {
+            m += &format!("[[param]]\nname = \"p{i}\"\n");
+            if i == 4 {
+                m += "type = \"color\"\ndefault = 0x1f6bff\nsection = \"Look\"\n";
+            }
+        }
+        let d = parse(&m, src, Path::new("/x")).unwrap();
+        assert_eq!(d.params.len(), 24);
+        assert_eq!(d.params[4].ui, ParamUi::Color);
+        assert_eq!(d.params[4].default, 0x1f6bff as f32);
+        assert_eq!(d.sections, &[(4, "Look")]);
+        assert_eq!(d.points, vec![PluginPoint { name: "Start".into(), x: 0, line_to: Some(2) }, PluginPoint { name: "End".into(), x: 2, line_to: None }]);
+        let bad = m.replace("line_to = 2", "line_to = 7");
+        assert!(parse(&bad, src, Path::new("/x")).unwrap_err().contains("no point has x = 7"));
+        let bad = m.replace("x = 2\n", "x = 23\n").replace("line_to = 2", "line_to = 23");
+        assert!(parse(&bad, src, Path::new("/x")).unwrap_err().contains("only 24"));
     }
 }

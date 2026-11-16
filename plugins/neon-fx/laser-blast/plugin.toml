@@ -1,0 +1,185 @@
+id = "scott.neon-fx.laser-blast"
+name = "Neon FX: Laser Blast"
+version = "2.0"
+author = "Neon FX"
+category = "Stylize"
+description = "Blaster bolts that fly between two points you drag in the Viewer, with muzzle and impact flashes, sparks, waves and heat distortion. Keyframe Travel from 0 % to about 150 % over a few frames to fire."
+premultiplied = true
+
+[[point]]
+name = "Gun"
+x = 0
+line_to = 2
+
+[[point]]
+name = "Target"
+x = 2
+
+[[param]]                     # 0
+section = "Shot"
+name = "From X"
+default = 15
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 1
+name = "From Y"
+default = 55
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 2
+name = "To X"
+default = 85
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 3
+name = "To Y"
+default = 45
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 4
+name = "Travel"
+default = 50
+min = 0
+max = 400
+suffix = " %"
+
+[[param]]                     # 5
+name = "Bolt length"
+default = 220
+min = 0
+max = 3000
+suffix = " px"
+
+[[param]]                     # 6
+section = "Look"
+name = "Thickness"
+default = 7
+min = 0
+max = 100
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 7
+name = "Inner core width"
+default = 60
+min = 0
+max = 100
+suffix = " % of bolt"
+
+[[param]]                     # 8
+name = "Core blur"
+default = 1
+min = 0
+max = 50
+suffix = " px"
+step = 0.05
+
+[[param]]                     # 9
+name = "Bolt colour"
+type = "color"
+default = 0xff2a1a
+
+[[param]]                     # 10
+name = "Core colour"
+type = "color"
+default = 0xfff2ee
+
+[[param]]                     # 11
+name = "Glow size"
+default = 20
+min = 0
+max = 300
+suffix = " px"
+
+[[param]]                     # 12
+name = "Glow intensity"
+default = 160
+min = 0
+max = 800
+suffix = " %"
+
+[[param]]                     # 13
+name = "Halation"
+default = 25
+min = 0
+max = 300
+suffix = " %"
+
+[[param]]                     # 14
+section = "Flashes and bolts"
+name = "Muzzle flash"
+default = 100
+min = 0
+max = 400
+suffix = " %"
+
+[[param]]                     # 15
+name = "Impact flash"
+default = 100
+min = 0
+max = 400
+suffix = " %"
+
+[[param]]                     # 16
+name = "Bolts"
+default = 1
+min = 1
+max = 6
+step = 0.05
+
+[[param]]                     # 17
+name = "Gap between bolts"
+default = 40
+min = 0
+max = 200
+suffix = " %"
+
+[[param]]                     # 18
+section = "Effects"
+name = "Wave height"
+default = 0
+min = 0
+max = 300
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 19
+name = "Wave length"
+default = 160
+min = 4
+max = 2000
+suffix = " px"
+
+[[param]]                     # 20
+name = "Flicker"
+default = 10
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 21
+name = "Sparks"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 22
+name = "Distortion"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+

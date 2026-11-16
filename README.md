@@ -1182,16 +1182,22 @@ What works now:
   linked to each other, not to the originals). Paste into a composition works too: missing
   tracks are added
 - **Effect plugins** (**Edit → Plugins…**): write your own GPU effects and install them without
-  rebuilding Reelforge. A plugin is a folder with a `plugin.toml` (name, category, up to 16
-  parameters: numbers, checkboxes and menus) and a WGSL shader; it appears in the effects
+  rebuilding Reelforge. A plugin is a folder with a `plugin.toml` (name, category, up to 24
+  parameters: numbers, checkboxes, menus and colours, in sections, plus points to drag in the
+  Viewer) and a WGSL shader; it appears in the effects
   browser beside the built-in effects and gets keyframes, undo, paste attributes and export
   like they do. Shaders are checked when loaded, with errors given as a line in your file;
   saving a plugin's files reloads it and the Viewer updates at once. Install from a folder or
   a .zip, start one from a template (**New plugin…**), remove one. Plugins can have several
   passes (blurs, glows) and animate with time. A project using a plugin that isn't installed
-  still opens; that effect is skipped and keeps its settings. Five examples ship in
-  `plugins/` (RGB Split, Film Grain, Mosaic, Bloom, Wave Warp). **See [PLUGINS.md](PLUGINS.md)
-  for how to write one**
+  still opens; that effect is skipped and keeps its settings. Several plugins can come as one
+  **pack** that installs and removes together. Five examples ship in `plugins/` (RGB Split,
+  Film Grain, Mosaic, Bloom, Wave Warp), and so does the **Neon FX** pack: **Lightsaber**
+  (hilt and tip dragged in the Viewer; core width and blur, glow, halo and halation, colour,
+  flicker, pulse, waviness, particles and heat distortion), **Laser Beam**, **Twin Laser**
+  (two strands twisted together, each its own colour), **Laser Blast** (blaster bolts),
+  **Neon Glow**, **Neon Outline** and **Neon Mask**. **See [PLUGINS.md](PLUGINS.md) for how to
+  write one**
 - **OpenFX plugins**: Reelforge hosts OpenFX image effects (`.ofx.bundle`, the plugin format of
   Resolve, Nuke, Vegas and HitFilm). It looks in the standard folder (`C:\Program Files\Common
   Files\OFX\Plugins` on Windows), the `OFX_PLUGIN_PATH` folders, its own OpenFX folder and any
@@ -2180,7 +2186,7 @@ cross-builds the Windows program as above and keeps **Reelforge-Windows-x64.zip*
 download on the run's page (Actions tab → the run → Artifacts). Pushing a tag such as `v1.0`
 also makes a GitHub Release with the zip attached. So a build never depends on one machine.
 
-**The download.** The Windows zip holds `reelforge.exe`, the example plugins, PLUGINS.md and
+**The download.** The Windows zip holds `reelforge.exe`, the example plugins and the Neon FX pack (lightsabers, lasers and neon), PLUGINS.md and
 **Get FFmpeg.bat**, which downloads the FFmpeg 8.1 shared build from BtbN and copies its DLLs
 next to the program (the DLLs are ~90 MB, too big to include). The test
 suites can be cross-built the same way (`cargo test --no-run --target …`) and run under Wine.

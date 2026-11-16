@@ -1,0 +1,193 @@
+id = "scott.neon-fx.lightsaber"
+name = "Neon FX: Lightsaber"
+version = "2.0"
+author = "Neon FX"
+category = "Stylize"
+description = "A glowing energy blade. Drag the hilt and tip in the Viewer (keyframe them to follow a prop); animate Blade length to ignite or retract it."
+premultiplied = true
+
+# Drag these in the Viewer. Each point is two parameters: x, then y (% of the layer).
+[[point]]
+name = "Hilt"
+x = 0
+line_to = 2
+
+[[point]]
+name = "Tip"
+x = 2
+
+[[param]]                     # 0
+section = "Blade"
+name = "Hilt X"
+default = 30
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 1
+name = "Hilt Y"
+default = 75
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 2
+name = "Tip X"
+default = 70
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 3
+name = "Tip Y"
+default = 25
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 4
+name = "Blade length"
+default = 100
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 5
+section = "Shape"
+name = "Hilt width"
+default = 12
+min = 0
+max = 200
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 6
+name = "Tip width"
+default = 8
+min = 0
+max = 200
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 7
+name = "Tip shape"
+type = "choice"
+options = ["Rounded", "Pointed", "Flat"]
+default = 0
+
+[[param]]                     # 8
+section = "Core"
+name = "Core colour"
+type = "color"
+default = 0xf2f7ff
+
+[[param]]                     # 9
+name = "Inner core width"
+default = 65
+min = 0
+max = 100
+suffix = " % of blade"
+
+[[param]]                     # 10
+name = "Core blur"
+default = 1.5
+min = 0
+max = 50
+suffix = " px"
+step = 0.05
+
+[[param]]                     # 11
+section = "Colour and glow"
+name = "Blade colour"
+type = "color"
+default = 0x1f6bff
+
+[[param]]                     # 12
+name = "Halo size"
+default = 5
+min = 0
+max = 100
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 13
+name = "Halo blur"
+default = 8
+min = 0
+max = 100
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 14
+name = "Halo strength"
+default = 90
+min = 0
+max = 300
+suffix = " %"
+
+[[param]]                     # 15
+name = "Glow size"
+default = 28
+min = 0
+max = 400
+suffix = " px"
+
+[[param]]                     # 16
+name = "Glow intensity"
+default = 130
+min = 0
+max = 800
+suffix = " %"
+
+[[param]]                     # 17
+name = "Halation"
+default = 35
+min = 0
+max = 300
+suffix = " %"
+
+[[param]]                     # 18
+name = "Halation size"
+default = 140
+min = 1
+max = 1000
+suffix = " px"
+
+[[param]]                     # 19
+section = "Life"
+name = "Flicker"
+default = 15
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 20
+name = "Flicker speed"
+default = 1
+min = 0
+max = 5
+suffix = " ×"
+step = 0.01
+
+[[param]]                     # 21
+name = "Unstable"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 22
+name = "Heat distortion"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 23
+name = "Blade only"
+type = "toggle"
+default = 0

@@ -108,6 +108,8 @@ pub struct PointView {
     /// Measured from another point (its first parameter), not from the
     /// layer's corner: a patch's source, which moves with its target.
     pub relative: Option<usize>,
+    /// Draw a guide line to the point whose first parameter is this.
+    pub line_to: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -191,9 +193,14 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
         .enumerate()
         .map(|(index, fx)| {
             let ofx = fx.ofx_def();
+            let plug = fx.plugin_def();
             let mut fx = fx.clone();
             fx.normalize();
-            let params = param_views(&fx, c, src, in_clip);
+            // A plugin's own section headings, else the built-in effect's.
+            let params = match &plug {
+                Some(d) => views_of(fx.param_specs(), &fx.params, &d.sections, |i| fx.value_at(i, src), c, src, in_clip),
+                None => param_views(&fx, c, src, in_clip),
+            };
             let (curves, lut) = match (&fx.data, fx.kind) {
                 (Some(EffectData::Curves(c)), _) => (Some(c.clone()), None),
                 (_, EffectKind::Curves) => (Some(Curves::default()), None),
@@ -269,10 +276,12 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     Some(EffectData::Fill(dir)) if reelforge_core::fillstore::exists(dir) => Some(reelforge_core::fillstore::frame_count(dir)),
                     _ => None,
                 },
-                points: if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
-                    vec![PointView { param: 0, label: "Start".into(), relative: None }, PointView { param: 2, label: "End".into(), relative: None }]
+                points: if let Some(d) = plug.as_ref().filter(|_| fx.kind == EffectKind::Plugin) {
+                    d.points.iter().map(|p| PointView { param: p.x, label: p.name.clone(), relative: None, line_to: p.line_to }).collect()
+                } else if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
+                    vec![PointView { param: 0, label: "Start".into(), relative: None, line_to: None }, PointView { param: 2, label: "End".into(), relative: None, line_to: None }]
                 } else if fx.kind == EffectKind::PatchReplacer {
-                    vec![PointView { param: 0, label: "Target".into(), relative: None }, PointView { param: 2, label: "Source".into(), relative: Some(0) }]
+                    vec![PointView { param: 0, label: "Target".into(), relative: None, line_to: None }, PointView { param: 2, label: "Source".into(), relative: Some(0), line_to: None }]
                 } else if let Some((param, label)) = match fx.kind {
                     EffectKind::AnamorphicFlare if fx.params.get(reelforge_core::effects::streak::FROM).is_some_and(|p| p.value >= 0.5) => Some((reelforge_core::effects::streak::X, "Light")),
                     k => match k {
@@ -287,9 +296,9 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     }
                     .map(|l| (0, l)),
                 } {
-                    vec![PointView { param, label: label.into(), relative: None }]
+                    vec![PointView { param, label: label.into(), relative: None, line_to: None }]
                 } else {
-                    ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label, relative: None }).collect())
+                    ofx.as_ref().map_or_else(Vec::new, |d| d.points().into_iter().map(|(param, label)| PointView { param, label, relative: None, line_to: None }).collect())
                 },
                 error: ofx.as_ref().and_then(|_| reelforge_export::ofxhost::error(c.id, index)).filter(|_| fx.enabled),
                 temporal: ofx.as_ref().is_some_and(|d| d.temporal),
@@ -1057,6 +1066,9 @@ pub struct PluginView {
     /// Why it didn't load.
     pub error: Option<String>,
     pub removable: bool,
+    /// The pack it came in (removing it removes the whole pack).
+    pub pack: Option<String>,
+    pub pack_folder: Option<String>,
 }
 
 #[tauri::command]
@@ -1085,6 +1097,8 @@ pub fn plugins_list() -> PluginsView {
                     passes: 0,
                     error: e.result.as_ref().err().cloned(),
                     removable: m.removable(e),
+                    pack: e.pack.as_ref().map(|p| if p.version.is_empty() { p.name.clone() } else { format!("{} {}", p.name, p.version) }),
+                    pack_folder: e.pack.as_ref().map(|p| p.folder.display().to_string()),
                 };
                 match &e.result {
                     Ok(d) => PluginView {
@@ -1111,9 +1125,9 @@ pub fn plugins_list() -> PluginsView {
 #[tauri::command]
 pub fn plugins_install(zip: bool) -> Res<Option<String>> {
     let picked = if zip {
-        rfd::FileDialog::new().set_title("Install a plugin (.zip)").add_filter("Plugin zip", &["zip"]).pick_file()
+        rfd::FileDialog::new().set_title("Install a plugin or plugin pack (.zip)").add_filter("Plugin zip", &["zip"]).pick_file()
     } else {
-        rfd::FileDialog::new().set_title("Install a plugin: its folder (with plugin.toml)").pick_folder()
+        rfd::FileDialog::new().set_title("Install a plugin: its folder (with plugin.toml, or pack.toml for a pack)").pick_folder()
     };
     let Some(path) = picked else { return Ok(None) };
     let r = plugins(|m| if zip { m.install_zip(&path) } else { m.install_folder(&path) }).map_err(|e| format!("Couldn't install: {e}"));

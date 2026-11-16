@@ -1,0 +1,198 @@
+id = "scott.neon-fx.twin-laser"
+name = "Neon FX: Twin Laser"
+version = "1.0"
+author = "Neon FX"
+category = "Stylize"
+description = "Two laser beams twisted round each other, each in its own colour, between two points you drag in the Viewer. With pulses, bending, waves, particles, lightning arcs, halo and heat distortion."
+premultiplied = true
+
+[[point]]
+name = "Beam start"
+x = 0
+line_to = 2
+
+[[point]]
+name = "Beam end"
+x = 2
+
+[[param]]                     # 0
+section = "Beam"
+name = "Start X"
+default = 10
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 1
+name = "Start Y"
+default = 55
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 2
+name = "End X"
+default = 90
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 3
+name = "End Y"
+default = 45
+min = -50
+max = 150
+suffix = " %"
+step = 0.1
+
+[[param]]                     # 4
+name = "Beam length"
+default = 100
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 5
+section = "Lasers"
+name = "Laser 1 colour"
+type = "color"
+default = 0xff2a6a
+
+[[param]]                     # 6
+name = "Laser 2 colour"
+type = "color"
+default = 0x2a8cff
+
+[[param]]                     # 7
+name = "Thickness"
+default = 6
+min = 0
+max = 100
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 8
+name = "Twist radius"
+default = 14
+min = 0
+max = 300
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 9
+name = "Twist length"
+default = 160
+min = 8
+max = 3000
+suffix = " px"
+
+[[param]]                     # 10
+name = "Twist speed"
+default = 0.5
+min = -10
+max = 10
+suffix = " turns/s"
+step = 0.01
+
+[[param]]                     # 11
+section = "Glow"
+name = "Glow size"
+default = 20
+min = 0
+max = 400
+suffix = " px"
+
+[[param]]                     # 12
+name = "Glow intensity"
+default = 140
+min = 0
+max = 800
+suffix = " %"
+
+[[param]]                     # 13
+name = "Halo"
+default = 6
+min = 0
+max = 100
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 14
+section = "Pulses"
+name = "Pulses"
+default = 0
+min = 0
+max = 30
+step = 0.05
+
+[[param]]                     # 15
+name = "Pulse strength"
+default = 80
+min = 0
+max = 300
+suffix = " %"
+
+[[param]]                     # 16
+name = "Pulse speed"
+default = 1
+min = -10
+max = 10
+suffix = " lengths/s"
+step = 0.01
+
+[[param]]                     # 17
+section = "Bend and waves"
+name = "Bend"
+default = 0
+min = -1000
+max = 1000
+suffix = " px"
+
+[[param]]                     # 18
+name = "Wave height"
+default = 0
+min = 0
+max = 300
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 19
+name = "Wave length"
+default = 240
+min = 4
+max = 3000
+suffix = " px"
+
+[[param]]                     # 20
+name = "Wave speed"
+default = 1
+min = -10
+max = 10
+suffix = " /s"
+step = 0.01
+
+[[param]]                     # 21
+section = "Effects"
+name = "Particles"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 22
+name = "Lightning"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 23
+name = "Distortion"
+default = 0
+min = 0
+max = 100
+suffix = " %"
+

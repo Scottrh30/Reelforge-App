@@ -656,7 +656,7 @@ export interface EffectView {
   sky_frames: number | null;
   animated: boolean;
   /// Positions to drag in the Viewer (an OpenFX plugin's): x at `param`, y at `param + 1`.
-  points: { param: number; label: string; relative: number | null }[];
+  points: { param: number; label: string; relative: number | null; line_to: number | null }[];
   /// Why it isn't rendering (an OpenFX plugin's error).
   error: string | null;
   temporal: boolean;
@@ -733,6 +733,9 @@ export interface PluginView {
   passes: number;
   error: string | null;
   removable: boolean;
+  /** The pack it came in ("Neon FX 1.0"); removing it removes the whole pack. */
+  pack: string | null;
+  pack_folder: string | null;
 }
 
 export interface PluginsView {

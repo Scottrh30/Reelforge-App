@@ -1,0 +1,114 @@
+id = "scott.neon-fx.neon-outline"
+name = "Neon FX: Neon Outline"
+version = "1.0"
+author = "Neon FX"
+category = "Stylize"
+description = "Glowing neon lines round a title, logo or keyed subject (or round the bright parts of the picture). Draw them on, or send dashes chasing round."
+passes = ["edges", "blur_across", "blur_down", "combine"]
+premultiplied = true
+# The lines can sit outside the shape and glow up to 3 x Glow radius further.
+spread = [4, 6, 6, 6]
+
+[[param]]                     # 0
+name = "Colour"
+type = "choice"
+options = ["Blue", "Green", "Red", "Purple", "Yellow", "Cyan", "Pink", "Orange", "White", "Custom (hue)"]
+default = 5
+
+[[param]]                     # 1
+name = "Custom hue"
+default = 180
+min = 0
+max = 360
+suffix = "°"
+
+[[param]]                     # 2
+name = "Outline"
+type = "choice"
+options = ["Shape (transparency)", "Picture (brightness)"]
+default = 0
+
+[[param]]                     # 3
+name = "Edge level"
+default = 50
+min = 1
+max = 99
+suffix = " %"
+
+[[param]]                     # 4
+name = "Line width"
+default = 6
+min = 0.5
+max = 100
+suffix = " px"
+step = 0.1
+
+[[param]]                     # 5
+name = "Position"
+type = "choice"
+options = ["Centred on the edge", "Outside", "Inside"]
+default = 0
+
+[[param]]                     # 6
+name = "Glow radius"
+default = 22
+min = 0
+max = 300
+suffix = " px"
+
+[[param]]                     # 7
+name = "Glow intensity"
+default = 130
+min = 0
+max = 800
+suffix = " %"
+
+[[param]]                     # 8
+name = "Core whiteness"
+default = 65
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 9
+name = "Picture"
+default = 100
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 10
+name = "Draw on"
+default = 100
+min = 0
+max = 100
+suffix = " %"
+
+[[param]]                     # 11
+name = "Draw on from"
+default = 0
+min = -360
+max = 360
+suffix = "°"
+
+[[param]]                     # 12
+name = "Chase dashes"
+default = 0
+min = 0
+max = 64
+step = 0.05
+
+[[param]]                     # 13
+name = "Chase speed"
+default = 0.25
+min = -5
+max = 5
+suffix = " turns/s"
+step = 0.005
+
+[[param]]                     # 14
+name = "Flicker"
+default = 0
+min = 0
+max = 100
+suffix = " %"

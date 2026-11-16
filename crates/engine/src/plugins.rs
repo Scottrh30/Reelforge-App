@@ -8,8 +8,12 @@
 //!   `~/Library/Application Support/Reelforge/plugins` on macOS;
 //! - a `plugins` folder next to the program (plugins shipped with it);
 //! - any folders listed in the `REELFORGE_PLUGINS` environment variable.
+//!
+//! A folder in one of those places is either a plugin (it has a plugin.toml)
+//! or a plugin pack (it has a pack.toml, and plugin folders inside it). A pack
+//! is installed, replaced and removed as one.
 
-use reelforge_core::plugin::{self, PluginDef, MANIFEST};
+use reelforge_core::plugin::{self, PluginDef, MANIFEST, PACK_MANIFEST};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -27,12 +31,25 @@ pub enum Source {
     Extra,
 }
 
+/// The pack a plugin came in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackInfo {
+    /// The pack's folder (holding pack.toml and the plugin folders).
+    pub folder: PathBuf,
+    /// From pack.toml (the folder's name and an empty id if it can't be read).
+    pub id: String,
+    pub name: String,
+    pub version: String,
+}
+
 /// One plugin folder and how loading it went.
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub folder: PathBuf,
     pub source: Source,
     pub result: Result<Arc<PluginDef>, String>,
+    /// The pack it's part of, if any.
+    pub pack: Option<Arc<PackInfo>>,
 }
 
 impl Entry {
@@ -90,15 +107,43 @@ pub fn check_folder(folder: &Path) -> Result<PluginDef, String> {
     Ok(def)
 }
 
-/// The plugin folders directly inside `root` (each holding a plugin.toml).
-fn plugin_folders(root: &Path) -> Vec<PathBuf> {
+/// The folders directly inside `root` holding `file` (not hidden ones).
+fn folders_with(root: &Path, file: &str) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(root) else { return Vec::new() };
     let mut v: Vec<PathBuf> = rd
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_dir() && p.join(MANIFEST).is_file() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
+        .filter(|p| p.is_dir() && p.join(file).is_file() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
         .collect();
     v.sort();
+    v
+}
+
+/// The plugin folders directly inside `root` (each holding a plugin.toml).
+fn plugin_folders(root: &Path) -> Vec<PathBuf> {
+    folders_with(root, MANIFEST)
+}
+
+/// The pack folders directly inside `root` (each holding a pack.toml and no plugin.toml).
+fn pack_folders(root: &Path) -> Vec<PathBuf> {
+    folders_with(root, PACK_MANIFEST).into_iter().filter(|p| !p.join(MANIFEST).is_file()).collect()
+}
+
+/// A pack's details; the folder's name if its pack.toml can't be read.
+fn pack_info(folder: &Path) -> PackInfo {
+    match plugin::load_pack(folder) {
+        Ok(p) => PackInfo { folder: folder.to_path_buf(), id: p.id, name: p.name, version: p.version },
+        Err(_) => PackInfo { folder: folder.to_path_buf(), id: String::new(), name: folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), version: String::new() },
+    }
+}
+
+/// Every plugin in `root`: plugin folders, then the plugins inside packs.
+fn all_plugins(root: &Path) -> Vec<(PathBuf, Option<Arc<PackInfo>>)> {
+    let mut v: Vec<(PathBuf, Option<Arc<PackInfo>>)> = plugin_folders(root).into_iter().map(|f| (f, None)).collect();
+    for pack in pack_folders(root) {
+        let info = Arc::new(pack_info(&pack));
+        v.extend(plugin_folders(&pack).into_iter().map(|f| (f, Some(info.clone()))));
+    }
     v
 }
 
@@ -122,7 +167,11 @@ impl PluginManager {
     fn current_fingerprint(&self) -> u64 {
         let mut h = DefaultHasher::new();
         for (root, _) in self.roots() {
-            for folder in plugin_folders(&root) {
+            for pack in pack_folders(&root) {
+                let m = std::fs::metadata(pack.join(PACK_MANIFEST)).ok();
+                (pack, m.as_ref().map(|m| m.len()), m.and_then(|m| m.modified().ok())).hash(&mut h);
+            }
+            for (folder, _) in all_plugins(&root) {
                 folder.hash(&mut h);
                 if let Ok(rd) = std::fs::read_dir(&folder) {
                     let mut files: Vec<(PathBuf, u64, Option<std::time::SystemTime>)> = rd
@@ -144,7 +193,7 @@ impl PluginManager {
         let mut entries: Vec<Entry> = Vec::new();
         let mut seen: Vec<(String, PathBuf)> = Vec::new();
         for (root, source) in self.roots() {
-            for folder in plugin_folders(&root) {
+            for (folder, pack) in all_plugins(&root) {
                 let mut result = check_folder(&folder).map(Arc::new);
                 if let Ok(d) = &result {
                     if let Some((_, other)) = seen.iter().find(|(id, _)| *id == d.id) {
@@ -153,7 +202,7 @@ impl PluginManager {
                         seen.push((d.id.clone(), folder.clone()));
                     }
                 }
-                entries.push(Entry { folder, source, result });
+                entries.push(Entry { folder, source, result, pack });
             }
         }
         plugin::set_installed(entries.iter().filter_map(|e| e.result.as_ref().ok().cloned()).collect());
@@ -202,6 +251,9 @@ impl PluginManager {
     /// Copy the plugin in `src` (a folder with a plugin.toml) into the user
     /// plugin folder, replacing an installed copy of the same plugin. Checked first.
     pub fn install_folder(&mut self, src: &Path) -> Result<String, String> {
+        if src.join(PACK_MANIFEST).is_file() && !src.join(MANIFEST).is_file() {
+            return self.install_pack(src);
+        }
         let def = check_folder(src)?;
         let dest_root = self.install_root();
         std::fs::create_dir_all(&dest_root).map_err(|e| format!("can't make {}: {e}", dest_root.display()))?;
@@ -209,7 +261,7 @@ impl PluginManager {
         let existing = plugin_folders(&dest_root).into_iter().find(|f| plugin::load_folder(f).is_ok_and(|d| d.id == def.id));
         let dest = match existing {
             Some(f) => f,
-            None => free_folder(&dest_root, &folder_name(src, &def)),
+            None => free_folder(&dest_root, &folder_name(src, &def.id)),
         };
         if same_place(src, &dest) {
             return Ok(format!("{} is already installed", def.name));
@@ -225,7 +277,59 @@ impl PluginManager {
         Ok(format!("Installed {} {}", def.name, def.version).trim().to_string())
     }
 
-    /// Install a plugin from a .zip (its plugin.toml at the top, or in one folder inside).
+    /// Copy the pack in `src` (a folder with a pack.toml and plugin folders)
+    /// into the user plugin folder, replacing an installed copy of the same
+    /// pack. Every plugin in it is checked first; one with a problem stops the
+    /// install. Plugins installed on their own with the same ids as the
+    /// pack's are replaced by the pack's.
+    pub fn install_pack(&mut self, src: &Path) -> Result<String, String> {
+        let pack = plugin::load_pack(src)?;
+        let members = plugin_folders(src);
+        if members.is_empty() {
+            return Err(format!("the pack {} has no plugin folders in it", pack.name));
+        }
+        let mut ids: Vec<String> = Vec::new();
+        for m in &members {
+            let what = m.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let def = check_folder(m).map_err(|e| format!("{what}: {e}"))?;
+            if ids.contains(&def.id) {
+                return Err(format!("{what}: two plugins in the pack have the id \"{}\"", def.id));
+            }
+            ids.push(def.id);
+        }
+        let dest_root = self.install_root();
+        std::fs::create_dir_all(&dest_root).map_err(|e| format!("can't make {}: {e}", dest_root.display()))?;
+        let existing = pack_folders(&dest_root).into_iter().find(|f| plugin::load_pack(f).is_ok_and(|p| p.id == pack.id));
+        let dest = match existing {
+            Some(f) => f,
+            None => free_folder(&dest_root, &folder_name(src, &pack.id)),
+        };
+        if same_place(src, &dest) {
+            return Ok(format!("{} is already installed", pack.name));
+        }
+        let tmp = dest_root.join(format!(".installing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        copy_dir(src, &tmp).map_err(|e| format!("couldn't copy the pack: {e}"))?;
+        if dest.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&dest) {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(format!("couldn't replace the old copy: {e}"));
+            }
+        }
+        // Loose copies of the pack's plugins would clash with it (same ids).
+        for f in plugin_folders(&dest_root) {
+            if plugin::load_folder(&f).is_ok_and(|d| ids.contains(&d.id)) {
+                let _ = std::fs::remove_dir_all(&f);
+            }
+        }
+        std::fs::rename(&tmp, &dest).map_err(|e| format!("couldn't install: {e}"))?;
+        self.scan();
+        let n = members.len();
+        Ok(format!("Installed {} {} ({n} effect{})", pack.name, pack.version, if n == 1 { "" } else { "s" }).replace("  ", " "))
+    }
+
+    /// Install a plugin or a pack from a .zip (its plugin.toml or pack.toml at
+    /// the top, or in one folder inside).
     pub fn install_zip(&mut self, zip_path: &Path) -> Result<String, String> {
         let root = self.install_root();
         let tmp = root.join(format!(".unzip-{}", std::process::id()));
@@ -249,13 +353,13 @@ impl PluginManager {
                     std::io::copy(&mut f, &mut w).map_err(|e| e.to_string())?;
                 }
             }
-            let folder = if tmp.join(MANIFEST).is_file() {
+            let folder = if tmp.join(MANIFEST).is_file() || tmp.join(PACK_MANIFEST).is_file() {
                 tmp.clone()
             } else {
-                match plugin_folders(&tmp).as_slice() {
-                    [one] => one.clone(),
-                    [] => return Err(format!("there's no {MANIFEST} in that zip")),
-                    _ => return Err("that zip has several plugins in it: unzip it and install them one by one".into()),
+                match (plugin_folders(&tmp).as_slice(), pack_folders(&tmp).as_slice()) {
+                    ([one], []) | ([], [one]) => one.clone(),
+                    ([], []) => return Err(format!("there's no {MANIFEST} or {PACK_MANIFEST} in that zip")),
+                    _ => return Err(format!("that zip has several plugins in it, but no {PACK_MANIFEST} to make them a pack: unzip it and install them one by one")),
                 }
             };
             self.install_folder(&folder)
@@ -283,15 +387,26 @@ impl PluginManager {
         Ok(dest)
     }
 
-    /// Delete an installed plugin's folder (user plugins only).
+    /// Delete an installed plugin's folder (user plugins only). A plugin
+    /// that's part of a pack takes the whole pack with it (`folder` can also
+    /// be the pack's own folder).
     pub fn remove(&mut self, folder: &Path) -> Result<String, String> {
         let user = user_dir();
-        let is_user = self.entries.iter().any(|e| e.folder == folder && (e.source == Source::User || (self.only_extra && folder.starts_with(self.install_root()))));
-        if !is_user || !(folder.starts_with(&user) || folder.starts_with(self.install_root())) {
+        let entry = self.entries.iter().find(|e| e.folder == folder || e.pack.as_ref().is_some_and(|p| p.folder == folder));
+        let Some(entry) = entry.filter(|e| self.removable(e)) else {
+            return Err("only plugins in your plugin folder can be removed here".into());
+        };
+        let (target, name) = match &entry.pack {
+            Some(p) => {
+                let n = self.entries.iter().filter(|e| e.pack.as_ref().is_some_and(|q| q.folder == p.folder)).count();
+                (p.folder.clone(), format!("{} ({n} effect{})", p.name, if n == 1 { "" } else { "s" }))
+            }
+            None => (entry.folder.clone(), entry.title()),
+        };
+        if !(target.starts_with(&user) || target.starts_with(self.install_root())) {
             return Err("only plugins in your plugin folder can be removed here".into());
         }
-        let name = self.entries.iter().find(|e| e.folder == folder).map(Entry::title).unwrap_or_default();
-        std::fs::remove_dir_all(folder).map_err(|e| format!("couldn't delete {}: {e}", folder.display()))?;
+        std::fs::remove_dir_all(&target).map_err(|e| format!("couldn't delete {}: {e}", target.display()))?;
         self.scan();
         Ok(format!("Removed {name}"))
     }
@@ -313,11 +428,12 @@ fn same_place(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// A folder name for a plugin: the source folder's, unless it's a temporary one.
-fn folder_name(src: &Path, def: &PluginDef) -> String {
+/// A folder name for a plugin or pack: the source folder's, unless it's a
+/// temporary one (then from its id).
+fn folder_name(src: &Path, id: &str) -> String {
     let n = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if n.is_empty() || n.starts_with('.') {
-        def.id.replace(['/', '\\', ':'], "-")
+        id.replace(['/', '\\', ':'], "-")
     } else {
         n
     }
@@ -487,6 +603,97 @@ mod tests {
             let d = check_folder(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
             assert!(d.id.starts_with("reelforge.") && !d.description.is_empty() && !d.params.is_empty(), "{}", d.id);
         }
+    }
+
+    #[test]
+    fn the_neon_fx_pack_loads() {
+        let pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/neon-fx");
+        let p = plugin::load_pack(&pack).unwrap();
+        assert_eq!((p.id.as_str(), p.name.as_str()), ("scott.neon-fx", "Neon FX"));
+        let folders = plugin_folders(&pack);
+        assert_eq!(folders.len(), 7, "{folders:?}");
+        for f in folders {
+            let d = check_folder(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+            assert!(d.id.starts_with("scott.neon-fx.") && d.name.starts_with("Neon FX: ") && !d.description.is_empty(), "{}", d.id);
+        }
+    }
+
+    fn write_pack(dir: &Path, id: &str, members: &[&str]) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(PACK_MANIFEST), format!("id = \"{id}\"\nname = \"{id} pack\"\nversion = \"2.0\"\n")).unwrap();
+        for m in members {
+            write_plugin(&dir.join(m), &format!("{id}.{m}"), GOOD);
+        }
+    }
+
+    #[test]
+    fn packs_install_replace_and_remove_as_one() {
+        let _turn = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = tmp("pack_root");
+        let src = tmp("pack_src");
+        let mut m = manager(&root);
+        m.scan();
+
+        // A loose plugin with the same id as one in the pack: the pack replaces it.
+        write_plugin(&root.join("loose-a"), "p.a", GOOD);
+        write_plugin(&root.join("other"), "t.other", GOOD);
+        m.scan();
+        assert!(plugin::find("p.a").is_some());
+
+        write_pack(&src.join("my-pack"), "p", &["a", "b", "c"]);
+        assert_eq!(m.install_folder(&src.join("my-pack")).unwrap(), "Installed p pack 2.0 (3 effects)");
+        assert!(root.join("my-pack/pack.toml").is_file() && root.join("my-pack/b/plugin.toml").is_file());
+        assert!(!root.join("loose-a").exists() && root.join("other").exists());
+        assert_eq!(m.entries.len(), 4);
+        assert!(m.entries.iter().all(|e| e.result.is_ok()), "{:?}", m.entries);
+        let in_pack: Vec<&Entry> = m.entries.iter().filter(|e| e.pack.is_some()).collect();
+        assert_eq!(in_pack.len(), 3);
+        assert!(in_pack.iter().all(|e| e.pack.as_ref().unwrap().name == "p pack" && m.removable(e)));
+        assert!(plugin::find("p.a").is_some() && plugin::find("p.c").is_some());
+
+        // A pack with a broken plugin isn't installed, and says which one.
+        write_pack(&src.join("broken"), "q", &["x"]);
+        std::fs::write(src.join("broken/x/effect.wgsl"), "nope").unwrap();
+        assert!(m.install_folder(&src.join("broken")).unwrap_err().starts_with("x: "));
+        assert!(!root.join("broken").exists());
+
+        // From a zip (pack in a folder), replacing the installed copy by pack id.
+        let zip_path = src.join("p.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut z = zip::ZipWriter::new(f);
+            let o: zip::write::SimpleFileOptions = Default::default();
+            z.start_file("zipped-pack/pack.toml", o).unwrap();
+            std::io::Write::write_all(&mut z, b"id = \"p\"\nname = \"P again\"\nversion = \"3.0\"\n").unwrap();
+            for id in ["a", "d"] {
+                z.start_file(format!("zipped-pack/{id}/plugin.toml"), o).unwrap();
+                std::io::Write::write_all(&mut z, format!("id = \"p.{id}\"\nname = \"{id}\"\n").as_bytes()).unwrap();
+                z.start_file(format!("zipped-pack/{id}/effect.wgsl"), o).unwrap();
+                std::io::Write::write_all(&mut z, b"fn effect(uv: vec2<f32>) -> vec4<f32> { return sample(uv); }").unwrap();
+            }
+            z.finish().unwrap();
+        }
+        assert_eq!(m.install_zip(&zip_path).unwrap(), "Installed P again 3.0 (2 effects)");
+        assert!(root.join("my-pack/d/plugin.toml").is_file() && !root.join("my-pack/b").exists(), "replaced in place");
+        assert!(plugin::find("p.b").is_none() && plugin::find("p.d").is_some());
+
+        // Removing any effect of the pack removes the pack.
+        let one = root.join("my-pack/a");
+        assert_eq!(m.remove(&one).unwrap(), "Removed P again (2 effects)");
+        assert!(!root.join("my-pack").exists() && root.join("other").exists());
+        assert!(plugin::find("p.a").is_none() && plugin::find("p.d").is_none() && plugin::find("t.other").is_some());
+        assert_eq!(m.entries.len(), 1);
+
+        // Editing a pack's plugin is picked up by live reload too.
+        write_pack(&root.join("live"), "l", &["one"]);
+        m.last_check = Instant::now() - Duration::from_secs(2);
+        assert!(m.poll().is_some());
+        assert!(plugin::find("l.one").is_some());
+        std::fs::write(root.join("live/one/effect.wgsl"), "broken!").unwrap();
+        m.last_check = Instant::now() - Duration::from_secs(2);
+        assert!(m.poll().expect("reloaded").contains("has a problem"));
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&src).unwrap();
     }
 
     #[test]
