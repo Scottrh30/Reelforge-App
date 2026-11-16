@@ -606,6 +606,38 @@ mod tests {
     }
 
     /// H.264, HEVC, VP9 and AV1 through the pure-Rust decoder libraries.
+    /// H.264 High 10 and High 4:2:2 (pro cameras, broadcast and intermediates) through the
+    /// app's own decoder, as FFmpeg decodes them.
+    #[test]
+    fn h264_high10_and_422_match_ffmpeg() {
+        let x = |pix: &'static str, profile: &'static str, extra: &[&'static str]| -> Vec<&'static str> {
+            [vec!["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", pix, "-profile:v", profile], extra.to_vec()].concat()
+        };
+        let cases: Vec<(&str, &str, u32, Vec<&str>)> = vec![
+            ("h264_10.mp4", "320x180", 25, x("yuv420p10le", "high10", &["-bf", "2"])),
+            ("h264_422.mkv", "320x180", 25, x("yuv422p", "high422", &["-bf", "2"])),
+            ("h264_422_10.mxf", "320x180", 25, x("yuv422p10le", "high422", &["-bf", "2"])),
+            ("h264_422_10_intra.mkv", "320x180", 25, x("yuv422p10le", "high422", &["-g", "1"])),
+            ("h264_10_cavlc.mkv", "250x142", 25, x("yuv420p10le", "high10", &["-x264-params", "cabac=0"])),
+        ];
+        let mut ran = 0;
+        let mut bad = Vec::new();
+        for (name, size, rate, args) in cases {
+            let Some(p) = clip_at(name, size, rate, &args) else {
+                eprintln!("{name}: ffmpeg couldn't make it, skipped");
+                continue;
+            };
+            ran += 1;
+            let (n, psnr) = compare_with_ffmpeg(&p);
+            eprintln!("{name}: {n} frames, worst {psnr:.1} dB");
+            if n < 25 || psnr < 50.0 {
+                bad.push(format!("{name}: {n} frames, {psnr:.1} dB"));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+        assert!(ran >= 4 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
     /// AV1's High (4:4:4) and Professional (4:2:2, 12-bit) profiles, as
     /// pro cameras, screen recorders and intermediates use them.
     #[test]
@@ -687,7 +719,8 @@ mod tests {
     fn unsupported_h264_is_reported() {
         for (name, args) in [
             ("interlaced264.mp4", vec!["-c:v", "libx264", "-flags", "+ildct+ilme", "-x264-params", "interlaced=1"]),
-            ("hi10.mp4", vec!["-c:v", "libx264", "-pix_fmt", "yuv420p10le"]),
+            // High 4:4:4 Predictive (lossless): still FFmpeg's.
+            ("lossless444.mp4", vec!["-c:v", "libx264", "-pix_fmt", "yuv444p", "-qp", "0"]),
         ] {
             let Some(p) = clip_at(name, "320x180", 25, &args) else { continue };
             crate::init();

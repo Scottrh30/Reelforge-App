@@ -1,6 +1,7 @@
 //! Scaling (dequantisation) and inverse transforms (8.5.10 - 8.5.13).
 
 use crate::params::ScalingMatrices;
+use crate::picture::Pel;
 use crate::tables::{norm_adjust4, norm_adjust8};
 
 /// LevelScale4x4 / LevelScale8x8 for all six scaling lists and qP % 6, raster order.
@@ -83,16 +84,47 @@ pub fn chroma_dc_dequant_420(c: &mut [i32; 4], qp: i32, ls00: i32) {
     }
 }
 
+/// 4:2:2 chroma DC: 2x4 transform + scaling (8.5.11). `c` is the 4-row × 2-column matrix in
+/// raster order (row * 2 + col), built from the levels by [`CHROMA_DC_422_SCAN`]; `qp_dc` is
+/// QP'c + 3. The output replaces `c` with the DC of chroma block row * 2 + col.
+pub fn chroma_dc_dequant_422(c: &mut [i32; 8], qp_dc: i32, ls00: i32) {
+    // f = A4 · c · A2, A4 the 4-point Hadamard (rows 1 1 1 1 / 1 1 -1 -1 / 1 -1 -1 1 / 1 -1 1 -1).
+    let mut t = [0i32; 8];
+    for j in 0..2 {
+        let (c0, c1, c2, c3) = (c[j], c[2 + j], c[4 + j], c[6 + j]);
+        t[j] = c0.wrapping_add(c1).wrapping_add(c2).wrapping_add(c3);
+        t[2 + j] = c0.wrapping_add(c1).wrapping_sub(c2).wrapping_sub(c3);
+        t[4 + j] = c0.wrapping_sub(c1).wrapping_sub(c2).wrapping_add(c3);
+        t[6 + j] = c0.wrapping_sub(c1).wrapping_add(c2).wrapping_sub(c3);
+    }
+    for i in 0..4 {
+        let (a, b) = (t[i * 2], t[i * 2 + 1]);
+        let f = [a.wrapping_add(b), a.wrapping_sub(b)];
+        for j in 0..2 {
+            c[i * 2 + j] = if qp_dc >= 36 {
+                f[j].wrapping_mul(ls00) << (qp_dc / 6 - 6)
+            } else {
+                f[j].wrapping_mul(ls00).wrapping_add(1 << (5 - qp_dc / 6)) >> (6 - qp_dc / 6)
+            };
+        }
+    }
+}
+
+/// chroma DC level k → position in the 4x2 matrix (raster row * 2 + col), 8.5.11.1:
+/// c = [[c0, c2], [c1, c5], [c3, c6], [c4, c7]].
+pub const CHROMA_DC_422_SCAN: [usize; 8] = [0, 2, 1, 4, 6, 3, 5, 7];
+
 #[inline(always)]
-fn clip_u8(v: i32) -> u8 {
-    v.clamp(0, 255) as u8
+fn clip<P: Pel>(v: i32, max: i32) -> P {
+    P::p(v.clamp(0, max))
 }
 
 /// Inverse 4x4 transform of raster-order `d` and add to `dst` (8.5.12.2, 8.5.14).
 ///
 /// Rows first, then columns (the spec's order: the `>> 1` steps make it matter). The column
 /// pass and the reconstruction run across all columns at once so they vectorise.
-pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
+pub fn idct4_add<P: Pel>(d: &[i32; 16], dst: &mut [P], stride: usize, max: i32) {
+    let max = if P::NARROW { 255 } else { max };
     let mut t = [[0i32; 4]; 4];
     for (i, row) in t.iter_mut().enumerate() {
         let r = &d[i * 4..i * 4 + 4];
@@ -118,18 +150,19 @@ pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
             return;
         };
         for (p, &v) in line.iter_mut().zip(row) {
-            *p = clip_u8(*p as i32 + ((v + 32) >> 6));
+            *p = clip(p.i() + ((v + 32) >> 6), max);
         }
     }
 }
 
 /// DC-only shortcut: all AC coefficients zero.
 #[allow(dead_code)]
-pub fn idct4_dc_add(dc: i32, dst: &mut [u8], stride: usize) {
+pub fn idct4_dc_add<P: Pel>(dc: i32, dst: &mut [P], stride: usize, max: i32) {
+    let max = if P::NARROW { 255 } else { max };
     let v = (dc + 32) >> 6;
     for i in 0..4 {
         for p in &mut dst[i * stride..i * stride + 4] {
-            *p = clip_u8(*p as i32 + v);
+            *p = clip(p.i() + v, max);
         }
     }
 }
@@ -157,7 +190,8 @@ fn idct8_1d(d: [i32; 8]) -> [i32; 8] {
 
 /// Inverse 8x8 transform of raster-order `d` and add to `dst` (8.5.13.2): rows, then columns,
 /// the column pass and reconstruction across all columns at once (they vectorise).
-pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
+pub fn idct8_add<P: Pel>(d: &[i32; 64], dst: &mut [P], stride: usize, max: i32) {
+    let max = if P::NARROW { 255 } else { max };
     let mut t = [[0i32; 8]; 8];
     for (row, src) in t.iter_mut().zip(d.as_chunks::<8>().0) {
         *row = idct8_1d(*src);
@@ -174,7 +208,7 @@ pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
             return;
         };
         for (p, &v) in line.iter_mut().zip(row) {
-            *p = clip_u8(*p as i32 + ((v + 32) >> 6));
+            *p = clip(p.i() + ((v + 32) >> 6), max);
         }
     }
 }
@@ -219,11 +253,11 @@ mod tests {
             let d8: [i32; 64] = std::array::from_fn(|_| (next() % (2 * range + 1)) as i32 - range as i32);
             let base: Vec<u8> = (0..24 * 8).map(|_| next() as u8).collect();
             let (mut a, mut b) = (base.clone(), base.clone());
-            idct4_add(&d4, &mut a[3..], 24);
+            idct4_add(&d4, &mut a[3..], 24, 255);
             reference_add(&d4, 4, &mut b[3..], 24);
             assert_eq!(a, b, "4x4 iteration {iter}");
             let (mut a, mut b) = (base.clone(), base);
-            idct8_add(&d8, &mut a[5..], 24);
+            idct8_add(&d8, &mut a[5..], 24, 255);
             reference_add(&d8, 8, &mut b[5..], 24);
             assert_eq!(a, b, "8x8 iteration {iter}");
         }
@@ -235,8 +269,8 @@ mod tests {
         d[0] = 640; // -> +10 everywhere
         let mut a = [100u8; 16];
         let mut b = [100u8; 16];
-        idct4_add(&d, &mut a, 4);
-        idct4_dc_add(640, &mut b, 4);
+        idct4_add(&d, &mut a, 4, 255);
+        idct4_dc_add(640, &mut b, 4, 255);
         assert_eq!(a, b);
         assert!(a.iter().all(|&v| v == 110));
     }
@@ -249,7 +283,7 @@ mod tests {
         d[0] = 64;
         d[1] = 64;
         let mut out = [0u8; 16];
-        idct4_add(&d, &mut out, 4);
+        idct4_add(&d, &mut out, 4, 255);
         for i in 0..4 {
             assert_eq!(&out[i * 4..i * 4 + 4], &[2, 2, 1, 0]);
         }
@@ -260,7 +294,7 @@ mod tests {
         let mut d = [0i32; 64];
         d[0] = 64 * 5;
         let mut out = [10u8; 64];
-        idct8_add(&d, &mut out, 8);
+        idct8_add(&d, &mut out, 8, 255);
         assert!(out.iter().all(|&v| v == 15));
     }
 

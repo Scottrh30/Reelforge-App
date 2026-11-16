@@ -18,6 +18,22 @@ macro_rules! fixture_tests {
 }
 
 fixture_tests!(
+    hi10_intra,
+    hi10_cabac_b,
+    hi10_cavlc,
+    hi10_weighted,
+    hi10_qp1,
+    hi10_qp0,
+    hi10_qp51,
+    hi422_8bit,
+    hi422_intra,
+    hi422_cabac_b,
+    hi422_cavlc,
+    hi422_weighted,
+    hi422_qp1,
+    hi422_crop,
+    hi422_slices,
+    hi422_nodeblock,
     intra_cavlc,
     intra_cavlc_noise,
     intra_cavlc_8x8,
@@ -78,7 +94,7 @@ fn draft_mode_changes_only_flagged_non_reference_pictures() {
             let (mut draft, mut changed) = (0, 0);
             for (i, p) in pics.iter().enumerate() {
                 let r = &reference[i * fsize..(i + 1) * fsize];
-                let same = p.y == r[..w * h] && [&p.u[..], &p.v[..]].concat() == r[w * h..];
+                let same = p.y.as_u8() == Some(&r[..w * h]) && [p.u.as_u8().unwrap_or(&[]), p.v.as_u8().unwrap_or(&[])].concat() == r[w * h..];
                 if p.draft {
                     draft += 1;
                     changed += !same as usize;

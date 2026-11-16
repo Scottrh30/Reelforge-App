@@ -1,5 +1,7 @@
 //! Inter prediction sample interpolation (8.4.2.2) and weighted sample prediction (8.4.2.3).
 
+use crate::picture::Pel;
+
 /// A reference plane (used by the plane-based helpers in tests).
 #[cfg(test)]
 #[derive(Clone, Copy)]
@@ -46,47 +48,47 @@ fn tap6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {
 }
 
 #[inline(always)]
-fn clip1(v: i32) -> u8 {
-    v.clamp(0, 255) as u8
+fn clip1<P: Pel>(v: i32, max: i32) -> P {
+    P::p(v.clamp(0, max))
 }
 
 /// Copy `n` bytes with a fixed-size move for the common block widths.
 #[inline(always)]
-fn copy_n(dst: &mut [u8], src: &[u8], n: usize) {
-    fn fixed<const N: usize>(dst: &mut [u8], src: &[u8]) {
+fn copy_n<P: Pel>(dst: &mut [P], src: &[P], n: usize) {
+    fn fixed<const N: usize, P: Pel>(dst: &mut [P], src: &[P]) {
         if let (Some(d), Some(s)) = (dst.first_chunk_mut::<N>(), src.first_chunk::<N>()) {
             *d = *s;
         }
     }
     match n {
-        16 => fixed::<16>(dst, src),
-        8 => fixed::<8>(dst, src),
-        4 => fixed::<4>(dst, src),
-        2 => fixed::<2>(dst, src),
+        16 => fixed::<16, P>(dst, src),
+        8 => fixed::<8, P>(dst, src),
+        4 => fixed::<4, P>(dst, src),
+        2 => fixed::<2, P>(dst, src),
         _ => dst[..n].copy_from_slice(&src[..n]),
     }
 }
 
 #[inline(always)]
-fn avg(a: u8, b: u8) -> u8 {
-    ((a as u16 + b as u16 + 1) >> 1) as u8
+fn avg<P: Pel>(a: P, b: P) -> P {
+    P::p((a.i() + b.i() + 1) >> 1)
 }
 
 /// Horizontal 6-tap (unclipped) at every position of `row` for `n` outputs: out[c] uses row[c..c + 6].
 #[inline(always)]
-fn htap_row(row: &[u8], out: &mut [i32], n: usize) {
+fn htap_row<P: Pel>(row: &[P], out: &mut [i32], n: usize) {
     let row = &row[..n + 5];
     for (o, w) in out[..n].iter_mut().zip(row.windows(6)) {
-        *o = tap6(w[0] as i32, w[1] as i32, w[2] as i32, w[3] as i32, w[4] as i32, w[5] as i32);
+        *o = tap6(w[0].i(), w[1].i(), w[2].i(), w[3].i(), w[4].i(), w[5].i());
     }
 }
 
 /// Vertical 6-tap (unclipped) over six rows at columns 0..n.
 #[inline(always)]
-fn vtap_row(rows: [&[u8]; 6], out: &mut [i32], n: usize) {
+fn vtap_row<P: Pel>(rows: [&[P]; 6], out: &mut [i32], n: usize) {
     let [a, b, c, d, e, f] = rows.map(|r| &r[..n]);
     for i in 0..n {
-        out[i] = tap6(a[i] as i32, b[i] as i32, c[i] as i32, d[i] as i32, e[i] as i32, f[i] as i32);
+        out[i] = tap6(a[i].i(), b[i].i(), c[i].i(), d[i].i(), e[i].i(), f[i].i());
     }
 }
 
@@ -104,13 +106,15 @@ pub fn mc_luma(p: PlaneRef, x: i32, y: i32, fx: u32, fy: u32, bw: usize, bh: usi
         fetch_window(p, x, y, bw, bh, &mut win);
         (&win[..], WIN)
     };
-    mc_luma_win(src, ss, fx, fy, bw, bh, out, os);
+    mc_luma_win(src, ss, fx, fy, bw, bh, out, os, 255);
 }
 
 /// Luma interpolation from a prepared window: `src[0]` is the sample at (x - 2, y - 2) and `ss` the
 /// window stride; the window covers (bw + 5) x (bh + 5) samples.
 #[allow(clippy::too_many_arguments)]
-pub fn mc_luma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize, out: &mut [u8], os: usize) {
+pub fn mc_luma_win<P: Pel>(src: &[P], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize, out: &mut [P], os: usize, max: i32) {
+    // A constant bound for 8-bit samples, so clipping compiles to saturating byte packs.
+    let max = if P::NARROW { 255 } else { max };
     // window row r (0..bh+5) starts at src[r * ss]; sample G of block (r, c) is at window (r + 2, c + 2)
     let wrow = |r: usize| &src[r * ss..r * ss + bw + 5];
     let mut t = [0i32; 16];
@@ -128,17 +132,17 @@ pub fn mc_luma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize
                 match fx {
                     1 => {
                         for c in 0..bw {
-                            o[c] = avg(row[c + 2], clip1((t[c] + 16) >> 5));
+                            o[c] = avg(row[c + 2], clip1((t[c] + 16) >> 5, max));
                         }
                     }
                     2 => {
                         for c in 0..bw {
-                            o[c] = clip1((t[c] + 16) >> 5);
+                            o[c] = clip1((t[c] + 16) >> 5, max);
                         }
                     }
                     _ => {
                         for c in 0..bw {
-                            o[c] = avg(row[c + 3], clip1((t[c] + 16) >> 5));
+                            o[c] = avg(row[c + 3], clip1((t[c] + 16) >> 5, max));
                         }
                     }
                 }
@@ -152,11 +156,11 @@ pub fn mc_luma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize
                 let o = &mut out[r * os..r * os + bw];
                 if fy == 2 {
                     for c in 0..bw {
-                        o[c] = clip1((t[c] + 16) >> 5);
+                        o[c] = clip1((t[c] + 16) >> 5, max);
                     }
                 } else {
                     for c in 0..bw {
-                        o[c] = avg(g[c], clip1((t[c] + 16) >> 5));
+                        o[c] = avg(g[c], clip1((t[c] + 16) >> 5, max));
                     }
                 }
             }
@@ -177,13 +181,13 @@ pub fn mc_luma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize
                 match (fx, fy) {
                     (2, 2) => {
                         for c in 0..bw {
-                            o[c] = clip1((t[c] + 512) >> 10);
+                            o[c] = clip1((t[c] + 512) >> 10, max);
                         }
                     }
                     (2, 1) | (2, 3) => {
                         let bh_ = if fy == 1 { b2 } else { b3 };
                         for c in 0..bw {
-                            o[c] = avg(clip1((bh_[c] + 16) >> 5), clip1((t[c] + 512) >> 10));
+                            o[c] = avg(clip1((bh_[c] + 16) >> 5, max), clip1((t[c] + 512) >> 10, max));
                         }
                     }
                     _ => {
@@ -191,7 +195,7 @@ pub fn mc_luma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize
                         let rows = [wrow(r), wrow(r + 1), wrow(r + 2), wrow(r + 3), wrow(r + 4), wrow(r + 5)].map(|x| &x[off..]);
                         vtap_row(rows, &mut v, bw);
                         for c in 0..bw {
-                            o[c] = avg(clip1((v[c] + 16) >> 5), clip1((t[c] + 512) >> 10));
+                            o[c] = avg(clip1((v[c] + 16) >> 5, max), clip1((t[c] + 512) >> 10, max));
                         }
                     }
                 }
@@ -208,7 +212,7 @@ pub fn mc_luma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize
                 vtap_row(rows, &mut v, bw);
                 let o = &mut out[r * os..r * os + bw];
                 for c in 0..bw {
-                    o[c] = avg(clip1((t[c] + 16) >> 5), clip1((v[c] + 16) >> 5));
+                    o[c] = avg(clip1((t[c] + 16) >> 5, max), clip1((v[c] + 16) >> 5, max));
                 }
             }
         }
@@ -242,12 +246,26 @@ pub fn mc_chroma(p: PlaneRef, x: i32, y: i32, fx: u32, fy: u32, bw: usize, bh: u
 /// Chroma interpolation from a prepared (bw + 1) x (bh + 1) window whose first sample is the integer
 /// position of the block.
 #[allow(clippy::too_many_arguments)]
-pub fn mc_chroma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize, out: &mut [u8], os: usize) {
-    let (fx, fy) = (fx as u16, fy as u16);
+pub fn mc_chroma_win<P: Pel>(src: &[P], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize, out: &mut [P], os: usize) {
+    let (fx, fy) = (fx as i32, fy as i32);
     let (w00, w10, w01, w11) = ((8 - fx) * (8 - fy), fx * (8 - fy), (8 - fx) * fy, fx * fy);
     if fx == 0 && fy == 0 {
         for r in 0..bh {
             copy_n(&mut out[r * os..], &src[r * ss..], bw);
+        }
+        return;
+    }
+    if P::NARROW {
+        // 8-bit: the sums fit 16 bits (64 × 255), twice the lanes per vector.
+        let (w00, w10, w01, w11) = (w00 as u16, w10 as u16, w01 as u16, w11 as u16);
+        for r in 0..bh {
+            let r0 = &src[r * ss..r * ss + bw + 1];
+            let r1 = &src[(r + 1) * ss..(r + 1) * ss + bw + 1];
+            let o = &mut out[r * os..r * os + bw];
+            for (c, o) in o.iter_mut().enumerate() {
+                let v = w00 * r0[c].i() as u16 + w10 * r0[c + 1].i() as u16 + w01 * r1[c].i() as u16 + w11 * r1[c + 1].i() as u16;
+                *o = P::p(((v + 32) >> 6) as i32);
+            }
         }
         return;
     }
@@ -256,8 +274,8 @@ pub fn mc_chroma_win(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usi
         let r1 = &src[(r + 1) * ss..(r + 1) * ss + bw + 1];
         let o = &mut out[r * os..r * os + bw];
         for (c, o) in o.iter_mut().enumerate() {
-            let v = w00 * r0[c] as u16 + w10 * r0[c + 1] as u16 + w01 * r1[c] as u16 + w11 * r1[c + 1] as u16;
-            *o = ((v + 32) >> 6) as u8;
+            let v = w00 * r0[c].i() + w10 * r0[c + 1].i() + w01 * r1[c].i() + w11 * r1[c + 1].i();
+            *o = P::p((v + 32) >> 6);
         }
     }
 }
@@ -273,7 +291,8 @@ pub enum Weight {
 
 /// Combine prediction(s) into `dst` (stride `ds`). `p0`/`p1` have stride `ps`.
 #[allow(clippy::too_many_arguments)]
-pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&[u8]>, ps: usize, bw: usize, bh: usize, w: Weight) {
+pub fn weighted_store<P: Pel>(dst: &mut [P], ds: usize, p0: Option<&[P]>, p1: Option<&[P]>, ps: usize, bw: usize, bh: usize, w: Weight, max: i32) {
+    let max = if P::NARROW { 255 } else { max };
     match (p0, p1, w) {
         (Some(a), Some(b), Weight::Default) => {
             for r in 0..bh {
@@ -281,7 +300,7 @@ pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&
                 let ra = &a[r * ps..r * ps + bw];
                 let rb = &b[r * ps..r * ps + bw];
                 for ((d, &x), &y) in d.iter_mut().zip(ra).zip(rb) {
-                    *d = ((x as u32 + y as u32 + 1) >> 1) as u8;
+                    *d = P::p((x.i() + y.i() + 1) >> 1);
                 }
             }
         }
@@ -294,7 +313,7 @@ pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&
                 let ra = &a[r * ps..r * ps + bw];
                 let rb = &b[r * ps..r * ps + bw];
                 for ((d, &x), &y) in d.iter_mut().zip(ra).zip(rb) {
-                    *d = clip1(((x as i32 * w0 + y as i32 * w1 + round) >> sh) + off);
+                    *d = clip1(((x.i() * w0 + y.i() * w1 + round) >> sh) + off, max);
                 }
             }
         }
@@ -314,7 +333,7 @@ pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&
                 let d = &mut dst[r * ds..r * ds + bw];
                 let ra = &a[r * ps..r * ps + bw];
                 for (d, &x) in d.iter_mut().zip(ra) {
-                    *d = clip1(((x as i32 * wt + round) >> log_wd) + o);
+                    *d = clip1(((x.i() * wt + round) >> log_wd) + o, max);
                 }
             }
         }
@@ -360,7 +379,7 @@ mod reference {
                 // a, b, c
                 for r in 0..bh {
                     for c in 0..bw {
-                        let b = clip1((b1(r as isize, c) + 16) >> 5) as i32;
+                        let b = clip1::<u8>((b1(r as isize, c) + 16) >> 5, 255) as i32;
                         out[r * os + c] = match fx {
                             1 => ((g(r, c) + b + 1) >> 1) as u8,
                             2 => b as u8,
@@ -373,7 +392,7 @@ mod reference {
                 // d, h, n
                 for r in 0..bh {
                     for c in 0..bw {
-                        let h = clip1((h1(r, c as isize) + 16) >> 5) as i32;
+                        let h = clip1::<u8>((h1(r, c as isize) + 16) >> 5, 255) as i32;
                         out[r * os + c] = match fy {
                             1 => ((g(r, c) + h + 1) >> 1) as u8,
                             2 => h as u8,
@@ -400,13 +419,13 @@ mod reference {
                             bcol[(r + 4) * WIN + c],
                             bcol[(r + 5) * WIN + c],
                         );
-                        let j = clip1((j1 + 512) >> 10) as i32;
+                        let j = clip1::<u8>((j1 + 512) >> 10, 255) as i32;
                         let v = match (fx, fy) {
                             (2, 2) => j,
-                            (2, 1) => (clip1((bcol[(r + 2) * WIN + c] + 16) >> 5) as i32 + j + 1) >> 1, // f
-                            (2, 3) => (clip1((bcol[(r + 3) * WIN + c] + 16) >> 5) as i32 + j + 1) >> 1, // q
-                            (1, 2) => (clip1((h1(r, c as isize) + 16) >> 5) as i32 + j + 1) >> 1,       // i
-                            _ => (clip1((h1(r, c as isize + 1) + 16) >> 5) as i32 + j + 1) >> 1,        // k
+                            (2, 1) => (clip1::<u8>((bcol[(r + 2) * WIN + c] + 16) >> 5, 255) as i32 + j + 1) >> 1, // f
+                            (2, 3) => (clip1::<u8>((bcol[(r + 3) * WIN + c] + 16) >> 5, 255) as i32 + j + 1) >> 1, // q
+                            (1, 2) => (clip1::<u8>((h1(r, c as isize) + 16) >> 5, 255) as i32 + j + 1) >> 1,       // i
+                            _ => (clip1::<u8>((h1(r, c as isize + 1) + 16) >> 5, 255) as i32 + j + 1) >> 1,        // k
                         };
                         out[r * os + c] = v as u8;
                     }
@@ -418,8 +437,8 @@ mod reference {
                     for c in 0..bw {
                         let hr = if fy == 1 { r as isize } else { r as isize + 1 };
                         let vc = if fx == 1 { c as isize } else { c as isize + 1 };
-                        let bh_ = clip1((b1(hr, c) + 16) >> 5) as i32;
-                        let vv = clip1((h1(r, vc) + 16) >> 5) as i32;
+                        let bh_ = clip1::<u8>((b1(hr, c) + 16) >> 5, 255) as i32;
+                        let vv = clip1::<u8>((h1(r, vc) + 16) >> 5, 255) as i32;
                         out[r * os + c] = ((bh_ + vv + 1) >> 1) as u8;
                     }
                 }
@@ -505,9 +524,9 @@ mod tests {
         let a = [100u8; 4];
         let b = [50u8; 4];
         let mut d = [0u8; 4];
-        weighted_store(&mut d, 4, Some(&a), Some(&b), 4, 4, 1, Weight::Default);
+        weighted_store(&mut d, 4, Some(&a), Some(&b), 4, 4, 1, Weight::Default, 255);
         assert_eq!(d, [75; 4]);
-        weighted_store(&mut d, 4, Some(&a), None, 4, 4, 1, Weight::Weighted { log_wd: 5, w0: 16, w1: 0, o0: 3, o1: 0 });
+        weighted_store(&mut d, 4, Some(&a), None, 4, 4, 1, Weight::Weighted { log_wd: 5, w0: 16, w1: 0, o0: 3, o1: 0 }, 255);
         assert_eq!(d, [53; 4]);
     }
 }

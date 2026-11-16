@@ -1,6 +1,6 @@
 //! Clean-room pure-Rust H.264 / AVC decoder, implemented from ITU-T Rec. H.264 (ISO/IEC 14496-10).
 //!
-//! Supported: progressive (frame) coding, 8-bit 4:2:0, Baseline / Main / High profiles — CAVLC and CABAC,
+//! Supported: progressive (frame) coding, 4:2:0 and 4:2:2 at 8 to 12 bits: Baseline / Main / High / High 10 / High 4:2:2 profiles — CAVLC and CABAC,
 //! I/P/B slices, 8x8 transform, custom scaling matrices, weighted prediction, spatial/temporal direct,
 //! multiple slices, long-term references and all MMCOs, deblocking.
 //!
@@ -56,7 +56,47 @@ pub struct ColorInfo {
     pub matrix: u8,
 }
 
-/// A decoded, cropped picture in 8-bit planar 4:2:0.
+/// Samples of one plane: bytes for 8-bit streams, else 16-bit words holding `bit_depth` bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Plane {
+    U8(Vec<u8>),
+    U16(Vec<u16>),
+}
+
+impl Plane {
+    pub fn len(&self) -> usize {
+        match self {
+            Plane::U8(v) => v.len(),
+            Plane::U16(v) => v.len(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Sample `i` (0 when out of range).
+    pub fn get(&self, i: usize) -> u16 {
+        match self {
+            Plane::U8(v) => v.get(i).map_or(0, |&s| s as u16),
+            Plane::U16(v) => v.get(i).copied().unwrap_or(0),
+        }
+    }
+    /// The samples as raw bytes: as they are (8-bit), else 16-bit little-endian.
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        match self {
+            Plane::U8(v) => v.clone(),
+            Plane::U16(v) => v.iter().flat_map(|s| s.to_le_bytes()).collect(),
+        }
+    }
+    /// The bytes of an 8-bit plane.
+    pub fn as_u8(&self) -> Option<&[u8]> {
+        match self {
+            Plane::U8(v) => Some(v),
+            Plane::U16(_) => None,
+        }
+    }
+}
+
+/// A decoded, cropped picture: planar 4:2:0 or 4:2:2 (`chroma_height` == `height`), 8 to 12 bits.
 #[derive(Clone, Debug)]
 pub struct Picture {
     /// Cropped luma width.
@@ -65,9 +105,11 @@ pub struct Picture {
     pub height: u32,
     pub chroma_width: u32,
     pub chroma_height: u32,
-    pub y: Vec<u8>,
-    pub u: Vec<u8>,
-    pub v: Vec<u8>,
+    pub bit_depth: u8,
+    pub bit_depth_chroma: u8,
+    pub y: Plane,
+    pub u: Plane,
+    pub v: Plane,
     pub y_stride: usize,
     pub uv_stride: usize,
     /// Presentation timestamp passed to [`Decoder::decode`] with the access unit of this picture.

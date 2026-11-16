@@ -100,6 +100,13 @@ fn is_config_record(data: &[u8]) -> bool {
 
 // ---- H.264 --------------------------------------------------------------------------
 
+fn h264_samples(p: &reelforge_h264::Plane) -> Samples<'_> {
+    match p {
+        reelforge_h264::Plane::U8(v) => Samples::U8(v),
+        reelforge_h264::Plane::U16(v) => Samples::U16(v),
+    }
+}
+
 pub struct H264Decoder {
     dec: reelforge_h264::Decoder,
     extradata: Vec<u8>,
@@ -128,12 +135,16 @@ impl H264Decoder {
     fn take(&mut self, pics: Vec<reelforge_h264::Picture>) -> Result<()> {
         for p in pics {
             let c = p.color;
+            if p.bit_depth != p.bit_depth_chroma {
+                return Err(Error::Unsupported(format!("H.264 with {}-bit luma and {}-bit chroma", p.bit_depth, p.bit_depth_chroma)));
+            }
             let planes = [
-                Some(Src { samples: Samples::U8(&p.y), stride: p.y_stride }),
-                Some(Src { samples: Samples::U8(&p.u), stride: p.uv_stride }),
-                Some(Src { samples: Samples::U8(&p.v), stride: p.uv_stride }),
+                Some(Src { samples: h264_samples(&p.y), stride: p.y_stride }),
+                Some(Src { samples: h264_samples(&p.u), stride: p.uv_stride }),
+                Some(Src { samples: h264_samples(&p.v), stride: p.uv_stride }),
             ];
-            self.out.push(picture(p.width, p.height, 8, Some((1, 1)), planes, h273_matrix(c.matrix), c.full_range, p.pts)?);
+            let sy = u32::from(p.chroma_height < p.height);
+            self.out.push(picture(p.width, p.height, p.bit_depth as u32, Some((1, sy)), planes, h273_matrix(c.matrix), c.full_range, p.pts)?);
         }
         Ok(())
     }

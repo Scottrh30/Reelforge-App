@@ -435,6 +435,11 @@ impl Sps {
     }
 
     /// ChromaArrayType.
+    /// The sample format pictures of this SPS decode to.
+    pub fn fmt(&self) -> crate::picture::Fmt {
+        crate::picture::Fmt { cf: self.chroma_array_type().clamp(1, 2) as u8, bd_y: self.bit_depth_luma.clamp(8, 12) as u8, bd_c: self.bit_depth_chroma.clamp(8, 12) as u8 }
+    }
+
     pub fn chroma_array_type(&self) -> u32 {
         if self.separate_colour_plane { 0 } else { self.chroma_format_idc }
     }
@@ -519,11 +524,11 @@ impl Sps {
         if !self.frame_mbs_only {
             return unsupported("interlaced (field / MBAFF) coding");
         }
-        if self.chroma_array_type() != 1 {
-            return unsupported(format!("chroma_format_idc {} (only 4:2:0 is implemented)", self.chroma_format_idc));
+        if !matches!(self.chroma_array_type(), 1 | 2) {
+            return unsupported(format!("chroma_format_idc {} (4:2:0 and 4:2:2 are implemented)", self.chroma_format_idc));
         }
-        if self.bit_depth_luma != 8 || self.bit_depth_chroma != 8 {
-            return unsupported(format!("bit depth luma {} chroma {} (only 8-bit is implemented)", self.bit_depth_luma, self.bit_depth_chroma));
+        if self.bit_depth_luma > 12 || self.bit_depth_chroma > 12 {
+            return unsupported(format!("bit depth luma {} chroma {} (up to 12 bits is implemented)", self.bit_depth_luma, self.bit_depth_chroma));
         }
         if self.qpprime_y_zero_transform_bypass {
             return unsupported("qpprime_y_zero_transform_bypass (lossless)");
