@@ -813,7 +813,7 @@ export interface OfxView {
 // ---- Export ----
 
 export type VideoCodec =
-  | "H264" | "H265"
+  | "H264" | "H265" | "Vp9" | "Av1"
   | "ProRes422Proxy" | "ProRes422Lt" | "ProRes422" | "ProRes422Hq" | "ProRes4444" | "ProRes4444Xq"
   | "DnxhrLb" | "DnxhrSq" | "DnxhrHq" | "DnxhrHqx" | "Dnxhr444" | "Dnxhd" | "Dnxhd10"
   | "Cineform" | "Cineform4444"

@@ -206,7 +206,7 @@ pub fn estimate_export_bytes(s: &ExportSettings, fps: f64) -> u64 {
         Some(_) if s.bitrate_kbps.is_some() => s.bitrate_kbps.unwrap_or(0) as f64 * 1000.0 * secs,
         Some(v) => {
             let bpp = match v {
-                VideoCodec::H264 | VideoCodec::H265 => 0.15,
+                VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9 | VideoCodec::Av1 => 0.15,
                 VideoCodec::ProRes422Proxy => 0.8,
                 VideoCodec::ProRes422Lt => 1.7,
                 VideoCodec::ProRes422 => 2.4,

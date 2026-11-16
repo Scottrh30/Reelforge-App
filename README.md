@@ -165,12 +165,13 @@ What works now:
   saw and heard
   - **Presets**: YouTube 1080p, YouTube 4K (H.265), YouTube 4K HDR (H.265, HLG),
     Shorts/Reels/TikTok 9:16 (1080×1920), Instagram portrait 4:5, Square 1:1, ProRes 422 HQ,
-    DNxHR HQ and CineForm 422 masters, graphics with transparency (ProRes 4444), a quick
+    DNxHR HQ and CineForm 422 masters, graphics with transparency (ProRes 4444), VP9 WebM and
+    AV1 WebM for the web, a web overlay with transparency (VP9 WebM), a quick
     half-size draft on the GPU, PNG/JPEG image sequences and audio-only WAV. Changing any setting turns the preset into "Custom"
   - **Your own presets**: **Save as preset…** keeps the current settings under a name (marked
     ★ in the list, with **Delete preset** next to it). They're kept with Reelforge's settings,
     so they're there next time
-  - **Colour** (H.265): **SDR 8-bit**, **SDR 10-bit** (no banding in skies, fades and
+  - **Colour** (H.265, VP9, AV1): **SDR 8-bit**, **SDR 10-bit** (no banding in skies, fades and
     vignettes), **HDR10 (PQ)** or **HDR (HLG)**, both 10-bit BT.2020. For HDR, white in the edit
     becomes 203 nits (PQ) or 75% signal (HLG), the ITU-R BT.2408 reference, and anything the
     edit pushes brighter than white (glow, exposure) keeps its extra brightness instead of
@@ -185,10 +186,14 @@ What works now:
     white at white and the highlights cut (no tone mapping yet). 10-bit and HDR exports render at 16 bits per
     channel; ProRes, CineForm, DNxHR HQX/444 and 10-bit DNxHD get the 16-bit render too (they're
     always 10-bit or more). Other codecs stay 8-bit SDR
-  - **Rate** (H.264/H.265): a **Quality** setting (constant quality), or a target **Bitrate**
+  - **Rate** (H.264/H.265/VP9/AV1): a **Quality** setting (constant quality), or a target **Bitrate**
     in Mbit/s with the estimated file size beside it (peaks may reach 1.5× the target). Picking
     Bitrate suggests a sensible starting value for the size
-  - **Formats**, listed under headings: H.264 or H.265 with AAC (MP4); the editing and master
+  - **Formats**, listed under headings: H.264 or H.265 with AAC (MP4); **VP9** or **AV1** with
+    Opus sound (WebM, or MKV; AV1 also in MP4, with AAC) for browsers, YouTube and web pages,
+    royalty-free, 10-bit and HDR too. VP9 uses libvpx; AV1 uses SVT-AV1 (quickest), else libaom
+    or rav1e, or the graphics card's AV1 encoder (NVIDIA RTX 40 and later, Intel Arc, AMD RX
+    7000) when "Use the graphics card" is ticked; the editing and master
     codecs below, all with 24-bit PCM audio and every core encoding; PNG, JPEG or TIFF sequences
     (`name_00001.png`, …); WAV. The file extension follows the format
     - **Apple ProRes** (MOV): 422 Proxy, 422 LT, 422, 422 HQ, 4444 and 4444 XQ
@@ -201,10 +206,13 @@ What works now:
       pick it under **File type**
     - **GoPro CineForm** (MOV): 422 (10-bit YUV) or 4444 (12-bit RGB). Quality sets CineForm's
       level: High is Film Scan 3+, Medium Film Scan 1, Low High
-  - **Transparent background** (ProRes 4444, ProRes 4444 XQ, CineForm 4444, PNG and TIFF):
-    where no layer covers the frame the file is see-through instead of black, with soft edges,
-    masks and opacity kept, for laying titles and graphics over footage in another program.
-    Letterbox bars are see-through too
+  - **Transparent background** (ProRes 4444, ProRes 4444 XQ, CineForm 4444, PNG, TIFF and
+    VP9 WebM): where no layer covers the frame the file is see-through instead of black, with
+    soft edges, masks and opacity kept, for laying titles and graphics over footage in another
+    program, or (VP9 WebM) animations over a web page in Chrome, Firefox and Edge.
+    Letterbox bars are see-through too. Transparent VP9 WebM files import with their
+    transparency as well (the alpha travels as a second VP9 picture beside each frame, which
+    Reelforge's own VP9 decoder reads)
   - **Any size**: the sequence size, half, quarter, common sizes, or custom. When the shape
     differs from the sequence, choose **Fit** (black bars), **Fill** (crop the edges; the
     default for vertical and square presets) or **Stretch**
@@ -1938,8 +1946,8 @@ decoders take those codecs when it's off or the card can't.
 | MPEG-2 video | done, Reelforge's own: Main and 4:2:2 profiles (4:2:0/4:2:2/4:4:4), I/P/B pictures, frame and field pictures, frame/field/16×8/dual-prime motion, field DCT, alternate scan, custom quantiser matrices, any size (incl. >2800 lines); slices on all cores. Covers DVD/broadcast/HDV/XDCAM/IMX in MPG, TS, VOB, MXF, MP4. MPEG-1 video is left to FFmpeg |
 | H.264 | done, via a pure-Rust decoder library: Baseline/Main/High, CAVLC and CABAC, B-frames, weighted prediction, 8×8 transforms, multiple slices; progressive 8-bit 4:2:0. Interlaced, 10-bit and 4:2:2 H.264 (some camcorders and pro cameras) go to FFmpeg |
 | HEVC (H.265) | done, via a pure-Rust decoder library: Main and Main 10 (4:2:0, 8/10-bit), tiles, WPP; 4:2:2/4:4:4 go to FFmpeg |
-| VP9 | done, via a pure-Rust decoder library: profiles 0–3 (8/10/12-bit, 4:2:0 to 4:4:4) |
-| AV1 | done, via a pure-Rust decoder library: Main profile, 8/10-bit 4:2:0 and monochrome, film grain |
+| VP9 | done, via a pure-Rust decoder library: profiles 0–3 (8/10/12-bit, 4:2:0 to 4:4:4); WebM transparency (the alpha stream beside each frame) |
+| AV1 | done, via a pure-Rust decoder library: Main, High and Professional profiles (8/10/12-bit; 4:2:0, 4:2:2, 4:4:4 and monochrome), film grain. Each checked bit for bit against FFmpeg's decoder on libaom files |
 | OpenEXR | done, Reelforge's own: scanline and tiled, single and multi-part, compression none, RLE, ZIPS, ZIP, PIZ, PXR24, B44 and B44A; half, float and uint channels; RGB(A) or Y, of the unnamed layer or the first named one (`beauty.R`…); the data window placed in the display window. Output is floating point (see above). Chunks decode on all cores, with SSE2 for ZIP's predictor. DWAA, DWAB and HTJ2K files go to FFmpeg's decoder. Checked bit for bit against the OpenEXR reference library (`tools/exr/make_fixtures.py` makes the test files and the library's own reading of them, in `crates/codecs/tests/data/exr`). On 2 cores, a 1080p half-float RGBA frame takes about 7 ms uncompressed, 40 ms ZIP, 50 ms PIZ and 15–25 ms B44A, against FFmpeg's 14, 79, (fails on that PIZ file) and 33 ms |
 | GoPro CineForm | done, Reelforge's own: 4:2:2 10-bit YUV, 12-bit RGB and RGBA, CineForm RAW (Bayer: the sensor mosaic, demosaiced like FFmpeg's), intra frames and two-frame groups (which FFmpeg can't decode), progressive and interlaced, peak tables; channels on all cores, AVX2 wavelet filters. Written from GoPro's CineForm SDK (MIT OR Apache-2.0; code tables in `crates/codecs/src/cineform_tables.rs`) |
 
@@ -2107,7 +2115,9 @@ don't include it, so Reelforge falls back, in order, to NVIDIA (`h264_nvenc`), I
 (`h264_qsv`), AMD (`h264_amf`) or Windows Media Foundation (`h264_mf`) hardware encoders, and
 finally MPEG-4 Part 2. The export queue says which encoder was used. H.265 needs `libx265`
 (also `gpl`) or a GPU encoder; ProRes, DNxHR/DNxHD, CineForm and image sequences work with
-every build.
+every build. VP9 WebM needs `libvpx` and AV1 `libsvtav1`, `libaom` or `librav1e` (all in
+BtbN's `lgpl` builds too) or a GPU AV1 encoder; Opus sound uses `libopus`, else FFmpeg's own
+Opus encoder.
 
 ### Cross-compiling the Windows build from Linux
 

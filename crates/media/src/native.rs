@@ -35,22 +35,59 @@ pub fn open(params: &ff::codec::Parameters) -> Option<NativeVideo> {
     };
     let dec = reelforge_codecs::open(codec, &info)?;
     log::info!("decoding {} with Reelforge's own decoder", codec.label());
-    Some(NativeVideo { dec, codec })
+    Some(NativeVideo::new(dec, codec))
 }
 
 #[cfg(test)]
 fn open_codec(codec: Codec) -> Option<NativeVideo> {
-    reelforge_codecs::open(codec, &StreamInfo::default()).map(|dec| NativeVideo { dec, codec })
+    reelforge_codecs::open(codec, &StreamInfo::default()).map(|dec| NativeVideo::new(dec, codec))
 }
 
 pub struct NativeVideo {
     dec: Box<dyn Decoder>,
     pub codec: Codec,
+    /// VP9 with transparency (WebM): the alpha channel is a second VP9
+    /// stream carried beside each frame (Matroska BlockAdditional 1),
+    /// decoded by a decoder of its own; its pictures wait here.
+    alpha: Option<Box<dyn Decoder>>,
+    alphas: std::collections::VecDeque<Picture>,
+}
+
+/// The alpha-channel VP9 frame carried with a WebM packet, if any.
+fn vp9_alpha(packet: &ff::Packet) -> Option<Vec<u8>> {
+    packet.side_data().find_map(|sd| {
+        let d = sd.data();
+        // 8 bytes of BlockAddID (big-endian; 1 = alpha), then the frame.
+        (sd.kind() == ff::packet::side_data::Type::MatroskaBlockAdditional && d.len() > 8 && d[..8] == [0, 0, 0, 0, 0, 0, 0, 1]).then(|| d[8..].to_vec())
+    })
 }
 
 impl NativeVideo {
+    fn new(dec: Box<dyn Decoder>, codec: Codec) -> Self {
+        NativeVideo { dec, codec, alpha: None, alphas: Default::default() }
+    }
+
     pub fn send_packet(&mut self, packet: &ff::Packet) -> Result<(), reelforge_codecs::Error> {
         let pts = packet.pts().or(packet.dts()).unwrap_or(ff::ffi::AV_NOPTS_VALUE);
+        if self.codec == Codec::Vp9 {
+            if let Some(a) = vp9_alpha(packet) {
+                if self.alpha.is_none() {
+                    self.alpha = reelforge_codecs::open(Codec::Vp9, &StreamInfo::default());
+                }
+                if let Some(dec) = self.alpha.as_mut() {
+                    // A bad alpha frame costs the transparency of that frame, not the clip.
+                    let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dec.send(&a, pts))).map_or(false, |r| r.is_ok());
+                    if ok {
+                        while let Some(p) = dec.receive() {
+                            self.alphas.push_back(p);
+                        }
+                    }
+                    while self.alphas.len() > 16 {
+                        self.alphas.pop_front();
+                    }
+                }
+            }
+        }
         match packet.data() {
             // A panic in a decoder (here or on a pool thread) is an error like any
             // other: the caller falls back to FFmpeg instead of losing the clip.
@@ -64,7 +101,12 @@ impl NativeVideo {
     pub fn receive_frame(&mut self, frame: &mut ff::frame::Video) -> bool {
         match self.dec.receive() {
             Some(p) => {
-                *frame = to_frame(&p);
+                // Its alpha picture: the one from the same packet (older ones are stale).
+                while self.alphas.front().is_some_and(|a| a.pts < p.pts) {
+                    self.alphas.pop_front();
+                }
+                let alpha = self.alphas.front().is_some_and(|a| a.pts == p.pts).then(|| self.alphas.pop_front()).flatten();
+                *frame = alpha.as_ref().and_then(|a| with_alpha(&p, a)).unwrap_or_else(|| to_frame(&p));
                 true
             }
             None => false,
@@ -73,6 +115,10 @@ impl NativeVideo {
 
     pub fn flush(&mut self) {
         self.dec.flush();
+        if let Some(a) = self.alpha.as_mut() {
+            a.flush();
+        }
+        self.alphas.clear();
     }
 
     pub fn send_eof(&mut self) {
@@ -104,6 +150,39 @@ fn pixel(f: Format) -> ff::format::Pixel {
         Format::Gbrpf16 => P::GBRPF16LE,
         Format::Gbrapf16 => P::GBRAPF16LE,
     }
+}
+
+/// A 4:2:0 picture and the alpha picture decoded beside it, as one YUVA
+/// frame (the alpha picture's luma is the alpha). None if they don't fit.
+fn with_alpha(p: &Picture, a: &Picture) -> Option<ff::frame::Video> {
+    use ff::format::Pixel as P;
+    let fmt = match (p.format, a.format) {
+        (Format::Yuv420P8, Format::Yuv420P8 | Format::Gray8) => P::YUVA420P,
+        (Format::Yuv420P10, Format::Yuv420P10) => P::YUVA420P10LE,
+        _ => return None,
+    };
+    if (a.width, a.height) != (p.width, p.height) || p.planes.len() < 3 || a.planes.is_empty() {
+        return None;
+    }
+    let f = to_frame(p);
+    let mut out = ff::frame::Video::new(fmt, p.width, p.height);
+    let b = p.format.bytes_per_sample();
+    for i in 0..4 {
+        let (pw, ph) = p.format.plane_size(if i == 3 { 0 } else { i }, p.width, p.height);
+        let row = pw as usize * b;
+        let (src, sstride): (&[u8], usize) = if i == 3 { (&a.planes[0].data, a.planes[0].stride) } else { (f.data(i), f.stride(i)) };
+        let dstride = out.stride(i);
+        let dst = out.data_mut(i);
+        for y in 0..ph as usize {
+            let s = src.get(y * sstride..y * sstride + row)?;
+            dst.get_mut(y * dstride..y * dstride + row)?.copy_from_slice(s);
+        }
+    }
+    // Colour and timing as the picture's.
+    out.set_color_space(f.color_space());
+    out.set_color_range(f.color_range());
+    out.set_pts(f.pts());
+    Some(out)
 }
 
 /// A native picture as an FFmpeg frame (rows copied to FFmpeg's padded layout).
@@ -527,6 +606,42 @@ mod tests {
     }
 
     /// H.264, HEVC, VP9 and AV1 through the pure-Rust decoder libraries.
+    /// AV1's High (4:4:4) and Professional (4:2:2, 12-bit) profiles, as
+    /// pro cameras, screen recorders and intermediates use them.
+    #[test]
+    fn av1_high_and_professional_match_ffmpeg() {
+        let aom = |pix: &'static str| -> Vec<&'static str> { vec!["-c:v", "libaom-av1", "-cpu-used", "8", "-crf", "35", "-row-mt", "1", "-pix_fmt", pix] };
+        let cases: Vec<(&str, &str, u32, Vec<&str>)> = vec![
+            ("av1_444.mkv", "320x180", 25, aom("yuv444p")),
+            ("av1_444_10.mkv", "320x180", 25, aom("yuv444p10le")),
+            ("av1_422.mkv", "320x180", 25, aom("yuv422p")),
+            ("av1_422_10.mkv", "320x180", 25, aom("yuv422p10le")),
+            ("av1_420_12.mkv", "320x180", 25, aom("yuv420p12le")),
+            ("av1_422_12.mkv", "320x180", 25, aom("yuv422p12le")),
+            ("av1_444_12.mkv", "320x180", 25, aom("yuv444p12le")),
+            ("av1_mono_12.mkv", "320x180", 25, aom("gray12le")),
+            // SVT-AV1 makes 4:2:0 only; odd sizes exercise the chroma edges.
+            ("av1_444_odd.mkv", "250x142", 25, aom("yuv444p")),
+            ("av1_422_odd.mkv", "250x142", 25, aom("yuv422p10le")),
+        ];
+        let mut ran = 0;
+        let mut bad = Vec::new();
+        for (name, size, rate, args) in cases {
+            let Some(p) = clip_at(name, size, rate, &args) else {
+                eprintln!("{name}: ffmpeg couldn't make it, skipped");
+                continue;
+            };
+            ran += 1;
+            let (n, psnr) = compare_with_ffmpeg(&p);
+            eprintln!("{name}: {n} frames, worst {psnr:.1} dB");
+            if n < 25 || psnr < 50.0 {
+                bad.push(format!("{name}: {n} frames, {psnr:.1} dB"));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+        assert!(ran >= 8 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
     #[test]
     fn h264_hevc_vp9_av1_match_ffmpeg() {
         let x264 = |extra: &[&'static str]| -> Vec<&'static str> { [vec!["-c:v", "libx264", "-preset", "fast", "-crf", "20"], extra.to_vec()].concat() };

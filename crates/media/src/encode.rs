@@ -61,6 +61,10 @@ pub enum VideoCodec {
     #[default]
     H264,
     H265,
+    /// WebM (or MKV): royalty-free, for the web; keeps transparency.
+    Vp9,
+    /// WebM, MKV or MP4: the newest web codec, smallest files.
+    Av1,
     ProRes422Proxy,
     ProRes422Lt,
     ProRes422,
@@ -125,9 +129,11 @@ pub fn dnxhd_bitrate(w: u32, h: u32, fps: f64, quality: Quality, ten_bit: bool) 
 }
 
 impl VideoCodec {
-    pub const ALL: [VideoCodec; 20] = [
+    pub const ALL: [VideoCodec; 22] = [
         VideoCodec::H264,
         VideoCodec::H265,
+        VideoCodec::Vp9,
+        VideoCodec::Av1,
         VideoCodec::ProRes422Proxy,
         VideoCodec::ProRes422Lt,
         VideoCodec::ProRes422,
@@ -152,6 +158,8 @@ impl VideoCodec {
         match self {
             VideoCodec::H264 => "H.264 (MP4)",
             VideoCodec::H265 => "H.265 / HEVC (MP4)",
+            VideoCodec::Vp9 => "VP9 (WebM)",
+            VideoCodec::Av1 => "AV1 (WebM)",
             VideoCodec::ProRes422Proxy => "ProRes 422 Proxy",
             VideoCodec::ProRes422Lt => "ProRes 422 LT",
             VideoCodec::ProRes422 => "ProRes 422",
@@ -193,6 +201,8 @@ impl VideoCodec {
         match self {
             VideoCodec::H264 => "Plays everywhere: the web, phones, TVs.",
             VideoCodec::H265 => "About half the size of H.264 at the same quality; 10-bit and HDR.",
+            VideoCodec::Vp9 => "Royalty-free web video with Opus sound, for browsers and YouTube; 10-bit and HDR; keeps transparency if you ask for it (for overlays on web pages).",
+            VideoCodec::Av1 => "The newest web codec: about a third smaller than HEVC, with Opus sound in WebM; 10-bit and HDR. Slower to encode without a recent graphics card.",
             VideoCodec::ProRes422Proxy => "Light ProRes for offline editing (about 45 Mbit/s at 1080p30).",
             VideoCodec::ProRes422Lt => "Smaller ProRes for editing and dailies (about 100 Mbit/s at 1080p30).",
             VideoCodec::ProRes422 => "Standard ProRes for editing and finishing (about 145 Mbit/s at 1080p30).",
@@ -252,6 +262,8 @@ impl VideoCodec {
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
             VideoCodec::H264 | VideoCodec::H265 => &["mp4"],
+            VideoCodec::Vp9 => &["webm", "mkv"],
+            VideoCodec::Av1 => &["webm", "mkv", "mp4"],
             // MXF (OP1a) is what Avid Media Composer expects.
             v if v.is_dnx() => &["mov", "mxf"],
             v if v.is_intermediate() => &["mov"],
@@ -268,17 +280,22 @@ impl VideoCodec {
 
     /// Has a quality setting (the others are fixed-quality by design).
     pub fn uses_quality(self) -> bool {
-        matches!(self, VideoCodec::H264 | VideoCodec::H265 | VideoCodec::JpegSequence) || self.is_dnxhd() || self.is_cineform()
+        matches!(self, VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9 | VideoCodec::Av1 | VideoCodec::JpegSequence) || self.is_dnxhd() || self.is_cineform()
     }
 
     /// Can use a GPU encoder.
     pub fn has_hardware_encoders(self) -> bool {
-        matches!(self, VideoCodec::H264 | VideoCodec::H265)
+        matches!(self, VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9 | VideoCodec::Av1)
+    }
+
+    /// Delivery codecs (long-GOP, compressed sound).
+    pub fn is_delivery(self) -> bool {
+        matches!(self, VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9 | VideoCodec::Av1)
     }
 
     /// Can keep a transparent background (an alpha channel).
     pub fn supports_alpha(self) -> bool {
-        matches!(self, VideoCodec::ProRes4444 | VideoCodec::ProRes4444Xq | VideoCodec::Cineform4444 | VideoCodec::PngSequence | VideoCodec::TiffSequence)
+        matches!(self, VideoCodec::Vp9 | VideoCodec::ProRes4444 | VideoCodec::ProRes4444Xq | VideoCodec::Cineform4444 | VideoCodec::PngSequence | VideoCodec::TiffSequence)
     }
 
     /// Intermediate/master codecs that keep audio uncompressed.
@@ -291,6 +308,9 @@ impl VideoCodec {
         let (sw, hw): (&[&str], &[&str]) = match self {
             VideoCodec::H264 => (&["libx264", "libopenh264"], &["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_videotoolbox"]),
             VideoCodec::H265 => (&["libx265"], &["hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf", "hevc_videotoolbox"]),
+            VideoCodec::Vp9 => (&["libvpx-vp9"], &["vp9_qsv", "vp9_vaapi"]),
+            // SVT-AV1 is far the quickest of the three software ones.
+            VideoCodec::Av1 => (&["libsvtav1", "libaom-av1", "librav1e"], &["av1_nvenc", "av1_qsv", "av1_amf", "av1_vaapi"]),
             v if v.is_prores() => (&["prores_ks", "prores_aw"], &[]),
             v if v.is_dnx() => (&["dnxhd"], &[]),
             v if v.is_cineform() => (&["cfhd"], &[]),
@@ -322,7 +342,9 @@ impl VideoCodec {
             VideoCodec::PngSequence | VideoCodec::TiffSequence if alpha => P::RGBA,
             VideoCodec::PngSequence | VideoCodec::TiffSequence => P::RGB24,
             VideoCodec::JpegSequence => P::YUVJ420P,
-            _ => return None, // H.264/H.265: 4:2:0, or what a GPU encoder wants
+            // VP9 carries alpha as a second, hidden picture (libvpx).
+            VideoCodec::Vp9 if alpha => P::YUVA420P,
+            _ => return None, // H.264/H.265/VP9/AV1: 4:2:0, or what a GPU encoder wants
         })
     }
 }
@@ -330,12 +352,12 @@ impl VideoCodec {
 impl VideoCodec {
     /// Can be written with 10 bits per channel (smoother gradients).
     pub fn supports_10bit(self) -> bool {
-        self == VideoCodec::H265
+        matches!(self, VideoCodec::H265 | VideoCodec::Vp9 | VideoCodec::Av1)
     }
 
     /// Can carry HDR (BT.2020 colour with a PQ or HLG curve).
     pub fn supports_hdr(self) -> bool {
-        self == VideoCodec::H265
+        matches!(self, VideoCodec::H265 | VideoCodec::Vp9 | VideoCodec::Av1)
     }
 
     /// Always encoded with more than 8 bits (fed from the 16-bit render).
@@ -345,7 +367,7 @@ impl VideoCodec {
 
     /// Takes a target bitrate (the others are fixed-quality by design).
     pub fn uses_bitrate(self) -> bool {
-        matches!(self, VideoCodec::H264 | VideoCodec::H265)
+        self.is_delivery()
     }
 }
 
@@ -649,9 +671,17 @@ impl MovieWriter {
             None => None,
         };
 
-        let pcm = s.video.is_none_or(|v| v.wants_pcm_audio());
+        let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let sound = if s.video.is_none_or(|v| v.wants_pcm_audio()) {
+            Sound::Pcm
+        } else if ext == "webm" || (ext == "mkv" && s.video.is_some_and(|v| matches!(v, VideoCodec::Vp9 | VideoCodec::Av1))) {
+            // WebM takes only Opus (or Vorbis).
+            Sound::Opus
+        } else {
+            Sound::Aac
+        };
         let audio = match s.audio_rate {
-            Some(rate) if !sequence => Some(open_audio_encoder(&mut octx, rate, global_header, pcm)?),
+            Some(rate) if !sequence => Some(open_audio_encoder(&mut octx, rate, global_header, sound)?),
             _ => None,
         };
         if video.is_none() {
@@ -988,6 +1018,16 @@ fn add_frame_hdr10(frame: &mut ff::frame::Video) {
     }
 }
 
+/// A quality's constant-quality value for the web encoders: [high, medium, low].
+fn web_crf(q: Quality, v: [u32; 3]) -> String {
+    match q {
+        Quality::High => v[0],
+        Quality::Medium => v[1],
+        Quality::Low => v[2],
+    }
+    .to_string()
+}
+
 /// Options a hardware HEVC encoder needs for `color`: the Main 10 profile
 /// for 10-bit (most pick 8-bit Main otherwise, or refuse P010).
 fn hardware_hevc_options(name: &str, color: ColorOut) -> Vec<(&'static str, &'static str)> {
@@ -1056,7 +1096,7 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
         enc.set_time_base(tb);
         enc.set_frame_rate(Some(fps));
         let mut flags = ff::codec::Flags::empty();
-        if matches!(kind, VideoCodec::H264 | VideoCodec::H265) {
+        if kind.is_delivery() {
             // Keyframe every ~2 s for easy scrubbing; every frame for proxies.
             enc.set_gop(if s.proxy { 1 } else { (s.frame_rate.fps() * 2.0).round().max(1.0) as u32 });
             if s.proxy {
@@ -1171,6 +1211,49 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
                 enc.set_global_quality(q * 118);
             }
             (VideoCodec::PngSequence | VideoCodec::TiffSequence, _) => {}
+            (_, "libvpx-vp9") => {
+                // Constant quality (a bitrate of 0) unless a target is set; CRF 0–63.
+                if target.is_none() {
+                    opts.set("crf", &web_crf(s.quality, [24, 31, 38]));
+                    enc.set_bit_rate(0);
+                }
+                opts.set("deadline", "good");
+                opts.set("cpu-used", "2");
+                opts.set("row-mt", "1");
+                opts.set("tile-columns", "2");
+                if color.ten_bit() {
+                    opts.set("profile", "2");
+                }
+                if pix == ff::format::Pixel::YUVA420P {
+                    // The alpha picture needs no alt-ref frames to stay in step.
+                    opts.set("auto-alt-ref", "0");
+                }
+            }
+            (_, "libsvtav1") => {
+                if target.is_none() {
+                    opts.set("crf", &web_crf(s.quality, [27, 33, 41]));
+                }
+                opts.set("preset", "8");
+                opts.set("svtav1-params", "log=0");
+            }
+            (_, "libaom-av1") => {
+                if target.is_none() {
+                    opts.set("crf", &web_crf(s.quality, [27, 33, 41]));
+                    enc.set_bit_rate(0);
+                }
+                opts.set("cpu-used", "6");
+                opts.set("row-mt", "1");
+            }
+            (_, "librav1e") => {
+                if target.is_none() {
+                    // Quantiser 0–255.
+                    opts.set("qp", &web_crf(s.quality, [70, 100, 140]));
+                }
+                opts.set("speed", "6");
+            }
+            // GPU AV1 and VP9: a bitrate, a little under HEVC's.
+            (VideoCodec::Av1, _) => enc.set_bit_rate(bitrate(s.quality.bits_per_pixel() * 0.5)),
+            (VideoCodec::Vp9, _) => enc.set_bit_rate(bitrate(s.quality.bits_per_pixel() * 0.6)),
             (VideoCodec::H265, _) => enc.set_bit_rate(bitrate(s.quality.bits_per_pixel() * 0.6)),
             _ => enc.set_bit_rate(bitrate(s.quality.bits_per_pixel())),
         }
@@ -1206,9 +1289,23 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
     ))
 }
 
-fn open_audio_encoder(octx: &mut ff::format::context::Output, rate: u32, global_header: bool, pcm: bool) -> Result<AudioOut> {
-    let id = if pcm { ff::codec::Id::PCM_S24LE } else { ff::codec::Id::AAC };
-    let codec = ff::encoder::find(id).ok_or_else(|| anyhow!("no {id:?} encoder in this FFmpeg build"))?;
+/// What the sound is written as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sound {
+    Aac,
+    Pcm,
+    Opus,
+}
+
+fn open_audio_encoder(octx: &mut ff::format::context::Output, rate: u32, global_header: bool, sound: Sound) -> Result<AudioOut> {
+    let pcm = sound == Sound::Pcm;
+    let id = match sound {
+        Sound::Pcm => ff::codec::Id::PCM_S24LE,
+        Sound::Aac => ff::codec::Id::AAC,
+        Sound::Opus => ff::codec::Id::OPUS,
+    };
+    // libopus over FFmpeg's own (still experimental) Opus encoder.
+    let codec = (if sound == Sound::Opus { ff::encoder::find_by_name("libopus") } else { None }).or_else(|| ff::encoder::find(id)).ok_or_else(|| anyhow!("no {id:?} encoder in this FFmpeg build"))?;
     let acodec = codec.audio()?;
     let formats: Vec<ff::format::Sample> = acodec.formats().map(|f| f.collect()).unwrap_or_default();
     let fltp = ff::format::Sample::F32(ff::format::sample::Type::Planar);

@@ -552,6 +552,8 @@ fn exports_every_video_format() {
     let red = |c: [i32; 3]| c[0] > 215 && c[1] < 30 && c[2] < 30; // lossy codecs drift a little
     for (codec, want_codec, want_audio) in [
         (VideoCodec::H265, "hevc", Some("aac")),
+        (VideoCodec::Vp9, "vp9", Some("opus")),
+        (VideoCodec::Av1, "av1", Some("opus")),
         (VideoCodec::ProRes422Hq, "prores", Some("pcm_s24le")),
         (VideoCodec::DnxhrHq, "dnxhd", Some("pcm_s24le")),
     ] {
@@ -647,7 +649,7 @@ fn exports_a_transparent_background() {
     seq.tracks[2].clips.clear();
     seq.tracks[0].clips[0].transform.scale = [0.5, 0.5];
     use VideoCodec as V;
-    for (codec, ext, alpha) in [(V::ProRes4444, "mov", true), (V::ProRes4444Xq, "mov", true), (V::Cineform4444, "mov", true), (V::PngSequence, "png", true), (V::TiffSequence, "tif", true), (V::ProRes4444, "mov", false)] {
+    for (codec, ext, alpha) in [(V::ProRes4444, "mov", true), (V::ProRes4444Xq, "mov", true), (V::Cineform4444, "mov", true), (V::PngSequence, "png", true), (V::TiffSequence, "tif", true), (V::Vp9, "webm", true), (V::ProRes4444, "mov", false)] {
         let dir = std::env::temp_dir().join(format!("rf_alpha_{codec:?}_{alpha}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -950,6 +952,15 @@ fn exports_10_bit_sdr_and_hdr_with_the_right_curves_and_tags() {
         }
         let y = centre_luma_10bit(&out, 320, 180) as i32;
         assert!((y - want).abs() <= 6, "{color:?}: white is {y}, want {want}");
+    }
+    // The web codecs: 10-bit HDR in WebM.
+    for codec in [VideoCodec::Vp9, VideoCodec::Av1] {
+        let out = std::env::temp_dir().join(format!("rf_deep_{codec:?}.webm"));
+        let mut st = settings(out.clone());
+        (st.width, st.height, st.end, st.video, st.color, st.include_audio) = (320, 180, s(0.4), Some(codec), ColorOut::HdrPq, false);
+        export_sequence(&p, &st, &device, &queue, |_| true).unwrap_or_else(|e| panic!("{codec:?}: {e:#}"));
+        let info = video_stream_info(&out);
+        assert!(info.contains("pix_fmt=yuv420p10le") && info.contains("color_transfer=smpte2084") && info.contains("color_primaries=bt2020"), "{codec:?}: {info}");
     }
     // H.264 can't do 10-bit/HDR: it falls back to 8-bit SDR rather than failing.
     let out = std::env::temp_dir().join("rf_deep_h264.mp4");

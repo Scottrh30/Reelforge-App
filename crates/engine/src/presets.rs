@@ -41,6 +41,9 @@ pub enum Preset {
     MasterDnxhr,
     MasterCineform,
     GraphicsAlpha,
+    WebVp9,
+    WebAv1,
+    WebOverlay,
     Draft,
     PngSequence,
     JpegSequence,
@@ -81,7 +84,7 @@ pub struct UserPreset {
 }
 
 impl Preset {
-    pub const ALL: [Preset; 14] = [
+    pub const ALL: [Preset; 17] = [
         Preset::YouTube1080,
         Preset::YouTube4k,
         Preset::YouTubeHdr,
@@ -92,6 +95,9 @@ impl Preset {
         Preset::MasterDnxhr,
         Preset::MasterCineform,
         Preset::GraphicsAlpha,
+        Preset::WebVp9,
+        Preset::WebAv1,
+        Preset::WebOverlay,
         Preset::Draft,
         Preset::PngSequence,
         Preset::JpegSequence,
@@ -110,6 +116,9 @@ impl Preset {
             Preset::MasterDnxhr => "Master: DNxHR HQ",
             Preset::MasterCineform => "Master: CineForm 422",
             Preset::GraphicsAlpha => "Graphics with transparency: ProRes 4444",
+            Preset::WebVp9 => "Web: VP9 WebM",
+            Preset::WebAv1 => "Web: AV1 WebM",
+            Preset::WebOverlay => "Web overlay with transparency: VP9 WebM",
             Preset::Draft => "Quick draft (half size, GPU)",
             Preset::PngSequence => "PNG image sequence",
             Preset::JpegSequence => "JPEG image sequence",
@@ -130,6 +139,9 @@ impl Preset {
             Preset::MasterDnxhr => "Avid's master codec at the sequence size, with uncompressed audio. Big files.",
             Preset::MasterCineform => "GoPro CineForm, 10-bit, at the sequence size: quick to decode, with uncompressed audio.",
             Preset::GraphicsAlpha => "Titles and graphics over a see-through background, to lay over footage in another editor.",
+            Preset::WebVp9 => "VP9 + Opus at 1920×1080: royalty-free, plays in every browser.",
+            Preset::WebAv1 => "AV1 + Opus at 1920×1080: the smallest files for the web, at the same quality.",
+            Preset::WebOverlay => "VP9 with a see-through background, for animations laid over a web page (Chrome, Firefox, Edge).",
             Preset::Draft => "Fast, small H.264 for checking a cut. Uses the graphics card's encoder if there is one.",
             Preset::PngSequence => "One lossless PNG per frame, for VFX and colour work. No audio.",
             Preset::JpegSequence => "One JPEG per frame, for thumbnails and contact sheets. No audio.",
@@ -152,6 +164,9 @@ impl Preset {
             Preset::MasterDnxhr => s(Some(V::DnxhrHq), Size::Scaled(1), Quality::High, Fit::Letterbox, false),
             Preset::MasterCineform => s(Some(V::Cineform), Size::Scaled(1), Quality::High, Fit::Letterbox, false),
             Preset::GraphicsAlpha => Some(Spec { alpha: true, ..s(Some(V::ProRes4444), Size::Scaled(1), Quality::High, Fit::Letterbox, false)? }),
+            Preset::WebVp9 => s(Some(V::Vp9), Size::Fixed(1920, 1080), Quality::High, Fit::Letterbox, false),
+            Preset::WebAv1 => s(Some(V::Av1), Size::Fixed(1920, 1080), Quality::High, Fit::Letterbox, false),
+            Preset::WebOverlay => Some(Spec { alpha: true, ..s(Some(V::Vp9), Size::Scaled(1), Quality::High, Fit::Letterbox, false)? }),
             Preset::Draft => s(Some(V::H264), Size::Scaled(2), Quality::Low, Fit::Letterbox, true),
             Preset::PngSequence => s(Some(V::PngSequence), Size::Scaled(1), Quality::High, Fit::Letterbox, false),
             Preset::JpegSequence => s(Some(V::JpegSequence), Size::Scaled(1), Quality::High, Fit::Letterbox, false),
@@ -164,7 +179,11 @@ impl Preset {
 /// A sensible starting bitrate for a `w`×`h` export (about YouTube's
 /// recommendations: ~8 Mbit/s for 1080p H.264, less for H.265).
 pub fn suggested_kbps(w: u32, h: u32, codec: VideoCodec) -> u32 {
-    let bpp = if codec == VideoCodec::H265 { 0.08 } else { 0.13 };
+    let bpp = match codec {
+        VideoCodec::H265 | VideoCodec::Vp9 => 0.08,
+        VideoCodec::Av1 => 0.06,
+        _ => 0.13,
+    };
     let kbps = w as f64 * h as f64 * 30.0 * bpp / 1000.0;
     ((kbps / 100.0).round() * 100.0).max(500.0) as u32
 }
@@ -191,6 +210,9 @@ mod tests {
         assert_eq!(extension(None), "wav");
         assert_eq!(Preset::Draft.spec().unwrap().size.resolve(1920, 1080), (960, 540));
         assert!(Preset::Custom.spec().is_none());
+        let web = Preset::WebOverlay.spec().unwrap();
+        assert!(web.alpha && web.video == Some(VideoCodec::Vp9) && web.video.unwrap().supports_alpha());
+        assert_eq!(extension(Preset::WebAv1.spec().unwrap().video), "webm");
     }
 
     #[test]

@@ -155,7 +155,7 @@
 
   // ---- Rate ----
   function suggestedKbps(w: number, h: number, c: VideoCodec): number {
-    const bpp = c === "H265" ? 0.08 : 0.13;
+    const bpp = c === "H265" || c === "Vp9" ? 0.08 : c === "Av1" ? 0.06 : 0.13;
     return Math.max(500, Math.round((w * h * 30 * bpp) / 1000 / 100) * 100);
   }
   const range = $derived.by((): [number, number] => {
