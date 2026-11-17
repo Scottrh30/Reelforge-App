@@ -35,6 +35,16 @@ use std::path::Path;
 use std::sync::Once;
 
 /// Initialise FFmpeg once per process. Safe to call repeatedly.
+/// Read the next packet of `input` into `packet`, which is emptied first.
+///
+/// (`ff::Packet::read` hands the packet straight to `av_read_frame`, which
+/// expects an empty one: reading into a packet still holding the last one
+/// loses that one's memory. Reused packets go through here.)
+pub(crate) fn read_packet(packet: &mut ffmpeg_next::Packet, input: &mut ffmpeg_next::format::context::Input) -> Result<(), ffmpeg_next::Error> {
+    *packet = ffmpeg_next::Packet::empty();
+    packet.read(input)
+}
+
 /// Open media for reading: a file, or an image sequence path (see
 /// `reelforge_core::imageseq`), read with FFmpeg's image-sequence reader from
 /// its first frame at its rate.

@@ -177,13 +177,15 @@ impl<T: Lerp> Curve<T> {
     }
 
     /// Add a key at `t`, or update the one already there (keeping its interpolation).
+    /// (The keys are in time order, so it's found by halving, not a search
+    /// through them all.)
     pub fn set(&mut self, t: Time, value: T) {
-        match self.0.iter_mut().find(|k| k.at == t) {
-            Some(k) => k.value = value,
-            None => {
-                let i = self.0.partition_point(|k| k.at < t);
+        let i = self.0.partition_point(|k| k.at < t);
+        match self.0.get_mut(i) {
+            Some(k) if k.at == t => k.value = value,
+            _ => {
                 // A new key inherits the interpolation of the key before it.
-                let interp = if i > 0 { self.0[i - 1].interp } else { Interp::Linear };
+                let interp = i.checked_sub(1).and_then(|j| self.0.get(j)).map_or(Interp::Linear, |k| k.interp);
                 self.0.insert(i, Key::new(t, value, interp));
             }
         }

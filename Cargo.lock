@@ -3674,6 +3674,7 @@ dependencies = [
  "reelforge-ofx",
  "reelforge-render",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

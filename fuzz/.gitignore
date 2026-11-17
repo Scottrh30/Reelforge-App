@@ -5,3 +5,4 @@ logs
 coverage
 old-artifacts
 round*.out
+__pycache__

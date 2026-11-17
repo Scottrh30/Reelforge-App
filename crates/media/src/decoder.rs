@@ -515,7 +515,7 @@ impl DecodeState {
                 *packet = p;
                 true
             }
-            None => packet.read(&mut self.ictx).is_ok(),
+            None => crate::read_packet(packet, &mut self.ictx).is_ok(),
         }
     }
 

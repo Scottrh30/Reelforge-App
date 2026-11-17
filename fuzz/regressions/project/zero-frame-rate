@@ -1,0 +1,447 @@
+{
+  "media": [
+    {
+      "id": 4,
+      "path": "/footage/shot.mov",
+      "name": "shot.mov",
+      "info": {
+        "duration": 14112000000,
+        "video": {
+          "width": 1920,
+          "height": 1080,
+          "frame_rate": {
+            "num": 25,
+            "den": 0
+          },
+          "codec": "",
+          "time_base": {
+            "num": 1,
+            "den": 25
+          }
+        },
+        "audio": {
+          "sample_rate": 48000,
+          "channels": 2,
+          "codec": ""
+        },
+        "container": ""
+      }
+    }
+  ],
+  "sequences": [
+    {
+      "name": "Main",
+      "width": 1280,
+      "height": 720,
+      "frame_rate": {
+        "num": 25,
+        "den": 1
+      },
+      "tracks": [
+        {
+          "name": "Inner",
+          "kind": "Video",
+          "clips": [
+            {
+              "id": 1,
+              "media": 18446744073709551615,
+              "timeline_start": 4233600000,
+              "source_in": 0,
+              "duration": 2116800000,
+              "link": null,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "opacity": 1.0,
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "crop": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "blend": "Normal",
+              "audio": {
+                "volume_db": 0.0,
+                "pan": 0.0,
+                "fade_in": 0,
+                "fade_out": 0,
+                "volume_keys": [],
+                "crossfade_in": 0,
+                "pan_keys": []
+              },
+              "anim": {
+                "position": [],
+                "scale": [],
+                "rotation": [],
+                "opacity": []
+              },
+              "dissolve_in": 0,
+              "effects": [],
+              "nested": 1
+            }
+          ],
+          "muted": false,
+          "audio": {
+            "volume_db": 0.0,
+            "pan": 0.0
+          },
+          "locked": false,
+          "height": 52,
+          "collapsed": false
+        },
+        {
+          "name": "Red",
+          "kind": "Video",
+          "clips": [
+            {
+              "id": 2,
+              "media": 0,
+              "timeline_start": 0,
+              "source_in": 0,
+              "duration": 7056000000,
+              "link": null,
+              "rntasform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  0.5,
+                  0.5
+                ],
+                "rotation": 0.0,
+                "opacity": 1.0,
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "crop": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "blend": "Normal",
+              "audio": {
+                "volume_db": 0.0,
+                "pan": 0.0,
+                "fade_in": 0,
+                "fade_out": 0,
+                "volume_keys": [],
+                "crossfade_in": 0,
+                "pan_keys": []
+              },
+              "anim": {
+                "position": [],
+                "scale": [],
+                "rotation": [],
+                "opacity": []
+              },
+              "dissolve_in": 0,
+              "effects": [],
+              "plane": [
+                255,
+                0,
+                0,
+                255
+              ]
+            }
+          ],
+          "muted": false,
+          "audio": {
+            "volume_db": 0.0,
+            "pan": 0.0
+          },
+          "locked": false,
+          "height": 52,
+          "collapsed": false
+        },
+        {
+          "name": "Shot",
+          "kind": "Video",
+          "clips": [
+            {
+              "id": 3,
+              "media": 4,
+              "timeline_start": 705600000,
+              "source_in": 0,
+              "duration": 2822400000,
+              "link": 5,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  0.5,
+                  0.5
+                ],
+                "rotation": 0.0,
+                "opacity": 1.0,
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "crop": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "blend": "Multiply",
+              "audio": {
+                "volume_db": 0.0,
+                "pan": 0.0,
+                "fade_in": 0,
+                "fade_out": 0,
+                "volume_keys": [],
+                "crossfade_in": 0,
+                "pan_keys": []
+              },
+              "anim": {
+                "position": [
+                  {
+                    "at": 0,
+                    "value": [
+                      -640.0,
+                      0.0
+                    ],
+                    "interp": "Linear"
+                  },
+                  {
+                    "at": 1411200000,
+                    "value": [
+                      640.0,
+                      0.0
+                    ],
+                    "interp": "Linear"
+                  }
+                ],
+                "scale": [],
+                "rotation": [],
+                "opacity": [
+                  {
+                    "at": 705600000,
+                    "value": 1.0,
+                    "interp": "Linear"
+                  },
+                  {
+                    "at": 2116800000,
+                    "value": 0.0,
+                    "interp": "Linear"
+                  }
+                ]
+              },
+              "dissolve_in": 0,
+              "effects": []
+            }
+          ],
+          "muted": false,
+          "audio": {
+            "volume_db": 0.0,
+            "pan": 0.0
+          },
+          "locked": false,
+          "height": 52,
+          "collapsed": false
+        },
+        {
+          "name": "Hello",
+          "kind": "Video",
+          "clips": [
+            {
+              "id": 7,
+              "media": 0,
+              "timeline_start": 1411200000,
+              "source_in": 0,
+              "duration": 2116800000,
+              "link": null,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "opacity": 1.0,
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "crop": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "blend": "Normal",
+              "audio": {
+                "volume_db": 0.0,
+                "pan": 0.0,
+                "fade_in": 0,
+                "fade_out": 0,
+                "volume_keys": [],
+                "crossfade_in": 0,
+                "pan_keys": []
+              },
+              "anim": {
+                "position": [],
+                "scale": [],
+                "rotation": [],
+                "opacity": []
+              },
+              "dissolve_in": 0,
+              "effects": [],
+              "title": {
+                "text": "Hello",
+                "font": {
+                  "path": null,
+                  "index": 0,
+                  "name": "Built-in (Ubuntu Light)"
+                },
+                "size": 96.0,
+                "color": [
+                  255,
+                  255,
+                      0,
+                  160
+                ],
+                "background_padding": 24.0
+              }
+            }
+          ],
+          "muted": false,
+          "audio": {
+            "volume_db": 0.0,
+            "pan": 0.0
+          },
+          "locked": false,
+          "height": 52,
+          "collapsed": false
+        },
+        {
+          "name": "Shot (sound)",
+          "kind": "Audio",
+          "clips": [
+            {
+              "id": 6,
+              "media": 4,
+              "timeline_start": 705600000,
+              "source_in": 0,
+              "duration": 2822400000,
+              "link": 5,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "opacity": 1.0,
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "crop": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "blend": "Multiply",
+              "audio": {
+                "volume_db": 0.0,
+                "pan": 0.0,
+                "fade_in": 0,
+                "fade_out": 0,
+                "volume_keys": [],
+                "crossfade_in": 0,
+                "pan_keys": []
+              },
+              "anim": {
+                "position": [],
+                "scale": [],
+                "rotation": [],
+                "opacity": []
+              },
+              "dissolve_in": 0,
+              "effects": []
+            }
+          ],
+          "muted": false,
+          "audio": {
+            "volume_db": 0.0,
+            "pan": 0.0
+          },
+          "locked": false,
+          "height": 52,
+          "collapsed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null
+    },
+    {
+      "name": "Inner",
+      "width": 640,
+      "height": 360,
+      "frame_rate": {
+        "num": 25,
+        "den": 1
+      },
+      "tracks": [
+        {
+          "name": "Video 1",
+          "kind": "Video",
+          "clips": [],
+          "muted": false,
+          "audio": {
+            "volume_db": 0.0,
+            "pan": 0.0
+          },
+          "locked": false,
+          "height": 52,
+          "collapsed": false
+        },
+        {
+          "name": "Audio 1",
+          "kind": "Audio",
+          "clips": [],
+          "muted": false,
+          "audio": {
+            "volume_db": 0.0,
+            "pan": 0.0
+          },
+          "locked": false,
+          "height": 52,
+          "collapsed": false
+        }
+      ],
+      "in_point": null,
+      "out_point": null
+    }
+  ],
+  "next_id": 8
+}

@@ -987,6 +987,17 @@ mod tests {
     #[test]
     fn a_premiere_edit_comes_across() {
         let im = read(SAMPLE.as_bytes(), None).unwrap();
+        // (`REELFORGE_FUZZ_SEEDS=dir`: the sample, gzipped as Premiere saves it, and as a
+        // Reelforge project, to start the fuzzers from: see fuzz/seeds.py)
+        if let Ok(dir) = std::env::var("REELFORGE_FUZZ_SEEDS") {
+            use std::io::Write;
+            let dir = std::path::Path::new(&dir);
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            let _ = gz.write_all(SAMPLE.as_bytes());
+            let _ = std::fs::write(dir.join("sample.prproj.xml"), SAMPLE);
+            let _ = std::fs::write(dir.join("sample.prproj"), gz.finish().unwrap_or_default());
+            let _ = std::fs::write(dir.join("from-premiere.rfproj"), serde_json::to_vec_pretty(&im.project).unwrap_or_default());
+        }
         let p = &im.project;
         assert_eq!(p.sequences.len(), 2);
         let s = &p.sequences[0];

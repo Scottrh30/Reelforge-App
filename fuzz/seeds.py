@@ -103,5 +103,66 @@ def main():
                 f.write(record_file(w, h, ex[0] if ex else b"", packets))
             made += 1
     print(f"{made} seeds in {OUT}")
+    media_seeds()
+    project_seeds()
 
-main()
+
+# Whole media files for the media target: its first byte picks the extension
+# (mp4, mov, mxf, webm, mkv, r3d, braw, ari), the rest is the file.
+MEDIA = [
+    (0, "h264_aac", ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-b:a", "32k"], "mp4"),
+    (1, "prores_pcm", ["-c:v", "prores_ks", "-profile:v", "0", "-c:a", "pcm_s16le"], "mov"),
+    (1, "h264_rotated", ["-c:v", "libx264", "-preset", "veryfast", "-metadata:s:v", "rotate=90", "-an"], "mov"),
+    (2, "dnxhd_pcm", ["-c:v", "dnxhd", "-profile:v", "dnxhr_lb", "-c:a", "pcm_s24le"], "mxf"),
+    (2, "mpeg2_pcm", ["-c:v", "mpeg2video", "-c:a", "pcm_s16le"], "mxf"),
+    (3, "vp9_opus", ["-c:v", "libvpx-vp9", "-b:v", "100k", "-c:a", "libopus", "-b:a", "24k"], "webm"),
+    (3, "vp8_alpha", ["-c:v", "libvpx", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", "-an"], "webm"),
+    (4, "hevc_flac", ["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-c:a", "flac"], "mkv"),
+]
+
+
+def media_seeds():
+    out = os.path.join(OUT, "media")
+    os.makedirs(out, exist_ok=True)
+    n = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for pick, name, args, ext in MEDIA:
+            path = os.path.join(tmp, f"{name}.{ext}")
+            pf = ["-pix_fmt", "yuv420p"] if "-pix_fmt" not in args and "prores_ks" not in args and "dnxhd" not in args else []
+            if "dnxhd" in args:
+                pf = ["-pix_fmt", "yuv422p"]
+            if "prores_ks" in args:
+                pf = ["-pix_fmt", "yuv422p10le"]
+            size = "256x128" if "dnxhd" in args else "64x48"
+            cmd = ["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=25:duration=0.2",
+                   "-f", "lavfi", "-i", "sine=frequency=440:duration=0.2:sample_rate=48000", *pf, *args, "-shortest", path]
+            if subprocess.run(cmd).returncode != 0 or not os.path.exists(path):
+                print(f"media {name}: ffmpeg couldn't make it")
+                continue
+            data = open(path, "rb").read()
+            open(os.path.join(out, f"seed-{name}"), "wb").write(bytes([pick]) + data)
+            n += 1
+    # Camera RAW names: what's checked before anything is decoded.
+    for pick, name, head in [(5, "r3d", b"\x00\x00\x00\x1cRED2" + bytes(64)), (6, "braw", b"\x00\x00\x00\x08ftypbraw" + bytes(64)), (7, "ari", b"ARRI\x12\x34\x56\x78" + bytes(4088))]:
+        open(os.path.join(out, f"seed-{name}"), "wb").write(bytes([pick]) + head)
+        n += 1
+    print(f"{n} media seeds")
+
+
+def project_seeds():
+    """Premiere, After Effects and Reelforge projects: the samples the importers' tests use."""
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, REELFORGE_FUZZ_SEEDS=tmp)
+        subprocess.run(["cargo", "test", "-q", "-p", "reelforge-core", "--lib", "adobe"], cwd=root, env=env, stdout=subprocess.DEVNULL)
+        for target, files in [("prproj", ["sample.prproj", "sample.prproj.xml"]), ("aep", ["sample.aep"]), ("project", ["from-premiere.rfproj", "from-after-effects.rfproj"])]:
+            out = os.path.join(OUT, target)
+            os.makedirs(out, exist_ok=True)
+            for f in files:
+                src = os.path.join(tmp, f)
+                if os.path.exists(src):
+                    open(os.path.join(out, "seed-" + f), "wb").write(open(src, "rb").read())
+    print("project seeds made")
+
+if __name__ == "__main__":
+    main()

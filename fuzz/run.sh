@@ -5,7 +5,7 @@
 cd "$(dirname "$0")"
 SECONDS_EACH=${SECONDS_EACH:-600}
 bin=target/x86_64-unknown-linux-gnu/release
-targets=${*:-"h264 hevc vp9 av1 vp8 mpeg2 prores dnxhd cineform exr mjpeg"}
+targets=${*:-"h264 hevc vp9 av1 vp8 mpeg2 prores dnxhd cineform exr mjpeg prproj aep project media"}
 run() {
     mkdir -p corpus/$1 artifacts/$1
     # (seeds/<target>: extra starting inputs kept in the repository, e.g. field-coded H.264 from

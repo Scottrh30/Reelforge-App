@@ -2068,8 +2068,14 @@ PC, where each clip used to get up to 16, far more.
 
 **Fuzz-tested:** every native decoder has a libFuzzer target in `fuzz/` that feeds it
 mutated streams (made from real ones encoded by FFmpeg) the way the app does, and flags any
-crash, hang or runaway memory use. Inputs that once failed are kept in `fuzz/regressions/` and
-replayed by `cargo test`. See `fuzz/README.md` to run it.
+crash, hang or runaway memory use. So do the file readers: media files (MP4, MOV, MXF, WebM,
+MKV and the camera RAW names) through probing, the first and a middle picture, the sound and
+the waveform; and Premiere Pro, After Effects and Reelforge projects through their importers,
+then the whole project walked as the app would (every sequence's pictures, nested sequences
+included, and every clip's timing, transform, effects and titles). Unpacking MP4, MOV, MXF and
+WebM is FFmpeg's work; what's fuzzed is everything of Reelforge's around it. Inputs that once
+failed are kept in `fuzz/regressions/` and replayed by `cargo test`. See `fuzz/README.md` to
+run it.
 
 ## Camera RAW (Blackmagic RAW, RED R3D, ARRIRAW)
 

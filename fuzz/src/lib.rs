@@ -57,3 +57,7 @@ pub fn encode(width: u16, height: u16, extradata: &[u8], packets: &[&[u8]]) -> V
     }
     v
 }
+
+// ---- Files: projects and media ----
+
+include!("files.rs");

@@ -138,7 +138,7 @@ impl AudioReader {
             if self.receive_frames() {
                 return true;
             }
-            match packet.read(&mut self.ictx) {
+            match crate::read_packet(&mut packet, &mut self.ictx) {
                 Ok(()) => {
                     if packet.stream() == self.stream_index {
                         let _ = self.decoder.send_packet(&packet);

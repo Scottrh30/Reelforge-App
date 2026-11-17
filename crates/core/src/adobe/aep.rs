@@ -438,13 +438,21 @@ impl<'r, 'a> Reader<'r, 'a> {
     }
 
     /// Does a composition have any sound in it (its footage's, or its compositions')?
-    fn comp_has_sound(&self, comp: &Chunk, depth: usize) -> bool {
-        depth < MAX_DEPTH
-            && layer_sources(self.r, comp).into_iter().any(|id| match self.items.get(&id) {
-                Some(Item::Footage(f)) => f.audio,
-                Some(Item::Comp(c)) => self.comp_has_sound(&c.chunk, depth + 1),
-                None => false,
-            })
+    /// (Each composition is looked in once: one used many times, or itself,
+    /// would otherwise be searched again and again.)
+    fn comp_has_sound(&self, comp: &Chunk) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        let mut todo = vec![*comp];
+        while let Some(c) = todo.pop() {
+            for id in layer_sources(self.r, &c) {
+                match self.items.get(&id) {
+                    Some(Item::Footage(f)) if f.audio => return true,
+                    Some(Item::Comp(inner)) if seen.insert(id) && seen.len() <= MAX_LAYERS => todo.push(inner.chunk),
+                    _ => {}
+                }
+            }
+        }
+        false
     }
 
     fn comp(&mut self, c: &CompRead) -> Sequence {
@@ -637,7 +645,7 @@ impl<'r, 'a> Reader<'r, 'a> {
         // Its sound, linked, on an audio track of its own.
         let has_sound = match &item {
             Some(Item::Footage(f)) => f.audio && matches!(f.kind, FootageKind::File(_)),
-            Some(Item::Comp(inner)) => self.comp_has_sound(&inner.chunk, 0),
+            Some(Item::Comp(inner)) => self.comp_has_sound(&inner.chunk),
             _ => false,
         } && audio_on;
         let picture = match &item {
@@ -797,16 +805,28 @@ impl<'r, 'a> Reader<'r, 'a> {
             }
         }
         if times.len() >= 2 {
+            // (Up to a key a frame: gathered, then put in order once, rather than
+            // each one slotted in among the rest.)
+            let mut keys: [Vec<(Time, f32)>; 4] = Default::default();
             for lt in times {
                 let t = l.start + lt * l.stretch;
                 if !(0.0..=comp_len.max(0.0) + 1.0).contains(&t) {
                     continue;
                 }
                 let v = at(lt);
-                for (i, p) in [pt::X, pt::Y, pt::ROTATION, pt::SCALE].into_iter().enumerate() {
-                    if let Some(param) = fx.params.get_mut(p) {
-                        param.keys.set(secs(t), v[i] as f32);
-                    }
+                for (k, v) in keys.iter_mut().zip(v) {
+                    k.push((secs(t), v as f32));
+                }
+            }
+            for (k, p) in keys.into_iter().zip([pt::X, pt::Y, pt::ROTATION, pt::SCALE]) {
+                if let Some(param) = fx.params.get_mut(p) {
+                    let mut k = k;
+                    // (a stretch below zero runs them backwards; the last of a time wins)
+                    k.sort_by_key(|(t, _)| *t);
+                    k.reverse();
+                    k.dedup_by_key(|(t, _)| *t);
+                    k.reverse();
+                    param.keys = crate::anim::Curve(k.into_iter().map(|(t, v)| crate::anim::Key::new(t, v, crate::anim::Interp::Linear)).collect());
                 }
             }
         }
@@ -1117,6 +1137,12 @@ mod tests {
     #[test]
     fn an_after_effects_comp_comes_across() {
         let im = read(&sample(), None).unwrap();
+        // (`REELFORGE_FUZZ_SEEDS=dir`: fuzzing seeds, see fuzz/seeds.py)
+        if let Ok(dir) = std::env::var("REELFORGE_FUZZ_SEEDS") {
+            let dir = std::path::Path::new(&dir);
+            let _ = std::fs::write(dir.join("sample.aep"), sample());
+            let _ = std::fs::write(dir.join("from-after-effects.rfproj"), serde_json::to_vec_pretty(&im.project).unwrap_or_default());
+        }
         let p = &im.project;
         assert_eq!(p.sequences.len(), 2, "{:?}", im.notes);
         let s = &p.sequences[0];
