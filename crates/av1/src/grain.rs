@@ -133,6 +133,10 @@ pub(crate) fn apply(pic: &mut Picture, g: &FilmGrainParams, seq: &SequenceHeader
         for i in 0..n - 1 {
             let dy = ys[i + 1] as i32 - ys[i] as i32;
             let dx = xs[i + 1] as i32 - xs[i] as i32;
+            // (points must increase; a damaged header that repeats one is skipped)
+            if dx <= 0 {
+                continue;
+            }
             let delta = dy * ((65536 + (dx >> 1)) / dx);
             for x in 0..dx {
                 l[xs[i] as usize + x as usize] = ys[i] as i32 + ((x * delta + 32768) >> 16);

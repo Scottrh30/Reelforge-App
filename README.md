@@ -743,6 +743,50 @@ What works now:
       and kept as it plays (a step a frame), with a checkpoint every second, so seeking back
       starts from the nearest one. **Flow round the layer's shape**: put it on a title or a
       keyed layer and the fluid flows round the letters or the subject instead of through them
+  - **Water** (**Timeline → Water** adds them ready-made: an ocean, a stormy sea at sunset, rain
+    on water, ripples from drops, waves rolling in, pouring water, a waterfall, filling with
+    water, and water round or poured onto the selected layer). Three effects, every setting
+    keyframable; with a transparent output and **Export → ProRes 4444** they become water
+    elements with alpha, for compositing anywhere:
+    - **Ocean**: an open sea out to the horizon, drawn afresh for every frame (so scrubbing is
+      instant). **Wind speed** and **Wind direction** raise a choppy wind sea (a spectrum of
+      Gerstner waves, from long rollers to short chop), **Wave height**, **Choppiness** (sharper
+      crests that fold over, with **Foam** in streaks where they break), a **Swell** of long
+      regular waves from its own direction, fine **Ripples**, and **Speed**. The **Camera** (its
+      height, how far it looks down, its field of view, flying forward) is placed in metres; it
+      never dips among the waves. The **Sky and sun**: the sun's height and direction (its
+      glitter path on the water, warmer when low), the sky and horizon colours, and **Haze**
+      into the distance. **Show**: the full scene, the water only (the sky left clear for a sky
+      of your own), or the water under the layer (the layer's transparent parts show the sea).
+      Distant waves fade out as they get finer than a pixel, so the horizon doesn't shimmer
+    - **Water surface**: water seen from above, a real wave simulation on the graphics card
+      (the wave equation on a height grid; 256, 384 or 512 cells across). **Rain** (drops a
+      second, their size and strength), a drop at a point **every** so often (drag the point in
+      the Viewer), **Waves rolling in** from the side you set (height, wavelength, direction),
+      **Wind ripples**, **Wave speed** and **Calming**. Waves reflect off **solid objects** —
+      the layer's own shape, or what's in front of a **green** or **blue screen**, or its dark or
+      light parts (keyed in the effect itself, with a tolerance) — and a moving object pushes
+      the water aside, leaving a **wake** behind it. **The layer** is the floor under the water
+      (seen through it, bent by the waves), or the solid objects shown, or hidden (keyed out).
+      The look: water colour and depth, refraction, **caustics** (the light the waves focus into
+      bright lines on the floor), reflections of the sky, the light's direction and height and
+      its highlights. **Output**: the full scene, or the water only (its own light and colour,
+      see-through, to lay over other footage)
+    - **Liquid (pouring water)**: water poured from a **Source** (drag it in the Viewer; its
+      direction, speed, width and flow, **Pours from** a time **for** so long), seen from the
+      side, falling with **Gravity**, splashing, filling up against the frame's **floor and
+      walls** (or open edges it falls out of), with a starting pool (**Fill**). A FLIP liquid
+      simulation on the graphics card (particles carried on a grid that keeps the water from
+      squashing; 120, 176 or 240 cells across): **Thickness** (honey-like), **Splashiness**,
+      **Droplets** (spray drawn as drops), **Bounce**. It splashes off and flows round **solid
+      objects** keyed from the layer as above, moving ones pushing it about. Drawn as a smooth
+      surface: water colour, **Clearness**, refraction of what's behind, highlights, foam and
+      spray. **Show**: the water over the layer, the water and the solid objects (the green
+      screen keyed out), or the water only (transparent)
+    - The two simulations are worked out from the layer's start (60 steps a second for the
+      surface, 120 for the liquid) and kept as it plays, with a checkpoint every second, so
+      seeking back starts from the nearest one and gives exactly the same water; what's solid
+      is read from the layer at each frame, so a keyed object can move
   - **Generate** (a category of its own):
     - **Fractal noise**: a pattern that drifts and evolves, like After Effects' Fractal Noise or
       HitFilm's Clouds. **Type**: *Smooth*, *Turbulent* (billowing smoke), *Ridged* (sharp

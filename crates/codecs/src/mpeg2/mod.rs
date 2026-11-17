@@ -163,9 +163,11 @@ struct View<'a> {
 impl View<'_> {
     #[inline]
     fn rows(&self) -> i32 {
+        // (never more lines than the plane holds: a damaged stream can disagree with it)
+        let lines = self.lines.min(self.data.len() / self.stride.max(1)).min(i32::MAX as usize);
         match self.field {
-            None => self.lines as i32,
-            Some(p) => ((self.lines - p).div_ceil(2)) as i32,
+            None => lines as i32,
+            Some(p) => (lines.saturating_sub(p).div_ceil(2)) as i32,
         }
     }
     #[inline]
@@ -184,11 +186,14 @@ impl View<'_> {
 fn mc(src: &View, x: i32, y: i32, hx: bool, hy: bool, w: usize, h: usize, dst: &mut [u8], dst_stride: usize, row0: usize, row_step: usize, avg: bool) {
     let cols = src.stride as i32;
     let rows = src.rows();
+    if rows <= 0 || cols <= 0 {
+        return;
+    }
     let inside = x >= 0 && y >= 0 && x + w as i32 + hx as i32 <= cols && y + h as i32 + hy as i32 <= rows;
     let at = |r: i32, c: i32| -> u32 {
         let r = r.clamp(0, rows - 1);
         let c = c.clamp(0, cols - 1);
-        src.data[src.line(r) * src.stride + c as usize] as u32
+        src.data.get(src.line(r) * src.stride + c as usize).copied().unwrap_or(128) as u32
     };
     for k in 0..h {
         let d = &mut dst[(row0 + k * row_step) * dst_stride..(row0 + k * row_step) * dst_stride + w];
@@ -494,7 +499,7 @@ impl Slicer<'_> {
                     }
                 }
                 _ => {
-                    let parity = self.ph.structure as usize - 1;
+                    let parity = (self.ph.structure as usize).saturating_sub(1).min(1);
                     for i in 0..2 {
                         let sel = if i == 0 { parity } else { 1 - parity };
                         if let Some(f) = reference(sel) {

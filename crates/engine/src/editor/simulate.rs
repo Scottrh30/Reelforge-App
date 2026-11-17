@@ -5,13 +5,13 @@
 //! timed, so everything can be changed afterwards in the Controls panel.
 
 use super::Editor;
-use reelforge_core::effects::{bullet, fluid_params as fl, muzzle, shatter};
+use reelforge_core::effects::{bullet, fluid_params as fl, liquid as lq, muzzle, ocean as oc, shatter, water as ws};
 use reelforge_core::particles as p;
 use reelforge_core::undo::{AddClip, Batch, Command};
 use reelforge_core::{Clip, ClipId, Effect, EffectKind, MediaId, TitleSpec, Time};
 
 /// What can be added (the menu's order): (name, label).
-pub const SIMULATIONS: [(&str, &str); 13] = [
+pub const SIMULATIONS: [(&str, &str); 24] = [
     ("fire", "Fire"),
     ("smoke", "Smoke"),
     ("explosion", "Explosion"),
@@ -25,7 +25,20 @@ pub const SIMULATIONS: [(&str, &str); 13] = [
     ("shatter", "Shatter the selected layer"),
     ("atomic", "Atomic particles from the selected layer"),
     ("disintegrate", "Disintegrate the selected layer"),
+    ("ocean", "Ocean"),
+    ("ocean_water", "Ocean, water only (for a sky of your own)"),
+    ("storm", "Stormy sea at sunset"),
+    ("rain_water", "Rain on water"),
+    ("ripples", "Ripples from drops at a point"),
+    ("waves", "Waves rolling in"),
+    ("pour", "Pour water"),
+    ("waterfall", "Waterfall"),
+    ("fill", "Fill with water"),
+    ("water_round", "Water round the selected layer (green screen)"),
+    ("pour_round", "Pour water onto the selected layer (green screen)"),
 ];
+
+pub const ON_SELECTED: [&str; 5] = ["shatter", "atomic", "disintegrate", "water_round", "pour_round"];
 
 /// Particles from preset `name`, its sizes and speeds scaled by `k` (the
 /// presets are made for a 1080-line frame), with `set` on top.
@@ -55,6 +68,20 @@ fn burst(e: &mut Effect, from: f64, len: f64, rate: f32) {
     keys.set(s(from), rate);
     keys.set(s(from + len), rate);
     keys.set(s(from + len + 0.01), 0.0);
+}
+
+/// A liquid with its sizes and speeds scaled by `k` (made for a 1080-line frame), with `set` on top.
+fn liquid(k: f32, set: &[(usize, f32)]) -> Effect {
+    let mut e = Effect::new(EffectKind::Liquid);
+    for i in [lq::SPEED, lq::WIDTH, lq::GRAVITY] {
+        e.params[i].value *= k;
+    }
+    // (finer than the effect's own default: these are meant to look good at once)
+    e.params[lq::DETAIL].value = 1.0;
+    for &(i, x) in set {
+        e.params[i].value = x;
+    }
+    e
 }
 
 fn with(kind: EffectKind, set: &[(usize, f32)]) -> Effect {
@@ -112,7 +139,26 @@ impl Editor {
                 "Added a gun shot: a muzzle flash, and its bullet hitting a wall a moment later. Drag both into place in the Viewer",
             ),
             "fluid" => self.add_effects_layer(vec![with(EffectKind::Fluid, &[(fl::DETAIL, 1.0)])], false, "Add fluid", "Added a fluid: coloured smoke pours from the source (drag it in the Viewer). It's worked out from the layer's start, so the first play of a long one takes a moment"),
-            "shatter" | "atomic" | "disintegrate" => self.add_to_selected(what),
+            "ocean" => self.add_effects_layer(vec![with(EffectKind::Ocean, &[])], false, "Add ocean", "Added an ocean out to the horizon: Wind speed and Choppiness make it rougher, the Camera settings move your view, the Sun lights it"),
+            "ocean_water" => self.add_effects_layer(vec![with(EffectKind::Ocean, &[(oc::SHOW, 1.0)])], false, "Add ocean", "Added the sea alone, the sky left clear: put a sky of your own on a layer below"),
+            "storm" => self.add_effects_layer(
+                vec![with(EffectKind::Ocean, &[(oc::WIND, 18.0), (oc::CHOP, 115.0), (oc::FOAM, 140.0), (oc::SWELL, 120.0), (oc::SUN_HEIGHT, 3.0), (oc::SUN_DIR, 25.0), (oc::HAZE, 55.0), (oc::SKY, 0x55607a as f32), (oc::HORIZON, 0xe0a070 as f32), (oc::CAM_HEIGHT, 7.0)])],
+                false,
+                "Add stormy sea",
+                "Added a stormy sea at sunset: high, choppy waves with foam, the sun low on the horizon",
+            ),
+            "rain_water" => self.add_effects_layer(vec![with(EffectKind::WaterSurface, &[(ws::RAIN, 20.0), (ws::DROP_SIZE, 14.0 * k), (ws::LAYER, 0.0)])], false, "Add rain on water", "Added rain falling on water: put it over a picture of the bottom (it shows through, bent by the ripples) or keep its sandy floor; Rain sets how heavy"),
+            "ripples" => self.add_effects_layer(vec![with(EffectKind::WaterSurface, &[(ws::RAIN, 0.0), (ws::DROP_EVERY, 1.2), (ws::DROP_SIZE, 30.0 * k)])], false, "Add ripples", "Added drops falling at one point (drag it in the Viewer), rings spreading out from each and bouncing off the frame's edges"),
+            "waves" => self.add_effects_layer(vec![with(EffectKind::WaterSurface, &[(ws::RAIN, 0.0), (ws::WAVE_HEIGHT, 100.0), (ws::WAVELENGTH, 160.0 * k), (ws::WAVE_DIR, -70.0)])], false, "Add waves", "Added waves rolling in from one side: Wavelength and Wave direction set them; put a green-screen object on the layer and they bounce off it"),
+            "pour" => self.add_effects_layer(vec![liquid(k, &[])], false, "Add pouring water", "Added water pouring in and splashing about the frame's floor (drag the source in the Viewer). It's worked out from the layer's start, so the first play takes a moment"),
+            "waterfall" => self.add_effects_layer(
+                vec![liquid(k, &[(lq::X, 8.0), (lq::Y, 18.0), (lq::DIRECTION, 0.0), (lq::SPEED, 220.0 * k), (lq::WIDTH, 90.0 * k), (lq::FLOW, 180.0), (lq::EDGES, 1.0), (lq::FILL, 12.0)])],
+                false,
+                "Add waterfall",
+                "Added a waterfall: water spilling over from the left into a pool, flowing out at the sides",
+            ),
+            "fill" => self.add_effects_layer(vec![liquid(k, &[(lq::X, 50.0), (lq::Y, 0.0), (lq::DIRECTION, -90.0), (lq::SPEED, 300.0 * k), (lq::WIDTH, 80.0 * k), (lq::FLOW, 250.0), (lq::FILL, 15.0)])], false, "Add filling water", "Added water pouring in from above and filling the frame up"),
+            "shatter" | "atomic" | "disintegrate" | "water_round" | "pour_round" => self.add_to_selected(what),
             _ => {}
         }
     }
@@ -132,7 +178,17 @@ impl Editor {
         let t = self.playback.playhead.max(c.timeline_start).min(c.timeline_end());
         let src = c.source_time(t).as_secs_f64() as f32;
         let k = self.seq().height as f32 / 1080.0;
-        let (fx, msg) = if what == "shatter" {
+        let (fx, msg) = if what == "water_round" {
+            (
+                with(EffectKind::WaterSurface, &[(ws::RAIN, 4.0), (ws::DROP_EVERY, 1.5), (ws::DROP_SIZE, 30.0 * k), (ws::SOLIDS, 2.0), (ws::LAYER, 1.0)]),
+                "The layer is in water now: what's in front of its green screen is solid, ripples bounce off it and it pushes the water as it moves. Solid objects sets what's solid (its own transparency, a blue screen…); The layer: Solid objects hidden leaves only the water, to export with transparency",
+            )
+        } else if what == "pour_round" {
+            (
+                liquid(k, &[(lq::X, 45.0), (lq::Y, 0.0), (lq::DIRECTION, -90.0), (lq::SPEED, 120.0 * k), (lq::WIDTH, 70.0 * k), (lq::SOLIDS, 2.0), (lq::SHOW, 1.0)]),
+                "Water pours onto the layer now: what's in front of its green screen is solid and the water splashes off it, the green keyed out. Show: Water only leaves just the water, to export with transparency",
+            )
+        } else if what == "shatter" {
             (with(EffectKind::Shatter, &[(shatter::AT, src)]), "The layer shatters at the playhead: drag the impact point in the Viewer")
         } else if what == "disintegrate" {
             (with(EffectKind::Disintegrate, &[(reelforge_core::effects::disintegrate::START, src)]), "The layer breaks up into particles from the playhead, over 2 seconds: set the direction, roughness and glow in the Controls panel")
@@ -183,7 +239,7 @@ mod tests {
     #[test]
     fn every_simulation_adds_its_effects() {
         let mut e = Editor::new(None, None);
-        for (what, _) in SIMULATIONS.iter().filter(|(w, _)| !matches!(*w, "shatter" | "atomic" | "disintegrate")) {
+        for (what, _) in SIMULATIONS.iter().filter(|(w, _)| !ON_SELECTED.contains(w)) {
             e.add_simulation(what);
             let id = e.selection.expect(what);
             let (_, c) = e.seq().find_clip(id).unwrap();
@@ -210,6 +266,14 @@ mod tests {
         e.add_simulation("shatter");
         let (_, c) = e.seq().find_clip(e.selection.unwrap()).unwrap();
         assert_eq!(c.effects.last().unwrap().kind, EffectKind::Shatter);
+        e.undo();
+        // Water round it, and water poured onto it, keyed off a green screen.
+        e.add_simulation("water_round");
+        e.add_simulation("pour_round");
+        let (_, c) = e.seq().find_clip(e.selection.unwrap()).unwrap();
+        assert_eq!(c.effects.iter().map(|f| f.kind).collect::<Vec<_>>(), [EffectKind::WaterSurface, EffectKind::Liquid]);
+        assert_eq!(c.effects[1].params[lq::SOLIDS].value, 2.0);
+        e.undo();
         e.undo();
         assert!(e.seq().find_clip(e.selection.unwrap()).unwrap().1.effects.is_empty());
     }

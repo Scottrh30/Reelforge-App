@@ -93,6 +93,7 @@ impl<'a> From<&'a reelforge_core::frame::Pixels> for PixelData<'a> {
 
 mod particles;
 mod fluidgpu;
+mod watergpu;
 pub mod plugin;
 pub mod solid;
 pub mod text;
@@ -395,6 +396,8 @@ pub struct Compositor {
     particles: particles::ParticleRenderer,
     /// Fluid effects, simulated on the card.
     fluid: fluidgpu::FluidGpu,
+    /// Water surfaces and liquids, simulated on the card.
+    water: watergpu::WaterGpu,
     /// Reads frames shared by the hardware decoder (Windows, Direct3D 12).
     #[cfg(windows)]
     interop: Option<interop::Importer>,
@@ -582,7 +585,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let fx2_pipelines = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add", "fs_hue_curves", "fs_audio_vis"]
+        let mut fx2_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add", "fs_hue_curves", "fs_audio_vis"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -604,7 +607,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let fx_pipelines = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -631,6 +634,31 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
+        // Water (water.wgsl): the ocean on its own, the simulations' pictures with their state.
+        let water_shader = device.create_shader_module(wgpu::include_wgsl!("water.wgsl"));
+        for (entry, layout, two) in [("fs_ocean", &fx_pl, false), ("fs_water", &mask_pl, true), ("fs_liquid", &mask_pl, true)] {
+            let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(layout),
+                vertex: wgpu::VertexState { module: &water_shader, entry_point: Some("vs_fullscreen"), compilation_options: Default::default(), buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &water_shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            if two {
+                fx2_pipelines.insert(entry, p);
+            } else {
+                fx_pipelines.insert(entry, p);
+            }
+        }
         let fx_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("effect uniforms"),
             size: fx_uniform_stride * MAX_FX_PASSES as u64,
@@ -766,6 +794,7 @@ impl Compositor {
             solid: solid::SolidRenderer::new(device, queue, LAYER_FORMAT),
             particles: particles::ParticleRenderer::new(device, &fx_pl, ACCUM_FORMAT),
             fluid: fluidgpu::FluidGpu::new(device, queue),
+            water: watergpu::WaterGpu::new(device, queue),
             #[cfg(windows)]
             interop: {
                 let i = interop::Importer::new(device);
@@ -1311,7 +1340,11 @@ impl Compositor {
                 if let Some(job) = &e.fluid {
                     // Stepped on to now; its picture goes in as this effect's table.
                     let layer = self.layers.get(&l.key).filter(|t| !t.float).map(|t| (t.texture.create_view(&Default::default()), t.content_id));
-                    if let Some(tex) = self.fluid.step_to(job, layer.as_ref().map(|(v, id)| (v, *id))) {
+                    let tex = match e.kind {
+                        EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(job, layer.as_ref().map(|(v, _)| v)),
+                        _ => self.fluid.step_to(job, layer.as_ref().map(|(v, id)| (v, *id))),
+                    };
+                    if let Some(tex) = tex {
                         let view = tex.create_view(&Default::default());
                         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                             label: Some("fluid picture"),
@@ -1724,6 +1757,34 @@ impl Compositor {
                             continue;
                         }
                         push("fs_fluid", cur, Second::Table(i), o1, uniform(&e.values, [0.0; 2]));
+                        cur = o1;
+                    }
+                    EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => {
+                        let second = if e.kind == EffectKind::Ocean {
+                            Second::None
+                        } else if self.tables.contains_key(&(key, i)) {
+                            Second::Table(i)
+                        } else {
+                            continue;
+                        };
+                        // All 32 parameters, the time and the layer's size (see water.wgsl).
+                        let mut u = uniform(&e.values, [0.0; 2]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        u[28..32].copy_from_slice(&e.values[16..20]);
+                        u[FX_P5..FX_P5 + 4].copy_from_slice(&e.values[20..24]);
+                        u[FX_P6..FX_P6 + 8].copy_from_slice(&e.values[24..32]);
+                        // The simulation's grid (cells across, down).
+                        if let Some(job) = &e.fluid {
+                            u[24..26].copy_from_slice(&[job.w as f32, job.h as f32]);
+                        }
+                        let entry = match e.kind {
+                            EffectKind::Ocean => "fs_ocean",
+                            EffectKind::WaterSurface => "fs_water",
+                            _ => "fs_liquid",
+                        };
+                        push(entry, cur, second, o1, u);
                         cur = o1;
                     }
                     EffectKind::Paint => {

@@ -1490,3 +1490,40 @@ fn scaled_up_titles_stay_crisp() {
     assert!(soft4 <= 4, "at 400 % the edges stay sharp: {soft4} soft pixels (stretched, it is 8)");
     assert!((lit4 as f32 / lit1 as f32 - 4.0).abs() < 1.0, "four times as wide: {lit1} → {lit4}");
 }
+
+/// Water made into a ProRes 4444 clip: poured water alone (no background)
+/// comes out with its transparency, the water solid enough to see and the
+/// rest of the frame clear.
+#[test]
+fn exports_water_alone_as_prores_4444() {
+    use reelforge_core::effects::liquid as lq;
+    use reelforge_core::{Effect, EffectKind, TitleSpec};
+    let Some((device, queue)) = headless_device() else { return };
+    let mut p = Project::new();
+    let mut seq = Sequence::new("Water", 640, 360, FrameRate::new(25, 1));
+    let s = Time::from_secs_f64;
+    let mut spec = TitleSpec::for_frame(360);
+    spec.text = String::new();
+    let mut clip = Clip::new_title(ClipId(1), s(0.0), s(2.0), spec);
+    let mut e = Effect::new(EffectKind::Liquid);
+    for (i, v) in [(lq::X, 30.0), (lq::Y, 5.0), (lq::DIRECTION, -70.0), (lq::FLOW, 250.0), (lq::SHOW, 2.0)] {
+        e.params[i].value = v;
+    }
+    clip.effects.push(e);
+    seq.tracks[0].clips.push(clip);
+    p.sequences = vec![seq];
+    let out = std::env::temp_dir().join("rf_water_4444.mov");
+    let mut st = settings(out.clone());
+    (st.start, st.end, st.video, st.alpha, st.include_audio) = (s(1.6), s(1.8), Some(VideoCodec::ProRes4444), true, false);
+    export_sequence(&p, &st, &device, &queue, |_| true).unwrap();
+    if let Some((c, _, pix)) = ffprobe_video(&out) {
+        assert_eq!((c.as_str(), pix.as_str()), ("prores", "yuva444p12le"));
+    }
+    let mut dec = FrameSource::open(&out, None).unwrap();
+    let f = dec.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap();
+    let alphas: Vec<u8> = f.rgba().chunks(4).map(|p| p[3]).collect();
+    let clear = alphas.iter().filter(|a| **a <= 2).count();
+    let water = alphas.iter().filter(|a| **a >= 60).count();
+    assert!(clear > alphas.len() / 3, "mostly clear: {clear} of {}", alphas.len());
+    assert!(water > 2000, "water you can see: {water}");
+}

@@ -30,6 +30,7 @@ pub mod template;
 pub mod effects;
 pub mod environment;
 pub mod fluid;
+pub mod water;
 pub mod frame;
 pub mod imageseq;
 pub mod interchange;

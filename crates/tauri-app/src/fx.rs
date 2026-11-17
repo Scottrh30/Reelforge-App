@@ -280,6 +280,8 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     d.points.iter().map(|p| PointView { param: p.x, label: p.name.clone(), relative: None, line_to: p.line_to }).collect()
                 } else if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
                     vec![PointView { param: 0, label: "Start".into(), relative: None, line_to: None }, PointView { param: 2, label: "End".into(), relative: None, line_to: None }]
+                } else if fx.kind == EffectKind::WaterSurface {
+                    vec![PointView { param: reelforge_core::effects::water::DROP_X, label: "Drop".into(), relative: None, line_to: None }]
                 } else if fx.kind == EffectKind::PatchReplacer {
                     vec![PointView { param: 0, label: "Target".into(), relative: None, line_to: None }, PointView { param: 2, label: "Source".into(), relative: Some(0), line_to: None }]
                 } else if let Some((param, label)) = match fx.kind {
@@ -288,7 +290,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::Shatter => Some("Impact"),
                     EffectKind::MuzzleFlash => Some("Barrel"),
                     EffectKind::BulletHit => Some("Hit"),
-                    EffectKind::Fluid => Some("Source"),
+                    EffectKind::Fluid | EffectKind::Liquid => Some("Source"),
                     EffectKind::LightRays => Some("Source"),
                     EffectKind::Bulge | EffectKind::Twirl | EffectKind::Ripple | EffectKind::Mirror | EffectKind::LensDistortion => Some("Centre"),
                     EffectKind::LensDirt if fx.params.get(reelforge_core::effects::dirt::LIT_BY).is_some_and(|p| p.value >= 0.5) => Some("Light"),

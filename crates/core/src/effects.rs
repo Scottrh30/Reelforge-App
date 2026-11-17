@@ -146,6 +146,17 @@ pub enum EffectKind {
     /// The layer breaks up into particles over time, a ragged glowing front
     /// sweeping across it (see [`crate::disintegrate`]).
     Disintegrate,
+    /// An open sea to the horizon: waves from the wind and a swell, foam on
+    /// the crests, the sky and the sun on the water (see [`crate::water`]).
+    Ocean,
+    /// A water surface seen from above: ripples from rain and drops, waves
+    /// rolling in, bouncing off and pushed by solid objects, caustics on the
+    /// floor (a wave simulation, see [`crate::water`]).
+    WaterSurface,
+    /// Water poured, flowing and splashing (seen from the side): a liquid
+    /// simulation that fills, falls and splashes off solid objects (see
+    /// [`crate::water`]).
+    Liquid,
     /// Fractal noise: clouds, smoke, liquid or marble patterns that evolve
     /// over time, drawn over the layer or used as its transparency.
     FractalNoise,
@@ -531,6 +542,96 @@ const FLUID: [ParamSpec; 16] = [
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
     choice("Flow round the layer's shape", &["Off", "On"]),
+];
+const OCEAN: [ParamSpec; 25] = [
+    spec("Wind speed", 10.0, 0.5, 40.0, " m/s", 0.05),
+    spec("Wind direction", 20.0, -360.0, 360.0, "°", 0.5),
+    spec("Wave height", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Choppiness", 70.0, 0.0, 150.0, " %", 0.5),
+    spec("Swell", 40.0, 0.0, 300.0, " %", 0.5),
+    spec("Swell direction", -30.0, -360.0, 360.0, "°", 0.5),
+    spec("Ripples", 60.0, 0.0, 200.0, " %", 0.5),
+    spec("Speed", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+    spec("Camera height", 4.0, 0.2, 300.0, " m", 0.05),
+    spec("Look down", 7.0, -20.0, 89.0, "°", 0.1),
+    spec("Field of view", 55.0, 10.0, 120.0, "°", 0.2),
+    spec("Camera speed", 0.0, -60.0, 60.0, " m/s", 0.1),
+    color("Deep water", 0x06283c),
+    color("Light through the waves", 0x1f8a8c),
+    spec("Foam", 60.0, 0.0, 200.0, " %", 0.5),
+    spec("Sun height", 18.0, -10.0, 90.0, "°", 0.2),
+    spec("Sun direction", 15.0, -180.0, 180.0, "°", 0.5),
+    spec("Sun strength", 100.0, 0.0, 400.0, " %", 0.5),
+    color("Sky", 0x4d86c6),
+    color("Horizon", 0xc8d6e2),
+    spec("Haze", 35.0, 0.0, 100.0, " %", 0.5),
+    choice("Show", &ocean::SHOWS),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Horizon softness", 30.0, 0.0, 100.0, " %", 0.5),
+];
+const WATER_SURFACE: [ParamSpec; 31] = [
+    spec("Rain", 6.0, 0.0, 400.0, " drops/s", 0.1),
+    spec("Drop size", 14.0, 1.0, 300.0, " px", 0.2),
+    spec("Drop strength", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Drop X", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("Drop Y", 50.0, -50.0, 150.0, " %", 0.1),
+    spec("A drop there every", 0.0, 0.0, 30.0, " s", 0.01),
+    spec("Wave height", 0.0, 0.0, 400.0, " %", 0.5),
+    spec("Wavelength", 120.0, 10.0, 2000.0, " px", 1.0),
+    spec("Wave direction", 90.0, -360.0, 360.0, "°", 0.5),
+    spec("Wind ripples", 15.0, 0.0, 200.0, " %", 0.5),
+    spec("Wave speed", 100.0, 10.0, 100.0, " %", 0.5),
+    spec("Calming", 15.0, 0.0, 100.0, " %", 0.5),
+    choice("Detail", &water::DETAILS),
+    spec("Wave scale", 100.0, 10.0, 400.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+    choice("Solid objects", &water::SOLID_KINDS),
+    spec("Key tolerance", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Wake", 100.0, 0.0, 400.0, " %", 0.5),
+    choice("The layer", &water::LAYER_KINDS),
+    color("Water colour", 0x17607a),
+    spec("Depth", 45.0, 0.0, 100.0, " %", 0.5),
+    spec("Refraction", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Caustics", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Reflections", 60.0, 0.0, 200.0, " %", 0.5),
+    spec("Light direction", 135.0, -360.0, 360.0, "°", 0.5),
+    spec("Light height", 50.0, 5.0, 90.0, "°", 0.2),
+    spec("Highlights", 100.0, 0.0, 400.0, " %", 0.5),
+    color("Sky", 0xa8cbe8),
+    color("Floor", 0xcdb98e),
+    choice("Output", &water::OUTPUTS),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+];
+const LIQUID: [ParamSpec; 28] = [
+    spec("Source X", 20.0, -50.0, 150.0, " %", 0.1),
+    spec("Source Y", 12.0, -50.0, 150.0, " %", 0.1),
+    spec("Direction", -15.0, -360.0, 360.0, "°", 0.5),
+    spec("Speed", 250.0, 0.0, 4000.0, " px/s", 1.0),
+    spec("Width", 36.0, 2.0, 1000.0, " px", 0.5),
+    spec("Flow", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Pours from", 0.0, 0.0, 3600.0, " s", 0.01),
+    spec("Pours for", 0.0, 0.0, 3600.0, " s", 0.01),
+    spec("Fill", 0.0, 0.0, 95.0, " %", 0.5),
+    spec("Gravity", 980.0, -5000.0, 5000.0, " px/s²", 1.0),
+    spec("Thickness", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Splashiness", 85.0, 0.0, 100.0, " %", 0.5),
+    spec("Droplets", 100.0, 0.0, 300.0, " %", 0.5),
+    choice("Frame edges", &liquid::EDGE_KINDS),
+    choice("Detail", &liquid::DETAILS),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+    choice("Solid objects", &water::SOLID_KINDS),
+    spec("Key tolerance", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Bounce", 20.0, 0.0, 100.0, " %", 0.5),
+    color("Water colour", 0x2f8fd0),
+    spec("Clearness", 65.0, 0.0, 100.0, " %", 0.5),
+    spec("Refraction", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Highlights", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Foam", 60.0, 0.0, 200.0, " %", 0.5),
+    spec("Smoothness", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Light direction", 120.0, -360.0, 360.0, "°", 0.5),
+    choice("Show", &liquid::SHOWS),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
 ];
 const LEVELS: [ParamSpec; 5] = [
     spec("Input black", 0.0, 0.0, 254.0, "", 0.5),
@@ -1381,6 +1482,108 @@ pub mod fluid_params {
     pub const OBSTACLES: usize = 15;
     pub const DETAILS: [&str; 3] = ["Low (fast)", "Medium", "High"];
 }
+/// Ocean parameter indices.
+pub mod ocean {
+    pub const WIND: usize = 0;
+    pub const WIND_DIR: usize = 1;
+    pub const HEIGHT: usize = 2;
+    pub const CHOP: usize = 3;
+    pub const SWELL: usize = 4;
+    pub const SWELL_DIR: usize = 5;
+    pub const RIPPLES: usize = 6;
+    pub const SPEED: usize = 7;
+    pub const SEED: usize = 8;
+    pub const CAM_HEIGHT: usize = 9;
+    pub const TILT: usize = 10;
+    pub const FOV: usize = 11;
+    pub const CAM_SPEED: usize = 12;
+    pub const DEEP: usize = 13;
+    pub const SCATTER: usize = 14;
+    pub const FOAM: usize = 15;
+    pub const SUN_HEIGHT: usize = 16;
+    pub const SUN_DIR: usize = 17;
+    pub const SUN: usize = 18;
+    pub const SKY: usize = 19;
+    pub const HORIZON: usize = 20;
+    pub const HAZE: usize = 21;
+    pub const SHOW: usize = 22;
+    pub const OPACITY: usize = 23;
+    pub const SOFT: usize = 24;
+    pub const SHOWS: [&str; 3] = ["Full scene", "Water only (no sky)", "Water under the layer"];
+}
+/// Water surface parameter indices.
+pub mod water {
+    pub const RAIN: usize = 0;
+    pub const DROP_SIZE: usize = 1;
+    pub const DROP_STRENGTH: usize = 2;
+    pub const DROP_X: usize = 3;
+    pub const DROP_Y: usize = 4;
+    pub const DROP_EVERY: usize = 5;
+    pub const WAVE_HEIGHT: usize = 6;
+    pub const WAVELENGTH: usize = 7;
+    pub const WAVE_DIR: usize = 8;
+    pub const WIND: usize = 9;
+    pub const SPEED: usize = 10;
+    pub const CALM: usize = 11;
+    pub const DETAIL: usize = 12;
+    pub const SCALE: usize = 13;
+    pub const SEED: usize = 14;
+    pub const SOLIDS: usize = 15;
+    pub const TOLERANCE: usize = 16;
+    pub const WAKE: usize = 17;
+    pub const LAYER: usize = 18;
+    pub const COLOR: usize = 19;
+    pub const DEPTH: usize = 20;
+    pub const REFRACTION: usize = 21;
+    pub const CAUSTICS: usize = 22;
+    pub const REFLECTIONS: usize = 23;
+    pub const LIGHT_DIR: usize = 24;
+    pub const LIGHT_HEIGHT: usize = 25;
+    pub const HIGHLIGHTS: usize = 26;
+    pub const SKY: usize = 27;
+    pub const FLOOR: usize = 28;
+    pub const OUTPUT: usize = 29;
+    pub const OPACITY: usize = 30;
+    pub const DETAILS: [&str; 3] = ["Low (fast)", "Medium", "High"];
+    /// What's solid (the water goes round it). Shared with the liquid.
+    pub const SOLID_KINDS: [&str; 6] = ["None", "The layer's shape", "Green screen (what's in front)", "Blue screen (what's in front)", "Dark areas", "Light areas"];
+    pub const LAYER_KINDS: [&str; 3] = ["Under the water", "Solid objects shown", "Solid objects hidden (keyed out)"];
+    pub const OUTPUTS: [&str; 2] = ["Full scene", "Water only (transparent)"];
+}
+/// Liquid parameter indices.
+pub mod liquid {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const DIRECTION: usize = 2;
+    pub const SPEED: usize = 3;
+    pub const WIDTH: usize = 4;
+    pub const FLOW: usize = 5;
+    pub const FROM: usize = 6;
+    pub const FOR: usize = 7;
+    pub const FILL: usize = 8;
+    pub const GRAVITY: usize = 9;
+    pub const THICK: usize = 10;
+    pub const SPLASH: usize = 11;
+    pub const DROPLETS: usize = 12;
+    pub const EDGES: usize = 13;
+    pub const DETAIL: usize = 14;
+    pub const SEED: usize = 15;
+    pub const SOLIDS: usize = 16;
+    pub const TOLERANCE: usize = 17;
+    pub const BOUNCE: usize = 18;
+    pub const COLOR: usize = 19;
+    pub const CLEAR: usize = 20;
+    pub const REFRACTION: usize = 21;
+    pub const HIGHLIGHTS: usize = 22;
+    pub const FOAM: usize = 23;
+    pub const SMOOTH: usize = 24;
+    pub const LIGHT_DIR: usize = 25;
+    pub const SHOW: usize = 26;
+    pub const OPACITY: usize = 27;
+    pub const DETAILS: [&str; 3] = ["Low (fast)", "Medium", "High"];
+    pub const EDGE_KINDS: [&str; 4] = ["Floor and walls", "Floor only", "Walls only", "Open (it falls out)"];
+    pub const SHOWS: [&str; 3] = ["Water over the layer", "Water and the solid objects (keyed)", "Water only (transparent)"];
+}
 /// Wire removal parameter indices.
 pub mod wire {
     /// The wire's two ends, in % of the layer.
@@ -1985,7 +2188,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 61] = [
+    pub const ALL: [EffectKind; 64] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -2021,6 +2224,9 @@ impl EffectKind {
         EffectKind::BulletHit,
         EffectKind::Fluid,
         EffectKind::Disintegrate,
+        EffectKind::Ocean,
+        EffectKind::WaterSurface,
+        EffectKind::Liquid,
         EffectKind::FractalNoise,
         EffectKind::Lightning,
         EffectKind::PatchReplacer,
@@ -2112,6 +2318,9 @@ impl EffectKind {
             EffectKind::MuzzleFlash => "Muzzle flash",
             EffectKind::BulletHit => "Bullet hit",
             EffectKind::Fluid => "Fluid",
+            EffectKind::Ocean => "Ocean",
+            EffectKind::WaterSurface => "Water surface",
+            EffectKind::Liquid => "Liquid (pouring water)",
             EffectKind::Disintegrate => "Disintegrate",
             EffectKind::FractalNoise => "Fractal noise",
             EffectKind::AudioSpectrum => "Audio spectrum",
@@ -2141,7 +2350,7 @@ impl EffectKind {
             EffectKind::Blur | EffectKind::Sharpen => EffectCategory::BlurSharpen,
             EffectKind::ChromaKey | EffectKind::LumaKey | EffectKind::DifferenceKey | EffectKind::KeyCleaner | EffectKind::MatteChoker | EffectKind::RefineMatte => EffectCategory::Keying,
             EffectKind::Glow | EffectKind::DropShadow | EffectKind::Vignette | EffectKind::EnergyBlade | EffectKind::Camera | EffectKind::Light | EffectKind::Point => EffectCategory::Stylize,
-            EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate => EffectCategory::Simulation,
+            EffectKind::Particles | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate | EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => EffectCategory::Simulation,
             EffectKind::LensFlare | EffectKind::LightRays | EffectKind::AnamorphicFlare | EffectKind::LensDirt | EffectKind::NeonPath | EffectKind::LightLeaks | EffectKind::FilmGrain | EffectKind::NeonEdges | EffectKind::Halftone | EffectKind::Crt => EffectCategory::Stylize,
             EffectKind::WireRemoval | EffectKind::PatchReplacer | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty => EffectCategory::Repair,
             EffectKind::SkyReplace => EffectCategory::Keying,
@@ -2205,6 +2414,9 @@ impl EffectKind {
             EffectKind::SkyReplace => "A new sky behind the footage: the sky in every frame is found by the object model (Find the sky), its edge softened round trees and buildings, the new sky (a picture, or a gradient) moved with the camera, and the footage's light matched to it.",
             EffectKind::Paint => "Paint in the Viewer: clone the picture from somewhere else (Alt-click where to copy from), brush on a colour, or erase strokes. Each stroke lasts a frame, from there on, or the whole clip.",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
+            EffectKind::Ocean => "An open sea out to the horizon: waves raised by the wind and a swell, choppy crests with foam, the sky and the sun on the water, seen from a camera you place. Full scene, the water alone (transparent sky), or the water under the layer.",
+            EffectKind::WaterSurface => "A water surface from above: ripples from rain and drops, waves rolling in, bouncing off solid objects (the layer's shape or a green screen) and pushed by them as they move, with caustics on the floor. A wave simulation, worked out from the clip's start.",
+            EffectKind::Liquid => "Water poured from a source, flowing, filling and splashing off solid objects (the layer's shape, or what's in front of a green or blue screen) and the frame's floor and walls. A liquid simulation, worked out from the clip's start; the water alone comes out with transparency.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Choose a lens from the library (cinematic sun, anamorphic, hexagon iris, sci-fi and more) and drag the light in the Viewer. To keep it on a moving lamp or the sun, track that in the Track panel and apply the track to the flare.",
             EffectKind::LightRays => "Rays of light streaming out from a point through the bright parts of the layer (or all of it), like sun through trees or a logo's god rays. Drag the source in the Viewer, or apply a motion track to it (Track panel) so it stays on what it shines from.",
             EffectKind::AnamorphicFlare => "Long horizontal streaks out of the bright parts of the picture (lamps, headlights, highlights), as an anamorphic lens draws them, or from a light you place (and can apply a motion track to, in the Track panel).",
@@ -2282,6 +2494,9 @@ impl EffectKind {
             EffectKind::MuzzleFlash => &MUZZLE_FLASH,
             EffectKind::BulletHit => &BULLET_HIT,
             EffectKind::Fluid => &FLUID,
+            EffectKind::Ocean => &OCEAN,
+            EffectKind::WaterSurface => &WATER_SURFACE,
+            EffectKind::Liquid => &LIQUID,
             EffectKind::Disintegrate => &DISINTEGRATE,
             EffectKind::FractalNoise => &FRACTAL,
             EffectKind::AudioSpectrum => &AUDIO_VIS,
@@ -2311,7 +2526,7 @@ impl EffectKind {
     /// Does the picture change with time even when the settings don't
     /// (flicker, shake, grain…)? Then every frame has to be drawn.
     pub fn animates_with_time(self) -> bool {
-        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::OpenFx | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate | EffectKind::Lightning)
+        matches!(self, EffectKind::EnergyBlade | EffectKind::CameraShake | EffectKind::FilmGrain | EffectKind::Glitch | EffectKind::LightLeaks | EffectKind::OpenFx | EffectKind::Shatter | EffectKind::MuzzleFlash | EffectKind::BulletHit | EffectKind::Fluid | EffectKind::Disintegrate | EffectKind::Lightning | EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid)
     }
 
     /// Headings to show above some parameters, as (first parameter, heading).
@@ -2331,6 +2546,9 @@ impl EffectKind {
             EffectKind::MuzzleFlash => &[(0, "Gun"), (5, "Flash"), (7, "Shots")],
             EffectKind::BulletHit => &[(0, "Hit"), (5, "Look")],
             EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look"), (15, "Obstacles")],
+            EffectKind::Ocean => &[(0, "Waves"), (9, "Camera"), (13, "Water"), (16, "Sky and sun"), (22, "Output")],
+            EffectKind::WaterSurface => &[(0, "Rain and drops"), (6, "Waves"), (10, "Water"), (15, "Solid objects"), (19, "Look"), (29, "Output")],
+            EffectKind::Liquid => &[(0, "Source"), (8, "Water"), (16, "Solid objects"), (19, "Look"), (26, "Output")],
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
             EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
             EffectKind::AudioSpectrum => &[(0, "Sound"), (3, "Where"), (7, "Shape"), (11, "Colour")],
@@ -2474,6 +2692,9 @@ impl EffectValues {
             EffectKind::MuzzleFlash => v[muzzle::BRIGHTNESS] == 0.0 && v[muzzle::LIGHT] == 0.0,
             EffectKind::BulletHit => false,
             EffectKind::Fluid => v[fluid_params::OPACITY] == 0.0 || self.fluid.is_none(),
+            EffectKind::Ocean => v[ocean::OPACITY] == 0.0,
+            EffectKind::WaterSurface => v[water::OPACITY] == 0.0 || self.fluid.is_none(),
+            EffectKind::Liquid => v[liquid::OPACITY] == 0.0 || self.fluid.is_none(),
             EffectKind::RefineMatte => v[refine::SMOOTH] < 0.01 && v[refine::SHIFT].abs() < 0.01 && v[refine::FEATHER] < 0.01 && v[refine::DECONTAMINATE] == 0.0 && v[refine::VIEW] == 0.0,
             EffectKind::MatteChoker => v[choker::CHOKE].abs() < 0.01 && v[choker::SOFTNESS] < 0.01 && v[choker::CONTRAST] == 0.0 && v[choker::VIEW] == 0.0,
             EffectKind::KeyCleaner => v[cleaner::SPILL] == 0.0 && v[cleaner::HOLES] < 0.01 && v[cleaner::SPECKS] < 0.01 && v[cleaner::VIEW] == 0.0,
@@ -2709,6 +2930,7 @@ impl Effect {
         match self.kind {
             EffectKind::Shatter => v.pieces = Some(Arc::new(crate::shatter::simulate(self, t, size))),
             EffectKind::Fluid => v.fluid = crate::fluid::job(self, t, size).map(Arc::new),
+            EffectKind::WaterSurface | EffectKind::Liquid => v.fluid = crate::water::job(self, t, size).map(Arc::new),
             EffectKind::Disintegrate => v.particles = Some(Arc::new(crate::disintegrate::simulate(self, t, size))),
             EffectKind::Paint => {
                 if let Some(EffectData::Paint(strokes)) = &self.data {
@@ -2795,7 +3017,7 @@ mod tests {
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 // These need the layer's size (a shatter's pieces, a fluid's grid).
-                EffectKind::Shatter | EffectKind::Fluid | EffectKind::Disintegrate | EffectKind::Lightning => assert!(v.is_identity() && !e.eval_sized(Time::from_secs_f64(0.5), None, [640.0, 360.0]).is_identity(), "{kind:?}"),
+                EffectKind::Shatter | EffectKind::Fluid | EffectKind::Disintegrate | EffectKind::Lightning | EffectKind::WaterSurface | EffectKind::Liquid => assert!(v.is_identity() && !e.eval_sized(Time::from_secs_f64(0.5), None, [640.0, 360.0]).is_identity(), "{kind:?}"),
                 _ => assert!(!v.is_identity(), "{kind:?} should do something by default"),
             }
         }

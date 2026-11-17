@@ -247,7 +247,10 @@ fn huf_uncompress(data: &[u8], out: &mut [u16]) -> Result<()> {
         }
     }
     let table_bytes = b.pos.div_ceil(8);
-    let stream = &data[20 + table_bytes..];
+    // (the table's last code can end past the data)
+    let Some(stream) = data.get(20 + table_bytes..) else {
+        return fail("PIZ Huffman table cut short");
+    };
     if n_bits > stream.len() * 8 {
         return fail("PIZ Huffman bit count");
     }

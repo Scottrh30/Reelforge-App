@@ -2861,3 +2861,92 @@ fn the_cpu_and_the_gpu_draw_the_same_picture() {
     // The list names a CPU renderer exactly when one opens.
     assert_eq!(have.iter().any(|r| r.kind == RenderDevice::Cpu), cpu.is_some());
 }
+
+/// Water: the ocean has sky above the horizon and sea below (and only the sea
+/// when asked); a water surface rings out from its drops and goes round (and
+/// leaves out) what's solid; the liquid falls from its source, never into a
+/// solid object, and comes out the same when seeking back.
+#[test]
+fn water_effects_draw_what_they_say() {
+    use reelforge_core::effects::{liquid as lq, ocean as oc, water as ws};
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    c.transparent = true;
+    let (w, h) = (192u32, 108u32);
+    let size = [w as f32, h as f32];
+    let clear = solid(w, h, [0, 0, 0, 0]);
+    // A green screen with a solid block in the middle.
+    let screen: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if (76..116).contains(&x) && (50..80).contains(&y) { [200u8, 60, 40, 255] } else { [20, 200, 50, 255] })).collect();
+    let mut key = 900u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, pixels: &[u8], kind: EffectKind, set: &[(usize, f32)], t: f64| {
+        let mut e = Effect::new(kind);
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        let v = e.eval_sized(Time::from_secs_f64(t), None, size);
+        key += 1;
+        let mut l = layer(1, pixels, [w, h], size, Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        let effects = if v.is_identity() { Vec::new() } else { vec![v] };
+        c.render([w, h], &[with_fx(l, effects)]);
+        c.read_output().unwrap()
+    };
+    let a = |img: &[u8], x: u32, y: u32| px(img, w, x, y)[3];
+
+    // Ocean: opaque sky over the sea; the water alone leaves the sky clear.
+    let sea = draw(&mut c, &clear, EffectKind::Ocean, &[], 2.0);
+    let (top, bottom) = (px(&sea, w, 20, 5), px(&sea, w, 20, 100));
+    assert!(top[3] == 255 && bottom[3] == 255);
+    assert!(top[2] > bottom[2] && top[2] > top[0], "a blue sky, darker sea: {top:?} {bottom:?}");
+    let only = draw(&mut c, &clear, EffectKind::Ocean, &[(oc::SHOW, 1.0)], 2.0);
+    assert!(a(&only, 20, 5) < 5 && a(&only, 20, 100) > 250);
+    // Waves move.
+    let later = draw(&mut c, &clear, EffectKind::Ocean, &[], 3.0);
+    assert!(sea.iter().zip(&later).filter(|(p, q)| p.abs_diff(**q) > 3).count() > 500);
+
+    // Water surface: still at first; a drop at the point rings out; the same picture seeking back.
+    let drop = [(ws::RAIN, 0.0), (ws::WIND, 0.0), (ws::DROP_EVERY, 5.0), (ws::DROP_X, 30.0), (ws::DROP_Y, 50.0), (ws::DROP_SIZE, 12.0)];
+    let still = draw(&mut c, &clear, EffectKind::WaterSurface, &[(ws::RAIN, 0.0), (ws::WIND, 0.0)], 1.0);
+    let flat = px(&still, w, 150, 20);
+    let ringing = draw(&mut c, &clear, EffectKind::WaterSurface, &drop, 0.6);
+    let changed = |img: &[u8], x0: u32, x1: u32| (0..h).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| px(img, w, x, y).iter().zip(flat).any(|(p, q)| p.abs_diff(q) > 6)).count();
+    assert!(changed(&ringing, 30, 90) > 300, "rings round the drop: {}", changed(&ringing, 30, 90));
+    assert!(changed(&ringing, 170, 192) < changed(&ringing, 30, 90) / 4, "not yet at the far side");
+    let later = draw(&mut c, &clear, EffectKind::WaterSurface, &drop, 2.0);
+    let again = draw(&mut c, &clear, EffectKind::WaterSurface, &drop, 0.6);
+    assert!(ringing.iter().zip(&again).filter(|(p, q)| p.abs_diff(**q) > 2).count() < 30, "seeking back");
+    assert!(later != ringing);
+    // Round a solid object, left out (keyed): clear inside it, water round it.
+    let keyed = draw(&mut c, &screen, EffectKind::WaterSurface, &[(ws::SOLIDS, 2.0), (ws::LAYER, 2.0)], 1.0);
+    assert!(a(&keyed, 96, 65) < 10 && a(&keyed, 20, 20) > 250);
+    // …or shown: the object itself there.
+    let shown = draw(&mut c, &screen, EffectKind::WaterSurface, &[(ws::SOLIDS, 2.0), (ws::LAYER, 1.0)], 1.0);
+    let o = px(&shown, w, 96, 65);
+    assert!(o[0] > 150 && o[1] < 120, "{o:?}");
+    // Water only: see-through.
+    let thin = draw(&mut c, &clear, EffectKind::WaterSurface, &[(ws::OUTPUT, 1.0)], 1.0);
+    assert!(a(&thin, 150, 20) < 200);
+
+    // Liquid: a stream from the source (top left, pouring down to the right) lands
+    // and spreads along the floor; the water alone is clear where there's none.
+    let pour = [(lq::X, 20.0), (lq::Y, 10.0), (lq::DIRECTION, -60.0), (lq::SPEED, 60.0), (lq::WIDTH, 14.0), (lq::GRAVITY, 300.0), (lq::FLOW, 200.0), (lq::SHOW, 2.0)];
+    let wet = |img: &[u8], y0: u32, y1: u32| (y0..y1).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| a(img, x, y) > 60).count();
+    let early = draw(&mut c, &clear, EffectKind::Liquid, &pour, 0.4);
+    assert!(wet(&early, 0, 30) > 20, "near the source: {}", wet(&early, 0, 30));
+    let settled = draw(&mut c, &clear, EffectKind::Liquid, &pour, 3.0);
+    assert!(wet(&settled, 90, 108) > 600, "a pool on the floor: {}", wet(&settled, 90, 108));
+    assert!(a(&settled, 185, 5) < 10, "dry far from it");
+    let back = draw(&mut c, &clear, EffectKind::Liquid, &pour, 0.4);
+    assert!(early.iter().zip(&back).filter(|(p, q)| p.abs_diff(**q) > 2).count() < 30, "seeking back gives the same water");
+    // Poured onto a solid block: none inside it.
+    let onto = [(lq::X, 50.0), (lq::Y, 5.0), (lq::DIRECTION, -90.0), (lq::SPEED, 40.0), (lq::WIDTH, 20.0), (lq::GRAVITY, 300.0), (lq::FLOW, 200.0), (lq::SOLIDS, 2.0), (lq::SHOW, 2.0)];
+    let img = draw(&mut c, &screen, EffectKind::Liquid, &onto, 2.0);
+    let inside = (55..76).flat_map(|y| (80..112).map(move |x| (x, y))).filter(|&(x, y)| a(&img, x, y) > 60).count();
+    assert!(inside < 15, "water inside the block: {inside}");
+    assert!(wet(&img, 0, 50) > 30, "water on and above it: {}", wet(&img, 0, 50));
+    // Shown with the solid object (the green keyed out): the block is there, the green isn't.
+    let mut keyed = onto;
+    keyed[8] = (lq::SHOW, 1.0);
+    let img = draw(&mut c, &screen, EffectKind::Liquid, &keyed, 2.0);
+    assert!(a(&img, 96, 65) > 250 && a(&img, 5, 60) < 10);
+}
