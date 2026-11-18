@@ -786,7 +786,24 @@ What works now:
     - The two simulations are worked out from the layer's start (60 steps a second for the
       surface, 120 for the liquid) and kept as it plays, with a checkpoint every second, so
       seeking back starts from the nearest one and gives exactly the same water; what's solid
-      is read from the layer at each frame, so a keyed object can move
+      is read from the layer at each frame, so a keyed object can move. Jump ahead (scrub,
+      seek, or export from part way in) and the water is still what playing up to there would
+      give: the frames in between are stepped through first, each with the object where it
+      was then (up to 250 frames; a longer jump spreads them over it), so the object doesn't
+      jump through the water. Two clips with the same water settings over different footage
+      each get their own simulation
+    - **Kept on disk**: with the rendered previews kept on disk (Settings, on by default),
+      every checkpoint of a water or fluid simulation is too (in the cache folder's
+      `render/sims`, with half the rendered previews' room), so opening the project again,
+      or exporting it, picks up from the nearest one instead of working it out again. A saved
+      checkpoint only fits the same settings, grid, layer and footage (written over, it's
+      worked out afresh) and the same version of the simulation. **Edit → Clear render cache**
+      empties these too
+    - **Simulate now** (**Timeline → Water → Simulate now**, or the button on any water or
+      fluid effect): works the simulations out all at once, start to end, for the selected
+      clips with one (or every clip with one), and keeps them with the rendered previews, so
+      playing, scrubbing and exporting are quick. Progress shows on the button, in the status
+      bar and as the green bar along the ruler; **Stop** (or `Esc`) keeps what's done
   - **Generate** (a category of its own):
     - **Fractal noise**: a pattern that drifts and evolves, like After Effects' Fractal Noise or
       HitFilm's Clouds. **Type**: *Smooth*, *Turbulent* (billowing smoke), *Ridged* (sharp

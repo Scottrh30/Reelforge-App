@@ -6,6 +6,7 @@
   import { api, type FxPreset, type Inspector, type CatalogGroup, type Curves, type HueCurves, type EffectView, type ParamView } from "../lib/api";
   import { livePump } from "../lib/live";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
+  import { actions } from "../lib/actions.svelte";
   import NumberField from "./NumberField.svelte";
   import CurvesEditor from "./CurvesEditor.svelte";
   import HueCurvesEditor from "./HueCurvesEditor.svelte";
@@ -388,6 +389,17 @@
           {#if fx.sky_frames === null && busy === null}
             <p class="note">Press <b>Find the sky</b>: the object model picks out the sky in every other frame (it looks for sky along the top of the first frame), its edge is fitted to the trees and roofs, and the camera's movement is worked out so the new sky moves with it. Then choose a sky picture, or use the gradient.</p>
           {/if}
+        {/if}
+        {#if fx.kind === "Fluid" || fx.kind === "WaterSurface" || fx.kind === "Liquid"}
+          {@const busy = app.live?.simulating ? app.live.render : null}
+          <div class="row lut">
+            <span class="file">{busy !== null ? `Simulating… ${Math.round(busy * 100)}%` : "Worked out as it plays, or all at once"}</span>
+            {#if busy !== null}
+              <button class="small" onclick={() => actions.act("stop_render_preview")} title="Stop (what's done so far is kept)">Stop</button>
+            {:else}
+              <button class="small" disabled={app.live?.render != null} onclick={() => actions.act("simulate_now")} title="Work the simulation out now, start to end, and keep it (on disk too, with the rendered previews), so playing, scrubbing and exporting are quick, also when the project is opened again">Simulate now</button>
+            {/if}
+          </div>
         {/if}
         {#if fx.kind === "ObjectRemoval"}
           {@const areas = ins.masks.filter((m) => m.mask.enabled && m.mask.fill_area).length}

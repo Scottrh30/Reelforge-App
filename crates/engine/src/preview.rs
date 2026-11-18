@@ -529,6 +529,10 @@ struct PreviewFrames<'a> {
 }
 
 impl FrameProvider for PreviewFrames<'_> {
+    fn wait_for_frames(&mut self, wait: bool) -> bool {
+        std::mem::replace(&mut self.blocking, wait)
+    }
+
     fn title(&mut self, _: &Project, l: &Layer, frame_size: [u32; 2], sharp: f32, whole: bool) -> anyhow::Result<Option<Picture>> {
         let Some(spec) = l.clip.title_at(l.source_time) else { return Ok(None) };
         let (frame, size) = sharp_title_frame(self.titles, l.clip.id, &spec, frame_size, reelforge_export::title_clock(l), sharp, whole);

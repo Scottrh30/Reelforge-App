@@ -180,6 +180,39 @@ impl FluidGpu {
         let n = w as u64 * h as u64;
         let groups = (w.div_ceil(8), h.div_ceil(8));
         let size = job.size;
+        // Further on from a checkpoint kept on disk? (see `simstore`)
+        let store = crate::simstore::store();
+        let lens = [n * 8, n * 16];
+        let shader = include_str!("fluid.wgsl");
+        if let Some(store) = &store {
+            let mut at = target / EVERY * EVERY;
+            for _ in 0..600 {
+                if at <= sim.step || at == 0 {
+                    break;
+                }
+                let key = crate::simstore::checkpoint_key(job.key, at, &lens, shader);
+                if store.has(key) {
+                    if let Some(parts) = store.load(key).as_deref().and_then(|b| crate::simstore::unpack(b, &lens).map(|p| p.iter().map(|x| x.to_vec()).collect::<Vec<_>>())) {
+                        self.queue.write_buffer(&sim.vel, 0, &parts[0]);
+                        self.queue.write_buffer(&sim.dye, 0, &parts[1]);
+                        let mut enc = self.device.create_command_encoder(&Default::default());
+                        if layer.is_some() {
+                            // (what's solid is worked out at the start, which was skipped)
+                            let inp = step_inputs(&job.effect, at, job.w, job.h, size);
+                            self.queue.write_buffer(&self.uniforms, 0, &step_bytes(w, h, true, &inp, 1.0));
+                            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("obstacles"), timestamp_writes: None });
+                            pass.set_pipeline(&self.pipelines["obstacles"]);
+                            pass.set_bind_group(0, &sim.group, &[0]);
+                            pass.dispatch_workgroups(groups.0, groups.1, 1);
+                        }
+                        self.queue.submit([enc.finish()]);
+                        sim.step = at;
+                    }
+                    break;
+                }
+                at -= EVERY;
+            }
+        }
         while sim.step < target {
             let todo = (target - sim.step).min(CHUNK);
             for k in 0..todo {
@@ -188,6 +221,7 @@ impl FluidGpu {
                 self.queue.write_buffer(&self.uniforms, k as u64 * SLOT, &step_bytes(w, h, layer.is_some(), &inp, keep));
             }
             let mut enc = self.device.create_command_encoder(&Default::default());
+            let mut fresh = Vec::new();
             for k in 0..todo {
                 let off = (k as u64 * SLOT) as u32;
                 let run = |enc: &mut wgpu::CommandEncoder, entry: &str| {
@@ -219,6 +253,7 @@ impl FluidGpu {
                     enc.copy_buffer_to_buffer(&sim.vel, 0, &v, 0, n * 8);
                     enc.copy_buffer_to_buffer(&sim.dye, 0, &d, 0, n * 16);
                     sim.checkpoints.push((now, v, d));
+                    fresh.push(now);
                     if sim.checkpoints.len() > CHECKPOINTS {
                         // Keep the first and thin out the rest.
                         sim.checkpoints.remove(1);
@@ -227,6 +262,17 @@ impl FluidGpu {
             }
             self.queue.submit([enc.finish()]);
             sim.step += todo;
+            if let Some(store) = &store {
+                for at in fresh {
+                    let key = crate::simstore::checkpoint_key(job.key, at, &lens, shader);
+                    let Some((_, v, d)) = sim.checkpoints.iter().find(|c| c.0 == at) else { continue };
+                    if !store.has(key) {
+                        if let Some(parts) = crate::simstore::read_back(&self.device, &self.queue, &[(v, lens[0]), (d, lens[1])]) {
+                            store.save(key, crate::simstore::pack(&parts));
+                        }
+                    }
+                }
+            }
         }
         // The picture (slot 0 told this grid's size: another may have used it last).
         let inp = step_inputs(&job.effect, target, job.w, job.h, size);

@@ -18,6 +18,11 @@
 //! files are written in the background; a frame missing from memory is
 //! looked up there, and comes back into memory when used. The disk has its
 //! own budget, and the least recently used files go first.
+//!
+//! Water and fluid **simulations** keep their checkpoints (one a second of
+//! simulated time) on disk the same way, in a `sims` folder beside the frames
+//! (a second [`DiskStore`], `.rfs` files, half the frames' budget): see
+//! `reelforge_render::simstore`.
 
 use reelforge_core::Time;
 use std::collections::{BTreeMap, HashMap};
@@ -31,6 +36,8 @@ use std::time::Instant;
 /// RGBA deflated), with an index of what's there.
 pub struct DiskStore {
     dir: PathBuf,
+    /// Its files' extension: `rfc` (frames) or `rfs` (simulation checkpoints).
+    ext: &'static str,
     /// recipe → (bytes on disk, last used).
     index: Mutex<HashMap<u64, (u64, u64)>>,
     budget: AtomicU64,
@@ -48,12 +55,21 @@ impl DiskStore {
     /// Use (and make) `dir`, keeping at most `budget` bytes there. What's
     /// already there is indexed (by when it was last used).
     pub fn open(dir: &Path, budget: u64) -> Arc<Self> {
+        Self::open_kind(dir, budget, "rfc")
+    }
+
+    /// The same, for simulation checkpoints (`.rfs` files).
+    pub fn open_simulations(dir: &Path, budget: u64) -> Arc<Self> {
+        Self::open_kind(dir, budget, "rfs")
+    }
+
+    fn open_kind(dir: &Path, budget: u64, ext: &'static str) -> Arc<Self> {
         let _ = std::fs::create_dir_all(dir);
         let mut found: Vec<(u64, u64, u64)> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
-                let Some(hex) = name.strip_suffix(".rfc") else { continue };
+                let Some(hex) = name.strip_suffix(ext).and_then(|n| n.strip_suffix('.')) else { continue };
                 let (Ok(recipe), Ok(meta)) = (u64::from_str_radix(hex, 16), e.metadata()) else { continue };
                 let when = meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
                 found.push((recipe, meta.len(), when));
@@ -64,7 +80,7 @@ impl DiskStore {
         let index: HashMap<u64, (u64, u64)> = found.iter().enumerate().map(|(i, f)| (f.0, (f.1, i as u64 + 1))).collect();
         let (tx, rx) = crossbeam_channel::unbounded::<(u64, [u32; 2], Arc<[u8]>)>();
         let pending = Arc::new(AtomicU64::new(0));
-        let store = Arc::new(DiskStore { dir: dir.to_owned(), index: Mutex::new(index), budget: AtomicU64::new(budget), clock: AtomicU64::new(found.len() as u64 + 1), queue: tx, pending: pending.clone(), paused: Default::default() });
+        let store = Arc::new(DiskStore { dir: dir.to_owned(), ext, index: Mutex::new(index), budget: AtomicU64::new(budget), clock: AtomicU64::new(found.len() as u64 + 1), queue: tx, pending: pending.clone(), paused: Default::default() });
         let weak = Arc::downgrade(&store);
         let _ = std::thread::Builder::new().name("render cache writer".into()).spawn(move || {
             for (recipe, size, rgba) in rx {
@@ -91,7 +107,7 @@ impl DiskStore {
     }
 
     fn path(&self, recipe: u64) -> PathBuf {
-        self.dir.join(format!("{recipe:016x}.rfc"))
+        self.dir.join(format!("{recipe:016x}.{}", self.ext))
     }
 
     pub fn set_budget(&self, bytes: u64) {
@@ -100,12 +116,12 @@ impl DiskStore {
     }
 
     pub fn has(&self, recipe: u64) -> bool {
-        self.index.lock().unwrap().contains_key(&recipe)
+        self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(&recipe)
     }
 
     /// (bytes, frames) on disk.
     pub fn stats(&self) -> (u64, usize) {
-        let i = self.index.lock().unwrap();
+        let i = self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         (i.values().map(|v| v.0).sum(), i.len())
     }
 
@@ -142,30 +158,44 @@ impl DiskStore {
             return;
         }
         let stamp = self.clock.fetch_add(1, Ordering::Relaxed);
-        self.index.lock().unwrap().insert(recipe, (data.len() as u64, stamp));
+        self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(recipe, (data.len() as u64, stamp));
         self.evict();
     }
 
     /// A kept frame, if it's on disk (and readable).
     pub fn load(&self, recipe: u64) -> Option<([u32; 2], Vec<u8>)> {
+        self.load_with(recipe, |size, len| len == size[0] as usize * size[1] as usize * 4)
+    }
+
+    /// Kept bytes (a simulation checkpoint), if they're on disk (and readable).
+    pub fn load_bytes(&self, key: u64) -> Option<Vec<u8>> {
+        self.load_with(key, |size, _| size == [0, 0]).map(|(_, b)| b)
+    }
+
+    /// Keep bytes (written in the background).
+    pub fn store_bytes(&self, key: u64, bytes: Arc<[u8]>) {
+        self.store(key, [0, 0], bytes);
+    }
+
+    fn load_with(&self, recipe: u64, fits: impl Fn([u32; 2], usize) -> bool) -> Option<([u32; 2], Vec<u8>)> {
         if !self.has(recipe) {
             return None;
         }
         let path = self.path(recipe);
         let read = || -> Option<([u32; 2], Vec<u8>)> {
             let data = std::fs::read(&path).ok()?;
-            if data.len() < 16 || &data[..4] != MAGIC {
+            if data.len() < 16 || data.get(..4)? != MAGIC {
                 return None;
             }
-            let u = |i: usize| u32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
-            let (size, len) = ([u(4), u(8)], u(12) as usize);
-            let rgba = miniz_oxide::inflate::decompress_to_vec_with_limit(&data[16..], len).ok()?;
-            (rgba.len() == len && len == (size[0] * size[1] * 4) as usize).then_some((size, rgba))
+            let u = |i: usize| data.get(i..i + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+            let (size, len) = ([u(4)?, u(8)?], u(12)? as usize);
+            let rgba = miniz_oxide::inflate::decompress_to_vec_with_limit(data.get(16..)?, len).ok()?;
+            (rgba.len() == len && fits(size, len)).then_some((size, rgba))
         };
         match read() {
             Some(f) => {
                 let stamp = self.clock.fetch_add(1, Ordering::Relaxed);
-                if let Some(e) = self.index.lock().unwrap().get_mut(&recipe) {
+                if let Some(e) = self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&recipe) {
                     e.1 = stamp;
                 }
                 // Remembered as used, for next time.
@@ -176,7 +206,7 @@ impl DiskStore {
             }
             None => {
                 // Unreadable: forget it.
-                self.index.lock().unwrap().remove(&recipe);
+                self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&recipe);
                 let _ = std::fs::remove_file(&path);
                 None
             }
@@ -186,7 +216,7 @@ impl DiskStore {
     /// Delete every kept frame.
     pub fn clear(&self) {
         self.flush();
-        let all: Vec<u64> = self.index.lock().unwrap().drain().map(|(k, _)| k).collect();
+        let all: Vec<u64> = self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain().map(|(k, _)| k).collect();
         for r in all {
             let _ = std::fs::remove_file(self.path(r));
         }
@@ -196,7 +226,7 @@ impl DiskStore {
         let budget = self.budget.load(Ordering::Relaxed);
         let mut gone = Vec::new();
         {
-            let mut i = self.index.lock().unwrap();
+            let mut i = self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut used: u64 = i.values().map(|v| v.0).sum();
             if used <= budget {
                 return;
@@ -215,6 +245,18 @@ impl DiskStore {
         for k in gone {
             let _ = std::fs::remove_file(self.path(k));
         }
+    }
+}
+
+impl reelforge_render::SimulationStore for DiskStore {
+    fn has(&self, key: u64) -> bool {
+        DiskStore::has(self, key)
+    }
+    fn load(&self, key: u64) -> Option<Vec<u8>> {
+        self.load_bytes(key)
+    }
+    fn save(&self, key: u64, bytes: Vec<u8>) {
+        self.store_bytes(key, bytes.into());
     }
 }
 
@@ -239,6 +281,8 @@ pub struct RenderJob {
     /// Frames actually rendered (the rest were already in the cache).
     pub rendered: u64,
     pub started: Instant,
+    /// Run to work simulations out (Simulate now): said so as it goes.
+    pub simulating: bool,
 }
 
 impl RenderJob {
@@ -261,11 +305,13 @@ pub struct RenderCache {
     pub job: Option<RenderJob>,
     /// Where frames are also kept on disk (none: memory only).
     pub disk: Option<Arc<DiskStore>>,
+    /// Where simulation checkpoints are kept on disk (with the frames).
+    pub sims: Option<Arc<DiskStore>>,
 }
 
 impl RenderCache {
     pub fn new(budget_mb: usize) -> Self {
-        Self { frames: HashMap::new(), lru: BTreeMap::new(), used: 0, budget: budget_mb << 20, clock: 0, generation: 0, job: None, disk: None }
+        Self { frames: HashMap::new(), lru: BTreeMap::new(), used: 0, budget: budget_mb << 20, clock: 0, generation: 0, job: None, disk: None, sims: None }
     }
 
     pub fn set_budget_mb(&mut self, mb: usize) {
@@ -324,6 +370,9 @@ impl RenderCache {
     pub fn clear_all(&mut self, disk_too: bool) {
         if disk_too {
             if let Some(d) = &self.disk {
+                d.clear();
+            }
+            if let Some(d) = &self.sims {
                 d.clear();
             }
         }
@@ -419,6 +468,30 @@ mod tests {
         c.clear();
         assert_eq!(c.stats(), (0, 0));
         assert!(c.generation > g);
+    }
+
+    #[test]
+    fn simulation_checkpoints_kept_on_disk_come_back_after_a_restart() {
+        use reelforge_render::SimulationStore;
+        let dir = std::env::temp_dir().join(format!("rf_sim_disk_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let blob: Vec<u8> = (0..5000u32).flat_map(|i| (i as f32 * 0.25).to_le_bytes()).collect();
+        let store = DiskStore::open_simulations(&dir, 1 << 30);
+        store.save(42, blob.clone());
+        store.flush();
+        assert!(store.has(42));
+        // Its own files: frames in the same folder don't mix with them.
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| e.path().extension().is_some_and(|x| x == "rfs")));
+        assert_eq!(store.load_bytes(42).unwrap(), blob);
+        drop(store);
+        let again = DiskStore::open_simulations(&dir, 1 << 30);
+        assert_eq!(SimulationStore::load(&*again, 42).unwrap(), blob);
+        assert!(again.load(42).is_none(), "not a frame");
+        let frames = DiskStore::open(&dir, 1 << 30);
+        assert!(!frames.has(42), "the frame store doesn't see them");
+        again.clear();
+        assert!(!again.has(42));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

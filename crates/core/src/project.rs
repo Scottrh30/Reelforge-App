@@ -1125,28 +1125,50 @@ impl Project {
         }
     }
 
-    pub fn video_layers_at(&self, seq: usize, t: Time) -> Vec<VideoItem<'_>> {
+    /// Clip `c` (on `track` of sequence `seq`) as it's drawn at sequence time
+    /// `t`, with `frame` the sequence's frame length. `t` may be outside the
+    /// clip (to catch a simulation up from before it starts, say).
+    pub fn clip_layer<'a>(&'a self, seq: usize, track: usize, c: &'a Clip, t: Time, frame: Time) -> Layer<'a> {
+        let p = self;
+        // (A title has no media, but its text animation runs on the clip's time.)
+        let source_time = if p.is_still(c.media) && c.title.is_none() { Time::ZERO } else { c.media_at(t) };
+        // Keys are anchored to source time (also for stills, like the transform's).
+        // The layer's size, for effects that work over its shape (shatter, fluid).
+        let frame_size = p.sequences.get(seq).map_or([1920.0, 1080.0], |s| [s.width as f32, s.height as f32]);
+        let size = match (c.nested, c.plane, c.adjustment, c.title.is_some()) {
+            (None, None, false, false) => p.media(c.media).and_then(|m| m.layer_size()).map_or(frame_size, |s| [s[0] as f32, s[1] as f32]),
+            (Some(s), ..) => p.sequences.get(s).map_or(frame_size, |s| [s.width as f32, s.height as f32]),
+            _ => frame_size,
+        };
+        let mut effects = c.effects_sized(t, frame, size);
+        // An audio visualiser hears the sound at the moment.
+        for v in effects.iter_mut().filter(|v| v.kind == crate::effects::EffectKind::AudioSpectrum) {
+            crate::audiovis::fill(v, p, seq, c, t);
+        }
+        // A simulation that the clip's picture pushes about is that clip's own:
+        // another with the same settings over other footage is another one,
+        // and so is this one once the footage file is written over (its
+        // results may be kept on disk).
+        if effects.iter().any(|v| v.fluid.as_ref().is_some_and(|j| j.obstacles)) {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (c.id, c.media, c.anchor, c.speed.to_bits(), c.reverse, format!("{:?}", c.remap)).hash(&mut h);
+            p.media(c.media).and_then(|m| crate::imageseq::media_version(&m.path)).hash(&mut h);
+            let salt = h.finish();
+            for v in effects.iter_mut() {
+                if let Some(job) = v.fluid.as_mut().filter(|j| j.obstacles) {
+                    std::sync::Arc::make_mut(job).key ^= salt;
+                }
+            }
+        }
+        Layer { track, clip: c, source_time, transform: p.world_transform(seq, c, t), blend: c.blend, effects }
+    }
+
+    pub fn video_layers_at<'a>(&'a self, seq: usize, t: Time) -> Vec<VideoItem<'a>> {
         let s = &self.sequences[seq];
         let dissolves = self.dissolves(seq);
         let frame = s.frame_rate.frame_duration();
-        fn layer<'a>(p: &Project, seq: usize, track: usize, c: &'a Clip, t: Time, frame: Time) -> Layer<'a> {
-            // (A title has no media, but its text animation runs on the clip's time.)
-            let source_time = if p.is_still(c.media) && c.title.is_none() { Time::ZERO } else { c.media_at(t) };
-            // Keys are anchored to source time (also for stills, like the transform's).
-            // The layer's size, for effects that work over its shape (shatter, fluid).
-            let frame_size = [p.sequences[seq].width as f32, p.sequences[seq].height as f32];
-            let size = match (c.nested, c.plane, c.adjustment, c.title.is_some()) {
-                (None, None, false, false) => p.media(c.media).and_then(|m| m.layer_size()).map_or(frame_size, |s| [s[0] as f32, s[1] as f32]),
-                (Some(s), ..) => p.sequences.get(s).map_or(frame_size, |s| [s.width as f32, s.height as f32]),
-                _ => frame_size,
-            };
-            let mut effects = c.effects_sized(t, frame, size);
-            // An audio visualiser hears the sound at the moment.
-            for v in effects.iter_mut().filter(|v| v.kind == crate::effects::EffectKind::AudioSpectrum) {
-                crate::audiovis::fill(v, p, seq, c, t);
-            }
-            Layer { track, clip: c, source_time, transform: p.world_transform(seq, c, t), blend: c.blend, effects }
-        }
+        let layer = |p: &'a Project, seq: usize, track: usize, c: &'a Clip, t: Time, frame: Time| p.clip_layer(seq, track, c, t, frame);
         let mut out = Vec::new();
         for (ti, tr) in s.tracks.iter().enumerate() {
             if tr.kind != TrackKind::Video || tr.muted {
@@ -1364,5 +1386,36 @@ mod crossfade_tests {
             other => panic!("{other:?}"),
         }
         assert!(matches!(at(4.6).as_slice(), [VideoItem::Single(l)] if l.clip.id == ClipId(11)));
+    }
+}
+
+#[cfg(test)]
+mod simulation_tests {
+    use super::*;
+    use crate::effects::{water as ws, Effect, EffectKind};
+
+    #[test]
+    fn water_pushed_by_footage_is_each_clips_own() {
+        // Two clips with the same water settings over different footage: each
+        // its own simulation (the solids differ). Without solids, shared.
+        let mut p = Project::new();
+        let mut e = Effect::new(EffectKind::WaterSurface);
+        e.params[ws::SOLIDS].value = 1.0;
+        let s = Time::from_secs_f64;
+        let mut a = Clip::new(ClipId(1), MediaId(1), s(0.0), s(0.0), s(5.0), None);
+        let mut b = Clip::new(ClipId(2), MediaId(2), s(0.0), s(0.0), s(5.0), None);
+        a.effects.push(e.clone());
+        b.effects.push(e.clone());
+        let keys = |p: &Project, a: &Clip, b: &Clip| {
+            let k = |c: &Clip| p.clip_layer(0, 0, c, s(1.0), s(0.04)).effects[0].fluid.as_ref().map(|j| j.key);
+            (k(a), k(b))
+        };
+        let (ka, kb) = keys(&p, &a, &b);
+        assert!(ka.is_some() && ka != kb, "{ka:?} {kb:?}");
+        a.effects[0].params[ws::SOLIDS].value = 0.0;
+        b.effects[0].params[ws::SOLIDS].value = 0.0;
+        let (ka, kb) = keys(&p, &a, &b);
+        assert_eq!(ka, kb);
+        p.alloc_id();
     }
 }

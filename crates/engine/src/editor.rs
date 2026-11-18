@@ -226,6 +226,7 @@ impl Editor {
     /// Open the rendered previews kept on disk again (after files moved in).
     pub fn reopen_render_disk(&mut self) {
         self.render_cache.disk = None;
+        self.render_cache.sims = None;
         self.apply_render_disk();
     }
 
@@ -234,12 +235,24 @@ impl Editor {
         let mb = self.prefs.render_cache_disk_mb as u64;
         if mb == 0 {
             self.render_cache.disk = None;
+            self.render_cache.sims = None;
+            reelforge_render::set_simulation_store(None);
             return;
         }
         let dir = self.render_disk_dir.clone().unwrap_or_else(|| reelforge_media::proxy::media_cache_dir().join("render"));
         match &self.render_cache.disk {
             Some(d) if d.dir() == dir => d.set_budget(mb << 20),
             _ => self.render_cache.disk = Some(crate::render_cache::DiskStore::open(&dir, mb << 20)),
+        }
+        // Simulation checkpoints beside them, with half as much room.
+        let sims = dir.join("sims");
+        match &self.render_cache.sims {
+            Some(d) if d.dir() == sims => d.set_budget(mb << 19),
+            _ => {
+                let store = crate::render_cache::DiskStore::open_simulations(&sims, mb << 19);
+                reelforge_render::set_simulation_store(Some(store.clone()));
+                self.render_cache.sims = Some(store);
+            }
         }
     }
 
@@ -575,6 +588,7 @@ impl Editor {
         fresh.render_cache.set_budget_mb(fresh.prefs.render_cache_mb);
         // The frames on disk stay (they're for any project).
         fresh.render_cache.disk = self.render_cache.disk.clone();
+        fresh.render_cache.sims = self.render_cache.sims.clone();
         fresh.render_disk_dir = self.render_disk_dir.clone();
         fresh.proxies = std::mem::take(&mut self.proxies);
         fresh.session = self.session.take();
@@ -1177,13 +1191,48 @@ impl Editor {
         }
         let (first, last) = reelforge_export::frame_range(s.frame_rate, start, end);
         self.playback.pause();
-        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end: last, first, rendered: 0, started: std::time::Instant::now() });
+        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end: last, first, rendered: 0, started: std::time::Instant::now(), simulating: false });
         self.status = format!("Rendering preview: {} frames (Esc to stop)", last - first);
+    }
+
+    /// Work out the water and fluid simulations now, rather than as they play
+    /// (Timeline → Water → Simulate now, or the effect's button): every frame
+    /// of the selected clips with one (or of every clip with one, if none
+    /// selected has), start to end, rendered into the render cache, the
+    /// simulations' checkpoints kept on disk with it. So playing, scrubbing and
+    /// exporting them is quick, now and when the project is opened again.
+    pub fn simulate_now(&mut self) {
+        use reelforge_core::effects::EffectKind;
+        self.commit_live_edit();
+        let simulated = |c: &reelforge_core::Clip| c.effects.iter().any(|e| e.enabled && matches!(e.kind, EffectKind::Fluid | EffectKind::WaterSurface | EffectKind::Liquid));
+        let s = self.seq();
+        let clips: Vec<&reelforge_core::Clip> = s.tracks.iter().flat_map(|t| &t.clips).filter(|c| simulated(c)).collect();
+        let chosen: Vec<&reelforge_core::Clip> = clips.iter().copied().filter(|c| self.selected.contains(&c.id)).collect();
+        let pick = if chosen.is_empty() { clips } else { chosen };
+        let (Some(start), Some(end)) = (pick.iter().map(|c| c.timeline_start).min(), pick.iter().map(|c| c.timeline_end()).max()) else {
+            self.status = "Nothing to simulate: no clip here has a water or fluid effect".into();
+            return;
+        };
+        let n = pick.len();
+        let (first, last) = reelforge_export::frame_range(s.frame_rate, start.max(Time::ZERO), end);
+        if last <= first {
+            self.status = "Nothing to simulate: the clip is too short".into();
+            return;
+        }
+        self.playback.pause();
+        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end: last, first, rendered: 0, started: std::time::Instant::now(), simulating: true });
+        self.status = format!("Simulating {n} clip{}: {} frames (Esc to stop)", if n == 1 { "" } else { "s" }, last - first);
+    }
+
+    /// Whether the render-preview run going is Simulate now.
+    pub fn simulating(&self) -> bool {
+        self.render_cache.job.as_ref().is_some_and(|j| j.simulating)
     }
 
     pub fn stop_render_preview(&mut self) {
         if let Some(j) = self.render_cache.job.take() {
-            self.status = format!("Stopped rendering the preview ({} of {} frames done)", j.next - j.first, j.end - j.first);
+            let what = if j.simulating { "simulating" } else { "rendering the preview" };
+            self.status = format!("Stopped {what} ({} of {} frames done)", j.next - j.first, j.end - j.first);
         }
     }
 
@@ -1268,7 +1317,7 @@ impl Editor {
     fn step_render_job(&mut self, sources: &HashMap<MediaId, PathBuf>) {
         let Some(mut job) = self.render_cache.job.take() else { return };
         if self.playback.playing {
-            self.status = format!("Stopped rendering the preview to play ({} of {} frames done)", job.next - job.first, job.end - job.first);
+            self.status = format!("Stopped {} to play ({} of {} frames done)", if job.simulating { "simulating" } else { "rendering the preview" }, job.next - job.first, job.end - job.first);
             return;
         }
         if job.seq != self.active || job.seq >= self.project.sequences.len() {
@@ -1295,7 +1344,10 @@ impl Editor {
             }
             job.next += 1;
         }
-        if job.next >= job.end {
+        if job.next >= job.end && job.simulating {
+            let total = job.end - job.first;
+            self.status = format!("Simulated: {total} frames in {:.1} s, kept with the rendered previews (on disk too, if that's on in Settings)", job.started.elapsed().as_secs_f64());
+        } else if job.next >= job.end {
             let total = job.end - job.first;
             let (bytes, kept) = self.render_cache.stats();
             self.status = if job.rendered == 0 {
@@ -1307,7 +1359,7 @@ impl Editor {
                 self.status += ". Not all fit: raise the render cache size in Settings";
             }
         } else {
-            self.status = format!("Rendering preview… {:.0}% (Esc to stop)", job.fraction() * 100.0);
+            self.status = format!("{}… {:.0}% (Esc to stop)", if job.simulating { "Simulating" } else { "Rendering preview" }, job.fraction() * 100.0);
             self.render_cache.job = Some(job);
         }
     }
@@ -5482,6 +5534,30 @@ mod tests {
         e.stop_render_preview();
         assert!(e.render_progress().is_none());
         assert!(e.status.starts_with("Stopped rendering"));
+    }
+
+    #[test]
+    fn simulate_now_runs_over_the_clips_with_a_simulation() {
+        let mut e = editor();
+        e.simulate_now();
+        assert!(e.status.starts_with("Nothing to simulate"), "{}", e.status);
+        e.add_title();
+        e.simulate_now();
+        assert!(e.render_progress().is_none(), "a title has no simulation");
+        e.add_simulation("pour");
+        let seq = e.seq();
+        let (_, c) = seq.tracks.iter().flat_map(|t| t.clips.iter().map(move |c| (t, c))).find(|(_, c)| !c.effects.is_empty()).unwrap();
+        let (start, end) = (c.timeline_start, c.timeline_end());
+        e.selected.clear();
+        e.simulate_now();
+        assert!(e.simulating() && e.render_progress().is_some(), "{}", e.status);
+        let j = e.render_cache.job.as_ref().unwrap();
+        let (first, last) = reelforge_export::frame_range(e.seq().frame_rate, start, end);
+        assert_eq!((j.first, j.end), (first, last), "the clip's frames");
+        assert!(e.status.starts_with("Simulating 1 clip"), "{}", e.status);
+        e.stop_render_preview();
+        assert!(!e.simulating());
+        assert!(e.status.starts_with("Stopped simulating"), "{}", e.status);
     }
 
     #[test]

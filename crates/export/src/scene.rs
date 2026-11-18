@@ -46,6 +46,14 @@ pub trait FrameProvider {
         let _ = (sharp, whole);
         self.picture(project, layer, frame_size)
     }
+
+    /// Wait for each exact frame from now on (`true`), or show what's ready
+    /// (`false`). Returns what it was, to put it back. (Providers that always
+    /// wait needn't do anything.)
+    fn wait_for_frames(&mut self, wait: bool) -> bool {
+        let _ = wait;
+        true
+    }
 }
 
 /// How much finer to draw a 2D title shown `scale` times its size: 1 up to
@@ -180,6 +188,10 @@ impl Scene {
         unchanged_from: Option<u64>,
     ) -> Result<u64> {
         self.tick += 1;
+        // (Stepping simulations through the frames in between draws them: the
+        // picture must then be drawn again even if nothing else changed.)
+        let caught_up = self.catch_up_simulations(project, seq, t, compositor, provider)?;
+        let unchanged_from = unchanged_from.filter(|_| !caught_up);
         let sig = self.render_at(project, seq, None, t, compositor, provider, unchanged_from, 0)?;
         let tick = self.tick;
         // Compositions off screen for a few seconds give their GPU memory back.
@@ -187,6 +199,66 @@ impl Scene {
         self.masks.retain(|_, m| tick - m.2 < 150);
         self.ofx.trim(600);
         Ok(sig)
+    }
+
+    /// Water that a layer's own picture pushes about (a keyed boat, say) reads
+    /// it at every step. Played straight through, each frame's steps see that
+    /// frame. After a jump (a scrub, a seek, starting an export part way in),
+    /// the steps since where the simulation can start from would all see the
+    /// frame jumped to, as if the object had been there all along: so first the
+    /// layer is drawn at the frames in between (each stepping its simulation on
+    /// with its own picture), waiting for each frame to decode. Returns whether
+    /// anything was drawn. (Layers of the sequence shown, not ones inside
+    /// nested sequences.)
+    fn catch_up_simulations(&mut self, project: &Project, seq: usize, t: Time, compositor: &mut Compositor, provider: &mut dyn FrameProvider) -> Result<bool> {
+        /// At most this many frames are drawn to catch one simulation up (10 s
+        /// at 25 fps); a longer jump spreads them evenly over it.
+        const MAX_FRAMES: usize = 250;
+        let Some(s) = project.sequences.get(seq) else { return Ok(false) };
+        let frame = s.frame_rate.frame_duration();
+        let fps = self.out_fps.unwrap_or(s.frame_rate.fps());
+        if !(fps > 0.0) {
+            return Ok(false);
+        }
+        let frame_size = [s.width.max(2), s.height.max(2)];
+        let mut todo = Vec::new();
+        for item in reelforge_core::multicam::layers_at(project, seq, t, None) {
+            for l in item.layers() {
+                for v in &l.effects {
+                    if let Some(job) = v.fluid.as_ref().filter(|j| j.obstacles) {
+                        if let Some(from) = compositor.simulation_resume(job) {
+                            todo.push((l.track, l.clip, job.clone(), from));
+                        }
+                    }
+                }
+            }
+        }
+        let mut drew = false;
+        for (track, clip, job, from) in todo {
+            let rate = reelforge_core::water::rate(job.effect.kind);
+            if job.step.saturating_sub(from) as f64 <= rate / fps * 1.5 {
+                continue; // a frame or so on: this frame's picture will do
+            }
+            // Clip (keyframe) times from where it starts to where it's going.
+            let (a, b) = (from as f64 / rate, job.step as f64 / rate);
+            let n = (((b - a) * fps).floor() as usize).saturating_sub(1).min(MAX_FRAMES);
+            if n == 0 {
+                continue;
+            }
+            let scene3d = project.scene3d_at(seq, t);
+            let was = provider.wait_for_frames(true);
+            for k in 1..=n {
+                let ct = Time::from_secs_f64(a + (b - a) * k as f64 / (n + 1) as f64);
+                let at = clip.timeline_start + (ct - clip.source_in);
+                let l = project.clip_layer(seq, track, clip, at, frame);
+                if let Some(g) = self.gather(project, &l, at, frame_size, fps, &scene3d, provider, 0)? {
+                    compositor.render_items(frame_size, &[DrawItem::Layer(input(&g))]);
+                    drew = true;
+                }
+            }
+            provider.wait_for_frames(was);
+        }
+        Ok(drew)
     }
 
     #[allow(clippy::too_many_arguments)]

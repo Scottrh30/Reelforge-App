@@ -94,6 +94,8 @@ impl<'a> From<&'a reelforge_core::frame::Pixels> for PixelData<'a> {
 mod particles;
 mod fluidgpu;
 mod watergpu;
+pub mod simstore;
+pub use simstore::{set_simulation_store, SimulationStore};
 pub mod plugin;
 pub mod solid;
 pub mod text;
@@ -1205,6 +1207,12 @@ impl Compositor {
     }
 
     /// Composite `items` (bottom first) into a `frame_size` frame and submit the GPU work.
+    /// For a water surface or liquid: the step its simulation would start from
+    /// to reach `job`'s (so a caller can feed it the frames in between first).
+    pub fn simulation_resume(&self, job: &reelforge_core::fluid::FluidJob) -> Option<usize> {
+        matches!(job.effect.kind, EffectKind::WaterSurface | EffectKind::Liquid).then(|| self.water.resume_step(job))
+    }
+
     pub fn render_items(&mut self, frame_size: [u32; 2], items: &[DrawItem]) {
         // The shadow quality changed: a new atlas, bound in its place.
         let tile = SHADOW_TILE.load(std::sync::atomic::Ordering::Relaxed);

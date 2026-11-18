@@ -94,6 +94,8 @@ struct Live {
     matching: Option<f32>,
     /// A render-preview run: how far along (0–1).
     render: Option<f32>,
+    /// The render-preview run going is Simulate now.
+    simulating: bool,
     /// Bumped when the render cache gains or loses frames.
     render_gen: u64,
     /// What the Viewer is working from, for its performance readout.
@@ -189,6 +191,7 @@ fn tick() -> Res<Live> {
             upscaling: e.upscale.as_ref().map(|j| (j.media.0, j.progress)),
             matching: e.color_match.as_ref().map(|j| j.progress),
             render: e.render_progress(),
+            simulating: e.simulating(),
             render_gen: e.render_cache.generation,
             viewer: viewer_info(e),
             disk: e.disk_low.clone().filter(|_| !e.disk_dismissed),
@@ -833,6 +836,7 @@ fn action(name: String) -> Res<()> {
         "nudge_left_10" => e.nudge(-10),
         "nudge_right_10" => e.nudge(10),
         "render_preview" => e.render_preview(),
+        "simulate_now" => e.simulate_now(),
         "stop_render_preview" => e.stop_render_preview(),
         "make_composite" => e.make_composite(),
         other => e.status = format!("Unknown action {other}"),
