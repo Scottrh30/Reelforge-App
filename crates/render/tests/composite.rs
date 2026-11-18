@@ -2866,6 +2866,56 @@ fn the_cpu_and_the_gpu_draw_the_same_picture() {
 /// when asked); a water surface rings out from its drops and goes round (and
 /// leaves out) what's solid; the liquid falls from its source, never into a
 /// solid object, and comes out the same when seeking back.
+/// Liquid with depth: the water a body behind the layer, its top seen from
+/// above (a 2D layer's view, or a 3D layer's camera); flat without depth.
+#[test]
+fn liquid_with_depth_shows_its_top() {
+    use reelforge_core::effects::liquid as lq;
+    use reelforge_core::space3d::{layer_space, Camera, Scene3d};
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    c.transparent = true;
+    let (w, h) = (192u32, 108u32);
+    let size = [w as f32, h as f32];
+    let clear = solid(w, h, [0, 0, 0, 0]);
+    let fx = |set: &[(usize, f32)]| {
+        let mut e = Effect::new(EffectKind::Liquid);
+        // A still pool filling the bottom 40 %, nothing pouring, the water alone.
+        for &(i, v) in [(lq::FILL, 40.0), (lq::FLOW, 0.0), (lq::SHOW, 2.0)].iter().chain(set) {
+            e.params[i].value = v;
+        }
+        e.eval_sized(Time::from_secs_f64(1.0), None, size)
+    };
+    let mut key = 7000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, tr: Transform, space: Option<&reelforge_core::space3d::LayerSpace>, set: &[(usize, f32)]| {
+        key += 1;
+        let mut l = layer(1, &clear, [w, h], size, tr, BlendMode::Normal);
+        l.content_id = key;
+        l.space = space;
+        c.render([w, h], &[with_fx(l, vec![fx(set)])]);
+        c.read_output().unwrap()
+    };
+    // Rows above the pool's surface (at 60 % down): clear when flat.
+    let water_above = |img: &[u8]| (40..58).flat_map(|y| (20..170).map(move |x| (x, y))).filter(|&(x, y)| px(img, w, x, y)[3] > 60).count();
+    let flat = draw(&mut c, Transform::default(), None, &[]);
+    assert!(water_above(&flat) < 50, "flat: nothing above the surface");
+    // 2D, seen from above: the pool's top shows above its front edge.
+    let deep = draw(&mut c, Transform::default(), None, &[(lq::DEPTH, 200.0), (lq::VIEW, 25.0)]);
+    let n = water_above(&deep);
+    assert!(n > 1500, "its top seen from above: {n}");
+    // Seen from below instead: the top's out of sight.
+    let below = draw(&mut c, Transform::default(), None, &[(lq::DEPTH, 200.0), (lq::VIEW, -25.0)]);
+    assert!(water_above(&below) < 50, "from below no top above the edge");
+    // A 3D layer tipped so the camera looks down on it: the same, by its camera.
+    let tr = Transform { three_d: true, orientation: [40.0, 0.0], ..Transform::default() };
+    let scene = Scene3d { camera: Camera::default_for(size), lights: vec![] };
+    let ls = layer_space(&tr, size, &scene);
+    let flat3 = draw(&mut c, tr.clone(), Some(&ls), &[]);
+    let deep3 = draw(&mut c, tr.clone(), Some(&ls), &[(lq::DEPTH, 200.0)]);
+    let (a, b) = (flat3.chunks(4).filter(|p| p[3] > 60).count(), deep3.chunks(4).filter(|p| p[3] > 60).count());
+    assert!(b > a + 800, "the 3D layer's water has a top too: {a} → {b}");
+}
+
 /// An ocean with solid objects in it (keyed from the layer): they sit in the
 /// sea, white water where the sea meets them, a foam track behind one moving;
 /// without objects the ocean is as it was.

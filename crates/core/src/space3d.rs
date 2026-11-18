@@ -485,9 +485,29 @@ pub struct LayerSpace {
     /// The layer's plane in the world: where its centre is, and its X and Y
     /// axes per layer pixel (for the shadows it casts).
     pub plane: [V3; 3],
+    /// Where the camera is in the world.
+    pub camera: V3,
 }
 
 impl LayerSpace {
+    /// Where the camera is in the layer's own pixels: across and down from its
+    /// centre, and how far in front of it (negative: behind it). `None` if
+    /// the plane has no size.
+    pub fn local_camera(&self) -> Option<[f32; 3]> {
+        let [o, u, v] = self.plane;
+        let (uu, vv) = (dot(u, u), dot(v, v));
+        let n = cross(u, v);
+        let nn = dot(n, n).sqrt();
+        if !(uu > 1e-12 && vv > 1e-12 && nn > 1e-12) {
+            return None;
+        }
+        let d = sub(self.camera, o);
+        // (the layer's front faces the default camera: +z, its normal, points away)
+        let px = ((uu + vv) * 0.5).sqrt();
+        let local = [dot(d, u) / uu, dot(d, v) / vv, -dot(d, n) / nn / px];
+        local.iter().all(|x| x.is_finite()).then_some(local)
+    }
+
     /// The layer's pixels → frame pixels, for the viewer (hit tests, outline).
     pub fn layer_map(&self) -> Option<LayerMap> {
         self.map.map(LayerMap::Projective)
@@ -559,7 +579,7 @@ pub fn layer_space(t: &Transform, layer: [f32; 2], scene: &Scene3d) -> LayerSpac
     let depth = dot(sub(pos, cam.position), f);
     let scale = focal / depth.max(NEAR) * ((t.scale[0].abs() + t.scale[1].abs()) * 0.5);
     let lighting = (t.lit && !scene.lights.is_empty()).then(|| Lighting { origin, u: mul(u, 1.0), v: mul(v, 1.0), camera: cam.position, lights: scene.lights.clone() });
-    LayerSpace { mvp, map, depth, scale, lighting, plane: [origin, u, v] }
+    LayerSpace { mvp, map, depth, scale, lighting, plane: [origin, u, v], camera: cam.position }
 }
 
 /// A solid object (3D text) as the camera sees it. Its own coordinates are
@@ -891,5 +911,32 @@ mod view_tests {
         assert_eq!(other, own);
         set_view(None);
         assert_eq!(p.scene3d_at(seq, Time::ZERO).camera, own);
+    }
+}
+
+#[cfg(test)]
+mod local_camera_tests {
+    use super::*;
+    use crate::Transform;
+
+    #[test]
+    fn the_camera_in_a_layers_own_pixels() {
+        let size = [1920.0, 1080.0];
+        let scene = Scene3d { camera: Camera::default_for(size), lights: vec![] };
+        let focal = scene.camera.focal();
+        // Facing it: straight in front, at the focal distance.
+        let flat = layer_space(&Transform { three_d: true, ..Transform::default() }, size, &scene);
+        let c = flat.local_camera().unwrap();
+        assert!(c[0].abs() < 1e-2 && c[1].abs() < 1e-2 && (c[2] - focal).abs() < 1e-1, "{c:?} {focal}");
+        // Tipped about X one way the camera looks down on it (it's up the
+        // layer's picture: negative y), the other way up at it; in front either way.
+        let down = layer_space(&Transform { three_d: true, orientation: [55.0, 0.0], ..Transform::default() }, size, &scene).local_camera().unwrap();
+        let up = layer_space(&Transform { three_d: true, orientation: [-55.0, 0.0], ..Transform::default() }, size, &scene).local_camera().unwrap();
+        assert!(down[1] < -100.0 && down[2] > 0.0, "{down:?}");
+        assert!(up[1] > 100.0 && up[2] > 0.0, "{up:?}");
+        // Twice the size: the same place in its (now bigger) pixels is half as far.
+        let big = layer_space(&Transform { three_d: true, scale: [2.0, 2.0], ..Transform::default() }, size, &scene);
+        let c = big.local_camera().unwrap();
+        assert!((c[2] - focal / 2.0).abs() < 1e-1, "{c:?}");
     }
 }

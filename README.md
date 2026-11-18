@@ -793,7 +793,14 @@ What works now:
       objects** keyed from the layer as above, moving ones pushing it about. Drawn as a smooth
       surface: water colour, **Clearness**, refraction of what's behind, highlights, foam and
       spray. **Show**: the water over the layer, the water and the solid objects (the green
-      screen keyed out), or the water only (transparent)
+      screen keyed out), or the water only (transparent). **Depth (3D)**: give the water a
+      **Depth** and it's a body of water that deep behind the layer, the side-on simulation
+      carried back through it (a tank, a channel, a sheet where it falls), its top and sides
+      seen as well as its front: on a 3D layer by the scene's camera, in true perspective that
+      changes as the camera or the layer moves; on a 2D layer from **View from above** (an
+      angle; below zero, from underneath). The top catches the sky and the light, the sides are
+      darker, further back a little dimmer. **Timeline → Water → Fill a tank (with depth)**
+      starts one
     - The two simulations are worked out from the layer's start (60 steps a second for the
       surface, 120 for the liquid) and kept as it plays, with a checkpoint every second, so
       seeking back starts from the nearest one and gives exactly the same water; what's solid

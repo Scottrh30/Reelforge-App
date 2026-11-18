@@ -1819,6 +1819,19 @@ impl Compositor {
                         if let Some(job) = &e.fluid {
                             u[24..26].copy_from_slice(&[job.w as f32, job.h as f32]);
                         }
+                        // A liquid with depth: where it's seen from (texel_dir; see
+                        // fs_liquid): a 3D layer's camera in its own pixels, or
+                        // for a 2D layer the slant of the view from above.
+                        if e.kind == EffectKind::Liquid && e.values[reelforge_core::effects::liquid::DEPTH] > 0.0 {
+                            let cam = l.space.and_then(|s| s.local_camera()).filter(|c| c[2] > 1.0);
+                            let look = match cam {
+                                Some(c) => [c[0], c[1], c[2], 1.0],
+                                None => [0.0, e.values[reelforge_core::effects::liquid::VIEW].clamp(-60.0, 60.0).to_radians().tan(), 0.0, 2.0],
+                            };
+                            u[8..12].copy_from_slice(&look);
+                        } else {
+                            u[8..12].copy_from_slice(&[0.0; 4]);
+                        }
                         let entry = match e.kind {
                             EffectKind::Ocean => "fs_ocean",
                             EffectKind::WaterSurface => "fs_water",

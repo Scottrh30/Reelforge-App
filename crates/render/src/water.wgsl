@@ -634,7 +634,11 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
 // The simulation's picture (second, twice as fine as its grid): water density
 // (0.5 at the surface), foam, solid. p4 = (solid objects, tolerance, bounce,
 // water colour), p5 = (clearness %, refraction %, highlights %, foam %),
-// p6 = (smoothness %, light direction °, show, opacity %); extra2.xy = grid.
+// p6 = (smoothness %, light direction °, show, opacity %), p7 = (depth px,
+// view from above °); extra2.xy = grid. With depth, texel_dir says where it's
+// seen from: w 1, a 3D layer's camera (xyz, its own pixels from its centre,
+// z in front); w 2, a 2D layer seen from above (y: how far down the sight
+// goes for each pixel back).
 
 fn liq(uv: vec2<f32>, r: vec2<f32>) -> vec2<f32> {
     let a0 = textureSampleLevel(second, second_sampler, uv, 0.0).xy;
@@ -649,10 +653,72 @@ fn shape(f: f32) -> f32 {
     return smoothstep(0.25, 0.95, f) * 1.6;
 }
 
+// Where the sight through layer point uv goes, for each layer pixel further
+// back (layer pixels across and down).
+fn sight_slant(uv: vec2<f32>) -> vec2<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    if (fx.texel_dir.w > 1.5) {
+        return vec2(0.0, fx.texel_dir.y);
+    }
+    let p = (uv - 0.5) * size;
+    return (p - fx.texel_dir.xy) / max(fx.texel_dir.z, 1.0);
+}
+
+// The water as a body `depth` deep behind the layer: the sight from the
+// camera through uv, followed back through it. Returns (how far back it
+// first meets water, in layer pixels, or -1 if it doesn't; and how much the
+// face it meets is its top, 1, rather than a side, 0).
+fn through_body(uv: vec2<f32>, depth: f32) -> vec2<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let slant = sight_slant(uv);
+    let steps = 64;
+    // (each pixel's steps start a little differently: no bands where they fall)
+    let jitter = cell_rnd(floor(uv * size), 91u);
+    var prev = 0.0;
+    for (var k = 1; k <= steps; k++) {
+        let z = depth * (f32(k) - jitter) / f32(steps);
+        let q = uv + slant * z / size;
+        if (inside(q) == 0.0) {
+            break;
+        }
+        if (textureSampleLevel(second, second_sampler, q, 0.0).x > 0.5) {
+            // (pinned down between the last two samples)
+            var lo = prev;
+            var hi = z;
+            for (var r = 0; r < 5; r++) {
+                let mid = (lo + hi) * 0.5;
+                if (textureSampleLevel(second, second_sampler, uv + slant * mid / size, 0.0).x > 0.5) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            // The face met: the top if the water's edge there runs across, a side if down.
+            let tx = 1.0 / (max(fx.extra2.xy, vec2(4.0)) * 2.0);
+            let at = uv + slant * hi / size;
+            let gx = textureSampleLevel(second, second_sampler, at + vec2(tx.x, 0.0), 0.0).x - textureSampleLevel(second, second_sampler, at - vec2(tx.x, 0.0), 0.0).x;
+            let gy = textureSampleLevel(second, second_sampler, at + vec2(0.0, tx.y), 0.0).x - textureSampleLevel(second, second_sampler, at - vec2(0.0, tx.y), 0.0).x;
+            // (blended: how much the edge there runs across rather than down)
+            return vec2(hi, smoothstep(0.3, 0.75, abs(gy) / (abs(gx) + abs(gy) + 1e-4)));
+        }
+        prev = z;
+    }
+    return vec2(-1.0, 0.0);
+}
+
 @fragment
 fn fs_liquid(in: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(src, src_sampler, to_tex(in.uv));
     let ins = inside(in.uv);
+    let depth = max(fx.p7.x, 0.0);
+    // With depth: where the front of the water isn't, the sight may meet its
+    // top or sides further back.
+    if (depth > 0.0 && fx.texel_dir.w > 0.5 && ins > 0.0 && textureSampleLevel(second, second_sampler, in.uv, 0.0).x < 0.5) {
+        let hit = through_body(in.uv, depth);
+        if (hit.x > 0.0) {
+            return body_face(in.uv, c, hit, depth);
+        }
+    }
     let size = max(fx.extra.zw, vec2(1.0));
     let grid = max(fx.extra2.xy, vec2(4.0)) * 2.0;
     let tx = 1.0 / grid;
@@ -715,5 +781,47 @@ fn fs_liquid(in: VsOut) -> @location(0) vec4<f32> {
     }
     water = mix(water, vec4(vec3(0.92, 0.95, 0.97), 1.0), foam);
     let out = mix(back, water, cover);
+    return mix(c, out, clamp(fx.p6.w / 100.0, 0.0, 1.0));
+}
+
+// The water's top or a side, met `hit.x` back in a body `depth` deep: its
+// colour and light (the top catches the sky and the light, a side is darker,
+// further back is a little dimmer), over what's behind as fs_liquid does.
+fn body_face(uv: vec2<f32>, c: vec4<f32>, hit: vec2<f32>, depth: f32) -> vec4<f32> {
+    let show = u32(round(fx.p6.z));
+    let kind = u32(round(fx.p4.x));
+    let tol = clamp(fx.p4.y / 100.0, 0.0, 1.0);
+    var back = c;
+    if (show == 1u) {
+        back = c * solidity(c, kind, tol);
+    } else if (show == 2u) {
+        back = vec4(0.0);
+    }
+    let tint = colour(fx.p4.w);
+    let clear = clamp(fx.p5.x / 100.0, 0.0, 1.0);
+    let top = hit.y;
+    let far = clamp(hit.x / max(depth, 1.0), 0.0, 1.0);
+    let hl = max(fx.p5.z, 0.0) / 100.0;
+    // (a top seen at a slant reflects more of the sky, like any water)
+    let slant = length(sight_slant(uv));
+    let fres = mix(0.1, clamp(0.06 + 0.5 / (1.0 + slant * 2.0), 0.06, 0.55), top);
+    let sky = vec3(0.75, 0.84, 0.92);
+    let lit = mix(0.55, 1.0, top) * (1.0 - far * 0.25);
+    // Soft ripples drifting on the top, catching the light now and then.
+    let size = max(fx.extra.zw, vec2(1.0));
+    let ripple = fbm(uv * size / vec2(60.0, 22.0) + vec2(fx.extra.y * 0.3, 0.0), 71u);
+    let glint = smoothstep(0.7, 0.95, ripple) * 0.22 * hl * top;
+    let body = tint * (0.2 + 0.3 * lit);
+    let murk = (1.0 - clear) * 0.8 + 0.2;
+    var rgb = mix(back.rgb * mix(vec3(1.0), tint, murk), body, murk) * lit;
+    rgb = mix(rgb, sky * lit, fres) + vec3(glint);
+    var a = 1.0;
+    if (show == 2u) {
+        a = clamp(0.3 + murk * 0.6 + fres + glint, 0.0, 1.0);
+        rgb = body * lit + sky * fres * lit + vec3(glint);
+    } else {
+        a = max(back.a, clamp(murk + fres, 0.0, 1.0));
+    }
+    let out = vec4(rgb, a);
     return mix(c, out, clamp(fx.p6.w / 100.0, 0.0, 1.0));
 }

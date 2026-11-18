@@ -11,7 +11,7 @@ use reelforge_core::undo::{AddClip, Batch, Command};
 use reelforge_core::{Clip, ClipId, Effect, EffectKind, MediaId, TitleSpec, Time};
 
 /// What can be added (the menu's order): (name, label).
-pub const SIMULATIONS: [(&str, &str); 25] = [
+pub const SIMULATIONS: [(&str, &str); 26] = [
     ("fire", "Fire"),
     ("smoke", "Smoke"),
     ("explosion", "Explosion"),
@@ -34,6 +34,7 @@ pub const SIMULATIONS: [(&str, &str); 25] = [
     ("pour", "Pour water"),
     ("waterfall", "Waterfall"),
     ("fill", "Fill with water"),
+    ("tank", "Fill a tank (with depth)"),
     ("water_round", "Water round the selected layer (green screen)"),
     ("pour_round", "Pour water onto the selected layer (green screen)"),
     ("sea_round", "Sea round the selected layer (green screen)"),
@@ -151,6 +152,7 @@ impl Editor {
             "rain_water" => self.add_effects_layer(vec![with(EffectKind::WaterSurface, &[(ws::RAIN, 20.0), (ws::DROP_SIZE, 14.0 * k), (ws::LAYER, 0.0)])], false, "Add rain on water", "Added rain falling on water: put it over a picture of the bottom (it shows through, bent by the ripples) or keep its sandy floor; Rain sets how heavy"),
             "ripples" => self.add_effects_layer(vec![with(EffectKind::WaterSurface, &[(ws::RAIN, 0.0), (ws::DROP_EVERY, 1.2), (ws::DROP_SIZE, 30.0 * k)])], false, "Add ripples", "Added drops falling at one point (drag it in the Viewer), rings spreading out from each and bouncing off the frame's edges"),
             "waves" => self.add_effects_layer(vec![with(EffectKind::WaterSurface, &[(ws::RAIN, 0.0), (ws::WAVE_HEIGHT, 100.0), (ws::WAVELENGTH, 160.0 * k), (ws::WAVE_DIR, -70.0)])], false, "Add waves", "Added waves rolling in from one side: Wavelength and Wave direction set them; put a green-screen object on the layer and they bounce off it"),
+            "tank" => self.add_effects_layer(vec![liquid(k, &[(lq::FILL, 20.0), (lq::DEPTH, 450.0 * k), (lq::VIEW, 22.0)])], false, "Add a tank of water", "Added water pouring into a tank, seen from a little above (Depth makes it a body of water; View from above sets the angle). Make the layer 3D (Transform) and it's seen by the scene's camera instead, in perspective as the camera or the layer moves"),
             "pour" => self.add_effects_layer(vec![liquid(k, &[])], false, "Add pouring water", "Added water pouring in and splashing about the frame's floor (drag the source in the Viewer). It's worked out from the layer's start, so the first play takes a moment"),
             "waterfall" => self.add_effects_layer(
                 vec![liquid(k, &[(lq::X, 8.0), (lq::Y, 18.0), (lq::DIRECTION, 0.0), (lq::SPEED, 220.0 * k), (lq::WIDTH, 90.0 * k), (lq::FLOW, 180.0), (lq::EDGES, 1.0), (lq::FILL, 12.0)])],

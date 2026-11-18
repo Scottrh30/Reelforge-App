@@ -261,6 +261,7 @@
         { label: "Pour water", run: () => run(api.addSimulation("pour")) },
         { label: "Waterfall", run: () => run(api.addSimulation("waterfall")) },
         { label: "Fill with water", run: () => run(api.addSimulation("fill")) },
+        { label: "Fill a tank (with depth)", run: () => run(api.addSimulation("tank")) },
         { separator: true },
         { label: "Water round the selected layer (green screen)", disabled: app.s?.selected.length !== 1, run: () => run(api.addSimulation("water_round")) },
         { label: "Pour water onto the selected layer (green screen)", disabled: app.s?.selected.length !== 1, run: () => run(api.addSimulation("pour_round")) },

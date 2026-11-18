@@ -99,13 +99,29 @@ fn main() {
         ("13-ocean-rocks-keyed", &green, fx(EffectKind::Ocean, &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0)], 6.0, size)),
         ("14-ocean-rocks-big-swell", &green, fx(EffectKind::Ocean, &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0), (oc::SWELL, 220.0), (oc::WIND, 14.0), (oc::CAM_HEIGHT, 3.0)], 6.0, size)),
         ("14b-ocean-rocks-big-swell-no-foam", &green, fx(EffectKind::Ocean, &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0), (oc::SWELL, 220.0), (oc::WIND, 14.0), (oc::CAM_HEIGHT, 3.0), (oc::SURF, 0.0), (oc::WAKE, 0.0)], 6.0, size)),
+        ("15-liquid-depth-2d", &wall, fx(EffectKind::Liquid, &[(lq::FILL, 30.0), (lq::FLOW, 200.0), (lq::DEPTH, 500.0), (lq::VIEW, 25.0)], 3.0, size)),
+        ("15b-liquid-flat-2d", &wall, fx(EffectKind::Liquid, &[(lq::FILL, 30.0), (lq::FLOW, 200.0)], 3.0, size)),
         ("12-liquid-thick-onto-rock", &green, fx(EffectKind::Liquid, &[(lq::X, 45.0), (lq::Y, 2.0), (lq::DIRECTION, -90.0), (lq::SPEED, 80.0), (lq::THICK, 70.0), (lq::SOLIDS, 2.0), (lq::SHOW, 1.0), (lq::COLOR, 0xd0a020 as f32), (lq::CLEAR, 20.0)], 4.0, size)),
     ];
+    let only: Option<String> = std::env::var("ONLY").ok();
+    // The liquid on a 3D layer, turned towards the camera: a body of water with depth.
+    if only.as_deref().is_none_or(|o| "16-liquid-3d".contains(o)) {
+        use reelforge_core::space3d::{layer_space, Camera, Scene3d};
+        for (name, orient) in [("16-liquid-3d-turned", [30.0f32, 30.0f32]), ("16b-liquid-3d-from-above", [55.0, 0.0])] {
+            let tr = Transform { three_d: true, orientation: orient, ..Transform::default() };
+            let scene = Scene3d { camera: Camera::default_for(size), lights: vec![] };
+            let ls = layer_space(&tr, size, &scene);
+            let e = fx(EffectKind::Liquid, &[(lq::FILL, 30.0), (lq::FLOW, 200.0), (lq::DEPTH, 500.0), (lq::SHOW, 2.0)], 3.0, size);
+            let layers = vec![LayerInput { key: 77, content_id: 77, pixels: PixelData::Rgba(&clear), pixel_size: [w, h], layer_size: size, transform: tr, blend: BlendMode::Normal, effects: vec![e], mask: None, wipe: None, mesh: None, space: Some(&ls) }];
+            c.render([w, h], &layers);
+            image::save_buffer(out.join(format!("{name}.png")), &c.read_output().unwrap(), w, h, image::ColorType::Rgba8).unwrap();
+            println!("{name}");
+        }
+    }
     if let Ok(frames) = std::env::var("ANIM") {
         animate(&mut c, &out, w, h, frames.parse().unwrap_or(90));
         return;
     }
-    let only: Option<String> = std::env::var("ONLY").ok();
     for (n, (name, px, e)) in shots.into_iter().enumerate() {
         if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
             continue;

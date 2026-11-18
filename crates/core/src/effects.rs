@@ -609,7 +609,7 @@ const WATER_SURFACE: [ParamSpec; 31] = [
     choice("Output", &water::OUTPUTS),
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
 ];
-const LIQUID: [ParamSpec; 28] = [
+const LIQUID: [ParamSpec; 30] = [
     spec("Source X", 20.0, -50.0, 150.0, " %", 0.1),
     spec("Source Y", 12.0, -50.0, 150.0, " %", 0.1),
     spec("Direction", -15.0, -360.0, 360.0, "°", 0.5),
@@ -638,6 +638,8 @@ const LIQUID: [ParamSpec; 28] = [
     spec("Light direction", 120.0, -360.0, 360.0, "°", 0.5),
     choice("Show", &liquid::SHOWS),
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Depth", 0.0, 0.0, 4000.0, " px", 1.0),
+    spec("View from above", 25.0, -60.0, 60.0, "°", 0.2),
 ];
 const LEVELS: [ParamSpec; 5] = [
     spec("Input black", 0.0, 0.0, 254.0, "", 0.5),
@@ -1595,6 +1597,11 @@ pub mod liquid {
     pub const LIGHT_DIR: usize = 25;
     pub const SHOW: usize = 26;
     pub const OPACITY: usize = 27;
+    /// The water as a body this deep behind the layer (layer pixels; 0: flat),
+    /// seen in perspective by a 3D layer's camera.
+    pub const DEPTH: usize = 28;
+    /// On a 2D layer: how far above the water it's seen from.
+    pub const VIEW: usize = 29;
     pub const DETAILS: [&str; 3] = ["Low (fast)", "Medium", "High"];
     pub const EDGE_KINDS: [&str; 4] = ["Floor and walls", "Floor only", "Walls only", "Open (it falls out)"];
     pub const SHOWS: [&str; 3] = ["Water over the layer", "Water and the solid objects (keyed)", "Water only (transparent)"];
@@ -2563,7 +2570,7 @@ impl EffectKind {
             EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look"), (15, "Obstacles")],
             EffectKind::Ocean => &[(0, "Waves"), (9, "Camera"), (13, "Water"), (16, "Sky and sun"), (22, "Output"), (25, "Solid objects")],
             EffectKind::WaterSurface => &[(0, "Rain and drops"), (6, "Waves"), (10, "Water"), (15, "Solid objects"), (19, "Look"), (29, "Output")],
-            EffectKind::Liquid => &[(0, "Source"), (8, "Water"), (16, "Solid objects"), (19, "Look"), (26, "Output")],
+            EffectKind::Liquid => &[(0, "Source"), (8, "Water"), (16, "Solid objects"), (19, "Look"), (26, "Output"), (28, "Depth (3D)")],
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
             EffectKind::FractalNoise => &[(0, "Noise"), (6, "Motion"), (10, "Colour")],
             EffectKind::AudioSpectrum => &[(0, "Sound"), (3, "Where"), (7, "Shape"), (11, "Colour")],
