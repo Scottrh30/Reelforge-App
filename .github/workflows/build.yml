@@ -114,7 +114,7 @@ jobs:
         with:
           name: Reelforge-Windows-x64
           path: ${{ runner.temp }}/Reelforge-Windows-x64.zip
-          retention-days: 30
+          retention-days: 7
       - name: Release (version tags)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
