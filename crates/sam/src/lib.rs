@@ -9,6 +9,10 @@
 //! frame ([`embed`], a second or two), then the decoder for each set of
 //! prompts ([`cut`], a tenth of a second).
 
+// Never crash: no unwrap, expect, panic, unreachable, todo or unimplemented
+// outside tests (a damaged file or an odd setting is an error, not a crash).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 // (as reelforge-render: model passes take their buffers plainly)
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
 
@@ -126,38 +130,45 @@ fn gemm(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], bt: bool, c: &mut [f
 
 /// Named tensors from a packed weights file: `RFSAM1` (f16 throughout) or
 /// `RFSAM2` (big tensors int8 with a scale per output channel, the rest f16).
+/// The weights in a packed model file (see the module notes), or `None` if
+/// it's damaged: every offset and size is checked against the file.
 pub(crate) fn load_weights(bytes: &[u8]) -> Option<HashMap<String, (Vec<usize>, Vec<f32>)>> {
-    if bytes.len() < 12 {
-        return None;
-    }
-    let hl = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
+    let hl = u32::from_le_bytes(bytes.get(8..12)?.try_into().ok()?) as usize;
+    let head_bytes = bytes.get(12..12usize.checked_add(hl)?)?;
     let mut w = HashMap::new();
-    let f16 = |d: &[u8], off: usize, n: usize| -> Vec<f32> { (0..n).map(|i| f16_to_f32(u16::from_le_bytes([d[off + 2 * i], d[off + 2 * i + 1]]))).collect() };
-    match &bytes[..6] {
+    // `n` halves from byte `off` of `d`.
+    let f16 = |d: &[u8], off: usize, n: usize| -> Option<Vec<f32>> {
+        let raw = d.get(off..off.checked_add(n.checked_mul(2)?)?)?;
+        Some(raw.chunks_exact(2).map(|b| f16_to_f32(u16::from_le_bytes([b[0], b[1]]))).collect())
+    };
+    // (no tensor bigger than the file could hold)
+    let count = |shape: &[usize]| -> Option<usize> { shape.iter().try_fold(1usize, |a, &d| a.checked_mul(d)).map(|n| n.max(1)).filter(|&n| n <= bytes.len()) };
+    match bytes.get(..6)? {
         // f16 throughout: offsets in halves.
         b"RFSAM1" => {
-            let head: HashMap<String, (usize, Vec<usize>)> = serde_json::from_slice(&bytes[12..12 + hl]).ok()?;
-            let data = &bytes[12 + hl + (12 + hl) % 2..];
+            let head: HashMap<String, (usize, Vec<usize>)> = serde_json::from_slice(head_bytes).ok()?;
+            let data = bytes.get(12 + hl + (12 + hl) % 2..)?;
             for (k, (off, shape)) in head {
-                let n: usize = shape.iter().product::<usize>().max(1);
-                w.insert(k, (shape.clone(), f16(data, 2 * off, n)));
+                let n = count(&shape)?;
+                w.insert(k, (shape.clone(), f16(data, off.checked_mul(2)?, n)?));
             }
         }
         // The big tensors int8 with a scale per output channel (f32,
         // before them), the rest f16: offsets in bytes.
         b"RFSAM2" => {
-            let head: HashMap<String, (usize, Vec<usize>, String)> = serde_json::from_slice(&bytes[12..12 + hl]).ok()?;
-            let data = &bytes[12 + hl + (4 - (12 + hl) % 4) % 4..];
+            let head: HashMap<String, (usize, Vec<usize>, String)> = serde_json::from_slice(head_bytes).ok()?;
+            let data = bytes.get(12 + hl + (4 - (12 + hl) % 4) % 4..)?;
             for (k, (off, shape, kind)) in head {
-                let n: usize = shape.iter().product::<usize>().max(1);
+                let n = count(&shape)?;
                 let v = if kind == "i8" {
-                    let rows = shape[0].max(1);
-                    let per = n / rows;
-                    let scales: Vec<f32> = (0..rows).map(|r| f32::from_le_bytes(data[off + 4 * r..off + 4 * r + 4].try_into().unwrap())).collect();
-                    let q = &data[off + 4 * rows..off + 4 * rows + n];
-                    q.iter().enumerate().map(|(i, &b)| b as i8 as f32 * scales[i / per]).collect()
+                    let rows = shape.first().copied().unwrap_or(1).max(1);
+                    let per = (n / rows).max(1);
+                    let scales: Vec<f32> = data.get(off..off.checked_add(rows.checked_mul(4)?)?)?.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+                    let at = off.checked_add(rows.checked_mul(4)?)?;
+                    let q = data.get(at..at.checked_add(n)?)?;
+                    q.iter().enumerate().map(|(i, &b)| b as i8 as f32 * scales.get(i / per).copied().unwrap_or(0.0)).collect()
                 } else {
-                    f16(data, off, n)
+                    f16(data, off, n)?
                 };
                 w.insert(k, (shape, v));
             }
@@ -165,6 +176,14 @@ pub(crate) fn load_weights(bytes: &[u8]) -> Option<HashMap<String, (Vec<usize>, 
         _ => return None,
     }
     Some(w)
+}
+
+/// Run a model, turning a panic inside it into `None`: a model file that
+/// doesn't match the code (a weight missing, a tensor the wrong shape) mustn't
+/// take the app down with it. Every public entry point that runs a model goes
+/// through here.
+pub fn guard<T>(f: impl FnOnce() -> Option<T>) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok().flatten()
 }
 
 impl Sam {
@@ -197,6 +216,9 @@ impl Sam {
         Some(sam)
     }
 
+    // (A weight the code asks for that the model file hasn't: the file doesn't
+    // match. Runs go through `guard`, which turns this into "the model failed".)
+    #[allow(clippy::panic)]
     fn t(&self, k: &str) -> &[f32] {
         &self.w.get(k).unwrap_or_else(|| panic!("no weight {k}")).1
     }
@@ -745,6 +767,10 @@ pub fn gpu() -> Option<&'static GpuEncoder> {
 /// Encode a picture (RGBA, `w` × `h`): on the graphics card when there is
 /// one, otherwise (or if that fails) on the CPU.
 pub fn embed(rgba: &[u8], w: usize, h: usize) -> Option<Embedding> {
+    guard(|| embed_now(rgba, w, h))
+}
+
+fn embed_now(rgba: &[u8], w: usize, h: usize) -> Option<Embedding> {
     let sam = model()?;
     if w == 0 || h == 0 || rgba.len() < w * h * 4 {
         return None;
@@ -776,6 +802,10 @@ pub struct Cut {
 }
 
 pub fn cut(e: &Embedding, p: &Prompt) -> Option<Cut> {
+    guard(|| cut_now(e, p))
+}
+
+fn cut_now(e: &Embedding, p: &Prompt) -> Option<Cut> {
     let sam = model()?;
     let s = e.scale;
     let points: Vec<([f32; 2], bool)> = p.points.iter().map(|(q, on)| ([q[0] * s, q[1] * s], *on)).collect();
@@ -786,7 +816,7 @@ pub fn cut(e: &Embedding, p: &Prompt) -> Option<Cut> {
     let (mut masks, iou) = sam.decode(&e.data, &points, bbox, p.mask);
     // One point is ambiguous (a part, the whole, …): the model offers three
     // and says which it thinks best; with more to go on, its single answer.
-    let best = if points.len() == 1 && bbox.is_none() && p.mask.is_none() { (1..4).max_by(|&a, &b| iou[a].total_cmp(&iou[b])).unwrap() } else { 0 };
+    let best = if points.len() == 1 && bbox.is_none() && p.mask.is_none() { (1..4).max_by(|&a, &b| iou[a].total_cmp(&iou[b])).unwrap_or(0) } else { 0 };
     let low = masks.swap_remove(best);
     Some(Cut { logits: upscale(&low, e.w, e.h, s), low, quality: iou[best].clamp(0.0, 1.0) })
 }
@@ -794,6 +824,50 @@ pub fn cut(e: &Embedding, p: &Prompt) -> Option<Cut> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A damaged or hostile model file is turned away, never a crash: cut
+    /// off anywhere, a header that claims too much, offsets past the end.
+    #[test]
+    fn damaged_weight_files_are_refused() {
+        let file = |magic: &[u8; 6], head: &str, data: &[u8]| {
+            let mut b = magic.to_vec();
+            b.extend_from_slice(&[0, 0]);
+            b.extend_from_slice(&(head.len() as u32).to_le_bytes());
+            b.extend_from_slice(head.as_bytes());
+            while !b.len().is_multiple_of(4) {
+                b.push(0);
+            }
+            b.extend_from_slice(data);
+            b
+        };
+        let good = file(b"RFSAM2", r#"{"w":[0,[2],"f16"]}"#, &[0, 0x3c, 0, 0x40]);
+        assert_eq!(load_weights(&good).unwrap()["w"].1, vec![1.0, 2.0]);
+        for n in 0..good.len() - 1 {
+            assert!(load_weights(&good[..n]).is_none(), "cut at {n}");
+        }
+        for head in [
+            r#"{"w":[0,[18446744073709551615,18446744073709551615],"f16"]}"#,
+            r#"{"w":[18446744073709551615,[2],"f16"]}"#,
+            r#"{"w":[18446744073709551615,[2,1],"i8"]}"#,
+            r#"{"w":[0,[4611686018427387904,1],"i8"]}"#,
+        ] {
+            assert!(load_weights(&file(b"RFSAM2", head, &[0; 16])).is_none(), "{head}");
+        }
+        assert!(load_weights(&file(b"RFSAM1", r#"{"w":[9223372036854775807,[2]]}"#, &[0; 8])).is_none());
+        let mut huge = good.clone();
+        huge[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(load_weights(&huge).is_none());
+        assert!(load_weights(b"junk").is_none());
+    }
+
+    /// A model that panics part way through gives nothing back instead.
+    #[test]
+    fn a_failing_model_run_is_caught() {
+        assert_eq!(guard(|| Some(3)), Some(3));
+        assert_eq!(guard::<u8>(|| None), None);
+        let empty: Vec<u8> = Vec::new();
+        assert_eq!(guard(|| Some(empty[usize::MAX / 2])), None);
+    }
 
     /// A red disc on a mottled grey ground: a click on it cuts out the disc,
     /// and a box round it does too.

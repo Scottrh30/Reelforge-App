@@ -115,7 +115,7 @@ impl Editor {
             return Err("Save the project first: its versions are kept beside it".into());
         }
         let name = if name.trim().is_empty() { format!("Version {}", self.versions().iter().filter(|v| !v.auto).count() + 1) } else { name.trim().to_owned() };
-        let v = self.write_version(&name, note.trim(), false, true)?.expect("always written");
+        let v = self.write_version(&name, note.trim(), false, true)?.ok_or("couldn't keep the version")?;
         self.status = format!("Kept the version \"{}\"", v.name);
         Ok(v)
     }
@@ -140,7 +140,7 @@ impl Editor {
         let saved = now();
         let stamp = chrono_like(saved);
         let base = format!("{stamp} {}", file_safe(name));
-        let file = (1..).map(|n| if n == 1 { format!("{base}.rfproj") } else { format!("{base} {n}.rfproj") }).find(|f| !dir.join(f).exists()).unwrap();
+        let file = reelforge_core::undo::first_free(|n| if n == 1 { format!("{base}.rfproj") } else { format!("{base} {n}.rfproj") }, |f| dir.join(f).exists());
         crate::safety::write_atomic(&dir.join(&file), json.as_bytes()).map_err(|e| format!("couldn't keep the version: {e}"))?;
         let v = Version { file, name: name.to_owned(), note: note.to_owned(), saved, auto, summary: describe(&self.project), hash };
         index.versions.push(v.clone());

@@ -67,7 +67,7 @@ impl Colours {
         let mut assign = vec![0usize; s.len()];
         for _ in 0..8 {
             for (i, p) in s.iter().enumerate() {
-                assign[i] = (0..k).min_by(|&a, &b| d2(p, &means[a]).total_cmp(&d2(p, &means[b]))).unwrap();
+                assign[i] = (0..k).min_by(|&a, &b| d2(p, &means[a]).total_cmp(&d2(p, &means[b]))).unwrap_or(0);
             }
             for (c, m) in means.iter_mut().enumerate() {
                 let (mut sum, mut n) = ([0.0f32; 3], 0.0f32);
@@ -436,7 +436,7 @@ pub fn simplify(pts: &[[f32; 2]], tol: f32) -> Vec<[f32; 2]> {
         }
     }
     // Split at the point furthest from the first.
-    let far = (1..pts.len()).max_by(|&i, &j| d2f(pts[i], pts[0]).total_cmp(&d2f(pts[j], pts[0]))).unwrap();
+    let Some(far) = (1..pts.len()).max_by(|&i, &j| d2f(pts[i], pts[0]).total_cmp(&d2f(pts[j], pts[0]))) else { return pts.to_vec() };
     let mut out = Vec::new();
     dp(&pts[..=far], tol, &mut out);
     let mut back: Vec<[f32; 2]> = pts[far..].to_vec();

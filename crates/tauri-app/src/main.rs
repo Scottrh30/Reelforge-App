@@ -8,6 +8,10 @@
 //! the viewer picture; it then fetches the full state when `rev` changed and
 //! the picture when `picture_rev` changed.
 
+// Never crash: no unwrap, expect, panic, unreachable, todo or unimplemented
+// outside tests (a damaged file or an odd setting is an error, not a crash).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 // (a few nested types read better spelled out)
 #![allow(clippy::type_complexity)]
 
@@ -282,7 +286,7 @@ fn thumbnail(path: String, at: i64) -> Res<Response> {
     static OPEN: Mutex<Vec<(PathBuf, reelforge_media::FrameSource)>> = Mutex::new(Vec::new());
     let path = PathBuf::from(path);
     let mut src = {
-        let mut open = OPEN.lock().unwrap();
+        let mut open = OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match open.iter().position(|(p, _)| *p == path) {
             Some(i) => open.remove(i).1,
             None => reelforge_media::FrameSource::open(&path, Some((320, 180))).map_err(|e| format!("{e:#}"))?,
@@ -290,7 +294,7 @@ fn thumbnail(path: String, at: i64) -> Res<Response> {
     };
     let frame = src.frame_at_blocking(Time(at.max(0)), std::time::Duration::from_secs(5));
     {
-        let mut open = OPEN.lock().unwrap();
+        let mut open = OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if open.len() >= 4 {
             open.remove(0);
         }
@@ -1731,14 +1735,17 @@ fn roto_model_bench() -> Vec<reelforge_render::bench::BenchLine> {
     };
     let mut out = Vec::new();
     if let Some(g) = reelforge_sam::gpu() {
-        let _ = g.encode(&img);
+        // (a model that doesn't match its file fails here rather than crashing)
+        if reelforge_sam::guard(|| g.encode(&img)).is_none() {
+            return out;
+        }
         let ms = time(&|| {
-            let _ = g.encode(&img);
+            let _ = reelforge_sam::guard(|| g.encode(&img));
         });
         out.push(line("Roto brush: one frame for the object model, on the graphics card", ms, format!("{} (under a second: strokes and carrying feel quick)", g.adapter)));
     }
     let ms = time(&|| {
-        let _ = sam.encode(&img);
+        let _ = reelforge_sam::guard(|| Some(sam.encode(&img)));
     });
     let gpu = if reelforge_sam::gpu().is_some() { "" } else { "; no suitable graphics card, so the CPU does it" };
     out.push(line("Roto brush: one frame for the object model, on the CPU", ms, format!("{} threads{gpu}", std::thread::available_parallelism().map_or(1, |n| n.get()))));

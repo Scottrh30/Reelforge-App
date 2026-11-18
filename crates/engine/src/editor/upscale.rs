@@ -93,14 +93,22 @@ impl Editor {
     pub(crate) fn poll_upscale(&mut self) {
         let Some(job) = self.upscale.as_mut() else { return };
         let mut done = None;
-        while let Ok(m) = job.rx.try_recv() {
-            match m {
-                UpMsg::Progress(p) => job.progress = p,
-                UpMsg::Done(r) => done = Some(r),
+        loop {
+            match job.rx.try_recv() {
+                Ok(UpMsg::Progress(p)) => job.progress = p,
+                Ok(UpMsg::Done(r)) => done = Some(r),
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                // (its thread gone without finishing: it couldn't start, or failed)
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    if done.is_none() {
+                        done = Some(Err("the upscaling stopped unexpectedly".into()));
+                    }
+                    break;
+                }
             }
         }
         let Some(result) = done else { return };
-        let job = self.upscale.take().unwrap();
+        let Some(job) = self.upscale.take() else { return };
         match result {
             Ok(Some(path)) => {
                 let name = self.project.media(job.media).map(|m| m.name.clone()).unwrap_or_default();
@@ -120,7 +128,9 @@ impl Editor {
 
 #[allow(clippy::too_many_arguments)]
 fn run(src: &Path, dst: &Path, info: &reelforge_core::MediaInfo, rate: reelforge_core::FrameRate, factor: u32, still: bool, stop: &AtomicBool, progress: &mut dyn FnMut(f32)) -> Result<Option<PathBuf>, String> {
-    std::fs::create_dir_all(dst.parent().unwrap()).map_err(|e| format!("making {}: {e}", dst.parent().unwrap().display()))?;
+    if let Some(dir) = dst.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("making {}: {e}", dir.display()))?;
+    }
     let mut source = reelforge_media::FrameSource::open(src, None).map_err(|e| format!("{e:#}"))?;
     let up = |rgba: &[u8], w: usize, h: usize, p: &mut dyn FnMut(f32)| -> Result<Vec<u8>, String> {
         let big = reelforge_sam::upscale::upscale(rgba, w, h, &mut *p).ok_or("the upscaling model didn't load")?;

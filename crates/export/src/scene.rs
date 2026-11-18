@@ -665,8 +665,9 @@ fn recipe_into(project: &Project, seq: usize, angle: Option<reelforge_core::mult
             (None, Some(_)) => {
                 2u8.hash(h);
                 let at = crate::title_clock(l);
-                let spec = clip.title_at(l.source_time).expect("a title");
-                spec.content_hash_at([((frame_size[0] as f32 * par).round() as u32).max(2), frame_size[1]], at.0, at.1).hash(h);
+                if let Some(spec) = clip.title_at(l.source_time) {
+                    spec.content_hash_at([((frame_size[0] as f32 * par).round() as u32).max(2), frame_size[1]], at.0, at.1).hash(h);
+                }
                 [frame_size[0] as f32, frame_size[1] as f32]
             }
             (None, None) => {
@@ -806,10 +807,18 @@ fn track_mattes(items: Vec<Item>, tags: &[(usize, Option<reelforge_core::TrackMa
         if let (Some(kind), Some(Item::Single(_))) = (matte, &slots[i]) {
             let next = i + 1 < slots.len() && Some(tags[i + 1].0) == above(track) && (i + 2 >= slots.len() || tags[i + 2].0 != tags[i + 1].0);
             if next && matches!(slots[i + 1], Some(Item::Single(_))) {
-                let (Some(Item::Single(layer)), Some(Item::Single(m))) = (slots[i].take(), slots[i + 1].take()) else { unreachable!() };
-                out.push(Item::Matted { matte: m, layer, kind });
-                i += 2;
-                continue;
+                match (slots[i].take(), slots[i + 1].take()) {
+                    (Some(Item::Single(layer)), Some(Item::Single(m))) => {
+                        out.push(Item::Matted { matte: m, layer, kind });
+                        i += 2;
+                        continue;
+                    }
+                    // (checked just above: never so, but put back as they were)
+                    (a, b) => {
+                        slots[i] = a;
+                        slots[i + 1] = b;
+                    }
+                }
             }
             if !next && matches!(kind, TrackMatte::Alpha | TrackMatte::Luma) {
                 i += 1;

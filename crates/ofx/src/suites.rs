@@ -157,7 +157,7 @@ unsafe extern "C" fn clip_define(effect: *mut c_void, name: *const c_char, out: 
                 .i("OfxImageEffectPropSupportsTiles", 1);
             e.clips.push(Box::new(ClipObj::new(n.to_string(), props)));
         }
-        let c = e.clips.iter_mut().find(|c| c.name == n).unwrap();
+        let Some(c) = e.clips.iter_mut().find(|c| c.name == n) else { return ERR_BAD_HANDLE };
         if !out.is_null() {
             *out = &mut *c.props as *mut PropSet as *mut c_void;
         }
@@ -437,7 +437,7 @@ unsafe extern "C" fn cb_message(kind: *const c_char, text: *const c_char, persis
     } else {
         log::info!("OpenFX plugin {k}: {t}");
     }
-    *LAST_MESSAGE.lock().unwrap() = Some(format!("{k}: {t}"));
+    *LAST_MESSAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("{k}: {t}"));
 }
 
 /// The last message a plugin showed (for error reports).
@@ -594,9 +594,9 @@ unsafe extern "C" fn mutex_destroy(m: *mut c_void) -> Status {
 unsafe extern "C" fn mutex_lock(m: *mut c_void) -> Status {
     let Some(m) = (m as *mut RecursiveMutex).as_ref() else { return ERR_BAD_HANDLE };
     let me = std::thread::current().id();
-    let mut st = m.state.lock().unwrap();
+    let mut st = m.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     while st.0.is_some_and(|o| o != me) {
-        st = m.free.wait(st).unwrap();
+        st = m.free.wait(st).unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     st.0 = Some(me);
     st.1 += 1;
@@ -604,7 +604,7 @@ unsafe extern "C" fn mutex_lock(m: *mut c_void) -> Status {
 }
 unsafe extern "C" fn mutex_unlock(m: *mut c_void) -> Status {
     let Some(m) = (m as *mut RecursiveMutex).as_ref() else { return ERR_BAD_HANDLE };
-    let mut st = m.state.lock().unwrap();
+    let mut st = m.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if st.0 != Some(std::thread::current().id()) || st.1 == 0 {
         return FAILED;
     }
@@ -618,7 +618,7 @@ unsafe extern "C" fn mutex_unlock(m: *mut c_void) -> Status {
 unsafe extern "C" fn mutex_try_lock(m: *mut c_void) -> Status {
     let Some(mm) = (m as *mut RecursiveMutex).as_ref() else { return ERR_BAD_HANDLE };
     let me = std::thread::current().id();
-    let mut st = mm.state.lock().unwrap();
+    let mut st = mm.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if st.0.is_some_and(|o| o != me) {
         return FAILED;
     }

@@ -18,6 +18,10 @@
 //!
 //! Every decoder is checked against FFmpeg's output in the media crate's tests.
 
+// Never crash: no unwrap, expect, panic, unreachable, todo or unimplemented
+// outside tests (a damaged file or an odd setting is an error, not a crash).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 // (as the other decoders: transforms and filters index several arrays in step,
 // as the spec writes them)
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]

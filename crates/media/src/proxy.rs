@@ -85,13 +85,13 @@ static MEDIA_CACHE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(
 
 /// Keep proxies and rendered previews in `dir` (`None`: the cache folder).
 pub fn set_media_cache_dir(dir: Option<PathBuf>) {
-    *MEDIA_CACHE.write().unwrap() = dir.filter(|d| !d.as_os_str().is_empty());
+    *MEDIA_CACHE.write().unwrap_or_else(std::sync::PoisonError::into_inner) = dir.filter(|d| !d.as_os_str().is_empty());
 }
 
 /// Where proxies and rendered previews go: the folder chosen in Settings, or
 /// the cache folder. (Autosaves, sessions and logs stay in the cache folder.)
 pub fn media_cache_dir() -> PathBuf {
-    MEDIA_CACHE.read().unwrap().clone().unwrap_or_else(cache_dir)
+    MEDIA_CACHE.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_else(cache_dir)
 }
 
 /// Where proxies (and other caches) are kept.
@@ -168,7 +168,9 @@ pub fn make_proxy_as(src: &Path, info: &MediaInfo, fmt: ProxyFormat, cancel: &At
     let v = info.video.as_ref().ok_or_else(|| anyhow!("no video to make a proxy of"))?;
     let rate = v.frame_rate;
     let frames = info.duration.to_frame(rate).max(1);
-    std::fs::create_dir_all(dst.parent().unwrap()).context("creating the proxy folder")?;
+    if let Some(dir) = dst.parent() {
+        std::fs::create_dir_all(dir).context("creating the proxy folder")?;
+    }
     // Same extension, so the writer picks the same container.
     let ext = dst.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
     let tmp = dst.with_extension(format!("partial.{ext}"));

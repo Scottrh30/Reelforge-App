@@ -31,7 +31,8 @@ pub struct PropSet {
 }
 
 fn cstring(s: &str) -> CString {
-    CString::new(s.replace('\0', "")).unwrap()
+    // (no NULs left in it, so it always converts)
+    CString::new(s.replace('\0', "")).unwrap_or_default()
 }
 
 impl PropSet {

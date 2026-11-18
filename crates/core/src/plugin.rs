@@ -167,7 +167,7 @@ fn intern_sections(params: &[ManifestParam]) -> &'static [(usize, &'static str)]
     if want.is_empty() {
         return &[];
     }
-    let mut cache = CACHE.lock().unwrap();
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((_, s)) = cache.iter().find(|(w, _)| *w == want) {
         return s;
     }
@@ -196,7 +196,7 @@ fn category_of(s: &str) -> EffectCategory {
 /// is reloaded with the same parameters, so editing its shader leaks nothing).
 fn intern_params(params: &[ManifestParam]) -> Result<&'static [ParamSpec], String> {
     static CACHE: Mutex<Vec<(Vec<ManifestParam>, &'static [ParamSpec])>> = Mutex::new(Vec::new());
-    let mut cache = CACHE.lock().unwrap();
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((_, specs)) = cache.iter().find(|(p, _)| p.as_slice() == params) {
         return Ok(specs);
     }
@@ -368,17 +368,17 @@ pub fn set_installed(defs: Vec<Arc<PluginDef>>) {
             r.by_id.insert(d.id.clone(), d);
         }
     }
-    *REGISTRY.write().unwrap() = Some(r);
+    *REGISTRY.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
 }
 
 /// The installed plugin with this id.
 pub fn find(id: &str) -> Option<Arc<PluginDef>> {
-    REGISTRY.read().unwrap().as_ref().and_then(|r| r.by_id.get(id).cloned())
+    REGISTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|r| r.by_id.get(id).cloned())
 }
 
 /// Every installed plugin, sorted by name.
 pub fn installed() -> Vec<Arc<PluginDef>> {
-    let r = REGISTRY.read().unwrap();
+    let r = REGISTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut v: Vec<Arc<PluginDef>> = r.as_ref().map(|r| r.order.iter().filter_map(|id| r.by_id.get(id).cloned()).collect()).unwrap_or_default();
     v.sort_by_key(|d| d.name.to_lowercase());
     v

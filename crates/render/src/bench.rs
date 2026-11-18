@@ -101,8 +101,9 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> BenchReport {
     for detail in 0..3 {
         let mut e = Effect::new(EffectKind::Fluid);
         e.params[reelforge_core::effects::fluid_params::DETAIL].value = detail as f32;
+        let Some(base) = reelforge_core::fluid::job(&e, Time::ZERO, [w as f32, h as f32]) else { continue };
         let job = |s: usize| {
-            let mut j = reelforge_core::fluid::job(&e, Time::from_secs_f64(s as f64 / reelforge_core::fluid::RATE), [w as f32, h as f32]).unwrap();
+            let mut j = base.clone();
             j.step = s;
             j
         };

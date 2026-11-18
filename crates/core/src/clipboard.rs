@@ -118,8 +118,9 @@ pub fn paste_clips_onto(p: &mut Project, seq: usize, cb: &Clipboard, at: Time, t
         }
     }
     let s = &sim.sequences[seq];
-    let track_of = |kind: TrackKind, rank: usize| (0..s.tracks.len()).filter(|&i| s.tracks[i].kind == kind).nth(rank).unwrap();
-    let placed: Vec<(usize, &Clip)> = items.iter().map(|c| (track_of(c.kind, c.rank), &c.clip)).collect();
+    // (the tracks were added above, so each is there)
+    let track_of = |kind: TrackKind, rank: usize| (0..s.tracks.len()).filter(|&i| s.tracks[i].kind == kind).nth(rank);
+    let placed: Vec<(usize, &Clip)> = items.iter().map(|c| Some((track_of(c.kind, c.rank)?, &c.clip))).collect::<Option<_>>()?;
     if placed.iter().any(|(t, _)| s.tracks[*t].locked) {
         return None;
     }

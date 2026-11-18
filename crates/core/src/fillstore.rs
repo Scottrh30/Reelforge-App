@@ -60,14 +60,14 @@ fn read_index(dir: &Path) -> Option<Arc<FillIndex>> {
     let path = dir.join("index.json");
     let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
     let cache = CACHE.get_or_init(Default::default);
-    if let Some((m, i)) = cache.lock().unwrap().get(dir) {
+    if let Some((m, i)) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(dir) {
         if *m == modified {
             return Some(i.clone());
         }
     }
     let idx: FillIndex = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
     let idx = Arc::new(idx);
-    cache.lock().unwrap().insert(dir.to_path_buf(), (modified, idx.clone()));
+    cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(dir.to_path_buf(), (modified, idx.clone()));
     Some(idx)
 }
 
@@ -107,14 +107,15 @@ pub fn load_moved(dir: &Path, t: Time) -> Option<(Arc<Table>, [f32; 4], [f32; 3]
     let path = dir.join(&f.file);
     let lru = FRAMES.get_or_init(Default::default);
     let shift = f.shift.unwrap_or([0.0, 0.0, 1.0]);
-    if let Some(t) = lru.lock().unwrap().iter().find(|(p, _)| *p == path).map(|(_, t)| t.clone()) {
+    if let Some(t) = lru.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|(p, _)| *p == path).map(|(_, t)| t.clone()) {
         return Some((t, place, shift));
     }
     let data = std::fs::read(&path).ok()?;
     if data.len() < 20 || &data[..4] != b"RFF1" {
         return None;
     }
-    let word = |k: usize| u32::from_le_bytes(data[4 + 4 * k..8 + 4 * k].try_into().unwrap());
+    // (the length is checked above: 20 bytes of header)
+    let word = |k: usize| data.get(4 + 4 * k..8 + 4 * k).and_then(|b| b.try_into().ok()).map_or(0, u32::from_le_bytes);
     let (w, h) = (word(2), word(3));
     let rgba = data[20..].to_vec();
     if w == 0 || h == 0 || rgba.len() != (w * h * 4) as usize {
@@ -127,7 +128,7 @@ pub fn load_moved(dir: &Path, t: Time) -> Option<(Arc<Table>, [f32; 4], [f32; 3]
         hs.finish() | 1 << 62
     };
     let table = Arc::new(Table { id, width: w, height: h, rgba, cube_size: 0 });
-    let mut l = lru.lock().unwrap();
+    let mut l = lru.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     l.push_back((path, table.clone()));
     while l.len() > 48 {
         l.pop_front();

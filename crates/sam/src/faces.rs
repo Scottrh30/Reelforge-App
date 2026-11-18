@@ -90,6 +90,9 @@ impl Cascade {
     }
 }
 
+// (The cascades are compiled in: parsing them can't go differently at run
+// time, and the tests parse them.)
+#[allow(clippy::expect_used)]
 fn cascades() -> &'static [Cascade; 2] {
     static C: std::sync::OnceLock<[Cascade; 2]> = std::sync::OnceLock::new();
     C.get_or_init(|| [Cascade::parse(include_str!("../faces_frontal.json")).expect("frontal cascade"), Cascade::parse(include_str!("../faces_profile.json")).expect("profile cascade")])
@@ -259,7 +262,7 @@ pub fn track(frames: &[Vec<Rect>], min_frames: usize, max_gap: usize) -> Vec<Vec
         let mut order: Vec<usize> = (0..tracks.len()).filter(|&t| i - tracks[t].0 <= max_gap + 1).collect();
         order.sort_by_key(|&t| i - tracks[t].0);
         for t in order {
-            let last = tracks[t].1[tracks[t].0].unwrap();
+            let Some(last) = tracks[t].1[tracks[t].0] else { continue };
             let best = found
                 .iter()
                 .enumerate()
@@ -296,7 +299,7 @@ pub fn track(frames: &[Vec<Rect>], min_frames: usize, max_gap: usize) -> Vec<Vec
             // Fill the gaps between sightings.
             for w in seen.windows(2) {
                 let (a, b) = (w[0], w[1]);
-                let (ra, rb) = (v[a].unwrap(), v[b].unwrap());
+                let (Some(ra), Some(rb)) = (v[a], v[b]) else { continue };
                 for (i, slot) in v.iter_mut().enumerate().take(b).skip(a + 1) {
                     let u = (i - a) as f32 / (b - a) as f32;
                     *slot = Some([0, 1, 2, 3].map(|k| ra[k] + (rb[k] - ra[k]) * u));

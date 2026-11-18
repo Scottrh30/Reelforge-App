@@ -184,7 +184,7 @@ fn svd3(m: &M3) -> (M3, V3, M3) {
     let s = [vals[2].max(0.0).sqrt(), vals[1].max(0.0).sqrt(), vals[0].max(0.0).sqrt()];
     let mut u = [[0.0; 3]; 3];
     let u0 = unit(mv(m, vcols[0])).unwrap_or([1.0, 0.0, 0.0]);
-    let u1 = unit(sub(mv(m, vcols[1]), scale(u0, dot(u0, mv(m, vcols[1]))))).unwrap_or_else(|| unit(cross(u0, [0.0, 0.0, 1.0])).or_else(|| unit(cross(u0, [0.0, 1.0, 0.0]))).unwrap());
+    let u1 = unit(sub(mv(m, vcols[1]), scale(u0, dot(u0, mv(m, vcols[1]))))).unwrap_or_else(|| unit(cross(u0, [0.0, 0.0, 1.0])).or_else(|| unit(cross(u0, [0.0, 1.0, 0.0]))).unwrap_or([0.0, 1.0, 0.0]));
     let u2 = if s[2] > 1e-9 * s[0].max(1e-300) { unit(mv(m, vcols[2])).unwrap_or(cross(u0, u1)) } else { cross(u0, u1) };
     for (c, uc) in [u0, u1, u2].into_iter().enumerate() {
         for r in 0..3 {
@@ -456,7 +456,7 @@ impl Ctx<'_> {
             }
             f += 1;
         }
-        if *out.last().unwrap() != n - 1 {
+        if out.last().is_some_and(|&l| l != n - 1) {
             out.push(n - 1);
         }
         out
@@ -637,9 +637,10 @@ impl Ctx<'_> {
         let cost_of = |rc: &Recon| -> (f64, f64, usize) {
             let (mut c, mut sq, mut n) = (0.0, 0.0, 0);
             for (id, obs) in &point_obs {
-                let x = rc.pts[*id].unwrap();
+                let Some(x) = rc.pts.get(*id).copied().flatten() else { continue };
                 for (f, u) in obs {
-                    let e = self.err(rc.poses[*f].as_ref().unwrap(), rc.focal, x, *u);
+                    let Some(pose) = rc.poses.get(*f).and_then(|p| p.as_ref()) else { continue };
+                    let e = self.err(pose, rc.focal, x, *u);
                     c += huber_cost(e);
                     if e < 5.0 {
                         sq += e * e;
@@ -666,10 +667,10 @@ impl Ctx<'_> {
             }
             let mut blocks: Vec<Blk> = Vec::with_capacity(point_obs.len());
             for (id, obs) in &point_obs {
-                let x = rc.pts[*id].unwrap();
+                let Some(x) = rc.pts.get(*id).copied().flatten() else { continue };
                 let mut blk = Blk { id: *id, c: [[0.0; 3]; 3], g: [0.0; 3], b: Vec::new() };
                 for (f, u) in obs {
-                    let pose = rc.poses[*f].as_ref().unwrap();
+                    let Some(pose) = rc.poses.get(*f).and_then(|p| p.as_ref()) else { continue };
                     let rx = mv(&pose.r, x);
                     let xc = add(rx, pose.t());
                     if xc[2] <= 1e-9 {
@@ -758,7 +759,7 @@ impl Ctx<'_> {
                 let mut trial = rc.clone();
                 for (k, &f) in frames.iter().enumerate().skip(1) {
                     let o = (k - 1) * d;
-                    let p = trial.poses[f].as_mut().unwrap();
+                    let Some(p) = trial.poses.get_mut(f).and_then(|p| p.as_mut()) else { continue };
                     let t = p.t();
                     let r = mm(&exp_so3([delta[o], delta[o + 1], delta[o + 2]]), &p.r);
                     let t = if rot_only { [0.0; 3] } else { add(t, [delta[o + 3], delta[o + 4], delta[o + 5]]) };
@@ -897,7 +898,9 @@ impl Ctx<'_> {
                 // A direction: the average ray, at distance 1.
                 let mut s = [0.0; 3];
                 for (p, u) in &views {
-                    s = add(s, unit(mv(&tr(&p.r), self.ray(rc.focal, *u))).unwrap());
+                    if let Some(d) = unit(mv(&tr(&p.r), self.ray(rc.focal, *u))) {
+                        s = add(s, d);
+                    }
                 }
                 let Some(x) = unit(s) else { continue };
                 if views.iter().all(|(p, u)| self.err(p, rc.focal, x, *u) < 4.0) {
@@ -906,7 +909,7 @@ impl Ctx<'_> {
                 continue;
             }
             // The widest angle between two of the rays.
-            let dirs: Vec<(V3, V3)> = views.iter().map(|(p, u)| (p.c, unit(mv(&tr(&p.r), self.ray(rc.focal, *u))).unwrap())).collect();
+            let dirs: Vec<(V3, V3)> = views.iter().filter_map(|(p, u)| Some((p.c, unit(mv(&tr(&p.r), self.ray(rc.focal, *u)))?))).collect();
             let Some(x) = self.triangulate(rc.focal, &views) else { continue };
             let mut widest = 0.0f64;
             for i in 0..dirs.len() {
@@ -932,8 +935,8 @@ impl Ctx<'_> {
         let trk = &self.tracks[id];
         let (mut sq, mut n) = (0.0, 0);
         for f in trk.start..trk.end().min(self.frames) {
-            if let Some(p) = &rc.poses[f] {
-                let e = self.err(p, rc.focal, x, trk.at(f).unwrap());
+            if let (Some(p), Some(at)) = (&rc.poses[f], trk.at(f)) {
+                let e = self.err(p, rc.focal, x, at);
                 sq += e * e;
                 n += 1;
             }
@@ -1077,8 +1080,8 @@ impl Ctx<'_> {
             }
             let f = kfs[k];
             // Start from the nearest placed keyframe.
-            let near = solved.iter().copied().min_by_key(|&s| s.abs_diff(f)).unwrap();
-            let init = rc.poses[near].unwrap();
+            let Some(near) = solved.iter().copied().min_by_key(|&s| s.abs_diff(f)) else { break };
+            let Some(init) = rc.poses.get(near).copied().flatten() else { break };
             let placed = self.place(&rc, f, init).filter(|(_, rms, good)| *rms < 3.0 && *good > 0.5);
             let Some((pose, ..)) = placed else {
                 if k > ib {
@@ -1100,7 +1103,7 @@ impl Ctx<'_> {
                 let mut near: Vec<usize> = solved.clone();
                 near.sort_by_key(|&s| s.abs_diff(f));
                 near.truncate(12);
-                let hold = if near.contains(&a) { a } else { *near.last().unwrap() };
+                let hold = if near.contains(&a) { a } else { near.last().copied().unwrap_or(a) };
                 let mut order_kf = vec![hold];
                 order_kf.extend(near.iter().copied().filter(|&s| s != hold));
                 self.bundle(&mut rc, &order_kf, false, 8);
@@ -1137,7 +1140,9 @@ pub fn solve(tracks: &[Track2d], frames: usize, size: [f32; 2], opts: SolveOptio
             continue;
         }
         for f in t.start..t.end().min(frames) {
-            by_frame[f].push((id, t.at(f).unwrap()));
+            if let Some(at) = t.at(f) {
+                by_frame[f].push((id, at));
+            }
         }
     }
     if tracks.iter().filter(|t| t.pos.len() >= 10).count() < 20 {
@@ -1589,9 +1594,9 @@ impl Solution {
                     let before = placed.iter().rev().find(|&&k| k < f).copied();
                     let after = placed.iter().find(|&&k| k > f).copied();
                     match (before, after) {
-                        (Some(a), Some(b)) => blend(&self.poses[a].unwrap(), &self.poses[b].unwrap(), (f - a) as f64 / (b - a) as f64),
-                        (Some(a), None) => self.poses[a].unwrap(),
-                        (None, Some(b)) => self.poses[b].unwrap(),
+                        (Some(a), Some(b)) => blend(&self.poses[a]?, &self.poses[b]?, (f - a) as f64 / (b - a) as f64),
+                        (Some(a), None) => self.poses[a]?,
+                        (None, Some(b)) => self.poses[b]?,
                         (None, None) => return None,
                     }
                 }

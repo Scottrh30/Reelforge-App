@@ -76,7 +76,9 @@ fn jagged(r: &mut Rng, a: [f32; 2], b: [f32; 2], levels: u32, jag: f32) -> Vec<[
             next.push(p);
             next.push([p[0] + d[0] * along + n[0] * off, p[1] + d[1] * along + n[1] * off]);
         }
-        next.push(*pts.last().unwrap());
+        if let Some(&end) = pts.last() {
+            next.push(end);
+        }
         pts = next;
         // Finer kinks are smaller, as in real lightning.
         amount *= 0.92;

@@ -66,7 +66,7 @@ static LAST: Mutex<(Vec<BundleReport>, bool)> = Mutex::new((Vec::new(), false));
 /// Scan every folder, replacing the installed OpenFX plugins (none when
 /// switched off). Returns a summary.
 fn scan() -> String {
-    LAST.lock().unwrap().1 = true;
+    LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).1 = true;
     let reports = if enabled() {
         let st = state_dir();
         let _ = std::fs::create_dir_all(&st);
@@ -77,7 +77,7 @@ fn scan() -> String {
     };
     let effects: usize = reports.iter().map(|r| r.plugins.len()).sum();
     let bad = reports.iter().filter(|r| r.plugins.is_empty() && (r.blocked || !r.errors.is_empty())).count();
-    *LAST.lock().unwrap() = (reports, false);
+    *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (reports, false);
     changed();
     if bad > 0 {
         format!("OpenFX: {effects} effect{} loaded; {bad} bundle{} didn't load (see Edit > Plugins…)", if effects == 1 { "" } else { "s" }, if bad == 1 { "" } else { "s" })
@@ -92,7 +92,7 @@ pub fn startup() {
     if !enabled() {
         return;
     }
-    LAST.lock().unwrap().1 = true;
+    LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).1 = true;
     let _ = std::thread::Builder::new().name("openfx-scan".into()).spawn(|| log::info!("{}", scan()));
 }
 
@@ -146,7 +146,7 @@ pub struct OfxEffect {
 
 #[tauri::command]
 pub fn ofx_list() -> OfxView {
-    let (reports, scanning) = LAST.lock().unwrap().clone();
+    let (reports, scanning) = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     let installed = reelforge_core::ofx::installed();
     let bundles = reports
         .iter()

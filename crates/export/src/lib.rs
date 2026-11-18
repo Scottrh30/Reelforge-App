@@ -7,6 +7,10 @@
 //! calls it (the app uses a background thread) and reports progress through a
 //! callback that can also cancel.
 
+// Never crash: no unwrap, expect, panic, unreachable, todo or unimplemented
+// outside tests (a damaged file or an odd setting is an error, not a crash).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 use anyhow::{anyhow, Context as _, Result};
 use reelforge_core::{ClipId, FrameRate, Layer, Project, Time, TrackKind};
 use reelforge_media::{ColorOut, Fit, FrameSource, MixClip, Mixer, MovieWriter, Quality, VideoCodec, VideoFrame, WriterSettings};

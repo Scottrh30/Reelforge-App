@@ -205,7 +205,7 @@ impl MoveClip {
     fn place(p: &mut Project, seq: usize, id: ClipId, (track, start): (usize, Time)) {
         let s = &mut p.sequences[seq];
         let Some((cur, _)) = s.find_clip_mut(id) else { return };
-        let i = s.tracks[cur].clips.iter().position(|c| c.id == id).unwrap();
+        let Some(i) = s.tracks[cur].clips.iter().position(|c| c.id == id) else { return };
         let mut clip = s.tracks[cur].clips.remove(i);
         clip.timeline_start = start;
         s.tracks[track].clips.push(clip);
@@ -658,7 +658,9 @@ impl Command for AddSequence {
     }
     fn undo(&mut self, p: &mut Project) {
         if p.sequences.len() == self.index + 1 {
-            self.seq = p.sequences.pop().unwrap();
+            if let Some(s) = p.sequences.pop() {
+                self.seq = s;
+            }
         }
     }
 }
@@ -694,9 +696,22 @@ impl Command for MakeComposite {
     }
 }
 
+/// The first of `name(1)`, `name(2)`… that isn't `taken` (as good as never
+/// past a few: after four billion, the last one tried).
+pub fn first_free(name: impl Fn(u32) -> String, taken: impl Fn(&str) -> bool) -> String {
+    let mut n = 1u32;
+    loop {
+        let s = name(n);
+        if !taken(&s) || n == u32::MAX {
+            return s;
+        }
+        n += 1;
+    }
+}
+
 /// A name like "Composition 3" not used by another sequence.
 pub fn next_composite_name(p: &Project) -> String {
-    (1..).map(|n| format!("Composition {n}")).find(|name| !p.sequences.iter().any(|s| &s.name == name)).unwrap()
+    first_free(|n| format!("Composition {n}"), |name| p.sequences.iter().any(|s| s.name == name))
 }
 
 /// `base`, or `base 2`, `base 3`… whichever no sequence is called yet.
@@ -705,7 +720,7 @@ pub fn unique_sequence_name(p: &Project, base: &str) -> String {
     if !taken(base) {
         return base.to_owned();
     }
-    (2..).map(|n| format!("{base} {n}")).find(|n| !taken(n)).unwrap()
+    first_free(|n| format!("{base} {}", n + 1), |n| taken(n))
 }
 
 /// "New composition from media": a composition named after the file, matching
@@ -835,8 +850,9 @@ pub fn make_composite(p: &mut Project, seq: usize, ids: &[ClipId], name: String)
         return Err("Some of those clips are on a locked track".into());
     }
     let clips: Vec<(usize, &Clip)> = moved.iter().filter_map(|id| s.find_clip(*id)).collect();
-    let start = clips.iter().map(|(_, c)| c.timeline_start).min().unwrap();
-    let end = clips.iter().map(|(_, c)| c.timeline_end()).max().unwrap();
+    let (Some(start), Some(end)) = (clips.iter().map(|(_, c)| c.timeline_start).min(), clips.iter().map(|(_, c)| c.timeline_end()).max()) else {
+        return Err("Select the clips to put in the composition first".into());
+    };
 
     // The new sequence: same format, one track per track that had a selected clip.
     let mut comp = Sequence { tracks: Vec::new(), in_point: None, out_point: None, pixel_aspect: s.pixel_aspect, ..Sequence::new(name, s.width, s.height, s.frame_rate) };
@@ -848,7 +864,7 @@ pub fn make_composite(p: &mut Project, seq: usize, ids: &[ClipId], name: String)
         }
     }
     for (ti, c) in &clips {
-        let inner = track_map.iter().find(|(o, _)| o == ti).unwrap().1;
+        let Some(&(_, inner)) = track_map.iter().find(|(o, _)| o == ti) else { continue };
         let mut c = (*c).clone();
         // A transition from a clip that stays outside can't come along.
         let from_outside = s.tracks[*ti].clips.iter().any(|o| o.timeline_end() == c.timeline_start && !moved.contains(&o.id));
@@ -901,7 +917,8 @@ pub fn make_composite(p: &mut Project, seq: usize, ids: &[ClipId], name: String)
         after.tracks[t].clips.push(Clip::new_nested(id, index, start, end - start, link));
         after.tracks[t].sort();
     }
-    Ok(MakeComposite { seq, before, after, comp, index, clip: clip_id.unwrap() })
+    let clip = clip_id.ok_or("Couldn't place the composition")?;
+    Ok(MakeComposite { seq, before, after, comp, index, clip })
 }
 
 // ---- Tracks -------------------------------------------------------------------
@@ -956,10 +973,8 @@ impl DuplicateTrack {
         let s = &p.sequences[seq];
         // "Video 1 copy", "Video 1 copy 2"…
         let base = format!("{} copy", src.name);
-        let name = std::iter::once(base.clone())
-            .chain((2..).map(|n| format!("{base} {n}")))
-            .find(|n| !s.tracks.iter().any(|t| &t.name == n))
-            .unwrap();
+        let taken = |n: &str| s.tracks.iter().any(|t| t.name == n);
+        let name = if taken(&base) { first_free(|n| format!("{base} {}", n + 1), taken) } else { base.clone() };
         // Link groups with more than one clip on this track.
         let mut counts = std::collections::HashMap::<u64, usize>::new();
         for c in &src.clips {
@@ -1456,18 +1471,19 @@ pub fn move_targets(p: &Project, seq: usize, lead: ClipId, selection: &[ClipId],
     // Tracks of the lead's kind, bottom first, so "up one video track" skips audio tracks.
     let same_kind: Vec<usize> = (0..s.tracks.len()).filter(|&t| s.tracks[t].kind == kind).collect();
     let rank = |t: usize| same_kind.iter().position(|&x| x == t);
-    let shift = rank(to.0).unwrap() as isize - rank(lead_track).unwrap() as isize;
+    let (Some(to_rank), Some(lead_rank)) = (rank(to.0), rank(lead_track)) else { return Err("there's no track there") };
+    let shift = to_rank as isize - lead_rank as isize;
     let delta = to.1.0 - lead_clip.timeline_start.0;
     let mut out = Vec::new();
     for id in &moving {
-        let (ti, c) = s.find_clip(*id).unwrap();
+        let Some((ti, c)) = s.find_clip(*id) else { continue };
         let start = Time(c.timeline_start.0 + delta);
         if start < Time::ZERO {
             return Err("can't move before the start of the timeline");
         }
         // Only selected clips change track; linked partners keep theirs.
         let track = if s.tracks[ti].kind == kind && sel.contains(id) {
-            let r = rank(ti).unwrap() as isize + shift;
+            let r = rank(ti).ok_or("there's no track there")? as isize + shift;
             *same_kind.get(usize::try_from(r).map_err(|_| "there's no track there")?).ok_or("there's no track there")?
         } else {
             ti
@@ -1490,6 +1506,15 @@ mod tests {
     use crate::audio::{ClipAudio, TrackAudio};
     use crate::transform::{BlendMode, Transform};
     use crate::{MediaInfo, Prop, VideoStreamInfo, FrameRate, Rational};
+
+    #[test]
+    fn first_free_picks_the_lowest_unused_name_and_always_ends() {
+        let taken = ["Video 1", "Video 2", "Video 4"];
+        assert_eq!(first_free(|n| format!("Video {n}"), |s| taken.contains(&s)), "Video 3");
+        assert_eq!(first_free(|n| format!("A{n}"), |_| false), "A1");
+        // A long run taken: it keeps counting up.
+        assert_eq!(first_free(|n| n.to_string(), |s| s.parse::<u32>().is_ok_and(|n| n < 5000)), "5000");
+    }
 
     fn clip(id: u64, start: f64, dur: f64) -> Clip {
         Clip::new(ClipId(id), MediaId(1), Time::from_secs_f64(start), Time::ZERO, Time::from_secs_f64(dur), None)

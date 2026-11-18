@@ -134,6 +134,9 @@ impl GpuEncoder {
         T { buf: Arc::new(buf), len }
     }
 
+    // (A weight the code asks for that the model file hasn't: the file doesn't
+    // match. Runs go through `guard`, which turns this into "the model failed".)
+    #[allow(clippy::panic)]
     fn wt(&self, k: &str) -> &wgpu::Buffer {
         &self.w.get(k).unwrap_or_else(|| panic!("no weight {k}")).1
     }

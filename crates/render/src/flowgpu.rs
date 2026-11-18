@@ -216,7 +216,7 @@ impl FlowInterp {
     fn make_pair(&self, out: [u32; 2], l0: [u32; 2]) -> Pair {
         let mut levels = vec![l0];
         while levels.len() < 7 {
-            let [w, h] = *levels.last().unwrap();
+            let Some(&[w, h]) = levels.last() else { break };
             if w.min(h) < 24 {
                 break;
             }

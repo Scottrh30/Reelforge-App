@@ -23,6 +23,10 @@
 //! targets kept per layer, and the result is drawn like a group. Because the
 //! effects run before the transform, they move, scale and rotate with the layer.
 
+// Never crash: no unwrap, expect, panic, unreachable, todo or unimplemented
+// outside tests (a damaged file or an odd setting is an error, not a crash).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 // (as reelforge-core; GPU dispatch helpers take their resources plainly)
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
 
@@ -1027,7 +1031,7 @@ impl Compositor {
             });
             self.layers.insert(l.key, LayerTex { texture, bind_group, size: l.pixel_size, content_id: u64::MAX, float });
         }
-        let t = self.layers.get_mut(&l.key).unwrap();
+        let Some(t) = self.layers.get_mut(&l.key) else { return };
         match l.pixels {
             PixelData::Below => {}
             PixelData::Rgba(px) => self.queue.write_texture(
@@ -1160,7 +1164,7 @@ impl Compositor {
             });
             self.masks.insert(key, LayerTex { texture, bind_group, size: m.size, content_id: u64::MAX, float: false });
         }
-        let t = self.masks.get_mut(&key).unwrap();
+        let Some(t) = self.masks.get_mut(&key) else { return };
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             m.pixels,
@@ -2289,7 +2293,7 @@ impl Compositor {
         }
         self.queue.write_buffer(&self.uniforms, 0, &data);
 
-        let targets = self.targets.as_ref().unwrap();
+        let Some(targets) = self.targets.as_ref() else { return };
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("composite") });
         let pass_on = |enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>| {
             enc.begin_render_pass(&wgpu::RenderPassDescriptor {

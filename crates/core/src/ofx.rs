@@ -249,15 +249,15 @@ static REGISTRY: RwLock<Vec<Arc<OfxDef>>> = RwLock::new(Vec::new());
 
 /// Replace the list of installed plugins.
 pub fn set_installed(defs: Vec<Arc<OfxDef>>) {
-    *REGISTRY.write().unwrap() = defs;
+    *REGISTRY.write().unwrap_or_else(std::sync::PoisonError::into_inner) = defs;
 }
 
 pub fn find(id: &str) -> Option<Arc<OfxDef>> {
-    REGISTRY.read().unwrap().iter().find(|d| d.id == id).cloned()
+    REGISTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|d| d.id == id).cloned()
 }
 
 pub fn installed() -> Vec<Arc<OfxDef>> {
-    REGISTRY.read().unwrap().clone()
+    REGISTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
 #[cfg(test)]

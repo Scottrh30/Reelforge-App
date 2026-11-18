@@ -26,6 +26,9 @@ pub struct RenderedTitle {
     pub missing_font: bool,
 }
 
+// (The font's bytes are compiled in: loading them can't go differently at
+// run time, and the tests load it.)
+#[allow(clippy::expect_used)]
 fn builtin_font() -> FontArc {
     static F: OnceLock<FontArc> = OnceLock::new();
     F.get_or_init(|| FontArc::try_from_slice(epaint_default_fonts::UBUNTU_LIGHT).expect("built-in font"))
@@ -37,7 +40,7 @@ pub fn load_font(choice: &FontChoice) -> (FontArc, bool) {
     type Cache = Mutex<HashMap<(PathBuf, u32), Option<FontArc>>>;
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let Some(path) = &choice.path else { return (builtin_font(), false) };
-    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap();
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = cache.entry((path.clone(), choice.index)).or_insert_with(|| {
         let data = std::fs::read(path).ok()?;
         FontVec::try_from_vec_and_index(data, choice.index).ok().map(FontArc::new)
@@ -541,12 +544,12 @@ impl Track {
         let closed = pts.len() > 2 && pts.first() == pts.last();
         let mut run = vec![0.0f32];
         for w in p.windows(2) {
-            run.push(run.last().unwrap() + ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt());
+            run.push(run.last().copied().unwrap_or(0.0) + ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt());
         }
         Some(Track { pts: p, run, closed })
     }
     fn len(&self) -> f32 {
-        *self.run.last().unwrap()
+        self.run.last().copied().unwrap_or(0.0)
     }
     /// The point `d` along it (wrapping round a closed one; carried on
     /// straight past the ends of an open one).
@@ -661,7 +664,7 @@ fn glyph_contours(font: &FontArc, g: &ab_glyph::Glyph, advance: f32, p: &Placed)
         if last.is_none_or(|l| (l.x - p0.x).abs() + (l.y - p0.y).abs() > 1e-3) {
             out.push(vec![map(p0)]);
         }
-        let contour = out.last_mut().unwrap();
+        let Some(contour) = out.last_mut() else { continue };
         let px = |a: ab_glyph::Point, b: ab_glyph::Point| ((a.x - b.x) * hs).hypot((a.y - b.y) * vs) * p.scale[0].abs().max(p.scale[1].abs());
         match c {
             Line(_, b) => contour.push(map(*b)),

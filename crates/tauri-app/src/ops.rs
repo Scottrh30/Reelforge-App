@@ -279,7 +279,7 @@ pub struct CollectDone {
 /// Start collecting in the background.
 #[tauri::command]
 pub fn collect_start(dest: String, name: String, include_unused: bool, include_fonts: bool) -> Res<()> {
-    if COLLECT.with(|c| c.borrow().as_ref().is_some_and(|j| j.progress.lock().unwrap().result.is_none())) {
+    if COLLECT.with(|c| c.borrow().as_ref().is_some_and(|j| j.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result.is_none())) {
         return Err("A collect is already running".into());
     }
     let dest = PathBuf::from(dest);
@@ -296,13 +296,13 @@ pub fn collect_start(dest: String, name: String, include_unused: bool, include_f
         .name("collect".into())
         .spawn(move || {
             let r = run_collect(&plan, &stop, |bytes, file, index| {
-                let mut g = p.lock().unwrap();
+                let mut g = p.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 (g.bytes, g.index) = (bytes, index);
                 if g.file != file {
                     g.file = file.to_string();
                 }
             });
-            p.lock().unwrap().result = Some(r);
+            p.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result = Some(r);
         })
         .map_err(|e| e.to_string())?;
     COLLECT.with(|c| *c.borrow_mut() = Some(Job { cancel, progress, total, count }));
@@ -323,7 +323,7 @@ pub fn collect_stop() {
 pub fn collect_dismiss() {
     COLLECT.with(|c| {
         let mut c = c.borrow_mut();
-        if c.as_ref().is_some_and(|j| j.progress.lock().unwrap().result.is_some()) {
+        if c.as_ref().is_some_and(|j| j.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result.is_some()) {
             *c = None;
         }
     });
@@ -334,7 +334,7 @@ pub fn view(e: &mut reelforge_engine::editor::Editor) -> Option<CollectView> {
     COLLECT.with(|c| {
         let c = c.borrow();
         let j = c.as_ref()?;
-        let p = j.progress.lock().unwrap();
+        let p = j.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let done = p.result.as_ref().map(|r| match r {
             Ok(rep) => CollectDone {
                 ok: true,

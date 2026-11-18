@@ -285,7 +285,7 @@ impl Editor {
                 }
                 let _ = tx.send(TrackMsg::FillDone(r));
             })
-            .expect("object removal thread");
+            .map_err(|e| log::error!("couldn't start the object removal thread: {e}")).ok();
         self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: Some(index), roto: None, ai: None, live: Vec::new(), live_shape: None });
         self.status = if preview { "Filling the frame at the playhead…" } else { "Removing the object: filling every frame…" }.into();
     }

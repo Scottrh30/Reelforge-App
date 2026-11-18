@@ -20,6 +20,10 @@
 //! The headers this follows are the OpenFX standard's (BSD-3-Clause), from
 //! the Academy Software Foundation; no OpenFX code is copied in here.
 
+// Never crash: no unwrap, expect, panic, unreachable, todo or unimplemented
+// outside tests (a damaged file or an odd setting is an error, not a crash).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod cl;
 pub mod cuda;
 pub mod gl;
@@ -205,7 +209,7 @@ unsafe impl Send for Plugin {}
 unsafe impl Sync for Plugin {}
 
 fn c(s: &str) -> CString {
-    CString::new(s).unwrap()
+    CString::new(s.replace('\0', "")).unwrap_or_default()
 }
 
 impl Plugin {
@@ -372,7 +376,7 @@ unsafe fn describe(entry: *const OfxPlugin, library: &Arc<Library>) -> Result<Pl
     }
     let depths = desc.props.strs("OfxImageEffectPropSupportedPixelDepths");
     let depth = ["OfxBitDepthFloat", "OfxBitDepthShort", "OfxBitDepthByte"].into_iter().find(|d| depths.is_empty() || depths.iter().any(|x| x == d)).ok_or_else(|| format!("{identifier}: no bit depth Reelforge can give ({})", depths.join(", ")))?;
-    let src = desc.clips.iter().find(|c| c.name == "Source").unwrap();
+    let src = desc.clips.iter().find(|c| c.name == "Source").ok_or_else(|| format!("{identifier}: has no Source clip"))?;
     let comps = src.props.strs("OfxImageEffectPropSupportedComponents");
     let components = if comps.is_empty() || comps.iter().any(|c| c == "OfxImageComponentRGBA") {
         "OfxImageComponentRGBA"
@@ -592,7 +596,7 @@ impl Plugin {
 }
 
 fn last_message() -> String {
-    suites::LAST_MESSAGE.lock().unwrap().take().map(|m| format!(": {m}")).unwrap_or_default()
+    suites::LAST_MESSAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().map(|m| format!(": {m}")).unwrap_or_default()
 }
 
 /// How a plugin's pixel depth stores a 0–1 value.
@@ -637,7 +641,7 @@ impl Instance {
             let info = &self.plugin.params[k];
             match v {
                 Value::Numbers(n) if matches!(info.kind, ParamKind::StrChoice { .. }) => {
-                    let ParamKind::StrChoice { values, .. } = &info.kind else { unreachable!() };
+                    let ParamKind::StrChoice { values, .. } = &info.kind else { continue };
                     if let Some(v) = n.first().and_then(|i| values.get(i.round().max(0.0) as usize)) {
                         p.value.s = CString::new(v.replace('\0', "")).unwrap_or_default();
                     }
@@ -893,7 +897,7 @@ impl Instance {
                     } else {
                         let at = (x * comps + ch) * bpc;
                         match bpc {
-                            4 => f32::from_ne_bytes(src[at..at + 4].try_into().unwrap()),
+                            4 => src.get(at..at + 4).and_then(|b| b.try_into().ok()).map_or(0.0, f32::from_ne_bytes),
                             2 => u16::from_ne_bytes([src[at], src[at + 1]]) as f32 / 65535.0,
                             _ => src[at] as f32 / 255.0,
                         }

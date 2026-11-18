@@ -497,7 +497,7 @@ pub fn pump(e: &mut Editor) {
     queue(|q| {
         for job in &mut q.jobs {
             let JobState::Running { run, .. } = &job.state else { continue };
-            let Some(result) = run.lock().unwrap().result.take() else { continue };
+            let Some(result) = run.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result.take() else { continue };
             job.state = match result {
                 Ok(r) => {
                     e.status = format!("Exported {} ({} frames, {}, {:.1} s)", r.path.display(), r.frames, if r.hardware { format!("{} on the GPU", r.video_codec) } else { r.video_codec.clone() }, r.elapsed.as_secs_f64());
@@ -548,11 +548,11 @@ pub fn pump(e: &mut Editor) {
         let (c, r) = (cancel.clone(), run.clone());
         std::thread::spawn(move || {
             let result = reelforge_export::export_sequence(&project, &settings, &device, &gpu_queue, |p| {
-                let mut s = r.lock().unwrap();
+                let mut s = r.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 (s.done, s.total, s.elapsed, s.remaining) = (p.done, p.total, p.elapsed.as_secs_f64(), p.remaining().map(|d| d.as_secs_f64()));
                 !c.load(Ordering::Relaxed)
             });
-            r.lock().unwrap().result = Some(result.map_err(|e| if e.downcast_ref::<reelforge_export::Cancelled>().is_some() { "cancelled".to_string() } else { format!("{e:#}") }));
+            r.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result = Some(result.map_err(|e| if e.downcast_ref::<reelforge_export::Cancelled>().is_some() { "cancelled".to_string() } else { format!("{e:#}") }));
         });
         e.status = format!("Exporting {}…", job.title);
         job.state = JobState::Running { cancel, run };
@@ -609,7 +609,7 @@ pub fn view() -> QueueView {
                 match &j.state {
                     JobState::Waiting => {}
                     JobState::Running { cancel, run } => {
-                        let r = run.lock().unwrap();
+                        let r = run.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         v.state = "running";
                         (v.done, v.total, v.remaining) = (r.done, r.total, r.remaining);
                         v.fps = (r.elapsed > 0.2 && r.done > 0).then(|| r.done as f64 / r.elapsed);

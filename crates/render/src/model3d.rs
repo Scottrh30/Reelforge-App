@@ -1009,11 +1009,11 @@ fn cache() -> &'static std::sync::Mutex<Vec<((std::path::PathBuf, Option<std::ti
 pub fn cached(src: &reelforge_core::ModelSource) -> Loaded {
     let modified = std::fs::metadata(&src.path).and_then(|m| m.modified()).ok();
     let key = (src.path.clone(), modified, src.rev);
-    if let Some((_, v)) = cache().lock().unwrap().iter().find(|(k, _)| *k == key) {
+    if let Some((_, v)) = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|(k, _)| *k == key) {
         return v.clone();
     }
     let v = if src.path.exists() { load(&src.path).map(std::sync::Arc::new) } else { Err("the file isn't there any more (moved or renamed?)".into()) };
-    let mut c = cache().lock().unwrap();
+    let mut c = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     c.retain(|(k, _)| k.0 != key.0);
     if c.len() >= 8 {
         let _ = c.remove(0);

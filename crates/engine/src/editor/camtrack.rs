@@ -110,7 +110,7 @@ impl Editor {
                 })();
                 let _ = tx.send(TrackMsg::CameraDone(r));
             })
-            .expect("camera tracker thread");
+            .map_err(|e| log::error!("couldn't start the camera tracker thread: {e}")).ok();
         self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: true, fill: None, roto: None, ai: None, live: Vec::new(), live_shape: None });
         self.status = if left_out { "Analysing the shot (leaving out the masked areas): following details, then solving the camera…" } else { "Analysing the shot: following details, then solving the camera…" }.into();
     }
@@ -127,7 +127,7 @@ impl Editor {
             ct.points.first().map(|p| p.pos.map(f32::to_bits)).hash(&mut h);
             h.finish()
         };
-        let mut cache = self.cam_fit.lock().unwrap();
+        let mut cache = self.cam_fit.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((k, v)) = cache.get(&id) {
             if *k == key {
                 return Some(v.clone());
@@ -204,7 +204,7 @@ impl Editor {
                 };
                 let _ = tx.send(TrackMsg::CameraDone(r));
             })
-            .expect("camera re-solve thread");
+            .map_err(|e| log::error!("couldn't start the camera re-solve thread: {e}")).ok();
         self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.6, mask: None, through: None, camera: true, fill: None, roto: None, ai: None, live: Vec::new(), live_shape: None });
         self.status = format!("Deleted {gone} point{}; solving the camera again…", if gone == 1 { "" } else { "s" });
     }
@@ -322,7 +322,7 @@ impl Editor {
             let track = match next_track {
                 Some(t) => {
                     let s = self.seq();
-                    let name = (1..).map(|n| format!("Video {n}")).find(|n| !s.tracks.iter().any(|t| &t.name == n) && new_name.as_ref() != Some(n)).unwrap();
+                    let name = reelforge_core::undo::first_free(|n| format!("Video {n}"), |n| s.tracks.iter().any(|t| t.name == n) || new_name.as_deref() == Some(n));
                     cmds.push(Box::new(reelforge_core::undo::AddTrack { seq: self.active, index: t + 1, track: reelforge_core::project::Track::new(name, TrackKind::Video) }));
                     t + 1
                 }
@@ -360,7 +360,8 @@ impl Editor {
                     }
                     Clip::new_title(lid, start, dur, spec)
                 }
-                CamMake::Camera => unreachable!(),
+                // Handled above (no layer for it).
+                CamMake::Camera => return,
             };
             if what != CamMake::Point {
                 let t = &mut clip.transform;
@@ -506,7 +507,11 @@ impl Editor {
             None => (self.playback.playhead.snap(rate), rate.fps()),
         };
         let times = camtrack_io::chan_times(&path_read, start, fps);
-        let end = *times.last().unwrap() + Time::from_secs_f64(1.0 / fps);
+        let Some(&last) = times.last() else {
+            self.status = "That file has no animation in it to bring in".into();
+            return;
+        };
+        let end = last + Time::from_secs_f64(1.0 / fps);
         let dur = (end - start).max(rate.frame_duration());
         let (add, track) = self.layer_track(start, dur);
         let nid = ClipId(self.project.alloc_id());

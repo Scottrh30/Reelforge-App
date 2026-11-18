@@ -157,9 +157,10 @@ pub fn with<R>(f: impl FnOnce(&Gl) -> R) -> Result<R, String> {
         }
         *g = Some(made);
     }
-    let gl = match g.as_ref().unwrap() {
-        Ok(gl) => gl,
-        Err(e) => return Err(e.clone()),
+    let gl = match g.as_ref() {
+        Some(Ok(gl)) => gl,
+        Some(Err(e)) => return Err(e.clone()),
+        None => return Err("OpenGL wasn't set up".into()),
     };
     // SAFETY: our context, made current here and released below.
     unsafe { gl.platform.make_current(true)? };
@@ -286,7 +287,7 @@ mod platform {
         }
 
         pub unsafe fn proc_address(&self, name: &str) -> *const c_void {
-            let n = CString::new(name).unwrap();
+            let Ok(n) = CString::new(name) else { return std::ptr::null() };
             let p = (self.get_proc)(n.as_ptr());
             if !p.is_null() {
                 return p;

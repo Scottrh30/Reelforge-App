@@ -70,7 +70,8 @@ fn unique(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     if !first.exists() {
         return first;
     }
-    (2..).map(|n| dir.join(format!("{stem} ({n}).{ext}"))).find(|p| !p.exists()).unwrap()
+    let name = reelforge_core::undo::first_free(|n| format!("{stem} ({}).{ext}", n + 1), |f| dir.join(f).exists());
+    dir.join(name)
 }
 
 /// RGBA8 as a PNG, or as a JPEG if the path ends .jpg or .jpeg (written to a

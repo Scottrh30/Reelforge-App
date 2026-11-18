@@ -32,6 +32,9 @@ pub fn model() -> Option<&'static Upscaler> {
 }
 
 impl Upscaler {
+    // (A weight the code asks for that the model file hasn't: the file doesn't
+    // match. Runs go through `guard`, which turns this into "the model failed".)
+    #[allow(clippy::panic)]
     fn t(&self, k: &str) -> &[f32] {
         &self.w.get(k).unwrap_or_else(|| panic!("no weight {k}")).1
     }
@@ -133,7 +136,11 @@ fn shuffle(_x: &[f32], rgb: &[f32], w: usize, h: usize, at: impl Fn(usize, usize
 /// A picture (RGBA, `w` × `h`) four times the size (RGBA; alpha blown up as
 /// it is), tile by tile: on the graphics card when there is one.
 /// `progress` is told how far it's got (0–1).
-pub fn upscale(rgba: &[u8], w: usize, h: usize, mut progress: impl FnMut(f32)) -> Option<Vec<u8>> {
+pub fn upscale(rgba: &[u8], w: usize, h: usize, progress: impl FnMut(f32)) -> Option<Vec<u8>> {
+    crate::guard(|| upscale_now(rgba, w, h, progress))
+}
+
+fn upscale_now(rgba: &[u8], w: usize, h: usize, mut progress: impl FnMut(f32)) -> Option<Vec<u8>> {
     let m = model()?;
     let gpu = super::gpu();
     let (ow, oh) = (w * SCALE, h * SCALE);

@@ -205,7 +205,7 @@ impl AudioReader {
             capacity,
             ChannelLayout::default(self.resampled_channels as i32),
         );
-        self.resampler.as_mut().unwrap().0.run(frame, &mut out)?;
+        self.resampler.as_mut().ok_or_else(|| anyhow!("no resampler"))?.0.run(frame, &mut out)?;
         self.push(&out);
         Ok(())
     }

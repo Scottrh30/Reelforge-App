@@ -508,7 +508,7 @@ impl Editor {
         std::thread::spawn(move || {
             let found = Arc::new(reelforge_render::text::system_fonts());
             log::info!("found {} font faces", found.len());
-            *fill.lock().unwrap() = Some(found);
+            *fill.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(found);
         });
         Self::blank(Playback::with_audio(audio), Preview::new(gpu), fonts)
     }
@@ -1863,7 +1863,7 @@ impl Editor {
 
     /// Installed fonts, once the background scan has finished.
     pub fn fonts(&self) -> Option<Arc<Vec<FontEntry>>> {
-        self.fonts.lock().unwrap().clone()
+        self.fonts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Add a 5 s title at the playhead on the top video track with room, and select it.
@@ -3235,7 +3235,7 @@ impl Editor {
                 });
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
-            .expect("tracker thread");
+            .map_err(|e| log::error!("couldn't start the tracker thread: {e}")).ok();
         self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: None, live: Vec::new(), live_shape: None });
         self.status = "Tracking…".into();
     }
@@ -3307,7 +3307,7 @@ impl Editor {
                 });
                 let _ = tx.send(TrackMsg::Done(r.map_err(|e| format!("{e:#}"))));
             })
-            .expect("mask tracker thread");
+            .map_err(|e| log::error!("couldn't start the mask tracker thread: {e}")).ok();
         self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: Some((index, motion)), through: (!own).then_some(src_id), camera: false, fill: None, roto: None, ai: None, live: Vec::new(), live_shape: None });
         self.status = if own { format!("Tracking {name}…") } else { format!("Tracking {name} through the footage below ({src_name})…") };
     }
@@ -3418,7 +3418,18 @@ impl Editor {
         let mut roto = None;
         let mut ai = None;
         let mut moved = false;
-        while let Ok(m) = job.rx.try_recv() {
+        // (the job's thread gone without saying it's done: it couldn't start,
+        // or it failed part way)
+        let mut gone = false;
+        loop {
+            let m = match job.rx.try_recv() {
+                Ok(m) => m,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    gone = true;
+                    break;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+            };
             match m {
                 TrackMsg::Progress(p) => job.progress = p,
                 TrackMsg::Live(p, now) => {
@@ -3448,28 +3459,33 @@ impl Editor {
         if moved && roto.is_none() {
             self.follow_tracking();
         }
+        let finished = ai.is_some() || roto.is_some() || fill.is_some() || camera.is_some() || done.is_some();
+        if gone && !finished {
+            self.tracking = None;
+            self.status = "The job stopped unexpectedly (nothing was changed): try it again".into();
+            return;
+        }
+        if !finished {
+            return;
+        }
+        let Some(job) = self.tracking.take() else { return };
         if let Some(r) = ai {
-            let job = self.tracking.take().unwrap();
             self.finish_ai(&job, r);
             return;
         }
         if let Some(r) = roto {
-            let job = self.tracking.take().unwrap();
             self.finish_roto(&job, r);
             return;
         }
         if let Some(r) = fill {
-            let job = self.tracking.take().unwrap();
             self.finish_object_removal(&job, r);
             return;
         }
         if let Some(r) = camera {
-            let job = self.tracking.take().unwrap();
             self.finish_camera_tracking(&job, r);
             return;
         }
         let Some(result) = done else { return };
-        let job = self.tracking.take().unwrap();
         match result {
             Err(e) => self.status = format!("Tracking failed: {e}"),
             Ok((samples, end)) if job.mask.is_some() => self.finish_mask_tracking(&job, samples, end),

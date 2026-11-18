@@ -3,6 +3,10 @@
 //! The UI never touches FFmpeg directly. It asks a [`FrameSource`] for "the frame
 //! at time t" every repaint, and the source keeps a decoder thread running ahead.
 
+// Never crash: no unwrap, expect, panic, unreachable, todo or unimplemented
+// outside tests (a damaged file or an odd setting is an error, not a crash).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 // (as reelforge-core: numeric code indexing several arrays in step, plain
 // argument lists, nested types spelled out)
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
@@ -70,7 +74,10 @@ pub fn open_input(path: &std::path::Path) -> Result<ffmpeg_next::format::context
 pub fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        ffmpeg_next::init().expect("failed to initialise FFmpeg");
+        // (if it can't, decoding and encoding fail with their own errors later)
+        if let Err(e) = ffmpeg_next::init() {
+            log::error!("FFmpeg didn't start: {e}");
+        }
         // One pool of worker threads, one per core, shared by every clip's
         // decoder (H.264, HEVC, AV1, ProRes, DNx, MPEG-2). Fails harmlessly if
         // something already started it.

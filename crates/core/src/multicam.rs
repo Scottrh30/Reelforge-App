@@ -73,7 +73,7 @@ pub fn layers_at(p: &crate::Project, seq: usize, t: crate::Time, angle: Option<A
         let frame = [s.width as f32, s.height as f32];
         items.retain(|i| tracks.iter().take(n).any(|t| *t == track_of(i)));
         for item in &mut items {
-            let cell = tracks.iter().position(|t| *t == track_of(item)).unwrap();
+            let Some(cell) = tracks.iter().position(|t| *t == track_of(item)) else { continue };
             match item {
                 VideoItem::Single(l) => l.transform = into_cell(&l.transform, cell, n, frame),
                 VideoItem::Dissolve { from, to, .. } => {

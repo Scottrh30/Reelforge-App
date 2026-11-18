@@ -645,23 +645,23 @@ pub mod zero_copy {
     pub fn fail(reason: impl Into<String>) {
         let reason = reason.into();
         log::warn!("zero-copy decoding switched off: {reason}");
-        let mut f = FAILED.lock().unwrap();
+        let mut f = FAILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if f.is_none() {
             *f = Some(reason);
         }
     }
     pub fn failure() -> Option<String> {
-        FAILED.lock().unwrap().clone()
+        FAILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Should decoders hand over frames on the graphics card?
     pub fn usable() -> bool {
-        enabled() && renderer().is_some() && FAILED.lock().unwrap().is_none()
+        enabled() && renderer().is_some() && FAILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none()
     }
 
     /// Why the decoders aren't using it, when it's their side (say, a different adapter).
     pub fn note_decoder(reason: impl Into<String>) {
-        *DECODER_NOTE.lock().unwrap() = Some(reason.into());
+        *DECODER_NOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason.into());
     }
 
     /// A frame was drawn straight from the graphics card.
@@ -690,7 +690,7 @@ pub mod zero_copy {
         if renderer().is_none() {
             return "not available here (Windows with Direct3D 12 and hardware decoding)".into();
         }
-        if let Some(n) = DECODER_NOTE.lock().unwrap().clone() {
+        if let Some(n) = DECODER_NOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
             if frames() == 0 {
                 return format!("not used: {n}");
             }

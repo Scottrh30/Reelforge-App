@@ -661,7 +661,7 @@ impl TitleSpec {
             if ch == '\r' {
                 continue;
             }
-            let line = out.last_mut().unwrap();
+            let Some(line) = out.last_mut() else { continue };
             let upper = match self.case {
                 TextCase::AsTyped => None,
                 TextCase::Upper => Some(true),

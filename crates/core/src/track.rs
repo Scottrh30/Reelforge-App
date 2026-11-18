@@ -336,7 +336,7 @@ impl Pyramid {
     pub fn new(data: Vec<f32>, width: usize, height: usize, levels: usize) -> Self {
         let mut v = vec![(data, width, height)];
         for _ in 0..levels {
-            let (prev, w, h) = v.last().unwrap();
+            let Some((prev, w, h)) = v.last() else { break };
             if *w < 16 || *h < 16 {
                 break;
             }

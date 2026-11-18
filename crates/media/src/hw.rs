@@ -57,7 +57,7 @@ static DEVICE: Mutex<Option<Result<Device, String>>> = Mutex::new(None);
 
 /// A new reference to the shared device, creating it on first use.
 fn device() -> Option<*mut AVBufferRef> {
-    let mut slot = DEVICE.lock().unwrap();
+    let mut slot = DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let dev = slot.get_or_insert_with(|| {
         let Some(ty) = device_type() else { return Err("not supported on this platform".into()) };
         let mut ctx: *mut AVBufferRef = std::ptr::null_mut();
@@ -89,7 +89,7 @@ pub fn status() -> String {
     if !enabled() {
         return "off (software decoding)".into();
     }
-    match &*DEVICE.lock().unwrap() {
+    match &*DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
         None => format!("{} (not used yet)", api_name()),
         Some(Ok(_)) => format!("{} available", api_name()),
         Some(Err(e)) => format!("unavailable: {e}; using software"),

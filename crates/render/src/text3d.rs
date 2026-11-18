@@ -73,11 +73,11 @@ pub fn text_mesh(spec: &TitleSpec, frame: [u32; 2]) -> Arc<TextMesh> {
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let id = spec.content_hash(frame);
     let cache = CACHE.get_or_init(Default::default);
-    if let Some(m) = cache.lock().unwrap().get(&id) {
+    if let Some(m) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
         return m.clone();
     }
     let mesh = Arc::new(build(spec, frame, id));
-    let mut c = cache.lock().unwrap();
+    let mut c = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if c.len() >= 32 {
         c.clear();
     }
@@ -151,7 +151,7 @@ fn glyph_polygons_within(spec: &TitleSpec, frame: [u32; 2], tolerance: f32) -> V
             if !joined {
                 contours.push(vec![start]);
             }
-            let cur = contours.last_mut().unwrap();
+            let Some(cur) = contours.last_mut() else { continue };
             cur.extend(pts);
             last = cur.last().copied();
         }

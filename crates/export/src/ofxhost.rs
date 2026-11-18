@@ -24,7 +24,7 @@ static REVISION: AtomicU64 = AtomicU64::new(1);
 
 /// The loaded plugin behind an installed [`OfxDef`].
 pub fn plugin(id: &str) -> Option<Arc<Plugin>> {
-    PLUGINS.read().unwrap().iter().find(|p| p.identifier == id).cloned()
+    PLUGINS.read().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|p| p.identifier == id).cloned()
 }
 
 /// How loading one bundle went.
@@ -120,7 +120,7 @@ pub fn scan(folders: &[PathBuf], state: Option<&Path>) -> Vec<BundleReport> {
         }
         reports.push(r);
     }
-    *PLUGINS.write().unwrap() = plugins;
+    *PLUGINS.write().unwrap_or_else(std::sync::PoisonError::into_inner) = plugins;
     core_ofx::set_installed(defs);
     reports
 }
@@ -244,11 +244,11 @@ static RENDERED: std::sync::Mutex<Vec<((ClipId, usize), String)>> = std::sync::M
 
 /// What effect `index` of `clip` (an OpenFX one) last rendered with ("OpenCL on …", "the processor").
 pub fn rendered_with(clip: ClipId, index: usize) -> Option<String> {
-    RENDERED.lock().unwrap().iter().find(|e| e.0 == (clip, index)).map(|e| e.1.clone())
+    RENDERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|e| e.0 == (clip, index)).map(|e| e.1.clone())
 }
 
 fn set_rendered(clip: ClipId, index: usize, how: Option<String>) {
-    let mut v = RENDERED.lock().unwrap();
+    let mut v = RENDERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     v.retain(|x| x.0 != (clip, index));
     if let Some(h) = how {
         v.push(((clip, index), h));
@@ -257,11 +257,11 @@ fn set_rendered(clip: ClipId, index: usize, how: Option<String>) {
 
 /// Why effect `index` of `clip` (an OpenFX one) isn't rendering, if it isn't.
 pub fn error(clip: ClipId, index: usize) -> Option<String> {
-    ERRORS.lock().unwrap().iter().find(|e| e.0 == (clip, index)).map(|e| e.1.clone())
+    ERRORS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|e| e.0 == (clip, index)).map(|e| e.1.clone())
 }
 
 fn set_error(clip: ClipId, index: usize, e: Option<String>) {
-    let mut v = ERRORS.lock().unwrap();
+    let mut v = ERRORS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     v.retain(|x| x.0 != (clip, index));
     if let Some(e) = e {
         v.push(((clip, index), e));
@@ -330,7 +330,8 @@ impl OfxRunner {
             if !s.def.temporal {
                 continue;
             }
-            let inst = &mut self.instances.get_mut(&(clip, s.index)).unwrap().2;
+            let Some(entry) = self.instances.get_mut(&(clip, s.index)) else { continue };
+            let inst = &mut entry.2;
             for f in inst.frames_needed(*t, fps, (frame.width, frame.height), values, range) {
                 if !wanted.iter().any(|w| (w - f).abs() < 0.5) {
                     wanted.push(f);
@@ -380,7 +381,7 @@ impl OfxRunner {
         let mut ran = false;
         for (k, values, t) in &plan {
             let s = &steps[*k];
-            let entry = self.instances.get_mut(&(clip, s.index)).unwrap();
+            let Some(entry) = self.instances.get_mut(&(clip, s.index)) else { continue };
             entry.3 = self.tick;
             // Other frames are the clip's own (before effects above this one).
             let refs: Vec<(f64, &Image)> = if s.def.temporal { other_images.iter().map(|(t, i)| (*t, i)).collect() } else { Vec::new() };

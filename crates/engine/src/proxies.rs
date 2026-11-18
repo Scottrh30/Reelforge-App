@@ -68,7 +68,7 @@ impl Proxies {
                     let _ = tx.send((job.src, state));
                 }
             })
-            .expect("proxy thread");
+            .map_err(|e| log::error!("couldn't start the proxy thread: {e}")).ok();
         Self { states: HashMap::new(), jobs, updates, stop, declined: Default::default() }
     }
 

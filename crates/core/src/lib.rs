@@ -3,6 +3,10 @@
 //! Nothing in here knows about FFmpeg, wgpu or the interface. Keeping the project model
 //! pure makes it easy to test, serialize, and drive from a headless renderer later.
 
+// Never crash: no unwrap, expect, panic, unreachable, todo or unimplemented
+// outside tests (a damaged file or an odd setting is an error, not a crash).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 // (numeric code indexes several arrays in step; GPU-free maths helpers take
 // their inputs plainly; a few nested return types read better spelled out)
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]

@@ -378,7 +378,7 @@ impl PluginManager {
         let root = self.install_root();
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let dest = free_folder(&root, "my-effect");
-        let n = dest.file_name().unwrap().to_string_lossy().into_owned();
+        let n = dest.file_name().map_or_else(|| "my-effect".to_string(), |f| f.to_string_lossy().into_owned());
         std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
         let manifest = TEMPLATE_MANIFEST.replace("{ID}", &format!("my.{n}")).replace("{NAME}", &title_case(&n));
         std::fs::write(dest.join(MANIFEST), manifest).map_err(|e| e.to_string())?;

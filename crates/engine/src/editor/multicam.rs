@@ -88,7 +88,7 @@ impl Editor {
         }
         let s = self.seq();
         let t = self.playback.playhead.snap(s.frame_rate);
-        let (_, c) = s.find_clip(at.clip).unwrap();
+        let Some((_, c)) = s.find_clip(at.clip) else { return };
         let mut cmds: Vec<Box<dyn Command>> = Vec::new();
         let targets: Vec<ClipId>;
         if t <= c.timeline_start || t >= c.timeline_end() {

@@ -486,7 +486,7 @@ impl SolidRenderer {
         }
         self.use_environment(device, queue, environment_of(s).map_or(0, |e| e.id));
         queue.write_buffer(&self.uniforms, 0, &uniform_bytes(s));
-        let t = self.targets.as_ref().unwrap();
+        let Some(t) = self.targets.as_ref() else { return };
         let m = &self.meshes[&key];
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("solid") });
         self.colour_pass(&mut enc, key, s, target, &self.no_shadows);
@@ -549,8 +549,8 @@ fn uniform_bytes(s: &SolidInput) -> Vec<u8> {
     f.resize(LIGHTS_END / 4, 0.0);
     match environment_of(s) {
         Some(e) => {
-            let l = lights.iter().find(|l| l.env.is_some()).unwrap();
-            f.extend([e.turn, e.reflect, e.blur, l.color.iter().sum::<f32>() / 3.0]);
+            let level = lights.iter().find(|l| l.env.is_some()).map_or(1.0, |l| l.color.iter().sum::<f32>() / 3.0);
+            f.extend([e.turn, e.reflect, e.blur, level]);
         }
         None => f.extend([0.0; 4]),
     }

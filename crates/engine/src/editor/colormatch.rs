@@ -219,14 +219,22 @@ impl Editor {
     pub(crate) fn poll_color_match(&mut self) {
         let Some(job) = self.color_match.as_mut() else { return };
         let mut done = None;
-        while let Ok(m) = job.rx.try_recv() {
-            match m {
-                MatchMsg::Progress(p) => job.progress = p,
-                MatchMsg::Done(r) => done = Some(r),
+        loop {
+            match job.rx.try_recv() {
+                Ok(MatchMsg::Progress(p)) => job.progress = p,
+                Ok(MatchMsg::Done(r)) => done = Some(r),
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                // (its thread gone without finishing: it couldn't start, or failed)
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    if done.is_none() {
+                        done = Some(Err("the colour match stopped unexpectedly".into()));
+                    }
+                    break;
+                }
             }
         }
         let Some(result) = done else { return };
-        let job = self.color_match.take().unwrap();
+        let Some(job) = self.color_match.take() else { return };
         match result {
             Ok(Some(luts)) if !luts.is_empty() => self.apply_match_luts(job.seq, &luts),
             Ok(Some(_)) => self.status = "Match colour: nothing to measure in those clips".into(),

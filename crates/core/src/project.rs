@@ -798,7 +798,7 @@ impl Sequence {
 
     /// A name for a new marker: "Marker 3", the first number not taken.
     pub fn next_marker_name(&self) -> String {
-        (1..).map(|n| format!("Marker {n}")).find(|name| !self.markers.iter().any(|m| &m.name == name)).unwrap()
+        crate::undo::first_free(|n| format!("Marker {n}"), |name| self.markers.iter().any(|m| m.name == name))
     }
     pub fn duration(&self) -> Time {
         self.tracks.iter().map(Track::end).max().unwrap_or(Time::ZERO)
@@ -829,7 +829,7 @@ impl Sequence {
     /// "Video 3", "Audio 2"…: the first name of that pattern not already used.
     pub fn next_track_name(&self, kind: TrackKind) -> String {
         let base = if kind == TrackKind::Video { "Video" } else { "Audio" };
-        (1..).map(|n| format!("{base} {n}")).find(|name| !self.tracks.iter().any(|t| &t.name == name)).unwrap()
+        crate::undo::first_free(|n| format!("{base} {n}"), |name| self.tracks.iter().any(|t| t.name == name))
     }
 
     /// Topmost visible video clip at `t` — what the viewer should show until

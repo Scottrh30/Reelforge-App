@@ -118,11 +118,8 @@ pub fn smooth_fill(img: &Image, hole: &[bool]) -> Image {
     let (w, h) = (img.w, img.h);
     // (colour × weight, weight) at each level.
     let mut levels: Vec<(usize, usize, Vec<[f32; 4]>)> = vec![(w, h, img.px.iter().zip(hole).map(|(p, &u)| if u { [0.0; 4] } else { [p[0], p[1], p[2], 1.0] }).collect())];
-    while {
-        let (lw, lh, _) = levels.last().unwrap();
-        *lw > 1 || *lh > 1
-    } {
-        let (lw, lh, v) = levels.last().unwrap();
+    while levels.last().is_some_and(|(lw, lh, _)| *lw > 1 || *lh > 1) {
+        let Some((lw, lh, v)) = levels.last() else { break };
         let (nw, nh) = (lw.div_ceil(2), lh.div_ceil(2));
         let mut n = vec![[0.0f32; 4]; nw * nh];
         for y in 0..*lh {
@@ -569,7 +566,11 @@ impl Filler {
                 break;
             }
             let Some(to_s) = self.map(t, s) else { continue };
-            let src_img = if filled { &self.last.as_ref().unwrap().1 } else { &self.frames[s - self.first].img };
+            let src_img = match (filled, &self.last) {
+                (true, Some(last)) => &last.1,
+                (true, None) => continue,
+                (false, _) => &self.frames[s - self.first].img,
+            };
             let src_hole = if filled { None } else { Some(&self.frames[s - self.first].hole) };
             let at = |p: [f32; 2]| -> Option<[f32; 3]> {
                 let q = to_s.apply(p);

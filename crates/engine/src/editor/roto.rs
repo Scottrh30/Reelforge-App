@@ -65,13 +65,13 @@ pub fn encoded(path: &Path, at: Time, rgba: &[u8], w: usize, h: usize) -> Option
     // One at a time: a stroke made while the frame's being got ready waits for it.
     static BUSY: Mutex<()> = Mutex::new(());
     let _one = BUSY.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((k, e)) = ENCODED.lock().unwrap().as_ref() {
+    if let Some((k, e)) = ENCODED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
         if *k == key {
             return Some(e.clone());
         }
     }
     let e = Arc::new(sam::embed(rgba, w, h)?);
-    *ENCODED.lock().unwrap() = Some((key, e.clone()));
+    *ENCODED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, e.clone()));
     Some(e)
 }
 
@@ -593,7 +593,7 @@ impl Editor {
                         let k = [w as f32 / layer[0].max(1.0), h as f32 / layer[1].max(1.0)];
                         if i > 0 {
                             // The outline moved with what's in and round it.
-                            let (pl, pw, ph) = prev.as_ref().unwrap();
+                            let Some((pl, pw, ph)) = prev.as_ref() else { continue };
                             let moved = if (*pw, *ph) == (w, h) {
                                 let near = inpaint::dilate(&fill_poly(&poly, k, w, h), w, h, (w.max(h) / 30).max(4));
                                 let leave: Vec<bool> = near.iter().map(|&b| !b).collect();
@@ -637,7 +637,7 @@ impl Editor {
                 })();
                 let _ = tx.send(TrackMsg::RotoDone(r));
             })
-            .expect("roto brush thread");
+            .map_err(|e| log::error!("couldn't start the roto brush thread: {e}")).ok();
         self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: Some(index), ai: None, live: Vec::new(), live_shape: None });
         self.status = format!("Carrying {} {}…", m.name, if forward { "forwards" } else { "backwards" });
     }

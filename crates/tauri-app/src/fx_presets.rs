@@ -20,7 +20,7 @@ pub fn startup(config: &Path) {
 }
 
 fn with<R>(f: impl FnOnce(&mut PresetLibrary) -> R) -> R {
-    let mut g = LIB.lock().unwrap();
+    let mut g = LIB.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let lib = g.get_or_insert_with(|| PresetLibrary::load(&FILE.get().cloned().unwrap_or_else(|| std::env::temp_dir().join("reelforge-effect-presets.json"))));
     f(lib)
 }

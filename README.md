@@ -2112,6 +2112,16 @@ own threads. A decoder that crashes is treated as a decode error: the clip carri
 FFmpeg. With 14 clips open on 2 cores this cut the threads from 58 to 41; on an 8- or 16-core
 PC, where each clip used to get up to 16, far more.
 
+**No crash shortcuts:** outside the tests, no product code may assume a value is there and stop
+the app when it isn't (`unwrap`, `expect`, `panic!`, `unreachable!`, `todo!`, `unimplemented!`).
+Every crate denies them, so the lint check (`cargo clippy --workspace --all-targets -- -D
+warnings`, run by CI on every push, which also fails on any other warning) refuses new ones.
+What's missing is handled instead: a damaged file is an error message, a background job whose
+thread couldn't start or that vanished says so in the status bar (instead of showing as running
+forever), a lock another thread failed while holding is still used, and a model file that
+doesn't match the code is caught and reported rather than taking the app down. The few kept
+(the built-in font and face-detector data, compiled into the program) say why next to them.
+
 **Fuzz-tested:** every native decoder has a libFuzzer target in `fuzz/` that feeds it
 mutated streams (made from real ones encoded by FFmpeg) the way the app does, and flags any
 crash, hang or runaway memory use. So do the file readers: media files (MP4, MOV, MXF, WebM,

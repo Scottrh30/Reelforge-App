@@ -125,7 +125,7 @@ pub fn dnxhd_bitrate(w: u32, h: u32, fps: f64, quality: Quality, ten_bit: bool) 
     // Avid's 720p rates are about an eighth more per pixel (220 at 59.94, 90 at 23.976).
     let per_pixel = if h == 720 { 1.125 } else { 1.0 };
     let want = bpp * per_pixel * w as f64 * h as f64 * fps.max(1.0);
-    Ok(*rates.iter().min_by(|a, b| ((**a as f64 / want).ln().abs()).total_cmp(&(**b as f64 / want).ln().abs())).unwrap())
+    rates.iter().min_by(|a, b| ((**a as f64 / want).ln().abs()).total_cmp(&(**b as f64 / want).ln().abs())).copied().ok_or_else(|| "no DNxHD bitrate for that size".to_string())
 }
 
 impl VideoCodec {
@@ -796,7 +796,7 @@ impl MovieWriter {
         let Some(a) = &mut self.audio else { return Ok(()) };
         a.pending.extend_from_slice(interleaved);
         loop {
-            let a = self.audio.as_mut().unwrap();
+            let Some(a) = self.audio.as_mut() else { return Ok(()) };
             let n = a.frame_size * CHANNELS;
             if a.pending.len() < n {
                 return Ok(());
@@ -807,7 +807,7 @@ impl MovieWriter {
     }
 
     fn encode_audio_chunk(&mut self, chunk: &[f32]) -> Result<()> {
-        let a = self.audio.as_mut().unwrap();
+        let Some(a) = self.audio.as_mut() else { return Ok(()) };
         let n = chunk.len() / CHANNELS;
         let mut frame = ff::frame::Audio::new(a.format, n, ChannelLayout::default(CHANNELS as i32));
         frame.set_rate(a.encoder.rate());
@@ -861,7 +861,7 @@ impl MovieWriter {
 
     fn drain_video(&mut self) -> Result<()> {
         let Some(v) = &mut self.video else { return Ok(()) };
-        let ost_tb = self.octx.stream(v.stream).unwrap().time_base();
+        let ost_tb = self.octx.stream(v.stream).ok_or_else(|| anyhow!("the video stream went missing"))?.time_base();
         let mut packet = ff::Packet::empty();
         while v.encoder.receive_packet(&mut packet).is_ok() {
             // One packet per frame. Without an explicit duration the muxer can't know how
@@ -878,7 +878,7 @@ impl MovieWriter {
 
     fn drain_audio(&mut self) -> Result<()> {
         let Some(a) = &mut self.audio else { return Ok(()) };
-        let ost_tb = self.octx.stream(a.stream).unwrap().time_base();
+        let ost_tb = self.octx.stream(a.stream).ok_or_else(|| anyhow!("the audio stream went missing"))?.time_base();
         let mut packet = ff::Packet::empty();
         while a.encoder.receive_packet(&mut packet).is_ok() {
             packet.set_stream(a.stream);
@@ -901,7 +901,9 @@ impl MovieWriter {
                 last.resize(a.frame_size * CHANNELS, 0.0);
                 self.encode_audio_chunk(&last)?;
             }
-            self.audio.as_mut().unwrap().encoder.send_eof()?;
+            if let Some(a) = self.audio.as_mut() {
+                a.encoder.send_eof()?;
+            }
             self.drain_audio()?;
         }
         self.octx.write_trailer().context("finalising the file")?;

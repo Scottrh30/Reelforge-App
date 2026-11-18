@@ -56,7 +56,7 @@ fn by_id() -> &'static Mutex<HashMap<u64, Arc<Environment>>> {
 /// can't be read.
 pub fn load(path: &Path) -> Option<Arc<Environment>> {
     let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
-    if let Some((m, e)) = cache().lock().unwrap().get(path) {
+    if let Some((m, e)) = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(path) {
         if *m == modified {
             return e.clone();
         }
@@ -72,17 +72,17 @@ pub fn load(path: &Path) -> Option<Arc<Environment>> {
     let env = read.map(|(w, h, rgb)| Arc::new(Environment::new(id, w, h, rgb)));
     // A picture the loader can't read yet (there's no loader) is tried again later.
     if is_hdr || LOADER.get().is_some() {
-        cache().lock().unwrap().insert(path.to_path_buf(), (modified, env.clone()));
+        cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(path.to_path_buf(), (modified, env.clone()));
     }
     if let Some(e) = &env {
-        by_id().lock().unwrap().insert(e.id, e.clone());
+        by_id().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(e.id, e.clone());
     }
     env
 }
 
 /// A loaded environment by its id (for the renderer, which uploads its picture).
 pub fn get(id: u64) -> Option<Arc<Environment>> {
-    by_id().lock().unwrap().get(&id).cloned()
+    by_id().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id).cloned()
 }
 
 /// The direction the picture's point (`u`, `v`, 0–1 from the top left) looks along.

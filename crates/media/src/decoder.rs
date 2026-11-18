@@ -790,7 +790,7 @@ impl DecodeState {
                     self.scaler = Some((Scaler::get(fmt, sw, sh, out_fmt, dw, dh, Flags::BILINEAR)?, key));
                 }
                 let mut small = ff::frame::Video::empty();
-                self.scaler.as_mut().unwrap().0.run(src, &mut small)?;
+                self.scaler.as_mut().ok_or_else(|| anyhow!("no scaler"))?.0.run(src, &mut small)?;
                 (pack_planes(&small, out_layout), out_layout, dw, dh)
             };
             let yuv = YuvPlanes { layout, width: w, height: h, planes, matrix, full_range, transfer: self.transfer_of(src) };
@@ -813,7 +813,7 @@ impl DecodeState {
             self.scaler = Some((s, key));
         }
         let mut rgba = ff::frame::Video::empty();
-        self.scaler.as_mut().unwrap().0.run(src, &mut rgba)?;
+        self.scaler.as_mut().ok_or_else(|| anyhow!("no scaler"))?.0.run(src, &mut rgba)?;
 
         // Repack: FFmpeg rows are padded to `stride`, wgpu wants tight rows.
         let row = dw as usize * 4;

@@ -41,7 +41,7 @@ pub fn decompress(data: &[u8], layout: &ChannelLayout, out: &mut [u8]) -> Result
     if data.len() < at + 4 {
         return fail("PIZ length missing");
     }
-    let len = i32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+    let len = i32::from_le_bytes(super::le4(data, at)?);
     at += 4;
     if len < 0 || data.len() < at + len as usize {
         return fail("PIZ data cut short");
@@ -215,8 +215,8 @@ fn huf_uncompress(data: &[u8], out: &mut [u16]) -> Result<()> {
     if data.len() < 20 {
         return fail("PIZ Huffman header");
     }
-    let rd = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as usize;
-    let (im, i_max, n_bits) = (rd(0), rd(4), rd(12));
+    let rd = |i: usize| super::le4(data, i).map(|b| u32::from_le_bytes(b) as usize);
+    let (im, i_max, n_bits) = (rd(0)?, rd(4)?, rd(12)?);
     if im >= HUF_ENCSIZE || i_max >= HUF_ENCSIZE || im > i_max {
         return fail("PIZ Huffman table range");
     }

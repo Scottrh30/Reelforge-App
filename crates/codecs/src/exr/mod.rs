@@ -165,10 +165,10 @@ impl<'a> Reader<'a> {
         Ok(self.bytes(1)?[0])
     }
     fn i32(&mut self) -> Result<i32> {
-        Ok(i32::from_le_bytes(self.bytes(4)?.try_into().unwrap()))
+        Ok(i32::from_le_bytes(le4(self.bytes(4)?, 0)?))
     }
     fn u64(&mut self) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.bytes(8)?.try_into().unwrap()))
+        Ok(u64::from_le_bytes(le8(self.bytes(8)?, 0)?))
     }
     fn cstr(&mut self) -> Result<&'a str> {
         let rest = &self.d[self.p.min(self.d.len())..];
@@ -178,12 +178,22 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Four bytes at `at` of `b` (cut short: a damaged file).
+pub(crate) fn le4(b: &[u8], at: usize) -> Result<[u8; 4]> {
+    b.get(at..at.saturating_add(4)).and_then(|s| s.try_into().ok()).ok_or_else(|| Error::Invalid("EXR: cut short".into()))
+}
+
+/// Eight bytes at `at` of `b`.
+fn le8(b: &[u8], at: usize) -> Result<[u8; 8]> {
+    b.get(at..at.saturating_add(8)).and_then(|s| s.try_into().ok()).ok_or_else(|| Error::Invalid("EXR: cut short".into()))
+}
+
 fn read_box(v: &[u8]) -> Result<Box2> {
     if v.len() < 16 {
         return fail("bad box");
     }
-    let i = |k: usize| i32::from_le_bytes(v[k * 4..k * 4 + 4].try_into().unwrap());
-    let b = Box2 { x0: i(0), y0: i(1), x1: i(2), y1: i(3) };
+    let i = |k: usize| le4(v, k * 4).map(i32::from_le_bytes);
+    let b = Box2 { x0: i(0)?, y0: i(1)?, x1: i(2)?, y1: i(3)? };
     if b.x1 < b.x0 || b.y1 < b.y0 || b.width() > 1 << 16 || b.height() > 1 << 16 {
         return fail("bad window");
     }
@@ -250,7 +260,7 @@ fn read_header(r: &mut Reader, tiled_file: bool, deep_file: bool) -> Result<Head
             ("dataWindow", "box2i") => data = Some(read_box(v)?),
             ("displayWindow", "box2i") => display = Some(read_box(v)?),
             ("tiles", "tiledesc") if v.len() >= 9 => {
-                let (tx, ty) = (u32::from_le_bytes(v[0..4].try_into().unwrap()), u32::from_le_bytes(v[4..8].try_into().unwrap()));
+                let (tx, ty) = (u32::from_le_bytes(le4(v, 0)?), u32::from_le_bytes(le4(v, 4)?));
                 if tx == 0 || ty == 0 || tx > 1 << 16 || ty > 1 << 16 {
                     return fail("bad tile size");
                 }
@@ -261,7 +271,7 @@ fn read_header(r: &mut Reader, tiled_file: bool, deep_file: bool) -> Result<Head
                 deep = t.starts_with("deep");
                 tiled = t == "tiledimage";
             }
-            ("chunkCount", "int") if v.len() >= 4 => chunks = Some(i32::from_le_bytes(v[0..4].try_into().unwrap()).max(0) as usize),
+            ("chunkCount", "int") if v.len() >= 4 => chunks = Some(i32::from_le_bytes(le4(v, 0)?).max(0) as usize),
             _ => {}
         }
     }
@@ -499,7 +509,8 @@ fn decompress(h: &Header, layout: &ChannelLayout, data: &[u8]) -> Result<Vec<u8>
         return Ok(data.to_vec());
     }
     match h.compression {
-        Compression::None => unreachable!(),
+        // (returned above)
+        Compression::None => Ok(data.to_vec()),
         Compression::Rle => Ok(unpredict_deinterleave(&mut rle(data, size)?)),
         Compression::Zips | Compression::Zip => Ok(unpredict_deinterleave(&mut inflate(data, size)?)),
         Compression::Pxr24 => pxr24(data, layout, size),
@@ -693,8 +704,8 @@ pub fn decode(file: &[u8]) -> Result<Picture> {
                                     d.copy_from_slice(&(u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as f32).to_le_bytes());
                                 }
                             }
-                            // `half` means every picked channel is half.
-                            (_, true) => unreachable!(),
+                            // `half` means every picked channel is half (done above).
+                            (_, true) => {}
                         }
                     }
                 }

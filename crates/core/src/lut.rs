@@ -295,14 +295,14 @@ pub fn load_cube(path: &Path) -> Result<Arc<Table>, String> {
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let modified = std::fs::metadata(path).and_then(|m| m.modified()).map_err(|e| format!("can't read {}: {e}", path.display()))?;
     let cache = CACHE.get_or_init(Default::default);
-    if let Some((t, table)) = cache.lock().unwrap().get(path) {
+    if let Some((t, table)) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(path) {
         if *t == modified {
             return Ok(table.clone());
         }
     }
     let text = std::fs::read_to_string(path).map_err(|e| format!("can't read {}: {e}", path.display()))?;
     let table = Arc::new(parse_cube(&text)?);
-    cache.lock().unwrap().insert(path.to_owned(), (modified, table.clone()));
+    cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(path.to_owned(), (modified, table.clone()));
     Ok(table)
 }
 
@@ -321,7 +321,7 @@ pub fn set_plate_loader(f: PlateLoader) {
 pub fn average_rgb(t: &Table) -> u32 {
     static SEEN: OnceLock<Mutex<HashMap<u64, u32>>> = OnceLock::new();
     let seen = SEEN.get_or_init(Default::default);
-    if let Some(v) = seen.lock().unwrap().get(&t.id) {
+    if let Some(v) = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&t.id) {
         return *v;
     }
     let n = (t.rgba.len() / 4).max(1) as u64;
@@ -333,7 +333,7 @@ pub fn average_rgb(t: &Table) -> u32 {
     }
     let m = n.div_ceil(7).max(1);
     let v = ((s[0] / m) << 16 | (s[1] / m) << 8 | (s[2] / m)) as u32;
-    seen.lock().unwrap().insert(t.id, v);
+    seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(t.id, v);
     v
 }
 
@@ -343,7 +343,7 @@ pub fn load_plate(path: &Path, at: crate::Time) -> Option<Arc<Table>> {
     let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
     let cache = CACHE.get_or_init(Default::default);
     let key = (path.to_path_buf(), at.0);
-    if let Some((m, t)) = cache.lock().unwrap().get(&key) {
+    if let Some((m, t)) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
         if *m == modified {
             return t.clone();
         }
@@ -356,7 +356,7 @@ pub fn load_plate(path: &Path, at: crate::Time) -> Option<Arc<Table>> {
     });
     // Not cached when there's no loader yet (it may be set later).
     if PLATE_LOADER.get().is_some() {
-        cache.lock().unwrap().insert(key, (modified, loaded.clone()));
+        cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, (modified, loaded.clone()));
     }
     loaded
 }
