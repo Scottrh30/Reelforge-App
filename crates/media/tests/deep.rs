@@ -27,7 +27,7 @@ fn make(name: &str, pix_fmt: &str, expr: &str, codec: &[&str]) -> Option<PathBuf
     ok.then_some(path)
 }
 
-fn frame(path: &PathBuf, max: Option<(u32, u32)>) -> VideoFrame {
+fn frame(path: &std::path::Path, max: Option<(u32, u32)>) -> VideoFrame {
     let mut src = FrameSource::open(path, max).unwrap();
     src.frame_at_blocking(Time::ZERO, Duration::from_secs(10)).expect("frame")
 }

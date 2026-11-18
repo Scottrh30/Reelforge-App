@@ -23,6 +23,9 @@
 //! targets kept per layer, and the result is drawn like a group. Because the
 //! effects run before the transform, they move, scale and rotate with the layer.
 
+// (as reelforge-core; GPU dispatch helpers take their resources plainly)
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
+
 use reelforge_core::{BlendMode, EffectKind, EffectValues, Transform};
 use std::collections::HashMap;
 

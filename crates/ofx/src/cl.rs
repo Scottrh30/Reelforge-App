@@ -213,6 +213,8 @@ impl Cl {
     }
 
     /// Wait for the queue, then copy buffer `m` (or image, `w`×`h` with rows of `row` bytes) into `out`.
+    // (`m` is OpenCL's own handle, made by this module: only the driver looks behind it)
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn read(&self, m: Mem, image: Option<(u32, u32, usize)>, out: &mut [u8]) -> Result<(), String> {
         // SAFETY: as above; `out` is big enough (checked by the caller's sizes).
         unsafe {
@@ -231,6 +233,8 @@ impl Cl {
         }
     }
 
+    // (as `read`)
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn release(&self, m: Mem) {
         if !m.is_null() {
             // SAFETY: a memory object we made.

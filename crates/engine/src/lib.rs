@@ -4,6 +4,10 @@
 //! meters, export presets, plugins, Collect project and the viewer gizmo.
 //! The app (`crates/tauri-app`, the `reelforge` program) is built on these.
 
+// (as reelforge-core: numeric code indexing several arrays in step, plain
+// argument lists, nested types spelled out)
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
+
 pub mod audio;
 pub mod camraw;
 pub mod collect;

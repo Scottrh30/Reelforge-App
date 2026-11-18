@@ -123,7 +123,7 @@ fn run(src: &Path, dst: &Path, info: &reelforge_core::MediaInfo, rate: reelforge
     std::fs::create_dir_all(dst.parent().unwrap()).map_err(|e| format!("making {}: {e}", dst.parent().unwrap().display()))?;
     let mut source = reelforge_media::FrameSource::open(src, None).map_err(|e| format!("{e:#}"))?;
     let up = |rgba: &[u8], w: usize, h: usize, p: &mut dyn FnMut(f32)| -> Result<Vec<u8>, String> {
-        let big = reelforge_sam::upscale::upscale(rgba, w, h, |f| p(f)).ok_or("the upscaling model didn't load")?;
+        let big = reelforge_sam::upscale::upscale(rgba, w, h, &mut *p).ok_or("the upscaling model didn't load")?;
         Ok(reelforge_sam::upscale::shrink(&big, w * 4, h * 4, (4 / factor) as usize))
     };
     if still {

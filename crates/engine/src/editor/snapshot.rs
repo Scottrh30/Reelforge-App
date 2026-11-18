@@ -48,7 +48,7 @@ impl Editor {
         write_picture(&path, &rgba, w, h)?;
         let what = format!("Snapshot of {} saved: {}", t.timecode(rate), path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
         if self.prefs.snapshot_import {
-            self.import(&[path.clone()]);
+            self.import(std::slice::from_ref(&path));
             self.status = format!("{what} (added to the Media panel)");
         } else {
             self.status = what;

@@ -306,6 +306,61 @@ pub fn load_cube(path: &Path) -> Result<Arc<Table>, String> {
     Ok(table)
 }
 
+/// Reads a clean plate (the frame of a picture or video file at a media
+/// time) as RGBA8; set by the media crate, which can decode files.
+pub type PlateLoader = fn(&Path, crate::Time) -> Option<(u32, u32, Vec<u8>)>;
+static PLATE_LOADER: OnceLock<PlateLoader> = OnceLock::new();
+
+pub fn set_plate_loader(f: PlateLoader) {
+    let _ = PLATE_LOADER.set(f);
+}
+
+/// A difference key's clean plate as a table the GPU samples (by layer uv),
+/// cached by file, time and modification time.
+/// A picture table's average colour, as 0xRRGGBB (sRGB; remembered by table).
+pub fn average_rgb(t: &Table) -> u32 {
+    static SEEN: OnceLock<Mutex<HashMap<u64, u32>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some(v) = seen.lock().unwrap().get(&t.id) {
+        return *v;
+    }
+    let n = (t.rgba.len() / 4).max(1) as u64;
+    let mut s = [0u64; 3];
+    for p in t.rgba.chunks_exact(4).step_by(7) {
+        for k in 0..3 {
+            s[k] += p[k] as u64;
+        }
+    }
+    let m = n.div_ceil(7).max(1);
+    let v = ((s[0] / m) << 16 | (s[1] / m) << 8 | (s[2] / m)) as u32;
+    seen.lock().unwrap().insert(t.id, v);
+    v
+}
+
+pub fn load_plate(path: &Path, at: crate::Time) -> Option<Arc<Table>> {
+    type Cache = Mutex<HashMap<(PathBuf, i64), (std::time::SystemTime, Option<Arc<Table>>)>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    let cache = CACHE.get_or_init(Default::default);
+    let key = (path.to_path_buf(), at.0);
+    if let Some((m, t)) = cache.lock().unwrap().get(&key) {
+        if *m == modified {
+            return t.clone();
+        }
+    }
+    let loaded = PLATE_LOADER.get().and_then(|f| f(path, at)).map(|(width, height, rgba)| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (&key, modified).hash(&mut h);
+        Arc::new(Table { id: h.finish() | 1 << 63, width, height, rgba, cube_size: 0 })
+    });
+    // Not cached when there's no loader yet (it may be set later).
+    if PLATE_LOADER.get().is_some() {
+        cache.lock().unwrap().insert(key, (modified, loaded.clone()));
+    }
+    loaded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,59 +442,4 @@ mod tests {
         assert!(parse_cube("LUT_3D_SIZE 2\n0 0 0\n").is_err());
         assert!(parse_cube("LUT_1D_SIZE 16\n").is_err());
     }
-}
-
-/// Reads a clean plate (the frame of a picture or video file at a media
-/// time) as RGBA8; set by the media crate, which can decode files.
-pub type PlateLoader = fn(&Path, crate::Time) -> Option<(u32, u32, Vec<u8>)>;
-static PLATE_LOADER: OnceLock<PlateLoader> = OnceLock::new();
-
-pub fn set_plate_loader(f: PlateLoader) {
-    let _ = PLATE_LOADER.set(f);
-}
-
-/// A difference key's clean plate as a table the GPU samples (by layer uv),
-/// cached by file, time and modification time.
-/// A picture table's average colour, as 0xRRGGBB (sRGB; remembered by table).
-pub fn average_rgb(t: &Table) -> u32 {
-    static SEEN: OnceLock<Mutex<HashMap<u64, u32>>> = OnceLock::new();
-    let seen = SEEN.get_or_init(Default::default);
-    if let Some(v) = seen.lock().unwrap().get(&t.id) {
-        return *v;
-    }
-    let n = (t.rgba.len() / 4).max(1) as u64;
-    let mut s = [0u64; 3];
-    for p in t.rgba.chunks_exact(4).step_by(7) {
-        for k in 0..3 {
-            s[k] += p[k] as u64;
-        }
-    }
-    let m = n.div_ceil(7).max(1);
-    let v = ((s[0] / m) << 16 | (s[1] / m) << 8 | (s[2] / m)) as u32;
-    seen.lock().unwrap().insert(t.id, v);
-    v
-}
-
-pub fn load_plate(path: &Path, at: crate::Time) -> Option<Arc<Table>> {
-    type Cache = Mutex<HashMap<(PathBuf, i64), (std::time::SystemTime, Option<Arc<Table>>)>>;
-    static CACHE: OnceLock<Cache> = OnceLock::new();
-    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
-    let cache = CACHE.get_or_init(Default::default);
-    let key = (path.to_path_buf(), at.0);
-    if let Some((m, t)) = cache.lock().unwrap().get(&key) {
-        if *m == modified {
-            return t.clone();
-        }
-    }
-    let loaded = PLATE_LOADER.get().and_then(|f| f(path, at)).map(|(width, height, rgba)| {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        (&key, modified).hash(&mut h);
-        Arc::new(Table { id: h.finish() | 1 << 63, width, height, rgba, cube_size: 0 })
-    });
-    // Not cached when there's no loader yet (it may be set later).
-    if PLATE_LOADER.get().is_some() {
-        cache.lock().unwrap().insert(key, (modified, loaded.clone()));
-    }
-    loaded
 }

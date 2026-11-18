@@ -234,7 +234,7 @@ pub fn ofx_add_folder() -> Res<Option<String>> {
 #[tauri::command]
 pub fn ofx_remove_folder(path: String) -> Res<String> {
     let mut list = extra_folders();
-    list.retain(|p| *p != PathBuf::from(&path));
+    list.retain(|p| p.as_path() != std::path::Path::new(&path));
     save_extra(&list)?;
     Ok(ofx_rescan())
 }

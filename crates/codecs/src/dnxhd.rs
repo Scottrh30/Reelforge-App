@@ -264,28 +264,28 @@ fn decode_row(h: &Header, t: &Tables, data: &[u8], row: &mut RowOut) -> Result<O
         let x = mb * 16;
         let (t0, t1) = if interlaced_mb { (0, 1) } else { (0, 8) };
         if !h.is_444 {
-            put(&mut row.y, w, x, t0, &blocks[0]);
-            put(&mut row.y, w, x + 8, t0, &blocks[1]);
-            put(&mut row.y, w, x, t1, &blocks[4]);
-            put(&mut row.y, w, x + 8, t1, &blocks[5]);
+            put(row.y, w, x, t0, &blocks[0]);
+            put(row.y, w, x + 8, t0, &blocks[1]);
+            put(row.y, w, x, t1, &blocks[4]);
+            put(row.y, w, x + 8, t1, &blocks[5]);
             let cx = mb * 8;
-            put(&mut row.u, cw, cx, t0, &blocks[2]);
-            put(&mut row.v, cw, cx, t0, &blocks[3]);
-            put(&mut row.u, cw, cx, t1, &blocks[6]);
-            put(&mut row.v, cw, cx, t1, &blocks[7]);
+            put(row.u, cw, cx, t0, &blocks[2]);
+            put(row.v, cw, cx, t0, &blocks[3]);
+            put(row.u, cw, cx, t1, &blocks[6]);
+            put(row.v, cw, cx, t1, &blocks[7]);
         } else {
-            put(&mut row.y, w, x, t0, &blocks[0]);
-            put(&mut row.y, w, x + 8, t0, &blocks[1]);
-            put(&mut row.y, w, x, t1, &blocks[6]);
-            put(&mut row.y, w, x + 8, t1, &blocks[7]);
-            put(&mut row.u, cw, x, t0, &blocks[2]);
-            put(&mut row.u, cw, x + 8, t0, &blocks[3]);
-            put(&mut row.u, cw, x, t1, &blocks[8]);
-            put(&mut row.u, cw, x + 8, t1, &blocks[9]);
-            put(&mut row.v, cw, x, t0, &blocks[4]);
-            put(&mut row.v, cw, x + 8, t0, &blocks[5]);
-            put(&mut row.v, cw, x, t1, &blocks[10]);
-            put(&mut row.v, cw, x + 8, t1, &blocks[11]);
+            put(row.y, w, x, t0, &blocks[0]);
+            put(row.y, w, x + 8, t0, &blocks[1]);
+            put(row.y, w, x, t1, &blocks[6]);
+            put(row.y, w, x + 8, t1, &blocks[7]);
+            put(row.u, cw, x, t0, &blocks[2]);
+            put(row.u, cw, x + 8, t0, &blocks[3]);
+            put(row.u, cw, x, t1, &blocks[8]);
+            put(row.u, cw, x + 8, t1, &blocks[9]);
+            put(row.v, cw, x, t0, &blocks[4]);
+            put(row.v, cw, x + 8, t0, &blocks[5]);
+            put(row.v, cw, x, t1, &blocks[10]);
+            put(row.v, cw, x + 8, t1, &blocks[11]);
         }
     }
     Ok(act_flag)

@@ -41,6 +41,9 @@ impl ParamObj {
     }
 }
 
+// (Boxed one by one: plugins hold pointers to them, so each must stay put as
+// the list grows.)
+#[allow(clippy::vec_box)]
 pub struct ParamSetObj {
     pub props: Box<PropSet>,
     pub params: Vec<Box<ParamObj>>,
@@ -97,6 +100,8 @@ pub struct GlClip {
     pub depth: &'static str,
 }
 
+// (as ParamSetObj: plugins hold pointers to the clips)
+#[allow(clippy::vec_box)]
 pub struct EffectObj {
     pub props: Box<PropSet>,
     pub params: Box<ParamSetObj>,

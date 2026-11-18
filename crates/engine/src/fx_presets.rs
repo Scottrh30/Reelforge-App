@@ -490,8 +490,7 @@ pub fn starters() -> Vec<EffectPreset> {
     ];
     out.push(EffectPreset { motion: Some(opacity_move(&[(0.0, 0.0), (1.0, 1.0)])), ..look("Fade in", Vec::new()) });
     out.push(EffectPreset { motion: Some(opacity_move(&[(0.0, 1.0), (1.0, 0.0)])), timing: Timing::FromEnd, length: one, ..look("Fade out", Vec::new()) });
-    let mut push = TransformAnim::default();
-    push.scale = Curve(vec![reelforge_core::anim::Key::new(Time::ZERO, [1.0, 1.0], reelforge_core::anim::Interp::Linear), reelforge_core::anim::Key::new(one, [1.1, 1.1], reelforge_core::anim::Interp::Linear)]);
+    let push = TransformAnim { scale: Curve(vec![reelforge_core::anim::Key::new(Time::ZERO, [1.0, 1.0], reelforge_core::anim::Interp::Linear), reelforge_core::anim::Key::new(one, [1.1, 1.1], reelforge_core::anim::Interp::Linear)]), ..TransformAnim::default() };
     out.push(EffectPreset { motion: Some(Motion { transform: Transform::default(), anim: push, props: vec!["scale".into()] }), timing: Timing::Stretch, length: one, ..look("Slow push in", Vec::new()) });
     out.extend(neon_signs());
     out.extend(light_looks());

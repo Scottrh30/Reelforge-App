@@ -208,7 +208,7 @@ impl WaterGpu {
 
     fn make(&self, kind: EffectKind, w: u32, h: u32) -> Option<Sim> {
         let n = w as u64 * h as u64;
-        let limit = self.device.limits().max_storage_buffer_binding_size as u64;
+        let limit = self.device.limits().max_storage_buffer_binding_size;
         let uniform = wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.uniforms, offset: 0, size: wgpu::BufferSize::new(SLOT) }) };
         let mut enc = self.device.create_command_encoder(&Default::default());
         let sim = if kind != EffectKind::Liquid {

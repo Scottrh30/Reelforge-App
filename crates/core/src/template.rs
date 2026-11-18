@@ -189,10 +189,10 @@ pub fn add(p: &mut Project, t: &TemplateFile) -> Added {
     for c in t.sequences.iter().flat_map(|s| s.tracks.iter().flat_map(|t| &t.clips)) {
         clip_map.insert(c.id, ClipId(p.alloc_id()));
         if let Some(l) = c.link {
-            if !link_map.contains_key(&l) {
-                let n = p.alloc_id();
-                link_map.insert(l, n);
-            }
+            link_map.entry(l).or_insert_with(|| {
+                
+                p.alloc_id()
+            });
         }
     }
     for (i, s) in t.sequences.iter().enumerate() {

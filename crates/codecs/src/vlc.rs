@@ -111,7 +111,7 @@ mod tests {
                 bits += &format!("{:0w$b}", c, w = l as usize);
             }
         }
-        while bits.len() % 8 != 0 {
+        while !bits.len().is_multiple_of(8) {
             bits.push('0');
         }
         let bytes: Vec<u8> = (0..bits.len() / 8).map(|i| u8::from_str_radix(&bits[i * 8..i * 8 + 8], 2).unwrap()).collect();
@@ -133,7 +133,7 @@ mod tests {
         for i in [3usize, 0, 4, 2, 1, 3] {
             bits += &format!("{:0w$b}", codes[i], w = lens[i] as usize);
         }
-        while bits.len() % 8 != 0 {
+        while !bits.len().is_multiple_of(8) {
             bits.push('0');
         }
         let bytes: Vec<u8> = (0..bits.len() / 8).map(|i| u8::from_str_radix(&bits[i * 8..i * 8 + 8], 2).unwrap()).collect();

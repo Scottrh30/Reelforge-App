@@ -77,7 +77,7 @@ impl NativeVideo {
                 }
                 if let Some(dec) = self.alpha.as_mut() {
                     // A bad alpha frame costs the transparency of that frame, not the clip.
-                    let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dec.send(&a, pts))).map_or(false, |r| r.is_ok());
+                    let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dec.send(&a, pts))).is_ok_and(|r| r.is_ok());
                     if ok {
                         while let Some(p) = dec.receive() {
                             self.alphas.push_back(p);
@@ -1006,7 +1006,7 @@ fn bench_native_vs_ffmpeg() {
         }
         let native = t.elapsed().as_secs_f64() * 1000.0 / (reps * packets.len()) as f64;
         let mut ctx = ff::codec::context::Context::from_parameters(params.clone()).unwrap();
-        ctx.set_threading(ff::codec::threading::Config { kind: ff::codec::threading::Type::Frame, count: 1, ..Default::default() });
+        ctx.set_threading(ff::codec::threading::Config { kind: ff::codec::threading::Type::Frame, count: 1 });
         let mut ffd = ctx.decoder().video().unwrap();
         let t = Instant::now();
         for _ in 0..reps {

@@ -9,6 +9,9 @@
 //! frame ([`embed`], a second or two), then the decoder for each set of
 //! prompts ([`cut`], a tenth of a second).
 
+// (as reelforge-render: model passes take their buffers plainly)
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
+
 use rayon::prelude::*;
 
 mod gpu;
@@ -72,7 +75,7 @@ fn exp_fast(x: f32) -> f32 {
 fn erf(x: f32) -> f32 {
     let a = x.abs();
     let t = 1.0 / (1.0 + 0.3275911 * a);
-    let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp_fast(-a * a);
+    let y = 1.0 - (((((1.061_405_4 * t - 1.453_152_1) * t) + 1.421_413_8) * t - 0.284_496_72) * t + 0.254_829_6) * t * exp_fast(-a * a);
     y.copysign(x)
 }
 

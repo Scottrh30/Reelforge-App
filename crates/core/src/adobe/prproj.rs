@@ -13,6 +13,10 @@
 //! `time,value,interpolation,…;` in the clip's source time; interpolation
 //! 0 is linear, 4 hold and 5 Bézier.
 
+// (clippy takes the closures that are called once and then handed on for
+// the keyframes, `f(&p.value)` then `curve(.., f, ..)`, for ones called only once)
+#![allow(clippy::redundant_closure_call)]
+
 use super::{count, file_name, locate, rate_of, Imported, Notes, MAX_UNPACKED};
 use crate::anim::{Curve, Interp, Key};
 use crate::audio::VolumeKey;
@@ -1032,7 +1036,7 @@ mod tests {
         assert!((sound.audio.volume_keys[1].db + 12.0).abs() < 0.01);
         // Media by path; the marker, orange → red.
         assert_eq!(p.media.len(), 2);
-        assert!(p.media.iter().any(|m| m.path == PathBuf::from("C:\\Footage\\a.mp4") && m.info.video.as_ref().is_some_and(|v| v.width == 1280)));
+        assert!(p.media.iter().any(|m| m.path == *"C:\\Footage\\a.mp4" && m.info.video.as_ref().is_some_and(|v| v.width == 1280)));
         assert_eq!(s.markers.len(), 1);
         assert_eq!((s.markers[0].name.as_str(), sec(s.markers[0].at), s.markers[0].color), ("Fix: check", 2.002, MarkerColor::Red));
         assert!(im.summary.contains("2 sequences"), "{}", im.summary);

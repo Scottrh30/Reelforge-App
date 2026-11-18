@@ -170,9 +170,9 @@ impl Bounds {
         let r = row as i32;
         Bounds {
             left: -((c * 16) << 3) - MARGIN,
-            right: (((cols as i32) - 1 - c) * 16 << 3) + MARGIN,
+            right: ((((cols as i32) - 1 - c) * 16) << 3) + MARGIN,
             top: -((r * 16) << 3) - MARGIN,
-            bottom: (((rows as i32) - 1 - r) * 16 << 3) + MARGIN,
+            bottom: ((((rows as i32) - 1 - r) * 16) << 3) + MARGIN,
         }
     }
     fn clamp(self, mv: Mv) -> Mv {

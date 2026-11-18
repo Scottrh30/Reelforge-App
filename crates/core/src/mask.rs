@@ -230,7 +230,7 @@ fn resample_closed(pts: &[[f32; 2]], n: usize) -> Vec<[f32; 2]> {
     let m = pts.len();
     let seg = |j: usize| { let (a, b) = (pts[j], pts[(j + 1) % m]); ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt() };
     let total: f32 = (0..m).map(seg).sum();
-    if !(total > 0.0) {
+    if total.is_nan() || total <= 0.0 {
         return vec![pts[0]; n];
     }
     let mut out = Vec::with_capacity(n);
@@ -950,7 +950,7 @@ mod tests {
     #[test]
     fn garbage_mattes_for_keys_dont_cut_the_layer() {
         let left = Mask { points: vec![[0.0, 0.0], [50.0, 0.0], [50.0, 100.0], [0.0, 100.0]], key_keep: true, ..Mask::default() };
-        let img = rasterize(&[left.clone()], Time::ZERO, [100.0, 100.0], 100).unwrap();
+        let img = rasterize(std::slice::from_ref(&left), Time::ZERO, [100.0, 100.0], 100).unwrap();
         assert!(img.data.iter().all(|&v| v == 255), "the layer isn't cut");
         assert_eq!((img.keep.len(), img.keep[10 * 100 + 10], img.keep[10 * 100 + 90]), (100 * 100, 255, 0));
         // With an ordinary mask as well: each does its own job.
@@ -1107,11 +1107,11 @@ mod tests {
         // Left out of the camera track: doesn't cut the layer, but is its own image.
         // A fill area doesn't cut the layer either, and has an image of its own.
         let fa = Mask { fill_area: true, ..rect(0.0, 0.0, 50.0, 100.0) };
-        assert!(rasterize(&[fa.clone()], Time::ZERO, layer, 64).is_none());
+        assert!(rasterize(std::slice::from_ref(&fa), Time::ZERO, layer, 64).is_none());
         let img = fill_area_image(&[fa], Time::ZERO, layer, 64).unwrap();
         assert!(img.at([10.0, 50.0], layer) > 200 && img.at([90.0, 50.0], layer) < 50);
         let ig = Mask { track_ignore: true, ..rect(0.0, 0.0, 50.0, 100.0) };
-        assert!(rasterize(&[ig.clone()], Time::ZERO, layer, 4096).is_none());
+        assert!(rasterize(std::slice::from_ref(&ig), Time::ZERO, layer, 4096).is_none());
         let both = rasterize(&[ig.clone(), rect(0.0, 0.0, 100.0, 50.0)], Time::ZERO, layer, 4096).unwrap();
         assert_eq!(both.data[75 * 100 + 25], 0, "only the ordinary mask cuts");
         let img = track_ignore_image(&[ig.clone(), rect(0.0, 0.0, 100.0, 50.0)], Time::ZERO, layer).unwrap();
@@ -1131,7 +1131,7 @@ mod tests {
         let mut round = straight.clone();
         round.curves = (0..4).map(|i| smooth_handles(&pts, i)).collect();
         assert!(round.is_curved(Time::ZERO) && !straight.is_curved(Time::ZERO));
-        let area = |m: &Mask| rasterize(&[m.clone()], Time::ZERO, layer, 4096).unwrap().data.iter().map(|&v| v as f32 / 255.0).sum::<f32>();
+        let area = |m: &Mask| rasterize(std::slice::from_ref(m), Time::ZERO, layer, 4096).unwrap().data.iter().map(|&v| v as f32 / 255.0).sum::<f32>();
         let (a0, a1) = (area(&straight), area(&round));
         assert!((a0 - 12_800.0).abs() < 60.0, "{a0}");
         // Between the diamond (12 800) and the circle through its points (≈20 100).

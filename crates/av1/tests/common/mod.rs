@@ -1,5 +1,8 @@
 //! Shared helpers for the AV1 oracle tests. ffmpeg (libsvtav1 to encode fixtures, libdav1d to
 //! decode the reference) is used only as an external process.
+
+// (test helpers: nested types spelled out)
+#![allow(clippy::type_complexity)]
 #![allow(dead_code)]
 
 use reelforge_av1::{Decoder, Picture};

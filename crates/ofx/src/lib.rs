@@ -249,9 +249,7 @@ pub fn find_bundles(dirs: &[PathBuf]) -> Vec<PathBuf> {
         entries.sort();
         for p in entries {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
-            if name.ends_with(".ofx.bundle") && p.is_dir() {
-                out.push(p);
-            } else if name.ends_with(".ofx") && p.is_file() {
+            if (name.ends_with(".ofx.bundle") && p.is_dir()) || (name.ends_with(".ofx") && p.is_file()) {
                 out.push(p);
             } else if p.is_dir() && depth < 3 {
                 stack.push((p, depth + 1));

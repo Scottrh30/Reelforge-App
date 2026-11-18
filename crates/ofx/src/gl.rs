@@ -59,6 +59,8 @@ pub struct Fns {
 }
 
 impl Fns {
+    // (each function pointer's type is its field's: spelling the 19 out again adds nothing)
+    #[allow(clippy::missing_transmute_annotations)]
     unsafe fn load(get: &dyn Fn(&str) -> *const c_void) -> Result<Self, String> {
         macro_rules! f {
             ($name:literal) => {{

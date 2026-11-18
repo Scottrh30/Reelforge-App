@@ -2756,7 +2756,7 @@ fn neon_path_follows_a_titles_letters() {
     let segs = reelforge_core::neonpath::segments_on(&v.values, &lines.iter().map(|l| (l.clone(), true)).collect::<Vec<_>>(), 0.0);
     assert!(segs.len() as f32 == v.gpu[1]);
     // Written on halfway: the outside first, so about half the length.
-    let mut half = v.values.clone();
+    let mut half = v.values;
     half[np::END] = 50.0;
     let all: f32 = segs.iter().map(|s| ((s.a[0] - s.b[0]).powi(2) + (s.a[1] - s.b[1]).powi(2)).sqrt()).sum();
     let some: f32 = reelforge_core::neonpath::segments_on(&half, &lines.iter().map(|l| (l.clone(), true)).collect::<Vec<_>>(), 0.0).iter().map(|s| ((s.a[0] - s.b[0]).powi(2) + (s.a[1] - s.b[1]).powi(2)).sqrt()).sum();
@@ -2910,8 +2910,8 @@ fn liquid_with_depth_shows_its_top() {
     let tr = Transform { three_d: true, orientation: [40.0, 0.0], ..Transform::default() };
     let scene = Scene3d { camera: Camera::default_for(size), lights: vec![] };
     let ls = layer_space(&tr, size, &scene);
-    let flat3 = draw(&mut c, tr.clone(), Some(&ls), &[]);
-    let deep3 = draw(&mut c, tr.clone(), Some(&ls), &[(lq::DEPTH, 200.0)]);
+    let flat3 = draw(&mut c, tr, Some(&ls), &[]);
+    let deep3 = draw(&mut c, tr, Some(&ls), &[(lq::DEPTH, 200.0)]);
     let (a, b) = (flat3.chunks(4).filter(|p| p[3] > 60).count(), deep3.chunks(4).filter(|p| p[3] > 60).count());
     assert!(b > a + 800, "the 3D layer's water has a top too: {a} → {b}");
 }

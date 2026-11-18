@@ -3,6 +3,10 @@
 //! Nothing in here knows about FFmpeg, wgpu or the interface. Keeping the project model
 //! pure makes it easy to test, serialize, and drive from a headless renderer later.
 
+// (numeric code indexes several arrays in step; GPU-free maths helpers take
+// their inputs plainly; a few nested return types read better spelled out)
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
+
 pub mod adobe;
 pub mod colormatch;
 pub mod neonpath;

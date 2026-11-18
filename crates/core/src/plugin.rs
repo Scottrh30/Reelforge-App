@@ -207,7 +207,7 @@ fn intern_params(params: &[ManifestParam]) -> Result<&'static [ParamSpec], Strin
         let spec = match p.kind.to_lowercase().as_str() {
             "" | "number" | "slider" | "float" => {
                 let (min, max) = (p.min.unwrap_or(0.0), p.max.unwrap_or(100.0));
-                if !(min < max) {
+                if min.is_nan() || max.is_nan() || min >= max {
                     return Err(format!("{what}: min ({min}) must be less than max ({max})"));
                 }
                 let speed = p.step.unwrap_or(((max - min) / 400.0).clamp(0.001, 10.0));

@@ -198,7 +198,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
             fx.normalize();
             // A plugin's own section headings, else the built-in effect's.
             let params = match &plug {
-                Some(d) => views_of(fx.param_specs(), &fx.params, &d.sections, |i| fx.value_at(i, src), c, src, in_clip),
+                Some(d) => views_of(fx.param_specs(), &fx.params, d.sections, |i| fx.value_at(i, src), c, src, in_clip),
                 None => param_views(&fx, c, src, in_clip),
             };
             let (curves, lut) = match (&fx.data, fx.kind) {
@@ -1008,7 +1008,7 @@ pub struct CatalogItem {
 pub fn effect_catalog() -> Vec<CatalogGroup> {
     let installed = reelforge_core::plugin::installed();
     let mut ofx = reelforge_core::ofx::installed();
-    ofx.sort_by(|a, b| (a.group.to_lowercase(), a.name.to_lowercase()).cmp(&(b.group.to_lowercase(), b.name.to_lowercase())));
+    ofx.sort_by_key(|a| (a.group.to_lowercase(), a.name.to_lowercase()));
     EffectCategory::ALL
         .into_iter()
         .map(|cat| {

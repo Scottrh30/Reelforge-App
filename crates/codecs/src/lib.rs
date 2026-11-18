@@ -18,6 +18,10 @@
 //!
 //! Every decoder is checked against FFmpeg's output in the media crate's tests.
 
+// (as the other decoders: transforms and filters index several arrays in step,
+// as the spec writes them)
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
+
 pub mod bits;
 pub mod cineform;
 mod cineform_tables;

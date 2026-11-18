@@ -265,12 +265,12 @@ pub fn edl(e: &Edit, video: usize, start: i64) -> String {
     let mut n = 0;
     for (_, _, lines) in events {
         for line in lines.lines() {
-            if line.starts_with("{N}") {
+            if let Some(rest) = line.strip_prefix("{N}") {
                 // Each pair of dissolve lines shares a number.
                 if !line.contains(" D ") {
                     n += 1;
                 }
-                let _ = writeln!(out, "{n:03}{}", &line[3..]);
+                let _ = writeln!(out, "{n:03}{rest}");
             } else {
                 let _ = writeln!(out, "{line}");
             }

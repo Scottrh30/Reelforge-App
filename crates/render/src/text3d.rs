@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn letters_become_a_closed_solid() {
         let m = text_mesh(&spec("OH", 40.0), [640, 360]);
-        assert!(!m.indices.is_empty() && m.indices.len() % 3 == 0);
+        assert!(!m.indices.is_empty() && m.indices.len().is_multiple_of(3));
         let zs: Vec<f32> = m.vertices.iter().map(|v| v.pos[2]).collect();
         assert!(zs.iter().all(|z| *z == 0.0 || *z == 40.0));
         // Front faces face the viewer (−Z), back faces away, sides sideways.

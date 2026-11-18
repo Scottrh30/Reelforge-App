@@ -49,7 +49,7 @@ fn settings(path: PathBuf) -> ExportSettings {
 }
 
 /// Distinct luma code values along row 30 of the exported file's first frame.
-fn levels_out(path: &PathBuf) -> usize {
+fn levels_out(path: &std::path::Path) -> usize {
     let mut src = FrameSource::open(path, None).unwrap();
     let f = src.frame_at_blocking(Time::ZERO, Duration::from_secs(10)).unwrap();
     let reelforge_core::frame::Pixels::Yuv(y) = &f.pixels else { panic!("not deep YUV: {:?}", f.pixels) };

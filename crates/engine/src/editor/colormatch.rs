@@ -127,7 +127,7 @@ impl Editor {
             }
             let Some((_, c)) = s.find_clip(id) else { continue };
             if let Some(sample) = self.solo(c) {
-                let name = if c.nested.is_some() { self.project.sequences.get(c.nested.unwrap()).map(|s| s.name.clone()).unwrap_or_default() } else { self.project.media(c.media).map(|m| m.name.clone()).unwrap_or_default() };
+                let name = if let Some(n) = c.nested { self.project.sequences.get(n).map(|s| s.name.clone()).unwrap_or_default() } else { self.project.media(c.media).map(|m| m.name.clone()).unwrap_or_default() };
                 jobs.push((id, name, sample));
             }
         }

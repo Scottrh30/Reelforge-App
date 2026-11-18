@@ -136,7 +136,7 @@ fn shrink(gray: &[f32], w: usize, h: usize, k: f32) -> (Vec<f32>, usize, usize) 
 fn windows(c: &Cascade, gray: &[f32], w: usize, h: usize, mirrored: bool, min_size: f32) -> Vec<Rect> {
     let mut scales = Vec::new();
     let mut k = (min_size / c.w as f32).max(1.0);
-    while (w as f32 / k) as usize >= c.w + 1 && (h as f32 / k) as usize >= c.h + 1 {
+    while (w as f32 / k) as usize > c.w && (h as f32 / k) as usize > c.h {
         scales.push(k);
         k *= 1.1;
     }
@@ -211,7 +211,7 @@ fn group(rects: &[Rect], min: usize) -> Vec<(Rect, usize)> {
         e.1 += 1;
     }
     let mut out: Vec<(Rect, usize)> = sums.into_values().filter(|(_, c)| *c > min).map(|(s, c)| (s.map(|v| v / c as f32), c)).collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|o| std::cmp::Reverse(o.1));
     out
 }
 
@@ -229,7 +229,7 @@ pub fn detect(gray: &[f32], w: usize, h: usize, min_size: f32) -> Vec<Rect> {
     }
     // A box inside a bigger, surer one is part of it.
     let mut keep: Vec<(Rect, usize)> = Vec::new();
-    found.sort_by(|a, b| b.1.cmp(&a.1));
+    found.sort_by_key(|f| std::cmp::Reverse(f.1));
     for (r, n) in found {
         let inside = keep.iter().any(|(k, _)| r[0] >= k[0] - k[2] * 0.2 && r[1] >= k[1] - k[3] * 0.2 && r[0] + r[2] <= k[0] + k[2] * 1.2 && r[1] + r[3] <= k[1] + k[3] * 1.2);
         if !inside {

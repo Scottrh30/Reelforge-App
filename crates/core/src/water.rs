@@ -182,7 +182,7 @@ pub fn surface_step(e: &Effect, step: usize, w: usize, h: usize, size: [f32; 2])
     let every = v(ws::DROP_EVERY);
     if every > 0.0 {
         let period = (every as f64 * SURFACE_RATE).round().max(1.0) as usize;
-        if step % period == 0 {
+        if step.is_multiple_of(period) {
             drops.push([v(ws::DROP_X) / 100.0 * w as f32, v(ws::DROP_Y) / 100.0 * h as f32, radius, strength * 1.5]);
         }
     }

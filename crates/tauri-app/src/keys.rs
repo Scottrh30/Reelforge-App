@@ -450,8 +450,8 @@ pub fn keys_delete(id: u64, keys: Vec<KeyRef>) -> Res<()> {
     let mut picked: Vec<_> = keys.iter().filter_map(|k| Some((parse_channel(&k.channel)?, k.index))).collect();
     let mut sound: Vec<_> = keys.iter().filter_map(|k| Some((parse_audio_channel(&k.channel)?, k.index))).collect();
     // Last first, so the others' places stay put.
-    picked.sort_by(|a, b| b.1.cmp(&a.1));
-    sound.sort_by(|a, b| b.1.cmp(&a.1));
+    picked.sort_by_key(|p| std::cmp::Reverse(p.1));
+    sound.sort_by_key(|s| std::cmp::Reverse(s.1));
     if !sound.is_empty() {
         audio_step(id, |a| sound.iter().for_each(|(ch, i)| a.audio_remove_key(*ch, *i)))?;
     }

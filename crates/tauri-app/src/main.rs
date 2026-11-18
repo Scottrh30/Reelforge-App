@@ -8,6 +8,9 @@
 //! the viewer picture; it then fetches the full state when `rev` changed and
 //! the picture when `picture_rev` changed.
 
+// (a few nested types read better spelled out)
+#![allow(clippy::type_complexity)]
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(all(windows, target_env = "gnu"))]
@@ -1727,15 +1730,12 @@ fn roto_model_bench() -> Vec<reelforge_render::bench::BenchLine> {
         t.elapsed().as_secs_f64() * 1000.0
     };
     let mut out = Vec::new();
-    match reelforge_sam::gpu() {
-        Some(g) => {
+    if let Some(g) = reelforge_sam::gpu() {
+        let _ = g.encode(&img);
+        let ms = time(&|| {
             let _ = g.encode(&img);
-            let ms = time(&|| {
-                let _ = g.encode(&img);
-            });
-            out.push(line("Roto brush: one frame for the object model, on the graphics card", ms, format!("{} (under a second: strokes and carrying feel quick)", g.adapter)));
-        }
-        None => {}
+        });
+        out.push(line("Roto brush: one frame for the object model, on the graphics card", ms, format!("{} (under a second: strokes and carrying feel quick)", g.adapter)));
     }
     let ms = time(&|| {
         let _ = sam.encode(&img);

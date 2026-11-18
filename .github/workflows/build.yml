@@ -1,4 +1,4 @@
-# Every push and pull request: the full test suite on Linux, and the Windows
+# Every push and pull request: lint (no warnings allowed) and the full test suite on Linux, and the Windows
 # download built and kept as an artifact (Actions → the run → Artifacts).
 # A version tag (v1.0, v1.2.3…) also publishes it as a GitHub Release.
 name: Build
@@ -48,6 +48,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           key: linux
@@ -62,6 +63,9 @@ jobs:
           npm ci
           npx svelte-check --threshold error
           npm run build
+      # Every lint warning fails the build: the code base has none, and keeps it so.
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
 

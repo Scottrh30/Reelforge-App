@@ -374,11 +374,11 @@ fn load_obj(path: &Path) -> Result<Model, String> {
     for m in &models {
         let mesh = &m.mesh;
         let n = mesh.positions.len() / 3;
-        let pos: Vec<[f32; 3]> = (0..n).map(|i| [mesh.positions[i * 3] as f32, mesh.positions[i * 3 + 1] as f32, mesh.positions[i * 3 + 2] as f32]).collect();
-        let normals: Option<Vec<[f32; 3]>> = (mesh.normals.len() == n * 3).then(|| (0..n).map(|i| [mesh.normals[i * 3] as f32, mesh.normals[i * 3 + 1] as f32, mesh.normals[i * 3 + 2] as f32]).collect());
+        let pos: Vec<[f32; 3]> = (0..n).map(|i| [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]]).collect();
+        let normals: Option<Vec<[f32; 3]>> = (mesh.normals.len() == n * 3).then(|| (0..n).map(|i| [mesh.normals[i * 3], mesh.normals[i * 3 + 1], mesh.normals[i * 3 + 2]]).collect());
         all_normals &= normals.is_some();
         let material = mesh.material_id.and_then(|i| materials.get(i));
-        let mat = material.and_then(|m| m.diffuse).map(|d| [d[0] as f32, d[1] as f32, d[2] as f32, 1.0]);
+        let mat = material.and_then(|m| m.diffuse).map(|d| [d[0], d[1], d[2], 1.0]);
         let tex = material.and_then(|m| m.diffuse_texture.as_ref()).filter(|t| !t.trim().is_empty()).map_or(-1, |t| {
             *tex_of.entry(t.clone()).or_insert_with(|| {
                 // The last word is the file (options like -bm 1 come first); backslashes from Windows.
@@ -394,10 +394,10 @@ fn load_obj(path: &Path) -> Result<Model, String> {
         });
         let part = part_index(&mut out.parts, material.map_or(m.name.as_str(), |mm| mm.name.as_str()));
         let uvs = mesh.texcoords.len() == n * 2;
-        let extra: Vec<VExtra> = (0..n).map(|i| VExtra { uv: if uvs { [mesh.texcoords[i * 2] as f32, 1.0 - mesh.texcoords[i * 2 + 1] as f32] } else { [0.0; 2] }, tex: if uvs { tex } else { -1 }, part }).collect();
+        let extra: Vec<VExtra> = (0..n).map(|i| VExtra { uv: if uvs { [mesh.texcoords[i * 2], 1.0 - mesh.texcoords[i * 2 + 1]] } else { [0.0; 2] }, tex: if uvs { tex } else { -1 }, part }).collect();
         // A textured material's colour is the texture's (times Kd, usually white).
         let colors: Vec<[f32; 4]> = if mesh.vertex_color.len() == n * 3 {
-            (0..n).map(|i| [mesh.vertex_color[i * 3] as f32, mesh.vertex_color[i * 3 + 1] as f32, mesh.vertex_color[i * 3 + 2] as f32, 1.0]).collect()
+            (0..n).map(|i| [mesh.vertex_color[i * 3], mesh.vertex_color[i * 3 + 1], mesh.vertex_color[i * 3 + 2], 1.0]).collect()
         } else {
             vec![mat.unwrap_or(DEFAULT_COLOR); n]
         };
@@ -1040,7 +1040,7 @@ mod tests {
         assert_eq!(m.normals.len(), m.positions.len());
         assert!(m.normals.iter().all(|n| (dot(*n, *n) - 1.0).abs() < 1e-3));
         assert_eq!(m.colors.len(), m.positions.len());
-        assert!(m.indices.len() % 3 == 0 && m.indices.iter().all(|&i| (i as usize) < m.positions.len()));
+        assert!(m.indices.len().is_multiple_of(3) && m.indices.iter().all(|&i| (i as usize) < m.positions.len()));
     }
 
     const CUBE_OBJ: &str = "mtllib cube.mtl\nusemtl red\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n\
@@ -1203,7 +1203,6 @@ def Xform "World"
             for v in vals {
                 a.append_f64(*v).unwrap();
             }
-            drop(a);
             w.close_node().unwrap();
         };
         w.new_node("Objects").unwrap();
@@ -1246,7 +1245,6 @@ def Xform "World"
             a.append_string_direct("OO").unwrap();
             a.append_i64(c).unwrap();
             a.append_i64(par).unwrap();
-            drop(a);
             w.close_node().unwrap();
         }
         w.close_node().unwrap();

@@ -106,6 +106,9 @@ fn mul(a: V8, k: f32) -> V8 {
 /// One 8-point AAN inverse transform along the index of `r`, done for eight
 /// independent lanes at once (`r[k]` holds coefficient k of every lane).
 #[inline(always)]
+// (1.414_213_6 is the AAN IDCT's own rounding of √2, a float step off the
+// exact value: changing it would change decoded pixels)
+#[allow(clippy::approx_constant)]
 fn aan_1d(r: &mut [V8; 8]) {
     // Even part.
     let tmp10 = add(r[0], r[4]);
@@ -238,6 +241,8 @@ mod avx2 {
 
     /// One 8-point AAN inverse transform down `r` (lane-wise), as [`super::aan_1d`].
     #[inline(always)]
+    // (the same rounding of √2 as aan_1d)
+    #[allow(clippy::approx_constant)]
     unsafe fn aan(r: &mut [__m256; 8]) {
         let k = |v: f32| _mm256_set1_ps(v);
         let (add, sub, mul) = (|a, b| _mm256_add_ps(a, b), |a, b| _mm256_sub_ps(a, b), |a, b| _mm256_mul_ps(a, b));

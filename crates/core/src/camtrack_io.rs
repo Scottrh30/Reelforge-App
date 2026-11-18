@@ -507,7 +507,7 @@ mod tests {
         let ct = track();
         let py = blender(&ct, "Shot \"1\"", &[]);
         assert!(py.contains("NAME = \"Shot \\\"1\\\"\""), "names are quoted safely");
-        assert_eq!(py.matches("),\n").count() >= 32, true);
+        assert!(py.matches("),\n").count() >= 32);
         assert!(py.contains("cam_data.angle_y = math.radians(FOV)") && py.contains("FOV = 42.000000"));
         assert!(py.contains("scene.render.resolution_x = 1920"));
         // Blender's axes: the first camera's back axis is the editor's forward turned (Z up, Y away), negated.

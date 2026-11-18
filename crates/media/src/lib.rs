@@ -3,6 +3,10 @@
 //! The UI never touches FFmpeg directly. It asks a [`FrameSource`] for "the frame
 //! at time t" every repaint, and the source keeps a decoder thread running ahead.
 
+// (as reelforge-core: numeric code indexing several arrays in step, plain
+// argument lists, nested types spelled out)
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
+
 pub mod audio;
 pub mod audiofx;
 pub mod cache;

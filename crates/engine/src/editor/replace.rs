@@ -147,7 +147,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (Some(a), Some(b)) = (video(&dir, "a.mp4", "160x90", 3), video(&dir, "b.mp4", "320x180", 1)) else { return };
         let mut e = Editor::new(None, None);
-        e.import(&[a.clone()]);
+        e.import(std::slice::from_ref(&a));
         let m = e.project.media[0].id;
         e.add_to_timeline(m, Some(0), Some(Time::ZERO));
         e.add_to_timeline(m, Some(0), Some(Time::from_secs_f64(5.0)));

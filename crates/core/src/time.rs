@@ -194,6 +194,19 @@ impl fmt::Display for Time {
     }
 }
 
+/// `a * m / d` without overflow or dividing by zero (0 when `d` is 0; the
+/// result saturates to an `i64`), rounding towards zero or, with `floor`, down.
+fn mul_div(a: i64, m: i128, d: i128, floor: bool) -> i64 {
+    let n = i128::from(a).saturating_mul(m);
+    let q = if floor { n.checked_div_euclid(d) } else { n.checked_div(d) };
+    match q {
+        None if d == 0 => 0,
+        // (only i128::MIN / -1, which is past an i64 anyway)
+        None => i64::MAX,
+        Some(q) => i64::try_from(q).unwrap_or(if q < 0 { i64::MIN } else { i64::MAX }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,18 +265,5 @@ mod tests {
     fn rational_reduces_and_orders() {
         assert_eq!(Rational::new(2, -4), Rational::new(-1, 2));
         assert!(Rational::new(1, 3) < Rational::new(1, 2));
-    }
-}
-
-/// `a * m / d` without overflow or dividing by zero (0 when `d` is 0; the
-/// result saturates to an `i64`), rounding towards zero or, with `floor`, down.
-fn mul_div(a: i64, m: i128, d: i128, floor: bool) -> i64 {
-    let n = i128::from(a).saturating_mul(m);
-    let q = if floor { n.checked_div_euclid(d) } else { n.checked_div(d) };
-    match q {
-        None if d == 0 => 0,
-        // (only i128::MIN / -1, which is past an i64 anyway)
-        None => i64::MAX,
-        Some(q) => i64::try_from(q).unwrap_or(if q < 0 { i64::MIN } else { i64::MAX }),
     }
 }

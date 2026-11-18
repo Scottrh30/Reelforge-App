@@ -160,7 +160,7 @@ const NEXT_FRAME_KEY: u64 = 1 << 62;
 impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         // (The audio visualiser hears sound through the media reader.)
-        reelforge_core::audiovis::set_audio_source(|p, at, n, r| reelforge_media::audio_window(p, at, n, r));
+        reelforge_core::audiovis::set_audio_source(reelforge_media::audio_window);
         Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0, zoom: 1.0, out_fps: None, between: None }
     }
 
@@ -217,7 +217,7 @@ impl Scene {
         let Some(s) = project.sequences.get(seq) else { return Ok(false) };
         let frame = s.frame_rate.frame_duration();
         let fps = self.out_fps.unwrap_or(s.frame_rate.fps());
-        if !(fps > 0.0) {
+        if fps.is_nan() || fps <= 0.0 {
             return Ok(false);
         }
         let frame_size = [s.width.max(2), s.height.max(2)];
@@ -453,7 +453,7 @@ impl Scene {
         // pixels aren't this sequence's shape takes as many of this
         // sequence's pixels across as it shows wide.
         if l.clip.plane.is_none() && !l.clip.adjustment {
-            let k = project.own_par(&l.clip) / self.par;
+            let k = project.own_par(l.clip) / self.par;
             if k != 1.0 {
                 picture.size[0] *= k;
             }

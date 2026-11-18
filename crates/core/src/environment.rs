@@ -243,7 +243,7 @@ pub fn read_hdr(b: &[u8], max_w: u32) -> Option<(u32, u32, Vec<f32>)> {
     let mut scan = vec![0u8; wu * 4];
     for y in 0..h as usize {
         let rest = b.get(pos..)?;
-        if wu >= 8 && wu < 32_768 && rest.len() >= 4 && rest[0] == 2 && rest[1] == 2 && rest[2] & 0x80 == 0 {
+        if (8..32_768).contains(&wu) && rest.len() >= 4 && rest[0] == 2 && rest[1] == 2 && rest[2] & 0x80 == 0 {
             // New run-length encoding: each of R, G, B, E in turn.
             if ((rest[2] as usize) << 8 | rest[3] as usize) != wu {
                 return None;

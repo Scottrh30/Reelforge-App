@@ -410,7 +410,7 @@ pub fn fit_for_cache(rgba: Vec<u8>, size: [u32; 2]) -> (Vec<u8>, [u32; 2]) {
     }
     let (w, h) = (size[0] / k, size[1] / k);
     let mut out = Vec::with_capacity((w * h * 4) as usize);
-    let n = (k * k) as u32;
+    let n = k * k;
     for y in 0..h {
         for x in 0..w {
             let mut acc = [0u32; 4];

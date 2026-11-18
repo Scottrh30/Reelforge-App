@@ -2,6 +2,9 @@
 //! then decode the result and compare it with what the compositor renders.
 //! Needs the `ffmpeg` CLI (to make test media) and a GPU adapter; skips otherwise.
 
+// (test helpers: nested types spelled out)
+#![allow(clippy::type_complexity)]
+
 use reelforge_core::{BlendMode, Clip, ClipId, FrameRate, MediaAsset, MediaId, Project, Sequence, Time, Transform};
 use reelforge_export::{export_sequence, frame_range, Cancelled, ExportSettings};
 use reelforge_media::{probe, AudioReader, ColorOut, Fit, FrameSource, Quality, VideoCodec};

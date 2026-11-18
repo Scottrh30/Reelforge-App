@@ -502,7 +502,7 @@ impl Editor {
     /// An editor with an empty project. `gpu` draws the viewer picture; `audio` plays sound.
     pub fn new(gpu: Option<(reelforge_render::wgpu::Device, reelforge_render::wgpu::Queue)>, audio: Option<AudioEngine>) -> Self {
         // (The audio visualiser hears sound through the media reader.)
-        reelforge_core::audiovis::set_audio_source(|p, at, n, r| reelforge_media::audio_window(p, at, n, r));
+        reelforge_core::audiovis::set_audio_source(reelforge_media::audio_window);
         let fonts = Arc::new(Mutex::new(None));
         let fill = fonts.clone();
         std::thread::spawn(move || {
@@ -1379,7 +1379,7 @@ impl Editor {
             Ok(cmd) => {
                 self.execute(cmd);
                 self.status = match (speed, reverse) {
-                    (s, _) if s == 0.0 => "Freeze frame: holds the clip's first frame".into(),
+                    (0.0, _) => "Freeze frame: holds the clip's first frame".into(),
                     (s, false) => format!("Speed {:.0}%", s * 100.0),
                     (s, true) => format!("Speed {:.0}%, reversed", s * 100.0),
                 };
@@ -4074,6 +4074,24 @@ pub fn load_project(path: &Path) -> anyhow::Result<Project> {
     Ok(p)
 }
 
+/// Apply an edit of the transform as seen at source time `src` (`shown`) to
+/// `edited`: keyframed properties get a key at `src` (when `can_key`), the
+/// others change the clip's static value.
+pub fn apply_transform_edit(v: &mut ClipVisual, shown: &Transform, edited: &Transform, src: Time, can_key: bool) {
+    for p in Prop::ALL {
+        if !shown.prop_differs(p, edited) {
+            continue;
+        }
+        if v.anim.prop_animated(p) {
+            if can_key {
+                v.anim.set_key(p, src, edited);
+            }
+        } else {
+            v.transform.copy_prop(p, edited);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5005,7 +5023,7 @@ mod tests {
         std::fs::write(&stl, "solid p\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid p\n").unwrap();
         let clips = |e: &Editor| e.seq().tracks.iter().map(|t| t.clips.len()).sum::<usize>();
         let before = clips(&e);
-        e.import(&[stl.clone()]);
+        e.import(std::slice::from_ref(&stl));
         let id = e.selection.unwrap();
         let (_, c) = e.seq().find_clip(id).unwrap();
         let spec = c.title.as_ref().unwrap();
@@ -6063,20 +6081,3 @@ mod tests {
     }
 }
 
-/// Apply an edit of the transform as seen at source time `src` (`shown`) to
-/// `edited`: keyframed properties get a key at `src` (when `can_key`), the
-/// others change the clip's static value.
-pub fn apply_transform_edit(v: &mut ClipVisual, shown: &Transform, edited: &Transform, src: Time, can_key: bool) {
-    for p in Prop::ALL {
-        if !shown.prop_differs(p, edited) {
-            continue;
-        }
-        if v.anim.prop_animated(p) {
-            if can_key {
-                v.anim.set_key(p, src, edited);
-            }
-        } else {
-            v.transform.copy_prop(p, edited);
-        }
-    }
-}

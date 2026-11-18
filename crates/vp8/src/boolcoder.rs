@@ -162,7 +162,7 @@ mod tests {
         for i in 0..5000 {
             x = x.wrapping_mul(1103515245).wrapping_add(12345);
             let p = ((x >> 16) % 255 + 1) as u8;
-            let bit = (x >> 8) % 3 == 0;
+            let bit = (x >> 8).is_multiple_of(3);
             e.write(p, bit);
             want.push((p, bit));
             if i % 97 == 0 {

@@ -20,6 +20,10 @@
 //! `ldat` (the keyframes)), or `otst` (orientation). Transform properties
 //! at their defaults aren't written at all.
 
+// (clippy takes the closures that are called once and then handed on for
+// the keyframes, `f(&p.value)` then `curve(.., f, ..)`, for ones called only once)
+#![allow(clippy::redundant_closure_call)]
+
 use super::{count, file_name, locate, rate_of, secs, Imported, Notes};
 use crate::anim::{Curve, Interp, Key};
 use crate::project::*;
@@ -847,11 +851,10 @@ impl<'r, 'a> Reader<'r, 'a> {
                         self.notes.add("Masks were left out");
                     }
                 }
-                "ADBE Time Remapping" => {
-                    if prop(r, &g).is_some_and(|p| !p.keys.is_empty()) {
+                "ADBE Time Remapping"
+                    if prop(r, &g).is_some_and(|p| !p.keys.is_empty()) => {
                         self.notes.add("Time remapping came across as the layer's plain timing");
                     }
-                }
                 _ => {}
             }
         }

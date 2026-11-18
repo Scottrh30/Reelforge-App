@@ -132,7 +132,7 @@ pub fn letters(lines: &[(Vec<[f32; 2]>, bool)]) -> Vec<usize> {
 /// failing starter, by Stutter) or with a quick fade up.
 pub fn switch_on(v: &[f32], letter: &[usize], since: f32) -> Vec<f32> {
     let over = v.get(p::SWITCH_ON).copied().unwrap_or(0.0);
-    if !(over > 0.0) {
+    if over.is_nan() || over <= 0.0 {
         return vec![1.0; letter.len()];
     }
     let n = letter.iter().copied().max().map_or(1, |m| m + 1);
@@ -178,7 +178,7 @@ pub fn segments_lit(v: &[f32], lines: &[(Vec<[f32; 2]>, bool)], lit: Option<&[f3
     let length = |l: &[[f32; 2]], closed: bool| -> f32 { l.windows(2).map(|w| dist(w[0], w[1])).sum::<f32>() + if closed && l.len() > 2 { l.first().zip(l.last()).map_or(0.0, |(a, b)| dist(*a, *b)) } else { 0.0 } };
     let lens: Vec<f32> = lines.iter().map(|(l, c)| length(l, *c)).collect();
     let total: f32 = lens.iter().sum();
-    if !(total > 0.5) {
+    if total.is_nan() || total <= 0.5 {
         return Vec::new();
     }
     let (s, e) = ((v[p::START] / 100.0).clamp(0.0, 1.0), (v[p::END] / 100.0).clamp(0.0, 1.0));

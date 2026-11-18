@@ -187,7 +187,7 @@ impl Editor {
                     let small_hole = |hole: &[bool]| -> Vec<bool> {
                         (0..mh).flat_map(|y| (0..mw).map(move |x| (y, x))).map(|(y, x)| hole[((y as f64 / k) as usize).min(h - 1) * w + ((x as f64 / k) as usize).min(w - 1)]).collect()
                     };
-                    let mut filler = Filler::new(method, reach, 0x0b1e_c7 ^ times.len() as u64);
+                    let mut filler = Filler::new(method, reach, 0x000b_1ec7 ^ times.len() as u64);
                     let mut prev: Option<(Vec<f32>, Vec<bool>)> = None;
                     let mut index = FillIndex { size: [w as u32, h as u32], frames: Vec::new(), preview: only.map(|_| frame_ticks) };
                     let mut holes: Vec<Vec<bool>> = Vec::new();

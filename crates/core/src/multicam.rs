@@ -232,7 +232,7 @@ pub fn into_cell(t: &Transform, i: usize, n: usize, frame: [f32; 2]) -> Transfor
     // Equal scale both ways keeps the picture's shape (cells are the frame's shape when cols = rows).
     let k = (1.0 / cols as f32).min(1.0 / rows as f32);
     let centre = [corner[0] + size[0] * 0.5 - frame[0] * 0.5, corner[1] + size[1] * 0.5 - frame[1] * 0.5];
-    let mut out = t.clone();
+    let mut out = *t;
     out.position = [t.position[0] * k + centre[0], t.position[1] * k + centre[1]];
     out.scale = [t.scale[0] * k, t.scale[1] * k];
     if let Some(pin) = out.pin.as_mut() {

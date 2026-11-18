@@ -41,20 +41,19 @@ fn damaged_frames_never_crash() {
                     2 => {
                         // Random bytes after the frame tag.
                         for b in f.iter_mut().skip(3) {
-                            if rng.next() % 16 == 0 {
+                            if rng.next().is_multiple_of(16) {
                                 *b = rng.next() as u8;
                             }
                         }
                     }
-                    3 => {
+                    3
                         // Huge or zero sizes in a key frame header.
-                        if f.len() > 10 && f[0] & 1 == 0 {
+                        if f.len() > 10 && f[0] & 1 == 0 => {
                             f[6] = rng.next() as u8;
                             f[7] = rng.next() as u8;
                             f[8] = rng.next() as u8;
                             f[9] = rng.next() as u8;
                         }
-                    }
                     _ => {}
                 }
                 let _ = dec.decode(&f, i as i64);

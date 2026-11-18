@@ -136,7 +136,7 @@ pub const SDR_WHITE_NITS: f32 = 203.0;
 pub const HLG_SDR_WHITE: f32 = 0.264_962_56;
 /// Linear BT.2020 RGB → linear BT.709 RGB (HDR footage's wide primaries into
 /// the compositor's; colours outside BT.709 come out negative, and are cut).
-pub const BT2020_TO_709: [[f32; 3]; 3] = [[1.660_491, -0.587_641, -0.072_850], [-0.124_551, 1.132_900, -0.008_349], [-0.018_151, -0.100_579, 1.118_730]];
+pub const BT2020_TO_709: [[f32; 3]; 3] = [[1.660_491, -0.587_641, -0.072_850], [-0.124_551, 1.132_9, -0.008_349], [-0.018_151, -0.100_579, 1.118_73]];
 
 impl Transfer {
     pub fn is_hdr(self) -> bool {

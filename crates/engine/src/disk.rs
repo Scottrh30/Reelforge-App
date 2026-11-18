@@ -228,9 +228,7 @@ pub fn estimate_export_bytes(s: &ExportSettings, fps: f64) -> u64 {
         }
     };
     // Audio: AAC/PCM alongside video, or a 24-bit stereo WAV.
-    let audio_bits = if s.video.is_none() {
-        48_000.0 * 2.0 * 24.0 * secs
-    } else if s.include_audio {
+    let audio_bits = if s.video.is_none() || s.include_audio {
         48_000.0 * 2.0 * 24.0 * secs
     } else {
         0.0

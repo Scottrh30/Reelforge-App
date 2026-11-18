@@ -777,7 +777,7 @@ mod simd {
         let n = l.len();
         let mut i = 1;
         // Needs l[i + 16] (the value after the block), so stop 16 short of n − 1.
-        while i + 17 <= n - 1 && h.len() >= i + 16 && out.len() >= 2 * i + 32 {
+        while i + 17 < n && h.len() >= i + 16 && out.len() >= 2 * i + 32 {
             // SAFETY: i − 1 + 18 <= n, and the checks above.
             unsafe {
                 let ld = |s: &[i16], at: usize| _mm256_loadu_si256(s.as_ptr().add(at) as *const __m256i);

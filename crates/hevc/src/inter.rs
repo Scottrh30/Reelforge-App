@@ -587,7 +587,7 @@ mod tests {
                 assert!(a.iter().any(|&v| v != S::default()) || w * h < 8);
                 for c in 1..3 {
                     let (cw, ch) = (w / 2, h / 2);
-                    mc_chroma::<S>(&f, c - 1, 0, 0, [(x * 8) as i32, (y * 8) as i32], cw, ch, &mut pred, &mut sc);
+                    mc_chroma::<S>(&f, c - 1, 0, 0, [(x * 8), (y * 8)], cw, ch, &mut pred, &mut sc);
                     let (mut a, mut b) = (vec![S::default(); cw * ch], vec![S::default(); cw * ch]);
                     put_uni(&pred, cw, ch, bd, &mut a, cw);
                     f.copy_block(c, x, y, cw, ch, &mut b, cw);

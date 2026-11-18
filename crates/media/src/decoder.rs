@@ -527,10 +527,10 @@ impl DecodeState {
         unsafe {
             let ctx = self.ictx.as_mut_ptr();
             let fmt = (*ctx).iformat;
-            if fmt.is_null() || (*fmt).flags & ff::ffi::AVFMT_NO_BYTE_SEEK as i32 != 0 {
+            if fmt.is_null() || (*fmt).flags & ff::ffi::AVFMT_NO_BYTE_SEEK != 0 {
                 return false;
             }
-            ff::ffi::av_seek_frame(ctx, -1, 0, ff::ffi::AVSEEK_FLAG_BYTE as i32) >= 0
+            ff::ffi::av_seek_frame(ctx, -1, 0, ff::ffi::AVSEEK_FLAG_BYTE) >= 0
         }
     }
 
@@ -936,7 +936,7 @@ pub(crate) fn float_frame(src: &ff::frame::Video, dw: u32, dh: u32) -> Option<Fl
     if (dw, dh) == (sw, sh) && half {
         // Half floats already: just interleave the planes (the bits are kept).
         let one = f32_to_f16(1.0);
-        fn row<'a>(p: (&'a [u8], usize), y: usize, w: usize) -> &'a [u8] {
+        fn row(p: (&[u8], usize), y: usize, w: usize) -> &[u8] {
             &p.0[y * p.1..y * p.1 + w * 2]
         }
         for y in 0..sh {
