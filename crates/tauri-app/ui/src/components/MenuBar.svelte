@@ -30,6 +30,16 @@
     }
   }
 
+  /// Timeline → Water → Export water element: ask where, then queue it.
+  async function exportWaterElement() {
+    const clip = app.s?.selected[0];
+    if (clip == null) return;
+    const suggested = await run(api.waterElementPath(clip));
+    if (!suggested) return;
+    const path = await run(api.exportPathDialog(suggested, "mov"));
+    if (path) await run(api.exportWaterElement(clip, path));
+  }
+
   /// The File menu, with the recent projects fetched first.
   async function showFile(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -258,6 +268,7 @@
         app.live?.simulating
           ? { label: `Stop simulating (${Math.round((app.live.render ?? 0) * 100)}%)`, hint: "Esc", run: () => actions.act("stop_render_preview") }
           : { label: "Simulate now", run: () => actions.act("simulate_now") },
+        { label: "Export water element (ProRes 4444)…", disabled: app.s?.selected.length !== 1, run: () => exportWaterElement() },
       ],
     },
     { label: "Add plane (new layer)", run: () => run(api.addNew("layer")) },

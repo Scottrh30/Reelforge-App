@@ -278,3 +278,135 @@ mod tests {
         assert!(e.seq().find_clip(e.selection.unwrap()).unwrap().1.effects.is_empty());
     }
 }
+
+/// What a water element export renders: a copy of the project with only the
+/// clip (its sequence's cameras and lights stay too), its water effects set
+/// to give the water alone, and the clip's span on the timeline.
+pub struct WaterElement {
+    pub project: reelforge_core::Project,
+    pub seq: usize,
+    pub start: Time,
+    pub end: Time,
+    /// A file name for it ("<clip> water").
+    pub name: String,
+}
+
+impl WaterElement {
+    /// How it's exported to `path`: ProRes 4444 with transparency, at the
+    /// sequence's size, over the clip's span, no sound.
+    pub fn settings(&self, path: std::path::PathBuf) -> reelforge_export::ExportSettings {
+        use reelforge_media::{ColorOut, Fit, Quality, VideoCodec};
+        let (w, h) = self.project.sequences.get(self.seq).map_or((1920, 1080), |s| (s.width, s.height));
+        reelforge_export::ExportSettings {
+            path,
+            width: w,
+            height: h,
+            quality: Quality::High,
+            include_audio: false,
+            start: self.start,
+            end: self.end,
+            video: Some(VideoCodec::ProRes4444),
+            hardware: false,
+            fit: Fit::Letterbox,
+            sequence: self.seq,
+            color: ColorOut::Sdr8,
+            bitrate_kbps: None,
+            alpha: true,
+            frame_rate: None,
+            between_frames: None,
+        }
+    }
+}
+
+impl Editor {
+    /// The water element of clip `id` (Timeline → Water → Export water
+    /// element): see [`WaterElement`]. The project itself isn't changed.
+    pub fn water_element(&self, id: ClipId) -> Result<WaterElement, String> {
+        let seq = self.active;
+        let s = self.project.sequences.get(seq).ok_or("No sequence")?;
+        let (track, clip) = s.find_clip(id).ok_or("Select the clip with the water first")?;
+        let water = |e: &Effect| e.enabled && matches!(e.kind, EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid);
+        if !clip.effects.iter().any(water) {
+            return Err("This clip has no water effect (ocean, water surface or pouring water) to export".into());
+        }
+        let (start, end) = (clip.timeline_start.max(Time::ZERO), clip.timeline_end());
+        if end <= start {
+            return Err("The clip is too short to export".into());
+        }
+        let name = format!("{} water", clip.display_name(&self.project));
+        let mut project = self.project.clone();
+        let out = project.sequences.get_mut(seq).ok_or("No sequence")?;
+        for (ti, t) in out.tracks.iter_mut().enumerate() {
+            t.clips.retain(|c| c.id == id || c.scene.is_some());
+            if ti == track {
+                t.muted = false;
+            }
+        }
+        let (_, c) = out.find_clip_mut(id).ok_or("Select the clip with the water first")?;
+        for e in c.effects.iter_mut().filter(|e| water(e)) {
+            let (i, v) = match e.kind {
+                EffectKind::Ocean => (oc::SHOW, 1.0),
+                EffectKind::WaterSurface => (ws::OUTPUT, 1.0),
+                _ => (lq::SHOW, 2.0),
+            };
+            if let Some(p) = e.params.get_mut(i) {
+                p.value = v;
+                p.keys = Default::default();
+            }
+        }
+        Ok(WaterElement { project, seq, start, end, name })
+    }
+}
+
+#[cfg(test)]
+mod water_element_tests {
+    use super::*;
+
+    #[test]
+    fn a_water_element_is_the_clip_alone_with_only_its_water() {
+        let mut e = Editor::new(None, None);
+        e.add_title();
+        let title = e.selection.unwrap();
+        e.add_simulation("pour");
+        let pour = e.selection.unwrap();
+        assert!(e.water_element(title).is_err(), "a title has no water");
+        let w = e.water_element(pour).unwrap();
+        let s = &w.project.sequences[w.seq];
+        let clips: Vec<_> = s.tracks.iter().flat_map(|t| &t.clips).collect();
+        assert_eq!(clips.len(), 1, "only the water's clip");
+        let c = clips[0];
+        assert_eq!(c.id, pour);
+        assert_eq!((w.start, w.end), (c.timeline_start, c.timeline_end()));
+        let fx = c.effects.iter().find(|e| e.kind == EffectKind::Liquid).unwrap();
+        assert_eq!(fx.params[lq::SHOW].value, 2.0, "water only (transparent)");
+        assert!(w.name.ends_with(" water"), "{}", w.name);
+        // The project itself is untouched.
+        assert_eq!(e.project.sequences[e.active].tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 2);
+    }
+
+    /// Exported: ProRes 4444 with transparency, the background left out, the
+    /// water there and the rest of the frame clear.
+    #[test]
+    fn a_water_element_exports_as_water_alone_with_transparency() {
+        let Some((device, queue)) = reelforge_render::headless_device() else { return };
+        let mut e = Editor::new(None, None);
+        e.add_plane([40, 90, 200, 255]); // a solid plane under it all
+        e.add_simulation("pour");
+        let pour = e.selection.unwrap();
+        let mut w = e.water_element(pour).unwrap();
+        // (just a moment of it, once the water's in)
+        w.start = Time::from_secs_f64(1.6);
+        w.end = Time::from_secs_f64(1.72);
+        let out = std::env::temp_dir().join(format!("rf_water_element_{}.mov", std::process::id()));
+        let st = w.settings(out.clone());
+        reelforge_export::export_sequence(&w.project, &st, &device, &queue, |_| true).unwrap();
+        let mut dec = reelforge_media::FrameSource::open(&out, None).unwrap();
+        let f = dec.frame_at_blocking(Time::ZERO, std::time::Duration::from_secs(5)).unwrap();
+        let _ = std::fs::remove_file(&out);
+        let alphas: Vec<u8> = f.rgba().chunks(4).map(|p| p[3]).collect();
+        let clear = alphas.iter().filter(|a| **a <= 2).count();
+        let water = alphas.iter().filter(|a| **a >= 60).count();
+        assert!(clear > alphas.len() / 3, "the plane left out, the frame mostly clear: {clear} of {}", alphas.len());
+        assert!(water > 2000, "water you can see: {water}");
+    }
+}

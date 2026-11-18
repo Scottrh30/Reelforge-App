@@ -1955,6 +1955,8 @@ fn main() {
             export::export_preset_save,
             export::export_preset_delete,
             export::export_add,
+            export::water_element_path,
+            export::export_water_element,
             export::export_estimate,
             export::export_job,
             export::export_run,

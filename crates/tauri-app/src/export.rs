@@ -125,6 +125,11 @@ pub fn export_suggest(ext: String) -> Res<Suggestion> {
 }
 
 fn default_path(e: &Editor, ext: &str) -> PathBuf {
+    default_path_named(e, &e.seq().name, ext)
+}
+
+/// `<folder>/<name>.<ext>`, as [`default_path`], for a name of its own.
+fn default_path_named(e: &Editor, name: &str, ext: &str) -> PathBuf {
     let dir = e
         .project_path
         .as_ref()
@@ -136,7 +141,7 @@ fn default_path(e: &Editor, ext: &str) -> PathBuf {
         })
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_default();
-    let name: String = e.seq().name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).collect();
+    let name: String = name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).collect();
     let name = if name.trim().is_empty() { "export".to_string() } else { name.trim().to_string() };
     let queued: Vec<PathBuf> = queue(|q| q.jobs.iter().filter(|j| !j.state.is_over()).map(|j| j.settings.path.clone()).collect());
     let taken = |p: &Path| p.exists() || queued.iter().any(|q| q == p);
@@ -382,6 +387,44 @@ pub fn export_add(spec: Spec, path: String, include_audio: bool, marked_only: bo
             e.status = format!("Added to the export queue ({waiting} waiting)");
         });
     }
+    Ok(())
+}
+
+/// Where a water element of `clip` would go (`<clip> water.mov`, beside the project).
+#[tauri::command]
+pub fn water_element_path(clip: u64) -> Res<String> {
+    ed(|e| e.water_element(reelforge_core::ClipId(clip)).map(|w| default_path_named(e, &w.name, "mov").display().to_string()))?
+}
+
+/// Export clip `clip`'s water alone to `path`, ready to composite: ProRes 4444
+/// with transparency at the sequence's size, over the clip's span, no sound,
+/// the water effects set to water only (Timeline → Water → Export water
+/// element). Queued and started.
+#[tauri::command]
+pub fn export_water_element(clip: u64, path: String) -> Res<()> {
+    if path.trim().is_empty() {
+        return Err("Choose where to save the water element".into());
+    }
+    let path = with_extension(&path, Some(VideoCodec::ProRes4444));
+    let (element, settings) = ed(|e| -> Res<_> {
+        e.commit_live_edit();
+        let w = e.water_element(reelforge_core::ClipId(clip))?;
+        let settings = w.settings(path.clone());
+        Ok((w, settings))
+    })??;
+    queue(|q| {
+        let out = settings.output_path();
+        if q.jobs.iter().any(|j| !j.state.is_over() && j.settings.output_path() == out) {
+            return Err(format!("{} is already in the export queue; pick another file name", settings.path.display()));
+        }
+        q.next_id += 1;
+        let detail = detail(&settings);
+        let title = format!("{} (water element)", settings.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        q.jobs.push(Job { id: q.next_id, title, detail, project: Arc::new(element.project), settings, state: JobState::Waiting });
+        q.run = true;
+        Ok(())
+    })?;
+    let _ = ed(|e| e.status = format!("Exporting {} as a water element (ProRes 4444 with transparency); see the export queue", element.name));
     Ok(())
 }
 

@@ -804,6 +804,13 @@ What works now:
       clips with one (or every clip with one), and keeps them with the rendered previews, so
       playing, scrubbing and exporting are quick. Progress shows on the button, in the status
       bar and as the green bar along the ruler; **Stop** (or `Esc`) keeps what's done
+    - **Export water element (ProRes 4444)…** (**Timeline → Water**, with the clip selected):
+      one click to a water element for compositing elsewhere. It asks where (suggesting
+      `<clip> water.mov` beside the project) and queues an export of that clip alone (the rest
+      of the timeline left out, cameras and lights kept), its water effects set to water only
+      (the ocean without its sky, the water surface's water only, the poured water only), as
+      ProRes 4444 with transparency at the sequence's size, over the clip's span, without
+      sound. The project itself isn't changed
   - **Generate** (a category of its own):
     - **Fractal noise**: a pattern that drifts and evolves, like After Effects' Fractal Noise or
       HitFilm's Clouds. **Type**: *Smooth*, *Turbulent* (billowing smoke), *Ridged* (sharp
