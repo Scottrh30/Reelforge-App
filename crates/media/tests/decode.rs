@@ -137,6 +137,41 @@ fn a_second_decoder_gets_already_seen_frames_from_the_cache_instantly() {
 }
 
 #[test]
+fn a_file_written_over_in_place_shows_its_new_pictures() {
+    // A clip re-exported under the same name: the cache mustn't hand back the
+    // old one's frames to a decoder of the new one.
+    let path = std::env::temp_dir().join(format!("reelforge_overwritten.{}.mov", std::process::id()));
+    let solid = |colour: &str, path: &std::path::Path| {
+        Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", &format!("color=c={colour}:size=64x64:rate=25:duration=1")])
+            .args(["-c:v", "prores_ks", "-pix_fmt", "yuv422p10le"])
+            .arg(path)
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if !solid("red", &path) {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    }
+    let red_at = |path: &std::path::Path| {
+        let mut s = FrameSource::open_cached(path, None).unwrap();
+        // (the cache answers straight away, if it has it, as it does the Viewer)
+        let f = match s.frame_at(Time::ZERO).cloned() {
+            Some(f) => f,
+            None => s.frame_at_blocking(Time::ZERO, Duration::from_secs(5)).unwrap(),
+        };
+        f.rgba()[0]
+    };
+    assert!(red_at(&path) > 200, "the red clip is red");
+    // Written over with a blue one (a moment later, so the time it changed differs too).
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(solid("blue", &path));
+    let now = red_at(&path);
+    let _ = std::fs::remove_file(&path);
+    assert!(now < 50, "the clip written over shows blue, not the red it was (red {now})");
+}
+
+#[test]
 fn proxies_are_small_all_keyframe_and_line_up_with_the_original() {
     use reelforge_media::proxy;
     use std::sync::atomic::AtomicBool;

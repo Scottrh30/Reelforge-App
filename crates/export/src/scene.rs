@@ -608,8 +608,9 @@ fn recipe_into(project: &Project, seq: usize, angle: Option<reelforge_core::mult
                             Some(v) if m.info.duration > Time::ZERO && v.frame_rate.fps() > 0.0 => l.source_time.to_frame(v.frame_rate).hash(h),
                             _ => {} // a still: the same picture throughout
                         }
-                        // Missing media shows a stand-in picture.
-                        reelforge_core::imageseq::media_exists(path).hash(h);
+                        // Missing media shows a stand-in picture; a file written
+                        // over shows its new pictures.
+                        reelforge_core::imageseq::media_version(path).hash(h);
                         m.layer_size().map_or([0.0; 2], |s| [s[0] as f32, s[1] as f32])
                     }
                     None => [0.0; 2],
@@ -894,6 +895,24 @@ mod recipe_tests {
         seq.tracks[0].clips = vec![Clip::new(ClipId(1), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(10.0), None)];
         p.sequences = vec![seq];
         p
+    }
+
+    #[test]
+    fn a_file_written_over_gets_new_recipes() {
+        // (so finished frames kept of the old file, in memory or on disk, aren't shown)
+        let dir = std::env::temp_dir().join(format!("reelforge-recipe-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("a.mp4");
+        std::fs::write(&file, b"one").unwrap();
+        let mut p = project();
+        p.media[0].path = file.clone();
+        let none = HashMap::new();
+        let before = frame_recipe(&p, 0, Time::from_secs_f64(1.0), &none);
+        assert_eq!(frame_recipe(&p, 0, Time::from_secs_f64(1.0), &none), before, "nothing changed");
+        std::fs::write(&file, b"two, longer").unwrap();
+        let after = frame_recipe(&p, 0, Time::from_secs_f64(1.0), &none);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_ne!(after, before);
     }
 
     #[test]

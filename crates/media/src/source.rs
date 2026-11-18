@@ -40,7 +40,7 @@ impl FrameSource {
         // These feed the viewer: hardware frames may stay on the graphics card.
         let decoder = DecoderHandle::spawn_with(path, max_size, 8, true)?;
         let mut s = Self { decoder, generation: 0, ahead: VecDeque::new(), current: None, pending_seek: Some(Time::ZERO), cache: None, hit: None };
-        s.cache = Some(CacheKey { path: path.to_owned(), max_size });
+        s.cache = Some(CacheKey { path: path.to_owned(), version: reelforge_core::imageseq::media_version(path), max_size });
         Ok(s)
     }
 

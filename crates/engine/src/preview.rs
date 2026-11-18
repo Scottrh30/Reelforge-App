@@ -88,7 +88,14 @@ struct Slot {
     /// The size it decodes at most at.
     max: (u32, u32),
     last_used: Instant,
+    /// Which version of the file it opened (see `media_version`), and when
+    /// that was last looked at: a file written over is opened again.
+    version: Option<(u64, u64)>,
+    checked: Instant,
 }
+
+/// How often an open file is looked at for being written over.
+const RECHECK: Duration = Duration::from_secs(1);
 
 /// A stand-in picture for media whose file is missing: dark red, with the file's name.
 fn offline_frame(name: &str, size: [u32; 2]) -> VideoFrame {
@@ -270,6 +277,9 @@ impl Preview {
 
     fn slot<'a>(slots: &'a mut HashMap<ClipId, Slot>, id: ClipId, path: &std::path::Path, max: (u32, u32)) -> &'a mut Slot {
         let open = || Slot {
+            // (the version first: anything decoded after is at least as new)
+            version: reelforge_core::imageseq::media_version(path),
+            checked: Instant::now(),
             source: FrameSource::open_cached(path, Some(max)).map_err(|e| format!("{e:#}")),
             path: path.to_owned(),
             max,
@@ -279,6 +289,12 @@ impl Preview {
         if slot.path != path || slot.max != max {
             // Switched between the original and its proxy, or to another playback quality.
             *slot = open();
+        } else if slot.checked.elapsed() >= RECHECK {
+            slot.checked = Instant::now();
+            if reelforge_core::imageseq::media_version(path) != slot.version {
+                // Written over (re-exported, re-rendered) or gone or back: start again.
+                *slot = open();
+            }
         }
         slot.last_used = Instant::now();
         slot

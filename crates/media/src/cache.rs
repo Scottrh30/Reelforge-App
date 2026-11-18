@@ -13,10 +13,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-/// Which stream of frames: the file and the size it was decoded at.
+/// Which stream of frames: the file, which version of it (size and when it
+/// last changed: see `reelforge_core::imageseq::media_version`), and the size
+/// it was decoded at.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CacheKey {
     pub path: PathBuf,
+    pub version: Option<(u64, u64)>,
     pub max_size: Option<(u32, u32)>,
 }
 
@@ -57,7 +60,7 @@ impl FrameCache {
     }
 
     pub fn set_budget_mb(&self, mb: usize) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         g.budget = mb << 20;
         g.evict();
     }
@@ -70,7 +73,7 @@ impl FrameCache {
             return;
         }
         let size = frame.byte_len();
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if size > g.budget {
             return;
         }
@@ -89,7 +92,7 @@ impl FrameCache {
 
     /// The cached frame showing at `t`, if there is one.
     pub fn get(&self, key: &CacheKey, t: Time) -> Option<VideoFrame> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         g.clock += 1;
         let stamp = g.clock;
         let found = g.files.get_mut(key).and_then(|m| {
@@ -116,14 +119,14 @@ impl FrameCache {
 
     /// (bytes used, frames held, hit rate 0–1).
     pub fn stats(&self) -> (usize, usize, f32) {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let frames = g.files.values().map(|m| m.len()).sum();
         let total = (g.hits + g.misses).max(1);
         (g.used, frames, g.hits as f32 / total as f32)
     }
 
     pub fn clear(&self) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         g.files.clear();
         g.lru.clear();
         g.used = 0;
@@ -158,7 +161,7 @@ mod tests {
     #[test]
     fn finds_the_frame_covering_a_time_and_evicts_oldest() {
         let c = FrameCache::new(300);
-        let k = CacheKey { path: "a.mp4".into(), max_size: None };
+        let k = CacheKey { path: "a.mp4".into(), version: None, max_size: None };
         let dur = Time::from_secs_f64(0.04);
         for i in 0..3 {
             c.insert(&k, &frame(i as f64 * 0.04, 100), dur);
@@ -174,6 +177,6 @@ mod tests {
         let (used, frames, _) = c.stats();
         assert_eq!((used, frames), (300, 3));
         // Another decode size of the same file is a different stream.
-        assert!(c.get(&CacheKey { path: "a.mp4".into(), max_size: Some((10, 10)) }, Time::ZERO).is_none());
+        assert!(c.get(&CacheKey { path: "a.mp4".into(), version: None, max_size: Some((10, 10)) }, Time::ZERO).is_none());
     }
 }

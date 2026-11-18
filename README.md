@@ -1026,6 +1026,10 @@ What works now:
     (Linux, macOS) work as before
 - **Frame cache**: decoded frames are kept in memory (1 GB by default), shared between clips
   of the same file, so scrubbing back over footage you've already seen is instant
+- **Files written over in place**: re-export or re-render a clip under the same name and the
+  Viewer shows the new one within a second. What's kept of a file (decoded frames, rendered
+  previews in memory and on disk) is tied to that version of it, its size and when it last
+  changed, and the Viewer looks at the files it has open once a second
 - **YUV on the GPU**: most video (4:2:0, 4:2:2 or 4:4:4, 8 to 16 bits, from software or hardware decoders) now
   stays in the YUV form it's stored in until it reaches the graphics card, which converts it to
   RGB as it draws. Decoding 1080p is about twice as fast as before (3.1 ms a frame instead of

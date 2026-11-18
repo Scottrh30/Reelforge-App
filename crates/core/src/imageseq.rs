@@ -136,6 +136,21 @@ pub fn media_exists(path: &Path) -> bool {
     }
 }
 
+/// Which version of the media is on disk: its size and when it was last
+/// changed (nanoseconds since 1970), or `None` if it's missing. Caches of what
+/// was decoded from a file key on this too, so a file written over in place
+/// (re-exported under the same name, say) isn't shown as it was. (A sequence
+/// is its frames, each its own file: it gives a fixed version while its first
+/// frame is there.)
+pub fn media_version(path: &Path) -> Option<(u64, u64)> {
+    if is_sequence(path) {
+        return parse(path).map(|_| (0, 0));
+    }
+    let m = std::fs::metadata(path).ok()?;
+    let when = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    Some((m.len(), when))
+}
+
 /// The frames of `file`'s sequence if it's a numbered still with numbered
 /// neighbours (`shot.1001.exr` next to `shot.1002.exr`), at `rate`. The
 /// sequence runs from the first frame without a gap up to `file`, and on
