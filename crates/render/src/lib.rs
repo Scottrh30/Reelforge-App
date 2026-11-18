@@ -329,6 +329,8 @@ struct Targets {
 }
 
 pub struct Compositor {
+    /// A clear 1 × 1 texture, for an effect pass whose second texture is optional.
+    blank_second: wgpu::BindGroup,
     device: wgpu::Device,
     queue: wgpu::Queue,
     layer_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
@@ -638,7 +640,9 @@ impl Compositor {
             .collect();
         // Water (water.wgsl): the ocean on its own, the simulations' pictures with their state.
         let water_shader = device.create_shader_module(wgpu::include_wgsl!("water.wgsl"));
-        for (entry, layout, two) in [("fs_ocean", &fx_pl, false), ("fs_water", &mask_pl, true), ("fs_liquid", &mask_pl, true)] {
+        // (the ocean reads a simulation round solid objects when it has one, a clear
+        // texture when it hasn't: see `blank_second`)
+        for (entry, layout, two) in [("fs_ocean", &mask_pl, true), ("fs_water", &mask_pl, true), ("fs_liquid", &mask_pl, true)] {
             let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
                 layout: Some(layout),
@@ -772,7 +776,32 @@ impl Compositor {
             ..Default::default()
         });
 
+        let blank_second = {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("no second texture"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &[0, 0, 0, 0],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            );
+            let view = texture.create_view(&Default::default());
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("no second texture"),
+                layout: &texture_layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }],
+            })
+        };
         Self {
+            blank_second,
             device: device.clone(),
             queue: queue.clone(),
             layer_pipelines,
@@ -1210,7 +1239,7 @@ impl Compositor {
     /// For a water surface or liquid: the step its simulation would start from
     /// to reach `job`'s (so a caller can feed it the frames in between first).
     pub fn simulation_resume(&self, job: &reelforge_core::fluid::FluidJob) -> Option<usize> {
-        matches!(job.effect.kind, EffectKind::WaterSurface | EffectKind::Liquid).then(|| self.water.resume_step(job))
+        matches!(job.effect.kind, EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid).then(|| self.water.resume_step(job))
     }
 
     pub fn render_items(&mut self, frame_size: [u32; 2], items: &[DrawItem]) {
@@ -1273,6 +1302,8 @@ impl Compositor {
             KeepMask,
             Table(usize),
             Scratch(usize),
+            /// A clear texture (an optional second texture that isn't there).
+            Blank,
         }
         struct FxPass {
             key: u64,
@@ -1349,7 +1380,7 @@ impl Compositor {
                     // Stepped on to now; its picture goes in as this effect's table.
                     let layer = self.layers.get(&l.key).filter(|t| !t.float).map(|t| (t.texture.create_view(&Default::default()), t.content_id));
                     let tex = match e.kind {
-                        EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(job, layer.as_ref().map(|(v, _)| v)),
+                        EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(job, layer.as_ref().map(|(v, _)| v)),
                         _ => self.fluid.step_to(job, layer.as_ref().map(|(v, id)| (v, *id))),
                     };
                     if let Some(tex) = tex {
@@ -1768,10 +1799,11 @@ impl Compositor {
                         cur = o1;
                     }
                     EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => {
-                        let second = if e.kind == EffectKind::Ocean {
-                            Second::None
-                        } else if self.tables.contains_key(&(key, i)) {
+                        // (an ocean has a simulation only with objects in it)
+                        let second = if self.tables.contains_key(&(key, i)) {
                             Second::Table(i)
+                        } else if e.kind == EffectKind::Ocean {
+                            Second::Blank
                         } else {
                             continue;
                         };
@@ -2277,6 +2309,7 @@ impl Compositor {
                 Second::KeepMask => Some(self.masks.get(&(p.key ^ KEEP_MASK)).map(|m| &m.bind_group)),
                 Second::Table(e) => Some(self.tables.get(&(p.key, e)).map(|t| &t.bind_group)),
                 Second::Scratch(s) => Some(Some(&fx.binds[s])),
+                Second::Blank => Some(Some(&self.blank_second)),
             };
             if matches!(second, Some(None)) {
                 return; // its texture is missing

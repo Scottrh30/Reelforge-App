@@ -3,8 +3,8 @@
 // are in grid cells; one step is one call of drive + wave.
 //
 // One buffer holds every grid, a section each (offsets in the step's uniform):
-// height, its rate of change, the next height and rate, what's solid now and
-// how that changed this step.
+// height, its rate of change, the next height and rate, what's solid now,
+// how that changed this step, and (an ocean's) foam.
 
 struct Step {
     w: u32,
@@ -22,9 +22,16 @@ struct Step {
     step: f32,
     // offsets of the sections: height, rate, next height, next rate
     o_a: vec4<u32>,
-    // solid, change in solid, -, -
+    // solid, change in solid, foam (an ocean's), -
     o_b: vec4<u32>,
     drops: array<vec4<f32>, 8>,
+    // An ocean with objects in it (reelforge_core::water::ocean_step): the
+    // camera (aspect, tan of half the view, look down rad, height m) and
+    // (distance travelled m, the sea's time s, 1 for ocean mode, how strongly
+    // waves bounce back). drops then holds the sea's 4 biggest waves:
+    // (direction x, z, wave number, height m), then (phase, -, -, -) each.
+    cam: vec4<f32>,
+    cam2: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> st: Step;
@@ -38,6 +45,8 @@ fn ix(x: i32, y: i32) -> u32 {
 }
 fn hgt(i: u32) -> f32 { return g[st.o_a.x + i]; }
 fn solid(i: u32) -> f32 { return g[st.o_b.x + i]; }
+// Cell j's height as seen from a water cell at height hc (a wall: level with it).
+fn side_h(j: u32, hc: f32) -> f32 { return select(hgt(j), hc, solid(j) > 0.5); }
 
 fn hash_u(x: u32) -> u32 {
     var v = x * 747796405u + 2891336453u;
@@ -89,6 +98,56 @@ fn wave_band(p: vec2<f32>) -> f32 {
     return e;
 }
 
+// ---- Ocean mode ----------------------------------------------------------
+
+fn ocean_mode() -> bool {
+    return st.cam2.z > 0.5;
+}
+
+// Where cell p's ray meets the sea: (world x, z, metres a cell across,
+// metres a cell in depth); w < 0 above the horizon.
+fn sea_point(p: vec2<f32>) -> vec4<f32> {
+    let uv = p / vec2(f32(st.w), f32(st.h));
+    let aspect = st.cam.x;
+    let tan_half = st.cam.y;
+    let pitch = st.cam.z;
+    let sx = (uv.x * 2.0 - 1.0) * aspect * tan_half;
+    let sy = (1.0 - uv.y * 2.0) * tan_half;
+    let fwd = vec3(0.0, -sin(pitch), cos(pitch));
+    let up = vec3(0.0, cos(pitch), sin(pitch));
+    let d = normalize(fwd + vec3(sx, 0.0, 0.0) + up * sy);
+    if (d.y > -0.004) {
+        return vec4(0.0, 0.0, 0.0, -1.0);
+    }
+    let tt = min(st.cam.w / -d.y, 20000.0);
+    let pix = 2.0 * tan_half / f32(st.h);
+    return vec4(d.x * tt, st.cam2.x + d.z * tt, tt * pix, tt * pix / max(-d.y, 0.02));
+}
+
+// The sea's own height there (its biggest waves).
+fn incident(x: vec2<f32>) -> f32 {
+    var y = 0.0;
+    for (var i = 0u; i < 4u; i++) {
+        let w = st.drops[i];
+        let ph = st.drops[i + 4u].x;
+        y += w.w * sin(w.z * dot(w.xy, x) - sqrt(9.81 * w.z) * st.cam2.y + ph);
+    }
+    return y;
+}
+
+// The wave speed squared there (cells² a step²): the sea's main waves'
+// speed, in the cells' size there (far off a cell is many metres, so waves
+// cross it slowly), at most what keeps the stepping steady.
+fn ocean_c2(sp: vec4<f32>) -> f32 {
+    if (sp.w < 0.0) {
+        return 0.0;
+    }
+    let k = max(st.drops[0].z, 0.01);
+    let c = sqrt(9.81 / k) / 60.0 / max(sqrt(sp.z * sp.w), 1e-4);
+    // (well inside the steady limit: the ocean's grid also damps its finest ripples)
+    return clamp(c * c, 0.0, 0.3);
+}
+
 // What's solid now, from the layer, and how that changed (for the wake).
 @compute @workgroup_size(8, 8)
 fn solids(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -123,6 +182,60 @@ fn drive(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     var h = g[st.o_a.x + i];
     let p = vec2<f32>(f32(x) + 0.5, f32(y) + 0.5);
+    if (ocean_mode()) {
+        let sp = sea_point(p);
+        if (sp.w < 0.0) {
+            g[st.o_a.x + i] = 0.0;
+            g[st.o_a.y + i] = 0.0;
+            return;
+        }
+        // Beside an object the sea's waves are cancelled (the water can't
+        // move into it): what the simulation holds is what the object sends
+        // back. (The sea's own waves are drawn by the ocean itself.)
+        var near = 0.0;
+        for (var k = 0; k < 4; k++) {
+            let o = array<vec2<i32>, 4>(vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1))[k];
+            near = max(near, solid(ix(x + o.x, y + o.y)));
+        }
+        if (near > 0.5) {
+            h = mix(h, -incident(sp.xy) * st.cam2.w, 0.7);
+        }
+        if (st.wake > 0.0) {
+            // (spread wider than the water surface's: the ocean's cells are
+            // coarse, and an edge stepping across them mustn't ring)
+            var push = 0.0;
+            for (var dy = -3; dy <= 3; dy++) {
+                for (var dx = -3; dx <= 3; dx++) {
+                    push += g[st.o_b.y + ix(x + dx, y + dy)] * exp(-f32(dx * dx + dy * dy) / 4.5);
+                }
+            }
+            // (in metres: a fair fraction of the sea's main wave)
+            h += push * st.wake * 0.03 * max(st.drops[0].w, 0.3);
+        }
+        // Foam: churned up at the waterline (just under an object in the
+        // picture) where it moves through the water, its bow and stern,
+        // and left behind along its track; and where the waves break against
+        // it. Fading over a few seconds.
+        var under = 0.0;
+        for (var k = 1; k <= 3; k++) {
+            under = max(under, solid(ix(x, y - k)));
+        }
+        var moving = 0.0;
+        if (under > 0.5) {
+            for (var dy = -4; dy <= 2; dy++) {
+                for (var dx = -3; dx <= 3; dx++) {
+                    moving += abs(g[st.o_b.y + ix(x + dx, y + dy)]);
+                }
+            }
+        }
+        var f = g[st.o_b.z + i] * 0.985 + clamp(moving, 0.0, 3.0) * 0.06 * min(st.wake, 2.0);
+        if (near > 0.5) {
+            f += clamp(abs(h) / max(st.drops[0].w, 0.3), 0.0, 2.0) * 0.02;
+        }
+        g[st.o_b.z + i] = clamp(f, 0.0, 1.0);
+        g[st.o_a.x + i] = h;
+        return;
+    }
     for (var k = 0u; k < min(st.ndrops, 8u); k++) {
         let d = st.drops[k];
         let r2 = max(d.z * d.z, 0.25);
@@ -202,9 +315,14 @@ fn wave(@builtin(global_invocation_id) id: vec3<u32>) {
     if (st.wave.x > 0.0 && wave_band(vec2<f32>(f32(x) + 0.5, f32(y) + 0.5)) < 14.0) {
         sponge = 1.0;
     }
-    let v = (vc + st.c2 * lap + 0.05 * lapv) * st.keep * sponge;
-    g[st.o_a.w + i] = v;
-    g[st.o_a.z + i] = (hc + v) * select(1.0, sponge, edge < 10.0);
+    let c2 = select(st.c2, ocean_c2(sea_point(vec2<f32>(f32(x) + 0.5, f32(y) + 0.5))), ocean_mode());
+    // (an ocean's grid is coarse for its waves near the horizon: damp its finest more)
+    let visc = select(0.05, 0.1, ocean_mode());
+    let v = (vc + c2 * lap + visc * lapv) * st.keep * sponge;
+    // (never a runaway value: one would spread over the whole grid)
+    let ok = abs(v) < 1e4 && abs(hc + v) < 1e4;
+    g[st.o_a.w + i] = select(0.0, v, ok);
+    g[st.o_a.z + i] = select(0.0, (hc + v) * select(1.0, sponge, edge < 10.0), ok);
 }
 
 // The next height and rate become the current ones.
@@ -218,7 +336,8 @@ fn commit(@builtin(global_invocation_id) id: vec3<u32>) {
     g[st.o_a.y + i] = g[st.o_a.w + i];
 }
 
-// The picture for the effect: height, slope across and down, solid.
+// The picture for the effect: height, slope across and down, and -1 where
+// solid (else the foam: 0 but for an ocean).
 @compute @workgroup_size(8, 8)
 fn picture(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= st.w || id.y >= st.h) {
@@ -227,7 +346,11 @@ fn picture(@builtin(global_invocation_id) id: vec3<u32>) {
     let x = i32(id.x);
     let y = i32(id.y);
     let i = id.y * st.w + id.x;
-    let gx = (hgt(ix(x + 1, y)) - hgt(ix(x - 1, y))) * 0.5;
-    let gy = (hgt(ix(x, y + 1)) - hgt(ix(x, y - 1))) * 0.5;
-    textureStore(out_tex, vec2<i32>(id.xy), vec4(hgt(i), gx, gy, solid(i)));
+    // (a solid neighbour is a wall: the water meets it level, as the
+    // wave step has it, so no slope is made up across its edge)
+    let hc = hgt(i);
+    let gx = (side_h(ix(x + 1, y), hc) - side_h(ix(x - 1, y), hc)) * 0.5;
+    let gy = (side_h(ix(x, y + 1), hc) - side_h(ix(x, y - 1), hc)) * 0.5;
+    // (the last channel: -1 for solid, else the foam)
+    textureStore(out_tex, vec2<i32>(id.xy), vec4(hc, gx, gy, select(g[st.o_b.z + i], -1.0, solid(i) > 0.5)));
 }

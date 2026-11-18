@@ -96,6 +96,9 @@ fn main() {
         ("09-liquid-pour", &wall, fx(EffectKind::Liquid, &[], 3.0, size)),
         ("10-liquid-onto-rock-keyed", &green, fx(EffectKind::Liquid, &[(lq::X, 38.0), (lq::Y, 5.0), (lq::DIRECTION, -80.0), (lq::SPEED, 150.0), (lq::WIDTH, 60.0), (lq::SOLIDS, 2.0), (lq::SHOW, 1.0)], 3.0, size)),
         ("11-liquid-filling-water-only", &clear, fx(EffectKind::Liquid, &[(lq::FILL, 25.0), (lq::FLOW, 200.0)], 3.0, size)),
+        ("13-ocean-rocks-keyed", &green, fx(EffectKind::Ocean, &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0)], 6.0, size)),
+        ("14-ocean-rocks-big-swell", &green, fx(EffectKind::Ocean, &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0), (oc::SWELL, 220.0), (oc::WIND, 14.0), (oc::CAM_HEIGHT, 3.0)], 6.0, size)),
+        ("14b-ocean-rocks-big-swell-no-foam", &green, fx(EffectKind::Ocean, &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0), (oc::SWELL, 220.0), (oc::WIND, 14.0), (oc::CAM_HEIGHT, 3.0), (oc::SURF, 0.0), (oc::WAKE, 0.0)], 6.0, size)),
         ("12-liquid-thick-onto-rock", &green, fx(EffectKind::Liquid, &[(lq::X, 45.0), (lq::Y, 2.0), (lq::DIRECTION, -90.0), (lq::SPEED, 80.0), (lq::THICK, 70.0), (lq::SOLIDS, 2.0), (lq::SHOW, 1.0), (lq::COLOR, 0xd0a020 as f32), (lq::CLEAR, 20.0)], 4.0, size)),
     ];
     if let Ok(frames) = std::env::var("ANIM") {
@@ -158,9 +161,14 @@ fn animate(c: &mut Compositor, out: &std::path::Path, w: u32, h: u32, frames: us
         ("storm", Box::new(move |t| (vec![0u8; (w * h * 4) as usize], fx(EffectKind::Ocean, &[(oc::WIND, 17.0), (oc::CHOP, 110.0), (oc::FOAM, 130.0), (oc::SUN_HEIGHT, 4.0), (oc::HAZE, 55.0), (oc::CAM_HEIGHT, 6.0)], t, size)))),
         ("rain", Box::new(move |t| (floor.clone(), fx(EffectKind::WaterSurface, &[(ws::RAIN, 18.0)], t, size)))),
         ("wake", Box::new(move |t| (moving_rock(w, h, t as f32), fx(EffectKind::WaterSurface, &[(ws::RAIN, 2.0), (ws::SOLIDS, 2.0), (ws::LAYER, 1.0), (ws::WAKE, 200.0)], t, size)))),
+        ("boat", Box::new(move |t| (moving_rock(w, h, t as f32), fx(EffectKind::Ocean, &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0), (oc::WAKE, 200.0), (oc::SWELL, 120.0)], t, size)))),
         ("pour", Box::new(move |t| (moving_rock(w, h, t as f32), fx(EffectKind::Liquid, &[(lq::X, 40.0), (lq::Y, 2.0), (lq::DIRECTION, -90.0), (lq::SPEED, 120.0), (lq::WIDTH, 50.0), (lq::FLOW, 220.0), (lq::SOLIDS, 2.0), (lq::SHOW, 1.0)], t, size)))),
     ];
+    let only: Option<String> = std::env::var("ONLY").ok();
     for (n, (name, make)) in shots.iter().enumerate() {
+        if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
+            continue;
+        }
         for f in 0..frames {
             let t = f as f64 / 30.0;
             let (px, e) = make(t);

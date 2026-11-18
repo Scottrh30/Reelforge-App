@@ -543,7 +543,7 @@ const FLUID: [ParamSpec; 16] = [
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
     choice("Flow round the layer's shape", &["Off", "On"]),
 ];
-const OCEAN: [ParamSpec; 25] = [
+const OCEAN: [ParamSpec; 31] = [
     spec("Wind speed", 10.0, 0.5, 40.0, " m/s", 0.05),
     spec("Wind direction", 20.0, -360.0, 360.0, "°", 0.5),
     spec("Wave height", 100.0, 0.0, 400.0, " %", 0.5),
@@ -569,6 +569,12 @@ const OCEAN: [ParamSpec; 25] = [
     choice("Show", &ocean::SHOWS),
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
     spec("Horizon softness", 30.0, 0.0, 100.0, " %", 0.5),
+    choice("Solid objects", &water::SOLID_KINDS),
+    spec("Key tolerance", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("White water", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Spray", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Wake", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Waves bouncing off", 100.0, 0.0, 300.0, " %", 0.5),
 ];
 const WATER_SURFACE: [ParamSpec; 31] = [
     spec("Rain", 6.0, 0.0, 400.0, " drops/s", 0.1),
@@ -1509,7 +1515,16 @@ pub mod ocean {
     pub const SHOW: usize = 22;
     pub const OPACITY: usize = 23;
     pub const SOFT: usize = 24;
-    pub const SHOWS: [&str; 3] = ["Full scene", "Water only (no sky)", "Water under the layer"];
+    /// Solid objects in the sea, keyed from the layer (as the water surface's).
+    pub const SOLIDS: usize = 25;
+    pub const TOLERANCE: usize = 26;
+    /// White water where the waves meet the objects.
+    pub const SURF: usize = 27;
+    pub const SPRAY: usize = 28;
+    pub const WAKE: usize = 29;
+    /// The waves bouncing back off the objects.
+    pub const REFLECT: usize = 30;
+    pub const SHOWS: [&str; 4] = ["Full scene", "Water only (no sky)", "Water under the layer", "The sea round the solid objects (keyed)"];
 }
 /// Water surface parameter indices.
 pub mod water {
@@ -2414,7 +2429,7 @@ impl EffectKind {
             EffectKind::SkyReplace => "A new sky behind the footage: the sky in every frame is found by the object model (Find the sky), its edge softened round trees and buildings, the new sky (a picture, or a gradient) moved with the camera, and the footage's light matched to it.",
             EffectKind::Paint => "Paint in the Viewer: clone the picture from somewhere else (Alt-click where to copy from), brush on a colour, or erase strokes. Each stroke lasts a frame, from there on, or the whole clip.",
             EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
-            EffectKind::Ocean => "An open sea out to the horizon: waves raised by the wind and a swell, choppy crests with foam, the sky and the sun on the water, seen from a camera you place. Full scene, the water alone (transparent sky), or the water under the layer.",
+            EffectKind::Ocean => "An open sea out to the horizon: waves raised by the wind and a swell, choppy crests with foam, the sky and the sun on the water, seen from a camera you place. Full scene, the water alone (transparent sky), or the water under the layer. With Solid objects keyed from the layer (rocks, a pier, a boat on a green screen), they sit in the sea: waves bounce off them, white water where the sea meets them, spray where the waves hit, and a wake and foam behind them as they move.",
             EffectKind::WaterSurface => "A water surface from above: ripples from rain and drops, waves rolling in, bouncing off solid objects (the layer's shape or a green screen) and pushed by them as they move, with caustics on the floor. A wave simulation, worked out from the clip's start.",
             EffectKind::Liquid => "Water poured from a source, flowing, filling and splashing off solid objects (the layer's shape, or what's in front of a green or blue screen) and the frame's floor and walls. A liquid simulation, worked out from the clip's start; the water alone comes out with transparency.",
             EffectKind::LensFlare => "A flare from a bright light: glow, streak, halo and ghost reflections across the frame. Choose a lens from the library (cinematic sun, anamorphic, hexagon iris, sci-fi and more) and drag the light in the Viewer. To keep it on a moving lamp or the sun, track that in the Track panel and apply the track to the flare.",
@@ -2546,7 +2561,7 @@ impl EffectKind {
             EffectKind::MuzzleFlash => &[(0, "Gun"), (5, "Flash"), (7, "Shots")],
             EffectKind::BulletHit => &[(0, "Hit"), (5, "Look")],
             EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look"), (15, "Obstacles")],
-            EffectKind::Ocean => &[(0, "Waves"), (9, "Camera"), (13, "Water"), (16, "Sky and sun"), (22, "Output")],
+            EffectKind::Ocean => &[(0, "Waves"), (9, "Camera"), (13, "Water"), (16, "Sky and sun"), (22, "Output"), (25, "Solid objects")],
             EffectKind::WaterSurface => &[(0, "Rain and drops"), (6, "Waves"), (10, "Water"), (15, "Solid objects"), (19, "Look"), (29, "Output")],
             EffectKind::Liquid => &[(0, "Source"), (8, "Water"), (16, "Solid objects"), (19, "Look"), (26, "Output")],
             EffectKind::Disintegrate => &[(0, "Sweep"), (4, "Edge"), (6, "Particles")],
@@ -2930,7 +2945,7 @@ impl Effect {
         match self.kind {
             EffectKind::Shatter => v.pieces = Some(Arc::new(crate::shatter::simulate(self, t, size))),
             EffectKind::Fluid => v.fluid = crate::fluid::job(self, t, size).map(Arc::new),
-            EffectKind::WaterSurface | EffectKind::Liquid => v.fluid = crate::water::job(self, t, size).map(Arc::new),
+            EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => v.fluid = crate::water::job(self, t, size).map(Arc::new),
             EffectKind::Disintegrate => v.particles = Some(Arc::new(crate::disintegrate::simulate(self, t, size))),
             EffectKind::Paint => {
                 if let Some(EffectData::Paint(strokes)) = &self.data {

@@ -264,6 +264,7 @@
         { separator: true },
         { label: "Water round the selected layer (green screen)", disabled: app.s?.selected.length !== 1, run: () => run(api.addSimulation("water_round")) },
         { label: "Pour water onto the selected layer (green screen)", disabled: app.s?.selected.length !== 1, run: () => run(api.addSimulation("pour_round")) },
+        { label: "Sea round the selected layer (green screen)", disabled: app.s?.selected.length !== 1, run: () => run(api.addSimulation("sea_round")) },
         { separator: true },
         app.live?.simulating
           ? { label: `Stop simulating (${Math.round((app.live.render ?? 0) * 100)}%)`, hint: "Esc", run: () => actions.act("stop_render_preview") }

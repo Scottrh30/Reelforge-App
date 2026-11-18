@@ -103,7 +103,11 @@ fn fbm(p: vec2<f32>, salt: u32) -> f32 {
 // p2 = (seed, camera height m, look down °, field of view °),
 // p3 = (camera speed m/s, deep colour, light-through colour, foam %),
 // p4 = (sun height °, sun direction °, sun strength %, sky colour),
-// p5 = (horizon colour, haze %, show, opacity %), p6.x = horizon softness %.
+// p5 = (horizon colour, haze %, show, opacity %), p6 = (horizon softness %,
+// solid objects, key tolerance %, white water %), p7 = (spray %, wake %,
+// waves bouncing off %, -). With solid objects, the second texture is the
+// simulation round them (see surface.wgsl's ocean mode: height in metres,
+// slope across and down a cell, solid) and extra2.xy its grid.
 //
 // World in metres, y up, the camera looking along +z. A direction of 0°
 // comes towards the camera (waves travel along -z); 90° travels to the right.
@@ -337,7 +341,35 @@ fn fs_ocean(in: VsOut) -> @location(0) vec4<f32> {
         }
         let sea = sea_at(&ws, p, t, fp, true);
         let r = ripples(p, t, fp);
-        let n = normalize(sea.n + r);
+        // The waves the objects send back (and the wake), from the simulation.
+        var simn = vec3(0.0);
+        var sim = vec4(0.0);
+        if (objects_on()) {
+            sim = surf(in.uv);
+            let cell_px = max(fx.extra.z, 1.0) / max(fx.extra2.x, 4.0);
+            let mx = max(tt * pix * cell_px, 1e-4);
+            let mz = max(fp * cell_px, 1e-4);
+            // The slopes smoothed over a cell or so (detail at the grid's own
+            // size is the stepping's, not the water's).
+            let tg = 1.0 / max(fx.extra2.xy, vec2(4.0));
+            var sl = sim.yz * 0.4;
+            for (var k = 0; k < 4; k++) {
+                let o = array<vec2<f32>, 4>(vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0))[k];
+                sl += surf(in.uv + o * tg).yz * 0.15;
+            }
+            // (down the picture is towards the camera: -z)
+            simn = vec3(-sl.x / mx, 0.0, sl.y / mz);
+            // Right at an object's edge is where the sea's waves are cancelled:
+            // that band shapes the waves sent out, but isn't itself shown.
+            let tx = 1.0 / max(fx.extra2.xy, vec2(4.0));
+            var edge = 0.0;
+            for (var k = 0; k < 4; k++) {
+                let o = array<vec2<f32>, 4>(vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0))[k];
+                edge = max(edge, obj(surf(in.uv + o * tx * 1.5)));
+            }
+            simn *= 1.0 - edge;
+        }
+        let n = normalize(sea.n + r + simn);
         let v = -d;
         let ndv = max(dot(n, v), 0.0);
         let fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
@@ -367,6 +399,26 @@ fn fs_ocean(in: VsOut) -> @location(0) vec4<f32> {
         let streak = fbm(p * 1.1 + vec2(t * 0.1, 0.0), 31u) * 0.6 + fbm(p * 4.3, 37u) * 0.4;
         let foam = clamp(fold * smoothstep(0.35, 0.75, streak) * 1.6 * foam_amt, 0.0, 1.0) * lod(6.2831853 / 2.0, fp);
         col = mix(col, vec3(0.85, 0.88, 0.9) * (light * 0.8 + 0.2), foam);
+        if (objects_on()) {
+            // White water where the sea meets the objects (churned harder as
+            // the waves hit), and foam left in the wake.
+            let near = object_near(in.uv);
+            let churn = clamp(abs(sim.x) / max(hs, 0.05) * 1.5, 0.0, 1.5);
+            let streak2 = fbm(p * 2.3 + vec2(0.0, t * 0.4), 53u);
+            // (in clumps that churn as the waves come in, not an even band)
+            let clump = fbm(p * 5.1 + vec2(t * 0.7, -t * 0.5), 57u);
+            let white = clamp(near * (0.35 + churn) * smoothstep(0.42, 0.72, streak2 * 0.6 + clump * 0.6 + churn * 0.25) * 1.4 * max(fx.p6.w, 0.0) / 100.0, 0.0, 1.0);
+            // The foam a moving object leaves along its track, in streaks
+            // (smoothed over a few cells: it's laid down cell by cell).
+            let tg = 1.0 / max(fx.extra2.xy, vec2(4.0));
+            var churned = 0.0;
+            for (var k = 0; k < 9; k++) {
+                let o = vec2(f32(k % 3) - 1.0, f32(k / 3) - 1.0) * 1.5;
+                churned += max(surf(in.uv + o * tg).w, 0.0) / 9.0;
+            }
+            let trail = clamp(churned * smoothstep(0.3, 0.7, streak2 * 0.7 + clump * 0.5) * 1.6 * max(fx.p7.y, 0.0) / 100.0 * (1.0 - near * 0.5), 0.0, 1.0);
+            col = mix(col, vec3(0.9, 0.93, 0.95) * (light * 0.8 + 0.2), max(white, trail));
+        }
         // Haze towards the horizon.
         let haze = max(fx.p5.y, 0.0) / 100.0;
         let far = 1.0 - exp(-tt * haze * 0.0012);
@@ -385,9 +437,77 @@ fn fs_ocean(in: VsOut) -> @location(0) vec4<f32> {
             let scene = vec4(mix(sky, water, sea_a), 1.0);
             out = c + scene * (1.0 - c.a);
         }
+        // The solid objects (keyed from the layer) in the sea.
+        case 3u: {
+            let scene = vec4(mix(sky, water, sea_a), 1.0);
+            let kind = u32(round(fx.p6.y));
+            let a = select(c.a, solidity(c, kind, clamp(fx.p6.z / 100.0, 0.0, 1.0)), kind != 0u);
+            let obj = vec4(select(vec3(0.0), c.rgb / c.a, c.a > 1e-4) * a, a);
+            out = obj + scene * (1.0 - a);
+        }
         default: { out = vec4(mix(sky, water, sea_a), 1.0); }
     }
+    // Spray thrown up where the waves hit the objects (over them too).
+    if (objects_on()) {
+        let sp = spray(in.uv);
+        out = vec4(mix(out.rgb, vec3(0.92, 0.95, 0.97) * clamp(sun_dir().y + 0.5, 0.35, 1.0) * sp, sp), max(out.a, sp));
+    }
     return mix(c, out, o);
+}
+
+// The simulation picture's last channel: an object there (1) or not.
+fn obj(v: vec4<f32>) -> f32 {
+    return select(0.0, 1.0, v.w < -0.5);
+}
+
+// The ocean has a simulation round solid objects (see above).
+fn objects_on() -> bool {
+    return fx.extra2.x > 0.5 && u32(round(fx.p6.y)) != 0u;
+}
+
+// How close the sea at uv is to an object's waterline (1 right at it,
+// fading out a few cells off): an object above it in the picture, or beside
+// it a little above (the sea meets an object along its bottom edge; its top
+// edge is against the sea behind).
+fn object_near(uv: vec2<f32>) -> f32 {
+    let tx = 1.0 / max(fx.extra2.xy, vec2(4.0));
+    var near = 0.0;
+    for (var k = 0; k < 5; k++) {
+        // 200° to 340°: up, and up to either side
+        let a = radians(200.0 + f32(k) * 35.0);
+        let o = vec2(cos(a), sin(a));
+        near = max(near, obj(surf(uv + o * tx * 1.5)));
+        near = max(near, obj(surf(uv + o * tx * 3.5)) * 0.6);
+    }
+    return near;
+}
+
+// Spray at uv: drops flung up from water churning against an object below.
+fn spray(uv: vec2<f32>) -> f32 {
+    let amt = max(fx.p7.x, 0.0) / 100.0;
+    if (amt <= 0.0) {
+        return 0.0;
+    }
+    let tx = 1.0 / max(fx.extra2.xy, vec2(4.0));
+    let hs = max(sea_height(clamp(fx.p0.x, 0.5, 40.0)) * 0.7 * max(fx.p0.z, 0.0) / 100.0, 0.05);
+    var dense = 0.0;
+    for (var j = 1; j <= 8; j++) {
+        let q = uv + vec2(0.0, f32(j) * tx.y * 1.5);
+        let s = surf(q);
+        if (obj(s) > 0.5) {
+            continue; // the object itself
+        }
+        let edge = max(max(obj(surf(q + vec2(tx.x * 1.5, 0.0))), obj(surf(q - vec2(tx.x * 1.5, 0.0)))), obj(surf(q - vec2(0.0, tx.y * 1.5))));
+        let churn = clamp(abs(s.x) / hs * 1.5 - 0.15 + max(s.w, 0.0) * 0.6, 0.0, 1.5);
+        // (higher up, thinner)
+        dense += edge * churn * (1.0 - f32(j) / 9.0);
+    }
+    // Drops: specks that change every frame of 24 a second.
+    let px = max(fx.extra.zw, vec2(1.0));
+    let frame = u32(max(fx.extra.y, 0.0) * 24.0);
+    let speck = smoothstep(0.7, 0.9, cell_rnd(floor(uv * px / 2.0), frame * 7u + 3u));
+    let mist = fbm(uv * px / 24.0 + vec2(0.0, fx.extra.y * 3.0), 61u);
+    return clamp(dense * amt * 1.6 * (speck * 0.9 + mist * 0.4), 0.0, 1.0);
 }
 
 // How solid a colour is, by the chosen key (see surface.wgsl): for crisp

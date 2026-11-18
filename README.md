@@ -758,7 +758,18 @@ What works now:
       glitter path on the water, warmer when low), the sky and horizon colours, and **Haze**
       into the distance. **Show**: the full scene, the water only (the sky left clear for a sky
       of your own), or the water under the layer (the layer's transparent parts show the sea).
-      Distant waves fade out as they get finer than a pixel, so the horizon doesn't shimmer
+      Distant waves fade out as they get finer than a pixel, so the horizon doesn't shimmer.
+      **Solid objects** (**Timeline → Water → Sea round the selected layer (green screen)**):
+      what's in front of the layer's green or blue screen (or its own shape, or its dark or light
+      parts, with a **Key tolerance**) sits in the sea, and **Show: The sea round the solid
+      objects** shows them in it with the screen keyed out. A wave simulation then runs over the
+      frame as well: the sea's own biggest waves are stopped at the objects, so **Waves bouncing
+      off** them spread back out, travelling slower into the distance as they would; **White
+      water** churns where the sea meets an object's waterline, harder as the waves hit;
+      **Spray** is thrown up there; and a moving object (a keyed boat) leaves a **Wake**: a V of
+      waves spreading behind it and a foam track along its waterline that fades over a few
+      seconds. Like the other simulations it's worked out from the layer's start and kept (see
+      below); without solid objects the ocean is drawn afresh as before
     - **Water surface**: water seen from above, a real wave simulation on the graphics card
       (the wave equation on a height grid; 256, 384 or 512 cells across). **Rain** (drops a
       second, their size and strength), a drop at a point **every** so often (drag the point in

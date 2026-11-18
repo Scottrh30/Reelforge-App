@@ -2,9 +2,14 @@
 //!
 //! - **Ocean**: an open sea drawn pixel by pixel on the graphics card (a sum of
 //!   Gerstner waves shaped by the wind, a swell and fine ripples, the sky and
-//!   sun reflected, foam where the crests fold). Nothing is simulated: every
-//!   moment is worked out on its own, so it needs nothing from here but its
-//!   settings.
+//!   sun reflected, foam where the crests fold). On its own nothing is
+//!   simulated: every moment is worked out on its own. With **solid objects**
+//!   keyed from the layer (rocks, a pier, a keyed boat), a water surface
+//!   simulation runs over the frame as well ([`ocean_step`]): the sea's own
+//!   biggest waves are cancelled at the objects' edges, so the simulation sends
+//!   back the waves they reflect and scatter, and a moving object leaves a
+//!   wake. The ocean adds its waves to its own, with white water where the sea
+//!   meets the objects, spray where the crests hit them, and foam in the wake.
 //! - **Water surface**: a height grid over the layer stepped by the wave
 //!   equation (drops of rain, drops at a point, waves rolling in from a side,
 //!   wind ripples), solid objects reflecting the waves and pushing water away
@@ -21,7 +26,7 @@
 //! from the effect's (keyframed) values at the step's time, so the same clip
 //! always gives the same water.
 
-use crate::effects::{liquid as lq, water as ws, Effect, EffectKind};
+use crate::effects::{liquid as lq, ocean as oc, water as ws, Effect, EffectKind};
 use crate::fluid::FluidJob;
 use crate::time::Time;
 
@@ -51,6 +56,7 @@ fn detail(e: &Effect, i: usize) -> usize {
 pub fn grid(e: &Effect, size: [f32; 2]) -> (usize, usize) {
     let w = match e.kind {
         EffectKind::Liquid => LIQUID_COLUMNS[detail(e, lq::DETAIL)],
+        EffectKind::Ocean => SURFACE_COLUMNS[1],
         _ => SURFACE_COLUMNS[detail(e, ws::DETAIL)],
     };
     let h = ((w as f32 * size[1] / size[0].max(1.0)).round() as usize).clamp(8, 1024);
@@ -61,6 +67,8 @@ pub fn grid(e: &Effect, size: [f32; 2]) -> (usize, usize) {
 fn sim_params(kind: EffectKind) -> std::ops::Range<usize> {
     match kind {
         EffectKind::Liquid => 0..lq::COLOR,
+        // (the waves and the camera; the objects' settings are added below)
+        EffectKind::Ocean => 0..oc::DEEP,
         _ => 0..ws::COLOR,
     }
 }
@@ -71,6 +79,8 @@ pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
     let enough = match e.kind {
         EffectKind::WaterSurface => e.params.len() > ws::OPACITY,
         EffectKind::Liquid => e.params.len() > lq::OPACITY,
+        // (an ocean simulates only with solid objects in it)
+        EffectKind::Ocean => e.params.len() > oc::REFLECT && e.value_at(oc::SOLIDS, Time::ZERO) >= 0.5,
         _ => false,
     };
     if !enough || !(size[0] >= 1.0 && size[1] >= 1.0) {
@@ -79,6 +89,7 @@ pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
     let (w, h) = grid(e, size);
     let solids = match e.kind {
         EffectKind::Liquid => e.value_at(lq::SOLIDS, Time::ZERO),
+        EffectKind::Ocean => e.value_at(oc::SOLIDS, Time::ZERO),
         _ => e.value_at(ws::SOLIDS, Time::ZERO),
     };
     let key = {
@@ -86,6 +97,9 @@ pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
         let mut hs = std::collections::hash_map::DefaultHasher::new();
         (e.kind as u32).hash(&mut hs);
         format!("{:?}", e.params.get(sim_params(e.kind))).hash(&mut hs);
+        if e.kind == EffectKind::Ocean {
+            format!("{:?}", e.params.get(oc::SOLIDS..=oc::REFLECT)).hash(&mut hs);
+        }
         (w, h).hash(&mut hs);
         size.map(f32::to_bits).hash(&mut hs);
         hs.finish()
@@ -141,6 +155,8 @@ pub struct SurfaceStep {
     /// How much moving objects push the water.
     pub wake: f32,
     pub step: u32,
+    /// For an ocean with objects in it: what drives it (see [`ocean_step`]).
+    pub ocean: Option<OceanForcing>,
 }
 
 /// The settings of step `step` of water surface `e` on a `w`×`h` grid over a `size` layer.
@@ -190,6 +206,115 @@ pub fn surface_step(e: &Effect, step: usize, w: usize, h: usize, size: [f32; 2])
         solids: solids(e, ws::SOLIDS, ws::TOLERANCE, at),
         wake: v(ws::WAKE) / 100.0,
         step: step as u32,
+        ocean: None,
+    }
+}
+
+/// What drives the simulation round objects in an ocean (see [`ocean_step`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OceanForcing {
+    /// The camera: layer aspect (width / height), tan of half the field of
+    /// view, how far it looks down (radians), its height (m).
+    pub cam: [f32; 4],
+    /// How far it has travelled (m), the sea's time (s), how strongly the
+    /// waves bounce back (0–3).
+    pub cam_z: f32,
+    pub time: f32,
+    pub reflect: f32,
+    /// The sea's biggest waves: direction (x, z), wave number (rad/m),
+    /// height (m), phase (rad).
+    pub waves: [[f32; 5]; 4],
+}
+
+/// The ocean's wave set, as `water.wgsl` makes it (`ocean_waves`): (direction
+/// x, z, wave number, amplitude, angular frequency, phase). The same numbers,
+/// so the waves sent back line up with the sea's crests.
+pub fn ocean_waves(e: &Effect, at: Time) -> Vec<[f32; 6]> {
+    const G: f32 = 9.81;
+    const WIND_WAVES: u32 = 24;
+    const SWELL_WAVES: u32 = 6;
+    fn hash_u(x: u32) -> u32 {
+        let mut v = x.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+        v = ((v >> ((v >> 28) + 4)) ^ v).wrapping_mul(277_803_737);
+        (v >> 22) ^ v
+    }
+    fn rnd(a: u32, b: u32) -> f32 {
+        (hash_u(hash_u(a) ^ b.wrapping_mul(0x9E37_79B9)) >> 8) as f32 / 16_777_216.0
+    }
+    fn heading(deg: f32) -> [f32; 2] {
+        let r = deg.to_radians();
+        [r.sin(), -r.cos()]
+    }
+    let v = |i: usize| e.value_at(i, at);
+    let seed = v(oc::SEED).max(0.0) as u32;
+    let u = v(oc::WIND).clamp(0.5, 40.0);
+    let kp = 0.769 * G / (u * u) * 3.0;
+    let mut ws: Vec<[f32; 6]> = Vec::with_capacity(30);
+    let mut sum = 0.0;
+    for i in 0..WIND_WAVES {
+        let f = (i as f32 + rnd(seed, i * 3)) / WIND_WAVES as f32;
+        let k = kp * 0.7 * 60f32.powf(f);
+        let spread = (rnd(seed, i * 3 + 1) - 0.5) * 2.0;
+        let d = heading(v(oc::WIND_DIR) + spread * 70.0 * (0.4 + 0.6 * f));
+        let rel = k / kp;
+        let shape = if rel < 1.0 { (-1.2 * (1.0 - rel) * (1.0 - rel) * 4.0).exp() } else { 1.0 / rel };
+        let a = shape * (1.0 - 0.5 * spread.abs());
+        sum += a * a;
+        ws.push([d[0], d[1], k, a, (G * k).sqrt(), rnd(seed, i * 3 + 2) * std::f32::consts::TAU]);
+    }
+    let hs = 0.21 * u * u / G * 0.7 * v(oc::HEIGHT).max(0.0) / 100.0;
+    let scale = hs / 4.0 * (2.0 / sum.max(1e-6)).sqrt();
+    for w in &mut ws {
+        w[3] *= scale;
+    }
+    let swell = v(oc::SWELL).max(0.0) / 100.0 * 0.6;
+    for j in 0..SWELL_WAVES {
+        let len = 110.0 + 190.0 * rnd(seed, 200 + j);
+        let d = heading(v(oc::SWELL_DIR) + (rnd(seed, 210 + j) - 0.5) * 16.0);
+        let k = std::f32::consts::TAU / len;
+        ws.push([d[0], d[1], k, swell / (SWELL_WAVES as f32).sqrt(), (G * k).sqrt(), rnd(seed, 220 + j) * std::f32::consts::TAU]);
+    }
+    ws
+}
+
+/// The settings of step `step` of an ocean with solid objects in it, on a
+/// `w`×`h` grid over a `size` layer: a water surface step (heights in metres)
+/// driven not by drops or waves from a side but by the sea's own biggest
+/// waves, cancelled at the objects' edges (so the simulation holds what they
+/// send back), and by the objects moving (the wake).
+pub fn ocean_step(e: &Effect, step: usize, w: usize, h: usize, size: [f32; 2]) -> SurfaceStep {
+    let t = step as f64 / SURFACE_RATE;
+    let at = Time::from_secs_f64(t);
+    let v = |i: usize| e.value_at(i, at);
+    let _ = (w, h);
+    let mut waves = ocean_waves(e, at);
+    waves.sort_by(|a, b| b[3].total_cmp(&a[3]));
+    let mut top = [[0.0f32; 5]; 4];
+    for (slot, wv) in top.iter_mut().zip(&waves) {
+        *slot = [wv[0], wv[1], wv[2], wv[3], wv[5]];
+    }
+    let sea_t = (t * (v(oc::SPEED).max(0.0) as f64 / 100.0)) as f32;
+    let tan_half = (v(oc::FOV).clamp(10.0, 120.0).to_radians() * 0.5).tan();
+    let hs = 0.21 * v(oc::WIND).clamp(0.5, 40.0).powi(2) / 9.81 * 0.7 * v(oc::HEIGHT).max(0.0) / 100.0;
+    let cam_y = v(oc::CAM_HEIGHT).max(hs * 0.8 + 0.5);
+    SurfaceStep {
+        drops: Vec::new(),
+        wave: [0.0; 4],
+        wave_dir: [1.0, 0.0],
+        wind: 0.0,
+        // (the speed is worked out cell by cell, from how far away the cell's sea is)
+        c2: 0.0,
+        keep: 1.0 - 0.002,
+        solids: solids(e, oc::SOLIDS, oc::TOLERANCE, at),
+        wake: v(oc::WAKE) / 100.0,
+        step: step as u32,
+        ocean: Some(OceanForcing {
+            cam: [size[0] / size[1].max(1.0), tan_half, v(oc::TILT).clamp(-20.0, 89.0).to_radians(), cam_y],
+            cam_z: v(oc::CAM_SPEED) * t as f32,
+            time: sea_t,
+            reflect: (v(oc::REFLECT) / 100.0).clamp(0.0, 3.0),
+            waves: top,
+        }),
     }
 }
 
@@ -270,6 +395,34 @@ pub fn capacity(w: usize, h: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_ocean_simulates_only_with_solid_objects_in_it() {
+        use crate::effects::ocean as oc;
+        let size = [1920.0, 1080.0];
+        let mut e = Effect::new(EffectKind::Ocean);
+        assert!(job(&e, Time::from_secs_f64(2.0), size).is_none(), "the open sea is drawn, not simulated");
+        e.params[oc::SOLIDS].value = 2.0;
+        let j = job(&e, Time::from_secs_f64(2.0), size).unwrap();
+        assert_eq!(j.step, 120);
+        assert!(j.obstacles);
+        // Its steps carry the camera and the sea's biggest waves, biggest first.
+        let st = ocean_step(&e, 10, j.w, j.h, size);
+        let o = st.ocean.unwrap();
+        assert!(o.waves[0][3] >= o.waves[1][3] && o.waves[1][3] >= o.waves[3][3] && o.waves[3][3] > 0.0);
+        assert!((o.cam[0] - 16.0 / 9.0).abs() < 1e-4);
+        // Another sea is another simulation; the look (colours, sun) isn't.
+        let mut rougher = e.clone();
+        rougher.params[oc::WIND].value = 20.0;
+        assert_ne!(job(&rougher, Time::ZERO, size).unwrap().key, j.key);
+        let mut sunnier = e.clone();
+        sunnier.params[oc::SUN].value = 300.0;
+        assert_eq!(job(&sunnier, Time::ZERO, size).unwrap().key, j.key);
+        // An ocean from before these settings existed (25 of them) isn't simulated.
+        let mut old = e.clone();
+        old.params.truncate(25);
+        assert!(job(&old, Time::ZERO, size).is_none());
+    }
+
     use super::*;
 
     fn effect(kind: EffectKind, set: &[(usize, f32)]) -> Effect {

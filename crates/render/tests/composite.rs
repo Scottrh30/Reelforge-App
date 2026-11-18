@@ -2866,6 +2866,69 @@ fn the_cpu_and_the_gpu_draw_the_same_picture() {
 /// when asked); a water surface rings out from its drops and goes round (and
 /// leaves out) what's solid; the liquid falls from its source, never into a
 /// solid object, and comes out the same when seeking back.
+/// An ocean with solid objects in it (keyed from the layer): they sit in the
+/// sea, white water where the sea meets them, a foam track behind one moving;
+/// without objects the ocean is as it was.
+#[test]
+fn an_ocean_meets_the_objects_in_it() {
+    use reelforge_core::effects::ocean as oc;
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (192u32, 108u32);
+    let size = [w as f32, h as f32];
+    // A green screen with a block at `x` (in the sea, below the horizon).
+    let screen = |x0: u32| -> Vec<u8> { (0..h).flat_map(|y| (0..w).flat_map(move |x| if (x0..x0 + 30).contains(&x) && (55..75).contains(&y) { [200u8, 60, 40, 255] } else { [20, 200, 50, 255] })).collect() };
+    let mut key = 5000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, pixels: &[u8], set: &[(usize, f32)], t: f64| {
+        let mut e = Effect::new(EffectKind::Ocean);
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        let v = e.eval_sized(Time::from_secs_f64(t), None, size);
+        key += 1;
+        let mut l = layer(1, pixels, [w, h], size, Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let lum = |img: &[u8], xs: std::ops::Range<u32>, ys: std::ops::Range<u32>| {
+        let mut sum = 0.0;
+        let mut n = 0.0;
+        for y in ys {
+            for x in xs.clone() {
+                let p = px(img, w, x, y);
+                sum += p[0] as f64 + p[1] as f64 + p[2] as f64;
+                n += 3.0;
+            }
+        }
+        sum / n
+    };
+    let still = screen(80);
+    // No objects: just the sea (the simulation isn't run, the picture as before).
+    let plain = draw(&mut c, &still, &[], 3.0);
+    assert!(lum(&plain, 85..105, 60..70) < 140.0, "no block drawn, no green: the sea");
+    // With objects: the block in the sea, the green keyed out.
+    let set = [(oc::SOLIDS, 2.0), (oc::SHOW, 3.0), (oc::SWELL, 200.0)];
+    let at_sea = draw(&mut c, &still, &set, 3.0);
+    let b = px(&at_sea, w, 95, 65);
+    assert!(b[0] > 170 && b[1] < 90, "the block shows: {b:?}");
+    let sea = px(&at_sea, w, 20, 95);
+    assert!(sea[1] < sea[2] + 20, "the green keyed out, the sea round it: {sea:?}");
+    // White water along its waterline (just under it), none with White water off.
+    let calm = draw(&mut c, &still, &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0), (oc::SWELL, 200.0), (oc::SURF, 0.0)], 3.0);
+    let (white, without) = (lum(&at_sea, 82..108, 75..78), lum(&calm, 82..108, 75..78));
+    assert!(white > without + 8.0, "white water at the waterline: {white:.0} against {without:.0}");
+    // Moving right for a second and a half: foam left along its track, behind it.
+    let mut last = Vec::new();
+    for k in 0..=36 {
+        let t = k as f64 / 24.0;
+        last = draw(&mut c, &screen(30 + (t * 60.0) as u32), &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0), (oc::SEED, 7.0)], t);
+    }
+    // (now at x 120–150: behind it 60–110, ahead of it beyond 155)
+    let (behind, ahead) = (lum(&last, 60..110, 75..79), lum(&last, 156..190, 75..79));
+    assert!(behind > ahead + 10.0, "a foam track behind it: {behind:.0} against {ahead:.0} ahead");
+}
+
 #[test]
 fn water_effects_draw_what_they_say() {
     use reelforge_core::effects::{liquid as lq, ocean as oc, water as ws};

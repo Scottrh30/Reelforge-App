@@ -11,7 +11,7 @@ use reelforge_core::undo::{AddClip, Batch, Command};
 use reelforge_core::{Clip, ClipId, Effect, EffectKind, MediaId, TitleSpec, Time};
 
 /// What can be added (the menu's order): (name, label).
-pub const SIMULATIONS: [(&str, &str); 24] = [
+pub const SIMULATIONS: [(&str, &str); 25] = [
     ("fire", "Fire"),
     ("smoke", "Smoke"),
     ("explosion", "Explosion"),
@@ -36,9 +36,10 @@ pub const SIMULATIONS: [(&str, &str); 24] = [
     ("fill", "Fill with water"),
     ("water_round", "Water round the selected layer (green screen)"),
     ("pour_round", "Pour water onto the selected layer (green screen)"),
+    ("sea_round", "Sea round the selected layer (green screen)"),
 ];
 
-pub const ON_SELECTED: [&str; 5] = ["shatter", "atomic", "disintegrate", "water_round", "pour_round"];
+pub const ON_SELECTED: [&str; 6] = ["shatter", "atomic", "disintegrate", "water_round", "pour_round", "sea_round"];
 
 /// Particles from preset `name`, its sizes and speeds scaled by `k` (the
 /// presets are made for a 1080-line frame), with `set` on top.
@@ -158,7 +159,7 @@ impl Editor {
                 "Added a waterfall: water spilling over from the left into a pool, flowing out at the sides",
             ),
             "fill" => self.add_effects_layer(vec![liquid(k, &[(lq::X, 50.0), (lq::Y, 0.0), (lq::DIRECTION, -90.0), (lq::SPEED, 300.0 * k), (lq::WIDTH, 80.0 * k), (lq::FLOW, 250.0), (lq::FILL, 15.0)])], false, "Add filling water", "Added water pouring in from above and filling the frame up"),
-            "shatter" | "atomic" | "disintegrate" | "water_round" | "pour_round" => self.add_to_selected(what),
+            "shatter" | "atomic" | "disintegrate" | "water_round" | "pour_round" | "sea_round" => self.add_to_selected(what),
             _ => {}
         }
     }
@@ -170,8 +171,8 @@ impl Editor {
             self.status = "Select the layer first".into();
             return;
         };
-        let Some((_, c)) = self.seq().find_clip(id) else { return };
-        if self.seq().tracks[self.seq().find_clip(id).unwrap().0].kind != reelforge_core::TrackKind::Video || c.scene.is_some() || c.adjustment {
+        let Some((track, c)) = self.seq().find_clip(id) else { return };
+        if self.seq().tracks.get(track).is_none_or(|t| t.kind != reelforge_core::TrackKind::Video) || c.scene.is_some() || c.adjustment {
             self.status = "Select a picture layer (footage, a still, a title or a composition)".into();
             return;
         }
@@ -182,6 +183,11 @@ impl Editor {
             (
                 with(EffectKind::WaterSurface, &[(ws::RAIN, 4.0), (ws::DROP_EVERY, 1.5), (ws::DROP_SIZE, 30.0 * k), (ws::SOLIDS, 2.0), (ws::LAYER, 1.0)]),
                 "The layer is in water now: what's in front of its green screen is solid, ripples bounce off it and it pushes the water as it moves. Solid objects sets what's solid (its own transparency, a blue screen…); The layer: Solid objects hidden leaves only the water, to export with transparency",
+            )
+        } else if what == "sea_round" {
+            (
+                with(EffectKind::Ocean, &[(oc::SOLIDS, 2.0), (oc::SHOW, 3.0)]),
+                "The layer is at sea now: what's in front of its green screen sits in the water, with white water where the waves meet it, spray where they hit, and a wake and foam behind it as it moves. Place it on the water's surface in the Viewer; Solid objects sets what's solid (its own transparency, a blue screen…)",
             )
         } else if what == "pour_round" {
             (

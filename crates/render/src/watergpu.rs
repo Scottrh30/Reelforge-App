@@ -96,6 +96,11 @@ fn floats(v: &mut Vec<u8>, xs: &[f32]) {
     }
 }
 
+/// A water surface's step, or an ocean's (with objects in it).
+fn surface_step(e: &reelforge_core::Effect, step: usize, w: usize, h: usize, size: [f32; 2]) -> SurfaceStep {
+    if e.kind == EffectKind::Ocean { water::ocean_step(e, step, w, h, size) } else { water::surface_step(e, step, w, h, size) }
+}
+
 fn surface_bytes(w: u32, h: u32, s: &SurfaceStep, off: &Offsets) -> Vec<u8> {
     let mut v = Vec::with_capacity(256);
     words(&mut v, &[w, h, s.solids.kind, s.drops.len().min(water::MAX_DROPS) as u32]);
@@ -103,9 +108,25 @@ fn surface_bytes(w: u32, h: u32, s: &SurfaceStep, off: &Offsets) -> Vec<u8> {
     floats(&mut v, &s.wave);
     floats(&mut v, &[s.wave_dir[0], s.wave_dir[1], s.solids.tolerance, s.step as f32]);
     words(&mut v, &off.g[0..4]);
-    words(&mut v, &[off.g[4], off.g[5], 0, 0]);
-    for k in 0..water::MAX_DROPS {
-        floats(&mut v, &s.drops.get(k).copied().unwrap_or([0.0; 4]));
+    words(&mut v, &[off.g[4], off.g[5], off.g[6], 0]);
+    match &s.ocean {
+        // (an ocean's slots hold its biggest waves, then their phases)
+        Some(o) => {
+            for w in &o.waves {
+                floats(&mut v, &w[..4]);
+            }
+            for w in &o.waves {
+                floats(&mut v, &[w[4], 0.0, 0.0, 0.0]);
+            }
+            floats(&mut v, &o.cam);
+            floats(&mut v, &[o.cam_z, o.time, 1.0, o.reflect]);
+        }
+        None => {
+            for k in 0..water::MAX_DROPS {
+                floats(&mut v, &s.drops.get(k).copied().unwrap_or([0.0; 4]));
+            }
+            floats(&mut v, &[0.0; 8]);
+        }
     }
     v
 }
@@ -190,13 +211,13 @@ impl WaterGpu {
         let limit = self.device.limits().max_storage_buffer_binding_size as u64;
         let uniform = wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.uniforms, offset: 0, size: wgpu::BufferSize::new(SLOT) }) };
         let mut enc = self.device.create_command_encoder(&Default::default());
-        let sim = if kind == EffectKind::WaterSurface {
-            // height, rate, next height, next rate, solid, change in solid
+        let sim = if kind != EffectKind::Liquid {
+            // height, rate, next height, next rate, solid, change in solid, foam (an ocean's)
             let mut off = Offsets::default();
-            for k in 0..6 {
+            for k in 0..7 {
                 off.g[k] = (n * k as u64) as u32;
             }
-            off.g_len = n * 6 * 4;
+            off.g_len = n * 7 * 4;
             if off.g_len > limit {
                 return None;
             }
@@ -359,7 +380,7 @@ impl WaterGpu {
     pub fn step_to(&mut self, job: &FluidJob, layer: Option<&wgpu::TextureView>) -> Option<wgpu::Texture> {
         let (w, h) = (job.w as u32, job.h as u32);
         let kind = job.effect.kind;
-        if w < 4 || h < 4 || !matches!(kind, EffectKind::WaterSurface | EffectKind::Liquid) {
+        if w < 4 || h < 4 || !matches!(kind, EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid) {
             return None;
         }
         self.tick += 1;
@@ -409,8 +430,8 @@ impl WaterGpu {
             let todo = (target - sim.step).min(CHUNK);
             let mut emits = Vec::with_capacity(todo);
             for k in 0..todo {
-                let bytes = if kind == EffectKind::WaterSurface {
-                    surface_bytes(w, h, &water::surface_step(&job.effect, sim.step + k, job.w, job.h, job.size), &sim.off)
+                let bytes = if kind != EffectKind::Liquid {
+                    surface_bytes(w, h, &surface_step(&job.effect, sim.step + k, job.w, job.h, job.size), &sim.off)
                 } else {
                     let st = water::liquid_step(&job.effect, sim.step + k, job.w, job.h, job.size);
                     let emit = st.emit.min(sim.cap);
@@ -423,7 +444,7 @@ impl WaterGpu {
             let mut fresh_checkpoints = Vec::new();
             for k in 0..todo {
                 let off = (k as u64 * SLOT) as u32;
-                if kind == EffectKind::WaterSurface {
+                if kind != EffectKind::Liquid {
                     self.surface_step(&mut enc, &sim, &layer_group, off);
                 } else {
                     let (emit, fill, fill_to) = emits[k];
@@ -467,8 +488,8 @@ impl WaterGpu {
         }
         // The picture (slot 0 told this simulation's sizes: another may have used it last).
         let mut enc = self.device.create_command_encoder(&Default::default());
-        if kind == EffectKind::WaterSurface {
-            let st = water::surface_step(&job.effect, target, job.w, job.h, job.size);
+        if kind != EffectKind::Liquid {
+            let st = surface_step(&job.effect, target, job.w, job.h, job.size);
             self.queue.write_buffer(&self.uniforms, 0, &surface_bytes(w, h, &st, &sim.off));
             self.run(&mut enc, &self.surface, "picture", &sim.group, &layer_group, 0, (w.div_ceil(8), h.div_ceil(8)));
         } else {
