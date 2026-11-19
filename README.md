@@ -1928,8 +1928,15 @@ it.
     it, all from the same spot), **Sci-fi corridor** (cool, glowing, long blue anamorphic
     streaks and a lens flare), **Night city** (glow, anamorphic streaks off the lights, dirt the
     lights catch, richer colour), **Golden hour haze**, **Stage spotlight** and **Summer sun**.
-    Move a light by dragging its X and Y, or change any part. All of these can be starred and
-    exported, not renamed or deleted.
+    Move a light by dragging its X and Y, or change any part. **Water and fluid looks** set a
+    simulation's look: seas to the horizon (**Calm lake at dawn**, **Harbour chop**, **Open sea
+    swell**, **Storm at sea**), water from above (**Tropical lagoon**, **Swimming pool**, **Rain
+    on a pond**), liquids poured (**Clear water**, **Muddy water**, **Milk**, **Honey**,
+    **Paint**, **Oil**: how thick, splashy, clear and shiny) and fluids (**Ink in water**,
+    **Coloured smoke**, **Steam**, **Thick smoke**). On a clip that already has that simulation
+    one changes just its look (colours, waves, how runny, the light), keeping where it pours
+    from, its direction, its camera and what's solid; on one that hasn't, it's added. All of
+    these can be starred and exported, not renamed or deleted.
   - Presets are kept in `effect-presets.json` (pictures in `preset-pictures`) in the app's
     settings folder; one that uses a plugin you no longer have says so.
 

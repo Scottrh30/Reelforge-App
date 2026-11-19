@@ -343,7 +343,21 @@ impl EffectPreset {
         if replace {
             v.effects.retain(|e| !savable(e));
         }
-        v.effects.extend(retime_effects(&self.effects, &f));
+        for e in retime_effects(&self.effects, &f) {
+            // A water, liquid or fluid look on a clip that already has that
+            // simulation: just its look, on the one there (where it is and
+            // what it's poured onto stay).
+            let look = look_params(e.kind);
+            if let Some(there) = v.effects.iter_mut().find(|x| x.kind == e.kind).filter(|_| !look.is_empty()) {
+                for &i in look {
+                    if let (Some(to), Some(from)) = (there.params.get_mut(i), e.params.get(i)) {
+                        *to = from.clone();
+                    }
+                }
+                continue;
+            }
+            v.effects.push(e);
+        }
         if !self.masks.is_empty() {
             let mut masks = retime_masks(&self.masks, &f);
             scale_masks(&mut masks, self.layer, layer);
@@ -439,8 +453,26 @@ pub const STARTERS: &str = "Starter looks";
 pub const NEON_SIGNS: &str = "Neon signs";
 /// Ready-made lighting: flares, rays, dirt and glow together.
 pub const LIGHT_LOOKS: &str = "Light looks";
+/// Water, liquid and fluid looks: seas, surfaces, honey and paint, ink and smoke.
+pub const WATER_LOOKS: &str = "Water and fluid looks";
 /// The folders the built-in presets are in, in order.
-pub const BUILTIN_FOLDERS: [&str; 3] = [STARTERS, NEON_SIGNS, LIGHT_LOOKS];
+pub const BUILTIN_FOLDERS: [&str; 4] = [STARTERS, NEON_SIGNS, LIGHT_LOOKS, WATER_LOOKS];
+
+/// The settings that make a water, liquid or fluid simulation's look (its
+/// colours, how runny or wild it is, the light on it), as opposed to where it
+/// is and what it's poured onto (its source, direction, camera, solid objects,
+/// what's shown). A look put on a clip that already has that simulation sets
+/// just these on it (see [`EffectPreset::apply`]).
+pub fn look_params(kind: EffectKind) -> &'static [usize] {
+    use reelforge_core::effects::{fluid_params as fl, liquid as lq, ocean as oc, water as ws};
+    match kind {
+        EffectKind::Ocean => &[oc::WIND, oc::HEIGHT, oc::CHOP, oc::SWELL, oc::RIPPLES, oc::SPEED, oc::DEEP, oc::SCATTER, oc::FOAM, oc::SUN_HEIGHT, oc::SUN, oc::SKY, oc::HORIZON, oc::HAZE, oc::SURF, oc::SPRAY],
+        EffectKind::WaterSurface => &[ws::RAIN, ws::DROP_SIZE, ws::DROP_STRENGTH, ws::WAVE_HEIGHT, ws::WAVELENGTH, ws::WIND, ws::SPEED, ws::CALM, ws::COLOR, ws::DEPTH, ws::REFRACTION, ws::CAUSTICS, ws::REFLECTIONS, ws::HIGHLIGHTS, ws::SKY, ws::FLOOR],
+        EffectKind::Liquid => &[lq::THICK, lq::SPLASH, lq::DROPLETS, lq::BOUNCE, lq::COLOR, lq::CLEAR, lq::REFRACTION, lq::HIGHLIGHTS, lq::FOAM, lq::SMOOTH],
+        EffectKind::Fluid => &[fl::FORCE, fl::AMOUNT, fl::COLOR_A, fl::COLOR_B, fl::CYCLE, fl::RISE, fl::SWIRL, fl::FADE],
+        _ => &[],
+    }
+}
 
 fn fx(kind: EffectKind, set: &[(usize, f32)]) -> Effect {
     let mut e = Effect::new(kind);
@@ -494,7 +526,41 @@ pub fn starters() -> Vec<EffectPreset> {
     out.push(EffectPreset { motion: Some(Motion { transform: Transform::default(), anim: push, props: vec!["scale".into()] }), timing: Timing::Stretch, length: one, ..look("Slow push in", Vec::new()) });
     out.extend(neon_signs());
     out.extend(light_looks());
+    out.extend(water_looks());
     out
+}
+
+/// Seas, water seen from above, liquids and fluids: each one simulation
+/// effect with its look set (put on a clip that has that simulation, it
+/// changes just the look of the one there).
+fn water_looks() -> Vec<EffectPreset> {
+    use reelforge_core::effects::{fluid_params as fl, liquid as lq, ocean as oc, water as ws};
+    let look = |name: &str, kind: EffectKind, set: &[(usize, f32)]| EffectPreset { effects: vec![fx(kind, set)], folder: WATER_LOOKS.into(), builtin: true, ..EffectPreset::empty(name, Time::ZERO, Timing::FromStart) };
+    let c = |rgb: u32| rgb as f32;
+    use EffectKind::{Fluid, Liquid, Ocean, WaterSurface};
+    vec![
+        // Seas, to the horizon.
+        look("Calm lake at dawn", Ocean, &[(oc::WIND, 2.0), (oc::HEIGHT, 15.0), (oc::CHOP, 10.0), (oc::SWELL, 0.0), (oc::RIPPLES, 40.0), (oc::SPEED, 70.0), (oc::DEEP, c(0x0e2a30)), (oc::SCATTER, c(0x2f6f6a)), (oc::FOAM, 0.0), (oc::SUN_HEIGHT, 6.0), (oc::SUN, 140.0), (oc::SKY, c(0xe9b48c)), (oc::HORIZON, c(0xffd9b4)), (oc::HAZE, 55.0), (oc::SURF, 40.0), (oc::SPRAY, 0.0)]),
+        look("Harbour chop", Ocean, &[(oc::WIND, 14.0), (oc::HEIGHT, 45.0), (oc::CHOP, 120.0), (oc::SWELL, 10.0), (oc::RIPPLES, 140.0), (oc::SPEED, 110.0), (oc::DEEP, c(0x10303a)), (oc::SCATTER, c(0x2d6e64)), (oc::FOAM, 40.0), (oc::SUN_HEIGHT, 30.0), (oc::SUN, 70.0), (oc::SKY, c(0x8fa8bc)), (oc::HORIZON, c(0xd0d8dc)), (oc::HAZE, 25.0), (oc::SURF, 120.0), (oc::SPRAY, 60.0)]),
+        look("Open sea swell", Ocean, &[(oc::WIND, 6.0), (oc::HEIGHT, 160.0), (oc::CHOP, 40.0), (oc::SWELL, 220.0), (oc::RIPPLES, 50.0), (oc::SPEED, 90.0), (oc::DEEP, c(0x062a44)), (oc::SCATTER, c(0x1d7f92)), (oc::FOAM, 25.0), (oc::SUN_HEIGHT, 35.0), (oc::SUN, 110.0), (oc::SKY, c(0x4a87c8)), (oc::HORIZON, c(0xc4d8ea)), (oc::HAZE, 30.0), (oc::SURF, 100.0), (oc::SPRAY, 80.0)]),
+        look("Storm at sea", Ocean, &[(oc::WIND, 32.0), (oc::HEIGHT, 300.0), (oc::CHOP, 140.0), (oc::SWELL, 180.0), (oc::RIPPLES, 160.0), (oc::SPEED, 120.0), (oc::DEEP, c(0x0b1a20)), (oc::SCATTER, c(0x24524e)), (oc::FOAM, 180.0), (oc::SUN_HEIGHT, 12.0), (oc::SUN, 30.0), (oc::SKY, c(0x47505a)), (oc::HORIZON, c(0x7a858c)), (oc::HAZE, 70.0), (oc::SURF, 220.0), (oc::SPRAY, 250.0)]),
+        // Water from above.
+        look("Tropical lagoon", WaterSurface, &[(ws::RAIN, 0.0), (ws::WAVE_HEIGHT, 80.0), (ws::WAVELENGTH, 260.0), (ws::WIND, 40.0), (ws::CALM, 10.0), (ws::COLOR, c(0x0fb2c8)), (ws::DEPTH, 72.0), (ws::REFRACTION, 120.0), (ws::CAUSTICS, 220.0), (ws::REFLECTIONS, 40.0), (ws::HIGHLIGHTS, 140.0), (ws::SKY, c(0xcfe8f5)), (ws::FLOOR, c(0xf1dfb0))]),
+        look("Swimming pool", WaterSurface, &[(ws::RAIN, 3.0), (ws::DROP_SIZE, 8.0), (ws::DROP_STRENGTH, 40.0), (ws::WAVE_HEIGHT, 60.0), (ws::WAVELENGTH, 140.0), (ws::WIND, 50.0), (ws::CALM, 10.0), (ws::COLOR, c(0x2fa8e0)), (ws::DEPTH, 60.0), (ws::REFRACTION, 140.0), (ws::CAUSTICS, 300.0), (ws::REFLECTIONS, 50.0), (ws::HIGHLIGHTS, 160.0), (ws::SKY, c(0xdff0fa)), (ws::FLOOR, c(0xd8eef5))]),
+        look("Rain on a pond", WaterSurface, &[(ws::RAIN, 40.0), (ws::DROP_SIZE, 10.0), (ws::DROP_STRENGTH, 90.0), (ws::WIND, 10.0), (ws::CALM, 20.0), (ws::COLOR, c(0x24453a)), (ws::DEPTH, 70.0), (ws::CAUSTICS, 30.0), (ws::REFLECTIONS, 110.0), (ws::HIGHLIGHTS, 70.0), (ws::SKY, c(0x9aa8b0)), (ws::FLOOR, c(0x4a4030))]),
+        // Liquids poured.
+        look("Clear water", Liquid, &[(lq::THICK, 0.0), (lq::SPLASH, 90.0), (lq::DROPLETS, 120.0), (lq::BOUNCE, 20.0), (lq::COLOR, c(0x6fb8e8)), (lq::CLEAR, 85.0), (lq::REFRACTION, 120.0), (lq::HIGHLIGHTS, 120.0), (lq::FOAM, 70.0), (lq::SMOOTH, 50.0)]),
+        look("Muddy water", Liquid, &[(lq::THICK, 15.0), (lq::SPLASH, 75.0), (lq::DROPLETS, 80.0), (lq::BOUNCE, 15.0), (lq::COLOR, c(0x6b5233)), (lq::CLEAR, 5.0), (lq::REFRACTION, 30.0), (lq::HIGHLIGHTS, 70.0), (lq::FOAM, 30.0), (lq::SMOOTH, 55.0)]),
+        look("Milk", Liquid, &[(lq::THICK, 20.0), (lq::SPLASH, 70.0), (lq::DROPLETS, 70.0), (lq::BOUNCE, 15.0), (lq::COLOR, c(0xf4f1ea)), (lq::CLEAR, 0.0), (lq::REFRACTION, 0.0), (lq::HIGHLIGHTS, 80.0), (lq::FOAM, 20.0), (lq::SMOOTH, 75.0)]),
+        look("Honey", Liquid, &[(lq::THICK, 85.0), (lq::SPLASH, 10.0), (lq::DROPLETS, 15.0), (lq::BOUNCE, 5.0), (lq::COLOR, c(0xf2b632)), (lq::CLEAR, 30.0), (lq::REFRACTION, 90.0), (lq::HIGHLIGHTS, 140.0), (lq::FOAM, 0.0), (lq::SMOOTH, 90.0)]),
+        look("Paint", Liquid, &[(lq::THICK, 70.0), (lq::SPLASH, 20.0), (lq::DROPLETS, 25.0), (lq::BOUNCE, 5.0), (lq::COLOR, c(0xd8302a)), (lq::CLEAR, 0.0), (lq::REFRACTION, 0.0), (lq::HIGHLIGHTS, 80.0), (lq::FOAM, 0.0), (lq::SMOOTH, 85.0)]),
+        look("Oil", Liquid, &[(lq::THICK, 55.0), (lq::SPLASH, 30.0), (lq::DROPLETS, 30.0), (lq::BOUNCE, 10.0), (lq::COLOR, c(0x2a2418)), (lq::CLEAR, 10.0), (lq::REFRACTION, 40.0), (lq::HIGHLIGHTS, 220.0), (lq::FOAM, 0.0), (lq::SMOOTH, 85.0)]),
+        // Fluids: smoke and ink.
+        look("Ink in water", Fluid, &[(fl::FORCE, 150.0), (fl::AMOUNT, 160.0), (fl::COLOR_A, c(0x1e3a8a)), (fl::COLOR_B, c(0x3a1a70)), (fl::CYCLE, 0.05), (fl::RISE, -20.0), (fl::SWIRL, 90.0), (fl::FADE, 1.0)]),
+        look("Coloured smoke", Fluid, &[(fl::FORCE, 350.0), (fl::AMOUNT, 120.0), (fl::COLOR_A, c(0xff4fa0)), (fl::COLOR_B, c(0x6a5cff)), (fl::CYCLE, 0.3), (fl::RISE, 120.0), (fl::SWIRL, 60.0), (fl::FADE, 10.0)]),
+        look("Steam", Fluid, &[(fl::FORCE, 250.0), (fl::AMOUNT, 70.0), (fl::COLOR_A, c(0xe8eef2)), (fl::COLOR_B, c(0xf6f8fa)), (fl::CYCLE, 0.0), (fl::RISE, 200.0), (fl::SWIRL, 70.0), (fl::FADE, 25.0)]),
+        look("Thick smoke", Fluid, &[(fl::FORCE, 300.0), (fl::AMOUNT, 250.0), (fl::COLOR_A, c(0x6a6a6a)), (fl::COLOR_B, c(0x3c3c3c)), (fl::CYCLE, 0.1), (fl::RISE, 90.0), (fl::SWIRL, 120.0), (fl::FADE, 5.0)]),
+    ]
 }
 
 /// A Neon path round a title's letters, with only the tube showing.
@@ -783,6 +849,43 @@ mod tests {
         let mut e = Effect::new(EffectKind::Blur);
         e.params[0].keys = Curve(vec![Key::new(Time::from_secs_f64(at), 0.0, Interp::Linear), Key::new(Time::from_secs_f64(at + 1.0), 8.0, Interp::Linear)]);
         e
+    }
+
+    /// The water and fluid looks: each is one simulation with its look set;
+    /// put on a clip that has that simulation, only the look changes on the
+    /// one there; on one that hasn't, it's added.
+    #[test]
+    fn water_looks_change_just_the_look() {
+        use reelforge_core::effects::liquid as lq;
+        let all = starters();
+        let looks: Vec<_> = all.iter().filter(|p| p.folder == WATER_LOOKS).collect();
+        assert!(looks.len() >= 12);
+        for p in &looks {
+            assert_eq!(p.effects.len(), 1, "{}", p.name);
+            let e = &p.effects[0];
+            assert!(!look_params(e.kind).is_empty(), "{}", p.name);
+            // Each sets something other than its effect's defaults, and only look settings.
+            let plain = Effect::new(e.kind);
+            let changed: Vec<usize> = (0..e.params.len()).filter(|&i| e.params[i].value != plain.params[i].value).collect();
+            assert!(!changed.is_empty(), "{}", p.name);
+            assert!(changed.iter().all(|i| look_params(e.kind).contains(i)), "{}: {changed:?}", p.name);
+        }
+        let honey = looks.iter().find(|p| p.name == "Honey").unwrap();
+        let mut v = ClipVisual { transform: Transform::default(), blend: BlendMode::Normal, track_matte: None, anim: TransformAnim::default(), effects: Vec::new(), masks: Vec::new(), mesh: None };
+        // On a clip with a liquid poured from the right: thick and golden, still poured from there.
+        let mut poured = Effect::new(EffectKind::Liquid);
+        poured.params[lq::X].value = 80.0;
+        poured.params[lq::THICK].keys = Curve(vec![Key::new(secs(1.0), 10.0, Interp::Linear)]);
+        v.effects = vec![Effect::new(EffectKind::Blur), poured];
+        honey.apply(&mut v, Time::ZERO, secs(5.0), [100.0, 100.0], false);
+        assert_eq!(v.effects.len(), 2);
+        let l = &v.effects[1];
+        assert_eq!((l.params[lq::X].value, l.params[lq::THICK].value, l.params[lq::COLOR].value), (80.0, 85.0, 0xf2b632 as f32));
+        assert!(l.params[lq::THICK].keys.is_empty(), "the look's own value, not the old keys");
+        // On a clip without one: added.
+        v.effects = vec![Effect::new(EffectKind::Blur)];
+        honey.apply(&mut v, Time::ZERO, secs(5.0), [100.0, 100.0], false);
+        assert_eq!(v.effects.iter().map(|e| e.kind).collect::<Vec<_>>(), [EffectKind::Blur, EffectKind::Liquid]);
     }
 
     #[test]
