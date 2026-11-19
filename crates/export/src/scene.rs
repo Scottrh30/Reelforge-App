@@ -138,7 +138,45 @@ pub struct Scene {
     /// a composition scaled up in the one it's in is drawn that much finer,
     /// so the text and shapes in it stay crisp (1 at the top).
     zoom: f32,
+    /// After a jump, at most this many frames are drawn to catch a simulation
+    /// up before showing the frame; a longer jump spreads them over it and the
+    /// simulation is approximate until filled in (when [`Self::idle`]).
+    /// `None` (the default: exports, rendered previews): every frame, so
+    /// it's always exact.
+    pub max_catch_up: Option<usize>,
+    /// Nothing's playing: a simulation left approximate by a long jump is
+    /// filled in a few frames at a time, then the picture drawn again.
+    pub idle: bool,
+    /// The simulation being filled in, and how far.
+    refining: Option<Refine>,
+    /// Counts simulations filled in (part of the picture's signature: the
+    /// same frame looks different afterwards).
+    sim_rev: u64,
+    /// A simulation was just filled in: the frame is drawn again.
+    redraw: bool,
 }
+
+/// A simulation left approximate by a long jump, being filled in: a copy of
+/// it stepped through its layer's frames from its last exact checkpoint up to
+/// the frame shown, in order, then put in its place.
+struct Refine {
+    /// The frame shown when it started (moving on stops it).
+    at: Time,
+    /// The simulation's key and kind, and its copy's.
+    key: u64,
+    kind: reelforge_core::EffectKind,
+    shadow: u64,
+    track: usize,
+    clip: reelforge_core::Clip,
+    /// Timeline times to step it through, and the next.
+    times: Vec<Time>,
+    next: usize,
+}
+
+/// Frames filled in per tick when idle.
+const REFINE_FRAMES: usize = 6;
+/// Marks a simulation copy's key apart from the simulation's.
+const SHADOW: u64 = 0x5bd1_e995_9e37_79b9;
 
 /// The most a composition is drawn finer than its own size (and the most
 /// pixels across it's drawn at).
@@ -161,7 +199,7 @@ impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         // (The audio visualiser hears sound through the media reader.)
         reelforge_core::audiovis::set_audio_source(reelforge_media::audio_window);
-        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0, zoom: 1.0, out_fps: None, between: None }
+        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0, zoom: 1.0, out_fps: None, between: None, max_catch_up: None, idle: false, refining: None, sim_rev: 0, redraw: false }
     }
 
     /// Forget composition renders (e.g. a different project was opened).
@@ -191,8 +229,23 @@ impl Scene {
         // (Stepping simulations through the frames in between draws them: the
         // picture must then be drawn again even if nothing else changed.)
         let caught_up = self.catch_up_simulations(project, seq, t, compositor, provider)?;
-        let unchanged_from = unchanged_from.filter(|_| !caught_up);
-        let sig = self.render_at(project, seq, None, t, compositor, provider, unchanged_from, 0)?;
+        // (the signature handed back carries the simulations filled in so far)
+        let unchanged_from = unchanged_from.map(|u| u ^ self.sim_rev).filter(|_| !caught_up);
+        let mut sig = self.render_at(project, seq, None, t, compositor, provider, unchanged_from, 0)?;
+        if unchanged_from != Some(sig) {
+            // Drawn afresh (something changed): a copy being filled in may no
+            // longer fit; it's started again when next idle, if still needed.
+            if let Some(r) = self.refining.take() {
+                compositor.simulation_discard(r.kind, r.shadow);
+            }
+        } else if self.idle {
+            self.refine_simulations(project, seq, t, compositor, provider)?;
+            if std::mem::take(&mut self.redraw) {
+                // Filled in: drawn again now, from the exact simulation.
+                sig = self.render_at(project, seq, None, t, compositor, provider, None, 0)?;
+            }
+        }
+        let sig = sig ^ self.sim_rev;
         let tick = self.tick;
         // Compositions off screen for a few seconds give their GPU memory back.
         self.nested.retain(|_, n| tick - n.last_used < 150);
@@ -211,9 +264,6 @@ impl Scene {
     /// anything was drawn. (Layers of the sequence shown, not ones inside
     /// nested sequences.)
     fn catch_up_simulations(&mut self, project: &Project, seq: usize, t: Time, compositor: &mut Compositor, provider: &mut dyn FrameProvider) -> Result<bool> {
-        /// At most this many frames are drawn to catch one simulation up (10 s
-        /// at 25 fps); a longer jump spreads them evenly over it.
-        const MAX_FRAMES: usize = 250;
         let Some(s) = project.sequences.get(seq) else { return Ok(false) };
         let frame = s.frame_rate.frame_duration();
         let fps = self.out_fps.unwrap_or(s.frame_rate.fps());
@@ -241,7 +291,8 @@ impl Scene {
             }
             // Clip (keyframe) times from where it starts to where it's going.
             let (a, b) = (from as f64 / rate, job.step as f64 / rate);
-            let n = (((b - a) * fps).floor() as usize).saturating_sub(1).min(MAX_FRAMES);
+            let needed = (((b - a) * fps).floor() as usize).saturating_sub(1);
+            let n = self.max_catch_up.map_or(needed, |m| needed.min(m));
             if n == 0 {
                 continue;
             }
@@ -257,11 +308,71 @@ impl Scene {
                 }
             }
             provider.wait_for_frames(was);
+            // (after: on a first jump the simulation is only made by the frames drawn)
+            compositor.simulation_caught_up(&job, from, n >= needed);
         }
         Ok(drew)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Fill in a simulation a long jump left approximate, a few frames a
+    /// tick (see [`Self::idle`]): its layer stepped through each frame from
+    /// its last exact checkpoint, in order, as playing would, drawing nothing;
+    /// then the frame is drawn again from it.
+    fn refine_simulations(&mut self, project: &Project, seq: usize, t: Time, compositor: &mut Compositor, provider: &mut dyn FrameProvider) -> Result<()> {
+        let Some(s) = project.sequences.get(seq) else { return Ok(()) };
+        let frame = s.frame_rate.frame_duration();
+        let fps = self.out_fps.unwrap_or(s.frame_rate.fps());
+        if fps.is_nan() || fps <= 0.0 {
+            return Ok(());
+        }
+        if let Some(r) = self.refining.take_if(|r| r.at != t) {
+            compositor.simulation_discard(r.kind, r.shadow);
+        }
+        if self.refining.is_none() {
+            'find: for item in reelforge_core::multicam::layers_at(project, seq, t, None) {
+                for l in item.layers() {
+                    for v in &l.effects {
+                        let Some(job) = v.fluid.as_ref().filter(|j| j.obstacles) else { continue };
+                        let shadow = job.key ^ SHADOW;
+                        let Some(c) = compositor.simulation_fork(job, shadow) else { continue };
+                        // The timeline frames between the checkpoint and now, as
+                        // played (clip time: c / rate on).
+                        let rate = reelforge_core::water::rate(job.effect.kind);
+                        let start = l.clip.timeline_start + (Time::from_secs_f64(c as f64 / rate) - l.clip.source_in);
+                        let first = start.to_frame(s.frame_rate) + 1;
+                        let last = t.to_frame(s.frame_rate);
+                        let times: Vec<Time> = (first.max(0)..last).map(|k| Time::from_frame(k, s.frame_rate)).collect();
+                        self.refining = Some(Refine { at: t, key: job.key, kind: job.effect.kind, shadow, track: l.track, clip: l.clip.clone(), times, next: 0 });
+                        break 'find;
+                    }
+                }
+            }
+        }
+        let Some(mut r) = self.refining.take() else { return Ok(()) };
+        let frame_size = [s.width.max(2), s.height.max(2)];
+        let scene3d = project.scene3d_at(seq, t);
+        let was = provider.wait_for_frames(true);
+        for _ in 0..REFINE_FRAMES {
+            let Some(&at) = r.times.get(r.next) else { break };
+            r.next += 1;
+            let l = project.clip_layer(seq, r.track, &r.clip, at, frame);
+            if let Some(g) = self.gather(project, &l, at, frame_size, fps, &scene3d, provider, 0)? {
+                compositor.step_simulations(&input(&g), r.key, r.shadow);
+            }
+        }
+        provider.wait_for_frames(was);
+        if r.next >= r.times.len() {
+            // Filled in: the copy takes the simulation's place and the frame
+            // is drawn again (stepping it the last bit, from its own picture).
+            compositor.simulation_adopt(r.kind, r.key, r.shadow);
+            self.sim_rev = self.sim_rev.wrapping_add(1);
+            self.redraw = true;
+        } else {
+            self.refining = Some(r);
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_at(
         &mut self,

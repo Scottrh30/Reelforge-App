@@ -39,6 +39,11 @@ struct Sim {
     out: wgpu::Texture,
     out_view: wgpu::TextureView,
     checkpoints: Vec<(usize, wgpu::Buffer, wgpu::Buffer)>,
+    /// Past this step its state is approximate (a long jump caught up on
+    /// fewer frames than it spans): see [`FluidGpu::caught_up`].
+    approx_after: Option<usize>,
+    /// A copy being filled in (see [`FluidGpu::fork`]).
+    forked_at: Option<usize>,
     /// The step whose obstacles were read last (`None`: none since the start
     /// or a seek, so the next read has nothing to compare with).
     obs_at: Option<usize>,
@@ -136,7 +141,74 @@ impl FluidGpu {
         enc.clear_buffer(&dye, 0, None);
         enc.clear_buffer(&obs, 0, None);
         self.queue.submit([enc.finish()]);
-        Sim { w, h, step: 0, vel: vel.clone(), dye: dye.clone(), out, out_view, checkpoints: Vec::new(), obs_at: None, used: 0, _bufs: vec![vel, vel_tmp, dye, dye_tmp, scratch, pa, pb, obs] }
+        Sim { w, h, step: 0, vel: vel.clone(), dye: dye.clone(), out, out_view, checkpoints: Vec::new(), approx_after: None, forked_at: None, obs_at: None, used: 0, _bufs: vec![vel, vel_tmp, dye, dye_tmp, scratch, pa, pb, obs] }
+    }
+
+    /// See [`crate::watergpu::WaterGpu::caught_up`].
+    pub fn caught_up(&mut self, job: &FluidJob, from: usize, exact: bool) {
+        let Some(sim) = self.sims.get_mut(&job.key) else { return };
+        sim.approx_after = match (sim.approx_after, exact) {
+            (Some(a), true) if from <= a => None,
+            (a, true) => a,
+            (Some(a), false) => Some(a.min(from)),
+            (None, false) => Some(from),
+        };
+    }
+
+    /// See [`crate::watergpu::WaterGpu::fork`].
+    pub fn fork(&mut self, job: &FluidJob, shadow: u64) -> Option<usize> {
+        let real = self.sims.get(&job.key)?;
+        let a = real.approx_after?;
+        let (w, h) = (real.w, real.h);
+        let from = real.checkpoints.iter().filter(|c| c.0 <= a).max_by_key(|c| c.0).map(|(s, v, d)| (*s, v.clone(), d.clone()));
+        let mut copy = self.make(w, h);
+        if let Some((step, v, d)) = from {
+            let mut enc = self.device.create_command_encoder(&Default::default());
+            enc.copy_buffer_to_buffer(&v, 0, &copy.vel, 0, v.size());
+            enc.copy_buffer_to_buffer(&d, 0, &copy.dye, 0, d.size());
+            self.queue.submit([enc.finish()]);
+            copy.step = step;
+        }
+        let at = copy.step;
+        copy.forked_at = Some(at);
+        copy.used = self.tick;
+        self.sims.insert(shadow, copy);
+        Some(at)
+    }
+
+    /// See [`crate::watergpu::WaterGpu::adopt`].
+    pub fn adopt(&mut self, key: u64, shadow: u64) {
+        let Some(mut copy) = self.sims.remove(&shadow) else { return };
+        let from = copy.forked_at.take().unwrap_or(0);
+        if let Some(real) = self.sims.remove(&key) {
+            let mut kept: Vec<_> = real.checkpoints.into_iter().filter(|c| c.0 <= from).collect();
+            kept.append(&mut copy.checkpoints);
+            kept.sort_by_key(|c| c.0);
+            kept.dedup_by_key(|c| c.0);
+            while kept.len() > CHECKPOINTS {
+                kept.remove(1);
+            }
+            copy.checkpoints = kept;
+        }
+        copy.approx_after = None;
+        if let Some(store) = crate::simstore::store() {
+            let n = copy.w as u64 * copy.h as u64;
+            let lens = [n * 8, n * 16];
+            for (at, v, d) in copy.checkpoints.iter().filter(|c| c.0 > from) {
+                let k = crate::simstore::checkpoint_key(key, *at, &lens, include_str!("fluid.wgsl"));
+                if !store.has(k) {
+                    if let Some(parts) = crate::simstore::read_back(&self.device, &self.queue, &[(v, lens[0]), (d, lens[1])]) {
+                        store.save(k, crate::simstore::pack(&parts));
+                    }
+                }
+            }
+        }
+        self.sims.insert(key, copy);
+    }
+
+    /// See [`crate::watergpu::WaterGpu::discard`].
+    pub fn discard(&mut self, shadow: u64) {
+        self.sims.remove(&shadow);
     }
 
     /// `sim`'s bind group, reading `layer` (the layer's picture now) for obstacles.
@@ -223,6 +295,13 @@ impl FluidGpu {
                 }
             }
             self.queue.submit([enc.finish()]);
+            // Back at or before where it stopped being exact: exact again, and
+            // the approximate checkpoints after go.
+            if sim.approx_after.is_some_and(|a| sim.step <= a) {
+                let at = sim.step;
+                sim.checkpoints.retain(|c| c.0 <= at);
+                sim.approx_after = None;
+            }
         }
         let n = w as u64 * h as u64;
         let groups = (w.div_ceil(8), h.div_ceil(8));
@@ -239,9 +318,13 @@ impl FluidGpu {
                 }
                 let key = crate::simstore::checkpoint_key(job.key, at, &lens, shader);
                 if store.has(key) {
-                    if let Some(parts) = store.load(key).as_deref().and_then(|b| crate::simstore::unpack(b, &lens).map(|p| p.iter().map(|x| x.to_vec()).collect::<Vec<_>>())) {
-                        self.queue.write_buffer(&sim.vel, 0, &parts[0]);
-                        self.queue.write_buffer(&sim.dye, 0, &parts[1]);
+                    if let Some([v, d]) = store.load(key).as_deref().and_then(|b| crate::simstore::unpack(b, &lens).map(|p| p.iter().map(|x| x.to_vec()).collect::<Vec<_>>())).and_then(|p| <[Vec<u8>; 2]>::try_from(p).ok()) {
+                        self.queue.write_buffer(&sim.vel, 0, &v);
+                        self.queue.write_buffer(&sim.dye, 0, &d);
+                        // (what's on disk is exact: the approximate tail in memory goes)
+                        if let Some(a) = sim.approx_after.take() {
+                            sim.checkpoints.retain(|c| c.0 <= a);
+                        }
                         // (no obstacles read for the step before it)
                         sim.obs_at = None;
                         sim.step = at;
@@ -315,6 +398,10 @@ impl FluidGpu {
             sim.step += todo;
             if let Some(store) = &store {
                 for at in fresh {
+                    // (approximate ones are never kept as if they were the real thing)
+                    if sim.approx_after.is_some_and(|a| at > a) || sim.forked_at.is_some() {
+                        continue;
+                    }
                     let key = crate::simstore::checkpoint_key(job.key, at, &lens, shader);
                     let Some((_, v, d)) = sim.checkpoints.iter().find(|c| c.0 == at) else { continue };
                     if !store.has(key) {

@@ -154,3 +154,43 @@ fn smoke_flows_round_a_moving_object_and_is_pushed_by_it() {
     assert!(x_moved > x_still + 3.0, "pushed right: on average {x_moved:.1} px across, {x_still:.1} without the object");
 }
 
+
+/// Jumped to `end` with a catch-up of at most `cap` frames (approximate, as
+/// the viewer does past 250),
+/// then left idle until filled in: (the picture first shown, the picture once
+/// filled in, ticks it took).
+fn jumped_then_filled_in(p: &Project, end: f64, cap: usize) -> (Vec<u8>, Vec<u8>, usize) {
+    let (device, queue) = headless_device().unwrap();
+    let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
+    scene.max_catch_up = Some(cap);
+    let mut frames = Crossing { frozen: None };
+    let t = Time::from_secs_f64(end);
+    let mut sig = scene.render(p, 0, t, &mut c, &mut frames, None).unwrap();
+    let first = c.read_output().unwrap();
+    scene.idle = true;
+    for tick in 1..200 {
+        let now = scene.render(p, 0, t, &mut c, &mut frames, Some(sig)).unwrap();
+        if now != sig {
+            return (first, c.read_output().unwrap(), tick);
+        }
+        sig = now;
+    }
+    panic!("never filled in");
+}
+
+#[test]
+fn a_long_jump_is_filled_in_while_idle() {
+    let Some((device, queue)) = headless_device() else { return };
+    let pixels = (W * H) as usize;
+    for (name, e, end) in [("water", wake(), 1.2), ("smoke", smoke(true), 1.0)] {
+        let p = project(e);
+        let (played, _, _) = played_jumped_stale(&device, &queue, &p, end);
+        let (first, filled, ticks) = jumped_then_filled_in(&p, end, 3);
+        let rough = differ(&played, &first);
+        let off = differ(&played, &filled);
+        assert!(rough > pixels / 100, "{name}: three frames for a {end} s jump is rough ({rough} pixels off)");
+        assert!(off <= pixels / 200, "{name}: filled in, it's as played ({off} pixels off; {rough} before)");
+        // (a few frames a tick: ~25 frames in about 4 ticks, then drawn)
+        assert!(ticks <= 10, "{name}: took {ticks} ticks");
+    }
+}

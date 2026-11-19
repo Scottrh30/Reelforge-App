@@ -169,7 +169,11 @@ impl Preview {
             // Hardware-decoded frames can stay on the graphics card when the
             // compositor can read them there (Windows, Direct3D 12).
             reelforge_core::frame::zero_copy::set_renderer(compositor.zero_copy_adapter());
-            let scene = Scene::new(&device, &queue);
+            let mut scene = Scene::new(&device, &queue);
+            // The viewer answers at once after a long jump (simulations
+            // caught up on at most 250 frames, 10 s at 25 fps) and fills
+            // the rest in while nothing plays.
+            scene.max_catch_up = Some(250);
             Gpu { device, queue, compositor, scene, cache_render: None }
         });
         Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1, full_when_paused: false, active: 1, auto: AutoQuality::default() }
@@ -378,6 +382,7 @@ impl Preview {
             max,
         };
         let unchanged = gpu.compositor.output_view().is_some().then_some(self.last_signature);
+        gpu.scene.idle = !playing;
         match gpu.scene.render(project, seq, t, &mut gpu.compositor, &mut frames, unchanged) {
             Ok(sig) => {
                 if sig != self.last_signature {

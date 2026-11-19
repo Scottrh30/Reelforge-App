@@ -813,8 +813,12 @@ What works now:
       is read from the layer at each frame, so a keyed object can move. Jump ahead (scrub,
       seek, or export from part way in) and the water is still what playing up to there would
       give: the frames in between are stepped through first, each with the object where it
-      was then (up to 250 frames; a longer jump spreads them over it), so the object doesn't
-      jump through the water. Two clips with the same water settings over different footage
+      was then, so the object doesn't jump through the water. The viewer steps through at most
+      250 frames before showing the frame (a longer jump spreads them over it, a close
+      likeness); then, while nothing plays, it fills in every frame from the last exact
+      checkpoint on a copy of the simulation, a few each tick, and redraws the frame when done
+      (a few seconds for a jump of a minute, more if decoding is slow). Until then, nothing from the likeness is
+      kept on disk. Exports and rendered previews always step through every frame. Two clips with the same water settings over different footage
       each get their own simulation
     - **Kept on disk**: with the rendered previews kept on disk (Settings, on by default),
       every checkpoint of a water or fluid simulation is too (in the cache folder's

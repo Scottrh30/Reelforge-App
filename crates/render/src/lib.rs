@@ -1254,6 +1254,65 @@ impl Compositor {
         }
     }
 
+    /// The scene stepped `job`'s simulation on from step `from` through the
+    /// frames in between: every one (`exact`), or fewer spread over a long
+    /// jump, leaving it approximate from `from` on until filled in (it's not
+    /// kept on disk meanwhile). See [`Self::simulation_refine_from`].
+    pub fn simulation_caught_up(&mut self, job: &reelforge_core::fluid::FluidJob, from: usize, exact: bool) {
+        match job.effect.kind {
+            EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.caught_up(job, from, exact),
+            EffectKind::Fluid => self.fluid.caught_up(job, from, exact),
+            _ => {}
+        }
+    }
+
+    /// For an approximate simulation: a copy of it, under `shadow`, from its
+    /// last exact checkpoint, and the step that is. Stepping the copy through
+    /// the frames after, in order ([`Self::step_simulations`] with `shadow`),
+    /// then [`Self::simulation_adopt`] makes it exact; the simulation shown
+    /// isn't touched meanwhile.
+    pub fn simulation_fork(&mut self, job: &reelforge_core::fluid::FluidJob, shadow: u64) -> Option<usize> {
+        match job.effect.kind {
+            EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.fork(job, shadow),
+            EffectKind::Fluid => self.fluid.fork(job, shadow),
+            _ => None,
+        }
+    }
+
+    /// The filled-in copy takes the simulation's place. See [`Self::simulation_fork`].
+    pub fn simulation_adopt(&mut self, kind: EffectKind, key: u64, shadow: u64) {
+        match kind {
+            EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.adopt(key, shadow),
+            EffectKind::Fluid => self.fluid.adopt(key, shadow),
+            _ => {}
+        }
+    }
+
+    /// Let go of a copy that won't be adopted.
+    pub fn simulation_discard(&mut self, kind: EffectKind, shadow: u64) {
+        match kind {
+            EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.discard(shadow),
+            EffectKind::Fluid => self.fluid.discard(shadow),
+            _ => {}
+        }
+    }
+
+    /// Step the simulation `key` of `layer`'s effects (water, liquid, fluid)
+    /// on to where it says, as `shadow` (a copy: see
+    /// [`Self::simulation_fork`]), with the layer's picture uploaded for
+    /// what's solid, drawing nothing: the picture shown stays as it is.
+    pub fn step_simulations(&mut self, layer: &LayerInput, key: u64, shadow: u64) {
+        let Some((kind, job)) = layer.effects.iter().find_map(|e| e.fluid.as_ref().filter(|j| j.key == key).map(|j| (e.kind, j))) else { return };
+        let mut job = reelforge_core::fluid::FluidJob::clone(job);
+        job.key = shadow;
+        self.upload(layer);
+        let view = self.layers.get(&layer.key).filter(|t| !t.float).map(|t| t.texture.create_view(&Default::default()));
+        let _ = match kind {
+            EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(&job, view.as_ref()),
+            _ => self.fluid.step_to(&job, view.as_ref()),
+        };
+    }
+
     pub fn render_items(&mut self, frame_size: [u32; 2], items: &[DrawItem]) {
         // The shadow quality changed: a new atlas, bound in its place.
         let tile = SHADOW_TILE.load(std::sync::atomic::Ordering::Relaxed);

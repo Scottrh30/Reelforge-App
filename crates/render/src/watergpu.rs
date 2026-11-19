@@ -62,6 +62,12 @@ struct Sim {
     group: wgpu::BindGroup,
     out: wgpu::Texture,
     checkpoints: Vec<(usize, Vec<wgpu::Buffer>)>,
+    /// Past this step its state is approximate (a long jump caught up on
+    /// fewer frames than it spans): see [`WaterGpu::caught_up`].
+    approx_after: Option<usize>,
+    /// A copy being filled in (see [`WaterGpu::fork`]): from this step, and
+    /// none of its checkpoints go to disk until it's adopted.
+    forked_at: Option<usize>,
     used: u64,
     off: Offsets,
     /// The liquid's atomic buffer (cleared each step after its counter).
@@ -230,7 +236,7 @@ impl WaterGpu {
                 entries: &[uniform, wgpu::BindGroupEntry { binding: 1, resource: grids.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view) }],
             });
             enc.clear_buffer(&grids, 0, None);
-            Sim { kind, w, h, step: 0, state: vec![(grids, off.g_len)], group, out, checkpoints: Vec::new(), used: 0, off, atomics: None, cap: 0, rw: w, rh: h }
+            Sim { kind, w, h, step: 0, state: vec![(grids, off.g_len)], group, out, checkpoints: Vec::new(), approx_after: None, forked_at: None, used: 0, off, atomics: None, cap: 0, rw: w, rh: h }
         } else {
             let cap = water::capacity(w as usize, h as usize) as u32;
             let (rw, rh) = (w * 2, h * 2);
@@ -280,7 +286,7 @@ impl WaterGpu {
             enc.clear_buffer(&atomics, 0, None);
             enc.clear_buffer(&grids, 0, None);
             // (the grids too: the pressure carries over from step to step)
-            Sim { kind, w, h, step: 0, state: vec![(parts, parts_len), (atomics.clone(), 64), (grids, off.g_len)], group, out, checkpoints: Vec::new(), used: 0, off, atomics: Some(atomics), cap, rw, rh }
+            Sim { kind, w, h, step: 0, state: vec![(parts, parts_len), (atomics.clone(), 64), (grids, off.g_len)], group, out, checkpoints: Vec::new(), approx_after: None, forked_at: None, used: 0, off, atomics: Some(atomics), cap, rw, rh }
         };
         self.queue.submit([enc.finish()]);
         Some(sim)
@@ -325,6 +331,81 @@ impl WaterGpu {
         self.on_disk(job, &lens, mem).unwrap_or(mem)
     }
 
+    /// The scene stepped `job`'s simulation on from step `from` through the
+    /// frames in between: all of them (`exact`), or fewer, spread over a long
+    /// jump (its state is approximate from `from` on, until filled in).
+    pub fn caught_up(&mut self, job: &FluidJob, from: usize, exact: bool) {
+        let Some(sim) = self.sims.get_mut(&job.key) else { return };
+        sim.approx_after = match (sim.approx_after, exact) {
+            // (an exact catch-up from before where it went approximate makes it exact)
+            (Some(a), true) if from <= a => None,
+            (a, true) => a,
+            (Some(a), false) => Some(a.min(from)),
+            (None, false) => Some(from),
+        };
+    }
+
+    /// For an approximate simulation: a copy of it under `shadow` from its
+    /// last exact checkpoint (or the start), to be stepped through the frames
+    /// from there and then [`Self::adopt`]ed. The step it starts from.
+    pub fn fork(&mut self, job: &FluidJob, shadow: u64) -> Option<usize> {
+        let real = self.sims.get(&job.key)?;
+        let a = real.approx_after?;
+        let mut copy = self.make(real.kind, real.w, real.h)?;
+        let from = real.checkpoints.iter().filter(|c| c.0 <= a).max_by_key(|c| c.0);
+        if let Some((step, bufs)) = from {
+            let mut enc = self.device.create_command_encoder(&Default::default());
+            for ((dst, len), src) in copy.state.iter().zip(bufs) {
+                enc.copy_buffer_to_buffer(src, 0, dst, 0, *len);
+            }
+            self.queue.submit([enc.finish()]);
+            copy.step = *step;
+        }
+        let at = copy.step;
+        copy.forked_at = Some(at);
+        copy.used = self.tick;
+        self.sims.insert(shadow, copy);
+        Some(at)
+    }
+
+    /// The copy under `shadow`, filled in, takes the place of `key`'s
+    /// simulation (with its exact checkpoints from before the copy began),
+    /// and its checkpoints go to disk.
+    pub fn adopt(&mut self, key: u64, shadow: u64) {
+        let Some(mut copy) = self.sims.remove(&shadow) else { return };
+        let from = copy.forked_at.take().unwrap_or(0);
+        if let Some(real) = self.sims.remove(&key) {
+            let mut kept: Vec<_> = real.checkpoints.into_iter().filter(|c| c.0 <= from).collect();
+            kept.append(&mut copy.checkpoints);
+            kept.sort_by_key(|c| c.0);
+            kept.dedup_by_key(|c| c.0);
+            while kept.len() > CHECKPOINTS {
+                kept.remove(1);
+            }
+            copy.checkpoints = kept;
+        }
+        copy.approx_after = None;
+        if let Some(store) = simstore::store() {
+            let lens: Vec<u64> = copy.state.iter().map(|b| b.1).collect();
+            for (at, bufs) in copy.checkpoints.iter().filter(|c| c.0 > from) {
+                let k = simstore::checkpoint_key(key, *at, &lens, shader(copy.kind));
+                if store.has(k) {
+                    continue;
+                }
+                let with_lens: Vec<(&wgpu::Buffer, u64)> = bufs.iter().zip(&lens).map(|(b, l)| (b, *l)).collect();
+                if let Some(parts) = simstore::read_back(&self.device, &self.queue, &with_lens) {
+                    store.save(k, simstore::pack(&parts));
+                }
+            }
+        }
+        self.sims.insert(key, copy);
+    }
+
+    /// Let go of a copy that won't be adopted.
+    pub fn discard(&mut self, shadow: u64) {
+        self.sims.remove(&shadow);
+    }
+
     /// The sizes of a fresh simulation's checkpointed buffers.
     fn state_lens(&self, kind: EffectKind, w: u32, h: u32) -> Option<Vec<u64>> {
         self.make(kind, w, h).map(|s| s.state.iter().map(|b| b.1).collect())
@@ -355,6 +436,10 @@ impl WaterGpu {
         let lens: Vec<u64> = sim.state.iter().map(|b| b.1).collect();
         let Some(bytes) = store.load(simstore::checkpoint_key(key, step, &lens, shader(sim.kind))) else { return false };
         let Some(parts) = simstore::unpack(&bytes, &lens) else { return false };
+        // (what's on disk is exact: the approximate tail in memory goes)
+        if let Some(a) = sim.approx_after.take() {
+            sim.checkpoints.retain(|c| c.0 <= a);
+        }
         let mut enc = self.device.create_command_encoder(&Default::default());
         let mut copies = Vec::with_capacity(parts.len());
         for ((buf, len), part) in sim.state.iter().zip(&parts) {
@@ -409,6 +494,13 @@ impl WaterGpu {
                     sim.step = *s;
                 }
                 None => self.reset(&mut sim),
+            }
+            // Back at or before where it stopped being exact: exact again, and
+            // the approximate checkpoints after go.
+            if sim.approx_after.is_some_and(|a| sim.step <= a) {
+                let at = sim.step;
+                sim.checkpoints.retain(|c| c.0 <= at);
+                sim.approx_after = None;
             }
         }
         // Further on from a checkpoint kept on disk?
@@ -474,6 +566,10 @@ impl WaterGpu {
             // New checkpoints go to disk too (read back, written in the background).
             if let Some(store) = &store {
                 for at in fresh_checkpoints {
+                    // (approximate ones are never kept as if they were the real thing)
+                    if sim.approx_after.is_some_and(|a| at > a) || sim.forked_at.is_some() {
+                        continue;
+                    }
                     let key = simstore::checkpoint_key(job.key, at, &lens, shader(kind));
                     if store.has(key) {
                         continue;
