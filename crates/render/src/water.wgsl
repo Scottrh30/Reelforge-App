@@ -416,8 +416,11 @@ fn fs_ocean(in: VsOut) -> @location(0) vec4<f32> {
                 let o = vec2(f32(k % 3) - 1.0, f32(k / 3) - 1.0) * 1.5;
                 churned += max(surf(in.uv + o * tg).w, 0.0) / 9.0;
             }
-            let trail = clamp(churned * smoothstep(0.3, 0.7, streak2 * 0.7 + clump * 0.5) * 1.6 * max(fx.p7.y, 0.0) / 100.0 * (1.0 - near * 0.5), 0.0, 1.0);
-            col = mix(col, vec3(0.9, 0.93, 0.95) * (light * 0.8 + 0.2), max(white, trail));
+            // (lacy: bright where the churned water's thick, open where it's thinning)
+            let lace = smoothstep(0.42, 0.78, streak2 * 0.6 + clump * 0.6 + churned * 0.3);
+            let trail = clamp(churned * lace * 1.8 * max(fx.p7.y, 0.0) / 100.0 * (1.0 - near * 0.5), 0.0, 1.0);
+            // (foam is white lit by the whole sky, not only the sun: never a dull grey)
+            col = mix(col, vec3(0.93, 0.95, 0.97) * (0.62 + 0.38 * light), max(white, trail));
         }
         // Haze towards the horizon.
         let haze = max(fx.p5.y, 0.0) / 100.0;

@@ -148,6 +148,14 @@ fn ocean_c2(sp: vec4<f32>) -> f32 {
     return clamp(c * c, 0.0, 0.3);
 }
 
+// How much the water an object leaves is drawn down, against what it's
+// pushed up ahead (see the ocean's wake in `drive`).
+const STERN_PULL: f32 = 0.0;
+// An ocean's height the objects leave settles back to the sea's own each
+// step (its waves still spread as they settle).
+const OCEAN_SETTLE: f32 = 0.996;
+// How much of a step's change in what's solid carries on to the next (see `solids`).
+const MOTION_KEEP: f32 = 0.6;
 // What's solid now, from the layer, and how that changed (for the wake).
 @compute @workgroup_size(8, 8)
 fn solids(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -161,8 +169,13 @@ fn solids(@builtin(global_invocation_id) id: vec3<u32>) {
         s = select(0.0, 1.0, solidity(textureSampleLevel(layer_tex, layer_samp, uv, 0.0), st.solids, st.tol) > 0.5);
     }
     let was = g[st.o_b.x + i];
-    // (nothing changes on the first step: the objects were there all along)
-    g[st.o_b.y + i] = select(s - was, 0.0, st.step < 0.5);
+    // How it's changing, smoothed over the next few steps: footage brings a
+    // new picture only every two or three steps (60 a second against 25 or
+    // 30 frames), and a push on just those steps leaves stripes along the
+    // wake. (The same push in all, spread out.) Nothing changes on the
+    // first step: the objects were there all along.
+    let change = select(s - was, 0.0, st.step < 0.5);
+    g[st.o_b.y + i] = select(g[st.o_b.y + i] * MOTION_KEEP + change * (1.0 - MOTION_KEEP), 0.0, st.step < 0.5);
     g[st.o_b.x + i] = s;
 }
 
@@ -206,7 +219,11 @@ fn drive(@builtin(global_invocation_id) id: vec3<u32>) {
             var push = 0.0;
             for (var dy = -3; dy <= 3; dy++) {
                 for (var dx = -3; dx <= 3; dx++) {
-                    push += g[st.o_b.y + ix(x + dx, y + dy)] * exp(-f32(dx * dx + dy * dy) / 4.5);
+                    let m = g[st.o_b.y + ix(x + dx, y + dy)];
+                    // (the water closes in behind faster than it's pushed
+                    // aside ahead: the stern draws less down than the bow
+                    // raises, so its track isn't one long trough)
+                    push += select(m, m * STERN_PULL, m < 0.0) * exp(-f32(dx * dx + dy * dy) / 4.5);
                 }
             }
             // (in metres: a fair fraction of the sea's main wave)
@@ -228,7 +245,15 @@ fn drive(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
             }
         }
-        var f = g[st.o_b.z + i] * 0.985 + clamp(moving, 0.0, 3.0) * 0.06 * min(st.wake, 2.0);
+        // (the foam spreads out from the track and breaks up as it fades, so
+        // the trail widens behind rather than staying a line)
+        var around = 0.0;
+        for (var k = 0; k < 4; k++) {
+            let o = array<vec2<i32>, 4>(vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1))[k];
+            around += g[st.o_b.z + ix(x + o.x, y + o.y)] * 0.25;
+        }
+        let here = mix(g[st.o_b.z + i], around, 0.12);
+        var f = here * 0.985 + clamp(moving, 0.0, 3.0) * 0.06 * min(st.wake, 2.0);
         if (near > 0.5) {
             f += clamp(abs(h) / max(st.drops[0].w, 0.3), 0.0, 2.0) * 0.02;
         }
@@ -322,7 +347,8 @@ fn wave(@builtin(global_invocation_id) id: vec3<u32>) {
     // (never a runaway value: one would spread over the whole grid)
     let ok = abs(v) < 1e4 && abs(hc + v) < 1e4;
     g[st.o_a.w + i] = select(0.0, v, ok);
-    g[st.o_a.z + i] = select(0.0, (hc + v) * select(1.0, sponge, edge < 10.0), ok);
+    let settle = select(1.0, OCEAN_SETTLE, ocean_mode());
+    g[st.o_a.z + i] = select(0.0, (hc + v) * select(1.0, sponge, edge < 10.0) * settle, ok);
 }
 
 // The next height and rate become the current ones.

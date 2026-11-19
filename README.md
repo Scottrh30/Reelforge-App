@@ -773,8 +773,11 @@ What works now:
       off** them spread back out, travelling slower into the distance as they would; **White
       water** churns where the sea meets an object's waterline, harder as the waves hit;
       **Spray** is thrown up there; and a moving object (a keyed boat) leaves a **Wake**: a V of
-      waves spreading behind it and a foam track along its waterline that fades over a few
-      seconds. Like the other simulations it's worked out from the layer's start and kept (see
+      waves spreading behind it, and a foam track along its waterline that spreads into lace
+      and fades over a few seconds, while the calmer water it leaves settles back to the sea.
+      The object's motion is spread over the water's steps (60 a second, against the
+      footage's 25 or 30 frames), so the wake is smooth along its track rather than striped.
+      Like the other simulations it's worked out from the layer's start and kept (see
       below); without solid objects the ocean is drawn afresh as before
     - **Water surface**: water seen from above, a real wave simulation on the graphics card
       (the wave equation on a height grid; 256, 384 or 512 cells across). **Rain** (drops a
