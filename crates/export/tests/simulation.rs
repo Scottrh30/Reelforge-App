@@ -1,7 +1,8 @@
-//! Water pushed about by a moving object comes out the same however the
-//! frame is reached: played up to it, or jumped straight to it (a scrub, a
+//! Water and smoke pushed about by a moving object come out the same however
+//! the frame is reached: played up to it, or jumped straight to it (a scrub, a
 //! seek, an export starting part way in).
 
+use reelforge_core::effects::fluid_params as fp;
 use reelforge_core::effects::water as ws;
 use reelforge_core::{Clip, ClipId, Effect, EffectKind, FrameRate, Layer, MediaAsset, MediaId, MediaInfo, Project, Rational, Sequence, Time, VideoStreamInfo};
 use reelforge_export::{FrameProvider, Picture, Scene};
@@ -37,7 +38,28 @@ impl FrameProvider for Crossing {
     }
 }
 
-fn project() -> Project {
+/// The wake: still water but for what the object stirs up (what's solid is
+/// what isn't clear).
+fn wake() -> Effect {
+    let mut e = Effect::new(EffectKind::WaterSurface);
+    for (i, v) in [(ws::RAIN, 0.0), (ws::WAVE_HEIGHT, 0.0), (ws::WIND, 0.0), (ws::SOLIDS, 1.0), (ws::WAKE, 100.0)] {
+        e.params[i].value = v;
+    }
+    e
+}
+
+/// Smoke rising from the bottom middle into the object's path, flowing round
+/// it (`obstacles`) or not; no swirl or colour change, so only the object
+/// stirs it.
+fn smoke(obstacles: bool) -> Effect {
+    let mut e = Effect::new(EffectKind::Fluid);
+    for (i, v) in [(fp::SIZE, 14.0), (fp::FORCE, 120.0), (fp::AMOUNT, 200.0), (fp::SWIRL, 0.0), (fp::FADE, 0.0), (fp::CYCLE, 0.0), (fp::OBSTACLES, if obstacles { 1.0 } else { 0.0 })] {
+        e.params[i].value = v;
+    }
+    e
+}
+
+fn project(e: Effect) -> Project {
     let mut p = Project::new();
     let info = MediaInfo {
         duration: Time::from_secs_f64(10.0),
@@ -48,11 +70,6 @@ fn project() -> Project {
     p.media.push(MediaAsset { id: MediaId(1), path: "/nowhere/boat.mov".into(), name: "boat.mov".into(), info, conform: None });
     let mut seq = Sequence::new("Wake", W, H, FrameRate::new(25, 1));
     let mut clip = Clip::new(ClipId(1), MediaId(1), Time::ZERO, Time::ZERO, Time::from_secs_f64(10.0), None);
-    let mut e = Effect::new(EffectKind::WaterSurface);
-    // Still water but for the wake: what's solid is what isn't clear.
-    for (i, v) in [(ws::RAIN, 0.0), (ws::WAVE_HEIGHT, 0.0), (ws::WIND, 0.0), (ws::SOLIDS, 1.0), (ws::WAKE, 100.0)] {
-        e.params[i].value = v;
-    }
     clip.effects.push(e);
     seq.tracks[0].clips.push(clip);
     p.sequences = vec![seq];
@@ -68,27 +85,72 @@ fn differ(a: &[u8], b: &[u8]) -> usize {
     a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > 3)).count()
 }
 
+/// The pictures `p` gives at `end` s: played (every frame up to it), jumped
+/// to (a fresh simulation), and what a jump used to give (every step seeing
+/// the frame jumped to, as if the object had been there all along).
+fn played_jumped_stale(device: &reelforge_render::wgpu::Device, queue: &reelforge_render::wgpu::Queue, p: &Project, end: f64) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let (mut scene, mut c) = (Scene::new(device, queue), Compositor::new(device, queue));
+    let mut frames = Crossing { frozen: None };
+    let mut played = Vec::new();
+    for k in 0..=(end * 25.0).round() as usize {
+        played = picture(&mut scene, &mut c, p, k as f64 / 25.0, &mut frames);
+    }
+    let (mut scene, mut c) = (Scene::new(device, queue), Compositor::new(device, queue));
+    let jumped = picture(&mut scene, &mut c, p, end, &mut frames);
+    let (mut scene, mut c) = (Scene::new(device, queue), Compositor::new(device, queue));
+    let stale = picture(&mut scene, &mut c, p, end, &mut Crossing { frozen: Some(Time::from_secs_f64(end)) });
+    (played, jumped, stale)
+}
+
 #[test]
 fn water_pushed_by_a_moving_object_is_the_same_played_or_jumped_to() {
     let Some((device, queue)) = headless_device() else { return };
-    let p = project();
-    let end = 1.2;
-    // Played: every frame up to 1.2 s.
-    let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
-    let mut frames = Crossing { frozen: None };
-    let mut played = Vec::new();
-    for k in 0..=30 {
-        played = picture(&mut scene, &mut c, &p, k as f64 / 25.0, &mut frames);
-    }
-    // Jumped straight to 1.2 s with a fresh simulation.
-    let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
-    let jumped = picture(&mut scene, &mut c, &p, end, &mut frames);
-    // What a jump used to give: every step seeing the frame jumped to.
-    let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
-    let stale = picture(&mut scene, &mut c, &p, end, &mut Crossing { frozen: Some(Time::from_secs_f64(end)) });
+    let p = project(wake());
+    let (played, jumped, stale) = played_jumped_stale(&device, &queue, &p, 1.2);
     let pixels = (W * H) as usize;
     let teleported = differ(&played, &stale);
     assert!(teleported > pixels / 50, "the object's path shows in the water ({teleported} of {pixels} pixels differ when it hasn't moved)");
     let off = differ(&played, &jumped);
     assert!(off <= pixels / 500, "jumped to, the water is as played ({off} of {pixels} pixels differ; {teleported} if it teleports)");
 }
+
+/// How much smoke (blue, not the white object) there is, and how far across it
+/// is on average, in the band the object crosses.
+fn smoke_in_path(img: &[u8]) -> (usize, f64) {
+    let (mut n, mut sx) = (0usize, 0.0);
+    for y in 20..70 {
+        for x in 0..W as usize {
+            let q = &img[(y * W as usize + x) * 4..][..4];
+            if q[2] > 60 && q[0] < 200 {
+                n += 1;
+                sx += x as f64;
+            }
+        }
+    }
+    (n, if n == 0 { 0.0 } else { sx / n as f64 })
+}
+
+#[test]
+fn smoke_flows_round_a_moving_object_and_is_pushed_by_it() {
+    let Some((device, queue)) = headless_device() else { return };
+    let end = 1.0;
+    let (played, jumped, stale) = played_jumped_stale(&device, &queue, &project(smoke(true)), end);
+    let pixels = (W * H) as usize;
+    // (The smoke used to be worked out afresh round each frame's shape: this.)
+    let teleported = differ(&played, &stale);
+    assert!(teleported > pixels / 50, "the object's path shows in the smoke ({teleported} of {pixels} pixels differ when it hasn't moved)");
+    let off = differ(&played, &jumped);
+    assert!(off <= pixels / 200, "jumped to, the smoke is as played ({off} of {pixels} pixels differ; {teleported} if it teleports)");
+    // Nothing inside the object where it is now.
+    let x0 = (10.0 + end * 100.0) as usize;
+    let inside = (34..56).flat_map(|y| (x0 + 3..x0 + 17).map(move |x| (x, y))).filter(|&(x, y)| { let q = &played[(y * W as usize + x) * 4..][..4]; q[2] > 60 && q[0] < 200 }).count();
+    assert_eq!(inside, 0, "no smoke inside the object");
+    // Pushed: the object sweeping right carries smoke with it, further right
+    // than the same smoke without obstacles.
+    let (still, _, _) = played_jumped_stale(&device, &queue, &project(smoke(false)), end);
+    let (n_moved, x_moved) = smoke_in_path(&played);
+    let (n_still, x_still) = smoke_in_path(&still);
+    assert!(n_moved > 100 && n_still > 100, "smoke in the object's path: {n_moved}, {n_still}");
+    assert!(x_moved > x_still + 3.0, "pushed right: on average {x_moved:.1} px across, {x_still:.1} without the object");
+}
+

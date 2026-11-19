@@ -742,7 +742,13 @@ What works now:
       on a grid 160, 320 or 512 cells across (**Detail**). It's worked out from the clip's start
       and kept as it plays (a step a frame), with a checkpoint every second, so seeking back
       starts from the nearest one. **Flow round the layer's shape**: put it on a title or a
-      keyed layer and the fluid flows round the letters or the subject instead of through them
+      keyed layer and the fluid flows round the letters or the subject instead of through them.
+      The shape is read at every step, so a keyed subject can move: it pushes the smoke out of
+      its way and draws it along behind, and smoke it passes over is carried with it and comes
+      out round its edges instead of vanishing (its motion is how far the shape's middle moves
+      a step, so it suits one moving object; a sudden jump, such as a cut, counts as none).
+      Jump ahead and the smoke is still what playing up to there would give, as for the water
+      below (the frames in between are stepped through first)
   - **Water** (**Timeline → Water** adds them ready-made: an ocean, a stormy sea at sunset, rain
     on water, ripples from drops, waves rolling in, pouring water, a waterfall, filling with
     water, and water round or poured onto the selected layer). Three effects, every setting

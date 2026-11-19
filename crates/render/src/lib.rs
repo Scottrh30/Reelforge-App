@@ -1243,10 +1243,15 @@ impl Compositor {
     }
 
     /// Composite `items` (bottom first) into a `frame_size` frame and submit the GPU work.
-    /// For a water surface or liquid: the step its simulation would start from
-    /// to reach `job`'s (so a caller can feed it the frames in between first).
+    /// For a water surface, liquid or fluid: the step its simulation would
+    /// start from to reach `job`'s (so a caller can feed it the frames in
+    /// between first).
     pub fn simulation_resume(&self, job: &reelforge_core::fluid::FluidJob) -> Option<usize> {
-        matches!(job.effect.kind, EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid).then(|| self.water.resume_step(job))
+        match job.effect.kind {
+            EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => Some(self.water.resume_step(job)),
+            EffectKind::Fluid => Some(self.fluid.resume_step(job)),
+            _ => None,
+        }
     }
 
     pub fn render_items(&mut self, frame_size: [u32; 2], items: &[DrawItem]) {
@@ -1388,7 +1393,7 @@ impl Compositor {
                     let layer = self.layers.get(&l.key).filter(|t| !t.float).map(|t| (t.texture.create_view(&Default::default()), t.content_id));
                     let tex = match e.kind {
                         EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(job, layer.as_ref().map(|(v, _)| v)),
-                        _ => self.fluid.step_to(job, layer.as_ref().map(|(v, id)| (v, *id))),
+                        _ => self.fluid.step_to(job, layer.as_ref().map(|(v, _)| v)),
                     };
                     if let Some(tex) = tex {
                         let view = tex.create_view(&Default::default());

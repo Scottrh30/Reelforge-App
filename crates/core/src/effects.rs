@@ -1486,7 +1486,8 @@ pub mod fluid_params {
     pub const DETAIL: usize = 12;
     pub const OPACITY: usize = 13;
     pub const SEED: usize = 14;
-    /// Flow round the layer's own shape (a title's letters).
+    /// Flow round the layer's own shape (a title's letters, or a keyed subject:
+    /// read at every step, so it can move and push the fluid about).
     pub const OBSTACLES: usize = 15;
     pub const DETAILS: [&str; 3] = ["Low (fast)", "Medium", "High"];
 }
@@ -2435,7 +2436,7 @@ impl EffectKind {
             EffectKind::FaceBeauty => "Finds the faces in the clip and follows them (Find faces), then smooths their skin while keeping its detail, evens out its tone and brightens it a touch; or blurs or pixelates them to hide who they are. Can smooth all the skin in the picture instead.",
             EffectKind::SkyReplace => "A new sky behind the footage: the sky in every frame is found by the object model (Find the sky), its edge softened round trees and buildings, the new sky (a picture, or a gradient) moved with the camera, and the footage's light matched to it.",
             EffectKind::Paint => "Paint in the Viewer: clone the picture from somewhere else (Alt-click where to copy from), brush on a colour, or erase strokes. Each stroke lasts a frame, from there on, or the whole clip.",
-            EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising: a fluid simulation, worked out from the clip's start.",
+            EffectKind::Fluid => "Coloured smoke or ink poured from a source into still air, swirling and rising, flowing round the layer's own shape if you like (pushed about by it as it moves): a fluid simulation, worked out from the clip's start.",
             EffectKind::Ocean => "An open sea out to the horizon: waves raised by the wind and a swell, choppy crests with foam, the sky and the sun on the water, seen from a camera you place. Full scene, the water alone (transparent sky), or the water under the layer. With Solid objects keyed from the layer (rocks, a pier, a boat on a green screen), they sit in the sea: waves bounce off them, white water where the sea meets them, spray where the waves hit, and a wake and foam behind them as they move.",
             EffectKind::WaterSurface => "A water surface from above: ripples from rain and drops, waves rolling in, bouncing off solid objects (the layer's shape or a green screen) and pushed by them as they move, with caustics on the floor. A wave simulation, worked out from the clip's start.",
             EffectKind::Liquid => "Water poured from a source, flowing, filling and splashing off solid objects (the layer's shape, or what's in front of a green or blue screen) and the frame's floor and walls. A liquid simulation, worked out from the clip's start; the water alone comes out with transparency.",

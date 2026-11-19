@@ -201,7 +201,7 @@ impl Scene {
         Ok(sig)
     }
 
-    /// Water that a layer's own picture pushes about (a keyed boat, say) reads
+    /// Water or smoke that a layer's own picture pushes about (a keyed boat, say) reads
     /// it at every step. Played straight through, each frame's steps see that
     /// frame. After a jump (a scrub, a seek, starting an export part way in),
     /// the steps since where the simulation can start from would all see the

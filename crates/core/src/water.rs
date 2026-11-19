@@ -43,9 +43,13 @@ pub const MAX_DROPS: usize = 8;
 /// Particles a cell holds when full.
 pub const PER_CELL: usize = 4;
 
-/// Steps a second for a simulated water effect.
+/// Steps a second for a simulated water (or fluid) effect.
 pub fn rate(kind: EffectKind) -> f64 {
-    if kind == EffectKind::Liquid { LIQUID_RATE } else { SURFACE_RATE }
+    match kind {
+        EffectKind::Liquid => LIQUID_RATE,
+        EffectKind::Fluid => crate::fluid::RATE,
+        _ => SURFACE_RATE,
+    }
 }
 
 fn detail(e: &Effect, i: usize) -> usize {
