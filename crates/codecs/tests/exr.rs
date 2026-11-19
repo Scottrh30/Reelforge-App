@@ -63,3 +63,35 @@ fn decodes_like_the_reference_library() {
     }
     assert!(checked >= 18, "{checked} files");
 }
+
+/// Every reference file cut short or with bytes changed: an error or a
+/// picture, never a crash (the reader takes no size or position on trust).
+#[test]
+fn damaged_files_never_crash() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/exr");
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "exr") {
+            continue;
+        }
+        let file = std::fs::read(&path).unwrap();
+        for k in 1..24 {
+            let _ = exr::decode(&file[..file.len() * k / 24]);
+        }
+        for _ in 0..48 {
+            let mut f = file.clone();
+            for _ in 0..1 + next() % 4 {
+                let i = (next() % f.len() as u64) as usize;
+                f[i] = next() as u8;
+            }
+            let _ = exr::decode(&f);
+        }
+    }
+}

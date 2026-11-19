@@ -2,12 +2,16 @@
 //! bytes for a block of one value); other channels are stored as they are.
 //! Written from the OpenEXR reference implementation (BSD-3-Clause).
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use super::{fail, ChannelLayout, PixelType};
 use crate::Result;
 
 /// A 14-byte block: a starting value and 6-bit differences, scaled by a shift.
-fn unpack14(b: &[u8], s: &mut [u16; 16]) {
-    let b: [u32; 14] = std::array::from_fn(|i| b[i] as u32);
+fn unpack14(b: &[u8; 14], s: &mut [u16; 16]) {
+    let b: [u32; 14] = b.map(u32::from);
     let shift = b[2] >> 2;
     let bias = 0x20u32 << shift;
     let w = |v: u32| v as u16;
@@ -34,8 +38,8 @@ fn unpack14(b: &[u8], s: &mut [u16; 16]) {
 }
 
 /// A 3-byte block: one value for all 16.
-fn unpack3(b: &[u8], s: &mut [u16; 16]) {
-    let mut v = ((b[0] as u16) << 8) | b[1] as u16;
+fn unpack3(b: &[u8; 3], s: &mut [u16; 16]) {
+    let mut v = u16::from_be_bytes([b[0], b[1]]);
     v = if v & 0x8000 != 0 { v & 0x7fff } else { !v };
     *s = [v; 16];
 }
@@ -51,10 +55,8 @@ pub fn decompress(data: &[u8], layout: &ChannelLayout, out: &mut [u8]) -> Result
         let (nx, ny) = (c.nx, c.ny);
         if c.ty != PixelType::Half {
             let n = nx * ny * c.units * 2;
-            if data.len() < at + n {
-                return fail("B44 data cut short");
-            }
-            planes.push(data[at..at + n].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect());
+            let Some(raw) = at.checked_add(n).and_then(|end| data.get(at..end)) else { return fail("B44 data cut short") };
+            planes.push(raw.chunks_exact(2).map(|b| u16::from_le_bytes([b.first().copied().unwrap_or(0), b.get(1).copied().unwrap_or(0)])).collect());
             at += n;
             continue;
         }
@@ -62,22 +64,23 @@ pub fn decompress(data: &[u8], layout: &ChannelLayout, out: &mut [u8]) -> Result
         let mut s = [0u16; 16];
         for y in (0..ny).step_by(4) {
             for x in (0..nx).step_by(4) {
-                if data.len() < at + 3 {
-                    return fail("B44 data cut short");
-                }
-                if data[at + 2] >= 13 << 2 {
-                    unpack3(&data[at..], &mut s);
+                let block = |len: usize| at.checked_add(len).and_then(|end| data.get(at..end));
+                let Some(&[_, _, kind]) = block(3) else { return fail("B44 data cut short") };
+                if kind >= 13 << 2 {
+                    let Some(Ok(b)) = block(3).map(<&[u8; 3]>::try_from) else { return fail("B44 data cut short") };
+                    unpack3(b, &mut s);
                     at += 3;
                 } else {
-                    if data.len() < at + 14 {
-                        return fail("B44 data cut short");
-                    }
-                    unpack14(&data[at..], &mut s);
+                    let Some(Ok(b)) = block(14).map(<&[u8; 14]>::try_from) else { return fail("B44 data cut short") };
+                    unpack14(b, &mut s);
                     at += 14;
                 }
                 let n = (nx - x).min(4);
-                for r in 0..4.min(ny - y) {
-                    p[(y + r) * nx + x..(y + r) * nx + x + n].copy_from_slice(&s[r * 4..r * 4 + n]);
+                for (r, src) in s.chunks_exact(4).take(ny - y).enumerate() {
+                    let row = (y + r) * nx + x;
+                    if let (Some(d), Some(v)) = (p.get_mut(row..row + n), src.get(..n)) {
+                        d.copy_from_slice(v);
+                    }
                 }
             }
         }
@@ -92,11 +95,14 @@ pub fn decompress(data: &[u8], layout: &ChannelLayout, out: &mut [u8]) -> Result
                 continue;
             }
             let n = c.nx * c.units;
-            for v in &planes[ci][rows[ci] * n..rows[ci] * n + n] {
-                out[o..o + 2].copy_from_slice(&v.to_le_bytes());
+            let (Some(plane), Some(row)) = (planes.get(ci), rows.get_mut(ci)) else { return fail("B44 channel list") };
+            let Some(vals) = plane.get(*row * n..*row * n + n) else { return fail("B44 block size mismatch") };
+            for v in vals {
+                let Some(d) = out.get_mut(o..o + 2) else { return fail("B44 block size mismatch") };
+                d.copy_from_slice(&v.to_le_bytes());
                 o += 2;
             }
-            rows[ci] += 1;
+            *row += 1;
         }
     }
     if o != out.len() {

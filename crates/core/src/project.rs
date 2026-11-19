@@ -1049,7 +1049,7 @@ impl Project {
     /// Every transition in sequence `seq`: crossfades on audio tracks and
     /// cross-dissolves on video tracks.
     pub fn transitions(&self, seq: usize) -> Vec<Crossfade> {
-        let s = &self.sequences[seq];
+        let Some(s) = self.sequences.get(seq) else { return Vec::new() };
         let mut out = Vec::new();
         for (ti, tr) in s.tracks.iter().enumerate() {
             for pair in tr.clips.windows(2) {

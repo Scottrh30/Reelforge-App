@@ -13,6 +13,10 @@
 //! `time,value,interpolation,…;` in the clip's source time; interpolation
 //! 0 is linear, 4 hold and 5 Bézier.
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 // (clippy takes the closures that are called once and then handed on for
 // the keyframes, `f(&p.value)` then `curve(.., f, ..)`, for ones called only once)
 #![allow(clippy::redundant_closure_call)]
@@ -392,13 +396,18 @@ impl<'a, 'i> Reader<'a, 'i> {
             let Some(mk) = self.follow(e, "Second") else { continue };
             let Some(json) = text(mk, "DVAMarker") else { continue };
             let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { continue };
-            let d = &v["DVAMarker"];
-            let Some(t) = d["mStartTime"]["ticks"].as_i64().or_else(|| d["mStartTime"]["ticks"].as_str().and_then(|s| s.parse().ok())) else { continue };
-            let mut name = d["mName"].as_str().unwrap_or("").to_string();
-            if let Some(c) = d["mComment"].as_str().filter(|c| !c.is_empty()) {
+            let d = |path: &str| v.pointer(&format!("/DVAMarker{path}"));
+            let ticks_at = d("/mStartTime/ticks");
+            let Some(t) = ticks_at.and_then(|t| t.as_i64().or_else(|| t.as_str().and_then(|s| s.parse().ok()))) else { continue };
+            let mut name = d("/mName").and_then(|n| n.as_str()).unwrap_or("").to_string();
+            if let Some(c) = d("/mComment").and_then(|c| c.as_str()).filter(|c| !c.is_empty()) {
                 name = if name.is_empty() { c.to_string() } else { format!("{name}: {c}") };
             }
-            let color = d["mCuePointList"].as_array().and_then(|l| l.iter().find_map(|c| c["mValue"].as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()).and_then(|v| v["color"].as_u64()))).map(marker_color).unwrap_or_default();
+            let color = d("/mCuePointList")
+                .and_then(|l| l.as_array())
+                .and_then(|l| l.iter().find_map(|c| c.get("mValue").and_then(|m| m.as_str()).and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()).and_then(|v| v.get("color").and_then(|c| c.as_u64()))))
+                .map(marker_color)
+                .unwrap_or_default();
             seq.markers.push(Marker { at: ticks(t).max(Time::ZERO), name, color });
         }
         seq.markers.sort_by_key(|m| m.at);
@@ -793,7 +802,7 @@ fn marker_color(n: u64) -> MarkerColor {
         .into_iter()
         .min_by_key(|c| {
             let q = c.rgb();
-            (0..3).map(|i| (rgb[i] - q[i] as i32).pow(2)).sum::<i32>()
+            rgb.iter().zip(q).map(|(a, b)| (a - b as i32).pow(2)).sum::<i32>()
         })
         .unwrap_or_default()
 }
@@ -893,7 +902,8 @@ fn strings_in(b: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + 4 < b.len() {
-        let n = u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) as usize;
+        let Some(Ok(len)) = b.get(i..i + 4).map(<[u8; 4]>::try_from) else { break };
+        let n = u32::from_le_bytes(len) as usize;
         if n > 0 && n < 100_000 {
             if let (Some(s), Some(0)) = (b.get(i + 4..i + 4 + n), b.get(i + 4 + n)) {
                 if let Ok(t) = std::str::from_utf8(s) {

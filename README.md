@@ -2128,6 +2128,14 @@ forever), a lock another thread failed while holding is still used, and a model 
 doesn't match the code is caught and reported rather than taking the app down. The few kept
 (the built-in font and face-detector data, compiled into the program) say why next to them.
 
+**No position taken on trust in file readers:** the code that reads files itself (the
+OpenEXR reader and its PIZ, B44 and PXR24 decompression, the Premiere and After Effects
+importers, `.cube` LUTs, `.hdr` environment maps, `.chan` camera files, EDL/XML/OTIO
+interchange, and the OBJ, PLY, FBX, glTF and USD model loaders) may not look anything up by a
+position it hasn't checked: the lint check refuses it there. A size, offset or index in a
+damaged or hostile file is an error message, never a crash; tests feed each one files cut short
+and with bytes changed.
+
 **Fuzz-tested:** every native decoder has a libFuzzer target in `fuzz/` that feeds it
 mutated streams (made from real ones encoded by FFmpeg) the way the app does, and flags any
 crash, hang or runaway memory use. So do the file readers: media files (MP4, MOV, MXF, WebM,

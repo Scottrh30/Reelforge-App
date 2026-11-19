@@ -9,6 +9,10 @@
 //! Normals the file doesn't give are worked out from the faces: shared where
 //! faces meet at less than 40°, so curved surfaces are smooth and edges sharp.
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use std::path::Path;
 
 /// A model as triangles.
@@ -139,13 +143,14 @@ pub fn pack_atlas(pics: &[Picture]) -> Option<Atlas> {
             })
             .collect();
         let mut order: Vec<usize> = (0..pics.len()).collect();
-        order.sort_by_key(|&i| std::cmp::Reverse(sizes[i].1));
+        order.sort_by_key(|&i| std::cmp::Reverse(sizes.get(i).map_or(0, |s| s.1)));
         let width = ATLAS_MAX.min(sizes.iter().map(|s| s.0 + 2).sum::<u32>().max(sizes.iter().map(|s| s.0 + 2).max().unwrap_or(1)));
         let (mut x, mut y, mut shelf) = (0u32, 0u32, 0u32);
         let mut at = vec![(0u32, 0u32); pics.len()];
         let mut fits = true;
         for &i in &order {
-            let (w, h) = (sizes[i].0 + 2, sizes[i].1 + 2);
+            let Some(&(sw, sh)) = sizes.get(i) else { continue };
+            let (w, h) = (sw + 2, sh + 2);
             if w > width {
                 fits = false;
                 break;
@@ -153,7 +158,9 @@ pub fn pack_atlas(pics: &[Picture]) -> Option<Atlas> {
             if x + w > width {
                 (x, y, shelf) = (0, y + shelf, 0);
             }
-            at[i] = (x, y);
+            if let Some(a) = at.get_mut(i) {
+                *a = (x, y);
+            }
             x += w;
             shelf = shelf.max(h);
         }
@@ -167,18 +174,17 @@ pub fn pack_atlas(pics: &[Picture]) -> Option<Atlas> {
         }
         let mut rgba = vec![0u8; (width * height * 4) as usize];
         let mut rects = Vec::with_capacity(pics.len());
-        for (i, p) in pics.iter().enumerate() {
-            let (w, h) = sizes[i];
-            let (ox, oy) = (at[i].0 + 1, at[i].1 + 1);
+        for ((p, &(w, h)), &(ax, ay)) in pics.iter().zip(&sizes).zip(&at) {
+            let (ox, oy) = (ax + 1, ay + 1);
             // Nearest-pixel shrink (box-filtered would be kinder; textures rarely need much).
             for yy in 0..h + 2 {
                 for xx in 0..w + 2 {
                     let sx = ((xx.saturating_sub(1).min(w - 1) as f32 + 0.5) / w as f32 * p.width as f32) as u32;
                     let sy = ((yy.saturating_sub(1).min(h - 1) as f32 + 0.5) / h as f32 * p.height as f32) as u32;
                     let si = ((sy.min(p.height - 1) * p.width + sx.min(p.width - 1)) * 4) as usize;
-                    let di = (((at[i].1 + yy) * width + at[i].0 + xx) * 4) as usize;
-                    if si + 4 <= p.rgba.len() {
-                        rgba[di..di + 4].copy_from_slice(&p.rgba[si..si + 4]);
+                    let di = (((ay + yy) * width + ax + xx) * 4) as usize;
+                    if let (Some(d), Some(src)) = (rgba.get_mut(di..di + 4), p.rgba.get(si..si + 4)) {
+                        d.copy_from_slice(src);
                     }
                 }
             }
@@ -219,32 +225,36 @@ fn unit(a: [f32; 3]) -> [f32; 3] {
 /// (area-weighted) normals of the faces round its point that are within the
 /// crease angle of its own face.
 fn with_normals(m: Model) -> Model {
-    let tris = m.indices.len() / 3;
-    let face: Vec<[f32; 3]> = (0..tris)
+    // (`load` has made sure every index is a point; one that isn't counts as the origin)
+    let at = |i: u32| m.positions.get(i as usize).copied().unwrap_or([0.0; 3]);
+    let face: Vec<[f32; 3]> = m
+        .indices
+        .chunks_exact(3)
         .map(|t| {
-            let [a, b, c] = [0, 1, 2].map(|k| m.positions[m.indices[t * 3 + k] as usize]);
+            let [a, b, c] = [0, 1, 2].map(|k| at(t.get(k).copied().unwrap_or(0)));
             cross(sub(b, a), sub(c, a))
         })
         .collect();
     // Faces round each point.
     let mut around: Vec<Vec<u32>> = vec![Vec::new(); m.positions.len()];
     for (k, &i) in m.indices.iter().enumerate() {
-        around[i as usize].push((k / 3) as u32);
+        if let Some(list) = around.get_mut(i as usize) {
+            list.push((k / 3) as u32);
+        }
     }
     let cos = CREASE_DEG.to_radians().cos();
     let mut out = Model { z_up: m.z_up, ..Default::default() };
     for (k, &i) in m.indices.iter().enumerate() {
-        let own = unit(face[k / 3]);
+        let own = unit(face.get(k / 3).copied().unwrap_or([0.0; 3]));
         let mut n = [0.0f32; 3];
-        for &t in &around[i as usize] {
-            let f = face[t as usize];
-            if dot(unit(f), own) >= cos {
+        for f in around.get(i as usize).into_iter().flatten().filter_map(|&t| face.get(t as usize)) {
+            if dot(unit(*f), own) >= cos {
                 n = [n[0] + f[0], n[1] + f[1], n[2] + f[2]];
             }
         }
-        out.positions.push(m.positions[i as usize]);
+        out.positions.push(at(i));
         out.normals.push(unit(if dot(n, n) > 0.0 { n } else { own }));
-        out.colors.push(m.colors[i as usize]);
+        out.colors.push(m.colors.get(i as usize).copied().unwrap_or(DEFAULT_COLOR));
         out.extra.push(m.extra.get(i as usize).copied().unwrap_or(VExtra::NONE));
         out.indices.push(k as u32);
     }
@@ -258,6 +268,9 @@ type M4 = [[f32; 4]; 4];
 const I4: M4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
 
 /// `a` after `b` (column-major: a · b).
+// (Fixed-size 4×4 / 3×3 arrays at positions below 4 from the loops here:
+// none comes from a file.)
+#[allow(clippy::indexing_slicing)]
 fn mul(a: &M4, b: &M4) -> M4 {
     let mut r = [[0.0; 4]; 4];
     for c in 0..4 {
@@ -267,10 +280,16 @@ fn mul(a: &M4, b: &M4) -> M4 {
     }
     r
 }
+// (Fixed-size 4×4 / 3×3 arrays at positions below 4 from the loops here:
+// none comes from a file.)
+#[allow(clippy::indexing_slicing)]
 fn apply(m: &M4, p: [f32; 3]) -> [f32; 3] {
     [0, 1, 2].map(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2] + m[3][r])
 }
 /// Normals under `m`: the inverse transpose of its 3×3 part (for non-uniform scales).
+// (Fixed-size 4×4 / 3×3 arrays at positions below 4 from the loops here:
+// none comes from a file.)
+#[allow(clippy::indexing_slicing)]
 fn normal_matrix(m: &M4) -> [[f32; 3]; 3] {
     let a = |r: usize, c: usize| m[c][r];
     let det = a(0, 0) * (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1)) - a(0, 1) * (a(1, 0) * a(2, 2) - a(1, 2) * a(2, 0)) + a(0, 2) * (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0));
@@ -282,6 +301,9 @@ fn normal_matrix(m: &M4) -> [[f32; 3]; 3] {
         [(a(0, 1) * a(1, 2) - a(0, 2) * a(1, 1)) * d, -(a(0, 0) * a(1, 2) - a(0, 2) * a(1, 0)) * d, (a(0, 0) * a(1, 1) - a(0, 1) * a(1, 0)) * d],
     ]
 }
+// (Fixed-size 4×4 / 3×3 arrays at positions below 4 from the loops here:
+// none comes from a file.)
+#[allow(clippy::indexing_slicing)]
 fn apply_normal(n: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
     unit([0, 1, 2].map(|r| n[r][0] * v[0] + n[r][1] * v[1] + n[r][2] * v[2]))
 }
@@ -297,11 +319,20 @@ fn scale(s: [f32; 3]) -> M4 {
 fn rot(axis: usize, deg: f32) -> M4 {
     let (s, c) = deg.to_radians().sin_cos();
     let mut m = I4;
-    let (i, j) = [(1, 2), (2, 0), (0, 1)][axis];
-    m[i][i] = c;
-    m[j][j] = c;
-    m[i][j] = s;
-    m[j][i] = -s;
+    // (another axis: no turn)
+    let Some(&(i, j)) = [(1usize, 2usize), (2, 0), (0, 1)].get(axis) else { return m };
+    if let Some(v) = m.get_mut(i).and_then(|col| col.get_mut(i)) {
+        *v = c;
+    }
+    if let Some(v) = m.get_mut(j).and_then(|col| col.get_mut(j)) {
+        *v = c;
+    }
+    if let Some(v) = m.get_mut(i).and_then(|col| col.get_mut(j)) {
+        *v = s;
+    }
+    if let Some(v) = m.get_mut(j).and_then(|col| col.get_mut(i)) {
+        *v = -s;
+    }
     m
 }
 fn quat(q: [f32; 4]) -> M4 {
@@ -330,10 +361,15 @@ fn add_mesh(out: &mut Model, m: &M4, positions: &[[f32; 3]], normals: Option<&[[
     // A mirroring transform turns faces inside out: keep them facing out.
     let det = dot(cross([m[0][0], m[0][1], m[0][2]], [m[1][0], m[1][1], m[1][2]]), [m[2][0], m[2][1], m[2][2]]);
     for t in indices.chunks_exact(3) {
+        let &[a, b, c] = t else { continue };
+        // (a corner past the mesh's points: the whole triangle is left out)
+        if [a, b, c].iter().any(|&i| i as usize >= positions.len()) {
+            continue;
+        }
         if det < 0.0 {
-            out.indices.extend([base + t[0], base + t[2], base + t[1]]);
+            out.indices.extend([base + a, base + c, base + b]);
         } else {
-            out.indices.extend(t.iter().map(|i| base + i));
+            out.indices.extend([base + a, base + b, base + c]);
         }
     }
 }
@@ -341,14 +377,16 @@ fn add_mesh(out: &mut Model, m: &M4, positions: &[[f32; 3]], normals: Option<&[[
 /// Fan-triangulate polygons given as vertex counts and indices.
 fn fans(counts: impl Iterator<Item = usize>, idx: &[u32]) -> (Vec<u32>, Vec<usize>) {
     let (mut out, mut face_of) = (Vec::new(), Vec::new());
-    let mut at = 0;
+    let mut at = 0usize;
     for (f, n) in counts.enumerate() {
-        if at + n > idx.len() {
-            break;
-        }
-        for k in 1..n.saturating_sub(1) {
-            out.extend([idx[at], idx[at + k], idx[at + k + 1]]);
-            face_of.push(f);
+        let Some(poly) = at.checked_add(n).and_then(|end| idx.get(at..end)) else { break };
+        if let Some((&first, rest)) = poly.split_first() {
+            for pair in rest.windows(2) {
+                if let &[b, c] = pair {
+                    out.extend([first, b, c]);
+                    face_of.push(f);
+                }
+            }
         }
         at += n;
     }
@@ -374,8 +412,9 @@ fn load_obj(path: &Path) -> Result<Model, String> {
     for m in &models {
         let mesh = &m.mesh;
         let n = mesh.positions.len() / 3;
-        let pos: Vec<[f32; 3]> = (0..n).map(|i| [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]]).collect();
-        let normals: Option<Vec<[f32; 3]>> = (mesh.normals.len() == n * 3).then(|| (0..n).map(|i| [mesh.normals[i * 3], mesh.normals[i * 3 + 1], mesh.normals[i * 3 + 2]]).collect());
+        let triples = |v: &[f32]| -> Vec<[f32; 3]> { v.chunks_exact(3).map(|c| [c.first(), c.get(1), c.get(2)].map(|x| x.copied().unwrap_or(0.0))).collect() };
+        let pos = triples(&mesh.positions);
+        let normals: Option<Vec<[f32; 3]>> = (mesh.normals.len() == n * 3).then(|| triples(&mesh.normals));
         all_normals &= normals.is_some();
         let material = mesh.material_id.and_then(|i| materials.get(i));
         let mat = material.and_then(|m| m.diffuse).map(|d| [d[0], d[1], d[2], 1.0]);
@@ -394,10 +433,15 @@ fn load_obj(path: &Path) -> Result<Model, String> {
         });
         let part = part_index(&mut out.parts, material.map_or(m.name.as_str(), |mm| mm.name.as_str()));
         let uvs = mesh.texcoords.len() == n * 2;
-        let extra: Vec<VExtra> = (0..n).map(|i| VExtra { uv: if uvs { [mesh.texcoords[i * 2], 1.0 - mesh.texcoords[i * 2 + 1]] } else { [0.0; 2] }, tex: if uvs { tex } else { -1 }, part }).collect();
+        let extra: Vec<VExtra> = (0..n)
+            .map(|i| match (uvs, mesh.texcoords.get(i * 2..i * 2 + 2)) {
+                (true, Some(&[u, v])) => VExtra { uv: [u, 1.0 - v], tex, part },
+                _ => VExtra { uv: [0.0; 2], tex: -1, part },
+            })
+            .collect();
         // A textured material's colour is the texture's (times Kd, usually white).
         let colors: Vec<[f32; 4]> = if mesh.vertex_color.len() == n * 3 {
-            (0..n).map(|i| [mesh.vertex_color[i * 3], mesh.vertex_color[i * 3 + 1], mesh.vertex_color[i * 3 + 2], 1.0]).collect()
+            triples(&mesh.vertex_color).into_iter().map(|[r, g, b]| [r, g, b, 1.0]).collect()
         } else {
             vec![mat.unwrap_or(DEFAULT_COLOR); n]
         };
@@ -427,7 +471,7 @@ fn load_gltf(path: &Path) -> Result<Model, String> {
                 if prim.mode() != gltf::mesh::Mode::Triangles {
                     continue;
                 }
-                let r = prim.reader(|b| Some(&buffers[b.index()]));
+                let r = prim.reader(|b| buffers.get(b.index()).map(|d| &**d));
                 let Some(pos) = r.read_positions() else { continue };
                 let pos: Vec<[f32; 3]> = pos.collect();
                 let normals: Option<Vec<[f32; 3]>> = r.read_normals().map(|n| n.collect());
@@ -479,11 +523,12 @@ fn to_picture(img: &gltf::image::Data) -> Picture {
     let px = (img.width * img.height) as usize;
     let mut rgba = Vec::with_capacity(px * 4);
     for p in img.pixels.chunks_exact(ch).take(px) {
-        rgba.extend(match ch {
-            1 => [p[0], p[0], p[0], 255],
-            2 => [p[0], p[0], p[0], p[1]],
-            3 => [p[0], p[1], p[2], 255],
-            _ => [p[0], p[1], p[2], p[3]],
+        rgba.extend(match *p {
+            [g] => [g, g, g, 255],
+            [g, a] => [g, g, g, a],
+            [r, g, b] => [r, g, b, 255],
+            [r, g, b, a, ..] => [r, g, b, a],
+            [] => [255; 4],
         });
     }
     rgba.resize(px * 4, 255);
@@ -559,8 +604,8 @@ struct PlyElem {
 
 fn parse_ply(data: &[u8]) -> Result<Model, String> {
     let end = data.windows(10).position(|w| w == b"end_header").ok_or("not a PLY file")?;
-    let header = std::str::from_utf8(&data[..end]).map_err(|_| "not a PLY file")?;
-    let mut body = &data[end + 10..];
+    let header = std::str::from_utf8(data.get(..end).unwrap_or_default()).map_err(|_| "not a PLY file")?;
+    let mut body = data.get(end + 10..).unwrap_or_default();
     // The rest of the header line.
     while let Some((&c, rest)) = body.split_first() {
         body = rest;
@@ -602,9 +647,10 @@ fn parse_ply(data: &[u8]) -> Result<Model, String> {
         let b = body.get(at..at + n).ok_or("the PLY data ends early")?;
         at += n;
         let mut a = [0u8; 8];
-        a[..n].copy_from_slice(b);
+        let lead = a.get_mut(..n).ok_or("bad PLY type")?;
+        lead.copy_from_slice(b);
         if big {
-            a[..n].reverse();
+            lead.reverse();
         }
         Ok(match ty {
             PlyType::I8 => a[0] as i8 as f64,
@@ -642,16 +688,16 @@ fn parse_ply(data: &[u8]) -> Result<Model, String> {
                 }
             }
             if e.name == "vertex" {
-                let get = |i: Option<usize>| i.map(|i| vals[i]);
+                let get = |i: Option<usize>| i.and_then(|i| vals.get(i).copied());
                 out.positions.push([get(x).unwrap_or(0.0) as f32, get(y).unwrap_or(0.0) as f32, get(z).unwrap_or(0.0) as f32]);
                 if let (Some(a), Some(b2), Some(c)) = (get(nx), get(ny), get(nz)) {
                     normals.push([a as f32, b2 as f32, c as f32]);
                 }
-                if let (Some(rv), Some(gv), Some(bv)) = (r, g, b) {
+                if let (Some(rv), Some(gv), Some(bv)) = (get(r), get(g), get(b)) {
                     // 8-bit colours are 0–255 sRGB; float ones 0–1.
-                    let scale = if e.props[rv].ty == PlyType::U8 { 255.0 } else { 1.0 };
+                    let scale = if r.and_then(|k| e.props.get(k)).is_some_and(|p| p.ty == PlyType::U8) { 255.0 } else { 1.0 };
                     let c = |v: f64| srgb_to_linear((v / scale) as f32);
-                    out.colors.push([c(vals[rv]), c(vals[gv]), c(vals[bv]), al.map_or(1.0, |a| (vals[a] / scale) as f32)]);
+                    out.colors.push([c(rv), c(gv), c(bv), get(al).map_or(1.0, |a| (a / scale) as f32)]);
                 }
             } else if e.name == "face" {
                 let (t, _) = fans(std::iter::once(list.len()), &list);
@@ -737,7 +783,7 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
         match o.name() {
             "Geometry" => {
                 let v = f64s(o.first_child_by_name("Vertices"));
-                let pos = v.chunks_exact(3).map(|c| [c[0] as f32, c[1] as f32, c[2] as f32]).collect();
+                let pos = v.chunks_exact(3).map(|c| [c.first(), c.get(1), c.get(2)].map(|x| x.copied().unwrap_or(0.0) as f32)).collect();
                 let poly = i32s(o.first_child_by_name("PolygonVertexIndex"));
                 let lm = o.first_child_by_name("LayerElementMaterial");
                 let mats = i32s(lm.and_then(|l| l.first_child_by_name("Materials")));
@@ -749,7 +795,10 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
             }
             "Model" => {
                 let p = props(&o);
-                let v3 = |k: &str, d: f64| p.get(k).filter(|v| v.len() >= 3).map_or([d as f32; 3], |v| [v[0] as f32, v[1] as f32, v[2] as f32]);
+                let v3 = |k: &str, d: f64| match p.get(k).map(Vec::as_slice) {
+                    Some(&[x, y, z, ..]) => [x as f32, y as f32, z as f32],
+                    _ => [d as f32; 3],
+                };
                 let (t, r, s, pre) = (v3("Lcl Translation", 0.0), v3("Lcl Rotation", 0.0), v3("Lcl Scaling", 1.0), v3("PreRotation", 0.0));
                 // Euler XYZ: X first, then Y, then Z.
                 let euler = |e: [f32; 3]| mul(&rot(2, e[2]), &mul(&rot(1, e[1]), &rot(0, e[0])));
@@ -758,7 +807,10 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
             }
             "Material" => {
                 let p = props(&o);
-                let c = p.get("DiffuseColor").or(p.get("Diffuse")).filter(|v| v.len() >= 3).map_or(DEFAULT_COLOR, |v| [v[0] as f32, v[1] as f32, v[2] as f32, 1.0]);
+                let c = match p.get("DiffuseColor").or(p.get("Diffuse")).map(Vec::as_slice) {
+                    Some(&[r, g, b, ..]) => [r as f32, g as f32, b as f32, 1.0],
+                    _ => DEFAULT_COLOR,
+                };
                 let k = p.get("DiffuseFactor").and_then(|v| v.first()).map_or(1.0, |v| *v as f32);
                 mat_color.insert(oid, [c[0] * k, c[1] * k, c[2] * k, 1.0]);
                 // Its name: "Name\0\x01Material".
@@ -806,7 +858,7 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
     };
     let mut out = Model { z_up: up_z, ..Default::default() };
     for (g, m) in geo_model {
-        let geo = &geos[&g];
+        let Some(geo) = geos.get(&g) else { continue };
         // Polygons end at a negative index (its bitwise NOT).
         let (mut counts, mut idx) = (Vec::new(), Vec::new());
         let mut n = 0;
@@ -829,7 +881,7 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
         let mut colors = Vec::with_capacity(tris.len());
         let mut extra = Vec::with_capacity(tris.len());
         for (t, tri) in tris.chunks_exact(3).enumerate() {
-            let mat = mat_of(face_of[t]);
+            let mat = face_of.get(t).and_then(|&f| mat_of(f));
             let c = mat.and_then(|k| mat_color.get(&k)).copied().unwrap_or(DEFAULT_COLOR);
             let part = part_index(&mut out.parts, mat.and_then(|k| mat_name.get(&k)).map_or("Model", |s| s.as_str()));
             for &i in tri {
@@ -851,7 +903,7 @@ fn weld(m: Model) -> Model {
     let mut map: std::collections::HashMap<([u32; 3], [u32; 4], u16), u32> = Default::default();
     let mut out = Model { z_up: m.z_up, parts: m.parts.clone(), atlas: m.atlas.clone(), ..Default::default() };
     for &i in &m.indices {
-        let (p, c) = (m.positions[i as usize], m.colors[i as usize]);
+        let (Some(&p), c) = (m.positions.get(i as usize), m.colors.get(i as usize).copied().unwrap_or(DEFAULT_COLOR)) else { continue };
         let x = m.extra.get(i as usize).copied().unwrap_or(VExtra::NONE);
         let k = (p.map(f32::to_bits), c.map(f32::to_bits), x.part);
         let j = *map.entry(k).or_insert_with(|| {
@@ -910,7 +962,7 @@ fn load_usd(path: &Path) -> Result<Model, String> {
                 for (t, tri) in tris.chunks_exact(3).enumerate() {
                     for &i in tri {
                         p2.push(pos.get(i as usize).copied().unwrap_or([0.0; 3]));
-                        c2.push(dc[face_of[t]]);
+                        c2.push(face_of.get(t).and_then(|&f| dc.get(f)).copied().unwrap_or(DEFAULT_COLOR));
                     }
                 }
                 let seq: Vec<u32> = (0..p2.len() as u32).collect();
@@ -955,10 +1007,14 @@ fn usd_local(prim: &openusd::usd::Prim) -> M4 {
             "rotateY" => f1().map(|d| rot(1, d)),
             "rotateZ" => f1().map(|d| rot(2, d)),
             // rotateXYZ: X first, then Y, then Z (and so on for the other orders).
-            k if k.starts_with("rotate") && k.len() == 9 => v3().map(|e| {
-                let axes: Vec<usize> = k[6..].chars().map(|c| (c as u8 - b'X') as usize).collect();
-                let angle = |ax: usize| e[ax];
-                axes.iter().fold(I4, |acc, &ax| mul(&rot(ax, angle(ax)), &acc))
+            // (only X, Y and Z: another letter, and the op is left out)
+            k if k.len() == 9 && k.strip_prefix("rotate").is_some_and(|a| a.chars().all(|c| matches!(c, 'X' | 'Y' | 'Z'))) => v3().map(|e| {
+                let axes = k.chars().skip(6).map(|c| match c {
+                    'X' => 0,
+                    'Y' => 1,
+                    _ => 2,
+                });
+                axes.fold(I4, |acc, ax| mul(&rot(ax, e.get(ax).copied().unwrap_or(0.0)), &acc))
             }),
             "orient" => a
                 .get::<gf::Quatf>()
@@ -984,6 +1040,9 @@ fn usd_local(prim: &openusd::usd::Prim) -> M4 {
 }
 
 /// The inverse of an affine transform.
+// (Fixed-size 4×4 / 3×3 arrays at positions below 4 from the loops here:
+// none comes from a file.)
+#[allow(clippy::indexing_slicing)]
 fn invert(m: &M4) -> M4 {
     let n = normal_matrix(m); // inverse transpose of the 3×3
     let mut r = I4;
@@ -1186,6 +1245,75 @@ def Xform "World"
         assert_eq!(m.indices.len(), 6);
         assert_eq!(extent(&m), ([10.0, 0.0, 0.0], [11.0, 1.0, 0.0]));
         assert!(m.colors.iter().all(|c| *c == [1.0, 0.0, 0.0, 1.0]));
+    }
+
+    /// A USD turn about axes that aren't X, Y or Z (a damaged or made-up file)
+    /// is left out, not a crash (it used to subtract from 'X' and index past the end).
+    #[test]
+    fn usd_turns_about_unknown_axes_are_left_out() {
+        let d = dir();
+        for op in ["rotateABC", "rotateXYW", "rotateZZZ"] {
+            let usda = format!(
+                r#"#usda 1.0
+def Xform "World"
+{{
+    float3 xformOp:{op} = (90, 0, 0)
+    double3 xformOp:translate = (10, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:{op}"]
+
+    def Mesh "Tri"
+    {{
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }}
+}}
+"#
+            );
+            let path = d.join(format!("{op}.usda"));
+            std::fs::write(&path, usda).unwrap();
+            let m = load(&path).unwrap();
+            assert_eq!(m.indices.len(), 3, "{op}");
+            if op == "rotateZZZ" {
+                continue;
+            }
+            // (no turn: the triangle stays flat in the XY plane, moved 10 across)
+            assert_eq!(extent(&m), ([10.0, 0.0, 0.0], [11.0, 1.0, 0.0]), "{op}");
+        }
+    }
+
+    /// PLY files cut short anywhere, or with faces pointing past their points,
+    /// a huge face list, or junk values: an error, never a crash.
+    #[test]
+    fn damaged_ply_files_never_crash() {
+        let mut bin = b"ply\nformat binary_little_endian 1.0\nelement vertex 3\nproperty double x\nproperty double y\nproperty double z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nelement face 1\nproperty list uchar uint vertex_indices\nend_header\n".to_vec();
+        for v in [[0.0f64, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]] {
+            for x in v {
+                bin.extend(x.to_le_bytes());
+            }
+            bin.extend([255, 0, 0]);
+        }
+        bin.push(3);
+        for i in [0u32, 1, 2] {
+            bin.extend(i.to_le_bytes());
+        }
+        assert!(parse_ply(&bin).is_ok());
+        for n in 0..bin.len() {
+            let _ = parse_ply(&bin[..n]);
+        }
+        for k in 0..bin.len() {
+            let mut b = bin.clone();
+            b[k] ^= 0xa5;
+            let _ = parse_ply(&b);
+        }
+        // A face at point 99 of 3: the file is refused when loaded.
+        let d = dir();
+        let ascii = "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 99\n";
+        std::fs::write(d.join("bad.ply"), ascii).unwrap();
+        assert!(load(&d.join("bad.ply")).is_err());
+        // Colour properties named but too few values on a line, and a face list claiming 4 billion.
+        let short = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nelement face 1\nproperty list uint int vertex_indices\nend_header\n0 1\n4000000000 0\n";
+        assert!(parse_ply(short.as_bytes()).is_err());
     }
 
     /// Binary FBX: a geometry under a model moved and scaled, with a material colour.

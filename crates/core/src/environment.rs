@@ -11,6 +11,10 @@
 //! Directions: the middle of the picture is +Z (the way the default camera
 //! looks), its top is up (−Y), and its left and right edges meet behind.
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use crate::space3d::V3;
 use std::collections::HashMap;
 use std::f32::consts::PI;
@@ -110,10 +114,12 @@ impl Environment {
             for x in 0..w {
                 let d = direction((x as f32 + 0.5) / w as f32, v);
                 let i = (y * w + x) * 3;
+                // (a picture shorter than its size says: the rest is black)
+                let Some(px) = rgb.get(i..i + 3) else { continue };
                 let ys = [0.282_095, 0.488_603 * d[0], 0.488_603 * d[1], 0.488_603 * d[2]];
-                for (k, yk) in ys.iter().enumerate() {
-                    for c in 0..3 {
-                        l[k][c] += rgb[i + c] * yk * solid;
+                for (lk, yk) in l.iter_mut().zip(ys) {
+                    for (a, c) in lk.iter_mut().zip(px) {
+                        *a += c * yk * solid;
                     }
                 }
             }
@@ -128,23 +134,30 @@ impl Environment {
     pub fn turned_sh(&self, turn: f32) -> [V3; 4] {
         let (s, c) = turn.sin_cos();
         let [k0, kx, ky, kz] = self.sh;
-        let x = [0, 1, 2].map(|i| kx[i] * c + kz[i] * s);
-        let z = [0, 1, 2].map(|i| kz[i] * c - kx[i] * s);
+        let x = std::array::from_fn(|i| kx.get(i).zip(kz.get(i)).map_or(0.0, |(a, b)| a * c + b * s));
+        let z = std::array::from_fn(|i| kz.get(i).zip(kx.get(i)).map_or(0.0, |(a, b)| a * c - b * s));
         [k0, x, ky, z]
     }
 
     /// The light a surface facing `n` gets, per channel (the CPU reference).
     pub fn diffuse(sh: &[V3; 4], n: V3) -> V3 {
-        [0, 1, 2].map(|c| (sh[0][c] + sh[1][c] * n[0] + sh[2][c] * n[1] + sh[3][c] * n[2]).max(0.0))
+        let [k0, kx, ky, kz] = sh;
+        std::array::from_fn(|c| {
+            let at = |k: &V3| k.get(c).copied().unwrap_or(0.0);
+            (at(k0) + at(kx) * n[0] + at(ky) * n[1] + at(kz) * n[2]).max(0.0)
+        })
     }
 
     /// The picture's colour along direction `d` (nearest pixel).
     pub fn sample(&self, d: V3) -> V3 {
         let [u, v] = uv_of(d);
-        let x = ((u.rem_euclid(1.0) * self.width as f32) as usize).min(self.width as usize - 1);
-        let y = ((v * self.height as f32) as usize).min(self.height as usize - 1);
+        let x = ((u.rem_euclid(1.0) * self.width as f32) as usize).min((self.width as usize).saturating_sub(1));
+        let y = ((v * self.height as f32) as usize).min((self.height as usize).saturating_sub(1));
         let i = (y * self.width as usize + x) * 3;
-        [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
+        match self.rgb.get(i..i + 3) {
+            Some(&[r, g, b]) => [r, g, b],
+            _ => [0.0; 3],
+        }
     }
 }
 
@@ -156,7 +169,10 @@ pub fn shrink(w: u32, h: u32, rgb: &[f32], max_w: u32) -> (u32, u32, Vec<f32>) {
     for y in 0..h as usize {
         acc.row(y, |x| {
             let i = (y * w as usize + x) * 3;
-            [rgb[i], rgb[i + 1], rgb[i + 2]]
+            match rgb.get(i..i + 3) {
+                Some(&[r, g, b]) => [r, g, b],
+                _ => [0.0; 3],
+            }
         });
     }
     (ow, oh, acc.finish())
@@ -183,22 +199,26 @@ impl Accumulator {
         Accumulator { w: w as usize, h: h as usize, ow, oh, sum: vec![0.0; ow * oh * 3], count: vec![0.0; ow * oh] }
     }
     fn row(&mut self, y: usize, px: impl Fn(usize) -> [f32; 3]) {
-        let oy = (y * self.oh / self.h.max(1)).min(self.oh - 1);
+        let oy = (y * self.oh / self.h.max(1)).min(self.oh.saturating_sub(1));
         for x in 0..self.w {
-            let ox = (x * self.ow / self.w.max(1)).min(self.ow - 1);
+            let ox = (x * self.ow / self.w.max(1)).min(self.ow.saturating_sub(1));
             let p = px(x);
             let o = oy * self.ow + ox;
-            for c in 0..3 {
-                // Inf and NaN (a broken file) count as black.
-                self.sum[o * 3 + c] += if p[c].is_finite() { p[c].max(0.0) } else { 0.0 };
+            if let Some(sum) = self.sum.get_mut(o * 3..o * 3 + 3) {
+                for (s, v) in sum.iter_mut().zip(p) {
+                    // Inf and NaN (a broken file) count as black.
+                    *s += if v.is_finite() { v.max(0.0) } else { 0.0 };
+                }
             }
-            self.count[o] += 1.0;
+            if let Some(n) = self.count.get_mut(o) {
+                *n += 1.0;
+            }
         }
     }
     fn finish(mut self) -> Vec<f32> {
-        for (o, n) in self.count.iter().enumerate() {
-            for c in 0..3 {
-                self.sum[o * 3 + c] /= n.max(1.0);
+        for (sum, n) in self.sum.chunks_exact_mut(3).zip(&self.count) {
+            for s in sum {
+                *s /= n.max(1.0);
             }
         }
         self.sum
@@ -213,7 +233,7 @@ pub fn read_hdr(b: &[u8], max_w: u32) -> Option<(u32, u32, Vec<f32>)> {
         let start = pos;
         let end = start + b.get(start..)?.iter().position(|&c| c == b'\n')?;
         pos = end + 1;
-        Some(&b[start..end])
+        b.get(start..end)
     };
     let first = line()?;
     if !first.starts_with(b"#?") {
@@ -230,10 +250,10 @@ pub fn read_hdr(b: &[u8], max_w: u32) -> Option<(u32, u32, Vec<f32>)> {
     }
     let size = std::str::from_utf8(line()?).ok()?.to_owned();
     let parts: Vec<&str> = size.split_whitespace().collect();
-    if parts.len() != 4 || parts[0] != "-Y" || parts[2] != "+X" {
+    let ["-Y", h, "+X", w] = parts.as_slice() else {
         return None;
-    }
-    let (h, w): (u32, u32) = (parts[1].parse().ok()?, parts[3].parse().ok()?);
+    };
+    let (h, w): (u32, u32) = (h.parse().ok()?, w.parse().ok()?);
     if w == 0 || h == 0 || w > 65_536 || h > 65_536 {
         return None;
     }
@@ -243,9 +263,13 @@ pub fn read_hdr(b: &[u8], max_w: u32) -> Option<(u32, u32, Vec<f32>)> {
     let mut scan = vec![0u8; wu * 4];
     for y in 0..h as usize {
         let rest = b.get(pos..)?;
-        if (8..32_768).contains(&wu) && rest.len() >= 4 && rest[0] == 2 && rest[1] == 2 && rest[2] & 0x80 == 0 {
+        let rle = match rest.get(..4) {
+            Some(&[2, 2, hi, lo]) if (8..32_768).contains(&wu) && hi & 0x80 == 0 => Some((hi, lo)),
+            _ => None,
+        };
+        if let Some((hi, lo)) = rle {
             // New run-length encoding: each of R, G, B, E in turn.
-            if ((rest[2] as usize) << 8 | rest[3] as usize) != wu {
+            if ((hi as usize) << 8 | lo as usize) != wu {
                 return None;
             }
             pos += 4;
@@ -261,8 +285,8 @@ pub fn read_hdr(b: &[u8], max_w: u32) -> Option<(u32, u32, Vec<f32>)> {
                         if x + run > wu {
                             return None;
                         }
-                        for i in 0..run {
-                            scan[(x + i) * 4 + c] = v;
+                        for d in scan.iter_mut().skip(x * 4 + c).step_by(4).take(run) {
+                            *d = v;
                         }
                         x += run;
                     } else {
@@ -270,8 +294,8 @@ pub fn read_hdr(b: &[u8], max_w: u32) -> Option<(u32, u32, Vec<f32>)> {
                             return None;
                         }
                         let src = b.get(pos..pos + n)?;
-                        for (i, v) in src.iter().enumerate() {
-                            scan[(x + i) * 4 + c] = *v;
+                        for (d, v) in scan.iter_mut().skip(x * 4 + c).step_by(4).zip(src) {
+                            *d = *v;
                         }
                         pos += n;
                         x += n;
@@ -283,17 +307,18 @@ pub fn read_hdr(b: &[u8], max_w: u32) -> Option<(u32, u32, Vec<f32>)> {
             scan.copy_from_slice(b.get(pos..pos + wu * 4)?);
             pos += wu * 4;
         }
-        acc.row(y, |x| rgbe(&scan[x * 4..x * 4 + 4]));
+        acc.row(y, |x| scan.get(x * 4..x * 4 + 4).map_or([0.0; 3], rgbe));
     }
     Some((ow, oh, acc.finish()))
 }
 
 fn rgbe(p: &[u8]) -> [f32; 3] {
-    if p[3] == 0 {
+    let &[r, g, b, e] = p else { return [0.0; 3] };
+    if e == 0 {
         return [0.0; 3];
     }
-    let f = 2f32.powi(p[3] as i32 - 136);
-    [(p[0] as f32 + 0.5) * f, (p[1] as f32 + 0.5) * f, (p[2] as f32 + 0.5) * f]
+    let f = 2f32.powi(e as i32 - 136);
+    [(r as f32 + 0.5) * f, (g as f32 + 0.5) * f, (b as f32 + 0.5) * f]
 }
 
 #[cfg(test)]
@@ -363,6 +388,29 @@ mod tests {
         let turned = Environment::diffuse(&p.turned_sh(PI), [0.0, 0.0, 1.0])[0];
         assert!(front > turned * 3.0, "{front} {turned}");
         assert!((p.sample([0.0, 0.0, 1.0])[0] - 10.0).abs() < 1e-4);
+    }
+
+    /// A Radiance file cut short anywhere or with bytes changed: nothing, or a
+    /// picture, never a crash.
+    #[test]
+    fn damaged_radiance_files_never_crash() {
+        let good = hdr_file(40, 6, |x, y| [x as f32 * 0.1, y as f32, 1.0]);
+        assert!(read_hdr(&good, 64).is_some());
+        for n in 0..good.len() {
+            let _ = read_hdr(&good[..n], 64);
+        }
+        for k in 0..good.len() {
+            for v in [0u8, 1, 2, 0x80, 0xff] {
+                let mut b = good.clone();
+                b[k] = v;
+                let _ = read_hdr(&b, 64);
+            }
+        }
+        // A picture shorter than the size it gives, made into a light.
+        let e = Environment::new(1, 8, 4, vec![1.0; 10]);
+        assert_eq!(e.sample([0.0, 0.0, 1.0]).len(), 3);
+        let (_, _, small) = shrink(8, 4, &[1.0; 5], 4);
+        assert!(small.iter().all(|v| v.is_finite()));
     }
 
     #[test]

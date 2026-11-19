@@ -20,6 +20,10 @@
 //! `ldat` (the keyframes)), or `otst` (orientation). Transform properties
 //! at their defaults aren't written at all.
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 // (clippy takes the closures that are called once and then handed on for
 // the keyframes, `f(&p.value)` then `curve(.., f, ..)`, for ones called only once)
 #![allow(clippy::redundant_closure_call)]
@@ -275,7 +279,7 @@ fn footage(r: &Riff, k: &[Chunk], name: String, dir: Option<&Path>) -> Option<Fo
         let ch = |at| (bef32(opti, at).unwrap_or(0.0).clamp(0.0, 1.0) * 255.0).round() as u8;
         FootageKind::Solid([ch(14), ch(18), ch(22), 255])
     } else {
-        let path = find_list(&pk, b"Als2").and_then(|a| find(&r.kids(a), b"alas").map(|c| r.body(c))).and_then(|b| serde_json::from_str::<serde_json::Value>(&cstr(b)).ok()).and_then(|v| v["fullpath"].as_str().map(str::to_string));
+        let path = find_list(&pk, b"Als2").and_then(|a| find(&r.kids(a), b"alas").map(|c| r.body(c))).and_then(|b| serde_json::from_str::<serde_json::Value>(&cstr(b)).ok()).and_then(|v| v.get("fullpath").and_then(|p| p.as_str()).map(str::to_string));
         match path.and_then(|p| locate(&[p.as_str()], dir)) {
             Some(p) => FootageKind::File(p),
             None => FootageKind::Nothing,
@@ -303,9 +307,9 @@ fn group(r: &Riff, g: &Chunk) -> Vec<(String, Chunk)> {
     let cs = r.kids(g);
     let mut out = Vec::new();
     let mut i = 0;
-    while i < cs.len() {
-        if &cs[i].id == b"tdmn" {
-            let name = cstr(r.body(&cs[i]));
+    while let Some(c) = cs.get(i) {
+        if &c.id == b"tdmn" {
+            let name = cstr(r.body(c));
             if let Some(next) = cs.get(i + 1).filter(|c| c.list.is_some()) {
                 out.push((name, *next));
                 i += 2;
@@ -494,11 +498,12 @@ impl<'r, 'a> Reader<'r, 'a> {
         let r = self.r;
         let k = r.kids(l);
         let ld = find(&k, b"ldta").map(|c| r.body(c)).unwrap_or(&[]);
-        if ld.len() < 112 {
+        // (the fixed part read below: 112 bytes)
+        let Some(ld_fixed) = ld.get(..112).and_then(|b| <&[u8; 112]>::try_from(b).ok()) else {
             return;
-        }
+        };
         let name = find(&k, b"Utf8").map(|c| cstr(r.body(c))).filter(|n| !n.is_empty()).unwrap_or_else(|| cstr(ld.get(64..96).unwrap_or(&[])));
-        let (f0, f1, f2) = (ld[37], ld[38], ld[39]);
+        let (f0, f1, f2) = (ld_fixed[37], ld_fixed[38], ld_fixed[39]);
         let enabled = f2 & 1 != 0;
         let audio_on = f2 & 2 != 0;
         let guide = f0 & 2 != 0;
@@ -506,8 +511,8 @@ impl<'r, 'a> Reader<'r, 'a> {
         let adjustment = f1 & 2 != 0;
         let three_d = f1 & 4 != 0;
         let source = be32(ld, 40).unwrap_or(0);
-        let blend_code = ld[99];
-        let matte = ld[107];
+        let blend_code = ld_fixed[99];
+        let matte = ld_fixed[107];
         let kind = ld.get(131).copied().unwrap_or(0);
         let parent = be32(ld, 132).unwrap_or(0);
         let stretch = {
@@ -777,8 +782,7 @@ impl<'r, 'a> Reader<'r, 'a> {
         times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         times.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
         // Turning or scaling between keys moves the point on a curve: every frame then.
-        if turns && times.len() >= 2 {
-            let (a, b) = (times[0], times[times.len() - 1]);
+        if let (true, Some(&a), Some(&b)) = (turns && times.len() >= 2, times.first(), times.last()) {
             let step = l.stretch.abs() / fps.max(1.0);
             let n = (((b - a) / step).ceil() as usize).min(20_000);
             times = (0..=n).map(|i| a + (b - a) * i as f64 / n.max(1) as f64).collect();
@@ -797,15 +801,15 @@ impl<'r, 'a> Reader<'r, 'a> {
             let d = [(cx[0] - anchor[0]) * scale, (cx[1] - anchor[1]) * scale];
             [pos[0] - cx[0] + co * d[0] - s * d[1], pos[1] - cx[1] + s * d[0] + co * d[1], rot, scale * 100.0]
         };
-        if get("ADBE Scale").is_some_and(|p| p.value.len() >= 2 && (p.value[0] - p.value[1]).abs() > 1e-6) {
+        if get("ADBE Scale").is_some_and(|p| matches!(p.value.as_slice(), [a, b, ..] if (a - b).abs() > 1e-6)) {
             self.notes.add("A parent scaled differently across and down moves its children with its width's scale");
         }
         let still = at(times.first().copied().unwrap_or(0.0));
         let Some(fx) = c.effects.get_mut(0) else { return };
         fx.normalize();
-        for (i, p) in [pt::X, pt::Y, pt::ROTATION, pt::SCALE].into_iter().enumerate() {
+        for (p, v) in [pt::X, pt::Y, pt::ROTATION, pt::SCALE].into_iter().zip(still) {
             if let Some(param) = fx.params.get_mut(p) {
-                param.value = still[i] as f32;
+                param.value = v as f32;
             }
         }
         if times.len() >= 2 {
@@ -875,7 +879,7 @@ impl<'r, 'a> Reader<'r, 'a> {
         }
         // Position: composition pixels from the top left; ours, from the centre.
         let pos = |a: &[f64]| [v(a, 0) - frame[0] / 2.0, v(a, 1) - frame[1] / 2.0];
-        let split: Vec<Option<&Prop>> = ["ADBE Position_0", "ADBE Position_1", "ADBE Position_2"].iter().map(|n| props.get(*n).filter(|p| p.flags & 2 == 0)).collect();
+        let split: [Option<&Prop>; 3] = ["ADBE Position_0", "ADBE Position_1", "ADBE Position_2"].map(|n| props.get(n).filter(|p| p.flags & 2 == 0));
         if let (Some(x), Some(y)) = (split[0], split[1]) {
             c.transform.position = pos(&[x.value.first().copied().unwrap_or(0.0), y.value.first().copied().unwrap_or(0.0)]);
             c.anim.position = merge(x, y, |a, b| pos(&[a, b]), to_ct);

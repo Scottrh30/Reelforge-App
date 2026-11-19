@@ -15,6 +15,10 @@
 //! floats for a half-float file or 32-bit floats otherwise, scene-linear and
 //! premultiplied, like the file.
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 mod b44;
 mod piz;
 
@@ -162,7 +166,8 @@ impl<'a> Reader<'a> {
         Ok(s)
     }
     fn u8(&mut self) -> Result<u8> {
-        Ok(self.bytes(1)?[0])
+        let [b] = self.bytes(1)? else { return fail("file cut short") };
+        Ok(*b)
     }
     fn i32(&mut self) -> Result<i32> {
         Ok(i32::from_le_bytes(le4(self.bytes(4)?, 0)?))
@@ -171,10 +176,10 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes(le8(self.bytes(8)?, 0)?))
     }
     fn cstr(&mut self) -> Result<&'a str> {
-        let rest = &self.d[self.p.min(self.d.len())..];
+        let rest = self.d.get(self.p..).unwrap_or_default();
         let n = rest.iter().position(|&b| b == 0).ok_or(Error::Invalid("EXR: unterminated name".into()))?;
         self.p += n + 1;
-        std::str::from_utf8(&rest[..n]).map_err(|_| Error::Invalid("EXR: name isn't text".into()))
+        std::str::from_utf8(rest.get(..n).unwrap_or_default()).map_err(|_| Error::Invalid("EXR: name isn't text".into()))
     }
 }
 
@@ -377,12 +382,14 @@ fn unpredict_deinterleave(t: &mut [u8]) -> Vec<u8> {
             }
         }
     }
-    for i in done..pairs {
-        out[2 * i] = lo[i];
-        out[2 * i + 1] = hi[i];
+    // (the rest, and an odd last byte: from lo only)
+    for ((o, &a), &b) in out.get_mut(done * 2..).unwrap_or_default().chunks_exact_mut(2).zip(lo.get(done..).unwrap_or_default()).zip(hi.get(done..).unwrap_or_default()) {
+        o.copy_from_slice(&[a, b]);
     }
     if n % 2 == 1 {
-        out[n - 1] = lo[half - 1];
+        if let (Some(o), Some(&a)) = (out.last_mut(), lo.last()) {
+            *o = a;
+        }
     }
     out
 }
@@ -402,7 +409,7 @@ fn unpredict(t: &mut [u8]) {
         // bytes at i with i + 16 <= len.
         unsafe {
             let bias = _mm_set1_epi8(-128i8);
-            let mut carry = _mm_set1_epi8(t[0] as i8);
+            let mut carry = _mm_set1_epi8(t.first().copied().unwrap_or(0) as i8);
             while i + 16 <= t.len() {
                 let p = t.as_mut_ptr().add(i) as *mut __m128i;
                 let mut v = _mm_sub_epi8(_mm_loadu_si128(p), bias);
@@ -418,23 +425,23 @@ fn unpredict(t: &mut [u8]) {
             }
         }
     }
-    for k in i..t.len() {
-        t[k] = t[k - 1].wrapping_add(t[k]).wrapping_sub(128);
+    let mut prev = t.get(i.wrapping_sub(1)).copied().unwrap_or(0);
+    for b in t.get_mut(i..).unwrap_or_default() {
+        *b = prev.wrapping_add(*b).wrapping_sub(128);
+        prev = *b;
     }
 }
 
 fn rle(data: &[u8], size: usize) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(size);
     let mut i = 0;
-    while i < data.len() {
-        let c = data[i] as i8;
+    while let Some(&c) = data.get(i) {
+        let c = c as i8;
         i += 1;
         if c < 0 {
             let n = (-(c as i32)) as usize;
-            if i + n > data.len() {
-                return fail("RLE literal");
-            }
-            out.extend_from_slice(&data[i..i + n]);
+            let Some(lit) = data.get(i..i + n) else { return fail("RLE literal") };
+            out.extend_from_slice(lit);
             i += n;
         } else {
             let Some(&b) = data.get(i) else { return fail("RLE run") };
@@ -456,7 +463,7 @@ fn pxr24(data: &[u8], layout: &ChannelLayout, size: usize) -> Result<Vec<u8>> {
     let stored: usize = layout.channels.iter().map(|c| c.nx * c.ny * if c.ty == PixelType::Float { 3 } else { c.ty.bytes() }).sum();
     let t = inflate(data, stored)?;
     let mut out = Vec::with_capacity(size);
-    let mut p = 0;
+    let mut p = 0usize;
     for y in layout.y0..layout.y0 + layout.lines as i32 {
         for c in &layout.channels {
             if y.rem_euclid(c.ys) != 0 {
@@ -464,30 +471,33 @@ fn pxr24(data: &[u8], layout: &ChannelLayout, size: usize) -> Result<Vec<u8>> {
             }
             let n = c.nx;
             let mut pixel = 0u32;
+            // The row's bytes, one plane per byte of each value (most significant first).
+            let planes = match c.ty {
+                PixelType::Uint => 4,
+                PixelType::Half => 2,
+                PixelType::Float => 3,
+            };
+            let Some(row) = p.checked_add(planes * n).and_then(|end| t.get(p..end)) else { return fail("PXR24 size") };
+            p += planes * n;
+            let plane = |k: usize| row.get(k * n..(k + 1) * n).unwrap_or_default();
             match c.ty {
                 PixelType::Uint => {
-                    for j in 0..n {
-                        let d = (t[p + j] as u32) << 24 | (t[p + n + j] as u32) << 16 | (t[p + 2 * n + j] as u32) << 8 | t[p + 3 * n + j] as u32;
-                        pixel = pixel.wrapping_add(d);
+                    for (((a, b), c2), d) in plane(0).iter().zip(plane(1)).zip(plane(2)).zip(plane(3)) {
+                        pixel = pixel.wrapping_add(u32::from_be_bytes([*a, *b, *c2, *d]));
                         out.extend_from_slice(&pixel.to_le_bytes());
                     }
-                    p += 4 * n;
                 }
                 PixelType::Half => {
-                    for j in 0..n {
-                        let d = (t[p + j] as u32) << 8 | t[p + n + j] as u32;
-                        pixel = pixel.wrapping_add(d);
+                    for (a, b) in plane(0).iter().zip(plane(1)) {
+                        pixel = pixel.wrapping_add(u32::from(u16::from_be_bytes([*a, *b])));
                         out.extend_from_slice(&(pixel as u16).to_le_bytes());
                     }
-                    p += 2 * n;
                 }
                 PixelType::Float => {
-                    for j in 0..n {
-                        let d = (t[p + j] as u32) << 24 | (t[p + n + j] as u32) << 16 | (t[p + 2 * n + j] as u32) << 8;
-                        pixel = pixel.wrapping_add(d);
+                    for ((a, b), c2) in plane(0).iter().zip(plane(1)).zip(plane(2)) {
+                        pixel = pixel.wrapping_add(u32::from_be_bytes([*a, *b, *c2, 0]));
                         out.extend_from_slice(&pixel.to_le_bytes());
                     }
-                    p += 3 * n;
                 }
             }
         }
@@ -571,14 +581,15 @@ pub fn decode(file: &[u8]) -> Result<Picture> {
         return unsupported("no R, G, B or Y channels");
     };
     for &c in pick.rgb.iter().chain(&pick.alpha) {
-        if h.channels[c].xs != 1 || h.channels[c].ys != 1 {
+        let Some(ch) = h.channels.get(c) else { return fail("channel list") };
+        if ch.xs != 1 || ch.ys != 1 {
             return unsupported("subsampled colour channels");
         }
     }
     let (w, ht) = (h.display.width() as u32, h.display.height() as u32);
     // Half-float files stay half floats (no conversion either way); anything
     // with a float or uint colour channel comes out as 32-bit float.
-    let half = pick.rgb.iter().chain(&pick.alpha).all(|&c| h.channels[c].ty == PixelType::Half);
+    let half = pick.rgb.iter().chain(&pick.alpha).all(|&c| h.channels.get(c).is_some_and(|ch| ch.ty == PixelType::Half));
     let format = match (pick.alpha.is_some(), half) {
         (true, true) => Format::Gbrapf16,
         (false, true) => Format::Gbrpf16,
@@ -588,11 +599,12 @@ pub fn decode(file: &[u8]) -> Result<Picture> {
 
     // Each chunk's place and data.
     let mut jobs: Vec<(ChannelLayout, i32, &[u8])> = Vec::new();
+    let table = tables.get(part).map(Vec::as_slice).unwrap_or_default();
     let level0 = match h.tiles {
         Some((tx, ty)) => tiles_across(h.data.width(), tx) * tiles_across(h.data.height(), ty),
-        None => tables[part].len(),
+        None => table.len(),
     };
-    for &off in tables[part].iter().take(level0) {
+    for &off in table.iter().take(level0) {
         let mut cr = Reader { d: file, p: off as usize };
         if multi && cr.i32()? as usize != part {
             return fail("chunk of another part");
@@ -654,8 +666,8 @@ pub fn decode(file: &[u8]) -> Result<Picture> {
     unsafe impl Sync for Out {}
     impl Out {
         // (A method, so closures capture the whole `Out`, not its field.)
-        fn plane(&self, t: usize) -> *mut u8 {
-            self.0[t]
+        fn plane(&self, t: usize) -> Option<*mut u8> {
+            self.0.get(t).copied()
         }
     }
     let out = Out(planes.iter_mut().map(|p| p.as_mut_ptr()).collect());
@@ -673,10 +685,7 @@ pub fn decode(file: &[u8]) -> Result<Picture> {
                         continue;
                     }
                     let bytes = c.nx * c.units * 2;
-                    if p + bytes > block.len() {
-                        return fail("chunk size mismatch");
-                    }
-                    let row = &block[p..p + bytes];
+                    let Some(row) = p.checked_add(bytes).and_then(|end| block.get(p..end)) else { return fail("chunk size mismatch") };
                     p += bytes;
                     let Some(s) = slot(ci) else { continue };
                     if oy < 0 || oy >= ht as i64 {
@@ -688,20 +697,25 @@ pub fn decode(file: &[u8]) -> Result<Picture> {
                         continue;
                     }
                     let targets: &[usize] = if gray && s == 2 { &[0, 1, 2] } else { std::slice::from_ref(&s) };
+                    // (the row's samples from `first` on, as stored)
+                    let from = |size: usize| row.get(first * size..).unwrap_or_default();
                     for &t in targets {
+                        let Some(base) = out.plane(t) else { continue };
                         // SAFETY: inside plane `t` (row `oy`, columns ox0..ox0+n), which only this chunk writes.
-                        let dst = unsafe { std::slice::from_raw_parts_mut(out.plane(t).add(oy as usize * stride + ox0 * bps), n * bps) };
+                        let dst = unsafe { std::slice::from_raw_parts_mut(base.add(oy as usize * stride + ox0 * bps), n * bps) };
                         match (c.ty, half) {
-                            (PixelType::Half, true) => dst.copy_from_slice(&row[first * 2..(first + n) * 2]),
-                            (PixelType::Float, false) => dst.copy_from_slice(&row[first * 4..(first + n) * 4]),
+                            (PixelType::Half, true) | (PixelType::Float, false) => {
+                                let Some(src) = from(c.ty.bytes()).get(..dst.len()) else { return fail("chunk size mismatch") };
+                                dst.copy_from_slice(src);
+                            }
                             (PixelType::Half, false) => {
-                                for (d, s) in dst.chunks_exact_mut(4).zip(row[first * 2..].chunks_exact(2)) {
-                                    d.copy_from_slice(&half_to_f32(u16::from_le_bytes([s[0], s[1]])).to_le_bytes());
+                                for (d, s) in dst.chunks_exact_mut(4).zip(from(2).chunks_exact(2)) {
+                                    d.copy_from_slice(&half_to_f32(u16::from_le_bytes([s.first().copied().unwrap_or(0), s.get(1).copied().unwrap_or(0)])).to_le_bytes());
                                 }
                             }
                             (PixelType::Uint, false) => {
-                                for (d, s) in dst.chunks_exact_mut(4).zip(row[first * 4..].chunks_exact(4)) {
-                                    d.copy_from_slice(&(u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as f32).to_le_bytes());
+                                for (d, s) in dst.chunks_exact_mut(4).zip(from(4).chunks_exact(4)) {
+                                    d.copy_from_slice(&(u32::from_le_bytes(le4(s, 0)?) as f32).to_le_bytes());
                                 }
                             }
                             // `half` means every picked channel is half (done above).

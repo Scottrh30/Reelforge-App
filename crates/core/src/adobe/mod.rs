@@ -12,6 +12,10 @@
 //! times are checked and kept in range, and a damaged file gives an error,
 //! never a crash.
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 pub mod aep;
 pub mod prproj;
 

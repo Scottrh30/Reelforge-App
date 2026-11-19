@@ -7,6 +7,10 @@
 //! - a 3D LUT of size N is laid out as N slices of N×N side by side
 //!   (width N·N, height N): texel (r + b·N, g) holds the colour for input (r, g, b).
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -187,6 +191,9 @@ impl HueCurves {
 
 /// A smooth curve through `points` (sorted by input), without overshoot
 /// (monotone cubic interpolation). Flat beyond the first and last points.
+// (Every position is below n = the points' own count, at least 2 past the
+// checks at the top: none comes from the points' values.)
+#[allow(clippy::indexing_slicing)]
 pub fn eval_curve(points: &[[f32; 2]], x: f32) -> f32 {
     let mut p: Vec<[f32; 2]> = points.to_vec();
     p.sort_by(|a, b| a[0].total_cmp(&b[0]));
@@ -255,10 +262,10 @@ pub fn parse_cube(text: &str) -> Result<Table, String> {
             "TITLE" | "LUT_3D_INPUT_RANGE" => {}
             s if s.parse::<f32>().is_ok() => {
                 let v = nums(line.split_whitespace())?;
-                if v.len() < 3 {
+                let [r, g, b, ..] = v.as_slice() else {
                     return Err("a data line needs three numbers".into());
-                }
-                data.push([v[0], v[1], v[2]]);
+                };
+                data.push([*r, *g, *b]);
             }
             _ => {} // other keywords are harmless
         }
@@ -273,17 +280,15 @@ pub fn parse_cube(text: &str) -> Result<Table, String> {
     // constant blue side by side: texel (r + b·N, g).
     let n = size;
     let mut rgba = vec![0u8; n * n * n * 4];
-    for b in 0..n {
-        for g in 0..n {
-            for r in 0..n {
-                let v = data[r + g * n + b * n * n];
-                let o = ((g * n * n) + b * n + r) * 4;
-                for c in 0..3 {
-                    let x = (v[c] - lo[c]) / (hi[c] - lo[c]).max(1e-6);
-                    rgba[o + c] = (x.clamp(0.0, 1.0) * 255.0).round() as u8;
-                }
-                rgba[o + 3] = 255;
-            }
+    for (k, v) in data.iter().enumerate() {
+        let (r, g, b) = (k % n, (k / n) % n, k / (n * n));
+        let o = ((g * n * n) + b * n + r) * 4;
+        let Some(px) = rgba.get_mut(o..o + 4) else { continue };
+        for (((d, x), l), h) in px.iter_mut().zip(v).zip(lo).zip(hi) {
+            *d = (((x - l) / (h - l).max(1e-6)).clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        if let Some(a) = px.get_mut(3) {
+            *a = 255;
         }
     }
     Ok(Table { id: hash_of(&rgba), width: (n * n) as u32, height: n as u32, rgba, cube_size: n as u32 })
@@ -327,8 +332,8 @@ pub fn average_rgb(t: &Table) -> u32 {
     let n = (t.rgba.len() / 4).max(1) as u64;
     let mut s = [0u64; 3];
     for p in t.rgba.chunks_exact(4).step_by(7) {
-        for k in 0..3 {
-            s[k] += p[k] as u64;
+        for (a, &c) in s.iter_mut().zip(p) {
+            *a += c as u64;
         }
     }
     let m = n.div_ceil(7).max(1);
@@ -420,6 +425,25 @@ mod tests {
         assert_eq!((t.width, t.height, t.rgba.len()), (256, 1, 1024));
         assert_eq!(t.rgba[0], 0);
         assert!(t.rgba[64 * 4] < 64, "darker shadows: {}", t.rgba[64 * 4]);
+    }
+
+    /// .cube files with short lines, the wrong count, odd sizes or junk: an
+    /// error, never a crash; curves with any points give a number.
+    #[test]
+    fn damaged_cube_files_and_odd_curves_never_crash() {
+        let good = "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+        assert!(parse_cube(good).is_ok());
+        for bad in ["LUT_3D_SIZE 2\n0 0\n", "LUT_3D_SIZE 1000000\n", "LUT_3D_SIZE 2\nDOMAIN_MIN 0\n", "LUT_3D_SIZE -1\n", "0 0 0\n", "LUT_3D_SIZE 2\n0 0 0\n"] {
+            assert!(parse_cube(bad).is_err(), "{bad:?}");
+        }
+        for n in 0..good.len() {
+            let _ = parse_cube(&good[..n]);
+        }
+        for pts in [vec![], vec![[0.5, 0.5]], vec![[0.0, 0.0], [0.0, 1.0]], vec![[f32::NAN, 0.0], [1.0, f32::INFINITY]], vec![[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]] {
+            for x in [-1.0, 0.0, 0.25, 0.5, 1.0, 2.0, f32::NAN] {
+                let _ = eval_curve(&pts, x);
+            }
+        }
     }
 
     #[test]

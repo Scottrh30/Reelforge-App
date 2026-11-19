@@ -16,6 +16,10 @@
 //! Blender has Z up and Y away; both get the editor's pixels ÷ 100
 //! ([`SCALE`]), so a 1920-pixel frame is about 19 units across.
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use crate::camtrack::{cam_pose, CamPose, CameraTrack, Pose};
 use crate::space3d::Camera;
 use crate::time::Time;
@@ -121,13 +125,7 @@ pub fn matrix_zxy(a: [f64; 3]) -> M3 {
 }
 
 fn mm(a: &M3, b: &M3) -> M3 {
-    let mut o = [[0.0; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            o[i][j] = (0..3).map(|k| a[i][k] * b[k][j]).sum();
-        }
-    }
-    o
+    a.map(|row| std::array::from_fn(|j| row.iter().zip(b).map(|(x, brow)| x * brow.get(j).copied().unwrap_or(0.0)).sum()))
 }
 
 /// Frames per second of the track (from its frame times).
@@ -147,13 +145,9 @@ fn nuke_frames(ct: &CameraTrack) -> Vec<(V3, [f64; 3])> {
         let mut e = euler_zxy(&m);
         // Keep angles continuous (no jumps of 360° between frames).
         if let Some((_, prev)) = out.last() {
-            for k in 0..3 {
-                while e[k] - prev[k] > 180.0 {
-                    e[k] -= 360.0;
-                }
-                while e[k] - prev[k] < -180.0 {
-                    e[k] += 360.0;
-                }
+            for (a, p) in e.iter_mut().zip(prev) {
+                // (the whole turns between, in one go: a damaged angle can't loop for long)
+                *a -= ((*a - p) / 360.0).round() * 360.0;
             }
         }
         out.push((to_nuke(p), e));
@@ -204,7 +198,7 @@ pub fn after_effects(ct: &CameraTrack, name: &str, picked: &[usize]) -> String {
     let _ = writeln!(s, "  cam.property(\"Transform\").property(\"Z Rotation\").setValuesAtTimes(t, [{}]);", roll.join(","));
     let pts = chosen(ct, picked);
     if !pts.is_empty() {
-        let list: Vec<String> = pts.iter().map(|&k| format!("[{},{}]", k + 1, ae(ct.points[k].pos))).collect();
+        let list: Vec<String> = pts.iter().filter_map(|&k| Some(format!("[{},{}]", k + 1, ae(ct.points.get(k)?.pos)))).collect();
         let _ = writeln!(s, "  var pts = [{}];", list.join(","));
         s.push_str("  for (var i = 0; i < pts.length; i++) {\n    var nl = comp.layers.addNull();\n    nl.threeDLayer = true;\n    nl.name = \"Track point \" + pts[i][0];\n    nl.property(\"Transform\").property(\"Position\").setValue(pts[i][1]);\n    nl.property(\"Transform\").property(\"Scale\").setValue([20, 20, 20]);\n  }\n");
     }
@@ -235,8 +229,8 @@ pub fn blender(ct: &CameraTrack, name: &str, picked: &[usize]) -> String {
         let _ = writeln!(s, "    ({}, {}, {}, {}),", py_v(to_blender(p)), py_v(dir_blender(r)), py_v(dir_blender(neg(d))), py_v(dir_blender(neg(f))));
     }
     s.push_str("]\nPOINTS = [\n");
-    for k in chosen(ct, picked) {
-        let _ = writeln!(s, "    {},", py_v(to_blender(v64(ct.points[k].pos))));
+    for p in chosen(ct, picked).into_iter().filter_map(|k| ct.points.get(k)) {
+        let _ = writeln!(s, "    {},", py_v(to_blender(v64(p.pos))));
     }
     s.push_str("]\n\n");
     let _ = writeln!(s, "scene = bpy.context.scene\nscene.render.resolution_x = {w}\nscene.render.resolution_y = {h}\nscene.render.resolution_percentage = 100");
@@ -308,8 +302,8 @@ fn nuke_name(name: &str, what: &str) -> String {
 /// The points as an `.obj` (vertices only), in Nuke's units and axes.
 pub fn obj(ct: &CameraTrack, picked: &[usize]) -> String {
     let mut s = String::from("# Reelforge camera solve points\n");
-    for k in chosen(ct, picked) {
-        let p = to_nuke(v64(ct.points[k].pos));
+    for pt in chosen(ct, picked).into_iter().filter_map(|k| ct.points.get(k)) {
+        let p = to_nuke(v64(pt.pos));
         let _ = writeln!(s, "v {:.6} {:.6} {:.6}", p[0], p[1], p[2]);
     }
     s
@@ -345,19 +339,19 @@ pub fn read_chan(text: &str, frame: [f32; 2], fov: f32) -> Result<ChanPath, Stri
         }
         let vals: Result<Vec<f64>, _> = line.split_whitespace().map(str::parse::<f64>).collect();
         let vals = vals.map_err(|_| format!("line {} isn't numbers: {line}", n + 1))?;
-        if vals.len() < 7 {
+        let [frame_no, x, y, z, rx, ry, rz, rest @ ..] = vals.as_slice() else {
             return Err(format!("line {} has {} numbers; a .chan line has 7 or 8 (frame, x y z, rotation x y z, field of view)", n + 1, vals.len()));
+        };
+        if let Some(&f) = rest.first().filter(|&&f| f > 0.0 && f < 180.0) {
+            file_fov = Some(f as f32);
         }
-        if vals.len() >= 8 && vals[7] > 0.0 && vals[7] < 180.0 {
-            file_fov = Some(vals[7] as f32);
-        }
-        let m = matrix_zxy([vals[4], vals[5], vals[6]]);
+        let m = matrix_zxy([*rx, *ry, *rz]);
         // Columns: right, up, back (Nuke) → the editor's right, down, forward.
-        let col = |c: usize| [m[0][c], m[1][c], m[2][c]];
+        let col = |c: usize| m.map(|row| row.get(c).copied().unwrap_or(0.0));
         let back_nuke = |v: V3| [v[0], -v[1], -v[2]];
         let (r, d, f) = (back_nuke(col(0)), neg(back_nuke(col(1))), neg(back_nuke(col(2))));
-        let pose = Pose { r: [r, d, f], c: from_nuke([vals[1], vals[2], vals[3]]) };
-        frames.push((vals[0].round() as i64, pose));
+        let pose = Pose { r: [r, d, f], c: from_nuke([*x, *y, *z]) };
+        frames.push((frame_no.round() as i64, pose));
     }
     if frames.is_empty() {
         return Err("there are no camera frames in this file".into());
@@ -537,6 +531,15 @@ mod tests {
         let mut bad = ct.clone();
         bad.times.pop();
         assert!(read_json(&json(&bad)).is_err());
+    }
+
+    /// .chan lines with too few numbers, wild angles or a bad field of view:
+    /// an error or a path, never a crash (or a long loop unwinding angles).
+    #[test]
+    fn odd_chan_files_never_crash() {
+        for text in ["", "1 2 3 4 5 6\n", "1 0 0 0 0 0 0 nan\n", "1 0 0 0 1e30 -1e30 1e30 400\n", "1 0 0 0 0 0 0\n2 0 0 0 1e9 0 0\n", "inf inf inf inf inf inf inf\n"] {
+            let _ = read_chan(text, [1920.0, 1080.0], 30.0);
+        }
     }
 
     #[test]

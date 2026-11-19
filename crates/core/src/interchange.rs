@@ -10,6 +10,10 @@
 //! program has its own); titles, solids and compositions go as named
 //! placeholders (gaps in an EDL, with a comment).
 
+// Reads files from anywhere: no position in a list is taken on trust (`get`,
+// checked slices), so a damaged or hostile file is an error, never a crash.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use crate::project::{Clip, Project, TrackKind};
 use crate::time::{FrameRate, Time};
 use crate::MediaId;
@@ -87,15 +91,21 @@ fn reel_of(name: &str) -> String {
 
 /// Sequence `seq` of `p` as an [`Edit`].
 pub fn edit_of(p: &Project, seq: usize) -> Edit {
-    let s = &p.sequences[seq];
+    // (no such sequence: an empty one)
+    let empty;
+    let s = match p.sequences.get(seq) {
+        Some(s) => s,
+        None => {
+            empty = crate::project::Sequence::new("", 1920, 1080, FrameRate::new(25, 1));
+            &empty
+        }
+    };
     let rate = s.frame_rate;
     let f = |t: Time| t.to_frame(rate);
     let dissolves = p.transitions(seq);
     let mut lanes = Vec::new();
-    let mut order: Vec<usize> = (0..s.tracks.len()).filter(|&i| s.tracks[i].kind == TrackKind::Video).collect();
-    order.extend((0..s.tracks.len()).filter(|&i| s.tracks[i].kind == TrackKind::Audio));
-    for ti in order {
-        let tr = &s.tracks[ti];
+    let order = s.tracks.iter().filter(|t| t.kind == TrackKind::Video).chain(s.tracks.iter().filter(|t| t.kind == TrackKind::Audio));
+    for tr in order {
         let mut items = Vec::new();
         for c in &tr.clips {
             if c.scene.is_some() {
@@ -211,8 +221,8 @@ pub fn edl(e: &Edit, video: usize, start: i64) -> String {
     if let Some(v) = videos.get(video) {
         chans.push((v, "V"));
     }
-    for (i, a) in audios.iter().enumerate() {
-        chans.push((a, ["A", "A2", "A3", "A4"][i]));
+    for (a, name) in audios.iter().zip(["A", "A2", "A3", "A4"]) {
+        chans.push((a, name));
     }
     for (ci, (lane, ch)) in chans.iter().enumerate() {
         for (k, it) in lane.items.iter().enumerate() {
@@ -226,9 +236,9 @@ pub fn edl(e: &Edit, video: usize, start: i64) -> String {
             // The outgoing clip stops where a dissolve into the next starts.
             let next_dissolve = lane.items.get(k + 1).filter(|n| n.rec.0 == it.rec.1).and_then(|n| n.dissolve);
             let rec_out = it.rec.1 - next_dissolve.map_or(0, |d| d.0);
-            match it.dissolve {
-                Some((before, after)) if k > 0 => {
-                    let prev = &lane.items[k - 1];
+            let prev = k.checked_sub(1).and_then(|j| lane.items.get(j));
+            match (it.dissolve, prev) {
+                (Some((before, after)), Some(prev)) => {
                     let at = it.rec.0 - before;
                     let prev_src = match prev.source {
                         Source::File { .. } => prev.src_in + ((at - prev.rec.0) as f64 * prev.speed).round() as i64,
@@ -403,7 +413,9 @@ pub fn fcpxml(e: &Edit) -> String {
             if let Some((a, _, parent)) = spine.get(k) {
                 // An offset is in the parent's own time: its start plus how far in.
                 let base = parent.map_or(*a, |p| p.src_in.min(p.src_out()));
-                connected[k].push(clip_xml(it, Some(li as i32), base + it.rec.0 - a, false, true, "              ", ""));
+                if let Some(list) = connected.get_mut(k) {
+                    list.push(clip_xml(it, Some(li as i32), base + it.rec.0 - a, false, true, "              ", ""));
+                }
             }
         }
     }
@@ -412,12 +424,14 @@ pub fn fcpxml(e: &Edit) -> String {
             let k = attach(it.rec.0);
             if let Some((a, _, parent)) = spine.get(k) {
                 let base = parent.map_or(*a, |p| p.src_in.min(p.src_out()));
-                connected[k].push(clip_xml(it, Some(-(li as i32) - 1), base + it.rec.0 - a, true, false, "              ", ""));
+                if let Some(list) = connected.get_mut(k) {
+                    list.push(clip_xml(it, Some(-(li as i32) - 1), base + it.rec.0 - a, true, false, "              ", ""));
+                }
             }
         }
     }
-    for (k, (a, b, it)) in spine.iter().enumerate() {
-        let mut inner: String = connected[k].concat();
+    for (k, ((a, b, it), attached)) in spine.iter().zip(&connected).enumerate() {
+        let mut inner: String = attached.concat();
         // Markers inside this element, in its own time.
         let base = it.map_or(*a, |p| p.src_in.min(p.src_out()));
         for m in e.markers.iter().filter(|m| m.at >= *a && m.at < *b) {
@@ -426,7 +440,7 @@ pub fn fcpxml(e: &Edit) -> String {
         match it {
             Some(it) => {
                 // A dissolve into this clip: a transition element just before it.
-                if let Some((before, after)) = it.dissolve.filter(|_| k > 0 && spine[k - 1].2.is_some()) {
+                if let Some((before, after)) = it.dissolve.filter(|_| k.checked_sub(1).and_then(|j| spine.get(j)).is_some_and(|p| p.2.is_some())) {
                     let _ = writeln!(o, "            <transition name=\"Cross Dissolve\" offset=\"{}\" duration=\"{}\"/>", t(a - before), t(before + after));
                 }
                 o.push_str(&clip_xml(it, None, *a, false, true, "            ", &inner));
@@ -558,7 +572,7 @@ pub fn otio(e: &Edit) -> String {
             if it.rec.0 > at {
                 children.push(json!({ "OTIO_SCHEMA": "Gap.1", "name": "", "metadata": {}, "source_range": range(0, it.rec.0 - at), "effects": [], "markers": [], "enabled": true }));
             }
-            if let Some((before, after)) = it.dissolve.filter(|_| k > 0 && lane.items[k - 1].rec.1 == it.rec.0) {
+            if let Some((before, after)) = it.dissolve.filter(|_| k.checked_sub(1).and_then(|j| lane.items.get(j)).is_some_and(|p| p.rec.1 == it.rec.0)) {
                 children.push(json!({ "OTIO_SCHEMA": "Transition.1", "name": "", "metadata": {}, "transition_type": "SMPTE_Dissolve", "in_offset": rt(before), "out_offset": rt(after) }));
             }
             let dur = it.rec.1 - it.rec.0;
@@ -695,6 +709,16 @@ mod tests {
         seq.tracks[2].clips = vec![Clip::new(ClipId(14), MediaId(1), s(0.0), s(10.0), s(4.0), Some(1))];
         seq.markers.push(crate::project::Marker { at: s(2.0), name: "Check this".into(), color: Default::default() });
         p
+    }
+
+    /// A sequence that isn't there: an empty edit, in every format.
+    #[test]
+    fn a_missing_sequence_writes_an_empty_edit() {
+        let p = Project::new();
+        for f in [Format::Edl, Format::Fcpxml, Format::Xmeml, Format::Otio] {
+            assert!(!f.write(&p, 7).is_empty());
+        }
+        assert!(edit_of(&p, 99).lanes.iter().all(|l| l.items.is_empty()));
     }
 
     #[test]
