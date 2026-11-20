@@ -51,6 +51,7 @@ fn samples() -> Vec<Sample> {
         s("VP9", &["libvpx-vp9"], P::YUV420P, "webm", &[("deadline", "realtime"), ("cpu-used", "8")], 0),
         s("AV1", &["libaom-av1", "libsvtav1", "librav1e"], P::YUV420P, "mkv", &[("cpu-used", "8"), ("preset", "12"), ("speed", "10")], 0),
         s("MPEG-2", &["mpeg2video"], P::YUV420P, "mpg", &[("b", "6M")], 2),
+        s("MPEG-1", &["mpeg1video"], P::YUV420P, "mpg", &[("b", "2M")], 2),
         s("ProRes 422 HQ", &["prores_ks"], P::YUV422P10LE, "mov", &[("profile", "3")], 0),
         Sample { alpha: true, ..s("ProRes 4444 with alpha", &["prores_ks"], P::YUVA444P10LE, "mov", &[("profile", "4")], 0) },
         s("DNxHR HQ", &["dnxhd"], P::YUV422P, "mov", &[("profile", "dnxhr_hq")], 0),

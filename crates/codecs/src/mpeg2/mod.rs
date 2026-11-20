@@ -1,7 +1,12 @@
 //! MPEG-2 video (ITU-T H.262 / ISO 13818-2), Main and 4:2:2 profiles:
 //! I, P and B pictures, frame and field pictures, frame/field/16×8/dual-prime
 //! motion, field DCT, alternate scan, non-linear quantiser, custom matrices,
-//! 4:2:0, 4:2:2 and 4:4:4.
+//! 4:2:0, 4:2:2 and 4:4:4. And MPEG-1 video (ISO 11172-2), the subset of it a
+//! sequence without a sequence extension is: its motion settings in the
+//! picture header (whole-pixel vectors too), its own rounding of
+//! coefficients (each made odd, no mismatch control), its shorter escape
+//! code, and slices that run on past the end of a row. (Its rare D pictures
+//! are left to FFmpeg.)
 //!
 //! Packets hold one picture (or both fields of one). Pictures come in
 //! decode order — each B picture after the two reference pictures it sits
@@ -74,6 +79,8 @@ struct Sequence {
     chroma_intra_matrix: [u8; 64],
     chroma_non_intra_matrix: [u8; 64],
     matrix: Matrix,
+    /// MPEG-1: no sequence extension came with the sequence header.
+    mpeg1: bool,
 }
 
 impl Sequence {
@@ -117,6 +124,10 @@ struct PictureHeader {
     q_scale_type: bool,
     intra_vlc_format: bool,
     alternate_scan: bool,
+    /// MPEG-1 (see the module's notes).
+    mpeg1: bool,
+    /// MPEG-1: vectors forwards / backwards in whole pixels.
+    full_pel: [bool; 2],
 }
 
 /// Read an 8-bit-per-entry matrix in zigzag order into raster order.
@@ -346,7 +357,7 @@ impl Slicer<'_> {
                 break;
             }
             let (run, level) = if sym == AC_ESCAPE {
-                (r.read(6) as usize, r.read_signed(12))
+                (r.read(6) as usize, self.escape_level(r))
             } else {
                 let l = AC_LEVEL[sym as usize] as i32;
                 (AC_RUN[sym as usize] as usize, if r.bit() { -l } else { l })
@@ -357,14 +368,34 @@ impl Slicer<'_> {
             }
             let j = scan[i] as usize;
             let mag = (level.abs() * st.qscale * matrix[j] as i32) >> 4;
-            let val = (if level < 0 { -mag } else { mag }).clamp(-2048, 2047);
+            let val = self.round(if level < 0 { -mag } else { mag });
             out[j] = val;
             parity ^= val & 1;
         }
-        if parity == 0 {
+        if parity == 0 && !self.ph.mpeg1 {
             out[63] ^= 1;
         }
         Ok(())
+    }
+
+    /// An escaped coefficient's level: 12 bits (MPEG-2), or MPEG-1's 8, with
+    /// 8 more for the larger ones.
+    fn escape_level(&self, r: &mut BitReader) -> i32 {
+        if !self.ph.mpeg1 {
+            return r.read_signed(12);
+        }
+        match r.read_signed(8) {
+            0 => r.read(8) as i32,
+            -128 => r.read(8) as i32 - 256,
+            l => l,
+        }
+    }
+
+    /// A dequantised coefficient, clamped: MPEG-1 makes each odd (towards
+    /// zero), where MPEG-2 has the mismatch control instead.
+    fn round(&self, v: i32) -> i32 {
+        let v = if self.ph.mpeg1 && v != 0 && v & 1 == 0 { v - v.signum() } else { v };
+        v.clamp(-2048, 2047)
     }
 
     fn non_intra_block(&self, r: &mut BitReader, st: &SliceState, n: usize, out: &mut [i32; 64]) -> Result<()> {
@@ -386,7 +417,7 @@ impl Slicer<'_> {
                     break;
                 }
                 if sym == AC_ESCAPE {
-                    (r.read(6) as usize, r.read_signed(12))
+                    (r.read(6) as usize, self.escape_level(r))
                 } else {
                     let l = AC_LEVEL[sym as usize] as i32;
                     (AC_RUN[sym as usize] as usize, if r.bit() { -l } else { l })
@@ -399,11 +430,11 @@ impl Slicer<'_> {
             }
             let j = scan[i as usize] as usize;
             let mag = ((2 * level.abs() + 1) * st.qscale * matrix[j] as i32) >> 5;
-            let val = (if level < 0 { -mag } else { mag }).clamp(-2048, 2047);
+            let val = self.round(if level < 0 { -mag } else { mag });
             out[j] = val;
             parity ^= val & 1;
         }
-        if parity == 0 {
+        if parity == 0 && !self.ph.mpeg1 {
             out[63] ^= 1;
         }
         Ok(())
@@ -552,9 +583,16 @@ fn decode_slice(s: &Slicer, cur: &Frame, data: &[u8], mb_row: usize, out: &mut V
         }
         let first = mb_x < 0;
         let target = if first { inc as isize - 1 } else { mb_x + inc as isize };
+        // (an MPEG-1 slice runs on past the end of its row: `mb_x` counts on
+        // from its first row's start)
+        let at = |a: isize| (a as usize % mbw, mb_row + a as usize / mbw);
         if !first {
             // Skipped macroblocks.
-            for x in (mb_x + 1)..target {
+            for a in (mb_x + 1)..target {
+                let (x, y) = at(a);
+                if y >= rows {
+                    return invalid("MPEG-2: slice below the picture");
+                }
                 if s.ph.kind == Kind::I {
                     return invalid("MPEG-2: skipped macroblock in an I picture");
                 }
@@ -565,18 +603,22 @@ fn decode_slice(s: &Slicer, cur: &Frame, data: &[u8], mb_row: usize, out: &mut V
                     m.dirs = 1;
                 } else {
                     m.dirs = st.last_motion.dirs;
-                    m.mv[0][0] = st.pmv[0][0];
-                    m.mv[1][0] = st.pmv[1][0];
+                    m.mv[0][0] = st.pmv[0][0].map(|v| v << s.ph.full_pel[0] as u32);
+                    m.mv[1][0] = st.pmv[1][0].map(|v| v << s.ph.full_pel[1] as u32);
                 }
                 m.kind = if field_pic { 1 } else { 0 };
                 let parity = (s.ph.structure as usize).wrapping_sub(1) & 1;
                 m.field_select = [[parity; 2]; 2];
-                reconstruct(s, cur, out, x as usize, mb_row, &m, None, false, &blocks, 0);
+                reconstruct(s, cur, out, x, y, &m, None, false, &blocks, 0);
             }
         }
         mb_x = target;
-        if mb_x < 0 || mb_x as usize >= mbw {
+        if mb_x < 0 || (mb_x as usize >= mbw && !s.ph.mpeg1) {
             return invalid("MPEG-2: macroblock past the row");
+        }
+        let (mx, my) = at(mb_x);
+        if my >= rows {
+            return invalid("MPEG-2: slice below the picture");
         }
 
         // Macroblock type.
@@ -618,7 +660,7 @@ fn decode_slice(s: &Slicer, cur: &Frame, data: &[u8], mb_row: usize, out: &mut V
             for (n, b) in blocks.iter_mut().enumerate() {
                 s.intra_block(&mut r, &mut st, n, b)?;
             }
-            reconstruct(s, cur, out, mb_x as usize, mb_row, &motion, None, field_dct, &blocks, (1 << nblocks) - 1);
+            reconstruct(s, cur, out, mx, my, &motion, None, field_dct, &blocks, (1 << nblocks) - 1);
             st.last_motion = Motion::default();
         } else {
             if flags & NO_MC != 0 {
@@ -660,7 +702,8 @@ fn decode_slice(s: &Slicer, cur: &Frame, data: &[u8], mb_row: usize, out: &mut V
                                 let val = decode_motion(&mut r, f[k], st.pmv[dir][0][k])?;
                                 st.pmv[dir][0][k] = val;
                                 st.pmv[dir][1][k] = val;
-                                motion.mv[dir][0][k] = val;
+                                // (MPEG-1's whole-pixel vectors, in the half pixels prediction works in)
+                                motion.mv[dir][0][k] = val << s.ph.full_pel[dir] as u32;
                             }
                         }
                         (false, 1) => {
@@ -744,7 +787,7 @@ fn decode_slice(s: &Slicer, cur: &Frame, data: &[u8], mb_row: usize, out: &mut V
                     mask |= 1 << n;
                 }
             }
-            reconstruct(s, cur, out, mb_x as usize, mb_row, &motion, Some(()), field_dct, &blocks, mask);
+            reconstruct(s, cur, out, mx, my, &motion, Some(()), field_dct, &blocks, mask);
             st.last_motion = motion;
         }
         if r.overrun {
@@ -876,7 +919,12 @@ impl Mpeg2Decoder {
             return invalid("MPEG-2: empty picture size");
         }
         let old = self.seq.as_ref();
-        let (chroma_format, progressive, low_delay, matrix) = old.map_or((1, true, false, Matrix::Unknown), |s| (s.chroma_format, s.progressive, s.low_delay, s.matrix));
+        // (MPEG-1 is always progressive 4:2:0 with B pictures reordered; an MPEG-2
+        // sequence extension right after this header sets them again)
+        let (chroma_format, progressive, low_delay, matrix) = match old {
+            Some(s) if !s.mpeg1 => (s.chroma_format, s.progressive, s.low_delay, s.matrix),
+            _ => (1, true, false, old.map_or(Matrix::Unknown, |s| s.matrix)),
+        };
         let (w_hi, h_hi) = old.map_or((0, 0), |s| (s.width & !0xFFF, s.height & !0xFFF));
         self.seq = Some(Sequence {
             width: width | w_hi,
@@ -889,6 +937,8 @@ impl Mpeg2Decoder {
             chroma_intra_matrix: intra,
             chroma_non_intra_matrix: non_intra,
             matrix,
+            // (until a sequence extension says otherwise)
+            mpeg1: true,
         });
         Ok(())
     }
@@ -900,6 +950,7 @@ impl Mpeg2Decoder {
             1 => {
                 // Sequence extension.
                 let Some(seq) = self.seq.as_mut() else { return Ok(()) };
+                seq.mpeg1 = false;
                 r.skip(8);
                 seq.progressive = r.bit();
                 seq.chroma_format = r.read(2).max(1);
@@ -1019,11 +1070,24 @@ impl Mpeg2Decoder {
             1 => Kind::I,
             2 => Kind::P,
             3 => Kind::B,
-            t => return Err(Error::Unsupported(format!("MPEG-2 picture type {t}"))),
+            t => return Err(Error::Unsupported(format!("MPEG-1/2 picture type {t}"))),
         };
+        // (vbv delay, then MPEG-1's motion settings: an MPEG-2 picture coding
+        // extension sets them again)
+        r.skip(16);
+        let mut full_pel = [false; 2];
+        let mut f1 = [7u32; 2];
+        if kind != Kind::I {
+            full_pel[0] = r.bit();
+            f1[0] = r.read(3).max(1);
+        }
+        if kind == Kind::B {
+            full_pel[1] = r.bit();
+            f1[1] = r.read(3).max(1);
+        }
         let mut ph = PictureHeader {
             kind,
-            f_code: [[15; 2]; 2],
+            f_code: if seq.mpeg1 { [[f1[0]; 2], [f1[1]; 2]] } else { [[15; 2]; 2] },
             intra_dc_precision: 0,
             structure: 3,
             top_field_first: false,
@@ -1032,6 +1096,8 @@ impl Mpeg2Decoder {
             q_scale_type: false,
             intra_vlc_format: false,
             alternate_scan: false,
+            mpeg1: seq.mpeg1,
+            full_pel: if seq.mpeg1 { full_pel } else { [false; 2] },
         };
         // Extensions that belong to this picture, then its slices.
         let mut slices = Vec::new();

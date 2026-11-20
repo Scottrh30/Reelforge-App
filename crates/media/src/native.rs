@@ -13,7 +13,8 @@ pub fn codec_of(id: ff::codec::Id) -> Option<Codec> {
         Id::MJPEG => Codec::Mjpeg,
         Id::PRORES => Codec::ProRes,
         Id::DNXHD => Codec::Dnxhd,
-        Id::MPEG2VIDEO => Codec::Mpeg2,
+        // (MPEG-1 is the MPEG-2 decoder's too: see reelforge_codecs::mpeg2)
+        Id::MPEG2VIDEO | Id::MPEG1VIDEO => Codec::Mpeg2,
         Id::H264 => Codec::H264,
         Id::HEVC => Codec::Hevc,
         Id::VP8 => Codec::Vp8,
@@ -52,6 +53,10 @@ pub struct NativeVideo {
     /// decoded by a decoder of its own; its pictures wait here.
     alpha: Option<Box<dyn Decoder>>,
     alphas: std::collections::VecDeque<Picture>,
+    /// Times of the frames whose packet carried an alpha frame: their alpha
+    /// picture is waited for (the decoders run frame-threaded, so the alpha
+    /// one can be a frame or two behind under load).
+    expect: std::collections::VecDeque<i64>,
 }
 
 /// The alpha-channel VP8 / VP9 frame carried with a WebM packet, if any.
@@ -65,7 +70,7 @@ fn webm_alpha(packet: &ff::Packet) -> Option<Vec<u8>> {
 
 impl NativeVideo {
     fn new(dec: Box<dyn Decoder>, codec: Codec) -> Self {
-        NativeVideo { dec, codec, alpha: None, alphas: Default::default() }
+        NativeVideo { dec, codec, alpha: None, alphas: Default::default(), expect: Default::default() }
     }
 
     pub fn send_packet(&mut self, packet: &ff::Packet) -> Result<(), reelforge_codecs::Error> {
@@ -79,6 +84,10 @@ impl NativeVideo {
                     // A bad alpha frame costs the transparency of that frame, not the clip.
                     let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dec.send(&a, pts))).is_ok_and(|r| r.is_ok());
                     if ok {
+                        self.expect.push_back(pts);
+                        while self.expect.len() > 16 {
+                            self.expect.pop_front();
+                        }
                         while let Some(p) = dec.receive() {
                             self.alphas.push_back(p);
                         }
@@ -103,6 +112,20 @@ impl NativeVideo {
         match self.dec.receive() {
             Some(p) => {
                 // Its alpha picture: the one from the same packet (older ones are stale).
+                let wanted = self.expect.contains(&p.pts);
+                while self.expect.front().is_some_and(|&t| t <= p.pts) {
+                    self.expect.pop_front();
+                }
+                if wanted && !self.alphas.iter().any(|a| a.pts >= p.pts) {
+                    if let Some(dec) = self.alpha.as_mut() {
+                        // Still in flight: let it finish (the decoder carries on after).
+                        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dec.finish())).is_ok() {
+                            while let Some(a) = dec.receive() {
+                                self.alphas.push_back(a);
+                            }
+                        }
+                    }
+                }
                 while self.alphas.front().is_some_and(|a| a.pts < p.pts) {
                     self.alphas.pop_front();
                 }
@@ -120,6 +143,7 @@ impl NativeVideo {
             a.flush();
         }
         self.alphas.clear();
+        self.expect.clear();
     }
 
     pub fn send_eof(&mut self) {
@@ -604,6 +628,31 @@ mod tests {
             ran += 1;
         }
         assert!(ran >= 6 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
+    }
+
+    /// MPEG-1 (Video CD, old .mpg files), through the MPEG-2 decoder.
+    #[test]
+    fn mpeg1_matches_ffmpeg() {
+        let m = |extra: &[&'static str]| -> Vec<&'static str> { [vec!["-c:v", "mpeg1video", "-q:v", "4"], extra.to_vec()].concat() };
+        let cases: Vec<(&str, &str, u32, Vec<&str>)> = vec![
+            ("m1_intra.m1v", "320x180", 25, m(&["-g", "1"])),
+            ("m1_ip.mpg", "352x288", 25, m(&["-bf", "0", "-g", "12"])),
+            ("m1_ipb.mpg", "352x240", 30, m(&["-bf", "2", "-g", "15"])),
+            // Slices running across rows, and fine quantising (big levels: the long escape).
+            ("m1_slices.mpg", "320x180", 25, vec!["-c:v", "mpeg1video", "-q:v", "1", "-slices", "2", "-bf", "2"]),
+            // Bigger motion: longer f codes.
+            ("m1_wide.mpg", "640x360", 25, vec!["-c:v", "mpeg1video", "-b:v", "3M", "-bf", "2", "-me_range", "64"]),
+        ];
+        let mut ran = 0;
+        for (name, size, rate, args) in cases {
+            let Some(p) = clip_at(name, size, rate, &args) else {
+                eprintln!("{name}: ffmpeg couldn't make it, skipped");
+                continue;
+            };
+            check(&p, 40.0);
+            ran += 1;
+        }
+        assert!(ran >= 4 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
     }
 
     /// H.264, HEVC, VP9 and AV1 through the pure-Rust decoder libraries.

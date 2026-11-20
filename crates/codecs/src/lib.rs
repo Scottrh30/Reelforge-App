@@ -68,7 +68,7 @@ impl Codec {
             Codec::Mjpeg => "Motion JPEG",
             Codec::ProRes => "Apple ProRes",
             Codec::Dnxhd => "DNxHD / DNxHR",
-            Codec::Mpeg2 => "MPEG-2",
+            Codec::Mpeg2 => "MPEG-1/2",
             Codec::H264 => "H.264",
             Codec::Hevc => "HEVC (H.265)",
             Codec::Vp8 => "VP8",
