@@ -445,6 +445,24 @@ mod tests {
         assert!(ran >= 7 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
     }
 
+    /// Real files of the kinds FFmpeg can't make: 12-bit DNxHR HQX and DNxHD
+    /// CID 1260 (adaptive interlace). FFmpeg's own test samples, fetched by
+    /// tools/dnx/fetch_samples.sh (skipped without them).
+    #[test]
+    fn dnx_samples_match_ffmpeg() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/dnx");
+        for name in ["dnxhr_cid1271_12bit.mov", "dnxhd100_cid1260.mov"] {
+            let p = dir.join(name);
+            if !p.exists() {
+                eprintln!("{name}: not fetched (tools/dnx/fetch_samples.sh), skipped");
+                continue;
+            }
+            let (n, psnr) = compare_with_ffmpeg(&p);
+            eprintln!("{name}: {n} frames, worst {psnr:.1} dB");
+            assert!(n >= 1 && psnr >= 45.0, "{name}: {n} frames, worst {psnr:.1} dB");
+        }
+    }
+
     #[test]
     fn cineform_matches_ffmpeg() {
         let cases: Vec<(&str, &str, Vec<&str>)> = vec![
