@@ -5,8 +5,8 @@
 //! documentation and checked against the reference library's output:
 //! - single-part and multi-part files, scanline and tiled (the full-size
 //!   level of mipmapped and ripmapped files)
-//! - compression: none, RLE, ZIPS, ZIP, PIZ, PXR24, B44 and B44A (DWAA, DWAB
-//!   and HTJ2K are left to FFmpeg's decoder)
+//! - compression: none, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA and DWAB
+//!   (HTJ2K and the newer ZSTD are left to FFmpeg's decoder)
 //! - half, float and uint channels; R, G, B (and A) or Y (luminance), of the
 //!   unnamed layer or else the first layer that has them (`beauty.R`…)
 //! - the data window placed within the display window, transparent outside
@@ -20,6 +20,9 @@
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 mod b44;
+mod dwa;
+
+pub use dwa::f32_to_half;
 mod piz;
 
 use crate::{Decoder, Error, Format, Output, Picture, Plane, Result, StreamInfo};
@@ -65,6 +68,8 @@ enum Compression {
     Pxr24,
     B44,
     B44a,
+    Dwaa,
+    Dwab,
 }
 
 impl Compression {
@@ -72,7 +77,8 @@ impl Compression {
         match self {
             Compression::None | Compression::Rle | Compression::Zips => 1,
             Compression::Zip | Compression::Pxr24 => 16,
-            Compression::Piz | Compression::B44 | Compression::B44a => 32,
+            Compression::Piz | Compression::B44 | Compression::B44a | Compression::Dwaa => 32,
+            Compression::Dwab => 256,
         }
     }
 }
@@ -256,8 +262,9 @@ fn read_header(r: &mut Reader, tiled_file: bool, deep_file: bool) -> Result<Head
                     Some(5) => Compression::Pxr24,
                     Some(6) => Compression::B44,
                     Some(7) => Compression::B44a,
-                    Some(8) => return unsupported("DWAA compression"),
-                    Some(9) => return unsupported("DWAB compression"),
+                    Some(8) => Compression::Dwaa,
+                    Some(9) => Compression::Dwab,
+                    Some(10 | 11) => return unsupported("HTJ2K compression"),
                     Some(c) => return unsupported(format!("compression {c}")),
                     None => return fail("bad compression"),
                 });
@@ -532,6 +539,11 @@ fn decompress(h: &Header, layout: &ChannelLayout, data: &[u8]) -> Result<Vec<u8>
         Compression::B44 | Compression::B44a => {
             let mut out = vec![0u8; size];
             b44::decompress(data, layout, &mut out)?;
+            Ok(out)
+        }
+        Compression::Dwaa | Compression::Dwab => {
+            let mut out = vec![0u8; size];
+            dwa::decompress(data, layout, &h.channels, &mut out)?;
             Ok(out)
         }
     }

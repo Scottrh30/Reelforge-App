@@ -221,7 +221,7 @@ impl Bits<'_> {
     }
 }
 
-fn huf_uncompress(data: &[u8], out: &mut [u16]) -> Result<()> {
+pub(super) fn huf_uncompress(data: &[u8], out: &mut [u16]) -> Result<()> {
     if out.is_empty() {
         return Ok(());
     }

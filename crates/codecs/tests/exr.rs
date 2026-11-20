@@ -54,6 +54,21 @@ fn decodes_like_the_reference_library() {
                 }
             }
         }
+        if name.starts_with("dwa") {
+            // Lossy, and the library's own result depends on the machine (its
+            // inverse DCT has SSE2, AVX and plain versions that round
+            // differently), so allow one step of the stored (non-linear) half
+            // values, now and then.
+            let stored = |v: f32| {
+                let z = if v.abs() <= 1.0 { v.abs().powf(1.0 / 2.2) } else { v.abs().ln() / 2.2 + 1.0 };
+                exr::f32_to_half(z.copysign(v)) as i32
+            };
+            let off: Vec<i32> = got.iter().zip(&want).filter(|(a, b)| a.to_bits() != b.to_bits()).map(|(&a, &b)| (stored(a) - stored(b)).abs()).collect();
+            let worst = off.iter().copied().max().unwrap_or(0);
+            assert!(worst <= 2 && off.len() * 200 <= got.len(), "{name}: {} of {} values differ, by up to {worst} steps", off.len(), got.len());
+            checked += 1;
+            continue;
+        }
         let bad = got.iter().zip(&want).position(|(a, b)| a.to_bits() != b.to_bits() && !(a.is_nan() && b.is_nan()));
         if let Some(i) = bad {
             let px = i / 4;
@@ -61,7 +76,7 @@ fn decodes_like_the_reference_library() {
         }
         checked += 1;
     }
-    assert!(checked >= 18, "{checked} files");
+    assert!(checked >= 25, "{checked} files");
 }
 
 /// Every reference file cut short or with bytes changed: an error or a
@@ -94,4 +109,17 @@ fn damaged_files_never_crash() {
             let _ = exr::decode(&f);
         }
     }
+}
+
+/// How long a big file takes (RF_EXR_BENCH=path; prints the time).
+#[test]
+fn bench_file() {
+    let Ok(path) = std::env::var("RF_EXR_BENCH") else { return };
+    let file = std::fs::read(path).unwrap();
+    exr::decode(&file).unwrap();
+    let t = std::time::Instant::now();
+    for _ in 0..10 {
+        exr::decode(&file).unwrap();
+    }
+    eprintln!("{:.1} ms", t.elapsed().as_secs_f64() * 100.0);
 }

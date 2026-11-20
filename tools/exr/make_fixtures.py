@@ -140,6 +140,20 @@ parts = [C.Part({"compression": C.ZIP_COMPRESSION, "type": C.scanlineimage}, {"Z
 C.File(parts).write(path)
 reference(path)
 
-# DWAA: left to FFmpeg (the decoder says it's not supported).
-write("dwaa-unsupported", {"compression": C.DWAA_COMPRESSION, "type": C.scanlineimage}, picture(H, W))
+# DWAA and DWAB: lossy, so the test allows a little difference from the
+# library (its float maths may round a value the other way).
+write("dwaa-half-rgba", {"compression": C.DWAA_COMPRESSION, "type": C.scanlineimage}, picture(H, W))
+write("dwab-half-rgba", {"compression": C.DWAB_COMPRESSION, "type": C.scanlineimage}, picture(300, 90, noise_level=0.01))
+write("dwaa-float-rgb", {"compression": C.DWAA_COMPRESSION, "type": C.scanlineimage}, picture(H, W, alpha=False, dtype=np.float32))
+write("dwaa-luma", {"compression": C.DWAA_COMPRESSION, "type": C.scanlineimage}, {"Y": picture(H, W, alpha=False)["G"]})
+p = picture(H, W)
+layered = {"beauty." + k: v for k, v in p.items()}
+layered["depth.Z"] = (np.ones((H, W)) * 12.5 + rng.normal(0, 1, (H, W))).astype(np.float32)
+layered["id"] = rng.integers(0, 9, (H, W)).astype(np.uint32)
+write("dwaa-layers", {"compression": C.DWAA_COMPRESSION, "type": C.scanlineimage}, layered)
+write("dwaa-tiled", {"compression": C.DWAA_COMPRESSION, "type": C.tiledimage, "tiles": tile32}, picture(70, 90))
+write("dwab-flat", {"compression": C.DWAB_COMPRESSION, "type": C.scanlineimage, "dwaCompressionLevel": 200.0}, picture(H, W, noise_level=0.0))
+
+# HTJ2K: left to FFmpeg (the decoder says it's not supported).
+write("htj2k-unsupported", {"compression": C.HTJ2K32_COMPRESSION, "type": C.scanlineimage}, picture(H, W))
 print("ok")
