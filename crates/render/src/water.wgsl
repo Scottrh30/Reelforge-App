@@ -828,3 +828,59 @@ fn body_face(uv: vec2<f32>, c: vec4<f32>, hit: vec2<f32>, depth: f32) -> vec4<f3
     let out = vec4(rgb, a);
     return mix(c, out, clamp(fx.p6.w / 100.0, 0.0, 1.0));
 }
+
+// ---- Liquid (3D) ------------------------------------------------------------
+// The simulation's picture (second, seen through its camera): thickness
+// (cells), foam, and the surface's normal across and down (towards the camera
+// is -z). p5 = (-, -, water colour, clearness %), p6 = (refraction %,
+// highlights %, foam %, light direction °), p7 = (view from above °, show,
+// opacity %).
+
+@fragment
+fn fs_liquid3d(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let s = textureSampleLevel(second, second_sampler, in.uv, 0.0);
+    let thick = max(s.x, 0.0) * inside(in.uv);
+    // Where there's water (its edge soft over a fraction of a cell).
+    let cover = smoothstep(0.05, 0.45, thick);
+    if (cover <= 0.0) {
+        return select(c, vec4(0.0), u32(round(fx.p7.y)) == 1u);
+    }
+    let nxy = clamp(s.zw, vec2(-1.0), vec2(1.0));
+    let n = vec3(nxy, -sqrt(max(1.0 - dot(nxy, nxy), 0.0)));
+    // (towards the eye: the camera looks along +z)
+    let v = vec3(0.0, 0.0, -1.0);
+    let tint = colour(fx.p5.z);
+    let clear = clamp(fx.p5.w / 100.0, 0.0, 1.0);
+    // The picture behind, bent through the surface (further where it's thicker).
+    let bend = nxy * max(fx.p6.x, 0.0) / 100.0 * 0.035 * clamp(thick / 3.0, 0.3, 1.5);
+    let back = textureSample(src, src_sampler, to_tex(clamp(in.uv + bend, vec2(0.0), vec2(1.0))));
+    // Light through the water: its colour deepens with thickness, less so the clearer it is.
+    let absorb = 1.0 - exp(-thick * (1.1 - clear) * 0.35);
+    let through = mix(back.rgb, back.rgb * tint, clamp(absorb + (1.0 - clear) * 0.3, 0.0, 1.0));
+    // Lit from a light at Light direction, above.
+    let ld = fx.p6.w * 0.017453293;
+    let l = normalize(vec3(cos(ld), -0.9, -0.6 + sin(ld) * 0.4));
+    let diffuse = clamp(dot(n, -l) * 0.5 + 0.5, 0.0, 1.0);
+    let body = tint * (0.25 + 0.55 * diffuse);
+    // Murky water shows its own colour; clear water, what's behind.
+    let murk = (1.0 - clear) * 0.85;
+    var rgb = mix(through, body, clamp(murk * absorb * 1.4, 0.0, 1.0));
+    // The sky in it at grazing angles, and the light's highlight.
+    let fres = 0.03 + 0.97 * pow(1.0 - clamp(-n.z, 0.0, 1.0), 4.0);
+    let sky = mix(vec3(0.62, 0.72, 0.82), vec3(0.88, 0.92, 0.96), clamp(-n.y * 0.5 + 0.5, 0.0, 1.0));
+    rgb = mix(rgb, sky, clamp(fres, 0.0, 0.8));
+    let h = normalize(-l - v);
+    let spec = pow(max(dot(-n, h), 0.0), 160.0) * 1.3 * max(fx.p6.y, 0.0) / 100.0;
+    rgb += vec3(1.0, 0.98, 0.94) * spec;
+    // Foam where it sprays.
+    let foam = clamp(s.y * 1.3 * max(fx.p6.z, 0.0) / 100.0, 0.0, 1.0);
+    rgb = mix(rgb, vec3(0.94, 0.96, 0.98) * (0.6 + 0.4 * diffuse), foam);
+    let o = clamp(fx.p7.z / 100.0, 0.0, 1.0) * cover;
+    if (u32(round(fx.p7.y)) == 1u) {
+        // The water alone (clear water lets little of itself show).
+        let a = clamp(o * (0.35 + murk * 0.5 + fres + spec + foam), 0.0, 1.0);
+        return vec4(rgb * a, a);
+    }
+    return mix(c, vec4(rgb, 1.0), o);
+}

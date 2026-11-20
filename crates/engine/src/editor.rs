@@ -1204,7 +1204,7 @@ impl Editor {
     pub fn simulate_now(&mut self) {
         use reelforge_core::effects::EffectKind;
         self.commit_live_edit();
-        let simulated = |c: &reelforge_core::Clip| c.effects.iter().any(|e| e.enabled && matches!(e.kind, EffectKind::Fluid | EffectKind::WaterSurface | EffectKind::Liquid));
+        let simulated = |c: &reelforge_core::Clip| c.effects.iter().any(|e| e.enabled && matches!(e.kind, EffectKind::Fluid | EffectKind::WaterSurface | EffectKind::Liquid | EffectKind::Liquid3D));
         let s = self.seq();
         let clips: Vec<&reelforge_core::Clip> = s.tracks.iter().flat_map(|t| &t.clips).filter(|c| simulated(c)).collect();
         let chosen: Vec<&reelforge_core::Clip> = clips.iter().copied().filter(|c| self.selected.contains(&c.id)).collect();

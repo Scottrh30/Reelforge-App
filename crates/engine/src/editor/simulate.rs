@@ -5,13 +5,13 @@
 //! timed, so everything can be changed afterwards in the Controls panel.
 
 use super::Editor;
-use reelforge_core::effects::{bullet, fluid_params as fl, liquid as lq, muzzle, ocean as oc, shatter, water as ws};
+use reelforge_core::effects::{bullet, fluid_params as fl, liquid as lq, liquid3d as l3, muzzle, ocean as oc, shatter, water as ws};
 use reelforge_core::particles as p;
 use reelforge_core::undo::{AddClip, Batch, Command};
 use reelforge_core::{Clip, ClipId, Effect, EffectKind, MediaId, TitleSpec, Time};
 
 /// What can be added (the menu's order): (name, label).
-pub const SIMULATIONS: [(&str, &str); 26] = [
+pub const SIMULATIONS: [(&str, &str); 28] = [
     ("fire", "Fire"),
     ("smoke", "Smoke"),
     ("explosion", "Explosion"),
@@ -32,6 +32,8 @@ pub const SIMULATIONS: [(&str, &str); 26] = [
     ("ripples", "Ripples from drops at a point"),
     ("waves", "Waves rolling in"),
     ("pour", "Pour water"),
+    ("pour3d", "Pour water in 3D (splashing towards the camera)"),
+    ("splash3d", "Splash of water at the camera (3D)"),
     ("waterfall", "Waterfall"),
     ("fill", "Fill with water"),
     ("tank", "Fill a tank (with depth)"),
@@ -153,6 +155,18 @@ impl Editor {
             "ripples" => self.add_effects_layer(vec![with(EffectKind::WaterSurface, &[(ws::RAIN, 0.0), (ws::DROP_EVERY, 1.2), (ws::DROP_SIZE, 30.0 * k)])], false, "Add ripples", "Added drops falling at one point (drag it in the Viewer), rings spreading out from each and bouncing off the frame's edges"),
             "waves" => self.add_effects_layer(vec![with(EffectKind::WaterSurface, &[(ws::RAIN, 0.0), (ws::WAVE_HEIGHT, 100.0), (ws::WAVELENGTH, 160.0 * k), (ws::WAVE_DIR, -70.0)])], false, "Add waves", "Added waves rolling in from one side: Wavelength and Wave direction set them; put a green-screen object on the layer and they bounce off it"),
             "tank" => self.add_effects_layer(vec![liquid(k, &[(lq::FILL, 20.0), (lq::DEPTH, 450.0 * k), (lq::VIEW, 22.0)])], false, "Add a tank of water", "Added water pouring into a tank, seen from a little above (Depth makes it a body of water; View from above sets the angle). Make the layer 3D (Transform) and it's seen by the scene's camera instead, in perspective as the camera or the layer moves"),
+            "pour3d" => self.add_effects_layer(
+                vec![with(EffectKind::Liquid3D, &[(l3::SPEED, 400.0 * k), (l3::WIDTH, 50.0 * k), (l3::GRAVITY, 980.0 * k), (l3::OBJECT_DEPTH, 120.0 * k), (l3::SHOW, 1.0)])],
+                false,
+                "Add pouring water in 3D",
+                "Added water pouring in 3D: it falls into a box behind the picture and splashes towards the camera (Towards the camera sets how much; drag the source in the Viewer). Over footage it bends what's behind it; on its own it comes out with transparency",
+            ),
+            "splash3d" => self.add_effects_layer(
+                vec![with(EffectKind::Liquid3D, &[(l3::X, 50.0), (l3::Y, 75.0), (l3::Z, 80.0), (l3::DIRECTION, 90.0), (l3::TOWARD, 62.0), (l3::SPEED, 2600.0 * k), (l3::WIDTH, 220.0 * k), (l3::FLOW, 260.0), (l3::FOR, 0.3), (l3::GRAVITY, 980.0 * k), (l3::SPLASH, 95.0), (l3::DROPLETS, 250.0), (l3::CONTAINER, 1.0), (l3::SHOW, 1.0)])],
+                false,
+                "Add a splash at the camera",
+                "Added a splash of water thrown up at the camera: a burst from the back, breaking into drops that fly out of the picture. Pours for sets how long it lasts",
+            ),
             "pour" => self.add_effects_layer(vec![liquid(k, &[])], false, "Add pouring water", "Added water pouring in and splashing about the frame's floor (drag the source in the Viewer). It's worked out from the layer's start, so the first play takes a moment"),
             "waterfall" => self.add_effects_layer(
                 vec![liquid(k, &[(lq::X, 8.0), (lq::Y, 18.0), (lq::DIRECTION, 0.0), (lq::SPEED, 220.0 * k), (lq::WIDTH, 90.0 * k), (lq::FLOW, 180.0), (lq::EDGES, 1.0), (lq::FILL, 12.0)])],

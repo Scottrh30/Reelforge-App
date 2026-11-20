@@ -100,6 +100,7 @@ impl<'a> From<&'a reelforge_core::frame::Pixels> for PixelData<'a> {
 
 mod particles;
 mod fluidgpu;
+mod liquid3dgpu;
 mod watergpu;
 pub mod simstore;
 pub use simstore::{set_simulation_store, SimulationStore};
@@ -409,6 +410,8 @@ pub struct Compositor {
     fluid: fluidgpu::FluidGpu,
     /// Water surfaces and liquids, simulated on the card.
     water: watergpu::WaterGpu,
+    /// Liquids in 3D, simulated on the card.
+    liquid3d: liquid3dgpu::Liquid3dGpu,
     /// Reads frames shared by the hardware decoder (Windows, Direct3D 12).
     #[cfg(windows)]
     interop: Option<interop::Importer>,
@@ -649,7 +652,7 @@ impl Compositor {
         let water_shader = device.create_shader_module(wgpu::include_wgsl!("water.wgsl"));
         // (the ocean reads a simulation round solid objects when it has one, a clear
         // texture when it hasn't: see `blank_second`)
-        for (entry, layout, two) in [("fs_ocean", &mask_pl, true), ("fs_water", &mask_pl, true), ("fs_liquid", &mask_pl, true)] {
+        for (entry, layout, two) in [("fs_ocean", &mask_pl, true), ("fs_water", &mask_pl, true), ("fs_liquid", &mask_pl, true), ("fs_liquid3d", &mask_pl, true)] {
             let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
                 layout: Some(layout),
@@ -833,6 +836,7 @@ impl Compositor {
             particles: particles::ParticleRenderer::new(device, &fx_pl, ACCUM_FORMAT),
             fluid: fluidgpu::FluidGpu::new(device, queue),
             water: watergpu::WaterGpu::new(device, queue),
+            liquid3d: liquid3dgpu::Liquid3dGpu::new(device, queue),
             #[cfg(windows)]
             interop: {
                 let i = interop::Importer::new(device);
@@ -1249,6 +1253,7 @@ impl Compositor {
     pub fn simulation_resume(&self, job: &reelforge_core::fluid::FluidJob) -> Option<usize> {
         match job.effect.kind {
             EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => Some(self.water.resume_step(job)),
+            EffectKind::Liquid3D => Some(self.liquid3d.resume_step(job)),
             EffectKind::Fluid => Some(self.fluid.resume_step(job)),
             _ => None,
         }
@@ -1261,6 +1266,7 @@ impl Compositor {
     pub fn simulation_caught_up(&mut self, job: &reelforge_core::fluid::FluidJob, from: usize, exact: bool) {
         match job.effect.kind {
             EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.caught_up(job, from, exact),
+            EffectKind::Liquid3D => self.liquid3d.caught_up(job, from, exact),
             EffectKind::Fluid => self.fluid.caught_up(job, from, exact),
             _ => {}
         }
@@ -1274,6 +1280,7 @@ impl Compositor {
     pub fn simulation_fork(&mut self, job: &reelforge_core::fluid::FluidJob, shadow: u64) -> Option<usize> {
         match job.effect.kind {
             EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.fork(job, shadow),
+            EffectKind::Liquid3D => self.liquid3d.fork(job, shadow),
             EffectKind::Fluid => self.fluid.fork(job, shadow),
             _ => None,
         }
@@ -1283,6 +1290,7 @@ impl Compositor {
     pub fn simulation_adopt(&mut self, kind: EffectKind, key: u64, shadow: u64) {
         match kind {
             EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.adopt(key, shadow),
+            EffectKind::Liquid3D => self.liquid3d.adopt(key, shadow),
             EffectKind::Fluid => self.fluid.adopt(key, shadow),
             _ => {}
         }
@@ -1292,6 +1300,7 @@ impl Compositor {
     pub fn simulation_discard(&mut self, kind: EffectKind, shadow: u64) {
         match kind {
             EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.discard(shadow),
+            EffectKind::Liquid3D => self.liquid3d.discard(shadow),
             EffectKind::Fluid => self.fluid.discard(shadow),
             _ => {}
         }
@@ -1309,6 +1318,7 @@ impl Compositor {
         let view = self.layers.get(&layer.key).filter(|t| !t.float).map(|t| t.texture.create_view(&Default::default()));
         let _ = match kind {
             EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(&job, view.as_ref()),
+            EffectKind::Liquid3D => self.liquid3d.step_to(&job, view.as_ref()),
             _ => self.fluid.step_to(&job, view.as_ref()),
         };
     }
@@ -1452,6 +1462,7 @@ impl Compositor {
                     let layer = self.layers.get(&l.key).filter(|t| !t.float).map(|t| (t.texture.create_view(&Default::default()), t.content_id));
                     let tex = match e.kind {
                         EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(job, layer.as_ref().map(|(v, _)| v)),
+                        EffectKind::Liquid3D => self.liquid3d.step_to(job, layer.as_ref().map(|(v, _)| v)),
                         _ => self.fluid.step_to(job, layer.as_ref().map(|(v, _)| v)),
                     };
                     if let Some(tex) = tex {
@@ -1869,7 +1880,7 @@ impl Compositor {
                         push("fs_fluid", cur, Second::Table(i), o1, uniform(&e.values, [0.0; 2]));
                         cur = o1;
                     }
-                    EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => {
+                    EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid | EffectKind::Liquid3D => {
                         // (an ocean has a simulation only with objects in it)
                         let second = if self.tables.contains_key(&(key, i)) {
                             Second::Table(i)
@@ -1906,6 +1917,7 @@ impl Compositor {
                         let entry = match e.kind {
                             EffectKind::Ocean => "fs_ocean",
                             EffectKind::WaterSurface => "fs_water",
+                            EffectKind::Liquid3D => "fs_liquid3d",
                             _ => "fs_liquid",
                         };
                         push(entry, cur, second, o1, u);

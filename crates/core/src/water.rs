@@ -26,7 +26,7 @@
 //! from the effect's (keyframed) values at the step's time, so the same clip
 //! always gives the same water.
 
-use crate::effects::{liquid as lq, ocean as oc, water as ws, Effect, EffectKind};
+use crate::effects::{liquid as lq, liquid3d as l3, ocean as oc, water as ws, Effect, EffectKind};
 use crate::fluid::FluidJob;
 use crate::time::Time;
 
@@ -38,6 +38,14 @@ pub const LIQUID_RATE: f64 = 120.0;
 const SURFACE_COLUMNS: [usize; 3] = [256, 384, 512];
 /// Grid columns of the liquid for each Detail setting.
 const LIQUID_COLUMNS: [usize; 3] = [120, 176, 240];
+/// Liquid (3D) steps a second.
+pub const LIQUID3D_RATE: f64 = 60.0;
+/// Grid columns of the 3D liquid for each Detail setting (as many cells deep as down).
+const LIQUID3D_COLUMNS: [usize; 3] = [64, 96, 128];
+/// Particles a full cell of the 3D liquid holds.
+pub const PER_CELL_3D: usize = 8;
+/// Where the layer sits in the 3D liquid's box, front to back (a fraction of its depth).
+pub const PLANE: f32 = 0.5;
 /// Most drops in one step (more in heavy rain wait for the next).
 pub const MAX_DROPS: usize = 8;
 /// Particles a cell holds when full.
@@ -47,6 +55,7 @@ pub const PER_CELL: usize = 4;
 pub fn rate(kind: EffectKind) -> f64 {
     match kind {
         EffectKind::Liquid => LIQUID_RATE,
+        EffectKind::Liquid3D => LIQUID3D_RATE,
         EffectKind::Fluid => crate::fluid::RATE,
         _ => SURFACE_RATE,
     }
@@ -60,6 +69,7 @@ fn detail(e: &Effect, i: usize) -> usize {
 pub fn grid(e: &Effect, size: [f32; 2]) -> (usize, usize) {
     let w = match e.kind {
         EffectKind::Liquid => LIQUID_COLUMNS[detail(e, lq::DETAIL)],
+        EffectKind::Liquid3D => LIQUID3D_COLUMNS[detail(e, l3::DETAIL)],
         EffectKind::Ocean => SURFACE_COLUMNS[1],
         _ => SURFACE_COLUMNS[detail(e, ws::DETAIL)],
     };
@@ -67,10 +77,17 @@ pub fn grid(e: &Effect, size: [f32; 2]) -> (usize, usize) {
     (w, h)
 }
 
+/// How many cells deep the 3D liquid's box is on a grid `h` cells down (as
+/// deep as it's tall, within reason).
+pub fn depth_cells(h: usize) -> usize {
+    h.clamp(8, 160)
+}
+
 /// Settings that change the simulation (the look is drawn afterwards).
 fn sim_params(kind: EffectKind) -> std::ops::Range<usize> {
     match kind {
         EffectKind::Liquid => 0..lq::COLOR,
+        EffectKind::Liquid3D => 0..l3::COLOR,
         // (the waves and the camera; the objects' settings are added below)
         EffectKind::Ocean => 0..oc::DEEP,
         _ => 0..ws::COLOR,
@@ -83,6 +100,7 @@ pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
     let enough = match e.kind {
         EffectKind::WaterSurface => e.params.len() > ws::OPACITY,
         EffectKind::Liquid => e.params.len() > lq::OPACITY,
+        EffectKind::Liquid3D => e.params.len() > l3::OPACITY,
         // (an ocean simulates only with solid objects in it)
         EffectKind::Ocean => e.params.len() > oc::REFLECT && e.value_at(oc::SOLIDS, Time::ZERO) >= 0.5,
         _ => false,
@@ -93,6 +111,7 @@ pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
     let (w, h) = grid(e, size);
     let solids = match e.kind {
         EffectKind::Liquid => e.value_at(lq::SOLIDS, Time::ZERO),
+        EffectKind::Liquid3D => e.value_at(l3::SOLIDS, Time::ZERO),
         EffectKind::Ocean => e.value_at(oc::SOLIDS, Time::ZERO),
         _ => e.value_at(ws::SOLIDS, Time::ZERO),
     };
@@ -109,7 +128,8 @@ pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
         hs.finish()
     };
     let step = (t.as_secs_f64().max(0.0) * rate(e.kind)).floor().min(1e9) as usize;
-    Some(FluidJob { key: key ^ 0x5741_7465, effect: e.clone(), size, w, h, step, obstacles: solids >= 0.5 })
+    let d = if e.kind == EffectKind::Liquid3D { depth_cells(h) } else { 0 };
+    Some(FluidJob { key: key ^ 0x5741_7465, effect: e.clone(), size, w, h, step, obstacles: solids >= 0.5, d })
 }
 
 fn splitmix(mut x: u64) -> u64 {
@@ -392,6 +412,89 @@ pub fn liquid_step(e: &Effect, step: usize, w: usize, h: usize, size: [f32; 2]) 
     }
 }
 
+/// One step of a 3D liquid (grid cells and steps; x across, y down, z away
+/// from the camera).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Liquid3dStep {
+    /// The source: middle of its mouth, direction (unit), speed (cells a step),
+    /// the mouth's width (cells).
+    pub src: [f32; 3],
+    pub dir: [f32; 3],
+    pub speed: f32,
+    pub width: f32,
+    /// Particles poured in this step.
+    pub emit: u32,
+    /// Gravity (cells a step², down).
+    pub gravity: f32,
+    /// FLIP fraction (the rest PIC: smoother, thicker water).
+    pub flip: f32,
+    /// Velocity kept a step (thick liquids keep less).
+    pub damp: f32,
+    pub bounce: f32,
+    /// The box's floor; its sides and back.
+    pub floor: bool,
+    pub walls: bool,
+    pub solids: Solids,
+    /// Half the solid objects' thickness (cells), about the layer's plane.
+    pub slab_half: f32,
+    /// The starting pool's surface, in cells from the top (h: none).
+    pub fill_to: f32,
+    pub droplets: f32,
+    pub step: u32,
+    pub seed: u32,
+}
+
+/// The settings of step `step` of 3D liquid `e` on a `w`×`h`×`d` grid over a `size` layer.
+pub fn liquid3d_step(e: &Effect, step: usize, w: usize, h: usize, d: usize, size: [f32; 2]) -> Liquid3dStep {
+    let t = step as f64 / LIQUID3D_RATE;
+    let at = Time::from_secs_f64(t);
+    let v = |i: usize| e.value_at(i, at);
+    let cell = size[0] / w.max(1) as f32;
+    let seed = e.value_at(l3::SEED, Time::ZERO).max(0.0) as u64;
+    let rate = LIQUID3D_RATE as f32;
+    // (two cells a step at most: faster water would leave the grid between steps)
+    let speed = (v(l3::SPEED).max(0.0) / cell / rate).min(2.0);
+    let a = v(l3::DIRECTION).to_radians();
+    let up = v(l3::TOWARD).clamp(-89.0, 89.0).to_radians();
+    let dir = [up.cos() * a.cos(), -up.cos() * a.sin(), -up.sin()];
+    let width = (v(l3::WIDTH) / cell).max(0.5);
+    let from = e.value_at(l3::FROM, Time::ZERO) as f64;
+    let dur = e.value_at(l3::FOR, Time::ZERO) as f64;
+    let pouring = t >= from && (dur <= 0.0 || t < from + dur);
+    // A full stream (PER_CELL_3D a cell) through the round mouth at its speed.
+    let flow = (v(l3::FLOW) / 100.0).max(0.0);
+    let mouth = std::f32::consts::PI * width * width / 4.0;
+    let per_step = if pouring { PER_CELL_3D as f32 * mouth * speed.max(0.15) * flow } else { 0.0 };
+    let emit = per_step.floor() as u32 + u32::from(rand(seed, step, 1) < per_step.fract());
+    let container = e.value_at(l3::CONTAINER, Time::ZERO).round() as u32;
+    let fill = e.value_at(l3::FILL, Time::ZERO).clamp(0.0, 95.0) / 100.0;
+    let thick = (v(l3::THICK) / 100.0).clamp(0.0, 1.0);
+    Liquid3dStep {
+        src: [v(l3::X) / 100.0 * w as f32, v(l3::Y) / 100.0 * h as f32, (v(l3::Z) / 100.0).clamp(0.0, 1.0) * d as f32],
+        dir,
+        speed,
+        width,
+        emit: emit.min(8192),
+        gravity: (v(l3::GRAVITY) / cell / (rate * rate)).clamp(-0.5, 0.5),
+        flip: ((v(l3::SPLASH) / 100.0).clamp(0.0, 1.0) * 0.98) * (1.0 - thick * 0.7),
+        damp: 1.0 - thick * thick * 0.04,
+        bounce: (v(l3::BOUNCE) / 100.0).clamp(0.0, 1.0),
+        floor: container <= 1,
+        walls: container == 0,
+        solids: solids(e, l3::SOLIDS, l3::TOLERANCE, at),
+        slab_half: (v(l3::OBJECT_DEPTH).max(0.0) / cell / 2.0).min(d as f32),
+        fill_to: h as f32 * (1.0 - fill),
+        droplets: (v(l3::DROPLETS) / 100.0).clamp(0.0, 3.0),
+        step: step as u32,
+        seed: seed as u32,
+    }
+}
+
+/// How many particles a 3D liquid on a `w`×`h`×`d` grid can hold.
+pub fn capacity3d(w: usize, h: usize, d: usize) -> usize {
+    (w * h * d * PER_CELL_3D).clamp(4096, 1 << 20)
+}
+
 /// How many particles a liquid on a `w`×`h` grid can hold.
 pub fn capacity(w: usize, h: usize) -> usize {
     (w * h * PER_CELL).clamp(1024, 1 << 20)
@@ -399,6 +502,42 @@ pub fn capacity(w: usize, h: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// A 3D liquid: a box as deep as it's tall, poured at its speed through a
+    /// round mouth, pointing towards the camera when asked; the look isn't
+    /// another simulation.
+    #[test]
+    fn a_3d_liquid_pours_through_a_box() {
+        use crate::effects::liquid3d as l3;
+        let size = [1920.0, 1080.0];
+        let mut e = Effect::new(EffectKind::Liquid3D);
+        let j = job(&e, Time::from_secs_f64(1.0), size).unwrap();
+        // (Low detail to start: 64 across)
+        assert_eq!((j.w, j.h, j.d, j.step), (64, 36, 36, 60));
+        let st = liquid3d_step(&e, 10, j.w, j.h, j.d, size);
+        assert!(st.emit > 0 && st.floor && st.walls);
+        // (30 % across, 20 % down, at the layer's plane)
+        assert!((st.src[0] - 19.2).abs() < 1e-3 && (st.src[1] - 7.2).abs() < 1e-3 && (st.src[2] - 18.0).abs() < 1e-3);
+        let len = (st.dir[0].powi(2) + st.dir[1].powi(2) + st.dir[2].powi(2)).sqrt();
+        assert!((len - 1.0).abs() < 1e-5 && st.dir[2] < -0.5, "towards the camera: {:?}", st.dir);
+        e.params[l3::TOWARD].value = 0.0;
+        assert!(liquid3d_step(&e, 10, j.w, j.h, j.d, size).dir[2].abs() < 1e-6);
+        // Another colour is the same simulation; more flow isn't.
+        let mut red = e.clone();
+        red.params[l3::COLOR].value = 0xff0000 as f32;
+        assert_eq!(job(&red, Time::ZERO, size).unwrap().key, job(&e, Time::ZERO, size).unwrap().key);
+        let mut more = e.clone();
+        more.params[l3::FLOW].value = 200.0;
+        assert_ne!(job(&more, Time::ZERO, size).unwrap().key, job(&e, Time::ZERO, size).unwrap().key);
+        // Wild settings stay in range.
+        for (i, v) in [(l3::SPEED, 1e9), (l3::WIDTH, 1e9), (l3::GRAVITY, -1e9), (l3::OBJECT_DEPTH, 1e9), (l3::TOWARD, 1e9)] {
+            let mut w = e.clone();
+            w.params[i].value = v;
+            let st = liquid3d_step(&w, 3, j.w, j.h, j.d, size);
+            assert!(st.speed <= 2.0 && st.emit <= 8192 && st.gravity.abs() <= 0.5 && st.slab_half <= j.d as f32 && st.dir.iter().all(|x| x.is_finite()), "{i}");
+        }
+        assert!(capacity3d(j.w, j.h, j.d) <= 1 << 20);
+    }
+
     #[test]
     fn an_ocean_simulates_only_with_solid_objects_in_it() {
         use crate::effects::ocean as oc;

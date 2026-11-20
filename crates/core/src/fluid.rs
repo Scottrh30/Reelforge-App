@@ -142,6 +142,8 @@ pub struct FluidJob {
     pub step: usize,
     /// Flow round the layer's shape.
     pub obstacles: bool,
+    /// Cells deep (a 3D liquid's box; 0 for the flat simulations).
+    pub d: usize,
 }
 
 /// The job for fluid effect `e` on a `size` layer at source time `t`.
@@ -153,7 +155,7 @@ pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
     let w = GPU_COLUMNS[detail];
     let h = ((w as f32 * size[1] / size[0].max(1.0)).round() as usize).clamp(8, 1024);
     let obstacles = e.value_at(p::OBSTACLES, Time::ZERO) >= 0.5;
-    Some(FluidJob { key: key(e, w, h, size) ^ 0x6705, effect: e.clone(), size, w, h, step: (t.as_secs_f64() * RATE).floor().max(0.0) as usize, obstacles })
+    Some(FluidJob { key: key(e, w, h, size) ^ 0x6705, effect: e.clone(), size, w, h, step: (t.as_secs_f64() * RATE).floor().max(0.0) as usize, obstacles, d: 0 })
 }
 
 fn inputs(e: &Effect, t: f64, g: &Grid, size: [f32; 2], seed: u64) -> Inputs {

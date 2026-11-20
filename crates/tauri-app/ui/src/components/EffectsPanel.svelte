@@ -390,7 +390,7 @@
             <p class="note">Press <b>Find the sky</b>: the object model picks out the sky in every other frame (it looks for sky along the top of the first frame), its edge is fitted to the trees and roofs, and the camera's movement is worked out so the new sky moves with it. Then choose a sky picture, or use the gradient.</p>
           {/if}
         {/if}
-        {#if fx.kind === "Fluid" || fx.kind === "WaterSurface" || fx.kind === "Liquid"}
+        {#if fx.kind === "Fluid" || fx.kind === "WaterSurface" || fx.kind === "Liquid" || fx.kind === "Liquid3D"}
           {@const busy = app.live?.simulating ? app.live.render : null}
           <div class="row lut">
             <span class="file">{busy !== null ? `Simulating… ${Math.round(busy * 100)}%` : "Worked out as it plays, or all at once"}</span>

@@ -823,6 +823,22 @@ What works now:
       (a few seconds for a jump of a minute, more if decoding is slow). Until then, nothing from the likeness is
       kept on disk. Exports and rendered previews always step through every frame. Two clips with the same water settings over different footage
       each get their own simulation
+    - **Liquid (3D)** (**Timeline → Simulations → Pour water in 3D**, or **Splash of water at
+      the camera**): water poured in three dimensions, in a box behind the layer as deep as
+      it's tall, seen through a camera, so it can splash towards the camera and out of the
+      picture, its drops growing as they come. The same kind of simulation as the Liquid
+      (particles that carry the water, a grid that keeps it from squashing), in 3D: a source
+      with a **Source depth** and an angle **Towards the camera**, **Fill** for a starting pool,
+      a **Container** (floor, walls and back; floor only; or open), and **Solid objects** keyed
+      from the layer and given an **Object thickness**, so the water flows round them and
+      splashes off them. Drawn as a surface: each particle a little sphere seen through the
+      camera, their nearest depth smoothed into one surface (its edges kept), then lit: the
+      picture behind bent through it, the sky in it at grazing angles, highlights, its colour
+      deeper where it's thicker, foam on the spray. **View from above** looks down into it.
+      Water thrown out of the box's front flies on under gravity alone until it's past the
+      camera. Its checkpoints are kept in memory only (a box of particles is tens of
+      megabytes a second); Detail Low is 64 cells across, High 128. Up close, drops flying at
+      the camera merge into sheets of water rather than separate drops
     - **Kept on disk**: with the rendered previews kept on disk (Settings, on by default),
       every checkpoint of a water or fluid simulation is too (in the cache folder's
       `render/sims`, with half the rendered previews' room), so opening the project again,
