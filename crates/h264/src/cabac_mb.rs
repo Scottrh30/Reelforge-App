@@ -43,8 +43,41 @@ const CHROMA_DC_CTX: [u8; 4] = [0, 1, 2, 2];
 /// The same for 4:2:2 (NumC8x8 2).
 const CHROMA_DC_CTX_422: [u8; 8] = [0, 0, 1, 1, 2, 2, 2, 2];
 
-/// Table 9-40 ctxIdxBlockCatOffset for ctxBlockCat 0..=5: (coded_block_flag, significant/last, abs level).
-const CAT_OFFSET: [(usize, usize, usize); 6] = [(0, 0, 0), (4, 15, 10), (8, 29, 20), (12, 44, 30), (16, 47, 39), (0, 0, 0)];
+/// Tables 9-34 and 9-40: ctxIdxOffset + ctxBlockCatOffset per ctxBlockCat 0..=13 (5, 9, 13:
+/// 8x8 blocks; 6..=13: the Cb and Cr of 4:4:4) for coded_block_flag, significant_coeff_flag
+/// (frame, field), last_significant_coeff_flag (frame, field) and coeff_abs_level_minus1.
+struct CatCtx {
+    cbf: usize,
+    sig: [usize; 2],
+    last: [usize; 2],
+    abs: usize,
+}
+const fn cat_ctx(cbf: usize, sig: usize, sig_f: usize, last: usize, last_f: usize, abs: usize) -> CatCtx {
+    CatCtx { cbf, sig: [sig, sig_f], last: [last, last_f], abs }
+}
+#[rustfmt::skip]
+const CAT_CTX: [CatCtx; 14] = [
+    cat_ctx(85, 105, 277, 166, 338, 227),
+    cat_ctx(85 + 4, 105 + 15, 277 + 15, 166 + 15, 338 + 15, 227 + 10),
+    cat_ctx(85 + 8, 105 + 29, 277 + 29, 166 + 29, 338 + 29, 227 + 20),
+    cat_ctx(85 + 12, 105 + 44, 277 + 44, 166 + 44, 338 + 44, 227 + 30),
+    cat_ctx(85 + 16, 105 + 47, 277 + 47, 166 + 47, 338 + 47, 227 + 39),
+    cat_ctx(1012, 402, 436, 417, 451, 426),
+    cat_ctx(460, 484, 776, 572, 864, 952),
+    cat_ctx(460 + 4, 484 + 15, 776 + 15, 572 + 15, 864 + 15, 952 + 10),
+    cat_ctx(460 + 8, 484 + 29, 776 + 29, 572 + 29, 864 + 29, 952 + 20),
+    cat_ctx(1012 + 4, 660, 675, 690, 699, 708),
+    cat_ctx(472, 528, 820, 616, 908, 982),
+    cat_ctx(472 + 4, 528 + 15, 820 + 15, 616 + 15, 908 + 15, 982 + 10),
+    cat_ctx(472 + 8, 528 + 29, 820 + 29, 616 + 29, 908 + 29, 982 + 20),
+    cat_ctx(1012 + 8, 718, 733, 748, 757, 766),
+];
+
+/// The ctxBlockCat of a luma-style block of colour plane `p` (4:4:4 Cb / Cr): `kind` 0 DC,
+/// 1 AC, 2 4x4, 3 8x8.
+const fn plane_cat(p: usize, kind: usize) -> usize {
+    [[0, 1, 2, 5], [6, 7, 8, 9], [10, 11, 12, 13]][p][kind]
+}
 
 /// A neighbouring 4x4 block's coordinate (−1 = the block left of / above the macroblock) as
 /// the sample the neighbour derivation looks at: the last one before the macroblock, or the
@@ -371,6 +404,10 @@ impl<P: Pel> SliceDecoder<'_, P> {
             let ch = st.cbp >> 4;
             if bin == 0 { (ch != 0) as usize } else { (ch == 2) as usize }
         };
+        if self.fmt.cf == 3 {
+            // ChromaArrayType 3: no chroma bins
+            return luma;
+        }
         let inc0 = cond(self.nb[0], 0) + 2 * cond(self.nb[1], 0);
         let mut chroma = 0u8;
         if c.decode_decision(77 + inc0) == 1 {
@@ -413,11 +450,34 @@ impl<P: Pel> SliceDecoder<'_, P> {
 
     /// coded_block_flag ctxIdxInc condition for a neighbouring luma 4x4 block (cat 0..2) or chroma.
     fn cbf_luma_cond(&self, bx: i32, by: i32, intra_cur: bool) -> usize {
+        let p = self.plane;
         if bx >= 0 && by >= 0 {
-            return (self.mb().nnz[(by * 4 + bx) as usize] != 0) as usize;
+            return (self.mb().nnz_of(p)[(by * 4 + bx) as usize] != 0) as usize;
         }
         let Some((m, xw, yw)) = self.nbr(sample(bx), sample(by), 16, 16) else { return intra_cur as usize };
-        (self.pic.mbs[m].nnz[(yw >> 2) * 4 + (xw >> 2)] != 0) as usize
+        (self.pic.mbs[m].nnz_of(p)[(yw >> 2) * 4 + (xw >> 2)] != 0) as usize
+    }
+
+    /// coded_block_flag ctxIdxInc condition for the neighbouring 8x8 block (`x8`, `y8`: −1 for
+    /// the macroblock to the left / above) of a 4:4:4 8x8 block (ctxBlockCat 5, 9, 13).
+    fn cbf8_cond(&self, x8: i32, y8: i32, intra_cur: bool) -> usize {
+        let p = self.plane;
+        if x8 >= 0 && y8 >= 0 {
+            let cur = self.mb();
+            if (cur.cbp >> (y8 * 2 + x8)) & 1 == 0 {
+                return 0;
+            }
+            return (cur.nnz_of(p)[(y8 * 8 + x8 * 2) as usize] != 0) as usize;
+        }
+        let Some((m, xw, yw)) = self.nbr(if x8 < 0 { -1 } else { x8 * 8 }, if y8 < 0 { -1 } else { y8 * 8 }, 16, 16) else { return intra_cur as usize };
+        let st = &self.pic.mbs[m];
+        if st.kind == MbKind::IPcm {
+            return 1;
+        }
+        if st.kind_is_skip() || !st.transform_8x8 || (st.cbp >> ((yw >> 3) * 2 + (xw >> 3))) & 1 == 0 {
+            return 0;
+        }
+        (st.nnz_of(p)[(yw >> 2) * 4 + (xw >> 2)] != 0) as usize
     }
 
     fn cbf_dc_cond(&self, n: Option<usize>, bit: u8, intra_cur: bool) -> usize {
@@ -441,22 +501,20 @@ impl<P: Pel> SliceDecoder<'_, P> {
     /// in list order (indices 0..max_num). `cbf_inc` is the coded_block_flag ctxIdxInc (ignored for cat 5).
     /// Returns the number of non-zero coefficients.
     fn residual_block_cabac(&mut self, c: &mut Cabac, coeff: &mut [i32], cat: usize, max_num: usize, cbf_inc: usize) -> u8 {
-        if cat != 5 && c.decode_decision(85 + CAT_OFFSET[cat].0 + cbf_inc) == 0 {
+        let Some(cc) = CAT_CTX.get(cat) else { return 0 };
+        let is8 = matches!(cat, 5 | 9 | 13);
+        // (8x8 blocks code coded_block_flag in 4:4:4 only: it's 1 otherwise)
+        if (!is8 || self.fmt.cf == 3) && c.decode_decision(cc.cbf + cbf_inc) == 0 {
             return 0;
         }
-        // field macroblocks have their own significance contexts (ctxIdx 277.., 338.., 436.., 451..)
+        // field macroblocks have their own significance contexts
         let field = self.coded_field();
-        let (sig_base, last_base, abs_base) = match (cat, field) {
-            (5, false) => (402, 417, 426),
-            (5, true) => (436, 451, 426),
-            (_, false) => (105 + CAT_OFFSET[cat].1, 166 + CAT_OFFSET[cat].1, 227 + CAT_OFFSET[cat].2),
-            (_, true) => (277 + CAT_OFFSET[cat].1, 338 + CAT_OFFSET[cat].1, 227 + CAT_OFFSET[cat].2),
-        };
+        let (sig_base, last_base, abs_base) = (cc.sig[field as usize], cc.last[field as usize], cc.abs);
         let (sig_tab, last_tab): (&[u8], &[u8]) = match cat {
             3 if max_num == 8 => (&CHROMA_DC_CTX_422, &CHROMA_DC_CTX_422),
             3 => (&CHROMA_DC_CTX, &CHROMA_DC_CTX),
-            5 if field => (&SIG8_FIELD, &LAST8),
-            5 => (&SIG8_FRAME, &LAST8),
+            _ if is8 && field => (&SIG8_FIELD, &LAST8),
+            _ if is8 => (&SIG8_FRAME, &LAST8),
             _ => (&IDENT_CTX, &IDENT_CTX),
         };
         // significance map: positions of the significant coefficients in scan order
@@ -517,14 +575,29 @@ impl<P: Pel> SliceDecoder<'_, P> {
     }
 
     fn residual_cabac(&mut self, c: &mut Cabac, cbp: u8) -> Result<()> {
+        // residual_luma() for luma, and for Cb and Cr of 4:4:4
+        for p in 0..if self.fmt.cf == 3 { 3 } else { 1 } {
+            self.plane = p;
+            self.residual_luma_cabac(c, cbp);
+            self.plane = 0;
+        }
+        if self.fmt.cf != 3 {
+            self.residual_chroma_cabac(c, cbp);
+        }
+        Ok(())
+    }
+
+    fn residual_luma_cabac(&mut self, c: &mut Cabac, cbp: u8) {
         let kind = self.mb().kind;
         let intra = kind.is_intra();
         let t8 = self.mb().transform_8x8;
+        let p = self.plane;
         if kind == MbKind::I16x16 {
-            let inc = self.cbf_dc_cond(self.nb[0], 0, intra) + 2 * self.cbf_dc_cond(self.nb[1], 0, intra);
+            let bit = p as u8;
+            let inc = self.cbf_dc_cond(self.nb[0], bit, intra) + 2 * self.cbf_dc_cond(self.nb[1], bit, intra);
             let mut lv = [0i32; 16];
-            if self.residual_block_cabac(c, &mut lv, 0, 16, inc) > 0 {
-                self.mb_mut().cbf_dc |= 1;
+            if self.residual_block_cabac(c, &mut lv, plane_cat(p, 0), 16, inc) > 0 {
+                self.mb_mut().cbf_dc |= 1 << bit;
                 self.put_luma_dc(&lv);
             }
         }
@@ -535,10 +608,18 @@ impl<P: Pel> SliceDecoder<'_, P> {
             }
             if t8 {
                 let mut lv = [0i32; 64];
-                self.residual_block_cabac(c, &mut lv, 5, 64, 0);
+                let inc = if self.fmt.cf == 3 {
+                    let (x8, y8) = ((b8 & 1) as i32, (b8 >> 1) as i32);
+                    self.cbf8_cond(x8 - 1, y8, intra) + 2 * self.cbf8_cond(x8, y8 - 1, intra)
+                } else {
+                    0
+                };
+                let n = self.residual_block_cabac(c, &mut lv, plane_cat(p, 3), 64, inc);
+                // coded_block_flag (1 when not coded) for the neighbours of later blocks
+                let cbf = if self.fmt.cf == 3 { (n > 0) as u8 } else { 1 };
                 let st = self.mb_mut();
                 for r in [by8 * 4 + bx8, by8 * 4 + bx8 + 1, (by8 + 1) * 4 + bx8, (by8 + 1) * 4 + bx8 + 1] {
-                    st.nnz[r] = 1;
+                    st.nnz_of_mut(p)[r] = cbf;
                 }
                 self.put_luma8(b8, &lv);
             } else {
@@ -548,17 +629,21 @@ impl<P: Pel> SliceDecoder<'_, P> {
                     let inc = self.cbf_luma_cond(bx as i32 - 1, by as i32, intra) + 2 * self.cbf_luma_cond(bx as i32, by as i32 - 1, intra);
                     let mut lv = [0i32; 16];
                     let n = if kind == MbKind::I16x16 {
-                        self.residual_block_cabac(c, &mut lv[1..], 1, 15, inc)
+                        self.residual_block_cabac(c, &mut lv[1..], plane_cat(p, 1), 15, inc)
                     } else {
-                        self.residual_block_cabac(c, &mut lv, 2, 16, inc)
+                        self.residual_block_cabac(c, &mut lv, plane_cat(p, 2), 16, inc)
                     };
-                    self.mb_mut().nnz[raster] = n;
+                    self.mb_mut().nnz_of_mut(p)[raster] = n;
                     if n > 0 {
                         self.put_luma4(raster, &lv, kind == MbKind::I16x16);
                     }
                 }
             }
         }
+    }
+
+    fn residual_chroma_cabac(&mut self, c: &mut Cabac, cbp: u8) {
+        let intra = self.mb().kind.is_intra();
         let cbp_c = cbp >> 4;
         let nblk = self.crows * 2;
         if cbp_c != 0 {
@@ -586,7 +671,6 @@ impl<P: Pel> SliceDecoder<'_, P> {
                 }
             }
         }
-        Ok(())
     }
 
     /// Parse and reconstruct one macroblock_layer() with CABAC.
@@ -630,12 +714,16 @@ impl<P: Pel> SliceDecoder<'_, P> {
                     };
                 }
                 self.derive_intra_modes(info.kind == MbKind::I8x8);
-                let m = self.decode_chroma_mode(c);
-                self.mb_mut().intra_chroma_mode = m;
+                if self.fmt.cf != 3 {
+                    let m = self.decode_chroma_mode(c);
+                    self.mb_mut().intra_chroma_mode = m;
+                }
             }
             MbKind::I16x16 => {
-                let m = self.decode_chroma_mode(c);
-                self.mb_mut().intra_chroma_mode = m;
+                if self.fmt.cf != 3 {
+                    let m = self.decode_chroma_mode(c);
+                    self.mb_mut().intra_chroma_mode = m;
+                }
             }
             MbKind::BDirect16x16 => {
                 self.mb_mut().direct8x8 = 0xf;
@@ -705,6 +793,7 @@ impl<P: Pel> SliceDecoder<'_, P> {
             }
         }
         let cbp = if info.kind == MbKind::I16x16 { info.i16_cbp } else { self.decode_cbp(c) };
+        let cbp = if self.fmt.cf == 3 { cbp & 15 } else { cbp };
         self.cur.cbp = cbp;
         self.mb_mut().cbp = cbp;
         if !intra && cbp & 15 != 0 && self.pps.transform_8x8_mode && self.no_sub_8x8_lt() {

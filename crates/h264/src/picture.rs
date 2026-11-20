@@ -83,7 +83,7 @@ impl Pel for u16 {
     }
 }
 
-/// Sample format of a picture: chroma format (1 = 4:2:0, 2 = 4:2:2) and bit depths.
+/// Sample format of a picture: chroma format (1 = 4:2:0, 2 = 4:2:2, 3 = 4:4:4) and bit depths.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fmt {
     pub cf: u8,
@@ -101,7 +101,12 @@ impl Fmt {
     /// Chroma lines per macroblock (8 or 16).
     #[inline]
     pub fn mbch(self) -> usize {
-        if self.cf == 2 { 16 } else { 8 }
+        if self.cf >= 2 { 16 } else { 8 }
+    }
+    /// Chroma samples across a macroblock (8 or 16).
+    #[inline]
+    pub fn mbcw(self) -> usize {
+        if self.cf == 3 { 16 } else { 8 }
     }
     #[inline]
     pub fn max_y(self) -> i32 {
@@ -131,7 +136,7 @@ pub struct Planes<P: Pel = u8> {
 
 impl<P: Pel> Planes<P> {
     pub fn new(width: usize, height: usize, fmt: Fmt) -> Self {
-        let (cw, ch) = (width / 2, height / 16 * fmt.mbch());
+        let (cw, ch) = (width / 16 * fmt.mbcw(), height / 16 * fmt.mbch());
         let mid = P::p(1 << (fmt.bd_c - 1));
         Planes { y: vec![P::default(); width * height], cb: vec![mid; cw * ch], cr: vec![mid; cw * ch], width, height, cwidth: cw, cheight: ch }
     }
@@ -183,6 +188,8 @@ pub struct MbState {
     pub intra_modes: [u8; 16],
     /// CAVLC: TotalCoeff per luma 4x4 block (raster). CABAC: coded_block_flag.
     pub nnz: [u8; 16],
+    /// The same for the Cb and Cr blocks of 4:4:4 (coded as luma is).
+    pub nnz444: [[u8; 16]; 2],
     /// Same for chroma AC blocks [Cb, Cr][raster 2 wide × 2 (4:2:0) or 4 (4:2:2) tall].
     pub nnz_c: [[u8; 8]; 2],
     /// CABAC coded_block_flag of DC blocks: bit0 luma (I16x16), bit1 Cb, bit2 Cr.
@@ -201,6 +208,24 @@ pub struct MbState {
 }
 
 impl MbState {
+    /// TotalCoeff / coded_block_flag per 4x4 block of colour plane `p` (0 luma; 1, 2 the Cb
+    /// and Cr of 4:4:4).
+    #[inline]
+    pub fn nnz_of(&self, p: usize) -> &[u8; 16] {
+        match p {
+            0 => &self.nnz,
+            1 => &self.nnz444[0],
+            _ => &self.nnz444[1],
+        }
+    }
+    #[inline]
+    pub fn nnz_of_mut(&mut self, p: usize) -> &mut [u8; 16] {
+        match p {
+            0 => &mut self.nnz,
+            1 => &mut self.nnz444[0],
+            _ => &mut self.nnz444[1],
+        }
+    }
     #[inline]
     pub fn kind_is_skip(&self) -> bool {
         matches!(self.kind, MbKind::PSkip | MbKind::BSkip)
@@ -219,6 +244,7 @@ impl Default for MbState {
             intra_chroma_mode: 0,
             intra_modes: [2; 16],
             nnz: [0; 16],
+            nnz444: [[0; 16]; 2],
             nnz_c: [[0; 8]; 2],
             cbf_dc: 0,
             nz_mask: 0,
@@ -280,7 +306,7 @@ impl<P: Pel> Frame<P> {
             poc,
             width: mb_w * 16,
             height: mb_h * 16,
-            cwidth: mb_w * 8,
+            cwidth: mb_w * fmt.mbcw(),
             cheight: mb_h * mbch,
             mb_w,
             fmt,
@@ -486,8 +512,8 @@ impl<P: Pel> Frame<P> {
             let row = self.row(r >> 4);
             y.extend_from_slice(&row.y[(r & 15) * self.width + cx..(r & 15) * self.width + cx + cw]);
         }
-        let (ccx, ccw) = (cx / 2, cw.div_ceil(2));
-        let (ccy, cch) = if self.fmt.cf == 2 { (cy, ch) } else { (cy / 2, ch.div_ceil(2)) };
+        let (ccx, ccw) = if self.fmt.cf == 3 { (cx, cw) } else { (cx / 2, cw.div_ceil(2)) };
+        let (ccy, cch) = if self.fmt.cf >= 2 { (cy, ch) } else { (cy / 2, ch.div_ceil(2)) };
         let mut u = P::alloc(ccw * cch);
         let mut v = P::alloc(ccw * cch);
         for r in ccy..ccy + cch {

@@ -199,14 +199,17 @@ pub(crate) struct Scratch<P: Pel> {
     /// Chroma blocks with coefficients (bit per raster block).
     pub c_nz: [u8; 2],
     pub pred: [[P; 256]; 2],
-    /// Chroma predictions, stride 8 (8x8 or 8x16).
-    pub pred_c: [[[P; 128]; 2]; 2],
+    /// Chroma predictions, stride 8 (8x8 or 8x16), or 16 (4:4:4).
+    pub pred_c: [[[P; 256]; 2]; 2],
+    /// 4:4:4: Cb and Cr coded as luma is: coefficients (as `coef`) and blocks with coefficients.
+    pub coef444: [[i32; 256]; 2],
+    pub nz444: [u16; 2],
 }
 
 impl<P: Pel> Scratch<P> {
     pub fn new() -> Box<Self> {
         let z = P::default();
-        Box::new(Scratch { coef: [0; 256], coef_c: [[0; 128]; 2], blk_nz: 0, c_nz: [0; 2], pred: [[z; 256]; 2], pred_c: [[[z; 128]; 2]; 2] })
+        Box::new(Scratch { coef: [0; 256], coef_c: [[0; 128]; 2], blk_nz: 0, c_nz: [0; 2], pred: [[z; 256]; 2], pred_c: [[[z; 256]; 2]; 2], coef444: [[0; 256]; 2], nz444: [0; 2] })
     }
 }
 
@@ -254,6 +257,12 @@ pub struct SliceDecoder<'a, P: Pel = u8> {
     tdirect_field: [Vec<(i32, bool)>; 2],
     /// CABAC: previous MB in decoding order had a non-zero mb_qp_delta.
     pub prev_qp_delta_nz: bool,
+    /// The colour plane the luma-style residual functions work on: 0, or 1 / 2 for the Cb and
+    /// Cr of 4:4:4 (coded as luma is).
+    pub plane: usize,
+    /// TransformBypassModeFlag of the current macroblock (lossless: qpprime_y_zero_transform_bypass
+    /// and QP'Y 0).
+    pub bypass: bool,
     /// MBAFF frame (macroblock pairs, each frame or field coded).
     pub mbaff: bool,
     /// The current macroblock is a field macroblock, and the field decoding flag of the
@@ -281,6 +290,17 @@ fn predict_block<P: Pel>(f: &Frame<P>, read: Option<usize>, coff: i32, mv: [i16;
         None => f.luma_window(ix - 2, iy - 2, bw + 5, bh + 5, &mut win, LW),
     }
     inter::mc_luma_win(&win, LW, (mv[0] & 3) as u32, (mv[1] & 3) as u32, bw, bh, y.0, y.1, f.fmt.max_y());
+    if f.fmt.cf == 3 {
+        // 4:4:4: chroma interpolated as luma is (8.4.2.2)
+        for (comp, out) in c.into_iter().enumerate() {
+            match read {
+                Some(par) => f.chroma_window_field(comp, par, ix - 2, iy - 2, bw + 5, bh + 5, &mut win, LW),
+                None => f.chroma_window(comp, ix - 2, iy - 2, bw + 5, bh + 5, &mut win, LW),
+            }
+            inter::mc_luma_win(&win, LW, (mv[0] & 3) as u32, (mv[1] & 3) as u32, bw, bh, out, cs, f.fmt.max_c());
+        }
+        return;
+    }
     let cx = (px / 2) as i32 + (mv[0] as i32 >> 3);
     let fx = (mv[0] & 7) as u32;
     // 4:2:2 chroma has full height: vertical motion in quarter samples (8.4.2.2.2).
@@ -350,6 +370,32 @@ struct Col {
     ref_idx: i8,
     key: u32,
     scale: VScale,
+}
+
+/// Add a lossless residual (`w` x `h`, row-major) to the prediction in `dst`, after the
+/// residual DPCM of 8.5.15 (`dpcm` 1: down the columns, 2: along the rows).
+fn add_raw<P: Pel>(r: &mut [i32], w: usize, h: usize, dpcm: u8, dst: &mut [P], stride: usize, max: i32) {
+    match dpcm {
+        1 => {
+            for i in w..w * h {
+                r[i] = r[i].wrapping_add(r[i - w]);
+            }
+        }
+        2 => {
+            for row in r.chunks_exact_mut(w) {
+                for x in 1..w {
+                    row[x] = row[x].wrapping_add(row[x - 1]);
+                }
+            }
+        }
+        _ => {}
+    }
+    for y in 0..h {
+        let Some(d) = dst.get_mut(y * stride..y * stride + w) else { return };
+        for (d, &v) in d.iter_mut().zip(&r[y * w..y * w + w]) {
+            *d = P::p((d.i() + v).clamp(0, max));
+        }
+    }
 }
 
 #[inline(always)]
@@ -429,6 +475,8 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
             tdirect,
             tdirect_field,
             prev_qp_delta_nz: false,
+            plane: 0,
+            bypass: false,
             mbaff: sps.mb_adaptive_frame_field && !sh.field_pic,
             field: false,
             pair_field: false,
@@ -666,9 +714,10 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
     fn nc_luma(&self, raster: usize) -> i32 {
         let (bx, by) = (raster & 3, raster >> 2);
         let cur = self.mb();
-        let at = |(m, x, y): (usize, usize, usize)| self.pic.mbs[m].nnz[(y >> 2) * 4 + (x >> 2)];
-        let a = if bx > 0 { Some(cur.nnz[raster - 1]) } else { self.nbr(-1, by as i32 * 4, 16, 16).map(at) };
-        let b = if by > 0 { Some(cur.nnz[raster - 4]) } else { self.nbr(bx as i32 * 4, -1, 16, 16).map(at) };
+        let p = self.plane;
+        let at = |(m, x, y): (usize, usize, usize)| self.pic.mbs[m].nnz_of(p)[(y >> 2) * 4 + (x >> 2)];
+        let a = if bx > 0 { Some(cur.nnz_of(p)[raster - 1]) } else { self.nbr(-1, by as i32 * 4, 16, 16).map(at) };
+        let b = if by > 0 { Some(cur.nnz_of(p)[raster - 4]) } else { self.nbr(bx as i32 * 4, -1, 16, 16).map(at) };
         match (a, b) {
             (Some(a), Some(b)) => (a as i32 + b as i32 + 1) >> 1,
             (Some(a), None) => a as i32,
@@ -1111,8 +1160,12 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         let pic_par = self.pic_par;
         let use0 = refs[0] >= 0 && ref_src_of(self.refs, mbaff_par, pic_par, 0, refs[0]).is_some();
         let use1 = refs[1] >= 0 && ref_src_of(self.refs, mbaff_par, pic_par, 1, refs[1]).is_some();
-        let c422 = self.fmt.cf == 2;
-        let (cx, cy, cbh) = if c422 { (px / 2, py, bh) } else { (px / 2, py / 2, bh / 2) };
+        let (cx, cy, cbw, cbh) = match self.fmt.cf {
+            3 => (px, py, bw, bh),
+            2 => (px / 2, py, bw / 2, bh),
+            _ => (px / 2, py / 2, bw / 2, bh / 2),
+        };
+        let cps = if self.fmt.cf == 3 { 16 } else { 8 };
         let (max_y, max_c) = (self.fmt.max_y(), self.fmt.max_c());
         if use0 != use1 && wts.iter().all(|w| *w == Weight::Default) {
             // single-list unweighted prediction: interpolate straight into the picture
@@ -1129,7 +1182,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
             let Some((rp, read, coff)) = ref_src_of(self.refs, mbaff_par, pic_par, l, refs[l]) else { continue };
             let s = &mut *self.s;
             let [pc0, pc1] = &mut s.pred_c[l];
-            predict_block(&rp.frame, read, coff, mvs[l], px, py, bw, bh, (&mut s.pred[l][..], 16), [&mut pc0[..], &mut pc1[..]], 8);
+            predict_block(&rp.frame, read, coff, mvs[l], px, py, bw, bh, (&mut s.pred[l][..], 16), [&mut pc0[..], &mut pc1[..]], cps);
         }
         let s = &mut *self.s;
         inter::weighted_store(
@@ -1148,7 +1201,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
             let a = if use0 { Some(&s.pred_c[0][c][..]) } else { None };
             let b = if use1 { Some(&s.pred_c[1][c][..]) } else { None };
             let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };
-            inter::weighted_store(&mut plane[cstart + cy * cs + cx..], cs, a, b, 8, bw / 2, cbh, wc, max_c);
+            inter::weighted_store(&mut plane[cstart + cy * cs + cx..], cs, a, b, cps, cbw, cbh, wc, max_c);
         }
     }
 
@@ -1264,7 +1317,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
     /// or chroma.
     #[inline]
     pub(crate) fn view(&self, c: usize) -> (usize, usize, usize, usize) {
-        let (w, mbw, mbh) = if c == 0 { (self.pic.planes.width, 16, 16) } else { (self.pic.planes.cwidth, 8, self.mbch) };
+        let (w, mbw, mbh) = if c == 0 { (self.pic.planes.width, 16, 16) } else { (self.pic.planes.cwidth, self.fmt.mbcw(), self.mbch) };
         if self.field {
             ((self.mb_y & 1) * w, 2 * w, self.mb_x * mbw, (self.mb_y >> 1) * mbh)
         } else {
@@ -1272,37 +1325,139 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         }
     }
 
-    fn add_luma_block4(&mut self, raster: usize) {
-        if self.s.blk_nz & (1 << raster) == 0 {
-            return;
+    /// The coefficients and coded blocks of colour plane `p` (see [`Self::plane`]).
+    fn coef_of(&mut self, p: usize) -> (&mut [i32; 256], &mut u16) {
+        let s = &mut *self.s;
+        match p {
+            0 => (&mut s.coef, &mut s.blk_nz),
+            1 => (&mut s.coef444[0], &mut s.nz444[0]),
+            _ => (&mut s.coef444[1], &mut s.nz444[1]),
         }
-        let (start, stride, x0, y0) = self.view(0);
-        let px = x0 + (raster & 3) * 4;
-        let py = y0 + (raster >> 2) * 4;
-        let Some(blk) = self.s.coef.get_mut(raster * 16..).and_then(|c| c.first_chunk_mut::<16>()) else {
-            return;
-        };
-        transform::idct4_add(blk, &mut self.pic.planes.y[start + py * stride + px..], stride, self.fmt.max_y());
-        blk.fill(0);
     }
 
-    fn add_luma_block8(&mut self, b8: usize) {
-        if self.s.blk_nz & (1 << b8) == 0 {
+    /// Plane `p` of the picture (0 luma, 1 Cb, 2 Cr), its view of the current macroblock and
+    /// largest sample value.
+    fn plane_mut(&mut self, p: usize) -> (&mut [P], usize, usize, usize, i32) {
+        let (start, stride, x0, y0) = self.view(p.min(1));
+        let max = if p == 0 { self.fmt.max_y() } else { self.fmt.max_c() };
+        let planes = &mut self.pic.planes;
+        let plane = match p {
+            0 => &mut planes.y,
+            1 => &mut planes.cb,
+            _ => &mut planes.cr,
+        };
+        (&mut plane[start..], stride, x0, y0, max)
+    }
+
+    /// The residual DPCM of a lossless intra block (8.5.15): 1 vertical, 2 horizontal, 0 none.
+    fn bypass_dpcm(&self, mode: u8) -> u8 {
+        if !self.mb().kind.is_intra() {
+            return 0;
+        }
+        match mode {
+            0 => 1,
+            1 => 2,
+            _ => 0,
+        }
+    }
+
+    fn add_luma_block4(&mut self, p: usize, raster: usize) {
+        let bypass = self.bypass;
+        let dpcm = if self.mb().kind == MbKind::I4x4 { self.bypass_dpcm(self.mb().intra_modes[raster]) } else { 0 };
+        let (coef, nz) = self.coef_of(p);
+        if *nz & (1 << raster) == 0 {
             return;
         }
-        let (start, stride, x0, y0) = self.view(0);
-        let px = x0 + (b8 & 1) * 8;
-        let py = y0 + (b8 >> 1) * 8;
-        let Some(blk) = self.s.coef.get_mut(b8 * 64..).and_then(|c| c.first_chunk_mut::<64>()) else {
+        let Some(blk) = coef.get_mut(raster * 16..).and_then(|c| c.first_chunk_mut::<16>()) else {
             return;
         };
-        transform::idct8_add(blk, &mut self.pic.planes.y[start + py * stride + px..], stride, self.fmt.max_y());
-        blk.fill(0);
+        let blk = std::mem::take(blk);
+        let (plane, stride, x0, y0, max) = self.plane_mut(p);
+        let o = (y0 + (raster >> 2) * 4) * stride + x0 + (raster & 3) * 4;
+        let Some(dst) = plane.get_mut(o..) else { return };
+        if bypass {
+            let mut r = blk;
+            add_raw(&mut r, 4, 4, dpcm, dst, stride, max);
+        } else {
+            transform::idct4_add(&blk, dst, stride, max);
+        }
+    }
+
+    fn add_luma_block8(&mut self, p: usize, b8: usize) {
+        let bypass = self.bypass;
+        let (bx, by) = ((b8 & 1) * 2, (b8 >> 1) * 2);
+        let dpcm = if self.mb().kind == MbKind::I8x8 { self.bypass_dpcm(self.mb().intra_modes[by * 4 + bx]) } else { 0 };
+        let (coef, nz) = self.coef_of(p);
+        if *nz & (1 << b8) == 0 {
+            return;
+        }
+        let Some(blk) = coef.get_mut(b8 * 64..).and_then(|c| c.first_chunk_mut::<64>()) else {
+            return;
+        };
+        let blk = std::mem::replace(blk, [0; 64]);
+        let (plane, stride, x0, y0, max) = self.plane_mut(p);
+        let o = (y0 + (b8 >> 1) * 8) * stride + x0 + (b8 & 1) * 8;
+        let Some(dst) = plane.get_mut(o..) else { return };
+        if bypass {
+            let mut r = blk;
+            add_raw(&mut r, 8, 8, dpcm, dst, stride, max);
+        } else {
+            transform::idct8_add(&blk, dst, stride, max);
+        }
+    }
+
+    /// Lossless Intra16x16: the whole macroblock's residual at once (its DPCM runs across the
+    /// 4x4 blocks).
+    fn add_luma_bypass16(&mut self, p: usize) {
+        let dpcm = self.bypass_dpcm(self.cur.info.i16_mode);
+        let (coef, nz) = self.coef_of(p);
+        if *nz == 0 {
+            return;
+        }
+        let mut r = [0i32; 256];
+        for b in 0..16 {
+            for k in 0..16 {
+                r[((b >> 2) * 4 + (k >> 2)) * 16 + (b & 3) * 4 + (k & 3)] = coef[b * 16 + k];
+            }
+        }
+        coef.fill(0);
+        *nz = 0;
+        let (plane, stride, x0, y0, max) = self.plane_mut(p);
+        if let Some(dst) = plane.get_mut(y0 * stride + x0..) {
+            add_raw(&mut r, 16, 16, dpcm, dst, stride, max);
+        }
     }
 
     fn add_chroma(&mut self) {
         let (start, stride, cx0, cy0) = self.view(1);
         let max = self.fmt.max_c();
+        if self.bypass {
+            // lossless: each component's residual at once, with the chroma mode's DPCM
+            let dpcm = match (self.mb().kind.is_intra(), self.mb().intra_chroma_mode) {
+                (true, 1) => 2,
+                (true, 2) => 1,
+                _ => 0,
+            };
+            let h = self.mbch;
+            for c in 0..2 {
+                if self.s.c_nz[c] == 0 {
+                    continue;
+                }
+                let mut r = [0i32; 128];
+                for b in 0..self.crows * 2 {
+                    for k in 0..16 {
+                        r[((b >> 1) * 4 + (k >> 2)) * 8 + (b & 1) * 4 + (k & 3)] = self.s.coef_c[c][b * 16 + k];
+                    }
+                }
+                self.s.coef_c[c].fill(0);
+                self.s.c_nz[c] = 0;
+                let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };
+                if let Some(dst) = plane.get_mut(start + cy0 * stride + cx0..) {
+                    add_raw(&mut r[..8 * h], 8, h, dpcm, dst, stride, max);
+                }
+            }
+            return;
+        }
         for c in 0..2 {
             if self.s.c_nz[c] == 0 {
                 continue;
@@ -1324,16 +1479,26 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         }
     }
 
+    /// Whether the left neighbouring samples of rows `y0..y0 + n` (luma, or chroma rows) are
+    /// all usable for intra prediction. In MBAFF frames with constrained intra prediction they
+    /// can lie in two macroblocks, one intra and one not, so every row is checked.
+    fn left_avail(&self, y0: i32, n: i32, chroma: bool) -> bool {
+        if !(self.mbaff && self.pps.constrained_intra_pred) {
+            return self.intra_nb(0);
+        }
+        let (w, h) = if chroma { (self.fmt.mbcw() as i32, self.mbch as i32) } else { (16, 16) };
+        (y0..y0 + n).all(|y| self.nbr(-1, y, w, h).is_some_and(|(m, _, _)| self.pic.mbs[m].kind.is_intra()))
+    }
+
     fn luma_avail4(&self, bx: usize, by: usize) -> Avail {
-        let a = self.intra_nb(0);
         let b = self.intra_nb(1);
         let c = self.intra_nb(2);
         let d = self.intra_nb(3);
-        let left = if bx > 0 { true } else { a };
+        let left = if bx > 0 { true } else { self.left_avail(by as i32 * 4, 4, false) };
         let top = if by > 0 { true } else { b };
         let top_left = match (bx > 0, by > 0) {
             (true, true) => true,
-            (false, true) => a,
+            (false, true) => self.left_avail(by as i32 * 4 - 1, 1, false),
             (true, false) => b,
             (false, false) => d,
         };
@@ -1350,70 +1515,93 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
     /// Reconstruct an intra MB (prediction + residual) after its syntax has been parsed.
     pub fn reconstruct_intra(&mut self) {
         let kind = self.mb().kind;
-        let (start, stride, x0, y0) = self.view(0);
-        match kind {
-            MbKind::I4x4 => {
-                for (blk, &(bx, by)) in BLK4_XY.iter().enumerate() {
-                    let (bx, by) = (bx as usize, by as usize);
-                    let _ = blk;
-                    let av = self.luma_avail4(bx, by);
-                    let mode = self.mb().intra_modes[by * 4 + bx];
-                    intra::pred4x4(&mut self.pic.planes.y[start..], stride, x0 + bx * 4, y0 + by * 4, mode, av, self.fmt.bd_y as u32);
-                    self.add_luma_block4(by * 4 + bx);
+        // the luma process for every colour plane of 4:4:4
+        let nplanes = if self.fmt.cf == 3 { 3 } else { 1 };
+        for p in 0..nplanes {
+            let bd = if p == 0 { self.fmt.bd_y } else { self.fmt.bd_c } as u32;
+            match kind {
+                MbKind::I4x4 => {
+                    for &(bx, by) in BLK4_XY.iter() {
+                        let (bx, by) = (bx as usize, by as usize);
+                        let av = self.luma_avail4(bx, by);
+                        let mode = self.mb().intra_modes[by * 4 + bx];
+                        let (plane, stride, x0, y0, _) = self.plane_mut(p);
+                        intra::pred4x4(plane, stride, x0 + bx * 4, y0 + by * 4, mode, av, bd);
+                        self.add_luma_block4(p, by * 4 + bx);
+                    }
                 }
-            }
-            MbKind::I8x8 => {
-                for b8 in 0..4 {
-                    let (bx, by) = ((b8 & 1) * 2, (b8 >> 1) * 2);
-                    let mut av = self.luma_avail4(bx, by);
-                    av.top_right = match b8 {
-                        0 => self.intra_nb(1),
-                        1 => self.intra_nb(2),
-                        2 => true,
-                        _ => false,
-                    };
-                    let mode = self.mb().intra_modes[by * 4 + bx];
-                    intra::pred8x8(&mut self.pic.planes.y[start..], stride, x0 + bx * 4, y0 + by * 4, mode, av, self.fmt.bd_y as u32);
-                    self.add_luma_block8(b8);
+                MbKind::I8x8 => {
+                    for b8 in 0..4 {
+                        let (bx, by) = ((b8 & 1) * 2, (b8 >> 1) * 2);
+                        let mut av = self.luma_avail4(bx, by);
+                        if bx == 0 {
+                            av.left = self.left_avail(by as i32 * 4, 8, false);
+                        }
+                        av.top_right = match b8 {
+                            0 => self.intra_nb(1),
+                            1 => self.intra_nb(2),
+                            2 => true,
+                            _ => false,
+                        };
+                        let mode = self.mb().intra_modes[by * 4 + bx];
+                        let (plane, stride, x0, y0, _) = self.plane_mut(p);
+                        intra::pred8x8(plane, stride, x0 + bx * 4, y0 + by * 4, mode, av, bd);
+                        self.add_luma_block8(p, b8);
+                    }
                 }
-            }
-            MbKind::I16x16 => {
-                let av = Avail { left: self.intra_nb(0), top: self.intra_nb(1), top_left: self.intra_nb(3), top_right: false };
-                intra::pred16x16(&mut self.pic.planes.y[start..], stride, x0, y0, self.cur.info.i16_mode, av, self.fmt.bd_y as u32);
-                for r in 0..16 {
-                    self.add_luma_block4(r);
+                MbKind::I16x16 => {
+                    let av = Avail { left: self.left_avail(0, 16, false), top: self.intra_nb(1), top_left: self.intra_nb(3), top_right: false };
+                    let mode = self.cur.info.i16_mode;
+                    let (plane, stride, x0, y0, _) = self.plane_mut(p);
+                    intra::pred16x16(plane, stride, x0, y0, mode, av, bd);
+                    if self.bypass {
+                        self.add_luma_bypass16(p);
+                    } else {
+                        for r in 0..16 {
+                            self.add_luma_block4(p, r);
+                        }
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
-        let av = Avail { left: self.intra_nb(0), top: self.intra_nb(1), top_left: self.intra_nb(3), top_right: false };
-        let (cstart, cs, cx, cy) = self.view(1);
-        let mode = self.mb().intra_chroma_mode;
-        let (bd, h) = (self.fmt.bd_c as u32, self.mbch);
-        intra::pred_chroma(&mut self.pic.planes.cb[cstart..], cs, cx, cy, mode, av, bd, h);
-        intra::pred_chroma(&mut self.pic.planes.cr[cstart..], cs, cx, cy, mode, av, bd, h);
-        self.add_chroma();
+        if self.fmt.cf != 3 {
+            let av = Avail { left: self.left_avail(0, self.mbch as i32, true), top: self.intra_nb(1), top_left: self.intra_nb(3), top_right: false };
+            let (cstart, cs, cx, cy) = self.view(1);
+            let mode = self.mb().intra_chroma_mode;
+            let (bd, h) = (self.fmt.bd_c as u32, self.mbch);
+            intra::pred_chroma(&mut self.pic.planes.cb[cstart..], cs, cx, cy, mode, av, bd, h);
+            intra::pred_chroma(&mut self.pic.planes.cr[cstart..], cs, cx, cy, mode, av, bd, h);
+            self.add_chroma();
+        }
         self.s.blk_nz = 0;
+        self.s.nz444 = [0; 2];
     }
 
     /// Add the residual of an inter MB (prediction already written).
     pub fn reconstruct_inter_residual(&mut self) {
-        if self.mb().transform_8x8 {
-            for b8 in 0..4 {
-                self.add_luma_block8(b8);
-            }
-        } else if self.s.blk_nz != 0 {
-            for r in 0..16 {
-                self.add_luma_block4(r);
+        let nplanes = if self.fmt.cf == 3 { 3 } else { 1 };
+        for p in 0..nplanes {
+            if self.mb().transform_8x8 {
+                for b8 in 0..4 {
+                    self.add_luma_block8(p, b8);
+                }
+            } else if *self.coef_of(p).1 != 0 {
+                for r in 0..16 {
+                    self.add_luma_block4(p, r);
+                }
             }
         }
-        self.add_chroma();
+        if self.fmt.cf != 3 {
+            self.add_chroma();
+        }
         self.s.blk_nz = 0;
+        self.s.nz444 = [0; 2];
     }
 
     /// Bytes of an I_PCM macroblock's samples.
     pub fn pcm_bytes(&self) -> usize {
-        (256 * self.fmt.bd_y as usize + 2 * 8 * self.mbch * self.fmt.bd_c as usize) / 8
+        (256 * self.fmt.bd_y as usize + 2 * self.fmt.mbcw() * self.mbch * self.fmt.bd_c as usize) / 8
     }
 
     /// Write I_PCM samples (`data` holds at least [`Self::pcm_bytes`] bytes: pcm_sample_luma
@@ -1433,7 +1621,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         for c in 0..2 {
             let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };
             for row in 0..self.mbch {
-                for col in 0..8 {
+                for col in 0..self.fmt.mbcw() {
                     let v = r.read_bits(bc)? as i32;
                     plane[cstart + (cy + row) * cs + cx + col] = P::p(v);
                 }
@@ -1451,6 +1639,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         st.qpc = qpc;
         st.nnz = [16; 16];
         st.nnz_c = [[16; 8]; 2];
+        st.nnz444 = [[16; 16]; 2];
         st.cbf_dc = 7;
         st.cbp = 0x2f;
         st.nz_mask = 0xffff;
@@ -1468,6 +1657,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
 
     pub fn store_qp(&mut self) {
         let qp = self.qp;
+        self.bypass = self.sps.qpprime_y_zero_transform_bypass && qp + self.qp_off_y == 0;
         let qpc = [self.chroma_qp(qp, 0) as i8, self.chroma_qp(qp, 1) as i8];
         let st = self.mb_mut();
         st.qp = qp as i8;
@@ -1478,67 +1668,84 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
     // Residual storage helpers (shared by CAVLC and CABAC)
     // ------------------------------------------------------------------------------------------
 
-    fn luma_list4(&self) -> usize {
-        if self.mb().kind.is_intra() { 0 } else { 3 }
+    /// QP'Y, or QP'C of the current plane's chroma component (4:4:4).
+    fn plane_qp(&self) -> i32 {
+        if self.plane == 0 { self.qp + self.qp_off_y } else { self.chroma_qp(self.qp, self.plane - 1) + self.qp_off_c }
     }
 
-    /// Store a 4x4 luma block given in scan order (levels[0..16]); `ac_only` skips position 0.
+    /// Store a 4x4 block of the current plane given in scan order (levels[0..16]); `ac_only`
+    /// skips position 0.
     pub fn put_luma4(&mut self, raster: usize, levels: &[i32; 16], ac_only: bool) {
-        let qp = self.qp + self.qp_off_y;
-        let ls = &self.ls.ls4[self.luma_list4()][(qp % 6) as usize];
-        let blk = &mut self.s.coef[raster * 16..raster * 16 + 16];
-        let mut any = false;
+        let qp = self.plane_qp();
+        let p = self.plane;
+        let list = if self.mb().kind.is_intra() { p } else { 3 + p };
+        let bypass = self.bypass;
         let scan = if self.field || self.pic_par.is_some() { &FIELD4 } else { &ZIGZAG4 };
+        let ls = self.ls.ls4[list][(qp.rem_euclid(6)) as usize];
+        let (coef, nz) = self.coef_of(p);
+        let blk = &mut coef[raster * 16..raster * 16 + 16];
+        let mut any = false;
         for (k, &lv) in levels.iter().enumerate().skip(ac_only as usize) {
             if lv != 0 {
-                let p = scan[k] as usize;
-                blk[p] = transform::scale4(lv, ls[p], qp);
+                let q = scan[k] as usize;
+                blk[q] = if bypass { lv } else { transform::scale4(lv, ls[q], qp) };
                 any = true;
             }
         }
         if any {
-            self.s.blk_nz |= 1 << raster;
-            self.pic.mbs[self.mb_addr].nz_mask |= 1 << raster;
+            *nz |= 1 << raster;
+            if p == 0 {
+                self.pic.mbs[self.mb_addr].nz_mask |= 1 << raster;
+            }
         }
     }
 
-    /// Store an 8x8 luma block given in scan order.
+    /// Store an 8x8 block of the current plane given in scan order.
     pub fn put_luma8(&mut self, b8: usize, levels: &[i32; 64]) {
-        let qp = self.qp + self.qp_off_y;
-        let list = if self.mb().kind.is_intra() { 0 } else { 1 };
-        let ls = &self.ls.ls8[list][(qp % 6) as usize];
-        let blk = &mut self.s.coef[b8 * 64..b8 * 64 + 64];
-        let mut any = false;
+        let qp = self.plane_qp();
+        let p = self.plane;
+        let list = 2 * p + !self.mb().kind.is_intra() as usize;
+        let bypass = self.bypass;
         let scan = if self.field || self.pic_par.is_some() { &FIELD8 } else { &ZIGZAG8 };
+        let ls = self.ls.ls8[list][(qp.rem_euclid(6)) as usize];
+        let (coef, nz) = self.coef_of(p);
+        let blk = &mut coef[b8 * 64..b8 * 64 + 64];
+        let mut any = false;
         for (k, &lv) in levels.iter().enumerate() {
             if lv != 0 {
-                let p = scan[k] as usize;
-                blk[p] = transform::scale8(lv, ls[p], qp);
+                let q = scan[k] as usize;
+                blk[q] = if bypass { lv } else { transform::scale8(lv, ls[q], qp) };
                 any = true;
             }
         }
         if any {
-            self.s.blk_nz |= 1 << b8;
-            let (bx, by) = ((b8 & 1) * 2, (b8 >> 1) * 2);
-            let m = (0b11u16 << (by * 4 + bx)) | (0b11u16 << ((by + 1) * 4 + bx));
-            self.pic.mbs[self.mb_addr].nz_mask |= m;
+            *nz |= 1 << b8;
+            if p == 0 {
+                let (bx, by) = ((b8 & 1) * 2, (b8 >> 1) * 2);
+                let m = (0b11u16 << (by * 4 + bx)) | (0b11u16 << ((by + 1) * 4 + bx));
+                self.pic.mbs[self.mb_addr].nz_mask |= m;
+            }
         }
     }
 
-    /// Intra16x16 DC levels in scan order -> scaled DC of each 4x4 block.
+    /// Intra16x16 DC levels in scan order -> scaled DC of each 4x4 block (of the current plane).
     pub fn put_luma_dc(&mut self, levels: &[i32; 16]) {
         let mut c = [0i32; 16];
         let scan = if self.field || self.pic_par.is_some() { &FIELD4 } else { &ZIGZAG4 };
         for (k, &lv) in levels.iter().enumerate() {
             c[scan[k] as usize] = lv;
         }
-        let qp = self.qp + self.qp_off_y;
-        let ls00 = self.ls.ls4[0][(qp % 6) as usize][0];
-        transform::luma_dc_dequant(&mut c, qp, ls00);
+        let qp = self.plane_qp();
+        let p = self.plane;
+        if !self.bypass {
+            let ls00 = self.ls.ls4[p][(qp.rem_euclid(6)) as usize][0];
+            transform::luma_dc_dequant(&mut c, qp, ls00);
+        }
+        let (coef, nz) = self.coef_of(p);
         for (r, &dc) in c.iter().enumerate() {
             if dc != 0 {
-                self.s.coef[r * 16] = dc;
-                self.s.blk_nz |= 1 << r;
+                coef[r * 16] = dc;
+                *nz |= 1 << r;
             }
         }
     }
@@ -1555,7 +1762,9 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
             }
             let qp_dc = qpc + 3;
             let ls00 = self.ls.ls4[list][(qp_dc % 6) as usize][0];
-            transform::chroma_dc_dequant_422(&mut m, qp_dc, ls00);
+            if !self.bypass {
+                transform::chroma_dc_dequant_422(&mut m, qp_dc, ls00);
+            }
             dc = m;
         } else {
             let mut v = [0i32; 4];
@@ -1563,7 +1772,9 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
                 *d = lv;
             }
             let ls00 = self.ls.ls4[list][(qpc % 6) as usize][0];
-            transform::chroma_dc_dequant_420(&mut v, qpc, ls00);
+            if !self.bypass {
+                transform::chroma_dc_dequant_420(&mut v, qpc, ls00);
+            }
             dc[..4].copy_from_slice(&v);
         }
         for (b, &d) in dc.iter().enumerate().take(self.crows * 2) {
@@ -1585,7 +1796,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         for (k, &lv) in levels.iter().enumerate().skip(1) {
             if lv != 0 {
                 let p = scan[k] as usize;
-                blk[p] = transform::scale4(lv, ls[p], qpc);
+                blk[p] = if self.bypass { lv } else { transform::scale4(lv, ls[p], qpc) };
                 any = true;
             }
         }
@@ -1673,14 +1884,18 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
                     self.cur.rem_mode[i] = if r.read_flag()? { -1 } else { r.read_bits(3)? as i8 };
                 }
                 self.derive_intra_modes(info.kind == MbKind::I8x8);
-                let m = r.read_ue()?;
-                ensure!(m <= 3, "intra_chroma_pred_mode out of range");
-                self.mb_mut().intra_chroma_mode = m as u8;
+                if self.fmt.cf != 3 {
+                    let m = r.read_ue()?;
+                    ensure!(m <= 3, "intra_chroma_pred_mode out of range");
+                    self.mb_mut().intra_chroma_mode = m as u8;
+                }
             }
             MbKind::I16x16 => {
-                let m = r.read_ue()?;
-                ensure!(m <= 3, "intra_chroma_pred_mode out of range");
-                self.mb_mut().intra_chroma_mode = m as u8;
+                if self.fmt.cf != 3 {
+                    let m = r.read_ue()?;
+                    ensure!(m <= 3, "intra_chroma_pred_mode out of range");
+                    self.mb_mut().intra_chroma_mode = m as u8;
+                }
             }
             MbKind::BDirect16x16 => {}
             _ => {
@@ -1737,12 +1952,19 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         // coded_block_pattern
         let cbp = if info.kind == MbKind::I16x16 {
             info.i16_cbp
+        } else if self.fmt.cf == 3 {
+            // Table 9-4 for ChromaArrayType 0 or 3: luma bits only
+            let code = r.read_ue()?;
+            ensure!(code < 16, "coded_block_pattern out of range");
+            let (i, p) = (CBP_ME_GRAY_INTRA[code as usize], CBP_ME_GRAY_INTER[code as usize]);
+            if info.kind.is_intra() { i } else { p }
         } else {
             let code = r.read_ue()?;
             ensure!(code < 48, "coded_block_pattern out of range");
             let (i, p) = CBP_ME[code as usize];
             if info.kind.is_intra() { i } else { p }
         };
+        let cbp = if self.fmt.cf == 3 { cbp & 15 } else { cbp };
         self.cur.cbp = cbp;
         self.mb_mut().cbp = cbp;
         if !info.kind.is_intra() && cbp & 15 != 0 && self.pps.transform_8x8_mode && self.no_sub_8x8_lt() {
@@ -1780,8 +2002,23 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
     }
 
     fn residual_cavlc(&mut self, r: &mut BitReader, cbp: u8) -> Result<()> {
+        // residual_luma() for luma, and for Cb and Cr of 4:4:4
+        for p in 0..if self.fmt.cf == 3 { 3 } else { 1 } {
+            self.plane = p;
+            let res = self.residual_luma_cavlc(r, cbp);
+            self.plane = 0;
+            res?;
+        }
+        if self.fmt.cf == 3 {
+            return Ok(());
+        }
+        self.residual_chroma_cavlc(r, cbp)
+    }
+
+    fn residual_luma_cavlc(&mut self, r: &mut BitReader, cbp: u8) -> Result<()> {
         let kind = self.mb().kind;
         let t8 = self.mb().transform_8x8;
+        let p = self.plane;
         if kind == MbKind::I16x16 {
             let nc = self.nc_luma(0);
             let mut lv = [0i32; 16];
@@ -1800,7 +2037,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
                     let nc = self.nc_luma(raster);
                     let mut lv = [0i32; 16];
                     let tc = cavlc::residual_block(r, &mut lv, 0, 15, 16, nc)?;
-                    self.mb_mut().nnz[raster] = tc;
+                    self.mb_mut().nnz_of_mut(p)[raster] = tc;
                     for (i, &v) in lv.iter().enumerate() {
                         lv8[4 * i + i4] = v;
                     }
@@ -1816,11 +2053,15 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
                     } else {
                         cavlc::residual_block(r, &mut lv, 0, 15, 16, nc)?
                     };
-                    self.mb_mut().nnz[raster] = tc;
+                    self.mb_mut().nnz_of_mut(p)[raster] = tc;
                     self.put_luma4(raster, &lv, kind == MbKind::I16x16);
                 }
             }
         }
+        Ok(())
+    }
+
+    fn residual_chroma_cavlc(&mut self, r: &mut BitReader, cbp: u8) -> Result<()> {
         let cbp_c = cbp >> 4;
         let nblk = self.crows * 2;
         if cbp_c & 3 != 0 {

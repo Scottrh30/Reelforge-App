@@ -405,25 +405,35 @@ pub fn deblock_mb<P: Pel>(pic: &mut PicState<P>, addr: usize, mb_w: usize) {
     };
     let width = pic.planes.width;
     let cwidth = pic.planes.cwidth;
-    // luma
-    for dir in 0..2 {
-        for e in 0..4 {
-            if bs[dir][e] == [0; 4] || (t8 && e % 2 == 1) {
-                continue;
-            }
-            let qpp = if e == 0 { p_qp[dir].map(|p| p.0).unwrap_or(q_qp) } else { q_qp };
-            let ep = params(qpp, q_qp, bs[dir][e], false);
-            if ep.alpha == 0 || ep.beta == 0 {
-                // filterSamplesFlag needs |p0 - q0| < alpha and |p1 - p0| < beta (8.7.2.2): no
-                // sample of the edge changes (low QPs)
-                continue;
-            }
-            if dir == 0 {
-                filter_vertical::<16, P>(&mut pic.planes.y, width, mx * 16 + e * 4, my * 16, &ep, false);
-            } else {
-                filter_horizontal::<16, P>(&mut pic.planes.y, width, mx * 16, my * 16 + e * 4, &ep, false);
+    // luma, and the Cb and Cr of 4:4:4 the same way (with their QPs)
+    let c444 = fmt.cf == 3;
+    for pl in 0..if c444 { 3 } else { 1 } {
+        // (QPY, or QPC of the plane's component)
+        let qp_pl = |qp: i32, qpc: [i8; 2]| if pl == 0 { qp } else { qpc[pl - 1] as i32 };
+        let q_q = qp_pl(q_qp, q_qpc);
+        for dir in 0..2 {
+            for e in 0..4 {
+                if bs[dir][e] == [0; 4] || (t8 && e % 2 == 1) {
+                    continue;
+                }
+                let qpp = if e == 0 { p_qp[dir].map(|p| qp_pl(p.0, p.1)).unwrap_or(q_q) } else { q_q };
+                let ep = params(qpp, q_q, bs[dir][e], pl > 0);
+                if ep.alpha == 0 || ep.beta == 0 {
+                    // filterSamplesFlag needs |p0 - q0| < alpha and |p1 - p0| < beta (8.7.2.2): no
+                    // sample of the edge changes (low QPs)
+                    continue;
+                }
+                let plane = plane_of(pic, pl);
+                if dir == 0 {
+                    filter_vertical::<16, P>(plane, width, mx * 16 + e * 4, my * 16, &ep, false);
+                } else {
+                    filter_horizontal::<16, P>(plane, width, mx * 16, my * 16 + e * 4, &ep, false);
+                }
             }
         }
+    }
+    if c444 {
+        return;
     }
     // chroma: vertical edges at chroma columns 0 and 4 use the bS of luma edges 0 and 2;
     // horizontal ones at rows 0 and 4 (4:2:0, luma edges 0 and 2) or 0, 4, 8, 12 (4:2:2,
@@ -463,6 +473,15 @@ pub fn deblock_mb<P: Pel>(pic: &mut PicState<P>, addr: usize, mb_w: usize) {
 /// line by line with each line's neighbour, the top edge of a frame macroblock under a field
 /// pair once per field, bS 1 for coefficient-free mixed edges and bS 3 (not 4) for intra
 /// horizontal edges involving a field macroblock.
+/// Plane `pl` (0 luma, 1 Cb, 2 Cr).
+fn plane_of<P: Pel>(pic: &mut PicState<P>, pl: usize) -> &mut [P] {
+    match pl {
+        0 => &mut pic.planes.y,
+        1 => &mut pic.planes.cb,
+        _ => &mut pic.planes.cr,
+    }
+}
+
 #[allow(clippy::needless_range_loop)]
 pub fn deblock_mb_mbaff<P: Pel>(pic: &mut PicState<P>, idx: usize, mb_w: usize) {
     let Some(&q) = pic.mbs.get(idx) else { return };
@@ -628,45 +647,54 @@ pub fn deblock_mb_mbaff<P: Pel>(pic: &mut PicState<P>, idx: usize, mb_w: usize) 
     let mbs_qp: Vec<(i32, [i8; 2])> = mixed.iter().chain(&double).map(|&(_, pn, _)| (qp_of(&pic.mbs[pn]), pic.mbs[pn].qpc)).collect();
     let (mixed_qp, double_qp) = mbs_qp.split_at(mixed.len());
 
-    // luma: edges in order (vertical left to right, then horizontal top to bottom), each
-    // macroblock in its own frame / field
-    for dir in 0..2 {
-        for e in 0..4 {
-            if dir == 0 && e == 0 && !mixed.is_empty() {
-                for (k, &(b, _, pass)) in mixed.iter().enumerate() {
-                    let ep = params(mixed_qp[k].0, q_qp, b, false);
-                    // a field MB's half, or a frame MB's lines of one parity
-                    let (start, stride, y) = if qf { (ls, lstride, ly0 + 8 * pass) } else { (pass * w, 2 * w, my * 8) };
-                    if ep.alpha != 0 && ep.beta != 0 {
-                        filter_vertical::<8, P>(&mut pic.planes.y[start..], stride, mx * 16, y, &ep, false);
+    // luma (and the Cb and Cr of 4:4:4 the same way, with their QPs): edges in order
+    // (vertical left to right, then horizontal top to bottom), each macroblock in its own
+    // frame / field
+    let c444 = fmt.cf == 3;
+    for pl in 0..if c444 { 3 } else { 1 } {
+        let qp_pl = |qp: i32, qpc: [i8; 2]| if pl == 0 { qp } else { qpc[pl - 1] as i32 };
+        let q_q = qp_pl(q_qp, q_qpc);
+        for dir in 0..2 {
+            for e in 0..4 {
+                if dir == 0 && e == 0 && !mixed.is_empty() {
+                    for (k, &(b, _, pass)) in mixed.iter().enumerate() {
+                        let ep = params(qp_pl(mixed_qp[k].0, mixed_qp[k].1), q_q, b, pl > 0);
+                        // a field MB's half, or a frame MB's lines of one parity
+                        let (start, stride, y) = if qf { (ls, lstride, ly0 + 8 * pass) } else { (pass * w, 2 * w, my * 8) };
+                        if ep.alpha != 0 && ep.beta != 0 {
+                            filter_vertical::<8, P>(&mut plane_of(pic, pl)[start..], stride, mx * 16, y, &ep, false);
+                        }
                     }
+                    continue;
                 }
-                continue;
-            }
-            if dir == 1 && e == 0 && !double.is_empty() {
-                for (k, &(b, _, j)) in double.iter().enumerate() {
-                    let ep = params(double_qp[k].0, q_qp, b, false);
-                    if ep.alpha != 0 && ep.beta != 0 {
-                        filter_horizontal::<16, P>(&mut pic.planes.y[j * w..], 2 * w, mx * 16, my * 8, &ep, false);
+                if dir == 1 && e == 0 && !double.is_empty() {
+                    for (k, &(b, _, j)) in double.iter().enumerate() {
+                        let ep = params(qp_pl(double_qp[k].0, double_qp[k].1), q_q, b, pl > 0);
+                        if ep.alpha != 0 && ep.beta != 0 {
+                            filter_horizontal::<16, P>(&mut plane_of(pic, pl)[j * w..], 2 * w, mx * 16, my * 8, &ep, false);
+                        }
                     }
+                    continue;
                 }
-                continue;
-            }
-            if bs[dir][e] == [0; 4] || (t8 && e % 2 == 1) {
-                continue;
-            }
-            let qpp = if e == 0 { p_mb[dir].map_or(q_qp, |n| qp_of(&pic.mbs[n])) } else { q_qp };
-            let ep = params(qpp, q_qp, bs[dir][e], false);
-            if ep.alpha == 0 || ep.beta == 0 {
-                continue;
-            }
-            let y = &mut pic.planes.y[ls..];
-            if dir == 0 {
-                filter_vertical::<16, P>(y, lstride, mx * 16 + e * 4, ly0, &ep, false);
-            } else {
-                filter_horizontal::<16, P>(y, lstride, mx * 16, ly0 + e * 4, &ep, false);
+                if bs[dir][e] == [0; 4] || (t8 && e % 2 == 1) {
+                    continue;
+                }
+                let qpp = if e == 0 { p_mb[dir].map_or(q_q, |n| qp_pl(qp_of(&pic.mbs[n]), pic.mbs[n].qpc)) } else { q_q };
+                let ep = params(qpp, q_q, bs[dir][e], pl > 0);
+                if ep.alpha == 0 || ep.beta == 0 {
+                    continue;
+                }
+                let y = &mut plane_of(pic, pl)[ls..];
+                if dir == 0 {
+                    filter_vertical::<16, P>(y, lstride, mx * 16 + e * 4, ly0, &ep, false);
+                } else {
+                    filter_horizontal::<16, P>(y, lstride, mx * 16, ly0 + e * 4, &ep, false);
+                }
             }
         }
+    }
+    if c444 {
+        return;
     }
     // chroma, as the progressive case but in the macroblock's view
     for c in 0..2 {

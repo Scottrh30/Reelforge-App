@@ -187,6 +187,11 @@ pub fn b_sub_mb_type(t: u32) -> Option<SubMbInfo> {
     Some(SubMbInfo { shape, pred, direct })
 }
 
+/// Table 9-4 (b): codeNum -> coded_block_pattern for ChromaArrayType 0 or 3 (luma bits only),
+/// Intra_4x4 / Intra_8x8 and Inter.
+pub const CBP_ME_GRAY_INTRA: [u8; 16] = [15, 0, 7, 11, 13, 14, 3, 5, 10, 12, 1, 2, 4, 8, 6, 9];
+pub const CBP_ME_GRAY_INTER: [u8; 16] = [0, 1, 2, 4, 8, 3, 5, 10, 12, 15, 7, 11, 13, 14, 6, 9];
+
 /// Table 9-4 (a): codeNum -> coded_block_pattern for (Intra_4x4/Intra_8x8, Inter), ChromaArrayType 1 or 2.
 #[rustfmt::skip]
 pub const CBP_ME: [(u8, u8); 48] = [

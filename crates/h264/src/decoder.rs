@@ -391,9 +391,6 @@ impl Decoder {
         if pps.num_slice_groups > 1 {
             return unsupported("slice groups (FMO)");
         }
-        if sps.mb_adaptive_frame_field && !sh.field_pic && pps.constrained_intra_pred {
-            return unsupported("constrained intra prediction in MBAFF frames");
-        }
         if matches!(sh.slice_type, SliceType::Sp | SliceType::Si) {
             return unsupported("SP/SI slices");
         }
@@ -813,8 +810,8 @@ fn make_picture(o: &Output<AnyFrame>) -> Picture {
             (Plane::U16(y), Plane::U16(u), Plane::U16(v))
         }
     };
-    let ccw = cw.div_ceil(2);
-    let cch = if fmt.cf == 2 { ch } else { ch.div_ceil(2) };
+    let ccw = if fmt.cf == 3 { cw } else { cw.div_ceil(2) };
+    let cch = if fmt.cf >= 2 { ch } else { ch.div_ceil(2) };
     Picture {
         width: cw as u32,
         height: ch as u32,

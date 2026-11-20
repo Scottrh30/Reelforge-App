@@ -82,6 +82,26 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture { name: "hi10_qp1", source: "mandelbrot", width: 176, height: 144, frames: 8, filter: NOISE, args: &["-pix_fmt", "yuv420p10le", "-profile:v", "high10", "-qp", "1"] },
     Fixture { name: "hi10_qp0", source: "mandelbrot", width: 176, height: 144, frames: 8, filter: NOISE, args: &["-pix_fmt", "yuv420p10le", "-profile:v", "high10", "-x264-params", "qp=1"] },
     Fixture { name: "hi10_qp51", source: "testsrc2", width: 176, height: 144, frames: 8, filter: NOISE, args: &["-pix_fmt", "yuv420p10le", "-profile:v", "high10", "-qp", "51"] },
+    // High 4:4:4 Predictive: 4:4:4 (CAVLC and CABAC, 8x8 transforms, inter, interlaced) and
+    // lossless (transform bypass, in 4:2:0 and 4:2:2 too)
+    Fixture { name: "hi444_intra", source: "testsrc2", width: 352, height: 288, frames: 4, filter: NOISE, args: &["-pix_fmt", "yuv444p", "-profile:v", "high444", "-x264-params", "keyint=1"] },
+    Fixture { name: "hi444_cavlc", source: "testsrc2", width: 352, height: 288, frames: 12, filter: NOISE, args: &["-pix_fmt", "yuv444p", "-profile:v", "high444", "-x264-params", "cabac=0:bframes=2"] },
+    Fixture { name: "hi444_cabac_b", source: "mandelbrot", width: 352, height: 288, frames: 16, filter: NOISE, args: &["-pix_fmt", "yuv444p", "-profile:v", "high444", "-bf", "3"] },
+    Fixture { name: "hi444_10bit", source: "testsrc2", width: 352, height: 288, frames: 12, filter: NOISE, args: &["-pix_fmt", "yuv444p10le", "-profile:v", "high444", "-bf", "2"] },
+    Fixture { name: "hi444_weighted", source: "testsrc2", width: 352, height: 288, frames: 14, filter: "noise=alls=12:allf=t+u,fade=in:0:12", args: &["-pix_fmt", "yuv444p", "-profile:v", "high444", "-x264-params", "weightp=2:weightb=1:bframes=2"] },
+    Fixture { name: "hi444_cqm", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-pix_fmt", "yuv444p", "-profile:v", "high444", "-x264-params", "cqm=jvt:bframes=2"] },
+    Fixture { name: "hi444_crop", source: "testsrc2", width: 318, height: 238, frames: 8, filter: NOISE, args: &["-pix_fmt", "yuv444p", "-profile:v", "high444", "-bf", "2"] },
+    Fixture { name: "hi444_mbaff", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-pix_fmt", "yuv444p", "-profile:v", "high444", "-x264-params", "interlaced=1:bframes=2"] },
+    Fixture { name: "hi444_mbaff_cavlc", source: "mandelbrot", width: 352, height: 288, frames: 8, filter: NOISE, args: &["-flags", "+ildct+ilme", "-pix_fmt", "yuv444p", "-profile:v", "high444", "-x264-params", "interlaced=1:bframes=2:cabac=0"] },
+    Fixture { name: "lossless_420", source: "testsrc2", width: 352, height: 288, frames: 8, filter: NOISE, args: &["-profile:v", "high444", "-qp", "0", "-bf", "2"] },
+    Fixture { name: "lossless_420_cavlc", source: "mandelbrot", width: 176, height: 144, frames: 8, filter: NOISE, args: &["-profile:v", "high444", "-qp", "0", "-x264-params", "cabac=0:bframes=2"] },
+    Fixture { name: "lossless_420_intra", source: "testsrc2", width: 176, height: 144, frames: 3, filter: NOISE, args: &["-profile:v", "high444", "-qp", "0", "-x264-params", "keyint=1"] },
+    Fixture { name: "lossless_422_10", source: "testsrc2", width: 176, height: 144, frames: 8, filter: NOISE, args: &["-pix_fmt", "yuv422p10le", "-profile:v", "high444", "-qp", "0", "-bf", "2"] },
+    Fixture { name: "lossless_444", source: "testsrc2", width: 176, height: 144, frames: 8, filter: NOISE, args: &["-pix_fmt", "yuv444p", "-profile:v", "high444", "-qp", "0", "-bf", "2"] },
+    Fixture { name: "lossless_444_cavlc_intra", source: "mandelbrot", width: 176, height: 144, frames: 3, filter: NOISE, args: &["-pix_fmt", "yuv444p", "-profile:v", "high444", "-qp", "0", "-x264-params", "keyint=1:cabac=0"] },
+    Fixture { name: "lossless_mbaff", source: "testsrc2", width: 176, height: 144, frames: 6, filter: NOISE, args: &["-flags", "+ildct+ilme", "-profile:v", "high444", "-qp", "0", "-x264-params", "interlaced=1:bframes=2"] },
+    Fixture { name: "constrained_intra_mbaff", source: "testsrc2", width: 352, height: 288, frames: 12, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:constrained-intra=1:bframes=2"] },
+    Fixture { name: "constrained_intra_mbaff_cavlc", source: "mandelbrot", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:constrained-intra=1:cabac=0"] },
     Fixture { name: "hi422_8bit", source: "testsrc2", width: 352, height: 288, frames: 20, filter: NOISE, args: &["-pix_fmt", "yuv422p", "-profile:v", "high422", "-bf", "2"] },
     Fixture { name: "hi422_intra", source: "testsrc2", width: 352, height: 288, frames: 6, filter: NOISE, args: &["-pix_fmt", "yuv422p10le", "-profile:v", "high422", "-x264-params", "keyint=1"] },
     Fixture { name: "hi422_cabac_b", source: "testsrc2", width: 352, height: 288, frames: 20, filter: NOISE, args: &["-pix_fmt", "yuv422p10le", "-profile:v", "high422", "-bf", "3"] },
@@ -536,8 +556,9 @@ pub fn decode_file_opts(path: &Path, threads: usize, draft: bool) -> Result<Vec<
 pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize) -> Result<(), String> {
     let Some(first) = pics.first() else { return if reference.is_empty() { Ok(()) } else { Err("decoder produced no frames".into()) } };
     let c422 = first.chroma_height == first.height && first.height > 1;
+    let c444 = c422 && first.chroma_width == first.width;
     let bps = if first.bit_depth > 8 { 2 } else { 1 };
-    let (cw, ch) = (w.div_ceil(2), if c422 { h } else { h.div_ceil(2) });
+    let (cw, ch) = (if c444 { w } else { w.div_ceil(2) }, if c422 { h } else { h.div_ceil(2) });
     let fsize = (w * h + 2 * cw * ch) * bps;
     let nref = reference.len() / fsize;
     let sample = |b: &[u8], i: usize| -> u16 { if bps == 2 { u16::from_le_bytes([b[2 * i], b[2 * i + 1]]) } else { b[i] as u16 } };
@@ -551,7 +572,8 @@ pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize) -> Result
         let f = &reference[i * fsize..(i + 1) * fsize];
         let (ys, cs) = (w * h * bps, cw * ch * bps);
         let mbh = if c422 { 16 } else { 8 };
-        let planes = [("Y", &p.y, &f[..ys], w, h, 16, 16), ("U", &p.u, &f[ys..ys + cs], cw, ch, 8, mbh), ("V", &p.v, &f[ys + cs..], cw, ch, 8, mbh)];
+        let mbw = if c444 { 16 } else { 8 };
+        let planes = [("Y", &p.y, &f[..ys], w, h, 16, 16), ("U", &p.u, &f[ys..ys + cs], cw, ch, mbw, mbh), ("V", &p.v, &f[ys + cs..], cw, ch, mbw, mbh)];
         for (name, got, exp, pw, ph, mbw, mbh) in planes {
             let mut first = None;
             let mut count = 0usize;

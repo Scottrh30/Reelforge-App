@@ -723,6 +723,14 @@ mod tests {
             ("h264_mbaff_bff.mp4", "320x180", 25, x("yuv420p", "high", &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:bff=1:cabac=0"])),
             // temporal direct prediction in MBAFF frames
             ("h264_mbaff_temporal.mp4", "320x180", 25, x("yuv420p", "high", &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:direct=temporal:bframes=2"])),
+            // constrained intra prediction in MBAFF frames
+            ("h264_mbaff_ci.mkv", "352x288", 25, x("yuv420p", "high", &["-flags", "+ildct+ilme", "-x264-params", "interlaced=1:constrained-intra=1:bframes=2"])),
+            // High 4:4:4 Predictive: 4:4:4, and lossless
+            ("h264_444.mkv", "320x180", 25, x("yuv444p", "high444", &["-bf", "2"])),
+            ("h264_444_10.mp4", "320x180", 25, x("yuv444p10le", "high444", &["-bf", "2"])),
+            ("h264_444_cavlc.mov", "250x142", 25, x("yuv444p", "high444", &["-x264-params", "cabac=0"])),
+            ("h264_lossless444.mp4", "320x180", 25, x("yuv444p", "high444", &["-qp", "0"])),
+            ("h264_lossless420.mkv", "320x180", 25, x("yuv420p", "high444", &["-qp", "0", "-bf", "2"])),
         ];
         let mut ran = 0;
         let mut bad = Vec::new();
@@ -848,13 +856,13 @@ mod tests {
         assert!(ran >= 4 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
     }
 
-    /// What the libraries don't decode (interlaced or 10-bit H.264) is reported as an
-    /// error, which hands the file to FFmpeg.
+    /// What the libraries don't decode is reported as an error, which hands the file to
+    /// FFmpeg.
     #[test]
     fn unsupported_h264_is_reported() {
         for (name, args) in [
-            // High 4:4:4 Predictive (lossless): still FFmpeg's.
-            ("lossless444.mp4", vec!["-c:v", "libx264", "-pix_fmt", "yuv444p", "-qp", "0"]),
+            // monochrome (4:0:0): still FFmpeg's
+            ("gray.mp4", vec!["-c:v", "libx264", "-pix_fmt", "gray", "-profile:v", "high"]),
         ] {
             let Some(p) = clip_at(name, "320x180", 25, &args) else { continue };
             crate::init();

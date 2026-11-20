@@ -143,8 +143,9 @@ impl H264Decoder {
                 Some(Src { samples: h264_samples(&p.u), stride: p.uv_stride }),
                 Some(Src { samples: h264_samples(&p.v), stride: p.uv_stride }),
             ];
+            let sx = u32::from(p.chroma_width < p.width);
             let sy = u32::from(p.chroma_height < p.height);
-            self.out.push(picture(p.width, p.height, p.bit_depth as u32, Some((1, sy)), planes, h273_matrix(c.matrix), c.full_range, p.pts)?);
+            self.out.push(picture(p.width, p.height, p.bit_depth as u32, Some((sx, sy)), planes, h273_matrix(c.matrix), c.full_range, p.pts)?);
         }
         Ok(())
     }
