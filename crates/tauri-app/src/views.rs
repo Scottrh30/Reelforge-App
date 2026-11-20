@@ -371,6 +371,8 @@ pub struct ModelInfo {
     /// Its parts (materials or objects), by name, and how many textures it has.
     pub parts: Vec<String>,
     pub textures: usize,
+    /// Texture files it names that weren't found.
+    pub missing_textures: Vec<String>,
 }
 
 /// A solved 3D camera, as the Track panel and the Viewer show it.
@@ -871,8 +873,8 @@ pub fn state(e: &Editor) -> State {
             title: c.title.clone(),
             title_missing_font: c.title.is_some() && e.preview.title_missing_font(c.id),
             model: c.title.as_ref().and_then(|t| t.model.as_ref()).map(|m| match reelforge_render::model3d::cached(m) {
-                Ok(md) => ModelInfo { triangles: md.indices.len() / 3, error: None, path: m.path.display().to_string(), parts: md.parts.clone(), textures: md.atlas.as_ref().map_or(0, |a| a.rects.len()) },
-                Err(err) => ModelInfo { triangles: 0, error: Some(err), path: m.path.display().to_string(), parts: Vec::new(), textures: 0 },
+                Ok(md) => ModelInfo { triangles: md.indices.len() / 3, error: None, path: m.path.display().to_string(), parts: md.parts.clone(), textures: md.atlas.as_ref().map_or(0, |a| a.rects.len()).saturating_sub(md.missing_textures.len()), missing_textures: md.missing_textures.clone() },
+                Err(err) => ModelInfo { triangles: 0, error: Some(err), path: m.path.display().to_string(), parts: Vec::new(), textures: 0, missing_textures: Vec::new() },
             }),
             gizmo: if video { crate::viewer::geometry(e) } else { None },
             gizmo3d: if video { crate::viewer::gizmo_3d(e) } else { None },

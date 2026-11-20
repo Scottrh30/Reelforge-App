@@ -307,7 +307,7 @@ export interface Inspector {
   name: string;
   kind: ClipKind;
   title_missing_font: boolean;
-  model: { path: string; triangles: number; error: string | null; parts: string[]; textures: number } | null;
+  model: { path: string; triangles: number; error: string | null; parts: string[]; textures: number; missing_textures: string[] } | null;
   gizmo: Gizmo | null;
   gizmo3d: Gizmo3d | null;
   track: string;
@@ -1306,6 +1306,8 @@ export const api = {
   proxyFolder: () => invoke<string>("proxy_folder"),
   relinkMedia: (media: number) => invoke("relink_media", { media }),
   relinkSearch: () => invoke("relink_search"),
+  relinkModel: (clip: number) => invoke("relink_model", { clip }),
+  findModelTextures: (clip: number) => invoke("find_model_textures", { clip }),
   replaceFootage: (media: number, keepSize: boolean) => invoke("replace_footage", { media, keepSize }),
   replaceClipFootage: (id: number, keepSize: boolean) => invoke("replace_clip_footage", { id, keepSize }),
   collectPlan: (dest: string, name: string, includeUnused: boolean, includeFonts: boolean) => invoke<CollectPlanView>("collect_plan", { dest, name, includeUnused, includeFonts }),

@@ -342,6 +342,7 @@ pub struct ImportReport {
     pub missing: usize,
 }
 mod replace;
+mod models;
 mod aifx;
 pub mod upscale;
 pub mod colormatch;
@@ -1891,7 +1892,7 @@ impl Editor {
     /// the playhead, half the frame high, turned a little so its depth shows.
     pub fn add_3d_model(&mut self, path: &Path) {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
-        let mut src = reelforge_core::ModelSource { path: path.clone(), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new() };
+        let mut src = reelforge_core::ModelSource { path: path.clone(), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new(), texture_dirs: Vec::new() };
         let name = path.file_name().map_or("model".into(), |n| n.to_string_lossy().into_owned());
         match reelforge_render::model3d::cached(&src) {
             Ok(m) => {
@@ -2656,10 +2657,19 @@ impl Editor {
     pub fn find_missing_in(&mut self, dir: &Path) {
         let missing: Vec<PathBuf> = reelforge_core::undo::missing_media(&self.project).into_iter().filter_map(|o| self.project.media(o).map(|m| m.path.clone())).collect();
         let pairs = crate::safety::find_by_name(dir, &missing);
+        // 3D model files and their textures too
+        let (models, textures) = self.find_missing_models_in(dir);
+        let extra = match (models, textures) {
+            (0, 0) => String::new(),
+            (m, 0) => format!("; {m} 3D model file{}", if m == 1 { "" } else { "s" }),
+            (0, t) => format!("; {t} model texture{}", if t == 1 { "" } else { "s" }),
+            (m, t) => format!("; {m} 3D model file{} and {t} texture{}", if m == 1 { "" } else { "s" }, if t == 1 { "" } else { "s" }),
+        };
         if pairs.is_empty() {
-            self.status = format!("None of the missing files are in {}", dir.display());
+            self.status = if extra.is_empty() { format!("None of the missing files are in {}", dir.display()) } else { format!("Found{}", &extra[1..]) };
         } else {
             self.apply_relinks(pairs);
+            self.status.push_str(&extra);
         }
     }
 
@@ -5056,6 +5066,57 @@ mod tests {
         e.add_3d_model(&stl);
         assert!(e.status.starts_with("Couldn't use Part.stl"), "{}", e.status);
         assert_eq!(clips(&e), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Relink finds a moved 3D model file and textures that moved away from
+    /// their model, by name; one undo step each.
+    #[test]
+    fn relink_finds_moved_models_and_their_textures() {
+        let mut e = editor();
+        let dir = std::env::temp_dir().join(format!("rf_model_relink_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (a, b, tex) = (dir.join("a"), dir.join("b"), dir.join("b").join("Pictures"));
+        for d in [&a, &b, &tex] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let obj = "mtllib box.mtl\nusemtl wood\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n";
+        std::fs::write(a.join("box.obj"), obj).unwrap();
+        std::fs::write(a.join("box.mtl"), "newmtl wood\nKd 1 1 1\nmap_Kd C:\\Work\\Wood.PNG\n").unwrap();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 120, 40, 255])).save(a.join("wood.png")).unwrap();
+        e.add_3d_model(&a.join("box.obj"));
+        let id = e.selection.unwrap();
+        let model = |e: &Editor| e.seq().find_clip(id).unwrap().1.title.clone().unwrap().model.unwrap();
+        let loaded = |e: &Editor| reelforge_render::model3d::cached(&model(e));
+        // The texture's written path is gone (another computer), but it's beside the model, by name.
+        assert!(loaded(&e).unwrap().missing_textures.is_empty());
+        // Both move: the model to b/, the texture to b/Pictures/.
+        std::fs::rename(a.join("box.obj"), b.join("box.obj")).unwrap();
+        std::fs::rename(a.join("box.mtl"), b.join("box.mtl")).unwrap();
+        std::fs::rename(a.join("wood.png"), tex.join("wood.png")).unwrap();
+        assert_eq!(e.missing_models(), vec![a.join("box.obj")]);
+        e.relink_model(id, b.join("box.obj"));
+        assert_eq!(model(&e).path, b.join("box.obj"));
+        assert_eq!(model(&e).texture_dirs, vec![tex.clone()], "{}", e.status);
+        let m = loaded(&e).unwrap();
+        assert!(m.missing_textures.is_empty() && m.atlas.is_some(), "{:?}", m.missing_textures);
+        assert!(e.status.contains("1 3D model file") && e.status.contains("1 texture"), "{}", e.status);
+        assert!(e.missing_models().is_empty());
+        // The texture moves again: the layer says so, and a folder search finds it.
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::rename(tex.join("wood.png"), elsewhere.join("WOOD.png")).unwrap();
+        let _ = model(&e); // (same source: bump the cache by reloading)
+        let mut t = e.seq().find_clip(id).unwrap().1.title.clone().unwrap();
+        t.model.as_mut().unwrap().rev += 1;
+        e.set_title_live(id, t);
+        e.commit_live_edit();
+        assert_eq!(loaded(&e).unwrap().missing_textures, vec!["C:/Work/Wood.PNG".to_string()]);
+        e.find_missing_in(&dir);
+        assert!(loaded(&e).unwrap().missing_textures.is_empty(), "{}", e.status);
+        assert!(e.status.contains("1 model texture"), "{}", e.status);
+        e.undo();
+        assert_eq!(loaded(&e).unwrap().missing_textures.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

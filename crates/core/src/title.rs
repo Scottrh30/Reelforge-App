@@ -454,6 +454,10 @@ pub struct ModelSource {
     /// (and without their texture).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub part_colours: Vec<(String, [u8; 3])>,
+    /// More folders to look for its texture files in, by name (found with
+    /// Relink after the textures moved).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texture_dirs: Vec<std::path::PathBuf>,
 }
 
 

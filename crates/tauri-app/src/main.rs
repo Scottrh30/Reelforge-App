@@ -2074,6 +2074,8 @@ fn main() {
             ops::proxy_folder,
             ops::relink_media,
             ops::relink_search,
+            ops::relink_model,
+            ops::find_model_textures,
             ops::replace_footage,
             ops::replace_clip_footage,
             ops::collect_plan,

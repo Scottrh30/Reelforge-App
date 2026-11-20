@@ -52,8 +52,13 @@
   <p class="file" title={m.path}><b>{name}</b></p>
   {#if info?.error}
     <p class="warn">Can't show it: {info.error}</p>
+    <div class="row btns"><button class="small" onclick={() => run(api.relinkModel(ins.id))} title="Find the model file where it is now (other missing models and textures in the same folder are found too)">Find file…</button></div>
   {:else if info}
     <p class="note">{info.triangles.toLocaleString()} triangles{info.textures ? `, ${info.textures} texture${info.textures === 1 ? "" : "s"}` : ""}{info.parts.length > 1 ? `, ${info.parts.length} parts` : ""}</p>
+    {#if info.missing_textures?.length}
+      <p class="warn" title={info.missing_textures.join("\n")}>{info.missing_textures.length} texture{info.missing_textures.length === 1 ? "" : "s"} not found: {info.missing_textures.slice(0, 3).map((t) => t.split(/[\\/]/).pop()).join(", ")}{info.missing_textures.length > 3 ? "…" : ""}</p>
+      <div class="row btns"><button class="small" onclick={() => run(api.findModelTextures(ins.id))} title="Choose a folder to look for them in (and its subfolders), by name">Find textures…</button></div>
+    {/if}
   {/if}
   <div class="grid">
     <span class="lbl" title="Its largest side, so it fits in a box this big">Size</span>

@@ -162,6 +162,34 @@ pub fn relink_search() -> Res<()> {
     ed(|e| e.find_missing_in(&dir))
 }
 
+/// Find a 3D model layer's missing file (asks which file), then look for
+/// other missing models and textures in the same folder.
+#[tauri::command]
+pub fn relink_model(clip: u64) -> Res<()> {
+    let id = reelforge_core::ClipId(clip);
+    let path = ed(|e| e.seq().find_clip(id).and_then(|(_, c)| c.title.as_ref()?.model.as_ref().map(|m| m.path.clone())))?.ok_or("not a 3D model layer")?;
+    let name = path.file_name().map_or("the model".into(), |n| n.to_string_lossy().into_owned());
+    let mut dlg = rfd::FileDialog::new().set_title(format!("Find {name}")).add_filter("3D models", &reelforge_core::MODEL_EXTENSIONS).add_filter("All files", &["*"]);
+    if let Some(d) = path.parent().filter(|d| d.is_dir()) {
+        dlg = dlg.set_directory(d);
+    }
+    let Some(new) = dlg.pick_file() else { return Ok(()) };
+    ed(|e| e.relink_model(id, new))
+}
+
+/// Search a folder (and its subfolders) for a 3D model layer's missing textures.
+#[tauri::command]
+pub fn find_model_textures(clip: u64) -> Res<()> {
+    let id = reelforge_core::ClipId(clip);
+    let dir = ed(|e| e.seq().find_clip(id).and_then(|(_, c)| c.title.as_ref()?.model.as_ref()?.path.parent().map(PathBuf::from)))?;
+    let mut dlg = rfd::FileDialog::new().set_title("Folder with the model's textures");
+    if let Some(d) = dir.filter(|d| d.is_dir()) {
+        dlg = dlg.set_directory(d);
+    }
+    let Some(dir) = dlg.pick_folder() else { return Ok(()) };
+    ed(|e| e.find_model_textures(id, &dir))
+}
+
 // ---- Replace footage ----------------------------------------------------------------
 
 /// Ask for the footage to swap in for `name` (starting in `dir`).

@@ -311,7 +311,7 @@ fn models_draw_in_their_own_colours() {
     )
     .unwrap();
     std::fs::write(d.join("cube.mtl"), "newmtl g\nKd 0.1 0.8 0.1\n").unwrap();
-    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new() };
+    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new(), texture_dirs: Vec::new() };
     let spec = |own: bool| TitleSpec { size: 100.0, color: [230, 40, 30, 255], shadow: false, model: Some(ModelSource { own_colours: own, ..src.clone() }), ..TitleSpec::default() };
     // The mesh: its largest side 100 px, centred every way.
     let m = text_mesh(&spec(true), [W, H]);
@@ -360,7 +360,7 @@ fn models_show_their_textures_and_parts_can_be_recoloured() {
     )
     .unwrap();
     std::fs::write(d.join("cube.mtl"), "newmtl painted\nKd 1 1 1\nmap_Kd tex.png\n").unwrap();
-    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new() };
+    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new(), texture_dirs: Vec::new() };
     let model = reelforge_render::model3d::cached(&src).unwrap();
     assert_eq!(model.parts, vec!["painted".to_string()]);
     assert!(model.atlas.is_some());

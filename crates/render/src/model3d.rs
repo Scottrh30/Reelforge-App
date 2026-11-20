@@ -32,6 +32,8 @@ pub struct Model {
     pub atlas: Option<std::sync::Arc<Atlas>>,
     /// The file says its up axis is Z.
     pub z_up: bool,
+    /// Texture files the model names that weren't found (as the file names them).
+    pub missing_textures: Vec<String>,
 }
 
 /// What a vertex has besides its place, normal and colour.
@@ -82,10 +84,16 @@ const CREASE_DEG: f32 = 40.0;
 
 /// Read the model in `path` (by its extension).
 pub fn load(path: &Path) -> Result<Model, String> {
+    load_with(path, &[])
+}
+
+/// Read the model in `path`, looking for texture files that aren't where it
+/// says in `texture_dirs` too (see [`find_texture`]).
+pub fn load_with(path: &Path, texture_dirs: &[std::path::PathBuf]) -> Result<Model, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let mut m = match ext.as_str() {
-        "obj" => load_obj(path),
-        "gltf" | "glb" => load_gltf(path),
+        "obj" => load_obj(path, texture_dirs),
+        "gltf" | "glb" => load_gltf(path, texture_dirs),
         "fbx" => load_fbx(path),
         "usd" | "usda" | "usdc" | "usdz" => load_usd(path),
         "stl" => load_stl(path),
@@ -201,6 +209,57 @@ pub fn pack_atlas(pics: &[Picture]) -> Option<Atlas> {
     }
 }
 
+/// Where a texture file the model at `dir` names as `written` is: as written
+/// (beside the model, or a full path), else by its name beside the model, in
+/// a `textures`-style folder there, or in one of `extra` (folders found with
+/// Relink). Names are matched ignoring case (models made on Windows).
+pub fn find_texture(dir: &Path, written: &str, extra: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    let written = written.trim().replace('\\', "/");
+    if written.is_empty() {
+        return None;
+    }
+    let as_written = dir.join(&written);
+    if as_written.is_file() {
+        return Some(as_written);
+    }
+    let name = written.rsplit('/').next().filter(|n| !n.is_empty())?.to_lowercase();
+    let mut dirs: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+    for sub in ["textures", "Textures", "texture", "tex", "maps", "Maps", "images", "materials"] {
+        dirs.push(dir.join(sub));
+    }
+    dirs.extend(extra.iter().cloned());
+    for d in dirs {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().to_lowercase() == name && e.path().is_file() {
+                return Some(e.path());
+            }
+        }
+    }
+    None
+}
+
+/// `%20`-style escapes in a glTF URI, decoded.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while let Some(&c) = b.get(i) {
+        let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (c, hex) {
+            (b'%', Some(v)) => {
+                out.push(v);
+                i += 3;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// A picture from any of the usual formats, as RGBA8.
 fn read_picture(path: &Path) -> Option<Picture> {
     let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?.into_rgba8();
@@ -243,7 +302,7 @@ fn with_normals(m: Model) -> Model {
         }
     }
     let cos = CREASE_DEG.to_radians().cos();
-    let mut out = Model { z_up: m.z_up, ..Default::default() };
+    let mut out = Model { z_up: m.z_up, missing_textures: m.missing_textures.clone(), ..Default::default() };
     for (k, &i) in m.indices.iter().enumerate() {
         let own = unit(face.get(k / 3).copied().unwrap_or([0.0; 3]));
         let mut n = [0.0f32; 3];
@@ -399,7 +458,7 @@ fn srgb_to_linear(c: f32) -> f32 {
 
 // ---- OBJ ----
 
-fn load_obj(path: &Path) -> Result<Model, String> {
+fn load_obj(path: &Path, texture_dirs: &[std::path::PathBuf]) -> Result<Model, String> {
     let opts = tobj::LoadOptions { triangulate: true, single_index: true, ..Default::default() };
     let (models, materials) = tobj::load_obj(path, &opts).map_err(|e| format!("not an OBJ file Reelforge can read ({e})"))?;
     let materials = materials.unwrap_or_default();
@@ -422,12 +481,15 @@ fn load_obj(path: &Path) -> Result<Model, String> {
             *tex_of.entry(t.clone()).or_insert_with(|| {
                 // The last word is the file (options like -bm 1 come first); backslashes from Windows.
                 let file = t.split_whitespace().last().unwrap_or(t).replace('\\', "/");
-                match read_picture(&dir.join(&file)) {
+                match find_texture(&dir, &file, texture_dirs).and_then(|f| read_picture(&f)) {
                     Some(p) => {
                         pics.push(p);
                         (pics.len() - 1) as i16
                     }
-                    None => -1,
+                    None => {
+                        out.missing_textures.push(file);
+                        -1
+                    }
                 }
             })
         });
@@ -456,11 +518,37 @@ fn load_obj(path: &Path) -> Result<Model, String> {
 
 // ---- glTF / GLB ----
 
-fn load_gltf(path: &Path) -> Result<Model, String> {
-    let (doc, buffers, images) = gltf::import(path).map_err(|e| format!("not a glTF file Reelforge can read ({e})"))?;
-    // The images, as RGBA8 (the atlas packs them).
-    let pics: Vec<Picture> = images.iter().map(to_picture).collect();
+fn load_gltf(path: &Path, texture_dirs: &[std::path::PathBuf]) -> Result<Model, String> {
+    let bad = |e: gltf::Error| format!("not a glTF file Reelforge can read ({e})");
+    let gltf::Gltf { document: doc, blob } = gltf::Gltf::open(path).map_err(bad)?;
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let buffers = gltf::import_buffers(&doc, Some(&dir), blob).map_err(bad)?;
     let mut out = Model::default();
+    // The images, as RGBA8 (the atlas packs them), each found as for OBJ; one
+    // that can't be read is a white stand-in (keeping the others' places).
+    let white = || Picture { width: 1, height: 1, rgba: vec![255; 4] };
+    let mut pics: Vec<Picture> = Vec::new();
+    for img in doc.images() {
+        let pic = match img.source() {
+            gltf::image::Source::View { view, .. } => {
+                let bytes = buffers.get(view.buffer().index()).and_then(|b| b.get(view.offset()..view.offset().checked_add(view.length())?));
+                bytes.and_then(|b| image::load_from_memory(b).ok()).map(|i| {
+                    let i = i.into_rgba8();
+                    Picture { width: i.width(), height: i.height(), rgba: i.into_raw() }
+                })
+            }
+            gltf::image::Source::Uri { uri, .. } if uri.starts_with("data:") => gltf::image::Data::from_source(img.source(), Some(&dir), &buffers).ok().map(|d| to_picture(&d)),
+            gltf::image::Source::Uri { uri, .. } => {
+                let file = percent_decode(uri.strip_prefix("file://").or_else(|| uri.strip_prefix("file:")).unwrap_or(uri));
+                let p = find_texture(&dir, &file, texture_dirs).and_then(|f| read_picture(&f));
+                if p.is_none() {
+                    out.missing_textures.push(file);
+                }
+                p
+            }
+        };
+        pics.push(pic.unwrap_or_else(white));
+    }
     let mut all_normals = true;
     let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("the file has no scene")?;
     let mut stack: Vec<(gltf::Node, M4)> = scene.nodes().map(|n| (n, I4)).collect();
@@ -901,7 +989,7 @@ fn load_fbx(path: &Path) -> Result<Model, String> {
 /// shared across faces again).
 fn weld(m: Model) -> Model {
     let mut map: std::collections::HashMap<([u32; 3], [u32; 4], u16), u32> = Default::default();
-    let mut out = Model { z_up: m.z_up, parts: m.parts.clone(), atlas: m.atlas.clone(), ..Default::default() };
+    let mut out = Model { z_up: m.z_up, parts: m.parts.clone(), atlas: m.atlas.clone(), missing_textures: m.missing_textures.clone(), ..Default::default() };
     for &i in &m.indices {
         let (Some(&p), c) = (m.positions.get(i as usize), m.colors.get(i as usize).copied().unwrap_or(DEFAULT_COLOR)) else { continue };
         let x = m.extra.get(i as usize).copied().unwrap_or(VExtra::NONE);
@@ -1058,8 +1146,11 @@ fn invert(m: &M4) -> M4 {
 
 /// Models read so far (by file, its change time and the reload count), and why one couldn't be.
 type Loaded = Result<std::sync::Arc<Model>, String>;
-fn cache() -> &'static std::sync::Mutex<Vec<((std::path::PathBuf, Option<std::time::SystemTime>, u32), Loaded)>> {
-    static C: std::sync::OnceLock<std::sync::Mutex<Vec<((std::path::PathBuf, Option<std::time::SystemTime>, u32), Loaded)>>> = std::sync::OnceLock::new();
+/// A model's path, when it last changed, its reload count and its texture folders.
+type CacheKey = (std::path::PathBuf, Option<std::time::SystemTime>, u32, Vec<std::path::PathBuf>);
+
+fn cache() -> &'static std::sync::Mutex<Vec<(CacheKey, Loaded)>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<Vec<(CacheKey, Loaded)>>> = std::sync::OnceLock::new();
     C.get_or_init(Default::default)
 }
 
@@ -1067,11 +1158,11 @@ fn cache() -> &'static std::sync::Mutex<Vec<((std::path::PathBuf, Option<std::ti
 /// it's reloaded).
 pub fn cached(src: &reelforge_core::ModelSource) -> Loaded {
     let modified = std::fs::metadata(&src.path).and_then(|m| m.modified()).ok();
-    let key = (src.path.clone(), modified, src.rev);
+    let key = (src.path.clone(), modified, src.rev, src.texture_dirs.clone());
     if let Some((_, v)) = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|(k, _)| *k == key) {
         return v.clone();
     }
-    let v = if src.path.exists() { load(&src.path).map(std::sync::Arc::new) } else { Err("the file isn't there any more (moved or renamed?)".into()) };
+    let v = if src.path.exists() { load_with(&src.path, &src.texture_dirs).map(std::sync::Arc::new) } else { Err("the file isn't there any more (moved or renamed?)".into()) };
     let mut c = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     c.retain(|(k, _)| k.0 != key.0);
     if c.len() >= 8 {
@@ -1208,11 +1299,32 @@ mod tests {
             buf.len(),
             b64(&buf)
         );
-        std::fs::write(d.join("t.gltf"), json).unwrap();
+        std::fs::write(d.join("t.gltf"), &json).unwrap();
         let m = load(&d.join("t.gltf")).unwrap();
         unit_normals(&m);
         assert_eq!(extent(&m), ([5.0, 0.0, 0.0], [6.0, 1.0, 0.0]));
         assert!(m.colors.iter().all(|c| *c == [0.0, 0.5, 1.0, 1.0]));
+
+        // A texture file that isn't there (once an error for the whole model) is
+        // left out and reported; found by name in another folder, it's read; an
+        // image in a buffer view past the buffer's end is left out, no crash.
+        let with_images = json.replacen(
+            r#""buffers""#,
+            r#""images":[{"uri":"maps%20old/Bark.PNG"},{"bufferView":1,"mimeType":"image/png"}],"textures":[{"source":0},{"source":1}],"buffers""#,
+            1,
+        );
+        let with_images = with_images.replace(r#""byteOffset":36,"byteLength":6"#, r#""byteOffset":36,"byteLength":6}},{{"buffer":0,"byteOffset":40,"byteLength":999"#.replace("{{", "{").replace("}}", "}").as_str());
+        let with_images = with_images.replace(r#""bufferView":1,"mimeType""#, r#""bufferView":2,"mimeType""#);
+        std::fs::write(d.join("t2.gltf"), &with_images).unwrap();
+        let m = load(&d.join("t2.gltf")).unwrap();
+        assert_eq!(m.missing_textures, vec!["maps old/Bark.PNG".to_string()]);
+        let elsewhere = d.join("found_textures");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([90, 60, 30, 255])).save(elsewhere.join("bark.png")).unwrap();
+        let m = load_with(&d.join("t2.gltf"), std::slice::from_ref(&elsewhere)).unwrap();
+        assert!(m.missing_textures.is_empty());
+        assert_eq!(m.atlas.as_ref().map(|a| a.rects.len()), Some(2));
+        assert_eq!(find_texture(&d, "C:\\x\\BARK.png", std::slice::from_ref(&elsewhere)), Some(elsewhere.join("bark.png")));
     }
 
     /// USDA: a mesh under a moved Xform, Z up, with a display colour.
