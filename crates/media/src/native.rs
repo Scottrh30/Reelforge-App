@@ -728,7 +728,7 @@ mod tests {
             // High 4:4:4 Predictive: 4:4:4, and lossless
             ("h264_444.mkv", "320x180", 25, x("yuv444p", "high444", &["-bf", "2"])),
             ("h264_444_10.mp4", "320x180", 25, x("yuv444p10le", "high444", &["-bf", "2"])),
-            ("h264_444_cavlc.mov", "250x142", 25, x("yuv444p", "high444", &["-x264-params", "cabac=0"])),
+            ("h264_444_cavlc.mkv", "250x142", 25, x("yuv444p", "high444", &["-x264-params", "cabac=0"])),
             ("h264_lossless444.mp4", "320x180", 25, x("yuv444p", "high444", &["-qp", "0"])),
             ("h264_lossless420.mkv", "320x180", 25, x("yuv420p", "high444", &["-qp", "0", "-bf", "2"])),
         ];
