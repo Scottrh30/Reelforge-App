@@ -867,7 +867,10 @@ fn fs_liquid3d(in: VsOut) -> @location(0) vec4<f32> {
     let murk = (1.0 - clear) * 0.85;
     var rgb = mix(through, body, clamp(murk * absorb * 1.4, 0.0, 1.0));
     // The sky in it at grazing angles, and the light's highlight.
-    let fres = 0.03 + 0.97 * pow(1.0 - clamp(-n.z, 0.0, 1.0), 4.0);
+    // (the thin rim of a body of water is seen edge on: it catches the sky
+    // too, rather than showing as a dark outline)
+    let rim = 1.0 - smoothstep(0.45, 1.4, thick);
+    let fres = max(0.03 + 0.97 * pow(1.0 - clamp(-n.z, 0.0, 1.0), 4.0), rim * 0.6);
     let sky = mix(vec3(0.62, 0.72, 0.82), vec3(0.88, 0.92, 0.96), clamp(-n.y * 0.5 + 0.5, 0.0, 1.0));
     rgb = mix(rgb, sky, clamp(fres, 0.0, 0.8));
     let h = normalize(-l - v);

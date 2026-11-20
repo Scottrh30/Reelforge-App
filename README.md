@@ -838,7 +838,8 @@ What works now:
       Water thrown out of the box's front flies on under gravity alone until it's past the
       camera. Its checkpoints are kept in memory only (a box of particles is tens of
       megabytes a second); Detail Low is 64 cells across, High 128. Up close, drops flying at
-      the camera merge into sheets of water rather than separate drops
+      the camera merge into sheets of water rather than separate drops, and where sheets
+      overlap right at the lens thin dark outlines can show between them
     - **Kept on disk**: with the rendered previews kept on disk (Settings, on by default),
       every checkpoint of a water or fluid simulation is too (in the cache folder's
       `render/sims`, with half the rendered previews' room), so opening the project again,

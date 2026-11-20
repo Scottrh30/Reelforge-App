@@ -763,6 +763,15 @@ fn picture(@builtin(global_invocation_id) id: vec3<u32>) {
         let up = p - select(p, view_point(f32(x), f32(y - 1), zu), zu > 0.0);
         dpx = select(left, right, abs(right.z) < abs(left.z) || zl <= 0.0);
         dpy = select(up, down, abs(down.z) < abs(up.z) || zu <= 0.0);
+        // (a step in depth of more than a couple of particles is one body of
+        // water in front of another, not a slope: flat across it)
+        let jump = DRAWN_R * 3.0;
+        if (abs(dpx.z) > jump) {
+            dpx.z = 0.0;
+        }
+        if (abs(dpy.z) > jump) {
+            dpy.z = 0.0;
+        }
         let c = cross(dpy, dpx);
         if (dot(c, c) > 1e-12) {
             nrm = normalize(c);
