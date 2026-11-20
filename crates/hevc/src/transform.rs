@@ -10,17 +10,20 @@ use crate::tables::{DST_MATRIX, TRANS_MATRIX};
 /// are most of them, cost nothing), with the size a compile-time constant so the inner loops over
 /// contiguous basis rows vectorise. Integer sums are exact (|sum| < 2^27), so the result equals the
 /// direct matrix product of 8.6.4.2 in any summation order.
-pub fn inverse_transform(c: &mut [i32], n: usize, dst: bool, max_x: usize, max_y: usize, bd_shift: u32) {
+/// `log2_range`: log2TransformRange (15, or more with extended precision processing): the
+/// intermediate values are clipped to it.
+pub fn inverse_transform(c: &mut [i32], n: usize, dst: bool, max_x: usize, max_y: usize, bd_shift: u32, log2_range: u32) {
+    let clip = 1i32 << log2_range;
     match n {
-        4 => inverse::<4>(c, dst, max_x, max_y, bd_shift),
-        8 => inverse::<8>(c, false, max_x, max_y, bd_shift),
-        16 => inverse::<16>(c, false, max_x, max_y, bd_shift),
-        _ => inverse::<32>(c, false, max_x, max_y, bd_shift),
+        4 => inverse::<4>(c, dst, max_x, max_y, bd_shift, clip),
+        8 => inverse::<8>(c, false, max_x, max_y, bd_shift, clip),
+        16 => inverse::<16>(c, false, max_x, max_y, bd_shift, clip),
+        _ => inverse::<32>(c, false, max_x, max_y, bd_shift, clip),
     }
 }
 
 #[inline(always)]
-fn inverse<const N: usize>(c: &mut [i32], dst: bool, max_x: usize, max_y: usize, bd_shift: u32) {
+fn inverse<const N: usize>(c: &mut [i32], dst: bool, max_x: usize, max_y: usize, bd_shift: u32, clip: i32) {
     let step = 32 / N;
     // basis function of coefficient index j (row j of the transform matrix, N samples)
     let basis = |j: usize| -> &[i8] { if dst { &DST_MATRIX[j][..N] } else { &TRANS_MATRIX[j * step][..N] } };
@@ -38,7 +41,7 @@ fn inverse<const N: usize>(c: &mut [i32], dst: bool, max_x: usize, max_y: usize,
             }
         }
         for a in acc.iter_mut() {
-            *a = ((*a + 64) >> 7).clamp(-32768, 32767);
+            *a = ((*a + 64) >> 7).clamp(-clip, clip - 1);
         }
     }
     // 2. rows: r[x][y] = sum_j M[j][x] * g[j][y], g[j][y] = col[j][y]
@@ -60,17 +63,21 @@ fn inverse<const N: usize>(c: &mut [i32], dst: bool, max_x: usize, max_y: usize,
 }
 
 /// DC-only inverse DCT: every residual sample gets the same value.
-pub fn inverse_dc(dc: i32, bd_shift: u32) -> i32 {
-    let e = ((64 * dc + 64) >> 7).clamp(-32768, 32767);
+pub fn inverse_dc(dc: i32, bd_shift: u32, log2_range: u32) -> i32 {
+    let clip = 1i32 << log2_range;
+    let e = ((64 * dc + 64) >> 7).clamp(-clip, clip - 1);
     (64 * e + (1 << (bd_shift - 1))) >> bd_shift
 }
 
-/// Transform skip residual (8-298, 8-299): r = (d << tsShift + round) >> bdShift.
-pub fn transform_skip(c: &mut [i32], n: usize, bd_shift: u32) {
-    let ts_shift = 5 + n.trailing_zeros();
-    let round = 1 << (bd_shift - 1);
-    for v in c[..n * n].iter_mut() {
-        *v = ((*v << ts_shift) + round) >> bd_shift;
+/// Transform skip residual (8-298, 8-299): r = (d << tsShift + round) >> bdShift, as the
+/// single shift `shift` = bdShift - tsShift (rounded; a left shift when negative).
+pub fn transform_skip(c: &mut [i32], shift: i32) {
+    for v in c.iter_mut() {
+        *v = match shift {
+            s if s > 0 => (*v + (1 << (s - 1))) >> s,
+            0 => *v,
+            s => v.wrapping_shl(s.unsigned_abs()),
+        };
     }
 }
 
@@ -133,7 +140,7 @@ mod tests {
                 }
                 for bd_shift in [12u32, 10] {
                     let (mut a, mut b) = (c.clone(), c.clone());
-                    inverse_transform(&mut a, n, dst, max_x, max_y, bd_shift);
+                    inverse_transform(&mut a, n, dst, max_x, max_y, bd_shift, 15);
                     reference(&mut b, n, dst, max_x, max_y, bd_shift);
                     assert_eq!(a, b, "n {n} dst {dst} max ({max_x}, {max_y}) shift {bd_shift}");
                 }
@@ -147,8 +154,8 @@ mod tests {
             for dc in [-300, -1, 1, 7, 64, 1000] {
                 let mut c = vec![0i32; n * n];
                 c[0] = dc;
-                inverse_transform(&mut c, n, false, 0, 0, 12);
-                let v = inverse_dc(dc, 12);
+                inverse_transform(&mut c, n, false, 0, 0, 12, 15);
+                let v = inverse_dc(dc, 12, 15);
                 assert!(c.iter().all(|&x| x == v), "n {n} dc {dc}");
             }
         }
@@ -162,9 +169,9 @@ mod tests {
         c[1] = -20;
         c[2 * n + 3] = 9;
         let mut a = c.clone();
-        inverse_transform(&mut a, n, false, 3, 2, 12);
+        inverse_transform(&mut a, n, false, 3, 2, 12, 15);
         let mut b = c.clone();
-        inverse_transform(&mut b, n, false, n - 1, n - 1, 12);
+        inverse_transform(&mut b, n, false, n - 1, n - 1, 12, 15);
         assert_eq!(a, b);
     }
 }

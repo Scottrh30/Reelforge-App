@@ -63,11 +63,17 @@ pub(crate) static NEXT_STATE: [[u8; 2]; 128] = {
 /// Context states, padded to a power of two so that the per-bin index needs no bounds check.
 pub type Contexts = [u8; CTX_SLOTS];
 const CTX_SLOTS: usize = NUM_CTX.next_power_of_two();
+/// The persistent Rice adaptation statistics StatCoeff[0..4] (9.3.3.11) live in the last
+/// slots: they are initialised, stored and synchronised (WPP, dependent slices) with the
+/// contexts.
+pub const STAT_COEFF: usize = CTX_SLOTS - 4;
+const _: () = assert!(STAT_COEFF >= NUM_CTX);
 
 /// Initialise all context variables for `slice_qp` and `init_type` (9.3.2.2). Each context is stored as
 /// `pStateIdx << 1 | valMps`.
 pub fn init_contexts(ctx: &mut Contexts, slice_qp: i32, init_type: usize) {
     let qp = slice_qp.clamp(0, 51);
+    ctx.fill(0);
     for (c, &v) in ctx.iter_mut().zip(CABAC_INIT[init_type].iter()) {
         let slope = (v >> 4) as i32;
         let offset = (v & 15) as i32;
@@ -203,6 +209,11 @@ impl<'a> Cabac<'a> {
         self.value -= ((r as u64) * self.range as u64) << s;
         self.bits = s;
         r
+    }
+
+    /// cabac_bypass_alignment: ivlCurrRange = 256 before a run of bypass bins (9.3.4.3.6).
+    pub fn align_bypass(&mut self) {
+        self.range = 256;
     }
 
     pub fn decode_terminate(&mut self) -> u32 {

@@ -75,6 +75,8 @@ CABAC = [
     ("EXPLICIT_RDPCM_DIR", "9-33", [None, [0, 2], [1, 3]]),
     ("CU_CHROMA_QP_OFFSET_FLAG", "9-34", [[0], [1], [2]]),
     ("CU_CHROMA_QP_OFFSET_IDX", "9-35", [[0], [1], [2]]),
+    ("LOG2_RES_SCALE_ABS", "9-36", [R(0, 7), R(8, 15), R(16, 23)]),
+    ("RES_SCALE_SIGN", "9-37", [R(0, 1), R(2, 3), R(4, 5)]),
 ]
 
 out = []
