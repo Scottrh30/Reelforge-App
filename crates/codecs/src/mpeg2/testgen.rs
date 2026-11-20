@@ -452,3 +452,71 @@ fn write_coded(b: &mut Bits, rng: &mut Rng, nblocks: usize, dc: &mut [i32; 3]) {
         }
     }
 }
+
+/// An MPEG-1 stream of D pictures (DC only: every 8×8 block one flat value) of
+/// `w`×`h` (multiples of 16), and the planes each picture must decode to
+/// (Y, Cb, Cr, tight). No encoder makes D pictures and FFmpeg's decoder
+/// skips them, but their decoding is exact: the DC value is the block.
+pub fn generate_d_pictures(w: usize, h: usize, frames: usize) -> (Vec<u8>, Vec<[Vec<u8>; 3]>) {
+    let (mbw, mbh) = (w / 16, h / 16);
+    let mut b = Bits::new();
+    b.start(0xb3);
+    b.put(w as u32, 12);
+    b.put(h as u32, 12);
+    b.put(1, 4); // square pixels
+    b.put(3, 4); // 25 fps
+    b.put(0x3ffff, 18);
+    b.put(1, 1);
+    b.put(20, 10);
+    b.put(0, 3); // not constrained, no matrices
+    b.start(0xb8);
+    b.put(0, 25);
+    b.put(0b10, 2); // closed GOP
+    let mut expect = Vec::new();
+    let mut rng = Rng(7);
+    for f in 0..frames {
+        b.start(0x00);
+        b.put(f as u32, 10);
+        b.put(4, 3); // D
+        b.put(0xffff, 16);
+        b.put(0, 1);
+        let mut planes = [vec![0u8; w * h], vec![0u8; w * h / 4], vec![0u8; w * h / 4]];
+        for my in 0..mbh {
+            b.start(my as u8 + 1);
+            b.put(rng.range(1, 31) as u32, 5);
+            b.put(0, 1);
+            let mut pred = [128i32; 3];
+            for mx in 0..mbw {
+                b.put(1, 1); // address increment 1
+                b.put(1, 1); // intra
+                for blk in 0..6 {
+                    let comp = if blk < 4 { 0 } else { blk - 3 };
+                    // the whole range, with big steps (every DC size)
+                    let v = rng.range(0, 255);
+                    let diff = v - pred[comp];
+                    pred[comp] = v;
+                    let size = if diff == 0 { 0 } else { 32 - diff.unsigned_abs().leading_zeros() };
+                    if comp == 0 {
+                        b.put(DC_LUM_CODES[size as usize], DC_LUM_BITS[size as usize] as u32);
+                    } else {
+                        b.put(DC_CHROMA_CODES[size as usize], DC_CHROMA_BITS[size as usize] as u32);
+                    }
+                    if size > 0 {
+                        b.put((if diff > 0 { diff } else { diff + (1 << size) - 1 }) as u32, size);
+                    }
+                    let (plane, pw, x0, y0) = match blk {
+                        0..4 => (0, w, mx * 16 + (blk & 1) * 8, my * 16 + (blk >> 1) * 8),
+                        _ => (comp, w / 2, mx * 8, my * 8),
+                    };
+                    for y in y0..y0 + 8 {
+                        planes[plane][y * pw + x0..y * pw + x0 + 8].fill(v as u8);
+                    }
+                }
+                b.put(1, 1); // end_of_macroblock
+            }
+        }
+        expect.push(planes);
+    }
+    b.start(0xb7);
+    (b.out, expect)
+}

@@ -5,8 +5,8 @@
 //! sequence without a sequence extension is: its motion settings in the
 //! picture header (whole-pixel vectors too), its own rounding of
 //! coefficients (each made odd, no mismatch control), its shorter escape
-//! code, and slices that run on past the end of a row. (Its rare D pictures
-//! are left to FFmpeg.)
+//! code, slices that run on past the end of a row, and its rare DC-only D
+//! pictures.
 //!
 //! Packets hold one picture (or both fields of one). Pictures come in
 //! decode order — each B picture after the two reference pictures it sits
@@ -109,6 +109,8 @@ enum Kind {
     I,
     P,
     B,
+    /// MPEG-1's DC-only intra pictures (fast-search previews): never references.
+    D,
 }
 
 #[derive(Clone, Copy)]
@@ -347,6 +349,9 @@ impl Slicer<'_> {
         st.last_dc[comp] += diff;
         *out = [0; 64];
         out[0] = st.last_dc[comp] << (3 - self.ph.intra_dc_precision);
+        if self.ph.kind == Kind::D {
+            return Ok(());
+        }
         let mut parity = out[0] & 1;
         let scan = if self.ph.alternate_scan { &ALTERNATE_SCAN } else { &ZIGZAG };
         let table = if self.ph.intra_vlc_format { &v.b15 } else { &v.b14 };
@@ -593,7 +598,7 @@ fn decode_slice(s: &Slicer, cur: &Frame, data: &[u8], mb_row: usize, out: &mut V
                 if y >= rows {
                     return invalid("MPEG-2: slice below the picture");
                 }
-                if s.ph.kind == Kind::I {
+                if matches!(s.ph.kind, Kind::I | Kind::D) {
                     return invalid("MPEG-2: skipped macroblock in an I picture");
                 }
                 st.last_dc = [128 << s.ph.intra_dc_precision; 3];
@@ -634,6 +639,12 @@ fn decode_slice(s: &Slicer, cur: &Frame, data: &[u8], mb_row: usize, out: &mut V
             }
             Kind::P => v.ptype.read(&mut r).ok_or_else(|| Error::Invalid("MPEG-2: bad P macroblock type".into()))? as u8,
             Kind::B => v.btype.read(&mut r).ok_or_else(|| Error::Invalid("MPEG-2: bad B macroblock type".into()))? as u8,
+            Kind::D => {
+                if !r.bit() {
+                    return invalid("MPEG-1: bad D macroblock type");
+                }
+                INTRA
+            }
         };
         let mut motion = Motion::default();
         let mut field_dct = false;
@@ -659,6 +670,10 @@ fn decode_slice(s: &Slicer, cur: &Frame, data: &[u8], mb_row: usize, out: &mut V
             }
             for (n, b) in blocks.iter_mut().enumerate() {
                 s.intra_block(&mut r, &mut st, n, b)?;
+            }
+            // (a D macroblock ends with end_of_macroblock, a 1)
+            if s.ph.kind == Kind::D && !r.bit() {
+                return invalid("MPEG-1: bad end of D macroblock");
             }
             reconstruct(s, cur, out, mx, my, &motion, None, field_dct, &blocks, (1 << nblocks) - 1);
             st.last_motion = Motion::default();
@@ -1020,7 +1035,7 @@ impl Mpeg2Decoder {
     /// A frame is complete: send it towards the output in display order.
     fn finish_frame(&mut self, f: Frame, kind: Kind) {
         let f = Arc::new(f);
-        if kind == Kind::B {
+        if matches!(kind, Kind::B | Kind::D) {
             self.emit(&f);
         } else {
             if let Some(h) = self.held.take() {
@@ -1070,6 +1085,7 @@ impl Mpeg2Decoder {
             1 => Kind::I,
             2 => Kind::P,
             3 => Kind::B,
+            4 if seq.mpeg1 => Kind::D,
             t => return Err(Error::Unsupported(format!("MPEG-1/2 picture type {t}"))),
         };
         // (vbv delay, then MPEG-1's motion settings: an MPEG-2 picture coding
@@ -1077,7 +1093,7 @@ impl Mpeg2Decoder {
         r.skip(16);
         let mut full_pel = [false; 2];
         let mut f1 = [7u32; 2];
-        if kind != Kind::I {
+        if matches!(kind, Kind::P | Kind::B) {
             full_pel[0] = r.bit();
             f1[0] = r.read(3).max(1);
         }
@@ -1133,7 +1149,7 @@ impl Mpeg2Decoder {
             return Ok(());
         }
         let refs: [Option<&Frame>; 2] = match kind {
-            Kind::I => [None, None],
+            Kind::I | Kind::D => [None, None],
             Kind::P => [self.refs[1].as_deref(), None],
             Kind::B => [self.refs[0].as_deref(), self.refs[1].as_deref()],
         };
@@ -1316,6 +1332,39 @@ mod gen_tests {
                 let mut d = Mpeg2Decoder::new(&StreamInfo::default());
                 d.strict = true;
                 d.send(&data, 0).unwrap_or_else(|e| panic!("fields={field_pictures} chroma={chroma_format} seed={seed}: {e}"));
+            }
+        }
+    }
+
+    /// MPEG-1 D pictures decode to exactly their flat 8×8 blocks.
+    #[test]
+    fn mpeg1_d_pictures_decode_exactly() {
+        let (data, expect) = super::testgen::generate_d_pictures(96, 64, 4);
+        let mut d = Mpeg2Decoder::new(&StreamInfo::default());
+        d.strict = true;
+        // one picture per packet, as a demuxer gives them
+        let mut pics = Vec::new();
+        let starts: Vec<usize> = (0..data.len().saturating_sub(3)).filter(|&i| data[i..i + 4] == [0, 0, 1, 0]).collect();
+        for (k, &s) in starts.iter().enumerate() {
+            let begin = if k == 0 { 0 } else { s };
+            let end = starts.get(k + 1).copied().unwrap_or(data.len());
+            d.send(&data[begin..end], k as i64).unwrap();
+            while let Some(p) = d.receive() {
+                pics.push(p);
+            }
+        }
+        d.finish();
+        while let Some(p) = d.receive() {
+            pics.push(p);
+        }
+        assert_eq!(pics.len(), expect.len());
+        for (i, (p, want)) in pics.iter().zip(&expect).enumerate() {
+            assert_eq!(p.pts, i as i64);
+            for (c, w) in want.iter().enumerate() {
+                let pl = &p.planes[c];
+                let pw = if c == 0 { 96 } else { 48 };
+                let got: Vec<u8> = pl.data.chunks(pl.stride).take(w.len() / pw).flat_map(|r| r[..pw].to_vec()).collect();
+                assert_eq!(&got, w, "picture {i} plane {c}");
             }
         }
     }
