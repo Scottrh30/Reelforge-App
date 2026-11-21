@@ -175,6 +175,10 @@ for comp, name in [(C.HTJ2K256_COMPRESSION, "htj2k256"), (C.HTJ2K32_COMPRESSION,
     write(f"{name}-datawindow", {"compression": comp, "type": C.scanlineimage,
                                  "dataWindow": (np.array([-5, 3], np.int32), np.array([-5 + W - 1, 3 + H - 1], np.int32)),
                                  "displayWindow": (np.array([0, 0], np.int32), np.array([79, 49], np.int32))}, picture(H, W))
-write("lj2k-half-rgba", {"compression": C.LJ2K_COMPRESSION, "type": C.scanlineimage}, picture(H, W))
-write("lj2k-layers", {"compression": C.LJ2K_COMPRESSION, "type": C.scanlineimage}, layered)
+# LJ2K as OpenEXR 3.5.0/3.5.1 wrote it (the transfer function outside the codestream) is
+# made by running this with OpenEXR 3.5.1 installed (pip install OpenEXR==3.5.1) and
+# ONLY=lj2k: those files are named lj2k351-*.
+lj2k = "lj2k351" if C.__version__ in ("3.5.0", "3.5.1") else "lj2k"
+write(f"{lj2k}-half-rgba", {"compression": C.LJ2K_COMPRESSION, "type": C.scanlineimage}, picture(H, W))
+write(f"{lj2k}-layers", {"compression": C.LJ2K_COMPRESSION, "type": C.scanlineimage}, layered)
 print("ok")

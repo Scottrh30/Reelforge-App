@@ -70,12 +70,13 @@ fn decodes_like_the_reference_library() {
             continue;
         }
         if name.starts_with("lj2k") {
-            // Lossy too (JPEG 2000's irreversible wavelet, in floating point): allow a
-            // step of the half value now and then.
+            // Lossy too, and like DWA the library's result depends on the machine:
+            // OpenJPH's SIMD and plain irreversible wavelets round a few samples
+            // differently (ours match its plain one exactly). Allow a step or two of the
+            // half value now and then (two: 3.5.1's transfer function spreads a step).
             let step = |v: f32| exr::f32_to_half(v) as i16 as i32;
             let off: Vec<i32> = got.iter().zip(&want).filter(|(a, b)| a.to_bits() != b.to_bits()).map(|(&a, &b)| (step(a) - step(b)).abs()).collect();
             let worst = off.iter().copied().max().unwrap_or(0);
-            eprintln!("{name}: {} of {} values differ, by up to {worst} steps", off.len(), got.len());
             assert!(worst <= 2 && off.len() * 100 <= got.len(), "{name}: {} of {} values differ, by up to {worst} steps", off.len(), got.len());
             checked += 1;
             continue;

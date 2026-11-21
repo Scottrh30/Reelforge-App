@@ -9,7 +9,7 @@
 //! the half, float or uint value. A lossy chunk's codestream may be padded a few rows and
 //! columns beyond the chunk (to suit the wavelet); those are dropped.
 
-use super::{fail, unsupported, ChannelLayout, Result};
+use super::{fail, ChannelLayout, Result};
 
 const MAGIC_HT: u16 = u16::from_be_bytes(*b"HT");
 const MAGIC_HL: u16 = u16::from_be_bytes(*b"HL");
@@ -21,9 +21,8 @@ pub(super) fn decompress(data: &[u8], layout: &ChannelLayout, lossy: bool, size:
     let be16 = |at: usize| data.get(at..at + 2).and_then(|b| b.try_into().ok()).map(u16::from_be_bytes);
     let (Some(magic), Some(len)) = (be16(0), data.get(2..6).and_then(|b| b.try_into().ok()).map(|b| u32::from_be_bytes(b) as usize)) else { return fail("HTJ2K chunk header") };
     match magic {
-        MAGIC_HT if lossy => return unsupported("LJ2K from OpenEXR 3.5.0/3.5.1 (transfer function outside the codestream)"),
+        MAGIC_HT | MAGIC_HL if lossy => {}
         MAGIC_HT => {}
-        MAGIC_HL if lossy => {}
         _ => return fail("HTJ2K chunk magic"),
     }
     let Some(start) = len.checked_add(6).filter(|&s| s <= data.len()) else { return fail("HTJ2K chunk header length") };
@@ -68,6 +67,10 @@ pub(super) fn decompress(data: &[u8], layout: &ChannelLayout, lossy: bool, size:
     }
     // All the samples, each line to its component (whichever order the codestream gives
     // them in).
+    // LJ2K as OpenEXR 3.5.0 and 3.5.1 wrote it ("HT"): the transfer function was applied
+    // to the lossy components before coding, so it's undone here (later files carry it
+    // in the codestream, where the decoder undoes it).
+    let legacy: Vec<bool> = (0..nch).map(|c| lossy && magic == MAGIC_HT && !cs.access_cod().is_reversible_comp(c as u32)).collect();
     cs.create().map_err(err)?;
     let mut planes: Vec<Vec<i32>> = dims.iter().map(|&(w, h)| Vec::with_capacity(w.saturating_mul(h).min(1 << 26))).collect();
     while let Some((comp, line)) = cs.pull().map_err(err)? {
@@ -81,13 +84,13 @@ pub(super) fn decompress(data: &[u8], layout: &ChannelLayout, lossy: bool, size:
     }
 
     // Each file channel's samples, cropped to the chunk.
-    let mut by_file: Vec<Option<(&[i32], usize)>> = vec![None; nch];
-    for ((&f, &(w, h)), p) in to_file.iter().zip(&dims).zip(&planes) {
+    let mut by_file: Vec<Option<(&[i32], usize, bool)>> = vec![None; nch];
+    for (((&f, &(w, h)), p), &old) in to_file.iter().zip(&dims).zip(&planes).zip(&legacy) {
         if p.len() != w * h {
             return fail("HTJ2K component cut short");
         }
         if let Some(slot) = by_file.get_mut(f) {
-            *slot = Some((p, w));
+            *slot = Some((p, w, old));
         }
     }
     let mut out = Vec::with_capacity(size);
@@ -99,10 +102,18 @@ pub(super) fn decompress(data: &[u8], layout: &ChannelLayout, lossy: bool, size:
             if !(ch.ys <= 1 || y % ch.ys as i64 == 0) || ch.ny == 0 {
                 continue;
             }
-            let (Some(Some((samples, w))), Some(row)) = (by_file.get(f).copied(), rows.get_mut(f)) else { return fail("HTJ2K channel") };
+            let (Some(Some((samples, w, old))), Some(row)) = (by_file.get(f).copied(), rows.get_mut(f)) else { return fail("HTJ2K channel") };
             let Some(src) = samples.get(*row * w..*row * w + ch.nx) else { return fail("HTJ2K channel rows") };
             *row += 1;
-            if ch.units == 1 {
+            if old && ch.units == 1 {
+                for &s in src {
+                    out.extend_from_slice(&legacy_half(s).to_le_bytes());
+                }
+            } else if old {
+                for &s in src {
+                    out.extend_from_slice(&legacy_float(s).to_bits().to_le_bytes());
+                }
+            } else if ch.units == 1 {
                 for &s in src {
                     out.extend_from_slice(&(s as u16).to_le_bytes());
                 }
@@ -117,4 +128,26 @@ pub(super) fn decompress(data: &[u8], layout: &ChannelLayout, lossy: bool, size:
         return fail("HTJ2K chunk size");
     }
     Ok(out)
+}
+
+/// OpenEXR's transfer function, back to linear: a 2.2 power up to 1, then exponential
+/// (its constants are single-precision literals worked in double, as there).
+fn tf_to_linear(x: f64) -> f64 {
+    let k = 2.2f32 as f64;
+    let v = x.abs();
+    let lin = if v <= 1.0 { v.powf(k) } else { (k * (v - 1.0)).exp() };
+    lin.copysign(x)
+}
+
+/// A legacy LJ2K 16-bit sample as a half (32 767 is the largest half after the transfer
+/// function).
+fn legacy_half(s: i32) -> u16 {
+    const FACTOR: f64 = 5424.23808866629;
+    super::f32_to_half(tf_to_linear(s.clamp(-32767, 32767) as f64 / FACTOR) as f32)
+}
+
+/// A legacy LJ2K 32-bit sample as a float.
+fn legacy_float(s: i32) -> f32 {
+    const FACTOR: f64 = 51961246.180338;
+    tf_to_linear(s as f64 / FACTOR).clamp(-(f32::MAX as f64), f32::MAX as f64) as f32
 }
