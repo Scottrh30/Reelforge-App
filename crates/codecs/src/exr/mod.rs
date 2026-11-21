@@ -21,9 +21,11 @@
 
 mod b44;
 mod dwa;
+mod htj2k;
 
 pub use dwa::f32_to_half;
 mod piz;
+mod zstd;
 
 use crate::{Decoder, Error, Format, Output, Picture, Plane, Result, StreamInfo};
 use rayon::prelude::*;
@@ -70,15 +72,19 @@ enum Compression {
     B44a,
     Dwaa,
     Dwab,
+    Htj2k256,
+    Htj2k32,
+    Lj2k,
+    Zstd,
 }
 
 impl Compression {
     fn lines(self) -> i32 {
         match self {
-            Compression::None | Compression::Rle | Compression::Zips => 1,
+            Compression::None | Compression::Rle | Compression::Zips | Compression::Zstd => 1,
             Compression::Zip | Compression::Pxr24 => 16,
-            Compression::Piz | Compression::B44 | Compression::B44a | Compression::Dwaa => 32,
-            Compression::Dwab => 256,
+            Compression::Piz | Compression::B44 | Compression::B44a | Compression::Dwaa | Compression::Htj2k32 => 32,
+            Compression::Dwab | Compression::Htj2k256 | Compression::Lj2k => 256,
         }
     }
 }
@@ -264,7 +270,10 @@ fn read_header(r: &mut Reader, tiled_file: bool, deep_file: bool) -> Result<Head
                     Some(7) => Compression::B44a,
                     Some(8) => Compression::Dwaa,
                     Some(9) => Compression::Dwab,
-                    Some(10 | 11) => return unsupported("HTJ2K compression"),
+                    Some(10) => Compression::Htj2k256,
+                    Some(11) => Compression::Htj2k32,
+                    Some(12) => Compression::Lj2k,
+                    Some(13) => Compression::Zstd,
                     Some(c) => return unsupported(format!("compression {c}")),
                     None => return fail("bad compression"),
                 });
@@ -546,6 +555,8 @@ fn decompress(h: &Header, layout: &ChannelLayout, data: &[u8]) -> Result<Vec<u8>
             dwa::decompress(data, layout, &h.channels, &mut out)?;
             Ok(out)
         }
+        Compression::Htj2k256 | Compression::Htj2k32 | Compression::Lj2k => htj2k::decompress(data, layout, h.compression == Compression::Lj2k, size),
+        Compression::Zstd => zstd::decompress(data, layout, size),
     }
 }
 

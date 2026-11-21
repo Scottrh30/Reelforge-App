@@ -69,6 +69,17 @@ fn decodes_like_the_reference_library() {
             checked += 1;
             continue;
         }
+        if name.starts_with("lj2k") {
+            // Lossy too (JPEG 2000's irreversible wavelet, in floating point): allow a
+            // step of the half value now and then.
+            let step = |v: f32| exr::f32_to_half(v) as i16 as i32;
+            let off: Vec<i32> = got.iter().zip(&want).filter(|(a, b)| a.to_bits() != b.to_bits()).map(|(&a, &b)| (step(a) - step(b)).abs()).collect();
+            let worst = off.iter().copied().max().unwrap_or(0);
+            eprintln!("{name}: {} of {} values differ, by up to {worst} steps", off.len(), got.len());
+            assert!(worst <= 2 && off.len() * 100 <= got.len(), "{name}: {} of {} values differ, by up to {worst} steps", off.len(), got.len());
+            checked += 1;
+            continue;
+        }
         let bad = got.iter().zip(&want).position(|(a, b)| a.to_bits() != b.to_bits() && !(a.is_nan() && b.is_nan()));
         if let Some(i) = bad {
             let px = i / 4;

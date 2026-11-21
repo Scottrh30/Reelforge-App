@@ -10,6 +10,10 @@ zune-jpeg = "0.5"
 zune-core = "0.5"
 # zlib (OpenEXR ZIP, ZIPS and PXR24).
 miniz_oxide = "0.9"
+# Zstandard (OpenEXR ZSTD), pure Rust.
+ruzstd = "0.9"
+# High-Throughput JPEG 2000 (OpenEXR HTJ2K256/HTJ2K32/LJ2K): a safe-Rust port of OpenJPH.
+htj2k = "0.1"
 reelforge-h264 = { path = "../h264" }
 reelforge-hevc = { path = "../hevc" }
 reelforge-vp8 = { path = "../vp8" }

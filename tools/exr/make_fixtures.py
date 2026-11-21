@@ -35,7 +35,13 @@ def picture(h, w, alpha=True, dtype=np.float16, hdr=40.0, noise_level=0.05):
     return {k: v.astype(dtype) for k, v in chans.items()}
 
 
+# ONLY=prefix,prefix: write just the files whose names start so (the others stay as made).
+ONLY = [o for o in os.environ.get("ONLY", "").split(",") if o]
+
+
 def write(name, header, channels):
+    if ONLY and not any(name.startswith(o) for o in ONLY):
+        return
     path = os.path.join(out, name + ".exr")
     OpenEXR.File(header, channels).write(path)
     reference(path)
@@ -135,10 +141,11 @@ write("layers-zip", {"compression": C.ZIP_COMPRESSION, "type": C.scanlineimage},
 
 # Multi-part: depth in the first part, the picture in the second.
 path = os.path.join(out, "multipart-piz.exr")
-parts = [C.Part({"compression": C.ZIP_COMPRESSION, "type": C.scanlineimage}, {"Z": np.ones((H, W), np.float32)}, name="depth"),
+parts = [] if ONLY else [C.Part({"compression": C.ZIP_COMPRESSION, "type": C.scanlineimage}, {"Z": np.ones((H, W), np.float32)}, name="depth"),
          C.Part({"compression": C.PIZ_COMPRESSION, "type": C.scanlineimage}, picture(H, W, noise_level=0.002), name="rgba")]
-C.File(parts).write(path)
-reference(path)
+if parts:
+    C.File(parts).write(path)
+    reference(path)
 
 # DWAA and DWAB: lossy, so the test allows a little difference from the
 # library (its float maths may round a value the other way).
@@ -154,6 +161,20 @@ write("dwaa-layers", {"compression": C.DWAA_COMPRESSION, "type": C.scanlineimage
 write("dwaa-tiled", {"compression": C.DWAA_COMPRESSION, "type": C.tiledimage, "tiles": tile32}, picture(70, 90))
 write("dwab-flat", {"compression": C.DWAB_COMPRESSION, "type": C.scanlineimage, "dwaCompressionLevel": 200.0}, picture(H, W, noise_level=0.0))
 
-# HTJ2K: left to FFmpeg (the decoder says it's not supported).
-write("htj2k-unsupported", {"compression": C.HTJ2K32_COMPRESSION, "type": C.scanlineimage}, picture(H, W))
+# HTJ2K (OpenEXR 3.4) and LJ2K and ZSTD (3.5), written by OpenEXR 3.5.
+for comp, name in [(C.HTJ2K256_COMPRESSION, "htj2k256"), (C.HTJ2K32_COMPRESSION, "htj2k32"), (C.ZSTD_COMPRESSION, "zstd")]:
+    write(f"{name}-half-rgba", {"compression": comp, "type": C.scanlineimage}, picture(300 if comp == C.HTJ2K256_COMPRESSION else H, W, noise_level=0.01))
+    write(f"{name}-float-rgb", {"compression": comp, "type": C.scanlineimage}, picture(H, W, alpha=False, dtype=np.float32, hdr=1000.0))
+    write(f"{name}-luma", {"compression": comp, "type": C.scanlineimage}, {"Y": picture(H, W, alpha=False)["G"]})
+    p = picture(H, W)
+    layered = {"beauty." + k: v for k, v in p.items()}
+    layered["depth.Z"] = (np.ones((H, W)) * 12.5 + rng.normal(0, 1, (H, W))).astype(np.float32)
+    layered["id"] = rng.integers(0, 9, (H, W)).astype(np.uint32)
+    write(f"{name}-layers", {"compression": comp, "type": C.scanlineimage}, layered)
+    write(f"{name}-tiled", {"compression": comp, "type": C.tiledimage, "tiles": tile}, picture(70, 150, noise_level=0.01))
+    write(f"{name}-datawindow", {"compression": comp, "type": C.scanlineimage,
+                                 "dataWindow": (np.array([-5, 3], np.int32), np.array([-5 + W - 1, 3 + H - 1], np.int32)),
+                                 "displayWindow": (np.array([0, 0], np.int32), np.array([79, 49], np.int32))}, picture(H, W))
+write("lj2k-half-rgba", {"compression": C.LJ2K_COMPRESSION, "type": C.scanlineimage}, picture(H, W))
+write("lj2k-layers", {"compression": C.LJ2K_COMPRESSION, "type": C.scanlineimage}, layered)
 print("ok")
