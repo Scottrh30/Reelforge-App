@@ -797,6 +797,7 @@ mod tests {
             ("high.mkv", "352x288", 25, x264(&["-profile:v", "high", "-bf", "3", "-x264-params", "weightp=2:b-pyramid=normal:slices=3"])),
             ("annexb.ts", "320x180", 25, x264(&["-bf", "2"])),
             ("odd264.mp4", "302x170", 25, x264(&[])),
+            ("gray.mp4", "320x180", 25, x264(&["-pix_fmt", "gray", "-profile:v", "high"])),
             ("hevc.mp4", "320x180", 25, x265(&["-bf", "3"])),
             ("hevc10.mkv", "320x180", 25, x265(&["-pix_fmt", "yuv420p10le"])),
             ("hevc.ts", "320x180", 25, x265(&[])),
@@ -854,31 +855,6 @@ mod tests {
         }
         assert!(bad.is_empty(), "{bad:#?}");
         assert!(ran >= 4 || std::process::Command::new("ffmpeg").arg("-version").output().is_err());
-    }
-
-    /// What the libraries don't decode is reported as an error, which hands the file to
-    /// FFmpeg.
-    #[test]
-    fn unsupported_h264_is_reported() {
-        for (name, args) in [
-            // monochrome (4:0:0): still FFmpeg's
-            ("gray.mp4", vec!["-c:v", "libx264", "-pix_fmt", "gray", "-profile:v", "high"]),
-        ] {
-            let Some(p) = clip_at(name, "320x180", 25, &args) else { continue };
-            crate::init();
-            let mut ictx = ff::format::input(&p).unwrap();
-            let st = ictx.streams().best(ff::media::Type::Video).unwrap();
-            let index = st.index();
-            let mut nat = open(&st.parameters()).unwrap();
-            let mut failed = false;
-            for (s, packet) in ictx.packets() {
-                if s.index() == index && nat.send_packet(&packet).is_err() {
-                    failed = true;
-                    break;
-                }
-            }
-            assert!(failed, "{name} should be refused");
-        }
     }
 
     /// Field-coded H.264 (PAFF: field pictures, and frames and fields mixed, with MBAFF and

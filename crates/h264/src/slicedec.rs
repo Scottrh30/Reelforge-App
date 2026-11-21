@@ -1565,7 +1565,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
                 _ => {}
             }
         }
-        if self.fmt.cf != 3 {
+        if self.fmt.chroma_syntax() {
             let av = Avail { left: self.left_avail(0, self.mbch as i32, true), top: self.intra_nb(1), top_left: self.intra_nb(3), top_right: false };
             let (cstart, cs, cx, cy) = self.view(1);
             let mode = self.mb().intra_chroma_mode;
@@ -1592,7 +1592,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
                 }
             }
         }
-        if self.fmt.cf != 3 {
+        if self.fmt.chroma_syntax() {
             self.add_chroma();
         }
         self.s.blk_nz = 0;
@@ -1601,7 +1601,9 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
 
     /// Bytes of an I_PCM macroblock's samples.
     pub fn pcm_bytes(&self) -> usize {
-        (256 * self.fmt.bd_y as usize + 2 * self.fmt.mbcw() * self.mbch * self.fmt.bd_c as usize) / 8
+        // (none of chroma in monochrome)
+        let chroma = if self.fmt.cf == 0 { 0 } else { 2 * self.fmt.mbcw() * self.mbch * self.fmt.bd_c as usize };
+        (256 * self.fmt.bd_y as usize + chroma) / 8
     }
 
     /// Write I_PCM samples (`data` holds at least [`Self::pcm_bytes`] bytes: pcm_sample_luma
@@ -1618,7 +1620,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
             }
         }
         let (cstart, cs, cx, cy) = self.view(1);
-        for c in 0..2 {
+        for c in 0..if self.fmt.cf == 0 { 0 } else { 2 } {
             let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };
             for row in 0..self.mbch {
                 for col in 0..self.fmt.mbcw() {
@@ -1884,14 +1886,14 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
                     self.cur.rem_mode[i] = if r.read_flag()? { -1 } else { r.read_bits(3)? as i8 };
                 }
                 self.derive_intra_modes(info.kind == MbKind::I8x8);
-                if self.fmt.cf != 3 {
+                if self.fmt.chroma_syntax() {
                     let m = r.read_ue()?;
                     ensure!(m <= 3, "intra_chroma_pred_mode out of range");
                     self.mb_mut().intra_chroma_mode = m as u8;
                 }
             }
             MbKind::I16x16 => {
-                if self.fmt.cf != 3 {
+                if self.fmt.chroma_syntax() {
                     let m = r.read_ue()?;
                     ensure!(m <= 3, "intra_chroma_pred_mode out of range");
                     self.mb_mut().intra_chroma_mode = m as u8;
@@ -1952,7 +1954,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
         // coded_block_pattern
         let cbp = if info.kind == MbKind::I16x16 {
             info.i16_cbp
-        } else if self.fmt.cf == 3 {
+        } else if !self.fmt.chroma_syntax() {
             // Table 9-4 for ChromaArrayType 0 or 3: luma bits only
             let code = r.read_ue()?;
             ensure!(code < 16, "coded_block_pattern out of range");
@@ -1964,7 +1966,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
             let (i, p) = CBP_ME[code as usize];
             if info.kind.is_intra() { i } else { p }
         };
-        let cbp = if self.fmt.cf == 3 { cbp & 15 } else { cbp };
+        let cbp = if self.fmt.chroma_syntax() { cbp } else { cbp & 15 };
         self.cur.cbp = cbp;
         self.mb_mut().cbp = cbp;
         if !info.kind.is_intra() && cbp & 15 != 0 && self.pps.transform_8x8_mode && self.no_sub_8x8_lt() {
@@ -2009,7 +2011,7 @@ impl<'a, P: Pel> SliceDecoder<'a, P> {
             self.plane = 0;
             res?;
         }
-        if self.fmt.cf == 3 {
+        if !self.fmt.chroma_syntax() {
             return Ok(());
         }
         self.residual_chroma_cavlc(r, cbp)

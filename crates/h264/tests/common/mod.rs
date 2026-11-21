@@ -27,6 +27,16 @@ pub struct Fixture {
 const NOISE: &str = "noise=alls=12:allf=t+u";
 
 impl Fixture {
+    /// What the reference is decoded to: the source's format, but monochrome streams come
+    /// out of ffmpeg's decoder as 4:2:0 with mid-grey chroma (as ours do; full range at 8
+    /// bits, as libx264 marks them).
+    pub fn reference_pix_fmt(&self) -> &'static str {
+        match self.pix_fmt() {
+            "gray" => "yuvj420p",
+            "gray10le" => "yuv420p10le",
+            p => p,
+        }
+    }
     /// The pixel format given with `-pix_fmt` (yuv420p otherwise): the source is made in it and
     /// the reference decoded to it.
     pub fn pix_fmt(&self) -> &'static str {
@@ -93,6 +103,15 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture { name: "hi444_crop", source: "testsrc2", width: 318, height: 238, frames: 8, filter: NOISE, args: &["-pix_fmt", "yuv444p", "-profile:v", "high444", "-bf", "2"] },
     Fixture { name: "hi444_mbaff", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-pix_fmt", "yuv444p", "-profile:v", "high444", "-x264-params", "interlaced=1:bframes=2"] },
     Fixture { name: "hi444_mbaff_cavlc", source: "mandelbrot", width: 352, height: 288, frames: 8, filter: NOISE, args: &["-flags", "+ildct+ilme", "-pix_fmt", "yuv444p", "-profile:v", "high444", "-x264-params", "interlaced=1:bframes=2:cabac=0"] },
+    // Monochrome (4:0:0, High and High 10)
+    Fixture { name: "mono_intra", source: "testsrc2", width: 352, height: 288, frames: 4, filter: NOISE, args: &["-pix_fmt", "gray", "-x264-params", "keyint=1"] },
+    Fixture { name: "mono_cabac_b", source: "mandelbrot", width: 352, height: 288, frames: 16, filter: NOISE, args: &["-pix_fmt", "gray", "-bf", "3"] },
+    Fixture { name: "mono_cavlc", source: "testsrc2", width: 320, height: 240, frames: 12, filter: NOISE, args: &["-pix_fmt", "gray", "-x264-params", "cabac=0:bframes=2"] },
+    Fixture { name: "mono_10bit", source: "testsrc2", width: 352, height: 288, frames: 12, filter: NOISE, args: &["-pix_fmt", "gray10le", "-bf", "2"] },
+    Fixture { name: "mono_weighted", source: "testsrc2", width: 352, height: 288, frames: 14, filter: "noise=alls=12:allf=t+u,fade=in:0:12", args: &["-pix_fmt", "gray", "-x264-params", "weightp=2:weightb=1:bframes=2"] },
+    Fixture { name: "mono_crop", source: "testsrc2", width: 318, height: 237, frames: 8, filter: NOISE, args: &["-pix_fmt", "gray", "-bf", "2"] },
+    Fixture { name: "mono_mbaff", source: "testsrc2", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-flags", "+ildct+ilme", "-pix_fmt", "gray", "-x264-params", "interlaced=1:bframes=2"] },
+    Fixture { name: "mono_lossless", source: "mandelbrot", width: 176, height: 144, frames: 8, filter: NOISE, args: &["-pix_fmt", "gray", "-qp", "0", "-bf", "2"] },
     Fixture { name: "lossless_420", source: "testsrc2", width: 352, height: 288, frames: 8, filter: NOISE, args: &["-profile:v", "high444", "-qp", "0", "-bf", "2"] },
     Fixture { name: "lossless_420_cavlc", source: "mandelbrot", width: 176, height: 144, frames: 8, filter: NOISE, args: &["-profile:v", "high444", "-qp", "0", "-x264-params", "cabac=0:bframes=2"] },
     Fixture { name: "lossless_420_intra", source: "testsrc2", width: 176, height: 144, frames: 3, filter: NOISE, args: &["-profile:v", "high444", "-qp", "0", "-x264-params", "keyint=1"] },
@@ -470,7 +489,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
         let tmp = reelforge_testkit::temp_path(&yuv);
         let mut c = Command::new(&ff);
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&h264);
-        c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", f.pix_fmt()]).arg(&tmp);
+        c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", f.reference_pix_fmt()]).arg(&tmp);
         assert!(run(&mut c), "reference decode failed for {}", f.name);
         std::fs::rename(&tmp, &yuv).unwrap();
     }

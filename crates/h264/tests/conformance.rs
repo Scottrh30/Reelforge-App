@@ -18,6 +18,14 @@ macro_rules! fixture_tests {
 }
 
 fixture_tests!(
+    mono_intra,
+    mono_cabac_b,
+    mono_cavlc,
+    mono_10bit,
+    mono_weighted,
+    mono_crop,
+    mono_mbaff,
+    mono_lossless,
     hi444_intra,
     hi444_cavlc,
     hi444_cabac_b,

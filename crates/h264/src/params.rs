@@ -437,7 +437,7 @@ impl Sps {
     /// ChromaArrayType.
     /// The sample format pictures of this SPS decode to.
     pub fn fmt(&self) -> crate::picture::Fmt {
-        crate::picture::Fmt { cf: self.chroma_array_type().clamp(1, 3) as u8, bd_y: self.bit_depth_luma.clamp(8, 12) as u8, bd_c: self.bit_depth_chroma.clamp(8, 12) as u8 }
+        crate::picture::Fmt { cf: self.chroma_array_type().min(3) as u8, bd_y: self.bit_depth_luma.clamp(8, 12) as u8, bd_c: self.bit_depth_chroma.clamp(8, 12) as u8 }
     }
 
     pub fn chroma_array_type(&self) -> u32 {
@@ -523,8 +523,11 @@ impl Sps {
     pub fn check_supported(&self) -> Result<()> {
         // Interlaced streams: frame pictures (MBAFF or all-frame) are decoded here; field
         // pictures are refused per slice.
-        if !matches!(self.chroma_array_type(), 1..=3) {
-            return unsupported(format!("chroma_format_idc {} (4:2:0, 4:2:2 and 4:4:4 are implemented)", self.chroma_format_idc));
+        if self.separate_colour_plane {
+            return unsupported("4:4:4 with separately coded colour planes".to_string());
+        }
+        if self.chroma_array_type() > 3 {
+            return unsupported(format!("chroma_format_idc {} (monochrome, 4:2:0, 4:2:2 and 4:4:4 are implemented)", self.chroma_format_idc));
         }
         if self.bit_depth_luma > 12 || self.bit_depth_chroma > 12 {
             return unsupported(format!("bit depth luma {} chroma {} (up to 12 bits is implemented)", self.bit_depth_luma, self.bit_depth_chroma));

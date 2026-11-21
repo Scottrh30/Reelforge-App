@@ -404,8 +404,8 @@ impl<P: Pel> SliceDecoder<'_, P> {
             let ch = st.cbp >> 4;
             if bin == 0 { (ch != 0) as usize } else { (ch == 2) as usize }
         };
-        if self.fmt.cf == 3 {
-            // ChromaArrayType 3: no chroma bins
+        if !self.fmt.chroma_syntax() {
+            // ChromaArrayType 0 or 3: no chroma bins
             return luma;
         }
         let inc0 = cond(self.nb[0], 0) + 2 * cond(self.nb[1], 0);
@@ -581,7 +581,7 @@ impl<P: Pel> SliceDecoder<'_, P> {
             self.residual_luma_cabac(c, cbp);
             self.plane = 0;
         }
-        if self.fmt.cf != 3 {
+        if self.fmt.chroma_syntax() {
             self.residual_chroma_cabac(c, cbp);
         }
         Ok(())
@@ -714,13 +714,13 @@ impl<P: Pel> SliceDecoder<'_, P> {
                     };
                 }
                 self.derive_intra_modes(info.kind == MbKind::I8x8);
-                if self.fmt.cf != 3 {
+                if self.fmt.chroma_syntax() {
                     let m = self.decode_chroma_mode(c);
                     self.mb_mut().intra_chroma_mode = m;
                 }
             }
             MbKind::I16x16 => {
-                if self.fmt.cf != 3 {
+                if self.fmt.chroma_syntax() {
                     let m = self.decode_chroma_mode(c);
                     self.mb_mut().intra_chroma_mode = m;
                 }
@@ -793,7 +793,7 @@ impl<P: Pel> SliceDecoder<'_, P> {
             }
         }
         let cbp = if info.kind == MbKind::I16x16 { info.i16_cbp } else { self.decode_cbp(c) };
-        let cbp = if self.fmt.cf == 3 { cbp & 15 } else { cbp };
+        let cbp = if self.fmt.chroma_syntax() { cbp } else { cbp & 15 };
         self.cur.cbp = cbp;
         self.mb_mut().cbp = cbp;
         if !intra && cbp & 15 != 0 && self.pps.transform_8x8_mode && self.no_sub_8x8_lt() {

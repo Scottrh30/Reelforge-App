@@ -83,7 +83,8 @@ impl Pel for u16 {
     }
 }
 
-/// Sample format of a picture: chroma format (1 = 4:2:0, 2 = 4:2:2, 3 = 4:4:4) and bit depths.
+/// Sample format of a picture: chroma format (0 = monochrome, 1 = 4:2:0, 2 = 4:2:2, 3 =
+/// 4:4:4) and bit depths. (Monochrome pictures keep 4:2:0 chroma planes, mid grey.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fmt {
     pub cf: u8,
@@ -115,6 +116,13 @@ impl Fmt {
     #[inline]
     pub fn max_c(self) -> i32 {
         (1 << self.bd_c) - 1
+    }
+    /// Whether macroblocks carry chroma syntax of their own (a chroma prediction mode,
+    /// chroma bits in coded_block_pattern, chroma residual): 4:2:0 and 4:2:2, not
+    /// monochrome or 4:4:4 (whose Cb and Cr are coded as luma is).
+    #[inline]
+    pub fn chroma_syntax(self) -> bool {
+        matches!(self.cf, 1 | 2)
     }
     /// Samples wider than 8 bits.
     pub fn deep(self) -> bool {
