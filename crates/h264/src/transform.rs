@@ -14,6 +14,16 @@ pub struct LevelScale {
 }
 
 impl LevelScale {
+    /// For colour plane `plane` (1 Cb, 2 Cr) of separately coded planes: its lists where
+    /// luma's are (it's decoded as luma is).
+    pub fn as_plane(&mut self, plane: usize) {
+        let plane = plane.min(2);
+        self.ls4[0] = self.ls4[plane];
+        self.ls4[3] = self.ls4[3 + plane];
+        self.ls8[0] = self.ls8[2 * plane];
+        self.ls8[1] = self.ls8[2 * plane + 1];
+    }
+
     pub fn new(m: &ScalingMatrices) -> Box<Self> {
         let mut s = Box::new(LevelScale { ls4: [[[0; 16]; 6]; 6], ls8: [[[0; 64]; 6]; 6] });
         for l in 0..6 {

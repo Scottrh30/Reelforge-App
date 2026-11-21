@@ -523,9 +523,6 @@ impl Sps {
     pub fn check_supported(&self) -> Result<()> {
         // Interlaced streams: frame pictures (MBAFF or all-frame) are decoded here; field
         // pictures are refused per slice.
-        if self.separate_colour_plane {
-            return unsupported("4:4:4 with separately coded colour planes".to_string());
-        }
         if self.chroma_array_type() > 3 {
             return unsupported(format!("chroma_format_idc {} (monochrome, 4:2:0, 4:2:2 and 4:4:4 are implemented)", self.chroma_format_idc));
         }

@@ -110,6 +110,10 @@ struct Shared {
     pool16: Mutex<Vec<PicState<u16>>>,
 }
 
+/// Pictures one colour plane's decoder may get ahead of another's (see
+/// [`Decoder::merge_planes`]).
+const PLANE_BACKLOG: usize = 32;
+
 /// H.264 decoder.
 pub struct Decoder {
     spss: Vec<Option<Arc<Sps>>>,
@@ -137,6 +141,13 @@ pub struct Decoder {
     threads: usize,
     /// Draft mode: skip deblocking of non-reference pictures ([`Decoder::set_draft`]).
     draft: bool,
+    /// 4:4:4 with separately coded colour planes: each plane is coded as a monochrome
+    /// picture is, so this decoder decodes the first (Y) and these the other two (Cb, Cr),
+    /// fed the same parameter sets and each its own plane's slices; their pictures (in the
+    /// same order) are put together on output.
+    planes: Option<Box<[Decoder; 2]>>,
+    /// Pictures each plane's decoder has given that the others haven't yet.
+    plane_out: [VecDeque<Picture>; 3],
 }
 
 /// The process-wide worker pool (rayon's global one, sized to the cores), so
@@ -208,6 +219,8 @@ impl Decoder {
             max_in_flight: threads.max(1) + 2,
             threads: workers,
             draft: false,
+            planes: None,
+            plane_out: Default::default(),
         }
     }
 
@@ -224,6 +237,9 @@ impl Decoder {
     /// export or for a frame shown while paused.
     pub fn set_draft(&mut self, on: bool) {
         self.draft = on;
+        if let Some(p) = self.planes.as_mut() {
+            p.iter_mut().for_each(|d| d.draft = on);
+        }
     }
 
     pub fn draft(&self) -> bool {
@@ -279,11 +295,30 @@ impl Decoder {
         };
         let mut result = Ok(());
         for nal in nals {
-            if let Err(e) = self.handle_nal(nal, pts) {
+            if let Err(e) = self.route_nal(nal, pts) {
                 result = Err(e);
                 break;
             }
         }
+        let pics = self.finish_access_unit(result);
+        if self.planes.is_none() {
+            return pics;
+        }
+        let pics = pics?;
+        self.plane_out[0].extend(pics);
+        for k in 0..2 {
+            let more = match self.planes.as_mut().and_then(|p| p.get_mut(k)) {
+                Some(d) => d.finish_access_unit(Ok(()))?,
+                None => Vec::new(),
+            };
+            self.plane_out[k + 1].extend(more);
+        }
+        Ok(self.merge_planes())
+    }
+
+    /// The access unit fed in is complete: its picture goes to a decoding job, and the
+    /// pictures finished so far come back.
+    fn finish_access_unit(&mut self, mut result: Result<()>) -> Result<Vec<Picture>> {
         // The access unit is complete: hand its picture to a decoding job.
         self.submit_pending();
         if let Some(e) = self.take_error() {
@@ -305,6 +340,56 @@ impl Decoder {
 
     /// Output all remaining pictures (end of stream).
     pub fn flush(&mut self) -> Vec<Picture> {
+        let pics = self.flush_own();
+        if self.planes.is_none() {
+            return pics;
+        }
+        self.plane_out[0].extend(pics);
+        for k in 0..2 {
+            let more = match self.planes.as_mut().and_then(|p| p.get_mut(k)) {
+                Some(d) => d.flush_own(),
+                None => Vec::new(),
+            };
+            self.plane_out[k + 1].extend(more);
+        }
+        let mut pics = self.merge_planes();
+        // (a plane short of pictures: the rest go out grey)
+        pics.extend(self.plane_out[0].drain(..));
+        self.plane_out.iter_mut().for_each(VecDeque::clear);
+        pics
+    }
+
+    /// Pictures of all three colour planes, put together as 4:4:4 (each plane's decoder
+    /// decoded it as the luma of a monochrome picture).
+    fn merge_planes(&mut self) -> Vec<Picture> {
+        let mut out = Vec::new();
+        while self.plane_out.iter().all(|q| !q.is_empty()) {
+            let (Some(mut p), Some(cb), Some(cr)) = (self.plane_out[0].pop_front(), self.plane_out[1].pop_front(), self.plane_out[2].pop_front()) else { break };
+            p.chroma_width = p.width;
+            p.chroma_height = p.height;
+            p.bit_depth_chroma = p.bit_depth;
+            p.uv_stride = p.y_stride;
+            p.u = cb.y;
+            p.v = cr.y;
+            p.draft |= cb.draft || cr.draft;
+            out.push(p);
+        }
+        // A plane whose slices are missing (a broken stream) mustn't hold the others back
+        // for ever: past a few dozen pictures the Y picture goes out as it is (grey) and
+        // the other planes' extras are dropped.
+        while self.plane_out.iter().any(|q| q.len() > PLANE_BACKLOG) {
+            if let Some(p) = self.plane_out[0].pop_front() {
+                out.push(p);
+            }
+            for q in &mut self.plane_out[1..] {
+                q.pop_front();
+            }
+        }
+        out
+    }
+
+    /// [`Decoder::flush`] of this decoder's own pictures.
+    fn flush_own(&mut self) -> Vec<Picture> {
         self.submit_pending();
         self.close_open_field();
         let mut outs = Vec::new();
@@ -331,7 +416,60 @@ impl Decoder {
     /// First error reported by a decoding job since the last call (also returned by
     /// [`Decoder::decode`]); useful after [`Decoder::flush`].
     pub fn take_error(&mut self) -> Option<Error> {
-        self.shared.error.lock().ok().and_then(|mut e| e.take())
+        let own = self.shared.error.lock().ok().and_then(|mut e| e.take());
+        let planes = self.planes.as_mut().and_then(|p| p.iter_mut().find_map(|d| d.take_error()));
+        own.or(planes)
+    }
+
+    /// A NAL unit to the decoder of its colour plane: parameter sets and the like to all
+    /// three, a slice to its plane's (see [`Decoder::planes`]).
+    fn route_nal(&mut self, nal: &[u8], pts: i64) -> Result<()> {
+        let Some(&first) = nal.first() else { return Ok(()) };
+        let hdr = NalHeader::parse(first)?;
+        let slice = matches!(hdr.nal_unit_type, nal_type::SLICE | nal_type::IDR);
+        if slice {
+            if let Some(plane) = self.colour_plane(nal).filter(|&p| p > 0) {
+                let d = self.planes.as_mut().and_then(|p| p.get_mut(plane - 1));
+                let Some(d) = d else { return invalid("a colour plane's slice without its sequence parameter set") };
+                return d.handle_nal(nal, pts);
+            }
+            return self.handle_nal(nal, pts);
+        }
+        self.handle_nal(nal, pts)?;
+        if hdr.nal_unit_type == nal_type::SPS && self.planes.is_none() && self.spss.iter().flatten().any(|s| s.separate_colour_plane) {
+            // (the other planes' decoders start with the parameter sets so far)
+            let make = || {
+                let mut d = Decoder::with_threads(self.threads);
+                d.spss = self.spss.clone();
+                d.ppss = self.ppss.clone();
+                d.draft = self.draft;
+                d
+            };
+            self.planes = Some(Box::new([make(), make()]));
+            return Ok(());
+        }
+        if let Some(p) = self.planes.as_mut() {
+            for d in p.iter_mut() {
+                d.handle_nal(nal, pts)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The colour plane (0–2) of slice NAL `nal` if its sequence codes the planes
+    /// separately.
+    fn colour_plane(&self, nal: &[u8]) -> Option<usize> {
+        // first_mb_in_slice, slice_type, pic_parameter_set_id, then colour_plane_id: early
+        // enough that a few bytes do.
+        let head = unescape_rbsp(nal.get(1..nal.len().min(16))?);
+        let mut r = BitReader::new(&head);
+        let (_, _, pps) = (r.read_ue().ok()?, r.read_ue().ok()?, r.read_ue().ok()?);
+        let pps = self.ppss.get(pps as usize)?.as_ref()?;
+        let sps = self.spss.get(pps.sps_id as usize)?.as_ref()?;
+        if !sps.separate_colour_plane {
+            return None;
+        }
+        Some(r.read_bits(2).ok()? as usize)
     }
 
     fn handle_nal(&mut self, nal: &[u8], pts: i64) -> Result<()> {
@@ -363,11 +501,17 @@ impl Decoder {
         Ok(())
     }
 
-    fn level_scale(&mut self, pps: &Arc<Pps>) -> Arc<LevelScale> {
+    /// The scaling for `pps`'s slices of colour plane `plane` (0 but for separately
+    /// coded planes, which each use their own component's lists as luma's: 8.5.9).
+    fn level_scale(&mut self, pps: &Arc<Pps>, plane: usize) -> Arc<LevelScale> {
         if let Some((_, ls)) = self.ls_cache.iter().find(|(p, _)| Arc::ptr_eq(p, pps)) {
             return ls.clone();
         }
-        let ls: Arc<LevelScale> = Arc::from(LevelScale::new(&pps.scaling));
+        let mut ls = LevelScale::new(&pps.scaling);
+        if plane > 0 {
+            ls.as_plane(plane);
+        }
+        let ls: Arc<LevelScale> = Arc::from(ls);
         self.ls_cache.retain(|(p, _)| self.ppss.iter().flatten().any(|q| Arc::ptr_eq(p, q)));
         self.ls_cache.push((pps.clone(), ls.clone()));
         ls
@@ -408,7 +552,7 @@ impl Decoder {
             }
             self.start_picture(&sh, &sps, pts)?;
         }
-        let ls = self.level_scale(&pps);
+        let ls = self.level_scale(&pps, if sps.separate_colour_plane { sh.colour_plane_id as usize } else { 0 });
         let Some(pending) = self.pending.as_mut() else {
             return invalid("slice without a started picture");
         };
