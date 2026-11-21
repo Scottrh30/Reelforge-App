@@ -22,6 +22,9 @@ const H: u32 = 90;
 struct Crossing {
     frozen: Option<Time>,
     shift: [i64; 2],
+    /// A second object as big crossing the top the other way (the two
+    /// together don't move on the whole).
+    decoy: bool,
 }
 
 impl FrameProvider for Crossing {
@@ -33,6 +36,15 @@ impl FrameProvider for Crossing {
         for y in rows {
             for x in x0..x0 + 20 {
                 if (0..W as i64).contains(&x) && (0..H as i64).contains(&y) {
+                    let i = ((y * W as i64 + x) * 4) as usize;
+                    px[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+                }
+            }
+        }
+        if self.decoy && l.clip.media != MediaId(2) {
+            let x1 = (120.0 - t * 100.0) as i64;
+            for y in 0..20i64 {
+                for x in x1.max(0)..(x1 + 30).min(W as i64) {
                     let i = ((y * W as i64 + x) * 4) as usize;
                     px[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
                 }
@@ -210,6 +222,31 @@ fn smoke_on_its_own_layer_flows_round_a_subject_on_the_layer_above() {
     let jumped = picture(&mut scene, &mut c, &two_layers(1.0, moved), end, &mut Crossing::default());
     let off = differ(&two, &jumped);
     assert!(off <= pixels / 200, "jumped to, as played ({off} of {pixels} pixels differ; {apart} if it flows through)");
+}
+#[test]
+fn two_objects_moving_opposite_ways_each_push_the_smoke() {
+    let Some((device, queue)) = headless_device() else { return };
+    let end: f64 = 1.0;
+    let render = |p: &Project, frames: &mut Crossing| {
+        let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
+        let mut out = Vec::new();
+        for k in 0..=(end * 25.0).round() as usize {
+            out = picture(&mut scene, &mut c, p, k as f64 / 25.0, frames);
+        }
+        out
+    };
+    // The object sweeping right still carries smoke right, though another
+    // as big goes left across the top (the shape as a whole doesn't move).
+    let both = render(&project(smoke(true)), &mut Crossing { decoy: true, ..Crossing::default() });
+    let still = render(&project(smoke(false)), &mut Crossing { decoy: true, ..Crossing::default() });
+    let (n_moved, x_moved) = smoke_in_path(&both);
+    let (n_still, x_still) = smoke_in_path(&still);
+    assert!(n_moved > 100 && n_still > 100, "smoke in the object's path: {n_moved}, {n_still}");
+    assert!(x_moved > x_still + 3.0, "pushed right: on average {x_moved:.1} px across, {x_still:.1} without the objects");
+    // Nothing inside the object where it is now.
+    let x0 = (10.0 + end * 100.0) as usize;
+    let inside = (34..56).flat_map(|y| (x0 + 3..x0 + 17).map(move |x| (x, y))).filter(|&(x, y)| { let q = &both[(y * W as usize + x) * 4..][..4]; q[2] > 60 && q[0] < 200 }).count();
+    assert_eq!(inside, 0, "no smoke inside the object");
 }
 
 /// Jumped to `end` with a catch-up of at most `cap` frames (approximate, as

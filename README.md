@@ -745,8 +745,11 @@ What works now:
       keyed layer and the fluid flows round the letters or the subject instead of through them.
       The shape is read at every step, so a keyed subject can move: it pushes the smoke out of
       its way and draws it along behind, and smoke it passes over is carried with it and comes
-      out round its edges instead of vanishing (its motion is how far the shape's middle moves
-      a step, so it suits one moving object; a sudden jump, such as a cut, counts as none).
+      out round its edges instead of vanishing. The push is worked out region by region, from
+      how each part of the shape's edge moves, so several things moving different ways (two
+      people walking past each other) each push the smoke their own way, and a round thing
+      spinning in place doesn't stir it; inside the shape, what's carried goes with the shape
+      as a whole. A sudden jump, such as a cut, counts as no motion.
       **Shape to flow round** picks whose shape: this layer's, **The layer above** or **The
       layer below** (the nearest clip on the next video track up or down), so smoke on its own
       layer flows round a subject on another one wherever that layer is moved, scaled, rotated

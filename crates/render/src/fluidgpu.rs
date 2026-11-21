@@ -9,14 +9,15 @@
 //!
 //! With obstacles on, each step reads the layer's picture as it is now (a new
 //! one each frame of moving footage), so the fluid flows round an object as it
-//! moves and is pushed by it. After a jump the scene first steps the
+//! moves and is pushed by it: by how its edges move, region by region, so
+//! several things moving different ways each push their own way. After a jump the scene first steps the
 //! simulation through the frames in between (`reelforge_export::scene`,
 //! [`FluidGpu::resume_step`]), as for the water.
 
 use reelforge_core::fluid::{step_inputs, FluidJob, EVERY};
 use std::collections::HashMap;
 
-const ENTRIES: [&str; 14] = ["obstacles", "motion_sum", "motion", "seep", "inject", "curl", "confine", "advect_vel", "divergence", "jacobi_ab", "jacobi_ba", "project", "advect_dye", "to_texture"];
+const ENTRIES: [&str; 17] = ["obstacles", "motion_sum", "motion", "blur_x", "blur_y", "local_motion", "seep", "inject", "curl", "confine", "advect_vel", "divergence", "jacobi_ab", "jacobi_ba", "project", "advect_dye", "to_texture"];
 /// Pressure-solve iterations a step (an even number: the result ends in `pa`).
 const ITERS: usize = 30;
 /// Steps encoded per submission (and uniform slots).
@@ -136,8 +137,8 @@ impl FluidGpu {
         let scratch = self.buffer("fluid scratch", n * 4);
         let pa = self.buffer("fluid pressure", n * 4);
         let pb = self.buffer("fluid pressure'", n * 4);
-        // (and the solid's motion after the cells)
-        let obs = self.buffer("fluid obstacles", (n + 1) * 8);
+        // (and the solid's motion after the cells, then its motion cell by cell)
+        let obs = self.buffer("fluid obstacles", (2 * n + 1) * 8);
         let out = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("fluid picture"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -376,6 +377,9 @@ impl FluidGpu {
                     run(&mut enc, "obstacles");
                     run(&mut enc, "motion_sum");
                     run_on(&mut enc, "motion", (1, 1));
+                    run(&mut enc, "blur_x");
+                    run(&mut enc, "blur_y");
+                    run(&mut enc, "local_motion");
                 }
                 run(&mut enc, "inject");
                 run(&mut enc, "curl");

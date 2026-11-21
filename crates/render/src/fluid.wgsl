@@ -46,6 +46,12 @@ struct Step {
 @group(0) @binding(9) var out_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(10) var layer_tex: texture_2d<f32>;
 @group(0) @binding(11) var layer_samp: sampler;
+// After those, how the solid moves cell by cell (cells a step; see
+// `local_motion`), after holding the obstacles blurred across: cell i at
+// obs[field(i)]. (Storage buffers are eight at most: so in this one.)
+fn field(i: u32) -> u32 {
+    return st.w * st.h + 1u + i;
+}
 
 fn ix(x: i32, y: i32) -> u32 {
     return u32(clamp(y, 0, i32(st.h) - 1)) * st.w + u32(clamp(x, 0, i32(st.w) - 1));
@@ -83,18 +89,18 @@ fn blocked(i: u32) -> bool {
 // or something appearing), not motion.
 const MOTION_MAX: f32 = 8.0;
 
-// How the solid moved this step (cells): see `motion`.
-fn obstacle_velocity() -> vec2<f32> {
+// How the solid moved this step at cell `i` (cells): see `local_motion`.
+fn obstacle_velocity(i: u32) -> vec2<f32> {
     if (st.obstacles == 0u || st.fresh != 0u) {
         return vec2(0.0);
     }
-    return obs[st.w * st.h];
+    return obs[field(i)];
 }
 
 // Where the fluid is moved by: its own velocity, or a solid's (moving or not).
 fn moving(x: i32, y: i32) -> vec2<f32> {
     let i = ix(x, y);
-    return select(vel[i], obstacle_velocity(), blocked(i));
+    return select(vel[i], obstacle_velocity(i), blocked(i));
 }
 
 // The layer's shape, cell by cell (where the fluid can't go), read at every
@@ -188,6 +194,68 @@ fn motion(@builtin(local_invocation_index) li: u32) {
         }
         obs[st.w * st.h] = m;
     }
+}
+
+// How far the obstacles are blurred (cells): their edges become ramps this
+// wide each side, so edges moving up to this far a step are measured exactly.
+const BLUR: i32 = 8;
+
+// The obstacles (now, a step ago) blurred across, into `field`'s place.
+@compute @workgroup_size(8, 8)
+fn blur_x(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x >= st.w || id.y >= st.h) {
+        return;
+    }
+    var s = vec2(0.0);
+    for (var d = -BLUR; d <= BLUR; d++) {
+        s += obs[ix(i32(id.x) + d, i32(id.y))];
+    }
+    obs[field(id.y * st.w + id.x)] = s / f32(2 * BLUR + 1);
+}
+
+// ... and down, into `pa` (now) and `pb` (a step ago), free till `divergence`.
+@compute @workgroup_size(8, 8)
+fn blur_y(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x >= st.w || id.y >= st.h) {
+        return;
+    }
+    var s = vec2(0.0);
+    for (var d = -BLUR; d <= BLUR; d++) {
+        s += obs[field(ix(i32(id.x), i32(id.y) + d))];
+    }
+    let i = id.y * st.w + id.x;
+    pa[i] = s.x / f32(2 * BLUR + 1);
+    pb[i] = s.y / f32(2 * BLUR + 1);
+}
+
+// How the solid moves at each cell, region by region: where an edge is (the
+// blurred shape slopes), how fast it moves across itself is how much the
+// shape there changed over how steep it is (dφ/dt = -v·∇φ). That is what
+// pushes the fluid, so two things moving opposite ways each push their own
+// way and a spinning round one stirs nothing. Along the edge, and inside,
+// where nothing slopes, the motion of the shape as a whole is kept (see
+// `motion`).
+@compute @workgroup_size(8, 8)
+fn local_motion(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x >= st.w || id.y >= st.h) {
+        return;
+    }
+    let x = i32(id.x);
+    let y = i32(id.y);
+    let i = id.y * st.w + id.x;
+    let whole = obs[st.w * st.h];
+    let g = 0.25 * vec2(pa[ix(x + 1, y)] + pb[ix(x + 1, y)] - pa[ix(x - 1, y)] - pb[ix(x - 1, y)], pa[ix(x, y + 1)] + pb[ix(x, y + 1)] - pa[ix(x, y - 1)] - pb[ix(x, y - 1)]);
+    let g2 = dot(g, g);
+    var v = whole;
+    // (a ramp BLUR cells wide slopes 1/17 a cell: g2 about 0.0035)
+    let k = smoothstep(1e-4, 1e-3, g2);
+    if (k > 0.0) {
+        let len = sqrt(g2);
+        let n = g / len;
+        let across = clamp(-(pa[i] - pb[i]) / len, -MOTION_MAX, MOTION_MAX);
+        v = whole + k * (across - dot(whole, n)) * n;
+    }
+    obs[field(i)] = v;
 }
 
 // The source pours in velocity and colour; thick colour rises.
@@ -319,7 +387,7 @@ fn project(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     if (blocked(i)) {
-        vel[i] = obstacle_velocity();
+        vel[i] = obstacle_velocity(i);
         return;
     }
     vel[i] -= 0.5 * vec2(pa[ix(x + 1, y)] - pa[ix(x - 1, y)], pa[ix(x, y + 1)] - pa[ix(x, y - 1)]);
@@ -332,7 +400,7 @@ fn advect_dye(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let i = id.y * st.w + id.x;
-    let carried = obstacle_velocity();
+    let carried = obstacle_velocity(i);
     if (blocked(i) && (dot(carried, carried) < 1e-6 || obs[i].y <= 0.5)) {
         // Just covered, what was here is picked up; standing still (between
         // two frames of footage, say), what it carries stays put.
