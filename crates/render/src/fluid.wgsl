@@ -30,6 +30,10 @@ struct Step {
     m0: vec4<f32>,
     m1: vec4<f32>,
     m2: vec4<f32>,
+    // Billowing body: x on (1) or flat (0), y the shading, zw the way to the light.
+    look: vec4<f32>,
+    // x: seconds in.
+    time: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> st: Step;
@@ -258,6 +262,70 @@ fn local_motion(@builtin(global_invocation_id) id: vec3<u32>) {
     obs[field(i)] = v;
 }
 
+// How thick billowing smoke can pile up (1: just covers).
+const THICK: f32 = 4.0;
+
+fn hash3(p: vec3<f32>) -> f32 {
+    let q = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    let r = q + dot(q, q.yzx + 33.33);
+    return fract((r.x + r.y) * r.z);
+}
+
+// Smooth value noise in space and time, 0–1.
+fn lumps(p: vec2<f32>, t: f32) -> f32 {
+    let x = vec3(p, t);
+    let i = floor(x);
+    let f = x - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    var s = 0.0;
+    for (var k = 0u; k < 8u; k++) {
+        let o = vec3(f32(k & 1u), f32((k >> 1u) & 1u), f32((k >> 2u) & 1u));
+        let w = mix(1.0 - u, u, o);
+        s += hash3(i + o) * w.x * w.y * w.z;
+    }
+    return s;
+}
+
+// Three octaves of it.
+fn wisps(p: vec2<f32>, t: f32) -> f32 {
+    return 0.55 * lumps(p, t) + 0.3 * lumps(p * 2.1 + 17.0, t * 1.3) + 0.15 * lumps(p * 4.3 + 41.0, t * 1.7);
+}
+
+// Noise `size` cells across that drifts with velocity `v` (cells a step): two
+// layers, each pushed along for a second then faded out as the other takes over
+// (so it doesn't stretch without end), 0–1.
+fn flowing(p: vec2<f32>, v: vec2<f32>, size: f32, seed: f32, octaves: bool) -> f32 {
+    let t = st.time.x;
+    var s = 0.0;
+    for (var k = 0; k < 2; k++) {
+        let f = fract(t + f32(k) * 0.5);
+        let start = floor(t + f32(k) * 0.5);
+        // (carried at most a size and a half: where the flow shears, neighbours
+        // carried far apart would break the noise into specks)
+        let moved = v * (f * 30.0);
+        let far = length(moved);
+        let carried = moved * min(1.0, 1.5 * size / max(far, 1e-4));
+        let q = (p - carried) / size + vec2(start * 13.7 + seed + f32(k) * 31.0, seed * 3.1);
+        let n = select(lumps(q, start * 0.37 + seed), wisps(q, start * 0.37 + seed), octaves);
+        s += n * (1.0 - abs(2.0 * f - 1.0));
+    }
+    return s;
+}
+
+// How covered billowing smoke is at (x, y).
+fn cover(x: f32, y: f32) -> f32 {
+    return 1.0 - exp(-1.5 * max(dye_at(x, y).a, 0.0));
+}
+
+// Rounded lumps drifting with the flow, 0–1.
+fn rounded(p: vec2<f32>, v: vec2<f32>, size: f32) -> f32 {
+    // (domes with sharp creases between them, like the cauliflower of real billows:
+    // the noise folded about its middle, two sizes of it)
+    let a = flowing(p, v, size, 7.0, false);
+    let b = flowing(p, v, size * 0.45, 19.0, false);
+    return 0.65 * abs(2.0 * a - 1.0) + 0.35 * abs(2.0 * b - 1.0);
+}
+
 // The source pours in velocity and colour; thick colour rises.
 @compute @workgroup_size(8, 8)
 fn inject(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -274,9 +342,17 @@ fn inject(@builtin(global_invocation_id) id: vec3<u32>) {
     if (wgt >= 0.01 && !blocked(i)) {
         v += (st.push - v) * wgt * 0.6;
         let add = min(st.amount * wgt * (6.0 / 30.0), 1.0);
-        c = vec4(c.rgb + (st.color - c.rgb) * add, c.a + (1.0 - c.a) * add);
+        if (st.look.x > 0.5) {
+            // Billowing: poured in puffs (thicker and thinner, place to place and
+            // moment to moment), piling up past covering.
+            let puff = 0.1 + 1.9 * smoothstep(0.25, 0.85, lumps(vec2<f32>(id.xy) / max(r * 0.8, 1.0), st.time.x * 1.7));
+            let more = add * puff * 1.6 * max(1.0 - c.a / THICK, 0.0);
+            c = vec4(c.rgb + st.color * more, c.a + more);
+        } else {
+            c = vec4(c.rgb + (st.color - c.rgb) * add, c.a + (1.0 - c.a) * add);
+        }
     }
-    v.y -= st.rise * c.a * 0.06;
+    v.y -= st.rise * min(c.a, 1.0) * 0.06;
     vel[i] = v;
     dye[i] = c;
 }
@@ -463,8 +539,40 @@ fn to_texture(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.y * st.w + id.x;
     // (what's being carried inside a solid doesn't show)
     let c = select(dye[i], vec4(0.0), blocked(i));
-    let a = clamp(c.a, 0.0, 1.0);
-    let lin = select(vec3(0.0), c.rgb / max(c.a, 1e-4), c.a > 1e-4);
+    var a = clamp(c.a, 0.0, 1.0);
+    var lin = select(vec3(0.0), c.rgb / max(c.a, 1e-4), c.a > 1e-4);
+    if (st.look.x > 0.5 && c.a > 1e-4) {
+        let scale = f32(st.w) / 320.0;
+        let here = vec2<f32>(id.xy);
+        // (the velocity smoothed a little, for the same reason)
+        let v = 0.25 * (vel[i] + vel[ix(i32(id.x) + 2, i32(id.y))] + vel[ix(i32(id.x), i32(id.y) + 2)] + vel[ix(i32(id.x) - 2, i32(id.y) - 2)]);
+        let thin = exp(-1.2 * c.a);
+        // Fine wisps, mostly where it's thin, and big lumps giving thick smoke its
+        // form: both drift with the flow (two staggered layers of noise, each carried
+        // along by the velocity here for a second, then faded out for a fresh one).
+        let fine = flowing(here, v, 6.0 * scale, 0.0, true);
+        let d = c.a * mix(1.0, 0.15 + 1.7 * fine, 0.3 + 0.55 * thin);
+        a = 1.0 - exp(-1.5 * d);
+        // Lit as a surface: the thickness (smoothed) and the lumps as height.
+        let k = 4.0 * scale;
+        let x = here.x;
+        let y = here.y;
+        // (the slope of how covered it is, not how thick: inside, where it's all
+        // covered, the lumps give the form)
+        let gd = vec2(cover(x + k, y) - cover(x - k, y), cover(x, y + k) - cover(x, y - k)) / (2.0 * k);
+        // (the lumps: rounded, soft, big)
+        let e = 5.0 * scale;
+        let big = 30.0 * scale;
+        let gb = vec2(rounded(here + vec2(e, 0.0), v, big) - rounded(here - vec2(e, 0.0), v, big), rounded(here + vec2(0.0, e), v, big) - rounded(here - vec2(0.0, e), v, big)) / (2.0 * e);
+        let g = gd * 6.0 * scale + gb * 20.0 * scale * min(c.a, 1.5);
+        let n = normalize(vec3(-g, 1.0));
+        let towards = normalize(vec3(st.look.z, st.look.w, 0.9));
+        // (wrapped, so the shaded sides stay soft)
+        // (in linear light, so the shade goes deeper than it looks on screen)
+        let wrap = 0.5 + 0.5 * dot(n, towards);
+        let lit = 0.25 + 0.8 * pow(wrap, 1.5);
+        lin *= mix(1.0, lit, st.look.y);
+    }
     let l = clamp(lin, vec3(0.0), vec3(1.0));
     let g = select(1.055 * pow(l, vec3(1.0 / 2.4)) - 0.055, l * 12.92, l <= vec3(0.0031308));
     textureStore(out_tex, vec2<i32>(id.xy), vec4(g, a));

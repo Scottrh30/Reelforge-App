@@ -469,7 +469,7 @@ pub fn look_params(kind: EffectKind) -> &'static [usize] {
         EffectKind::Ocean => &[oc::WIND, oc::HEIGHT, oc::CHOP, oc::SWELL, oc::RIPPLES, oc::SPEED, oc::DEEP, oc::SCATTER, oc::FOAM, oc::SUN_HEIGHT, oc::SUN, oc::SKY, oc::HORIZON, oc::HAZE, oc::SURF, oc::SPRAY],
         EffectKind::WaterSurface => &[ws::RAIN, ws::DROP_SIZE, ws::DROP_STRENGTH, ws::WAVE_HEIGHT, ws::WAVELENGTH, ws::WIND, ws::SPEED, ws::CALM, ws::COLOR, ws::DEPTH, ws::REFRACTION, ws::CAUSTICS, ws::REFLECTIONS, ws::HIGHLIGHTS, ws::SKY, ws::FLOOR],
         EffectKind::Liquid => &[lq::THICK, lq::SPLASH, lq::DROPLETS, lq::BOUNCE, lq::COLOR, lq::CLEAR, lq::REFRACTION, lq::HIGHLIGHTS, lq::FOAM, lq::SMOOTH],
-        EffectKind::Fluid => &[fl::FORCE, fl::AMOUNT, fl::COLOR_A, fl::COLOR_B, fl::CYCLE, fl::RISE, fl::SWIRL, fl::FADE],
+        EffectKind::Fluid => &[fl::FORCE, fl::AMOUNT, fl::COLOR_A, fl::COLOR_B, fl::CYCLE, fl::RISE, fl::SWIRL, fl::FADE, fl::BODY, fl::LIGHT, fl::SHADING],
         _ => &[],
     }
 }
@@ -560,6 +560,7 @@ fn water_looks() -> Vec<EffectPreset> {
         look("Coloured smoke", Fluid, &[(fl::FORCE, 350.0), (fl::AMOUNT, 120.0), (fl::COLOR_A, c(0xff4fa0)), (fl::COLOR_B, c(0x6a5cff)), (fl::CYCLE, 0.3), (fl::RISE, 120.0), (fl::SWIRL, 60.0), (fl::FADE, 10.0)]),
         look("Steam", Fluid, &[(fl::FORCE, 250.0), (fl::AMOUNT, 70.0), (fl::COLOR_A, c(0xe8eef2)), (fl::COLOR_B, c(0xf6f8fa)), (fl::CYCLE, 0.0), (fl::RISE, 200.0), (fl::SWIRL, 70.0), (fl::FADE, 25.0)]),
         look("Thick smoke", Fluid, &[(fl::FORCE, 300.0), (fl::AMOUNT, 250.0), (fl::COLOR_A, c(0x6a6a6a)), (fl::COLOR_B, c(0x3c3c3c)), (fl::CYCLE, 0.1), (fl::RISE, 90.0), (fl::SWIRL, 120.0), (fl::FADE, 5.0)]),
+        look("Billowing smoke", Fluid, &[(fl::FORCE, 160.0), (fl::AMOUNT, 160.0), (fl::COLOR_A, c(0xf2f4f8)), (fl::COLOR_B, c(0xc9d2e4)), (fl::CYCLE, 0.2), (fl::RISE, 60.0), (fl::SWIRL, 150.0), (fl::FADE, 3.0), (fl::BODY, 1.0), (fl::LIGHT, 60.0), (fl::SHADING, 80.0)]),
     ]
 }
 

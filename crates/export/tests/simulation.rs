@@ -248,6 +248,33 @@ fn two_objects_moving_opposite_ways_each_push_the_smoke() {
     let inside = (34..56).flat_map(|y| (x0 + 3..x0 + 17).map(move |x| (x, y))).filter(|&(x, y)| { let q = &both[(y * W as usize + x) * 4..][..4]; q[2] > 60 && q[0] < 200 }).count();
     assert_eq!(inside, 0, "no smoke inside the object");
 }
+#[test]
+fn billowing_smoke_has_form_and_is_the_same_jumped_to() {
+    let Some((device, queue)) = headless_device() else { return };
+    let end: f64 = 1.0;
+    let pixels = (W * H) as usize;
+    let mut e = smoke(true);
+    e.params[fp::BODY].value = 1.0;
+    e.params[fp::SHADING].value = 80.0;
+    let p = project(e);
+    let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
+    let mut played = Vec::new();
+    for k in 0..=(end * 25.0).round() as usize {
+        played = picture(&mut scene, &mut c, &p, k as f64 / 25.0, &mut Crossing::default());
+    }
+    let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
+    let jumped = picture(&mut scene, &mut c, &p, end, &mut Crossing::default());
+    let off = differ(&played, &jumped);
+    assert!(off <= pixels / 200, "billowing: jumped to, as played ({off} of {pixels} pixels differ)");
+    // Not the flat body: shaded, so thick parts aren't all one colour.
+    let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
+    let mut flat = Vec::new();
+    for k in 0..=(end * 25.0).round() as usize {
+        flat = picture(&mut scene, &mut c, &project(smoke(true)), k as f64 / 25.0, &mut Crossing::default());
+    }
+    let apart = differ(&played, &flat);
+    assert!(apart > pixels / 50, "billowing isn't flat ({apart} of {pixels} pixels differ)");
+}
 
 /// Jumped to `end` with a catch-up of at most `cap` frames (approximate, as
 /// the viewer does past 250),

@@ -68,7 +68,7 @@ pub(crate) struct FluidGpu {
 /// The identity map: the layer's own picture.
 const SAME: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
-/// The uniform for one step (112 bytes; `map` takes the grid's 0–1
+/// The uniform for one step (144 bytes; `map` takes the grid's 0–1
 /// coordinates to the obstacle picture's).
 #[allow(clippy::too_many_arguments)]
 fn step_bytes(w: u32, h: u32, obstacles: bool, fresh: bool, i: &reelforge_core::fluid::Inputs, keep: f32, map: &[f32; 9]) -> Vec<u8> {
@@ -84,10 +84,17 @@ fn step_bytes(w: u32, h: u32, obstacles: bool, fresh: bool, i: &reelforge_core::
             v.extend(x.to_le_bytes());
         }
     }
+    for x in [if i.billow { 1.0 } else { 0.0 }, i.shading, i.light[0], i.light[1]] {
+        v.extend(x.to_le_bytes());
+    }
+    // (then the time, padded to 16 bytes)
+    for x in [i.t, 0.0, 0.0, 0.0] {
+        v.extend(x.to_le_bytes());
+    }
     v
 }
 
-const UNIFORM: u64 = 112;
+const UNIFORM: u64 = 144;
 
 impl FluidGpu {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {

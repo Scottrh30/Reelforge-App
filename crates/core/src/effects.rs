@@ -529,7 +529,7 @@ const DISINTEGRATE: [ParamSpec; 17] = [
     choice("Look", &crate::particles::LOOKS),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
-const FLUID: [ParamSpec; 17] = [
+const FLUID: [ParamSpec; 20] = [
     spec("Source X", 50.0, -50.0, 150.0, " %", 0.1),
     spec("Source Y", 85.0, -50.0, 150.0, " %", 0.1),
     spec("Direction", 90.0, -360.0, 360.0, "°", 0.5),
@@ -547,6 +547,9 @@ const FLUID: [ParamSpec; 17] = [
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
     choice("Flow round the layer's shape", &["Off", "On"]),
     choice("Shape to flow round", &fluid_params::SHAPES),
+    choice("Body", &["Flat", "Billowing"]),
+    spec("Light from", 60.0, -360.0, 360.0, "°", 0.5),
+    spec("Shading", 60.0, 0.0, 100.0, " %", 0.5),
 ];
 const OCEAN: [ParamSpec; 31] = [
     spec("Wind speed", 10.0, 0.5, 40.0, " m/s", 0.05),
@@ -1531,6 +1534,12 @@ pub mod fluid_params {
     /// (smoke on its own layer flowing round a subject on another).
     pub const OBSTACLE_LAYER: usize = 16;
     pub const SHAPES: [&str; 3] = ["This layer's", "The layer above", "The layer below"];
+    /// Flat (an even fill where it's thick), or billowing: poured in puffs, piling up
+    /// thicker than covers, lit as a surface and wispy where thin.
+    pub const BODY: usize = 17;
+    /// Where billowing smoke's light comes from (90°: above) and how strongly it shades.
+    pub const LIGHT: usize = 18;
+    pub const SHADING: usize = 19;
     pub const DETAILS: [&str; 3] = ["Low (fast)", "Medium", "High"];
 }
 /// Ocean parameter indices.
@@ -2656,7 +2665,7 @@ impl EffectKind {
             EffectKind::Shatter => &[(0, "Impact"), (2, "Pieces"), (4, "Motion")],
             EffectKind::MuzzleFlash => &[(0, "Gun"), (5, "Flash"), (7, "Shots")],
             EffectKind::BulletHit => &[(0, "Hit"), (5, "Look")],
-            EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look"), (15, "Obstacles")],
+            EffectKind::Fluid => &[(0, "Source"), (6, "Colour"), (9, "Motion"), (12, "Look"), (15, "Obstacles"), (17, "Body")],
             EffectKind::Ocean => &[(0, "Waves"), (9, "Camera"), (13, "Water"), (16, "Sky and sun"), (22, "Output"), (25, "Solid objects")],
             EffectKind::WaterSurface => &[(0, "Rain and drops"), (6, "Waves"), (10, "Water"), (15, "Solid objects"), (19, "Look"), (29, "Output")],
             EffectKind::Liquid => &[(0, "Source"), (8, "Water"), (16, "Solid objects"), (19, "Look"), (26, "Output"), (28, "Depth (3D)")],

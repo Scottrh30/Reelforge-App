@@ -121,6 +121,14 @@ pub struct Inputs {
     pub swirl: f32,
     /// Fraction of the colour lost a second.
     pub fade: f32,
+    /// Billowing body (on the graphics card; the processor's simulation stays flat).
+    pub billow: bool,
+    /// How much billows are shaded (0–1), and the way to the light (a unit vector across
+    /// the grid, y down).
+    pub shading: f32,
+    pub light: [f32; 2],
+    /// Seconds in (what varies over time on the card: the puffs).
+    pub t: f32,
 }
 
 /// The settings of step `step` of effect `e` on a `w`×`h` grid over a `size` layer.
@@ -195,6 +203,13 @@ fn inputs(e: &Effect, t: f64, g: &Grid, size: [f32; 2], seed: u64) -> Inputs {
         rise: v(p::RISE) / 100.0,
         swirl: v(p::SWIRL) / 100.0,
         fade: v(p::FADE) / 100.0,
+        billow: v(p::BODY) >= 0.5,
+        shading: (v(p::SHADING) / 100.0).clamp(0.0, 1.0),
+        light: {
+            let a = v(p::LIGHT).to_radians();
+            [a.cos(), -a.sin()]
+        },
+        t: t as f32,
     }
 }
 

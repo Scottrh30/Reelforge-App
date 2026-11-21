@@ -756,6 +756,13 @@ What works now:
       or corner-pinned to (its picture's own alpha is used, before its effects: a title, a
       keyed clip with alpha, a PNG; 3D layers aren't linked, and with no layer there it flows
       freely).
+      **Body** is **Flat** (as it always was: thick smoke an even fill) or **Billowing**: poured
+      in puffs and piling up thicker than just covering, thick smoke is lit as a surface (soft
+      domes with creases between, from **Light from**, as much as **Shading**), and fine wisps
+      show where it's thin; the lumps and wisps drift with the flow. Set up against footage of
+      a real backlit cloud, it has form where flat smoke is a plain fill; it's still drawn from
+      a flat simulation, so real billows that roll towards or away from the camera aren't
+      there (the processor's fallback draws it flat).
       Jump ahead and the smoke is still what playing up to there would give, as for the water
       below (the frames in between are stepped through first)
   - **Water** (**Timeline → Water** adds them ready-made: an ocean, a stormy sea at sunset, rain
@@ -1966,7 +1973,7 @@ it.
     swell**, **Storm at sea**), water from above (**Tropical lagoon**, **Swimming pool**, **Rain
     on a pond**), liquids poured (**Clear water**, **Muddy water**, **Milk**, **Honey**,
     **Paint**, **Oil**: how thick, splashy, clear and shiny) and fluids (**Ink in water**,
-    **Coloured smoke**, **Steam**, **Thick smoke**). On a clip that already has that simulation
+    **Coloured smoke**, **Steam**, **Thick smoke**, **Billowing smoke**). On a clip that already has that simulation
     one changes just its look (colours, waves, how runny, the light), keeping where it pours
     from, its direction, its camera and what's solid; on one that hasn't, it's added. All of
     these can be starred and exported, not renamed or deleted.

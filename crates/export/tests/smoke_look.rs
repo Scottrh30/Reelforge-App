@@ -157,7 +157,7 @@ fn smoke(subject: Subject) -> Effect {
         Subject::Walker => &[(fp::X, 50.0), (fp::Y, 98.0), (fp::SIZE, 110.0), (fp::FORCE, 300.0), (fp::AMOUNT, 250.0), (fp::COLOR_A, 0x8a8a8a as f32), (fp::COLOR_B, 0x5c5c5c as f32), (fp::CYCLE, 0.1), (fp::RISE, 90.0), (fp::SWIRL, 120.0), (fp::FADE, 5.0)],
         // Low mist rolling along the road.
         // A big, dense, slowly rising cloud, lit from behind (white, blue at its edges).
-        Subject::Pair => &[(fp::X, 30.0), (fp::Y, 95.0), (fp::SIZE, 140.0), (fp::FORCE, 180.0), (fp::AMOUNT, 300.0), (fp::COLOR_A, 0xf2f6ff as f32), (fp::COLOR_B, 0x9fb8ff as f32), (fp::CYCLE, 0.2), (fp::RISE, 60.0), (fp::SWIRL, 150.0), (fp::FADE, 3.0)],
+        Subject::Pair => &[(fp::X, 30.0), (fp::Y, 95.0), (fp::SIZE, 110.0), (fp::FORCE, 160.0), (fp::AMOUNT, 160.0), (fp::COLOR_A, 0xf2f6ff as f32), (fp::COLOR_B, 0x9fb8ff as f32), (fp::CYCLE, 0.2), (fp::RISE, 60.0), (fp::SWIRL, 150.0), (fp::FADE, 3.0), (fp::BODY, 1.0), (fp::LIGHT, 60.0), (fp::SHADING, 100.0)],
         Subject::Car => &[(fp::X, 30.0), (fp::Y, 88.0), (fp::DIRECTION, 0.0), (fp::SIZE, 160.0), (fp::FORCE, 160.0), (fp::AMOUNT, 140.0), (fp::COLOR_A, 0xdfe6ea as f32), (fp::COLOR_B, 0xf2f4f6 as f32), (fp::CYCLE, 0.0), (fp::RISE, 15.0), (fp::SWIRL, 70.0), (fp::FADE, 4.0)],
     };
     for &(i, v) in set {
