@@ -15,4 +15,5 @@ log.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json.workspace = true
