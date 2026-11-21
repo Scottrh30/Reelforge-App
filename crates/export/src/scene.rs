@@ -365,7 +365,7 @@ impl Scene {
             if let Some(mut g) = self.gather(project, &l, at, frame_size, fps, &scene3d, provider, 0)? {
                 let other = self.gather_obstacle(project, seq, r.track, r.obstacle_from, at, frame_size, fps, &scene3d, provider)?;
                 link_obstacle(&mut g, other.as_ref(), [frame_size[0] as f32, frame_size[1] as f32]);
-                compositor.step_simulations(&input(&g), other.as_ref().map(input).as_ref(), r.key, r.shadow);
+                compositor.step_simulations(frame_size, &input(&g), other.as_ref().map(input).as_ref(), r.key, r.shadow);
             }
         }
         provider.wait_for_frames(was);

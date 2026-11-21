@@ -753,9 +753,10 @@ What works now:
       **Shape to flow round** picks whose shape: this layer's, **The layer above** or **The
       layer below** (the nearest clip on the next video track up or down), so smoke on its own
       layer flows round a subject on another one wherever that layer is moved, scaled, rotated
-      or corner-pinned to (its picture's own alpha is used, before its effects: a title, a
-      keyed clip with alpha, a PNG; 3D layers aren't linked, and with no layer there it flows
-      freely).
+      or corner-pinned to: its shape after its effects, so a clip keyed out of a green screen
+      by a keyer (or cut out by a mask, cropped, faded) is the shape the smoke flows round
+      (that layer's effects run first, then the smoke is stepped on; 3D layers aren't linked,
+      and with no layer there it flows freely).
       **Body** is **Flat** (as it always was: thick smoke an even fill) or **Billowing**: poured
       in puffs and piling up thicker than just covering, thick smoke is lit as a surface (soft
       domes with creases between, from **Light from**, as much as **Shading**), and fine wisps

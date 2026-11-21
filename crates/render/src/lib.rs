@@ -1321,10 +1321,22 @@ impl Compositor {
     /// on to where it says, as `shadow` (a copy: see
     /// [`Self::simulation_fork`]), with the layer's picture uploaded for
     /// what's solid, drawing nothing: the picture shown stays as it is.
-    pub fn step_simulations(&mut self, layer: &LayerInput, obstacle: Option<&LayerInput>, key: u64, shadow: u64) {
+    pub fn step_simulations(&mut self, frame_size: [u32; 2], layer: &LayerInput, obstacle: Option<&LayerInput>, key: u64, shadow: u64) {
         let Some((kind, job)) = layer.effects.iter().find_map(|e| e.fluid.as_ref().filter(|j| j.key == key).map(|j| (e.kind, j))) else { return };
         let mut job = reelforge_core::fluid::FluidJob::clone(job);
         job.key = shadow;
+        if let Some(o) = obstacle.filter(|o| !o.effects.is_empty() && job.source.is_some_and(|s| s.key == o.key)) {
+            // It flows round what the other layer's effects make of it: those run
+            // first, as when the frame is drawn (the shadow simulation in its place).
+            let mut fluid = layer.clone();
+            for e in &mut fluid.effects {
+                if e.fluid.as_ref().is_some_and(|j| j.key == key) {
+                    e.fluid = Some(std::sync::Arc::new(job.clone()));
+                }
+            }
+            self.run_effects(frame_size, &[DrawItem::Layer(o.clone()), DrawItem::Layer(fluid)]);
+            return;
+        }
         self.upload(layer);
         if let Some(o) = obstacle {
             self.upload(o);
@@ -1338,6 +1350,16 @@ impl Compositor {
     }
 
     pub fn render_items(&mut self, frame_size: [u32; 2], items: &[DrawItem]) {
+        self.render_items_inner(frame_size, items, false);
+    }
+
+    /// Run `items`' effects (stepping their simulations) without drawing the frame: the
+    /// picture shown stays as it is.
+    fn run_effects(&mut self, frame_size: [u32; 2], items: &[DrawItem]) {
+        self.render_items_inner(frame_size, items, true);
+    }
+
+    fn render_items_inner(&mut self, frame_size: [u32; 2], items: &[DrawItem], dry: bool) {
         // The shadow quality changed: a new atlas, bound in its place.
         let tile = SHADOW_TILE.load(std::sync::atomic::Ordering::Relaxed);
         if tile != self.shadow_tile {
@@ -1419,6 +1441,10 @@ impl Compositor {
         let mut margins: HashMap<u64, [f32; 4]> = HashMap::new();
         // Every emitter's particles this frame, and its look.
         let mut particle_sets: Vec<particles::Set> = Vec::new();
+        // Layers whose effects run this frame, and fluids flowing round one of them
+        // (another layer's shape after its effects): stepped once those have run.
+        let with_effects: std::collections::HashSet<u64> = all_layers().filter(|l| !l.effects.is_empty()).map(|l| l.key).collect();
+        let mut deferred: Vec<(u64, usize, reelforge_core::fluid::FluidJob)> = Vec::new();
         for l in all_layers() {
             let masked = l.mask.is_some() && self.masks.contains_key(&l.key);
             // Keys keep the layer inside its garbage mattes.
@@ -1472,6 +1498,10 @@ impl Compositor {
                     self.upload_table((l.key, i | TABLE2), t);
                 }
                 if let Some(job) = &e.fluid {
+                    if e.kind == EffectKind::Fluid && job.obstacle_from != 0 && job.source.is_some_and(|s| s.key != l.key && with_effects.contains(&s.key)) {
+                        deferred.push((l.key, i, reelforge_core::fluid::FluidJob::clone(job)));
+                        continue;
+                    }
                     // Stepped on to now; its picture goes in as this effect's table.
                     let layer = self.obstacle_view(l.key, job);
                     let tex = match e.kind {
@@ -2403,7 +2433,11 @@ impl Compositor {
         };
 
         // One effect pass: its own render pass on a layer's scratch target.
-        let encode_fx = |enc: &mut wgpu::CommandEncoder, i: usize, p: &FxPass| {
+        // Encoding one effect pass (a macro, as it's needed twice: for the layers some
+        // fluids flow round, then for the rest).
+        macro_rules! encode_fx {
+            () => {
+                |enc: &mut wgpu::CommandEncoder, i: usize, p: &FxPass| {
             let Some(fx) = self.fx_targets.get(&p.key) else { return };
             let source = match p.src {
                 Src::Layer => match self.layers.get(&p.key) {
@@ -2444,16 +2478,72 @@ impl Compositor {
             if let Some(b) = p.particles.and_then(|i| particle_batches.get(i)) {
                 self.particles.draw(&mut pass, b);
             }
-        };
+        }
+            };
+        }
+        // Fluids flowing round another layer after its effects: that layer's passes
+        // first (submitted), then the fluids stepped on with what they made.
+        let mut early: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        if !deferred.is_empty() {
+            early = deferred.iter().filter_map(|(_, _, j)| j.source.map(|s| s.key)).filter(|k| processed.contains_key(k)).collect();
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("obstacle effects") });
+            {
+                let encode_fx = encode_fx!();
+                for (i, p) in fx_passes.iter().enumerate() {
+                    if early.contains(&p.key) {
+                        encode_fx(&mut enc, i, p);
+                    }
+                }
+            }
+            self.queue.submit([enc.finish()]);
+            for (key, i, mut job) in deferred {
+                let Some(src) = job.source else { continue };
+                let made = processed.get(&src.key).copied().zip(margins.get(&src.key).copied());
+                let tex = match made {
+                    Some((t, [sx, sy, ox, oy])) => {
+                        // (the processed picture has room round it: its uv, from the layer's)
+                        let m = src.map;
+                        let (ax, ay) = (1.0 / sx.max(1e-6), 1.0 / sy.max(1e-6));
+                        let to_target = [ax * m[0] - ax * ox * m[6], ax * m[1] - ax * ox * m[7], ax * m[2] - ax * ox * m[8], ay * m[3] - ay * oy * m[6], ay * m[4] - ay * oy * m[7], ay * m[5] - ay * oy * m[8], m[6], m[7], m[8]];
+                        job.source = Some(reelforge_core::fluid::ObstacleSource { key: src.key, map: to_target });
+                        let view = self.fx_targets.get(&src.key).and_then(|f| f.views.get(t));
+                        self.fluid.step_to(&job, view)
+                    }
+                    None => {
+                        let view = self.obstacle_view(key, &job);
+                        self.fluid.step_to(&job, view.as_ref())
+                    }
+                };
+                if let Some(tex) = tex {
+                    let view = tex.create_view(&Default::default());
+                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("fluid picture"),
+                        layout: &self.texture_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                        ],
+                    });
+                    let size = [tex.width(), tex.height()];
+                    self.tables.insert((key, i), LayerTex { texture: tex, bind_group, size, content_id: job.key ^ job.step as u64, float: false });
+                }
+            }
+        }
+        let encode_fx = encode_fx!();
         // Adjustment layers' passes wait for the frame below them to be drawn.
         let adjust: std::collections::HashSet<u64> = ops.iter().filter_map(|o| if let Op::Adjust { draw, .. } = o { Some(draw.key) } else { None }).collect();
         // 3D text in shadow is drawn again once the atlas is ready (below), so
         // its effects wait for that too.
         let shaded: Vec<u64> = if occluders.is_empty() { Vec::new() } else { solids.iter().filter(|(_, s)| s.space.lights.iter().any(shadowing)).map(|(k, _)| *k).collect() };
         for (i, p) in fx_passes.iter().enumerate() {
-            if !adjust.contains(&p.key) && !shaded.contains(&p.key) {
+            if !adjust.contains(&p.key) && !shaded.contains(&p.key) && !early.contains(&p.key) {
                 encode_fx(&mut enc, i, p);
             }
+        }
+        if dry {
+            // (only the effects: the frame isn't drawn)
+            self.queue.submit([enc.finish()]);
+            return;
         }
         // The shadow casters' outlines into the atlas (from what they'll be drawn with).
         if !occluders.is_empty() {
