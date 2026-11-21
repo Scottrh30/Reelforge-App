@@ -144,6 +144,22 @@ pub struct FluidJob {
     pub obstacles: bool,
     /// Cells deep (a 3D liquid's box; 0 for the flat simulations).
     pub d: usize,
+    /// Whose shape it flows round: 0 the layer's own, 1 the layer above, 2 the
+    /// one below.
+    pub obstacle_from: u8,
+    /// For another layer's shape: that layer, found when the frame is put
+    /// together (none there: nothing to flow round).
+    pub source: Option<ObstacleSource>,
+}
+
+/// Another layer whose shape a fluid flows round.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObstacleSource {
+    /// The layer's key (its uploaded picture).
+    pub key: u64,
+    /// Homography (row major) from the fluid layer's 0–1 picture coordinates
+    /// to the other layer's.
+    pub map: [f32; 9],
 }
 
 /// The job for fluid effect `e` on a `size` layer at source time `t`.
@@ -155,7 +171,8 @@ pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
     let w = GPU_COLUMNS[detail];
     let h = ((w as f32 * size[1] / size[0].max(1.0)).round() as usize).clamp(8, 1024);
     let obstacles = e.value_at(p::OBSTACLES, Time::ZERO) >= 0.5;
-    Some(FluidJob { key: key(e, w, h, size) ^ 0x6705, effect: e.clone(), size, w, h, step: (t.as_secs_f64() * RATE).floor().max(0.0) as usize, obstacles, d: 0 })
+    let obstacle_from = e.value_at(p::OBSTACLE_LAYER, Time::ZERO).round().clamp(0.0, 2.0) as u8;
+    Some(FluidJob { key: key(e, w, h, size) ^ 0x6705, effect: e.clone(), size, w, h, step: (t.as_secs_f64() * RATE).floor().max(0.0) as usize, obstacles, d: 0, obstacle_from, source: None })
 }
 
 fn inputs(e: &Effect, t: f64, g: &Grid, size: [f32; 2], seed: u64) -> Inputs {

@@ -64,22 +64,35 @@ pub(crate) struct FluidGpu {
     tick: u64,
 }
 
-fn step_bytes(w: u32, h: u32, obstacles: bool, fresh: bool, i: &reelforge_core::fluid::Inputs, keep: f32) -> Vec<u8> {
-    let mut v = Vec::with_capacity(64);
+/// The identity map: the layer's own picture.
+const SAME: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+
+/// The uniform for one step (112 bytes; `map` takes the grid's 0–1
+/// coordinates to the obstacle picture's).
+#[allow(clippy::too_many_arguments)]
+fn step_bytes(w: u32, h: u32, obstacles: bool, fresh: bool, i: &reelforge_core::fluid::Inputs, keep: f32, map: &[f32; 9]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(UNIFORM as usize);
     for x in [w, h, u32::from(obstacles), u32::from(fresh)] {
         v.extend(x.to_le_bytes());
     }
     for x in [i.src[0], i.src[1], i.radius, i.amount, i.push[0], i.push[1], i.rise, i.swirl, i.color[0], i.color[1], i.color[2], keep] {
         v.extend(x.to_le_bytes());
     }
+    for row in map.chunks(3) {
+        for x in row.iter().copied().chain([0.0]) {
+            v.extend(x.to_le_bytes());
+        }
+    }
     v
 }
+
+const UNIFORM: u64 = 112;
 
 impl FluidGpu {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         use wgpu::{BindGroupLayoutEntry as E, BindingType as B, ShaderStages as S};
         let storage = |binding| E { binding, visibility: S::COMPUTE, ty: B::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None };
-        let mut entries = vec![E { binding: 0, visibility: S::COMPUTE, ty: B::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: wgpu::BufferSize::new(64) }, count: None }];
+        let mut entries = vec![E { binding: 0, visibility: S::COMPUTE, ty: B::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: wgpu::BufferSize::new(UNIFORM) }, count: None }];
         entries.extend((1..=8).map(storage));
         entries.push(E { binding: 9, visibility: S::COMPUTE, ty: B::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 }, count: None });
         entries.push(E { binding: 10, visibility: S::COMPUTE, ty: B::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None });
@@ -213,7 +226,7 @@ impl FluidGpu {
 
     /// `sim`'s bind group, reading `layer` (the layer's picture now) for obstacles.
     fn group(&self, sim: &Sim, layer: Option<&wgpu::TextureView>) -> wgpu::BindGroup {
-        let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.uniforms, offset: 0, size: wgpu::BufferSize::new(64) }) }];
+        let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.uniforms, offset: 0, size: wgpu::BufferSize::new(UNIFORM) }) }];
         entries.extend(sim._bufs.iter().enumerate().map(|(k, b)| wgpu::BindGroupEntry { binding: k as u32 + 1, resource: b.as_entire_binding() }));
         entries.push(wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&sim.out_view) });
         entries.push(wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(layer.unwrap_or(&self.blank)) });
@@ -263,6 +276,7 @@ impl FluidGpu {
         }
         self.tick += 1;
         let layer = layer.filter(|_| job.obstacles);
+        let map = job.source.map_or(SAME, |s| s.map);
         let fresh = !matches!(self.sims.get(&job.key), Some(s) if s.w == w && s.h == h);
         if fresh {
             if self.sims.len() >= KEEP {
@@ -342,7 +356,7 @@ impl FluidGpu {
                 let keep = (1.0 - inp.fade / reelforge_core::fluid::RATE as f32).clamp(0.0, 1.0);
                 // The obstacles read the step before are what this step's are compared with.
                 let fresh = k == 0 && (step == 0 || sim.obs_at != Some(step - 1));
-                self.queue.write_buffer(&self.uniforms, k as u64 * SLOT, &step_bytes(w, h, layer.is_some(), fresh, &inp, keep));
+                self.queue.write_buffer(&self.uniforms, k as u64 * SLOT, &step_bytes(w, h, layer.is_some(), fresh, &inp, keep, &map));
             }
             if layer.is_some() {
                 sim.obs_at = Some(sim.step + todo - 1);
@@ -414,7 +428,7 @@ impl FluidGpu {
         }
         // The picture (slot 0 told this grid's size: another may have used it last).
         let inp = step_inputs(&job.effect, target, job.w, job.h, size);
-        self.queue.write_buffer(&self.uniforms, 0, &step_bytes(w, h, layer.is_some(), true, &inp, 1.0));
+        self.queue.write_buffer(&self.uniforms, 0, &step_bytes(w, h, layer.is_some(), true, &inp, 1.0, &map));
         let mut enc = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("to_texture"), timestamp_writes: None });

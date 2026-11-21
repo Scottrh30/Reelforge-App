@@ -529,7 +529,7 @@ const DISINTEGRATE: [ParamSpec; 17] = [
     choice("Look", &crate::particles::LOOKS),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
 ];
-const FLUID: [ParamSpec; 16] = [
+const FLUID: [ParamSpec; 17] = [
     spec("Source X", 50.0, -50.0, 150.0, " %", 0.1),
     spec("Source Y", 85.0, -50.0, 150.0, " %", 0.1),
     spec("Direction", 90.0, -360.0, 360.0, "°", 0.5),
@@ -546,6 +546,7 @@ const FLUID: [ParamSpec; 16] = [
     spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
     choice("Flow round the layer's shape", &["Off", "On"]),
+    choice("Shape to flow round", &fluid_params::SHAPES),
 ];
 const OCEAN: [ParamSpec; 31] = [
     spec("Wind speed", 10.0, 0.5, 40.0, " m/s", 0.05),
@@ -1526,6 +1527,10 @@ pub mod fluid_params {
     /// Flow round the layer's own shape (a title's letters, or a keyed subject:
     /// read at every step, so it can move and push the fluid about).
     pub const OBSTACLES: usize = 15;
+    /// Whose shape: this layer's, or the layer on the track above or below
+    /// (smoke on its own layer flowing round a subject on another).
+    pub const OBSTACLE_LAYER: usize = 16;
+    pub const SHAPES: [&str; 3] = ["This layer's", "The layer above", "The layer below"];
     pub const DETAILS: [&str; 3] = ["Low (fast)", "Medium", "High"];
 }
 /// Ocean parameter indices.

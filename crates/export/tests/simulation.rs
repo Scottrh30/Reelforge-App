@@ -16,18 +16,23 @@ const H: u32 = 90;
 /// Footage of a solid square crossing a clear frame (100 px a second). With
 /// `frozen`, every frame is the one at that time instead: the object as if
 /// it had been there all along.
+/// (Media 2 is clear: a layer for smoke on its own. `shift` moves the
+/// square in the picture.)
+#[derive(Default)]
 struct Crossing {
     frozen: Option<Time>,
+    shift: [i64; 2],
 }
 
 impl FrameProvider for Crossing {
     fn picture(&mut self, _: &Project, l: &Layer, _: [u32; 2]) -> anyhow::Result<Option<Picture>> {
         let t = self.frozen.unwrap_or(l.source_time).as_secs_f64();
-        let x0 = (10.0 + t * 100.0) as i64;
+        let x0 = (10.0 + t * 100.0) as i64 + self.shift[0];
         let mut px = vec![0u8; (W * H * 4) as usize];
-        for y in 30..60i64 {
+        let rows = if l.clip.media == MediaId(2) { 0..0 } else { 30 + self.shift[1]..60 + self.shift[1] };
+        for y in rows {
             for x in x0..x0 + 20 {
-                if (0..W as i64).contains(&x) {
+                if (0..W as i64).contains(&x) && (0..H as i64).contains(&y) {
                     let i = ((y * W as i64 + x) * 4) as usize;
                     px[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
                 }
@@ -76,6 +81,25 @@ fn project(e: Effect) -> Project {
     p
 }
 
+/// The smoke on its own clear layer (track 1), flowing round the square on
+/// the track above (or, with `from` 0, its own clear layer: nothing), the
+/// square's layer moved by `moved` px.
+fn two_layers(from: f32, moved: [f32; 2]) -> Project {
+    let mut e = smoke(true);
+    e.params[fp::OBSTACLE_LAYER].value = from;
+    let mut p = project(e);
+    let mut info = p.media[0].clone();
+    info.id = MediaId(2);
+    p.media.push(info);
+    let seq = &mut p.sequences[0];
+    let mut subject = seq.tracks[0].clips[0].clone();
+    subject.effects.clear();
+    subject.transform.position = moved;
+    seq.tracks[0].clips[0].media = MediaId(2);
+    seq.tracks[1].clips.push(Clip { id: ClipId(2), ..subject });
+    p
+}
+
 fn picture(scene: &mut Scene, c: &mut Compositor, p: &Project, t: f64, frames: &mut Crossing) -> Vec<u8> {
     scene.render(p, 0, Time::from_secs_f64(t), c, frames, None).unwrap();
     c.read_output().unwrap()
@@ -90,7 +114,7 @@ fn differ(a: &[u8], b: &[u8]) -> usize {
 /// the frame jumped to, as if the object had been there all along).
 fn played_jumped_stale(device: &reelforge_render::wgpu::Device, queue: &reelforge_render::wgpu::Queue, p: &Project, end: f64) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let (mut scene, mut c) = (Scene::new(device, queue), Compositor::new(device, queue));
-    let mut frames = Crossing { frozen: None };
+    let mut frames = Crossing::default();
     let mut played = Vec::new();
     for k in 0..=(end * 25.0).round() as usize {
         played = picture(&mut scene, &mut c, p, k as f64 / 25.0, &mut frames);
@@ -98,7 +122,7 @@ fn played_jumped_stale(device: &reelforge_render::wgpu::Device, queue: &reelforg
     let (mut scene, mut c) = (Scene::new(device, queue), Compositor::new(device, queue));
     let jumped = picture(&mut scene, &mut c, p, end, &mut frames);
     let (mut scene, mut c) = (Scene::new(device, queue), Compositor::new(device, queue));
-    let stale = picture(&mut scene, &mut c, p, end, &mut Crossing { frozen: Some(Time::from_secs_f64(end)) });
+    let stale = picture(&mut scene, &mut c, p, end, &mut Crossing { frozen: Some(Time::from_secs_f64(end)), ..Crossing::default() });
     (played, jumped, stale)
 }
 
@@ -154,6 +178,39 @@ fn smoke_flows_round_a_moving_object_and_is_pushed_by_it() {
     assert!(x_moved > x_still + 3.0, "pushed right: on average {x_moved:.1} px across, {x_still:.1} without the object");
 }
 
+#[test]
+fn smoke_on_its_own_layer_flows_round_a_subject_on_the_layer_above() {
+    let Some((device, queue)) = headless_device() else { return };
+    let end: f64 = 1.0;
+    let pixels = (W * H) as usize;
+    let render = |p: &Project, frames: &mut Crossing| {
+        let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
+        let mut out = Vec::new();
+        for k in 0..=(end * 25.0).round() as usize {
+            out = picture(&mut scene, &mut c, p, k as f64 / 25.0, frames);
+        }
+        out
+    };
+    // The square moved on its own layer: as the square drawn there in one
+    // layer with the smoke flowing round its own shape.
+    let moved = [20.0, 10.0];
+    let two = render(&two_layers(1.0, moved), &mut Crossing::default());
+    let one = render(&project(smoke(true)), &mut Crossing { shift: [20, 10], ..Crossing::default() });
+    let off = differ(&two, &one);
+    assert!(off <= pixels / 200, "flowing round the layer above is as flowing round its own shape ({off} of {pixels} pixels differ)");
+    // Its own clear shape (nothing to flow round) is another thing.
+    let through = render(&two_layers(0.0, moved), &mut Crossing::default());
+    let apart = differ(&two, &through);
+    assert!(apart > pixels / 50, "the subject on the other layer pushes the smoke ({apart} of {pixels} pixels differ from flowing through)");
+    // Nothing below: as nothing to flow round.
+    let below = render(&two_layers(2.0, moved), &mut Crossing::default());
+    assert!(differ(&below, &through) <= pixels / 500, "no layer below: nothing to flow round");
+    // Jumped to, the in-between frames step it on with the other layer too.
+    let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
+    let jumped = picture(&mut scene, &mut c, &two_layers(1.0, moved), end, &mut Crossing::default());
+    let off = differ(&two, &jumped);
+    assert!(off <= pixels / 200, "jumped to, as played ({off} of {pixels} pixels differ; {apart} if it flows through)");
+}
 
 /// Jumped to `end` with a catch-up of at most `cap` frames (approximate, as
 /// the viewer does past 250),
@@ -163,7 +220,7 @@ fn jumped_then_filled_in(p: &Project, end: f64, cap: usize) -> (Vec<u8>, Vec<u8>
     let (device, queue) = headless_device().unwrap();
     let (mut scene, mut c) = (Scene::new(&device, &queue), Compositor::new(&device, &queue));
     scene.max_catch_up = Some(cap);
-    let mut frames = Crossing { frozen: None };
+    let mut frames = Crossing::default();
     let t = Time::from_secs_f64(end);
     let mut sig = scene.render(p, 0, t, &mut c, &mut frames, None).unwrap();
     let first = c.read_output().unwrap();
@@ -182,8 +239,10 @@ fn jumped_then_filled_in(p: &Project, end: f64, cap: usize) -> (Vec<u8>, Vec<u8>
 fn a_long_jump_is_filled_in_while_idle() {
     let Some((device, queue)) = headless_device() else { return };
     let pixels = (W * H) as usize;
-    for (name, e, end) in [("water", wake(), 1.2), ("smoke", smoke(true), 1.0)] {
-        let p = project(e);
+    let mut round_above = smoke(true);
+    round_above.params[fp::OBSTACLE_LAYER].value = 1.0;
+    for (name, e, end, two) in [("water", wake(), 1.2, false), ("smoke", smoke(true), 1.0, false), ("smoke round the layer above", round_above, 1.0, true)] {
+        let p = if two { two_layers(1.0, [20.0, 10.0]) } else { project(e) };
         let (played, _, _) = played_jumped_stale(&device, &queue, &p, end);
         let (first, filled, ticks) = jumped_then_filled_in(&p, end, 3);
         let rough = differ(&played, &first);

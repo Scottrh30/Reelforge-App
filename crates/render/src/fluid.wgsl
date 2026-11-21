@@ -24,6 +24,12 @@ struct Step {
     swirl: f32,
     color: vec3<f32>,
     keep: f32,
+    // From the grid's 0–1 coordinates to the obstacle picture's (rows of a
+    // homography): the identity for the layer's own shape, or the way onto
+    // another layer.
+    m0: vec4<f32>,
+    m1: vec4<f32>,
+    m2: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> st: Step;
@@ -99,8 +105,16 @@ fn obstacles(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let i = id.y * st.w + id.x;
-    let uv = (vec2<f32>(id.xy) + 0.5) / vec2<f32>(f32(st.w), f32(st.h));
-    let now = textureSampleLevel(layer_tex, layer_samp, uv, 0.0).a;
+    let uv = vec3((vec2<f32>(id.xy) + 0.5) / vec2<f32>(f32(st.w), f32(st.h)), 1.0);
+    let q = vec3(dot(st.m0.xyz, uv), dot(st.m1.xyz, uv), dot(st.m2.xyz, uv));
+    var now = 0.0;
+    if (abs(q.z) > 1e-6) {
+        let o = q.xy / q.z;
+        // Outside the other layer: nothing solid there.
+        if (q.z > 0.0 && all(o >= vec2(0.0)) && all(o <= vec2(1.0))) {
+            now = textureSampleLevel(layer_tex, layer_samp, o, 0.0).a;
+        }
+    }
     obs[i] = vec2(now, select(obs[i].x, now, st.fresh != 0u));
 }
 

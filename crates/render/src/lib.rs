@@ -1306,16 +1306,30 @@ impl Compositor {
         }
     }
 
+    /// The picture a simulation flows round: its own layer's (`own`), or the
+    /// other layer its job names (none there: nothing).
+    fn obstacle_view(&self, own: u64, job: &reelforge_core::fluid::FluidJob) -> Option<wgpu::TextureView> {
+        let key = match (job.obstacle_from, &job.source) {
+            (0, _) => own,
+            (_, Some(s)) => s.key,
+            (_, None) => return None,
+        };
+        self.layers.get(&key).filter(|t| !t.float).map(|t| t.texture.create_view(&Default::default()))
+    }
+
     /// Step the simulation `key` of `layer`'s effects (water, liquid, fluid)
     /// on to where it says, as `shadow` (a copy: see
     /// [`Self::simulation_fork`]), with the layer's picture uploaded for
     /// what's solid, drawing nothing: the picture shown stays as it is.
-    pub fn step_simulations(&mut self, layer: &LayerInput, key: u64, shadow: u64) {
+    pub fn step_simulations(&mut self, layer: &LayerInput, obstacle: Option<&LayerInput>, key: u64, shadow: u64) {
         let Some((kind, job)) = layer.effects.iter().find_map(|e| e.fluid.as_ref().filter(|j| j.key == key).map(|j| (e.kind, j))) else { return };
         let mut job = reelforge_core::fluid::FluidJob::clone(job);
         job.key = shadow;
         self.upload(layer);
-        let view = self.layers.get(&layer.key).filter(|t| !t.float).map(|t| t.texture.create_view(&Default::default()));
+        if let Some(o) = obstacle {
+            self.upload(o);
+        }
+        let view = self.obstacle_view(layer.key, &job);
         let _ = match kind {
             EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(&job, view.as_ref()),
             EffectKind::Liquid3D => self.liquid3d.step_to(&job, view.as_ref()),
@@ -1459,11 +1473,11 @@ impl Compositor {
                 }
                 if let Some(job) = &e.fluid {
                     // Stepped on to now; its picture goes in as this effect's table.
-                    let layer = self.layers.get(&l.key).filter(|t| !t.float).map(|t| (t.texture.create_view(&Default::default()), t.content_id));
+                    let layer = self.obstacle_view(l.key, job);
                     let tex = match e.kind {
-                        EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(job, layer.as_ref().map(|(v, _)| v)),
-                        EffectKind::Liquid3D => self.liquid3d.step_to(job, layer.as_ref().map(|(v, _)| v)),
-                        _ => self.fluid.step_to(job, layer.as_ref().map(|(v, _)| v)),
+                        EffectKind::Ocean | EffectKind::WaterSurface | EffectKind::Liquid => self.water.step_to(job, layer.as_ref()),
+                        EffectKind::Liquid3D => self.liquid3d.step_to(job, layer.as_ref()),
+                        _ => self.fluid.step_to(job, layer.as_ref()),
                     };
                     if let Some(tex) = tex {
                         let view = tex.create_view(&Default::default());

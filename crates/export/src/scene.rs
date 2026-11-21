@@ -171,6 +171,8 @@ struct Refine {
     /// Timeline times to step it through, and the next.
     times: Vec<Time>,
     next: usize,
+    /// Whose shape it flows round (see [`reelforge_core::fluid::FluidJob::obstacle_from`]).
+    obstacle_from: u8,
 }
 
 /// Frames filled in per tick when idle.
@@ -302,8 +304,12 @@ impl Scene {
                 let ct = Time::from_secs_f64(a + (b - a) * k as f64 / (n + 1) as f64);
                 let at = clip.timeline_start + (ct - clip.source_in);
                 let l = project.clip_layer(seq, track, clip, at, frame);
-                if let Some(g) = self.gather(project, &l, at, frame_size, fps, &scene3d, provider, 0)? {
-                    compositor.render_items(frame_size, &[DrawItem::Layer(input(&g))]);
+                if let Some(mut g) = self.gather(project, &l, at, frame_size, fps, &scene3d, provider, 0)? {
+                    let other = self.gather_obstacle(project, seq, track, job.obstacle_from, at, frame_size, fps, &scene3d, provider)?;
+                    link_obstacle(&mut g, other.as_ref(), [frame_size[0] as f32, frame_size[1] as f32]);
+                    let mut draw: Vec<DrawItem> = other.iter().map(|o| DrawItem::Layer(input(o))).collect();
+                    draw.push(DrawItem::Layer(input(&g)));
+                    compositor.render_items(frame_size, &draw);
                     drew = true;
                 }
             }
@@ -342,7 +348,7 @@ impl Scene {
                         let first = start.to_frame(s.frame_rate) + 1;
                         let last = t.to_frame(s.frame_rate);
                         let times: Vec<Time> = (first.max(0)..last).map(|k| Time::from_frame(k, s.frame_rate)).collect();
-                        self.refining = Some(Refine { at: t, key: job.key, kind: job.effect.kind, shadow, track: l.track, clip: l.clip.clone(), times, next: 0 });
+                        self.refining = Some(Refine { at: t, key: job.key, kind: job.effect.kind, shadow, track: l.track, clip: l.clip.clone(), times, next: 0, obstacle_from: job.obstacle_from });
                         break 'find;
                     }
                 }
@@ -356,8 +362,10 @@ impl Scene {
             let Some(&at) = r.times.get(r.next) else { break };
             r.next += 1;
             let l = project.clip_layer(seq, r.track, &r.clip, at, frame);
-            if let Some(g) = self.gather(project, &l, at, frame_size, fps, &scene3d, provider, 0)? {
-                compositor.step_simulations(&input(&g), r.key, r.shadow);
+            if let Some(mut g) = self.gather(project, &l, at, frame_size, fps, &scene3d, provider, 0)? {
+                let other = self.gather_obstacle(project, seq, r.track, r.obstacle_from, at, frame_size, fps, &scene3d, provider)?;
+                link_obstacle(&mut g, other.as_ref(), [frame_size[0] as f32, frame_size[1] as f32]);
+                compositor.step_simulations(&input(&g), other.as_ref().map(input).as_ref(), r.key, r.shadow);
             }
         }
         provider.wait_for_frames(was);
@@ -371,6 +379,26 @@ impl Scene {
             self.refining = Some(r);
         }
         Ok(())
+    }
+
+    /// For a fluid on `track` flowing round another layer's shape (`from`:
+    /// 1 the layer above, 2 the one below; 0 none): that layer at `at`,
+    /// gathered (see [`neighbour`]).
+    #[allow(clippy::too_many_arguments)]
+    fn gather_obstacle(&mut self, project: &Project, seq: usize, track: usize, from: u8, at: Time, frame_size: [u32; 2], fps: f64, scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider) -> Result<Option<Gathered>> {
+        if from == 0 {
+            return Ok(None);
+        }
+        let singles: Vec<Layer> = reelforge_core::multicam::layers_at(project, seq, at, None)
+            .into_iter()
+            .filter_map(|i| match i {
+                VideoItem::Single(l) if !l.clip.adjustment => Some(l),
+                _ => None,
+            })
+            .collect();
+        let tracks: Vec<usize> = singles.iter().map(|l| l.track).collect();
+        let Some(l) = neighbour(&tracks, track, from).and_then(|j| singles.get(j)) else { return Ok(None) };
+        Ok(self.gather(project, l, at, frame_size, fps, scene3d, provider, 0)?.filter(|g| !g.adjustment))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -434,6 +462,7 @@ impl Scene {
             }
             tags.resize(items.len(), tag);
         }
+        link_obstacles(&mut items, &tags, [frame_size[0] as f32, frame_size[1] as f32]);
         let items = track_mattes(items, &tags, &s.tracks);
         let mut items = items;
 
@@ -900,6 +929,80 @@ fn input(g: &Gathered) -> LayerInput<'_> {
         mesh: g.mesh.clone(),
         space: g.space.as_ref(),
     }
+}
+
+/// Of layers on `tracks`, the one on the nearest track above `track`
+/// (`from` 1) or below it (`from` 2), the first of any on that track.
+fn neighbour(tracks: &[usize], track: usize, from: u8) -> Option<usize> {
+    let pick = match from {
+        1 => tracks.iter().copied().filter(|&t| t > track).min(),
+        2 => tracks.iter().copied().filter(|&t| t < track).max(),
+        _ => None,
+    }?;
+    tracks.iter().position(|&t| t == pick)
+}
+
+/// Point each fluid in the frame that flows round another layer's shape at
+/// that layer (none there: nothing to flow round).
+fn link_obstacles(items: &mut [Item], tags: &[(usize, Option<reelforge_core::TrackMatte>)], frame: [f32; 2]) {
+    let wants = |g: &Gathered| g.effects.iter().filter_map(|e| e.fluid.as_ref()).find(|j| j.obstacles && j.obstacle_from != 0).map(|j| j.obstacle_from);
+    // Only whole layers can be shapes (not adjustments, or dissolves part way).
+    let shape = |i: &Item| matches!(i, Item::Single(g) if !g.adjustment);
+    let tracks: Vec<(usize, usize)> = items.iter().enumerate().filter(|(_, i)| shape(i)).filter_map(|(k, _)| tags.get(k).map(|t| (k, t.0))).collect();
+    let only: Vec<usize> = tracks.iter().map(|t| t.1).collect();
+    for k in 0..items.len() {
+        let (Some(Item::Single(g)), Some(tag)) = (items.get(k), tags.get(k)) else { continue };
+        let Some(from) = wants(g) else { continue };
+        let source = neighbour(&only, tag.0, from)
+            .and_then(|j| tracks.get(j))
+            .and_then(|&(j, _)| match items.get(j) {
+                Some(Item::Single(o)) => obstacle_source(g, o, frame),
+                _ => None,
+            });
+        if let Some(Item::Single(g)) = items.get_mut(k) {
+            set_obstacle(g, source);
+        }
+    }
+}
+
+/// [`link_obstacles`] for one layer, given the other one.
+fn link_obstacle(g: &mut Gathered, other: Option<&Gathered>, frame: [f32; 2]) {
+    let source = other.and_then(|o| obstacle_source(g, o, frame));
+    set_obstacle(g, source);
+}
+
+fn set_obstacle(g: &mut Gathered, source: Option<reelforge_core::fluid::ObstacleSource>) {
+    for e in &mut g.effects {
+        if let Some(job) = e.fluid.as_ref().filter(|j| j.obstacle_from != 0 && j.source != source) {
+            let mut job = reelforge_core::fluid::FluidJob::clone(job);
+            job.source = source;
+            e.fluid = Some(Arc::new(job));
+        }
+    }
+}
+
+/// How `other`'s picture lies under `fluid`'s: the homography from the
+/// fluid layer's 0–1 picture coordinates to `other`'s (both through the
+/// frame, corner pins included). 3D layers aren't linked.
+fn obstacle_source(fluid: &Gathered, other: &Gathered, frame: [f32; 2]) -> Option<reelforge_core::fluid::ObstacleSource> {
+    use reelforge_core::transform::Homography;
+    if fluid.space.is_some() || other.space.is_some() || fluid.solid.is_some() || other.solid.is_some() {
+        return None;
+    }
+    let (fs, os) = (fluid.picture.size, other.picture.size);
+    if !(fs[0] >= 1.0 && fs[1] >= 1.0 && os[0] >= 1.0 && os[1] >= 1.0) {
+        return None;
+    }
+    let to_frame = fluid.transform.layer_map(fs, frame);
+    let from_frame = other.transform.layer_map(os, frame).inverse()?;
+    let unit = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let to = unit.map(|[u, v]| {
+        let [x, y] = from_frame.apply(to_frame.apply([(u - 0.5) * fs[0], (v - 0.5) * fs[1]]));
+        [x / os[0] + 0.5, y / os[1] + 0.5]
+    });
+    let h = Homography::from_quads(&unit, &to)?;
+    let map = h.0.map(|x| x as f32);
+    map.iter().all(|x| x.is_finite()).then_some(reelforge_core::fluid::ObstacleSource { key: other.key, map })
 }
 
 /// 3D layers next to each other in the stack are drawn furthest first (2D

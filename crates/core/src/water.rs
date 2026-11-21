@@ -129,7 +129,7 @@ pub fn job(e: &Effect, t: Time, size: [f32; 2]) -> Option<FluidJob> {
     };
     let step = (t.as_secs_f64().max(0.0) * rate(e.kind)).floor().min(1e9) as usize;
     let d = if e.kind == EffectKind::Liquid3D { depth_cells(h) } else { 0 };
-    Some(FluidJob { key: key ^ 0x5741_7465, effect: e.clone(), size, w, h, step, obstacles: solids >= 0.5, d })
+    Some(FluidJob { key: key ^ 0x5741_7465, effect: e.clone(), size, w, h, step, obstacles: solids >= 0.5, d, obstacle_from: 0, source: None })
 }
 
 fn splitmix(mut x: u64) -> u64 {

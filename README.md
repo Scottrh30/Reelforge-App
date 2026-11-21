@@ -747,6 +747,12 @@ What works now:
       its way and draws it along behind, and smoke it passes over is carried with it and comes
       out round its edges instead of vanishing (its motion is how far the shape's middle moves
       a step, so it suits one moving object; a sudden jump, such as a cut, counts as none).
+      **Shape to flow round** picks whose shape: this layer's, **The layer above** or **The
+      layer below** (the nearest clip on the next video track up or down), so smoke on its own
+      layer flows round a subject on another one wherever that layer is moved, scaled, rotated
+      or corner-pinned to (its picture's own alpha is used, before its effects: a title, a
+      keyed clip with alpha, a PNG; 3D layers aren't linked, and with no layer there it flows
+      freely).
       Jump ahead and the smoke is still what playing up to there would give, as for the water
       below (the frames in between are stepped through first)
   - **Water** (**Timeline → Water** adds them ready-made: an ocean, a stormy sea at sunset, rain
