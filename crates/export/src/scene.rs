@@ -196,6 +196,8 @@ pub fn nested_zoom(scale: [f32; 2], outer: f32, size: [u32; 2]) -> f32 {
 
 /// The second frame of a blend has a key of its own (it's another layer for the compositor).
 const NEXT_FRAME_KEY: u64 = 1 << 62;
+/// Echo copies' clip ids (with the copy's number above bit 48).
+const ECHO_KEY: u64 = 1 << 61;
 
 impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
@@ -428,7 +430,10 @@ impl Scene {
                 VideoItem::Dissolve { to, .. } => (to.track, None),
             };
             match item {
-                VideoItem::Single(l) => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
+                VideoItem::Single(l) => match l.effects.iter().find(|v| v.kind == reelforge_core::EffectKind::Echo).cloned() {
+                    Some(echo) => self.gather_echoes(project, seq, &l, &echo, t, frame_size, fps, &scene3d, provider, depth, &mut items)?,
+                    None => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
+                },
                 VideoItem::Dissolve { from, to, mix, kind } => {
                     match (self.gather(project, &from, t, frame_size, fps, &scene3d, provider, depth)?, self.gather(project, &to, t, frame_size, fps, &scene3d, provider, depth)?) {
                         (Some(mut a), Some(mut b)) => {
@@ -491,6 +496,64 @@ impl Scene {
             .collect();
         compositor.retain_layers(|k| keys.contains(&k));
         Ok(signature)
+    }
+
+    /// A layer with an Echo effect: copies of it from moments before (or
+    /// after) `t`, each fainter than the last, behind it, in front of it or
+    /// blended onto it, and the layer itself. Each copy is the layer as it was
+    /// then (its picture, its transform and its other effects), read through a
+    /// decoder of its own; there are no copies from outside the clip.
+    #[allow(clippy::too_many_arguments)]
+    fn gather_echoes(&mut self, project: &Project, seq: usize, l: &Layer, echo: &EffectValues, t: Time, frame_size: [u32; 2], fps: f64, scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize, items: &mut Vec<Item>) -> Result<()> {
+        use reelforge_core::effects::echo as e;
+        let v = |i: usize| echo.values.get(i).copied().filter(|x| x.is_finite()).unwrap_or(0.0);
+        let delay = v(e::DELAY) as f64;
+        let count = (v(e::COUNT).round().max(0.0) as usize).min(e::MAX);
+        let first = (v(e::FIRST) / 100.0).clamp(0.0, 1.0);
+        let keep = 1.0 - (v(e::DECAY) / 100.0).clamp(0.0, 1.0);
+        let mode = v(e::DRAW).round() as i32;
+        let original = (v(e::ORIGINAL) / 100.0).clamp(0.0, 1.0);
+        let blend = match mode {
+            2 => BlendMode::Add,
+            3 => BlendMode::Screen,
+            4 => BlendMode::Lighten,
+            _ => l.blend,
+        };
+        let not_echo = |x: &EffectValues| x.kind != reelforge_core::EffectKind::Echo;
+        let frame = project.sequences.get(seq).map_or(Time::from_secs_f64(1.0 / fps), |s| s.frame_rate.frame_duration());
+        let c = l.clip;
+        // Each copy its own clip id, so its frames come from a decoder of its own.
+        let clips: Vec<reelforge_core::Clip> = (1..=count).map(|k| reelforge_core::Clip { id: ClipId(c.id.0 ^ ECHO_KEY ^ ((k as u64) << 48)), ..c.clone() }).collect();
+        let mut copies = Vec::new();
+        // The farthest first, so nearer copies draw over it.
+        for (k, ck) in clips.iter().enumerate().rev() {
+            let opacity = first * keep.powi(k as i32);
+            let at = t.as_secs_f64() - delay * (k + 1) as f64;
+            if opacity < 0.002 || !at.is_finite() {
+                continue;
+            }
+            let at = Time::from_secs_f64(at);
+            if at < c.timeline_start || at >= c.timeline_end() {
+                continue;
+            }
+            let mut el = project.clip_layer(seq, l.track, ck, at, frame);
+            el.effects.retain(not_echo);
+            el.transform.opacity *= opacity;
+            el.blend = blend;
+            copies.extend(self.gather_retimed(project, &el, at, frame_size, fps, scene3d, provider, depth)?);
+        }
+        let mut me = l.clone();
+        me.effects.retain(not_echo);
+        me.transform.opacity *= original;
+        let me = if original > 0.0 { self.gather_retimed(project, &me, t, frame_size, fps, scene3d, provider, depth)? } else { None };
+        if mode == 0 {
+            items.extend(copies);
+            items.extend(me);
+        } else {
+            items.extend(me);
+            items.extend(copies);
+        }
+        Ok(())
     }
 
     /// A layer, and for retimed footage between two of its frames, those two

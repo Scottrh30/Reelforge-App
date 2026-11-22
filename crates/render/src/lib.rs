@@ -1841,7 +1841,8 @@ impl Compositor {
                         cur = o1;
                     }
                     // Camera and light settings are never drawn (they're filtered out earlier).
-                    EffectKind::Camera | EffectKind::Light | EffectKind::Point | EffectKind::OpenFx => {}
+                    // (Echo is drawn as copies of the layer, by the scene.)
+                    EffectKind::Camera | EffectKind::Light | EffectKind::Point | EffectKind::OpenFx | EffectKind::Echo => {}
                     EffectKind::EnergyBlade => {
                         // A seed per blade (its place in the stack) so two blades flicker apart.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);

@@ -709,6 +709,15 @@ What works now:
     (a cut-out, a title, a logo): **Colour**, **Amount** of the edge that's lit, **Reach** out
     from it, **Thickness**, **Speed**, **Flicker**, **Glow** and **Brightness**, **Scale** of
     the wiggles; **Over the shape** lets the arcs cross it too
+  - **Echo** (Light & stylize): the layer drawn again from moments before — trails behind
+    something moving, ghosting, a stutter. **Echo time** apart (negative: from moments after,
+    so the copies lead), **Number of echoes** (up to 16), **First echo** (how strong the
+    nearest copy is) and **Each fades by**; **Draw echoes** **Behind the layer**, **In front of
+    it**, **Added** (light trails that brighten where they overlap), **Screen** or **Lighten**;
+    **Original** fades the layer itself. Each copy is the layer as it was then — its footage,
+    where it was and its other effects, so a title flying in leaves a trail too — and there are
+    no copies from before the clip starts. Each copy reads the footage on its own, so many
+    echoes of long-GOP 4K footage take more memory and time; proxies help
   - **Particles & simulation** (their own category in the browser, and **Timeline → Particles &
     simulation** for ready-made layers):
     - **Particles**: sparks, embers, fire, smoke, rain, snow, fog, dust, debris, confetti, magic
