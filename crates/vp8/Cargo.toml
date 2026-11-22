@@ -4,6 +4,7 @@ description = "Pure-Rust VP8 decoder (RFC 6386)"
 version = "0.9.0"
 edition = "2024"
 license.workspace = true
+authors.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

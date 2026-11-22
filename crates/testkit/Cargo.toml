@@ -4,6 +4,7 @@ description = "Test-only helpers: ffmpeg/ffprobe oracle discovery, fixture direc
 version = "0.9.0"
 edition = "2024"
 license.workspace = true
+authors = ["Scott Hambach", "ArtCraft Team and the FilmCraft contributors (the decoders this is adapted from)"]
 publish = false
 
 [lints.rust]

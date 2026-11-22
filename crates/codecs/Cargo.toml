@@ -4,6 +4,7 @@ description = "Reelforge's own video decoders, in Rust (MJPEG, ProRes, DNxHD/DNx
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 
 [dependencies]
 zune-jpeg = "0.5"

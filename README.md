@@ -2190,7 +2190,8 @@ their tests), so building needs nothing beyond this repo. H.264, HEVC, VP9 and A
 libvpx (BSD-3-Clause): see `THIRD-PARTY-NOTICES.txt`, which has to ship with the program and
 any copy of the source.
 
-**Reelforge's licence:** Copyright (c) 2026 Reelforge - SRH. Reelforge is licensed under
+**Reelforge's licence:** Reelforge was created by Scott Hambach. Copyright (c) 2026 Scott
+Hambach (Reelforge - SRH). Reelforge is licensed under
 either the Apache License 2.0 (`LICENSE-APACHE`) or the MIT licence (`LICENSE-MIT`), at your
 option; `NOTICE` says so and credits the code adapted from elsewhere.
 

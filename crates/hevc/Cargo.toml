@@ -4,6 +4,7 @@ description = "Clean-room pure-Rust H.265/HEVC decoder (ITU-T H.265)"
 version = "0.9.0"
 edition = "2024"
 license.workspace = true
+authors = ["Scott Hambach", "ArtCraft Team and the FilmCraft contributors (the decoders this is adapted from)"]
 
 [lints.rust]
 unsafe_code = "forbid"

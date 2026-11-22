@@ -4,6 +4,7 @@ description = "Reelforge video editor: the app (a Tauri window with a Svelte int
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 
 [[bin]]
 name = "reelforge"

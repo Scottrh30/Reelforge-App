@@ -4,6 +4,7 @@ description = "Reelforge's editor engine without a user interface: the editing m
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 
 [dependencies]
 # Reading SVG logos for 3D shapes (no text, no raster images).

@@ -115,7 +115,7 @@
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="about-title">
       <div class="top">
         <h2 id="about-title">Reelforge</h2>
-        <span class="copyright" title="Licensed under the MIT or Apache 2.0 licence, at your option (LICENSE-MIT, LICENSE-APACHE)">© 2026 Reelforge - SRH · MIT or Apache-2.0</span>
+        <span class="copyright" title="Licensed under the MIT or Apache 2.0 licence, at your option (LICENSE-MIT, LICENSE-APACHE)">Created by Scott Hambach · © 2026 Scott Hambach (Reelforge - SRH) · MIT or Apache-2.0</span>
         <nav class="tabs" aria-label="About">
           <button class:on={app.aboutTab === "diagnostics"} onclick={() => (app.aboutTab = "diagnostics")}>Diagnostics</button>
           <button class:on={app.aboutTab === "check"} onclick={() => (app.aboutTab = "check")}>Check decoders</button>

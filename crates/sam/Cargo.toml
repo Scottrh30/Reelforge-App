@@ -8,6 +8,7 @@ edition.workspace = true
 # The depth model (src/depth.rs, depth.bin) is Depth Anything V2 Small's
 # (Apache-2.0): see THIRD-PARTY-NOTICES.txt.
 license = "Apache-2.0"
+authors.workspace = true
 
 [dependencies]
 rayon = "1"

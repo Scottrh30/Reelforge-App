@@ -4,6 +4,7 @@ description = "An OpenFX image effect plugin host: loads .ofx plugins and render
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 
 [dependencies]
 libloading = "0.8"

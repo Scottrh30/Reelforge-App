@@ -6,6 +6,7 @@ members = ["crates/core", "crates/codecs", "crates/bitstream", "crates/h264", "c
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+authors = ["Scott Hambach"]
 
 [workspace.dependencies]
 reelforge-core = { path = "crates/core" }
