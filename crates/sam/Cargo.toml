@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 # The network is written from MobileSAM's (Apache-2.0) and its weights are
 # MobileSAM's: see LICENSE-MobileSAM and THIRD-PARTY-NOTICES.txt.
+# The depth model (src/depth.rs, depth.bin) is Depth Anything V2 Small's
+# (Apache-2.0): see THIRD-PARTY-NOTICES.txt.
 license = "Apache-2.0"
 
 [dependencies]

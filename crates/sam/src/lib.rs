@@ -20,6 +20,7 @@ use rayon::prelude::*;
 
 mod gpu;
 pub mod upscale;
+pub mod depth;
 pub mod faces;
 pub use gpu::GpuEncoder;
 use std::collections::HashMap;

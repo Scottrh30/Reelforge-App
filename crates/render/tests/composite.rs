@@ -2759,6 +2759,68 @@ fn face_beauty_smooths_the_face_and_nothing_else() {
     assert_eq!(px(&px_out, w, 40, 50), px(&px_out, w, 41, 50));
 }
 
+/// Depth map and Relight, from a depth folder: the left half far (0), the
+/// right half a slope rising to near (1) at the right edge.
+#[test]
+fn depth_map_and_relight_follow_the_depth() {
+    use reelforge_core::effects::{depth_map as dm, relight as rl};
+    use reelforge_core::fillstore::{write_frame, write_index, FillFrame, FillIndex};
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (80u32, 40u32);
+    let img: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 120, 120, 255]).collect();
+    let dir = std::env::temp_dir().join(format!("rf-depth-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let depth = |x: u32| if x < 40 { 0.0 } else { (x - 40) as f32 / 39.0 };
+    let table: Vec<u8> = (0..w * h).flat_map(|i| {
+        let q = (depth(i % w) * 65535.0).round() as u16;
+        [(q >> 8) as u8, (q & 255) as u8, 0, 255]
+    }).collect();
+    let file = write_frame(&dir, 0, [0, 0, w, h], &table).unwrap();
+    write_index(&dir, &FillIndex { size: [w, h], frames: vec![FillFrame { at: 0, file, rect: [0, 0, w, h], shift: None }], preview: None }).unwrap();
+    let mut n = 8100;
+    let mut draw = |c: &mut Compositor, kind: EffectKind, set: &[(usize, f32)]| {
+        let mut e = Effect::new(kind);
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        e.data = Some(reelforge_core::effects::EffectData::Depth(dir.clone()));
+        n += 1;
+        let mut l = layer(1, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        let v = e.eval_sized(Time::ZERO, None, [w as f32, h as f32]);
+        assert!(!v.is_identity());
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let lum = |p: [u8; 4]| p[0] as i32;
+    // The depth itself: black far, white near, grey between.
+    let d = draw(&mut c, EffectKind::DepthMap, &[]);
+    assert!(lum(px(&d, w, 10, 20)) < 5 && lum(px(&d, w, 79, 20)) > 245, "{:?} {:?}", px(&d, w, 10, 20), px(&d, w, 79, 20));
+    let mid = lum(px(&d, w, 60, 20));
+    assert!((100..160).contains(&mid), "halfway: {mid}");
+    let inv = draw(&mut c, EffectKind::DepthMap, &[(dm::INVERT, 1.0)]);
+    assert!(lum(px(&inv, w, 10, 20)) > 245, "inverted");
+    // Fog: the far half takes the fog colour, the nearest stays as it was.
+    let fog = draw(&mut c, EffectKind::DepthMap, &[(dm::SHOW, 1.0), (dm::FOG, 100.0), (dm::FOG_COLOR, 0xff0000 as f32)]);
+    assert!(near(px(&fog, w, 10, 20), [255, 0, 0]) && near(px(&fog, w, 79, 20), [120, 120, 120]), "{:?} {:?}", px(&fog, w, 10, 20), px(&fog, w, 79, 20));
+    // Key: only what's nearer than halfway.
+    let key = draw(&mut c, EffectKind::DepthMap, &[(dm::SHOW, 2.0), (dm::KEY, 50.0), (dm::SOFTNESS, 2.0)]);
+    assert!(lum(px(&key, w, 10, 20)) < 5 && near(px(&key, w, 75, 20), [120, 120, 120]));
+    // Relight from the left, nothing darkened: the flat far half is lit evenly (as flat), the
+    // slope facing away from the light (rising to the right, so facing left: towards it) lit more.
+    let lit = draw(&mut c, EffectKind::Relight, &[(rl::X, -50.0), (rl::Y, 50.0), (rl::HEIGHT, 0.0), (rl::DARKEN, 0.0), (rl::KIND, 1.0), (rl::COLOR, 0xffffff as f32), (rl::BUMPS, 200.0)]);
+    let (flat, slope) = (lum(px(&lit, w, 20, 20)), lum(px(&lit, w, 60, 20)));
+    assert!(flat > 120 && slope > flat + 10, "flat {flat}, slope {slope}");
+    // Lit from the right instead, the slope faces away: darker than the flat part.
+    let away = draw(&mut c, EffectKind::Relight, &[(rl::X, 150.0), (rl::Y, 50.0), (rl::HEIGHT, 0.0), (rl::DARKEN, 0.0), (rl::KIND, 1.0), (rl::COLOR, 0xffffff as f32), (rl::BUMPS, 200.0)]);
+    assert!(lum(px(&away, w, 60, 20)) < lum(px(&away, w, 20, 20)), "facing away");
+    // All darkened, no light: black.
+    let dark = draw(&mut c, EffectKind::Relight, &[(rl::INTENSITY, 0.0), (rl::DARKEN, 100.0)]);
+    assert!(lum(px(&dark, w, 40, 20)) < 5);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Sky replacement: where the sky matte is, the new sky (a gradient here)
 /// shows; the ground stays; the matte view shows the matte.
 #[test]

@@ -103,6 +103,26 @@ The Apache licence text is under "Licence texts" below (and in
 licenses/MobileSAM-LICENSE-APACHE.txt). Reelforge is not affiliated with or
 endorsed by the MobileSAM authors, Meta or Microsoft.
 
+Depth Anything V2 Small (Depth map and Relight's depth model)
+--------------------------------------------------------------
+
+Depth map and Relight work out depth with Depth Anything V2 Small: its network
+(crates/sam/src/depth.rs, written from the model's published architecture, a
+DINOv2 ViT-S/14 encoder and a DPT head) and its trained weights
+(crates/sam/depth.bin, converted to 8-bit integers with a scale per output
+channel, and half precision):
+
+    Depth Anything V2: Copyright (c) 2024 Lihe Yang, Bingyi Kang, Zilong Huang,
+    Zhen Zhao, Xiaogang Xu, Jiashi Feng, Hengshuang Zhao and the Depth
+    Anything authors. The Small model is licensed under the Apache License,
+    Version 2.0.
+    DINOv2: Copyright (c) Meta Platforms, Inc. and affiliates. Licensed under
+    the Apache License, Version 2.0.
+
+The Apache licence text is under "Licence texts" below (and in
+licenses/DepthAnythingV2-LICENSE-APACHE.txt). Reelforge is not affiliated with
+or endorsed by the Depth Anything authors, ByteDance or Meta.
+
 Real-ESRGAN (AI upscale)
 ------------------------
 

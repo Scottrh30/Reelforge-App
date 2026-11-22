@@ -87,6 +87,8 @@ pub struct EffectView {
     /// has been found in (`None`: not yet).
     pub sky_image: Option<String>,
     pub sky_frames: Option<usize>,
+    /// Depth map and Relight: frames the depth has been worked out for (`None`: not yet).
+    pub depth_frames: Option<usize>,
     pub animated: bool,
     /// Positions to drag in the Viewer (an OpenFX plugin's): the first of
     /// each one's two parameters (x, y in % of the layer, y down) and its name.
@@ -268,6 +270,10 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     Some(EffectData::Sky { image: Some(p), .. }) => Some(p.display().to_string()),
                     _ => None,
                 },
+                depth_frames: match &fx.data {
+                    Some(EffectData::Depth(d)) if reelforge_core::fillstore::exists(d) => Some(reelforge_core::fillstore::frame_count(d)),
+                    _ => None,
+                },
                 sky_frames: match &fx.data {
                     Some(EffectData::Sky { matte: Some(d), .. }) if reelforge_core::fillstore::exists(d) => Some(reelforge_core::fillstore::frame_count(d)),
                     _ => None,
@@ -287,6 +293,10 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     vec![PointView { param: 0, label: "Target".into(), relative: None, line_to: None }, PointView { param: 2, label: "Source".into(), relative: Some(0), line_to: None }]
                 } else if let Some((param, label)) = match fx.kind {
                     EffectKind::AnamorphicFlare if fx.params.get(reelforge_core::effects::streak::FROM).is_some_and(|p| p.value >= 0.5) => Some((reelforge_core::effects::streak::X, "Light")),
+                    // (centres that aren't the first two parameters)
+                    EffectKind::Starfield => Some((reelforge_core::effects::stars::X, "Centre")),
+                    EffectKind::Hud => Some((reelforge_core::effects::hud::X, "Centre")),
+                    EffectKind::HeatHaze => Some((reelforge_core::effects::haze::X, "Centre")),
                     k => match k {
                     EffectKind::Shatter => Some("Impact"),
                     EffectKind::MuzzleFlash => Some("Barrel"),
@@ -294,11 +304,9 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::Fluid | EffectKind::Liquid | EffectKind::Liquid3D => Some("Source"),
                     EffectKind::LightRays => Some("Source"),
                     EffectKind::Bulge | EffectKind::Twirl | EffectKind::Ripple | EffectKind::Mirror | EffectKind::LensDistortion => Some("Centre"),
-                    EffectKind::Hud => Some("Centre"),
+                    EffectKind::Relight => Some("Light"),
                     EffectKind::Portal => Some("Centre"),
-                    EffectKind::Starfield => Some("Centre"),
                     EffectKind::Shockwave => Some("Centre"),
-                    EffectKind::HeatHaze => Some("Centre"),
                     EffectKind::LensDirt if fx.params.get(reelforge_core::effects::dirt::LIT_BY).is_some_and(|p| p.value >= 0.5) => Some("Light"),
                     _ => None,
                     }
@@ -661,6 +669,12 @@ pub fn face_on(id: u64, index: usize, face: usize, on: bool) -> Res<()> {
         });
         e.commit_live_edit();
     })
+}
+
+/// Depth map or Relight `index` of clip `id`: work out the depth in every frame, in the background.
+#[tauri::command]
+pub fn find_depth(id: u64, index: usize) -> Res<()> {
+    ed(|e| e.start_find_depth(reelforge_core::ClipId(id), index))
 }
 
 /// Sky replacement `index` of clip `id`: find the sky in every frame, in the background.
@@ -1202,4 +1216,31 @@ fn open_dir(dir: &std::path::Path) -> Res<()> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let r = std::process::Command::new("xdg-open").arg(dir).spawn();
     r.map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every Viewer handle of a built-in effect drags an x and a y: the
+    /// parameter it names and the next one are a position's.
+    #[test]
+    fn viewer_handles_drag_positions() {
+        let e = Editor::new(None, None);
+        for kind in EffectKind::ALL {
+            if matches!(kind, EffectKind::Plugin | EffectKind::OpenFx) {
+                continue;
+            }
+            let mut c = Clip::new_plane(ClipId(9), Time::ZERO, Time::from_secs_f64(1.0), [0, 0, 0, 255]);
+            c.effects.push(Effect::new(kind));
+            for v in views(&e, &c) {
+                for p in &v.points {
+                    let specs = kind.params();
+                    let (x, y) = (specs.get(p.param).map(|s| s.name), specs.get(p.param + 1).map(|s| s.name));
+                    let pos = |n: Option<&str>, a: &str| n.is_some_and(|n| n.contains(a) || n.ends_with(&a.to_lowercase()));
+                    assert!(pos(x, "X") && pos(y, "Y"), "{kind:?} {}: {x:?} {y:?}", p.label);
+                }
+            }
+        }
+    }
 }

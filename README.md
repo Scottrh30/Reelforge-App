@@ -718,6 +718,20 @@ What works now:
     (a cut-out, a title, a logo): **Colour**, **Amount** of the edge that's lit, **Reach** out
     from it, **Thickness**, **Speed**, **Flicker**, **Glow** and **Brightness**, **Scale** of
     the wiggles; **Over the shape** lets the arcs cross it too
+  - **Depth map** and **Relight** (Light & stylize): the depth model (Depth Anything V2
+    Small, built in; Apache-2.0) works out how far away each part of the footage is — press
+    **Work out depth** on the effect; it looks at every frame in the background (every other
+    above 30 a second; a second or two a frame on the CPU), fits the depth to the picture's
+    edges and keeps its scale steady from frame to frame
+    - **Depth map** shows **The depth** (near is white; **Invert** for near black), **Fog by
+      depth** (thickening with distance, in a **Fog colour**) or **Keep what's near** (a depth
+      key: **Keep nearer than**, **Key softness**); **Nearest at** and **Farthest at** pick
+      which part of the depth range to use
+    - **Relight** adds a light after the shot, shading the footage by its shape: **A lamp**
+      (drag it in the Viewer; **Height** in front of the picture, **Reach**) or **The sun**
+      (from where the light sits, seen from the middle), its **Colour** and **Intensity**;
+      **Darken the rest** dims the original light so the new one tells, **Surface detail**
+      how strongly bumps and slopes catch it
   - **Echo** (Light & stylize): the layer drawn again from moments before — trails behind
     something moving, ghosting, a stutter. **Echo time** apart (negative: from moments after,
     so the copies lead), **Number of echoes** (up to 16), **First echo** (how strong the
@@ -2781,6 +2795,14 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   unchanged vertex shader draws the quad and the GPU interpolates texture coordinates in
   perspective. Hit testing, the gizmo, masks and the tracker overlay all go through
   `layer_map`, so they agree with what's drawn. Pin keys are a `Curve<Pin>` like any property
+- **Depth** (`sam/src/depth.rs`, `engine/src/editor/aifx.rs`): Depth Anything V2 Small (a
+  DINOv2 ViT-S/14 encoder and a DPT head, 24.8 M weights) written out in Rust on the CPU, the
+  weights packed like MobileSAM's (`sam/depth.bin`: int8 with a scale per output channel for
+  the big tensors, f16 for the rest, ~25 MB). The picture is squeezed to 518 × 518; the
+  output (relative inverse depth) is stretched back, scaled so the 2nd–98th percentiles are
+  0–1 (those eased from frame to frame by a quarter), guided-filtered on the frame's luma
+  (radius 4), and stored as 16-bit depth in a fills folder. Its test compares the network
+  with the reference (onnxruntime, float weights) on a synthetic scene.
 - **Match colour** (`core/src/colormatch.rs`, `engine/src/editor/colormatch.rs`): each look is
   measured in CIE L\*a\*b\* (D65) from up to 40 000 samples a frame: a lightness histogram, and
   the mean and spread of a\*/b\* in shadows, midtones and highlights (soft bands centred on L\*

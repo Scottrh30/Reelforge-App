@@ -930,3 +930,85 @@ fn fs_liquify(in: VsOut) -> @location(0) vec4<f32> {
     }
     return out;
 }
+
+// Depth (Depth map and Relight): the frame's depth from the table, 16 bits
+// in red and green, 1 nearest (see core's EffectData::Depth).
+fn dp_load(c: vec2<i32>) -> f32 {
+    let dims = vec2<i32>(textureDimensions(second));
+    let b = round(textureLoad(second, clamp(c, vec2(0), dims - vec2(1)), 0) * 255.0);
+    return (b.x * 256.0 + b.y) / 65535.0;
+}
+
+// The depth at layer uv (blended between the table's samples).
+fn dp_at(uv: vec2<f32>) -> f32 {
+    let dims = vec2<f32>(textureDimensions(second));
+    let g = uv * dims - 0.5;
+    let g0 = floor(g);
+    let f = g - g0;
+    let i = vec2<i32>(g0);
+    return mix(mix(dp_load(i), dp_load(i + vec2(1, 0)), f.x), mix(dp_load(i + vec2(0, 1)), dp_load(i + vec2(1, 1)), f.x), f.y);
+}
+
+fn dp_rgb(v: f32) -> vec3<f32> {
+    let c = u32(clamp(round(v), 0.0, 16777215.0));
+    let g = vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0;
+    return select(pow((g + 0.055) / 1.055, vec3(2.4)), g / 12.92, g <= vec3(0.04045));
+}
+
+@fragment
+fn fs_depth_map(in: VsOut) -> @location(0) vec4<f32> {
+    let orig = textureSample(src, src_sampler, to_tex(in.uv));
+    // Depth from Farthest at (0) to Nearest at (1).
+    let span = fx.p0.y / 100.0 - fx.p0.z / 100.0;
+    let safe = select(span, select(-0.001, 0.001, span >= 0.0), abs(span) < 0.001);
+    var d = clamp((dp_at(in.uv) - fx.p0.z / 100.0) / safe, 0.0, 1.0);
+    if (fx.p0.w > 0.5) {
+        d = 1.0 - d;
+    }
+    let mode = u32(round(fx.p0.x));
+    if (mode == 1u) {
+        // Fog: thicker the farther away.
+        let fog = clamp(fx.p1.y / 100.0, 0.0, 1.0) * (1.0 - d);
+        return vec4(mix(orig.rgb, dp_rgb(fx.p1.x) * orig.a, fog), orig.a);
+    }
+    if (mode == 2u) {
+        let soft = max(fx.p1.w / 100.0, 0.001);
+        let key = fx.p1.z / 100.0;
+        return orig * smoothstep(key - soft * 0.5, key + soft * 0.5, d);
+    }
+    // The depth as a grey picture (even steps to the eye).
+    return vec4(vec3(pow(d, 2.2)) * orig.a, orig.a);
+}
+
+@fragment
+fn fs_relight(in: VsOut) -> @location(0) vec4<f32> {
+    let orig = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let d = dp_at(in.uv);
+    // The surface's slope from the depth either side (a texel of the table away).
+    let e = 1.0 / vec2<f32>(textureDimensions(second));
+    let dx = dp_at(in.uv + vec2(e.x, 0.0)) - dp_at(in.uv - vec2(e.x, 0.0));
+    let dy = dp_at(in.uv + vec2(0.0, e.y)) - dp_at(in.uv - vec2(0.0, e.y));
+    let k = fx.p1.w / 100.0 * 30.0;
+    let n = normalize(vec3(-dx * k, -dy * k, 1.0));
+    // Depth in pixels: the nearest things half the picture's width in front of the farthest.
+    let deep = max(size.x, size.y) * 0.5;
+    let at = vec3(p, d * deep);
+    var dir: vec3<f32>;
+    var fall = 1.0;
+    let lp = fx.p0.xy / 100.0;
+    if (u32(round(fx.p2.x)) == 1u) {
+        // The sun: the same direction everywhere, from where the light sits seen from the middle.
+        dir = normalize(vec3((lp - 0.5) * 2.0, fx.p0.z / 100.0 + 0.05));
+    } else {
+        let l = vec3(lp * size, (1.0 + fx.p0.z / 100.0) * deep);
+        let v = l - at;
+        dir = normalize(v);
+        let reach = max(fx.p1.z / 100.0 * max(size.x, size.y), 1.0);
+        fall = 1.0 / (1.0 + dot(v.xy, v.xy) / (reach * reach));
+    }
+    let lit = max(dot(n, dir), 0.0) * fall * fx.p1.x / 100.0;
+    let keep = 1.0 - clamp(fx.p1.y / 100.0, 0.0, 1.0);
+    return vec4(orig.rgb * keep + orig.rgb * dp_rgb(fx.p0.w) * lit, orig.a);
+}

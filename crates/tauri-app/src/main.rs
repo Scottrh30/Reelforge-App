@@ -1998,6 +1998,7 @@ fn main() {
             fx::find_faces,
             fx::face_on,
             fx::find_sky,
+            fx::find_depth,
             fx::sky_image,
             fx::paint_stroke,
             fx::paint_clear,

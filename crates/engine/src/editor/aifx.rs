@@ -24,6 +24,8 @@ pub enum AiResult {
     Faces(Vec<FaceTrack>),
     /// The sky's folder.
     Sky(PathBuf),
+    /// The depth's folder.
+    Depth(PathBuf),
 }
 
 impl Editor {
@@ -170,6 +172,68 @@ impl Editor {
         self.status = if sam::gpu().is_some() { "Finding the sky…" } else { "Finding the sky (on the CPU: a second or two a frame)…" }.into();
     }
 
+    /// Depth map or Relight `index` of clip `id`: work out the footage's depth
+    /// in every frame (every other above 30 a second), in the background.
+    /// Each frame's depth is fitted to the picture's edges and scaled so the
+    /// nearest and farthest things seen are 1 and 0, steadied from frame to
+    /// frame so it doesn't flicker.
+    pub fn start_find_depth(&mut self, id: ClipId, index: usize) {
+        let kind = match self.seq().find_clip(id).and_then(|(_, c)| c.effects.get(index)).map(|f| f.kind) {
+            Some(k @ (EffectKind::DepthMap | EffectKind::Relight)) => k,
+            _ => return,
+        };
+        let every = if self.seq().frame_rate.fps() > 31.0 { 2 } else { 1 };
+        let Some((times, media)) = self.ai_frames(id, index, kind, every) else { return };
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let dir: PathBuf = reelforge_media::proxy::media_cache_dir().join("fills").join(format!("depth-{}-{index}-{stamp:x}", id.0));
+        let owner = self.project_path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+        let (tx, rx) = unbounded();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stop = cancel.clone();
+        std::thread::Builder::new()
+            .name("work out depth".into())
+            .spawn(move || {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Option<AiResult>, String> {
+                    std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't make {}: {e}", dir.display()))?;
+                    let _ = std::fs::write(dir.join("owner.txt"), &owner);
+                    let mut src = reelforge_media::FrameSource::open(&media.path, Some((SIDE, SIDE))).map_err(|e| format!("{e:#}"))?;
+                    let mut index = FillIndex::default();
+                    let mut range: Option<(f32, f32)> = None;
+                    for (i, (at, media_t)) in times.iter().enumerate() {
+                        if stop.load(Ordering::Relaxed) {
+                            return Ok(None);
+                        }
+                        let f = src.frame_at_blocking(*media_t, Duration::from_secs(20)).ok_or_else(|| format!("no frame at {media_t}"))?;
+                        let (w, h) = (f.width as usize, f.height as usize);
+                        index.size = [w as u32, h as u32];
+                        let rgba = f.pixels.to_rgba();
+                        let raw = sam::depth::depth(&rgba, w, h).ok_or("the depth model didn't load")?;
+                        let d = depth_to_frame(&raw, &rgba, w, h, &mut range);
+                        let bytes: Vec<u8> = d
+                            .iter()
+                            .flat_map(|&v| {
+                                let q = (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
+                                [(q >> 8) as u8, (q & 255) as u8, 0, 255]
+                            })
+                            .collect();
+                        let file = fillstore::write_frame(&dir, i, [0, 0, w as u32, h as u32], &bytes).map_err(|e| e.to_string())?;
+                        index.frames.push(FillFrame { at: at.0, file, rect: [0, 0, w as u32, h as u32], shift: None });
+                        let _ = tx.send(TrackMsg::Progress((i + 1) as f32 / times.len() as f32));
+                    }
+                    fillstore::write_index(&dir, &index).map_err(|e| e.to_string())?;
+                    Ok(Some(AiResult::Depth(dir.clone())))
+                }))
+                .unwrap_or_else(|_| Err("the depth model failed".into()));
+                if !matches!(r, Ok(Some(_))) {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
+                let _ = tx.send(TrackMsg::AiDone(r));
+            })
+            .map_err(|e| log::error!("couldn't start the work out depth thread: {e}")).ok();
+        self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: Some(index), live: Vec::new(), live_shape: None });
+        self.status = "Working out the depth (on the CPU: a second or two a frame)…".into();
+    }
+
     pub(super) fn finish_ai(&mut self, job: &TrackJob, r: Result<Option<AiResult>, String>) {
         let Some(index) = job.ai else { return };
         let Some(c) = self.project.sequences.get(job.seq).and_then(|s| s.find_clip(job.clip)).map(|(_, c)| c.clone()) else { return };
@@ -189,6 +253,11 @@ impl Editor {
                     n => format!("Found {n} faces, followed through the clip: untick any you don't want touched"),
                 };
             }
+            Ok(Some(AiResult::Depth(dir))) => {
+                fx.data = Some(EffectData::Depth(dir.clone()));
+                self.execute(Box::new(SetClipVisual { seq: job.seq, id: job.clip, old, new }));
+                self.status = format!("Worked out the depth in {} frames", fillstore::frame_count(&dir));
+            }
             Ok(Some(AiResult::Sky(dir))) => {
                 let image = match &fx.data {
                     Some(EffectData::Sky { image, .. }) => image.clone(),
@@ -199,6 +268,45 @@ impl Editor {
                 self.status = format!("Found the sky in {} frames", fillstore::frame_count(&dir));
             }
         }
+    }
+}
+
+/// The depth model's square map (`raw`, bigger nearer) over the frame
+/// (`w` × `h`): stretched back, its edges fitted to the picture's, and scaled
+/// so the 2nd and 98th percentiles are 0 and 1. `range` carries those from
+/// frame to frame, eased, so the scale doesn't jump about.
+fn depth_to_frame(raw: &[f32], rgba: &[u8], w: usize, h: usize, range: &mut Option<(f32, f32)>) -> Vec<f32> {
+    let side = sam::depth::SIDE;
+    let at = |x: usize, y: usize| raw.get(y.min(side - 1) * side + x.min(side - 1)).copied().unwrap_or(0.0);
+    let mut d = Vec::with_capacity(w * h);
+    for y in 0..h {
+        let sy = ((y as f32 + 0.5) * side as f32 / h as f32 - 0.5).max(0.0);
+        let (y0, fy) = (sy.floor() as usize, sy.fract());
+        for x in 0..w {
+            let sx = ((x as f32 + 0.5) * side as f32 / w as f32 - 0.5).max(0.0);
+            let (x0, fx) = (sx.floor() as usize, sx.fract());
+            let top = at(x0, y0) * (1.0 - fx) + at(x0 + 1, y0) * fx;
+            let bottom = at(x0, y0 + 1) * (1.0 - fx) + at(x0 + 1, y0 + 1) * fx;
+            d.push(top * (1.0 - fy) + bottom * fy);
+        }
+    }
+    let mut sorted: Vec<f32> = d.iter().copied().filter(|v| v.is_finite()).collect();
+    sorted.sort_by(f32::total_cmp);
+    let pick = |q: f32| sorted.get(((sorted.len().saturating_sub(1)) as f32 * q) as usize).copied().unwrap_or(0.0);
+    let (lo, hi) = (pick(0.02), pick(0.98));
+    let (lo, hi) = match *range {
+        Some((a, b)) => (a + (lo - a) * 0.25, b + (hi - b) * 0.25),
+        None => (lo, hi),
+    };
+    *range = Some((lo, hi));
+    let span = (hi - lo).max(1e-6);
+    let n: Vec<f32> = d.iter().map(|v| ((v - lo) / span).clamp(0.0, 1.0)).collect();
+    // Fitted to the picture's edges (a few pixels' radius).
+    let luma: Vec<f32> = reelforge_core::track::luma_of_rgba(rgba).iter().map(|v| v / 255.0).collect();
+    if luma.len() == w * h && w > 8 && h > 8 {
+        guided(&luma, &n, w, h, 4, 1e-3)
+    } else {
+        n
     }
 }
 
@@ -362,6 +470,41 @@ mod job_tests {
         let (t, _, _) = fillstore::load_moved(m, Time::ZERO).unwrap();
         let a = |x: usize, y: usize| t.rgba[(y * t.width as usize + x) * 4 + 3];
         assert!(a(80, 10) > 200 && a(80, 75) < 50, "{} {}", a(80, 10), a(80, 75));
+        assert!(!fx.eval(Time::ZERO).is_identity());
+        let _ = std::fs::remove_dir_all(m);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Sky over ground going away: the depth is worked out for each frame,
+    /// the ground nearer than the sky, and the effect then draws.
+    #[test]
+    fn the_depth_is_worked_out() {
+        let dir = std::env::temp_dir().join(format!("rf-engine-depth-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-filter_complex", "color=c=0x8cbcec:s=160x90:r=10:d=0.2[sky];color=c=0x4a5a2a:s=160x40:r=10:d=0.2,noise=alls=60:allf=t[ground];[sky][ground]overlay=x=0:y=50", "-pix_fmt", "yuv420p"])
+            .arg(&f)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return;
+        }
+        let mut e = Editor::new(None, None);
+        let id = clip_of(&mut e, &f, 0.2, EffectKind::Relight);
+        e.start_find_depth(id, 0);
+        wait(&mut e);
+        let fx = e.seq().find_clip(id).unwrap().1.effects[0].clone();
+        let Some(EffectData::Depth(m)) = &fx.data else { panic!("{}", e.status) };
+        let fps = e.seq().frame_rate.fps();
+        let frames = (0.2 * fps).round() as usize;
+        assert_eq!(fillstore::frame_count(m), if fps > 31.0 { frames.div_ceil(2) } else { frames }, "{}", e.status);
+        let (t, _) = fillstore::load(m, Time::ZERO).unwrap();
+        let d = |x: usize, y: usize| {
+            let i = (y * t.width as usize + x) * 4;
+            (t.rgba[i] as u32) << 8 | t.rgba[i + 1] as u32
+        };
+        assert!(d(80, 80) > d(80, 10) + 10_000, "the ground nearer than the sky: {} {}", d(80, 80), d(80, 10));
         assert!(!fx.eval(Time::ZERO).is_identity());
         let _ = std::fs::remove_dir_all(m);
         std::fs::remove_dir_all(&dir).unwrap();

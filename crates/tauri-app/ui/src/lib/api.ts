@@ -591,7 +591,7 @@ export type ControlValue = string | number | [number, number];
 export type ControlTarget = "Text" | "TextColour" | "Opacity" | "Position" | { Param: { effect: number; param: number } };
 export type ViewMode = "Active" | "Front" | "Top" | "Left" | "Custom";
 export type CameraTool = "orbit" | "pan" | "dolly";
-export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Ocean" | "WaterSurface" | "Liquid" | "Liquid3D" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace" | "LightRays" | "AnamorphicFlare" | "LensDirt" | "NeonPath" | "HslQualifier" | "HueCurves" | "Bulge" | "Twirl" | "Ripple" | "WaveWarp" | "PolarCoordinates" | "Mirror" | "LensDistortion" | "AudioSpectrum" | "FilmLook" | "FilmDamage" | "AnalogueDamage" | "Abstraction" | "PrismBlur" | "TiltShift" | "Scanlines" | "Echo" | "Liquify" | "ElectricArcs" | "LightSweep" | "Hud" | "Portal" | "Hologram" | "Starfield" | "Shockwave" | "HeatHaze" | "TurbulentDisplace";
+export type EffectKind = "ColorCorrect" | "Blur" | "ChromaKey" | "LumaKey" | "DifferenceKey" | "KeyCleaner" | "MatteChoker" | "RefineMatte" | "Vignette" | "Levels" | "ColorWheels" | "Curves" | "Sharpen" | "Glow" | "DropShadow" | "Lut" | "Plugin" | "OpenFx" | "EnergyBlade" | "Particles" | "LensFlare" | "CameraShake" | "ChromaticAberration" | "FilmGrain" | "Glitch" | "LightLeaks" | "NeonEdges" | "Halftone" | "Crt" | "WireRemoval" | "Shatter" | "MuzzleFlash" | "BulletHit" | "Fluid" | "Ocean" | "WaterSurface" | "Liquid" | "Liquid3D" | "Disintegrate" | "FractalNoise" | "Lightning" | "PatchReplacer" | "ObjectRemoval" | "Paint" | "FaceBeauty" | "SkyReplace" | "LightRays" | "AnamorphicFlare" | "LensDirt" | "NeonPath" | "HslQualifier" | "HueCurves" | "Bulge" | "Twirl" | "Ripple" | "WaveWarp" | "PolarCoordinates" | "Mirror" | "LensDistortion" | "AudioSpectrum" | "FilmLook" | "FilmDamage" | "AnalogueDamage" | "Abstraction" | "PrismBlur" | "TiltShift" | "Scanlines" | "Echo" | "Liquify" | "DepthMap" | "Relight" | "ElectricArcs" | "LightSweep" | "Hud" | "Portal" | "Hologram" | "Starfield" | "Shockwave" | "HeatHaze" | "TurbulentDisplace";
 
 /// The Hue curves effect's curves (points x, y in 0–1; y 0.5 is no change).
 export interface HueCurves {
@@ -654,6 +654,8 @@ export interface EffectView {
   /// Sky replacement: the new sky's picture, and frames the sky was found in (null: not yet).
   sky_image: string | null;
   sky_frames: number | null;
+  /// Depth map and Relight: frames the depth was worked out for (null: not yet).
+  depth_frames: number | null;
   animated: boolean;
   /// Positions to drag in the Viewer (an OpenFX plugin's): x at `param`, y at `param + 1`.
   points: { param: number; label: string; relative: number | null; line_to: number | null }[];
@@ -1182,6 +1184,7 @@ export const api = {
   findFaces: (id: number, index: number) => invoke("find_faces", { id, index }),
   faceOn: (id: number, index: number, face: number, on: boolean) => invoke("face_on", { id, index, face, on }),
   findSky: (id: number, index: number) => invoke("find_sky", { id, index }),
+  findDepth: (id: number, index: number) => invoke("find_depth", { id, index }),
   skyImage: (id: number, index: number) => invoke("sky_image", { id, index }),
   camtrackStart: (id: number, fov: number | null, tripod: boolean) => invoke("camtrack_start", { id, fov, tripod }),
   camtrackMake: (id: number, what: CamMake, picked: number[]) => invoke("camtrack_make", { id, what, picked }),

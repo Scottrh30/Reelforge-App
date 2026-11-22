@@ -117,6 +117,10 @@ pub enum EffectKind {
     Echo,
     /// The picture pushed, twirled, pinched and swelled with a brush in the Viewer.
     Liquify,
+    /// The depth of the footage (worked out by the depth model): shown, as fog, or as a key.
+    DepthMap,
+    /// A light added to footage after it was shot, shading it by its depth.
+    Relight,
     ElectricArcs,
     LightSweep,
     Hud,
@@ -277,6 +281,9 @@ pub enum EffectData {
     Paint(Vec<crate::paint::PaintStroke>),
     /// Liquify's strokes (see `crate::liquify`).
     Liquify(Vec<crate::liquify::LiquifyStroke>),
+    /// Depth map and Relight: the footage's depth in each frame (a folder, see
+    /// `crate::fillstore`; red and green hold it, 16 bits, bigger nearer).
+    Depth(PathBuf),
     /// Face beauty's faces, followed through the clip.
     Faces(Vec<crate::faces::FaceTrack>),
     /// Sky replacement: the new sky (a picture), and the sky found in each
@@ -1320,6 +1327,29 @@ pub mod liquify_params {
     pub const AMOUNT: usize = 3;
     pub const EDGES: usize = 4;
     pub const MESH: usize = 5;
+}
+/// Depth map's parameters.
+pub mod depth_map {
+    pub const SHOW: usize = 0;
+    pub const NEAR: usize = 1;
+    pub const FAR: usize = 2;
+    pub const INVERT: usize = 3;
+    pub const FOG_COLOR: usize = 4;
+    pub const FOG: usize = 5;
+    pub const KEY: usize = 6;
+    pub const SOFTNESS: usize = 7;
+}
+/// Relight's parameters (the light's position in % of the layer).
+pub mod relight {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const HEIGHT: usize = 2;
+    pub const COLOR: usize = 3;
+    pub const INTENSITY: usize = 4;
+    pub const DARKEN: usize = 5;
+    pub const REACH: usize = 6;
+    pub const BUMPS: usize = 7;
+    pub const KIND: usize = 8;
 }
 pub mod ripple {
     pub const X: usize = 0;
@@ -2397,6 +2427,27 @@ const LIQUIFY: [ParamSpec; 6] = [
     choice("Edges", &["Transparent", "Stretch"]),
     ParamSpec { name: "Show mesh", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
 ];
+const DEPTH_MAP: [ParamSpec; 8] = [
+    choice("Show", &["The depth (near is white)", "Fog by depth", "Keep what's near (depth key)"]),
+    spec("Nearest at", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Farthest at", 0.0, 0.0, 100.0, " %", 0.5),
+    ParamSpec { name: "Invert (near is black)", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    color("Fog colour", 0xc9d2dc),
+    spec("Fog", 80.0, 0.0, 100.0, " %", 0.5),
+    spec("Keep nearer than", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Key softness", 10.0, 0.0, 100.0, " %", 0.5),
+];
+const RELIGHT: [ParamSpec; 9] = [
+    spec("Light X", 30.0, -100.0, 200.0, " %", 0.2),
+    spec("Light Y", 30.0, -100.0, 200.0, " %", 0.2),
+    spec("Height", 40.0, 0.0, 400.0, " %", 0.5),
+    color("Colour", 0xffd9a8),
+    spec("Intensity", 100.0, 0.0, 1000.0, " %", 0.5),
+    spec("Darken the rest", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Reach", 60.0, 1.0, 500.0, " %", 0.5),
+    spec("Surface detail", 50.0, 0.0, 400.0, " %", 0.5),
+    choice("Light", &["A lamp (from a point)", "The sun (from a direction)"]),
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -2606,7 +2657,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 76] = [
+    pub const ALL: [EffectKind; 78] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -2674,6 +2725,8 @@ impl EffectKind {
         EffectKind::Scanlines,
         EffectKind::Echo,
         EffectKind::Liquify,
+        EffectKind::DepthMap,
+        EffectKind::Relight,
         EffectKind::ElectricArcs,
         EffectKind::LightSweep,
         EffectKind::Hud,
@@ -2770,6 +2823,8 @@ impl EffectKind {
             EffectKind::Hud => "HUD element",
             EffectKind::LightSweep => "Light sweep",
             EffectKind::ElectricArcs => "Electric arcs",
+            EffectKind::DepthMap => "Depth map",
+            EffectKind::Relight => "Relight",
             EffectKind::Liquify => "Liquify",
             EffectKind::Echo => "Echo",
             EffectKind::Scanlines => "Scanlines",
@@ -2820,6 +2875,7 @@ impl EffectKind {
             EffectKind::ElectricArcs => EffectCategory::Generate,
             EffectKind::Echo => EffectCategory::Stylize,
             EffectKind::Liquify => EffectCategory::Distort,
+            EffectKind::DepthMap | EffectKind::Relight => EffectCategory::Stylize,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -2866,6 +2922,8 @@ impl EffectKind {
             EffectKind::Hud => "Sci-fi screen graphics drawn over the picture: a targeting reticle, a radar sweep, rings of ticks turning at different speeds, a readout of moving bars, or corner brackets. Drag it in the Viewer, keyframe Draw on to bring it in. Add a Glow for the lit look.",
             EffectKind::LightSweep => "A sheen of light passing over a title or logo, like light catching chrome or glass: its angle, width and softness, when it passes and how long it takes (or keyframe Position), and whether it lights only the shape, only its bright parts, or everything.",
             EffectKind::ElectricArcs => "Crackling electricity crawling over the edges of the layer’s shape — a keyed person, a title, a logo — and jumping off them: thin, branching, flickering arcs with a glow, in the colour you choose.",
+            EffectKind::DepthMap => "How far away each part of the footage is, worked out by the depth model (Work out depth): shown as a picture (near is white), as fog that thickens with distance, or as a key that keeps what's near",
+            EffectKind::Relight => "A light added after the shot: the depth model works out the footage's shape (Work out depth), and the light shades it, brighter where surfaces face it and nearer to it",
             EffectKind::Liquify => "Push, twirl, pinch and swell the picture with a brush in the Viewer",
             EffectKind::Echo => "Copies of the layer from a moment before, fading behind it: trails, ghosting and stutter",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
@@ -2983,6 +3041,8 @@ impl EffectKind {
             EffectKind::ElectricArcs => &ELECTRICARCS,
             EffectKind::Echo => &ECHO,
             EffectKind::Liquify => &LIQUIFY,
+            EffectKind::DepthMap => &DEPTH_MAP,
+            EffectKind::Relight => &RELIGHT,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -3165,6 +3225,8 @@ impl EffectValues {
             EffectKind::Hud => v[hud::OPACITY] == 0.0 || v[hud::DRAW_ON] == 0.0,
             EffectKind::LightSweep => v[sweep::BRIGHTNESS] == 0.0,
             EffectKind::ElectricArcs => v[arcs::AMOUNT] == 0.0 || v[arcs::BRIGHTNESS] == 0.0,
+            EffectKind::DepthMap => self.table.is_none(),
+            EffectKind::Relight => self.table.is_none() || (v[relight::INTENSITY] == 0.0 && v[relight::DARKEN] == 0.0),
             EffectKind::Liquify => self.table.is_none() || (v[liquify_params::AMOUNT] == 0.0 && v[liquify_params::MESH] == 0.0),
             EffectKind::Echo => v[echo::COUNT] < 0.5 || v[echo::FIRST] == 0.0 || v[echo::DELAY] == 0.0,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
@@ -3395,6 +3457,11 @@ impl Effect {
         let particles = (self.kind == EffectKind::Particles).then(|| Arc::new(crate::particles::simulate(self, t)));
         let (mut table, mut gpu, mut table2) = (self.table(), [0.0; 4], None);
         match (&self.data, self.kind) {
+            (Some(EffectData::Depth(dir)), EffectKind::DepthMap | EffectKind::Relight) => {
+                if let Some((tb, _)) = crate::fillstore::load(dir, t) {
+                    table = Some(tb);
+                }
+            }
             (Some(EffectData::Fill(dir)), EffectKind::ObjectRemoval) => {
                 if let Some((tb, place)) = crate::fillstore::load(dir, t) {
                     (table, gpu) = (Some(tb), place);
@@ -3523,7 +3590,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
                 // Nothing has been born yet at the start, but soon is.
