@@ -621,7 +621,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2152,6 +2152,8 @@ impl Compositor {
                     | EffectKind::CustomFlare
                     | EffectKind::ForceField
                     | EffectKind::Teleport
+                    | EffectKind::BlasterFire
+                    | EffectKind::BloodSpatter
                     | EffectKind::Scanlines => {
                         // A number of its own (its place in the stack), the time and the layer's size.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
@@ -2186,6 +2188,8 @@ impl Compositor {
                             EffectKind::PrismBlur => "fs_prism",
                             EffectKind::TiltShift => "fs_tilt_shift",
                             EffectKind::Scanlines => "fs_scanlines",
+                            EffectKind::BloodSpatter => "fs_blood",
+                            EffectKind::BlasterFire => "fs_blaster",
                             EffectKind::Teleport => "fs_teleport",
                             EffectKind::ForceField => "fs_force_field",
                             EffectKind::CustomFlare => "fs_custom_flare",

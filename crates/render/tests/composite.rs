@@ -2759,6 +2759,48 @@ fn face_beauty_smooths_the_face_and_nothing_else() {
     assert_eq!(px(&px_out, w, 40, 50), px(&px_out, w, 41, 50));
 }
 
+/// Blaster fire: nothing before it fires, a bolt on its way between gun and
+/// target, a glowing scorch at the target after; blood spatter: nothing before
+/// the hit, red round the hit after, the far side untouched.
+#[test]
+fn blaster_bolts_fly_and_blood_lands() {
+    use reelforge_core::effects::{blaster as bl, blood as bd};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let black: Vec<u8> = (0..w * h).flat_map(|_| [0u8, 0, 0, 255]).collect();
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [150u8, 150, 150, 255]).collect();
+    let mut n = 9200;
+    let mut draw = |c: &mut Compositor, img: &[u8], kind: EffectKind, set: &[(usize, f32)], t: f32| {
+        n += 1;
+        let mut v = fx(kind, set);
+        v.time = t;
+        let mut l = layer(1, img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let lum = |p: [u8; 4]| p[0] as i32 + p[1] as i32 + p[2] as i32;
+    // One shot across the middle (gun at 10 %, target at 90 %: 128 px), 200 px/s, fired at 1 s.
+    let shot = [(bl::FROM_Y, 50.0), (bl::TO_Y, 50.0), (bl::FROM_X, 10.0), (bl::TO_X, 90.0), (bl::SHOTS, 1.0), (bl::FIRE_AT, 1.0), (bl::SPEED, 200.0), (bl::LENGTH, 20.0), (bl::SPREAD, 0.0), (bl::GLOW, 4.0)];
+    let before = draw(&mut c, &black, EffectKind::BlasterFire, &shot, 0.5);
+    assert!((0..w).all(|x| lum(px(&before, w, x, 45)) < 5), "nothing before it fires");
+    // At 1.3 s its head is 60 px from the gun (x 76), its tail at 56.
+    let flying = draw(&mut c, &black, EffectKind::BlasterFire, &shot, 1.3);
+    assert!(lum(px(&flying, w, 70, 45)) > 400, "the bolt: {:?}", px(&flying, w, 70, 45));
+    assert!(lum(px(&flying, w, 100, 45)) < 30 && lum(px(&flying, w, 70, 30)) < 30, "only the bolt");
+    let after = draw(&mut c, &black, EffectKind::BlasterFire, &shot, 2.0);
+    assert!(lum(px(&after, w, 144, 45)) > 100 && lum(px(&after, w, 70, 45)) < 30, "a scorch at the target, the bolt gone");
+    // Blood at 1 s, flung right from the middle.
+    let none = draw(&mut c, &grey, EffectKind::BloodSpatter, &[(bd::AT, 1.0)], 0.5);
+    assert_eq!(px(&none, w, 80, 40), [150, 150, 150, 255], "nothing before the hit");
+    let hit = draw(&mut c, &grey, EffectKind::BloodSpatter, &[(bd::AT, 1.0), (bd::SHINE, 0.0)], 2.0);
+    let at = px(&hit, w, 80, 40);
+    assert!(at[0] as i32 > at[1] as i32 + 40 && at[1] < 60, "red at the hit: {at:?}");
+    let reddened = (80..160).flat_map(|x| (0..h).map(move |y| (x, y))).filter(|&(x, y)| px(&hit, w, x, y)[1] < 100).count();
+    let behind = (0..60).flat_map(|x| (0..h).map(move |y| (x, y))).filter(|&(x, y)| px(&hit, w, x, y)[1] < 100).count();
+    assert!(reddened > 100 && behind < reddened / 5, "flung forward: {reddened} ahead, {behind} behind");
+}
+
 /// Sci-fi pack 2: the force field's rim glows and the world outside is left
 /// alone; a teleport brings a layer in over its time (and takes it out); the
 /// sparkle trail lights the head's path and nowhere else.

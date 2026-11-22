@@ -879,6 +879,16 @@ What works now:
       of dust (or smoke off metal) blowing out and settling, and the mark it leaves on **Wall**,
       **Concrete** (with cracks), **Metal** (a torn bright rim and scorch), **Glass** (a star of
       cracks and rings) or **Wood**
+    - **Blaster fire**: blaster bolts that fire on their own from a **Gun** to a **Target**
+      (drag both in the Viewer) — from **Fire at**, so many **Shots**, one **Every** so many
+      seconds, at a **Speed**, **Bolt length** and **Thickness**, in a **Colour** with a **White
+      core** and **Glow**, each turned a little at random (**Spread**), with **Muzzle** and
+      **Impact flashes** and **Scorch marks** that glow and fade at the target. (The Neon FX
+      pack's Laser Blast is the hand-keyframed one, with sparks and waves)
+    - **Blood spatter**: at **At**, drops flung from the **Hit** (drag it in the Viewer) in a
+      **Direction** and **Spread**, landing round it as splats with tails — bigger near, smaller
+      far (**Drop size**, **Reach**, **Amount**) — a splash at the hit itself, a **Shine** on the
+      drops, and **Run down** for drops running down after they land
     - **Disintegrate** (an effect, or **Disintegrate the selected layer**, starting at the
       playhead): the layer breaks up into particles of its own colours over time. A front sweeps
       across it in the **Direction** you choose (0° left to right, 90° bottom to top), from

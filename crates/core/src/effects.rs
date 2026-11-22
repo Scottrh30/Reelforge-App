@@ -113,6 +113,8 @@ pub enum EffectKind {
     TiltShift,
     /// Lines across the picture as on a screen.
     Scanlines,
+    BloodSpatter,
+    BlasterFire,
     Teleport,
     ForceField,
     CustomFlare,
@@ -1561,6 +1563,40 @@ pub mod sparkle {
     pub const BRIGHTNESS: usize = 14;
     pub const SEED: usize = 15;
 }
+pub mod blaster {
+    pub const FROM_X: usize = 0;
+    pub const FROM_Y: usize = 1;
+    pub const TO_X: usize = 2;
+    pub const TO_Y: usize = 3;
+    pub const FIRE_AT: usize = 4;
+    pub const SHOTS: usize = 5;
+    pub const EVERY: usize = 6;
+    pub const SPEED: usize = 7;
+    pub const LENGTH: usize = 8;
+    pub const WIDTH: usize = 9;
+    pub const COLOR: usize = 10;
+    pub const CORE: usize = 11;
+    pub const GLOW: usize = 12;
+    pub const SPREAD: usize = 13;
+    pub const MUZZLE: usize = 14;
+    pub const IMPACT: usize = 15;
+    pub const SCORCH: usize = 16;
+    pub const SEED: usize = 17;
+}
+pub mod blood {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const AT: usize = 2;
+    pub const DIRECTION: usize = 3;
+    pub const SPREAD: usize = 4;
+    pub const AMOUNT: usize = 5;
+    pub const SIZE: usize = 6;
+    pub const REACH: usize = 7;
+    pub const COLOR: usize = 8;
+    pub const SHINE: usize = 9;
+    pub const DRIP: usize = 10;
+    pub const SEED: usize = 11;
+}
 pub mod ripple {
     pub const X: usize = 0;
     pub const Y: usize = 1;
@@ -2843,6 +2879,40 @@ const SPARKLE: [ParamSpec; 16] = [
     spec("Brightness", 100.0, 0.0, 1000.0, " %", 0.5),
     spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
 ];
+const BLASTERFIRE: [ParamSpec; 18] = [
+    spec("Gun X", 15.0, -100.0, 200.0, " %", 0.2),
+    spec("Gun Y", 60.0, -100.0, 200.0, " %", 0.2),
+    spec("Target X", 85.0, -100.0, 200.0, " %", 0.2),
+    spec("Target Y", 45.0, -100.0, 200.0, " %", 0.2),
+    spec("Fire at", 0.0, 0.0, 36000.0, " s", 0.01),
+    spec("Shots", 3.0, 1.0, 50.0, "", 0.05),
+    spec("Every", 0.25, 0.02, 10.0, " s", 0.005),
+    spec("Speed", 2500.0, 50.0, 50000.0, " px/s", 5.0),
+    spec("Bolt length", 90.0, 2.0, 2000.0, " px", 0.5),
+    spec("Thickness", 4.0, 0.5, 100.0, " px", 0.1),
+    color("Colour", 0xff2a2a),
+    spec("White core", 70.0, 0.0, 100.0, " %", 0.5),
+    spec("Glow", 16.0, 0.0, 300.0, " px", 0.2),
+    spec("Spread", 1.5, 0.0, 45.0, "°", 0.05),
+    spec("Muzzle flash", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Impact flash", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Scorch marks", 60.0, 0.0, 300.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const BLOODSPATTER: [ParamSpec; 12] = [
+    spec("Hit X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Hit Y", 45.0, -100.0, 200.0, " %", 0.2),
+    spec("At", 0.0, 0.0, 36000.0, " s", 0.01),
+    spec("Direction", 0.0, -360.0, 360.0, "°", 0.5),
+    spec("Spread", 70.0, 0.0, 360.0, "°", 0.5),
+    spec("Amount", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Drop size", 6.0, 0.5, 100.0, " px", 0.1),
+    spec("Reach", 140.0, 1.0, 3000.0, " px", 0.5),
+    color("Colour", 0x6e0606),
+    spec("Shine", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Run down", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -3052,7 +3122,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 94] = [
+    pub const ALL: [EffectKind; 96] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -3118,6 +3188,8 @@ impl EffectKind {
         EffectKind::PrismBlur,
         EffectKind::TiltShift,
         EffectKind::Scanlines,
+        EffectKind::BloodSpatter,
+        EffectKind::BlasterFire,
         EffectKind::Teleport,
         EffectKind::ForceField,
         EffectKind::CustomFlare,
@@ -3254,6 +3326,8 @@ impl EffectKind {
             EffectKind::CustomFlare => "Custom flare",
             EffectKind::ForceField => "Force field",
             EffectKind::Teleport => "Teleport",
+            EffectKind::BlasterFire => "Blaster fire",
+            EffectKind::BloodSpatter => "Blood spatter",
             EffectKind::Scanlines => "Scanlines",
 
             EffectKind::Lightning => "Lightning",
@@ -3319,6 +3393,8 @@ impl EffectKind {
             EffectKind::CustomFlare => EffectCategory::Stylize,
             EffectKind::ForceField => EffectCategory::Generate,
             EffectKind::Teleport => EffectCategory::Stylize,
+            EffectKind::BlasterFire => EffectCategory::Generate,
+            EffectKind::BloodSpatter => EffectCategory::Generate,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -3385,6 +3461,8 @@ impl EffectKind {
             EffectKind::CustomFlare => "A lens flare built from its parts: glow, starburst rays, a streak, a halo ring (rainbow if you like) and ghosts (round or many-sided) along the line through the middle, each part sized and as bright as you want",
             EffectKind::ForceField => "A shield bubble: a glowing rim, a pattern of hexagons, a grid or ripples flowing over it, the picture behind bent as through glass, and ripples spreading from where it is hit",
             EffectKind::Teleport => "Beaming in or out: the layer (a cut-out person or thing) appears or vanishes in a column of sparkles, a scan line, a pixel dissolve or a pillar of light",
+            EffectKind::BlasterFire => "Blaster bolts that fire on their own, from a gun to a target you drag in the Viewer: when to fire, how many shots and how often, their speed, length, colour and glow, a little spread, muzzle and impact flashes, and scorch marks that glow and fade",
+            EffectKind::BloodSpatter => "A spray of blood from a hit: a burst of drops flung out in a direction, landing as splats and streaks round the spot, glistening, and running down if you like",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
@@ -3518,6 +3596,8 @@ impl EffectKind {
             EffectKind::CustomFlare => &CUSTOMFLARE,
             EffectKind::ForceField => &FORCEFIELD,
             EffectKind::Teleport => &TELEPORT,
+            EffectKind::BlasterFire => &BLASTERFIRE,
+            EffectKind::BloodSpatter => &BLOODSPATTER,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -3720,6 +3800,8 @@ impl EffectValues {
             EffectKind::CustomFlare => v[custom_flare::BRIGHTNESS] == 0.0,
             EffectKind::ForceField => v[force_field::POWER] == 0.0,
             EffectKind::Teleport => false,
+            EffectKind::BlasterFire => false,
+            EffectKind::BloodSpatter => v[blood::AMOUNT] == 0.0,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
 
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
@@ -3792,6 +3874,8 @@ impl EffectValues {
             || (self.kind == EffectKind::ForceField && (v[force_field::SHIMMER] > 0.0 || v[force_field::HIT_AT] >= 0.0))
             || (self.kind == EffectKind::Teleport && (true))
             || self.kind == EffectKind::SparkleTrail
+            || (self.kind == EffectKind::BlasterFire && (true))
+            || (self.kind == EffectKind::BloodSpatter && (true))
             || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)
             || (self.kind == EffectKind::WaveWarp && v[wave::SPEED] != 0.0)
             || (self.kind == EffectKind::NeonPath && (v[neonpath::FLICKER] > 0.0 || v[neonpath::DASH_SPEED] != 0.0 || v[neonpath::SWITCH_ON] > 0.0))

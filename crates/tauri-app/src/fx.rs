@@ -285,6 +285,8 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 },
                 points: if let Some(d) = plug.as_ref().filter(|_| fx.kind == EffectKind::Plugin) {
                     d.points.iter().map(|p| PointView { param: p.x, label: p.name.clone(), relative: None, line_to: p.line_to }).collect()
+                } else if fx.kind == EffectKind::BlasterFire {
+                    vec![PointView { param: 0, label: "Gun".into(), relative: None, line_to: None }, PointView { param: 2, label: "Target".into(), relative: None, line_to: None }]
                 } else if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
                     vec![PointView { param: 0, label: "Start".into(), relative: None, line_to: None }, PointView { param: 2, label: "End".into(), relative: None, line_to: None }]
                 } else if fx.kind == EffectKind::WaterSurface {
@@ -304,6 +306,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::Fluid | EffectKind::Liquid | EffectKind::Liquid3D => Some("Source"),
                     EffectKind::LightRays => Some("Source"),
                     EffectKind::Bulge | EffectKind::Twirl | EffectKind::Ripple | EffectKind::Mirror | EffectKind::LensDistortion => Some("Centre"),
+                    EffectKind::BloodSpatter => Some("Hit"),
                     EffectKind::ForceField => Some("Centre"),
                     EffectKind::CustomFlare => Some("Light"),
                     EffectKind::Spotlight => Some("Centre"),

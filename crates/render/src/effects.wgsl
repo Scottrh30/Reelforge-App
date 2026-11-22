@@ -3799,3 +3799,137 @@ fn fs_teleport(in: VsOut) -> @location(0) vec4<f32> {
     let add = col * light * glow;
     return vec4(body.rgb + add, max(body.a, clamp(max(add.r, max(add.g, add.b)), 0.0, 1.0)));
 }
+
+// Blaster fire: shot k leaves the gun at fire_at + k·every, flies at `speed`
+// towards the target (turned by up to ±spread at random), and ends there in a
+// flash and a scorch mark. p0 = (gun x %, y %, target x %, y %), p1 = (fire
+// at s, shots, every s, speed px/s), p2 = (length px, thickness px, colour,
+// core %), p3 = (glow px, spread°, muzzle %, impact %), p4 = (scorch %, seed).
+fn bl_seg(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    return length(p - a - ab * h);
+}
+
+@fragment
+fn fs_blaster(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let t = fx.extra.y;
+    let gun = fx.p0.xy / 100.0 * size;
+    let goal = fx.p0.zw / 100.0 * size;
+    let col = rgb_of(fx.p2.z);
+    let width = max(fx.p2.y, 0.3);
+    let glow = max(fx.p3.x, 0.01);
+    let seed = u32(max(fx.p4.y, 0.0)) * 6151u + 7u;
+    let shots = i32(clamp(round(fx.p1.y), 1.0, 50.0));
+    var core = 0.0;
+    var halo = 0.0;
+    for (var k = 0; k < shots; k++) {
+        let dt = t - (fx.p1.x + f32(k) * max(fx.p1.z, 0.02));
+        if (dt < 0.0) {
+            continue;
+        }
+        let turn = radians(fx.p3.y) * (rnd3(seed, u32(k), 1u) - 0.5) * 2.0;
+        let d0 = goal - gun;
+        let aim = gun + vec2(cos(turn) * d0.x - sin(turn) * d0.y, sin(turn) * d0.x + cos(turn) * d0.y);
+        let dist = max(length(aim - gun), 1.0);
+        let dir = (aim - gun) / dist;
+        let gone = dt * max(fx.p1.w, 1.0);
+        let head = min(gone, dist);
+        let tail = max(gone - max(fx.p2.x, 1.0), 0.0);
+        if (tail < dist) {
+            let d = bl_seg(p, gun + dir * tail, gun + dir * head);
+            core = max(core, 1.0 - smoothstep(width * 0.35, width * 0.5, d));
+            halo += exp(-d * d / (glow * glow)) * 0.8;
+        }
+        // Muzzle flash, a moment after firing.
+        let m = exp(-dt * 30.0) * fx.p3.z / 100.0;
+        let dm = length(p - gun);
+        halo += m * exp(-dm * dm / (glow * glow * 9.0)) * 2.0;
+        // Impact: a flash when it arrives, then a glowing scorch that fades.
+        if (gone >= dist) {
+            let since = (gone - dist) / max(fx.p1.w, 1.0);
+            let di = length(p - aim);
+            halo += exp(-since * 14.0) * fx.p3.w / 100.0 * exp(-di * di / (glow * glow * 12.0)) * 2.5;
+            let scorch = exp(-since * 1.2) * fx.p4.x / 100.0;
+            halo += scorch * exp(-di * di / (width * width * 4.0)) * 0.9;
+        }
+    }
+    let core_col = mix(col, vec3(1.0), fx.p2.w / 100.0);
+    let light = core_col * core * 1.5 + col * halo;
+    return vec4(c.rgb * (1.0 - core) + light, max(c.a, clamp(max(light.r, max(light.g, light.b)), 0.0, 1.0)));
+}
+
+// Blood spatter: drops flung from the hit at `at`, each flying out over a
+// fraction of a second and landing as a splat stretched along its path (with
+// a tail), a big splash at the hit itself, and drops running down if wanted.
+// p0 = (x %, y %, at s, direction°), p1 = (spread°, amount %, drop px, reach
+// px), p2 = (colour, shine %, run down %, seed).
+@fragment
+fn fs_blood(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let since = fx.extra.y - fx.p0.z;
+    if (since < 0.0) {
+        return c;
+    }
+    let hit = fx.p0.xy / 100.0 * size;
+    let seed = u32(max(fx.p2.w, 0.0)) * 3301u + 9u;
+    let n = i32(clamp(fx.p1.y / 100.0 * 120.0, 0.0, 120.0));
+    let drop = max(fx.p1.z, 0.5);
+    let reach = max(fx.p1.w, 1.0);
+    var cover = 0.0;
+    var shine = 0.0;
+    // The splash at the hit: a ragged blob.
+    let grow = smoothstep(0.0, 0.08, since);
+    let dh = p - hit;
+    let ang = atan2(dh.y, dh.x);
+    let rag = 0.75 + 0.35 * vnoise(seed, vec2(ang * 3.0, 0.5)) + 0.2 * vnoise(seed + 1u, vec2(ang * 9.0, 2.0));
+    let blob = 1.0 - smoothstep(0.85, 1.0, length(dh) / max(drop * 2.5 * rag * grow, 0.01));
+    cover = max(cover, blob * select(0.0, 1.0, fx.p1.y > 0.0));
+    for (var i = 0; i < n; i++) {
+        let r1 = rnd3(seed, u32(i), 1u);
+        let r2 = rnd3(seed, u32(i), 2u);
+        let r3 = rnd3(seed, u32(i), 3u);
+        let r4 = rnd3(seed, u32(i), 4u);
+        let a = radians(fx.p0.w + (r1 - 0.5) * fx.p1.x);
+        let dir = vec2(cos(a), sin(a));
+        // Farther drops are smaller; each lands after its flight.
+        let far = pow(r2, 0.7);
+        let land = reach * far;
+        let flight = 0.05 + 0.2 * far;
+        let k = clamp(since / flight, 0.0, 1.0);
+        let at = hit + dir * land * (1.0 - (1.0 - k) * (1.0 - k));
+        let rad = drop * (0.35 + 1.3 * (1.0 - far) * (0.3 + 0.7 * r3 * r3));
+        // Stretched along its path: longer the faster it flew.
+        let q = p - at;
+        let along_ = dot(q, dir);
+        let across = dot(q, vec2(-dir.y, dir.x));
+        let stretch = 1.0 + 1.2 * far;
+        var e = length(vec2(along_ / (rad * stretch), across / rad));
+        // A tail back towards the hit while it lands.
+        let tl = rad * stretch * (1.2 + 1.5 * far);
+        let tail = select(0.0, 1.0, along_ < 0.0 && along_ > -tl && abs(across) < rad * 0.55 * (1.0 + along_ / tl));
+        var d = max(1.0 - smoothstep(0.85, 1.0, e), tail * k);
+        // Running down after it lands.
+        if (fx.p2.z > 0.0 && k >= 1.0 && r4 < 0.5) {
+            let run = min((since - flight) * 25.0 * (0.4 + r4), reach * 0.5) * fx.p2.z / 100.0;
+            let qd = p - at;
+            let w = rad * 0.35;
+            if (qd.y > 0.0 && qd.y < run && abs(qd.x) < w) {
+                d = max(d, 1.0);
+            }
+            let tip = length(qd - vec2(0.0, run)) / (w * 1.4);
+            d = max(d, 1.0 - smoothstep(0.8, 1.0, tip));
+        }
+        cover = max(cover, d);
+        // A glint on each drop.
+        shine = max(shine, exp(-length(q - vec2(-0.3, -0.35) * rad) / max(rad * 0.18, 0.3)) * d);
+    }
+    let col = rgb_of(fx.p2.x);
+    let wet = col * (0.85 + 0.15 * cover) + vec3(1.0) * shine * fx.p2.y / 100.0 * 0.5;
+    return vec4(mix(c.rgb, wet, cover), max(c.a, cover));
+}
