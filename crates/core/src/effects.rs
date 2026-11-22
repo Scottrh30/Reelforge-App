@@ -113,6 +113,10 @@ pub enum EffectKind {
     TiltShift,
     /// Lines across the picture as on a screen.
     Scanlines,
+    CustomFlare,
+    Halation,
+    Gleam,
+    Spotlight,
     XRay,
     Infrared,
     ThermalCamera,
@@ -130,6 +134,8 @@ pub enum EffectKind {
     Relight,
     /// The background (or anything out of focus) blurred by its depth, as a portrait mode.
     PortraitBlur,
+    /// Shafts of light through the air from a source, blocked by what's in front of it (by depth, or the dark parts).
+    VolumetricLight,
     ElectricArcs,
     LightSweep,
     Hud,
@@ -1430,6 +1436,79 @@ pub mod xray {
     pub const BRIGHTNESS: usize = 6;
     pub const SEED: usize = 7;
 }
+pub mod spotlight {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const SIZE: usize = 2;
+    pub const SQUASH: usize = 3;
+    pub const ANGLE: usize = 4;
+    pub const SOFTNESS: usize = 5;
+    pub const INTENSITY: usize = 6;
+    pub const COLOR: usize = 7;
+    pub const DARKEN: usize = 8;
+    pub const BEAM: usize = 9;
+    pub const SOURCE_X: usize = 10;
+    pub const SOURCE_Y: usize = 11;
+    pub const GOBO: usize = 12;
+    pub const GOBO_SIZE: usize = 13;
+    pub const GOBO_SPIN: usize = 14;
+}
+pub mod gleam {
+    pub const THRESHOLD: usize = 0;
+    pub const LENGTH: usize = 1;
+    pub const POINTS: usize = 2;
+    pub const ANGLE: usize = 3;
+    pub const BRIGHTNESS: usize = 4;
+    pub const COLOR: usize = 5;
+    pub const OWN_COLOUR: usize = 6;
+    pub const RAINBOW: usize = 7;
+    pub const TWINKLE: usize = 8;
+    pub const SHARPNESS: usize = 9;
+    pub const SHOW: usize = 10;
+}
+pub mod halation {
+    pub const THRESHOLD: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const AMOUNT: usize = 2;
+    pub const COLOR: usize = 3;
+    pub const EDGES_ONLY: usize = 4;
+}
+pub mod custom_flare {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const BRIGHTNESS: usize = 2;
+    pub const COLOR: usize = 3;
+    pub const GLOW_SIZE: usize = 4;
+    pub const GLOW: usize = 5;
+    pub const RAYS: usize = 6;
+    pub const RAYS_LENGTH: usize = 7;
+    pub const RAYS_BRIGHT: usize = 8;
+    pub const STREAK_LENGTH: usize = 9;
+    pub const STREAK_BRIGHT: usize = 10;
+    pub const STREAK_COLOR: usize = 11;
+    pub const HALO_RADIUS: usize = 12;
+    pub const HALO_BRIGHT: usize = 13;
+    pub const RAINBOW: usize = 14;
+    pub const GHOSTS: usize = 15;
+    pub const GHOST_SIZE: usize = 16;
+    pub const GHOST_SHAPE: usize = 17;
+    pub const GHOST_BRIGHT: usize = 18;
+    pub const SEED: usize = 19;
+}
+/// Volumetric light's parameters.
+pub mod volumetric {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const LENGTH: usize = 2;
+    pub const INTENSITY: usize = 3;
+    pub const COLOR: usize = 4;
+    pub const DEPTH: usize = 5;
+    pub const THRESHOLD: usize = 6;
+    pub const SOFTNESS: usize = 7;
+    pub const HAZE: usize = 8;
+    pub const DECAY: usize = 9;
+    pub const SHOW: usize = 10;
+}
 pub mod ripple {
     pub const X: usize = 0;
     pub const Y: usize = 1;
@@ -2593,6 +2672,78 @@ const XRAY: [ParamSpec; 8] = [
     spec("Brightness", 100.0, 0.0, 300.0, " %", 0.5),
     spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
 ];
+const SPOTLIGHT: [ParamSpec; 15] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 55.0, -100.0, 200.0, " %", 0.2),
+    spec("Size", 50.0, 0.0, 300.0, " %", 0.2),
+    spec("Roundness", 70.0, 5.0, 300.0, " %", 0.5),
+    spec("Angle", 0.0, -360.0, 360.0, "°", 0.5),
+    spec("Softness", 35.0, 0.0, 100.0, " %", 0.5),
+    spec("Intensity", 120.0, 0.0, 1000.0, " %", 0.5),
+    color("Colour", 0xfff1d6),
+    spec("Darken the rest", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Beam in the air", 25.0, 0.0, 200.0, " %", 0.5),
+    spec("Lamp X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Lamp Y", -10.0, -100.0, 200.0, " %", 0.2),
+    choice("Pattern", &["None", "Window", "Leaves", "Stripes", "Dots", "Rings"]),
+    spec("Pattern size", 100.0, 10.0, 500.0, " %", 0.5),
+    spec("Pattern turn", 0.0, -360.0, 360.0, "°", 0.5),
+];
+const GLEAM: [ParamSpec; 11] = [
+    spec("Threshold", 80.0, 0.0, 100.0, " %", 0.5),
+    spec("Length", 60.0, 0.0, 1000.0, " px", 0.5),
+    choice("Points", &["4", "6", "8"]),
+    spec("Angle", 45.0, -360.0, 360.0, "°", 0.5),
+    spec("Brightness", 100.0, 0.0, 1000.0, " %", 0.5),
+    color("Tint", 0xffffff),
+    spec("Their own colour", 70.0, 0.0, 100.0, " %", 0.5),
+    spec("Rainbow", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Twinkle", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Sharpness", 60.0, 0.0, 100.0, " %", 0.5),
+    choice("Show", &["The picture and its glints", "The glints only"]),
+];
+const HALATION: [ParamSpec; 5] = [
+    spec("Threshold", 70.0, 0.0, 100.0, " %", 0.5),
+    spec("Size", 12.0, 0.0, 200.0, " px", 0.2),
+    spec("Amount", 60.0, 0.0, 400.0, " %", 0.5),
+    color("Colour", 0xff4a14),
+    spec("Round the edges only", 70.0, 0.0, 100.0, " %", 0.5),
+];
+const CUSTOMFLARE: [ParamSpec; 20] = [
+    spec("Light X", 30.0, -100.0, 200.0, " %", 0.2),
+    spec("Light Y", 30.0, -100.0, 200.0, " %", 0.2),
+    spec("Brightness", 100.0, 0.0, 1000.0, " %", 0.5),
+    color("Colour", 0xfff0dc),
+    spec("Glow size", 25.0, 0.0, 300.0, " %", 0.5),
+    spec("Glow", 80.0, 0.0, 500.0, " %", 0.5),
+    spec("Rays", 12.0, 0.0, 64.0, "", 0.1),
+    spec("Ray length", 40.0, 0.0, 300.0, " %", 0.5),
+    spec("Ray brightness", 20.0, 0.0, 500.0, " %", 0.5),
+    spec("Streak length", 80.0, 0.0, 400.0, " %", 0.5),
+    spec("Streak brightness", 60.0, 0.0, 500.0, " %", 0.5),
+    color("Streak colour", 0x7fb6ff),
+    spec("Halo radius", 30.0, 0.0, 200.0, " %", 0.5),
+    spec("Halo brightness", 25.0, 0.0, 500.0, " %", 0.5),
+    ParamSpec { name: "Rainbow halo", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Ghosts", 6.0, 0.0, 24.0, "", 0.1),
+    spec("Ghost size", 14.0, 0.0, 100.0, " %", 0.2),
+    choice("Ghost shape", &["Round", "Hexagon", "Octagon"]),
+    spec("Ghost brightness", 40.0, 0.0, 500.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const VOLUMETRIC: [ParamSpec; 11] = [
+    spec("Light X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Light Y", 20.0, -100.0, 200.0, " %", 0.2),
+    spec("Length", 70.0, 0.0, 100.0, " %", 0.5),
+    spec("Intensity", 100.0, 0.0, 1000.0, " %", 0.5),
+    color("Colour", 0xffe6b8),
+    spec("Light depth", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Threshold", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Softness", 15.0, 0.0, 100.0, " %", 0.5),
+    spec("Haze round the light", 40.0, 0.0, 300.0, " %", 0.5),
+    spec("Fall-off", 50.0, 0.0, 100.0, " %", 0.5),
+    choice("Show", &["The picture and its light", "The light only"]),
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -2802,7 +2953,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 86] = [
+    pub const ALL: [EffectKind; 91] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -2868,6 +3019,10 @@ impl EffectKind {
         EffectKind::PrismBlur,
         EffectKind::TiltShift,
         EffectKind::Scanlines,
+        EffectKind::CustomFlare,
+        EffectKind::Halation,
+        EffectKind::Gleam,
+        EffectKind::Spotlight,
         EffectKind::XRay,
         EffectKind::Infrared,
         EffectKind::ThermalCamera,
@@ -2880,6 +3035,7 @@ impl EffectKind {
         EffectKind::DepthMap,
         EffectKind::Relight,
         EffectKind::PortraitBlur,
+        EffectKind::VolumetricLight,
         EffectKind::ElectricArcs,
         EffectKind::LightSweep,
         EffectKind::Hud,
@@ -2977,6 +3133,7 @@ impl EffectKind {
             EffectKind::LightSweep => "Light sweep",
             EffectKind::ElectricArcs => "Electric arcs",
             EffectKind::DepthMap => "Depth map",
+            EffectKind::VolumetricLight => "Volumetric light",
             EffectKind::PortraitBlur => "Portrait blur",
             EffectKind::Relight => "Relight",
             EffectKind::Liquify => "Liquify",
@@ -2988,6 +3145,10 @@ impl EffectKind {
             EffectKind::ThermalCamera => "Thermal camera",
             EffectKind::Infrared => "Infrared",
             EffectKind::XRay => "X-ray",
+            EffectKind::Spotlight => "Spotlight",
+            EffectKind::Gleam => "Gleam",
+            EffectKind::Halation => "Halation",
+            EffectKind::CustomFlare => "Custom flare",
             EffectKind::Scanlines => "Scanlines",
 
             EffectKind::Lightning => "Lightning",
@@ -3038,6 +3199,7 @@ impl EffectKind {
             EffectKind::Liquify => EffectCategory::Distort,
             EffectKind::DepthMap | EffectKind::Relight => EffectCategory::Stylize,
             EffectKind::PortraitBlur => EffectCategory::BlurSharpen,
+            EffectKind::VolumetricLight => EffectCategory::Stylize,
             EffectKind::DirectionalBlur => EffectCategory::BlurSharpen,
             EffectKind::RadialBlur => EffectCategory::BlurSharpen,
             EffectKind::MotionBlur => EffectCategory::BlurSharpen,
@@ -3045,6 +3207,10 @@ impl EffectKind {
             EffectKind::ThermalCamera => EffectCategory::Stylize,
             EffectKind::Infrared => EffectCategory::Stylize,
             EffectKind::XRay => EffectCategory::Stylize,
+            EffectKind::Spotlight => EffectCategory::Stylize,
+            EffectKind::Gleam => EffectCategory::Stylize,
+            EffectKind::Halation => EffectCategory::Stylize,
+            EffectKind::CustomFlare => EffectCategory::Stylize,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -3092,6 +3258,7 @@ impl EffectKind {
             EffectKind::LightSweep => "A sheen of light passing over a title or logo, like light catching chrome or glass: its angle, width and softness, when it passes and how long it takes (or keyframe Position), and whether it lights only the shape, only its bright parts, or everything.",
             EffectKind::ElectricArcs => "Crackling electricity crawling over the edges of the layer’s shape — a keyed person, a title, a logo — and jumping off them: thin, branching, flickering arcs with a glow, in the colour you choose.",
             EffectKind::DepthMap => "How far away each part of the footage is, worked out by the depth model (Work out depth): shown as a picture (near is white), as fog that thickens with distance, or as a key that keeps what's near",
+            EffectKind::VolumetricLight => "Shafts of light through hazy air from a light you place, shadowed by what stands in front of it: by the footage's depth (Work out depth), or by its dark parts",
             EffectKind::PortraitBlur => "A portrait mode: what's in focus stays sharp and everything nearer or farther blurs like a wide-open lens, round highlights and all, by the footage's depth (Work out depth)",
             EffectKind::Relight => "A light added after the shot: the depth model works out the footage's shape (Work out depth), and the light shades it, brighter where surfaces face it and nearer to it",
             EffectKind::Liquify => "Push, twirl, pinch and swell the picture with a brush in the Viewer",
@@ -3103,6 +3270,10 @@ impl EffectKind {
             EffectKind::ThermalCamera => "A heat camera: the picture as heat, from its brightness or its warm colours, in a thermal palette (iron, rainbow, white hot, black hot, lava), with a scale bar if you like",
             EffectKind::Infrared => "Infrared photography: leaves and grass turn white (or pink and red in colour infrared), skies go dark, with the soft glow infrared film has",
             EffectKind::XRay => "An X-ray film look: the picture inverted and tinted cold, edges and dense parts glowing, with soft bloom and film noise",
+            EffectKind::Spotlight => "A spotlight thrown onto the scene: a pool of light (round or slanted, soft or hard), the rest darkened, a beam through the air from where the lamp is, and a pattern in it if you like (window, leaves, stripes, dots, rings)",
+            EffectKind::Gleam => "Star-shaped glints on the bright parts of the picture: 4, 6 or 8 points, in their own colour or a tint, rainbow-fringed if you like, twinkling",
+            EffectKind::Halation => "The red-orange glow film gets round bright things: light spreading out from highlights into the darker parts next to them",
+            EffectKind::CustomFlare => "A lens flare built from its parts: glow, starburst rays, a streak, a halo ring (rainbow if you like) and ghosts (round or many-sided) along the line through the middle, each part sized and as bright as you want",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
@@ -3221,6 +3392,7 @@ impl EffectKind {
             EffectKind::DepthMap => &DEPTH_MAP,
             EffectKind::Relight => &RELIGHT,
             EffectKind::PortraitBlur => &PORTRAIT,
+            EffectKind::VolumetricLight => &VOLUMETRIC,
             EffectKind::DirectionalBlur => &DIRECTIONALBLUR,
             EffectKind::RadialBlur => &RADIALBLUR,
             EffectKind::MotionBlur => &MOTIONBLUR,
@@ -3228,6 +3400,10 @@ impl EffectKind {
             EffectKind::ThermalCamera => &THERMALCAMERA,
             EffectKind::Infrared => &INFRARED,
             EffectKind::XRay => &XRAY,
+            EffectKind::Spotlight => &SPOTLIGHT,
+            EffectKind::Gleam => &GLEAM,
+            EffectKind::Halation => &HALATION,
+            EffectKind::CustomFlare => &CUSTOMFLARE,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -3411,6 +3587,7 @@ impl EffectValues {
             EffectKind::LightSweep => v[sweep::BRIGHTNESS] == 0.0,
             EffectKind::ElectricArcs => v[arcs::AMOUNT] == 0.0 || v[arcs::BRIGHTNESS] == 0.0,
             EffectKind::DepthMap => self.table.is_none(),
+            EffectKind::VolumetricLight => v[volumetric::INTENSITY] == 0.0,
             EffectKind::PortraitBlur => self.table.is_none() || (v[portrait::BLUR] < 0.5 && v[portrait::SHOW] == 0.0),
             EffectKind::Relight => self.table.is_none() || (v[relight::INTENSITY] == 0.0 && v[relight::DARKEN] == 0.0),
             EffectKind::Liquify => self.table.is_none() || (v[liquify_params::AMOUNT] == 0.0 && v[liquify_params::MESH] == 0.0),
@@ -3422,6 +3599,10 @@ impl EffectValues {
             EffectKind::ThermalCamera => false,
             EffectKind::Infrared => v[infrared::MIX] == 0.0,
             EffectKind::XRay => false,
+            EffectKind::Spotlight => false,
+            EffectKind::Gleam => v[gleam::BRIGHTNESS] == 0.0 || v[gleam::LENGTH] < 0.5,
+            EffectKind::Halation => v[halation::AMOUNT] == 0.0 || v[halation::SIZE] < 0.25,
+            EffectKind::CustomFlare => v[custom_flare::BRIGHTNESS] == 0.0,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
 
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
@@ -3490,6 +3671,7 @@ impl EffectValues {
             || (self.kind == EffectKind::ThermalCamera && (v[thermal::NOISE] > 0.0))
             || (self.kind == EffectKind::Infrared && (v[infrared::GRAIN] > 0.0))
             || (self.kind == EffectKind::XRay && (v[xray::NOISE] > 0.0))
+            || (self.kind == EffectKind::Gleam && (v[gleam::TWINKLE] > 0.0))
             || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)
             || (self.kind == EffectKind::WaveWarp && v[wave::SPEED] != 0.0)
             || (self.kind == EffectKind::NeonPath && (v[neonpath::FLICKER] > 0.0 || v[neonpath::DASH_SPEED] != 0.0 || v[neonpath::SWITCH_ON] > 0.0))
@@ -3662,7 +3844,7 @@ impl Effect {
         let particles = (self.kind == EffectKind::Particles).then(|| Arc::new(crate::particles::simulate(self, t)));
         let (mut table, mut gpu, mut table2) = (self.table(), [0.0; 4], None);
         match (&self.data, self.kind) {
-            (Some(EffectData::Depth(dir)), EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur) => {
+            (Some(EffectData::Depth(dir)), EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::VolumetricLight) => {
                 if let Some((tb, _)) = crate::fillstore::load(dir, t) {
                     table = Some(tb);
                 }
@@ -3690,6 +3872,14 @@ impl Effect {
                 }
             }
             _ => {}
+        }
+        if self.kind == EffectKind::VolumetricLight {
+            // Depth when it's been worked out (gpu.x = 1); otherwise a blank table and the
+            // picture's brightness decides what blocks the light.
+            gpu[0] = if table.is_some() { 1.0 } else { 0.0 };
+            if table.is_none() {
+                table = Some(std::sync::Arc::new(crate::lut::Table { id: u64::MAX - 7, width: 1, height: 1, rgba: vec![0, 0, 0, 255], cube_size: 0 }));
+            }
         }
         EffectValues { kind: self.kind, values, table, plugin, time: t.as_secs_f64() as f32, prev, particles, pieces: None, fluid: None, gpu, table2 }
     }

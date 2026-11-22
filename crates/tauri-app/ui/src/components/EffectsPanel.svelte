@@ -351,7 +351,7 @@
             <p class="note">Drag in the Viewer to paint. For <b>Clone</b>, Alt-click where to copy from first; the next stroke copies from there, keeping the same distance for later strokes. Undo takes the last stroke away.</p>
           {/if}
         {/if}
-        {#if fx.kind === "DepthMap" || fx.kind === "Relight" || fx.kind === "PortraitBlur"}
+        {#if fx.kind === "DepthMap" || fx.kind === "Relight" || fx.kind === "PortraitBlur" || fx.kind === "VolumetricLight"}
           {@const busy = app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null}
           <div class="row lut">
             <span class="file">{busy !== null ? `Working out depth… ${Math.round(busy * 100)}%` : fx.depth_frames !== null ? `Depth worked out for ${fx.depth_frames} frames` : "Depth not worked out yet"}</span>
@@ -361,7 +361,9 @@
               <button class="small" disabled={!!app.live?.tracking || ins.kind !== "video"} onclick={() => run(api.findDepth(ins.id, i))} title="Work out how far away everything is in every frame, with the depth model (in the background)">{fx.depth_frames === null ? "Work out depth" : "Work out again"}</button>
             {/if}
           </div>
-          {#if fx.depth_frames === null && busy === null}
+          {#if fx.depth_frames === null && busy === null && fx.kind === "VolumetricLight"}
+            <p class="note">Without depth, the picture's dark parts block the light. Press <b>Work out depth</b> to have whatever stands nearer than <b>Light depth</b> cast the shadows instead.</p>
+          {:else if fx.depth_frames === null && busy === null}
             <p class="note">Press <b>Work out depth</b>: the depth model looks at every frame (a second or two each, in the background) and works out how near each part of it is.{fx.kind === "Relight" ? " Then drag the light in the Viewer." : ""}</p>
           {/if}
         {/if}

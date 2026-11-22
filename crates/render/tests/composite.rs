@@ -2759,6 +2759,56 @@ fn face_beauty_smooths_the_face_and_nothing_else() {
     assert_eq!(px(&px_out, w, 40, 50), px(&px_out, w, 41, 50));
 }
 
+/// The light pack: a spotlight lights its pool and darkens the rest; Gleam's
+/// spokes run at its angle; halation reddens round a highlight; a custom flare
+/// lights the frame from its light; volumetric light streams from a bright
+/// window through the dark.
+#[test]
+fn light_pack_lights_where_it_should() {
+    use reelforge_core::effects::{custom_flare as cf, gleam as gl, halation as ha, spotlight as sp, volumetric as vo};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 120, 120, 255]).collect();
+    let dot: Vec<u8> = (0..w * h).flat_map(|i| if (79..82).contains(&(i % w)) && (44..47).contains(&(i / w)) { [255u8, 255, 255, 255] } else { [0, 0, 0, 255] }).collect();
+    let square: Vec<u8> = (0..w * h).flat_map(|i| if (60..100).contains(&(i % w)) && (25..65).contains(&(i / w)) { [255u8, 255, 255, 255] } else { [0, 0, 0, 255] }).collect();
+    let window: Vec<u8> = (0..w * h).flat_map(|i| if (30..50).contains(&(i % w)) && (10..30).contains(&(i / w)) { [255u8, 250, 240, 255] } else { [20, 20, 20, 255] }).collect();
+    let mut n = 8800;
+    let mut draw = |c: &mut Compositor, img: &[u8], kind: EffectKind, set: &[(usize, f32)]| {
+        n += 1;
+        let mut l = layer(1, img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        c.render([w, h], &[with_fx(l, vec![fx(kind, set)])]);
+        c.read_output().unwrap()
+    };
+    let lum = |p: [u8; 4]| p[0] as i32 + p[1] as i32 + p[2] as i32;
+    // Spotlight: brighter in the pool, darker outside, a beam above it.
+    let spot = draw(&mut c, &grey, EffectKind::Spotlight, &[(sp::BEAM, 0.0)]);
+    assert!(lum(px(&spot, w, 80, 50)) > lum(px(&grey, w, 80, 50)) + 40, "the pool: {:?}", px(&spot, w, 80, 50));
+    assert!(lum(px(&spot, w, 5, 5)) < lum(px(&grey, w, 5, 5)) - 100, "the rest darkened: {:?}", px(&spot, w, 5, 5));
+    let beam = draw(&mut c, &grey, EffectKind::Spotlight, &[(sp::DARKEN, 0.0), (sp::INTENSITY, 0.0), (sp::BEAM, 100.0)]);
+    assert!(lum(px(&beam, w, 80, 20)) > lum(px(&grey, w, 80, 20)) + 10 && lum(px(&beam, w, 10, 20)) == lum(px(&grey, w, 10, 20)), "the beam");
+    // Gleam, 4 points at 45°: lit along the diagonals, not across.
+    let gleam = draw(&mut c, &dot, EffectKind::Gleam, &[(gl::LENGTH, 40.0), (gl::THRESHOLD, 50.0), (gl::BRIGHTNESS, 300.0)]);
+    assert!(lum(px(&gleam, w, 90, 55)) > 30 && lum(px(&gleam, w, 70, 35)) > 30, "diagonal spokes: {:?}", px(&gleam, w, 90, 55));
+    assert!(lum(px(&gleam, w, 95, 45)) < 10, "nothing across: {:?}", px(&gleam, w, 95, 45));
+    // Halation: just outside the white square, red; far away, nothing.
+    let hal = draw(&mut c, &square, EffectKind::Halation, &[(ha::AMOUNT, 200.0)]);
+    let edge = px(&hal, w, 103, 45);
+    assert!(edge[0] as i32 > edge[1] as i32 + 20, "red round the edge: {edge:?}");
+    assert!(lum(px(&hal, w, 10, 10)) < 5, "nothing far off");
+    // Custom flare on black: brightest at the light, fading away from it.
+    let black: Vec<u8> = (0..w * h).flat_map(|_| [0u8, 0, 0, 255]).collect();
+    let flare = draw(&mut c, &black, EffectKind::CustomFlare, &[(cf::GHOSTS, 0.0)]);
+    let (at_light, far) = (lum(px(&flare, w, 48, 27)), lum(px(&flare, w, 150, 85)));
+    assert!(at_light > 600 && at_light > far + 300, "{at_light} {far}");
+    // Volumetric light from the window: below it, the dark lit; beside the window
+    // at the same distance but up in the corner, where the path crosses only dark, not.
+    let vol = draw(&mut c, &window, EffectKind::VolumetricLight, &[(vo::X, 25.0), (vo::Y, 22.0), (vo::HAZE, 0.0)]);
+    assert!(lum(px(&vol, w, 40, 42)) > lum(px(&window, w, 40, 42)) + 30, "a shaft below: {:?}", px(&vol, w, 40, 42));
+    let only = draw(&mut c, &window, EffectKind::VolumetricLight, &[(vo::X, 25.0), (vo::Y, 22.0), (vo::SHOW, 1.0)]);
+    assert!(lum(px(&only, w, 150, 85)) < lum(px(&only, w, 40, 45)), "fades with distance");
+}
+
 /// Vision looks: night vision tints green and lifts the dark, goggles black out
 /// the corners; thermal maps heat to its palette; infrared turns leaves bright
 /// (red in false colour); X-ray inverts and tints cold.

@@ -571,6 +571,33 @@ What works now:
     layer, like sun through trees or god rays behind a logo. **Length** (how far they reach,
     as a share of the way to the source), **Brightness**, **Colour**; **Show** the layer and
     its rays, or the rays only (to put on a layer of their own)
+  - **Volumetric light** (Light & stylize): shafts of light through hazy air from a light
+    you place (drag it in the Viewer), shadowed by what stands in front of it — by the
+    footage's depth (press **Work out depth**: whatever is nearer than **Light depth** casts
+    the shadow, so a person in front of a window blocks the light), or, without depth, by the
+    picture's dark parts (**Threshold**, **Softness**). **Length**, **Intensity**, **Colour**,
+    **Fall-off**, **Haze round the light**; **Show** the picture and its light, or the light
+    only
+  - **Spotlight** (Light & stylize): a pool of light thrown on the scene — at a **Centre**
+    (drag it in the Viewer), **Size**, **Roundness** (a slanted pool on a floor or wall),
+    **Angle** and **Softness** — lighting what it falls on in its **Colour** and
+    **Intensity**, with **Darken the rest**, a faint **Beam in the air** from the **Lamp**'s
+    position, and a **Pattern** in the light (a **Window**, **Leaves**, **Stripes**, **Dots**,
+    **Rings**; its size and turn)
+  - **Gleam** (Light & stylize): star glints on the bright parts (**Threshold**) — **4**,
+    **6** or **8 points** at an **Angle**, **Length**, **Brightness**, **Sharpness**, in
+    **Their own colour** or a **Tint**, with a **Rainbow** fringe and **Twinkle**; the picture
+    and its glints, or the glints only
+  - **Halation** (Light & stylize): film's red-orange glow round bright things, on its own
+    (Film look has a simpler one): **Threshold**, **Size**, **Amount**, **Colour**, and **Round
+    the edges only** (how much the highlight itself is left alone)
+  - **Custom flare** (Light & stylize): a lens flare built from its parts, each set on its own
+    — **Glow** (size, brightness), starburst **Rays** (how many, length, brightness), a
+    **Streak** (length, brightness, colour), a **Halo** ring (radius, brightness, **Rainbow
+    halo**), and **Ghosts** along the line through the middle (how many, size, **Round**,
+    **Hexagon** or **Octagon**, brightness; **Seed** for another arrangement) — all at a
+    **Light** you drag in the Viewer, in a **Colour**, at a **Brightness**. (**Lens flare**
+    has the ready-made lenses)
   - **Anamorphic flare** (Light & stylize): long horizontal streaks out of the bright parts
     of the picture — lamps, headlights, highlights — as an anamorphic lens draws them:
     **Threshold**, **Length** (px), **Thickness**, **Brightness**, **Colour** (blue by

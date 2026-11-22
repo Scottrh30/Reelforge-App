@@ -3462,3 +3462,203 @@ fn fs_xray(in: VsOut) -> @location(0) vec4<f32> {
     let col = rgb_of(fx.p0.x) * to_linear(vec3(min(x, 1.0))) + vec3(max(x - 1.0, 0.0));
     return vec4(col * c.a, c.a);
 }
+
+// Spotlight: p0 = (centre x %, y %, size % of the height, roundness %), p1 =
+// (angle°, softness %, intensity %, colour), p2 = (darken %, beam %, lamp x %,
+// lamp y %), p3 = (pattern, pattern size %, pattern turn°).
+fn sp_pattern(kind: u32, q: vec2<f32>) -> f32 {
+    if (kind == 1u) {
+        // A window: four panes and their bars.
+        let f = abs(fract(q * 1.2 + 0.5) - 0.5);
+        return smoothstep(0.03, 0.06, min(f.x, f.y));
+    }
+    if (kind == 2u) {
+        // Light through leaves: dappled.
+        let n = vnoise(91u, q * 3.0) * 0.65 + vnoise(17u, q * 7.0) * 0.35;
+        return smoothstep(0.45, 0.6, n);
+    }
+    if (kind == 3u) {
+        return smoothstep(-0.2, 0.2, sin(q.x * 12.0));
+    }
+    if (kind == 4u) {
+        let f = fract(q * 3.0) - 0.5;
+        return 1.0 - smoothstep(0.25, 0.32, length(f));
+    }
+    if (kind == 5u) {
+        return smoothstep(-0.3, 0.3, sin(length(q) * 18.0));
+    }
+    return 1.0;
+}
+
+@fragment
+fn fs_spotlight(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let centre = fx.p0.xy / 100.0 * size;
+    let r = max(fx.p0.z / 100.0 * size.y * 0.5, 1.0);
+    let a = radians(fx.p1.x);
+    let d = p - centre;
+    let rot = vec2(cos(a) * d.x + sin(a) * d.y, -sin(a) * d.x + cos(a) * d.y);
+    let q = rot / (r * vec2(1.0, max(fx.p0.w / 100.0, 0.05)));
+    let soft = max(fx.p1.y / 100.0, 0.01);
+    var pool = 1.0 - smoothstep(1.0 - soft, 1.0, length(q));
+    // The pattern, in the pool's own frame.
+    let g = radians(fx.p3.z);
+    let qg = vec2(cos(g) * q.x + sin(g) * q.y, -sin(g) * q.x + cos(g) * q.y) * 100.0 / max(fx.p3.y, 1.0);
+    pool *= sp_pattern(u32(round(fx.p3.x)), qg);
+    let col = rgb_of(fx.p1.w);
+    let lit = c.rgb * (1.0 - fx.p2.x / 100.0) + c.rgb * col * pool * fx.p1.z / 100.0;
+    // The beam: a cone from the lamp to the pool, faint in the air.
+    let lamp = fx.p2.zw / 100.0 * size;
+    let axis = centre - lamp;
+    let l2 = max(dot(axis, axis), 1.0);
+    let t = dot(p - lamp, axis) / l2;
+    let side = abs(axis.x * (p.y - lamp.y) - axis.y * (p.x - lamp.x)) / sqrt(l2);
+    let width = mix(r * 0.08, r, clamp(t, 0.0, 1.0));
+    let beam = (1.0 - smoothstep(0.5, 1.0, side / max(width, 1.0))) * smoothstep(0.0, 0.05, t) * (1.0 - smoothstep(0.95, 1.05, t)) * mix(1.0, 0.5, clamp(t, 0.0, 1.0));
+    let air = col * beam * fx.p2.y / 100.0 * 0.35;
+    return vec4(lit + air * c.a, c.a);
+}
+
+// Gleam: the bright parts' light gathered along each spoke of a star.
+fn gl_bright(uv: vec2<f32>) -> vec3<f32> {
+    let c = textureSampleLevel(src, src_sampler, to_tex(clamp(uv, vec2(0.0), vec2(1.0))), 0.0) * inside(uv);
+    let y = dot(to_display(unpremul(c)), LUMA);
+    let t = fx.p0.x / 100.0;
+    let w = smoothstep(t, t + 0.08, y);
+    let own = mix(vec3(1.0), c.rgb / max(max3(c.rgb), 1e-4), fx.p1.z / 100.0);
+    return own * w * c.a;
+}
+
+@fragment
+fn fs_gleam(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let lines = i32(round(fx.p0.z)) + 2;
+    let len = max(fx.p0.y, 0.0);
+    let sharp = 1.0 + fx.p2.y / 100.0 * 4.0;
+    let steps = 20;
+    var acc = vec3(0.0);
+    for (var k = 0; k < lines; k++) {
+        let a = radians(fx.p0.w) + f32(k) * 3.14159265 / f32(lines);
+        let dir = vec2(cos(a), sin(a)) / size;
+        for (var s = 1; s <= steps; s++) {
+            let f = f32(s) / f32(steps);
+            let w = pow(1.0 - f, sharp);
+            var tint = vec3(1.0);
+            if (fx.p1.w > 0.0) {
+                tint = mix(vec3(1.0), hue_rgb(fract(f * 1.3) * 360.0), fx.p1.w / 100.0);
+            }
+            acc += (gl_bright(in.uv + dir * f * len) + gl_bright(in.uv - dir * f * len)) * w * tint;
+        }
+    }
+    var glints = acc / f32(steps) * rgb_of(fx.p1.y) * fx.p1.x / 100.0 * 0.6;
+    if (fx.p2.x > 0.0) {
+        let cell = vec2<u32>(ibits(in.uv.x * size.x / 24.0), ibits(in.uv.y * size.y / 24.0));
+        let ph = rnd3(cell.x, cell.y, 77u) * 6.283;
+        glints *= 1.0 - fx.p2.x / 100.0 * (0.5 + 0.5 * sin(fx.extra.y * 6.0 + ph));
+    }
+    if (u32(round(fx.p2.z)) == 1u) {
+        return vec4(glints, clamp(max3(glints), 0.0, 1.0));
+    }
+    return vec4(c.rgb + glints, max(c.a, clamp(max3(glints), 0.0, 1.0)));
+}
+
+fn ha_high(uv: vec2<f32>) -> f32 {
+    let c = textureSampleLevel(src, src_sampler, to_tex(clamp(uv, vec2(0.0), vec2(1.0))), 0.0) * inside(uv);
+    let y = dot(to_display(unpremul(c)), LUMA) * c.a;
+    let t = fx.p0.x / 100.0;
+    return smoothstep(t - 0.05, t + 0.1, y);
+}
+
+@fragment
+fn fs_halation(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let r = max(fx.p0.y, 0.0);
+    let here = ha_high(in.uv);
+    // The highlights spread over three rings (closer counting more).
+    var spread = here * 0.2;
+    var total = 0.2;
+    for (var ring = 1; ring <= 3; ring++) {
+        let rr = r * f32(ring) / 3.0;
+        let w = 1.0 / f32(ring);
+        for (var k = 0; k < 12; k++) {
+            let a = (f32(k) + f32(ring) * 0.33) * 0.5235988;
+            spread += ha_high(in.uv + vec2(cos(a), sin(a)) * rr / size) * w;
+            total += w;
+        }
+    }
+    spread /= total;
+    let glow = max(spread - here * fx.p1.x / 100.0, 0.0);
+    let dark = 1.0 - clamp(dot(to_display(unpremul(c)), LUMA), 0.0, 1.0) * 0.6;
+    let add = rgb_of(fx.p0.w) * glow * fx.p0.z / 100.0 * dark;
+    return vec4(c.rgb + add, max(c.a, clamp(max3(add), 0.0, 1.0)));
+}
+
+// A regular n-gon's "radius" at angle a (1 at its corners' circle), for
+// shaped ghosts; n = 0: round.
+fn cf_shape(q: vec2<f32>, n: f32) -> f32 {
+    if (n < 3.0) {
+        return length(q);
+    }
+    let seg = 6.2831853 / n;
+    let a = atan2(q.y, q.x) + 6.2831853;
+    let k = a - seg * floor(a / seg) - seg * 0.5;
+    return length(q) * cos(k) / cos(seg * 0.5);
+}
+
+@fragment
+fn fs_custom_flare(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let aspect = max(fx.extra.x, 1e-3);
+    let light = fx.p0.xy / 100.0;
+    // Distances in heights (so round things are round).
+    let d = (in.uv - light) * vec2(aspect, 1.0);
+    let r = length(d);
+    let tint = rgb_of(fx.p0.w);
+    var col = vec3(0.0);
+    // Glow.
+    let gs = max(fx.p1.x / 100.0 * 0.25, 1e-3);
+    col += tint * exp(-r * r / (gs * gs)) * fx.p1.y / 100.0;
+    col += tint * 0.15 * exp(-r / (gs * 3.0)) * fx.p1.y / 100.0;
+    // Starburst rays.
+    let rays = round(fx.p1.z);
+    if (rays >= 1.0) {
+        let a = atan2(d.y, d.x);
+        let spoke = pow(abs(cos(a * rays * 0.5 + fx.p4.w)), 60.0);
+        let thin = pow(abs(cos(a * rays * 0.5 * 1.7 + 1.3 + fx.p4.w)), 120.0) * 0.5;
+        let rl = max(fx.p1.w / 100.0 * 0.6, 1e-3);
+        col += tint * (spoke + thin) * exp(-r / rl) * fx.p2.x / 100.0;
+    }
+    // Streak (across).
+    let sl = max(fx.p2.y / 100.0 * 0.6, 1e-3);
+    col += rgb_of(fx.p2.w) * exp(-abs(d.y) * 220.0) * exp(-abs(d.x) / sl) * fx.p2.z / 100.0;
+    // Halo ring.
+    let hr = fx.p3.x / 100.0 * 0.5;
+    let hw = max(hr * 0.08, 0.003);
+    let ring = exp(-pow((r - hr) / hw, 2.0));
+    var halo_col = tint;
+    if (fx.p3.z > 0.5) {
+        halo_col = hue_rgb(clamp(0.5 + (r - hr) / (hw * 4.0), 0.0, 1.0) * 290.0);
+    }
+    col += halo_col * ring * fx.p3.y / 100.0 * 0.6;
+    // Ghosts along the line from the light through the middle.
+    let axis = (vec2(0.5) - light);
+    let n = i32(clamp(round(fx.p3.w), 0.0, 24.0));
+    let seed = u32(max(fx.p4.w, 0.0)) * 2654435u + 3u;
+    let shape = select(0.0, select(8.0, 6.0, round(fx.p4.y) < 1.5), round(fx.p4.y) >= 0.5);
+    for (var i = 0; i < n; i++) {
+        let k = 0.3 + rnd3(seed, u32(i), 1u) * 1.7;
+        let pos = light + axis * k;
+        let sz = max(fx.p4.x / 100.0 * 0.5 * (0.3 + rnd3(seed, u32(i), 2u) * 1.2), 1e-3);
+        let q = (in.uv - pos) * vec2(aspect, 1.0) / sz;
+        let e = cf_shape(q, shape);
+        let disc = (1.0 - smoothstep(0.85, 1.0, e)) * (0.35 + 0.65 * smoothstep(0.4, 1.0, e));
+        let hue = hue_rgb(rnd3(seed, u32(i), 3u) * 360.0);
+        col += mix(tint, hue, 0.6) * disc * fx.p4.z / 100.0 * 0.7 * (0.4 + rnd3(seed, u32(i), 4u) * 0.6);
+    }
+    let light_add = col * fx.p0.z / 100.0;
+    return vec4(c.rgb + light_add, c.a);
+}

@@ -1062,3 +1062,49 @@ fn fs_portrait(in: VsOut) -> @location(0) vec4<f32> {
     }
     return acc / max(wsum, 1e-5);
 }
+
+// Volumetric light: how much a point blocks the light (0 clear, 1 blocked):
+// with depth (fx.extra2.x = 1), what's nearer than the light; otherwise the
+// dark parts of the picture.
+fn vol_block(uv: vec2<f32>) -> f32 {
+    if (fx.extra2.x > 0.5) {
+        let ld = fx.p1.y / 100.0;
+        return smoothstep(ld + 0.02, ld + 0.1, dp_at(uv));
+    }
+    let c = textureSampleLevel(src, src_sampler, to_tex(clamp(uv, vec2(0.0), vec2(1.0))), 0.0);
+    let y = dot(to_display(unpremul(c)), vec3(0.2126, 0.7152, 0.0722)) * c.a;
+    let t = fx.p1.z / 100.0;
+    let s = max(fx.p1.w / 100.0, 0.01);
+    return 1.0 - smoothstep(t - s, t + s, y);
+}
+
+@fragment
+fn fs_volumetric(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let light = fx.p0.xy / 100.0;
+    let len = clamp(fx.p0.z / 100.0, 0.0, 1.0);
+    let n = 64;
+    // A different start for each pixel, so the steps blend rather than band.
+    let j = fract(sin(dot(in.uv * fx.extra.zw, vec2(12.9898, 78.233))) * 43758.547) / f32(n);
+    let decay = 1.0 - fx.p2.y / 100.0 * 0.06;
+    var acc = 0.0;
+    var w = 1.0;
+    var total = 0.0;
+    for (var i = 0; i < n; i++) {
+        let k = (f32(i) / f32(n) + j) * len;
+        acc += (1.0 - vol_block(in.uv + (light - in.uv) * k)) * w;
+        total += w;
+        w *= decay;
+    }
+    var shafts = acc / max(total, 1e-4);
+    // Brighter close to the light, and haze lit round it.
+    let d = (in.uv - light) * vec2(fx.extra.x, 1.0);
+    let near = 1.0 / (1.0 + dot(d, d) * 12.0);
+    shafts *= 0.35 + 0.65 * near;
+    shafts += near * near * fx.p2.x / 100.0 * 0.6;
+    let col = dp_rgb(fx.p1.x) * shafts * fx.p0.w / 100.0;
+    if (u32(round(fx.p2.z)) == 1u) {
+        return vec4(col, clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0));
+    }
+    return vec4(c.rgb + col, max(c.a, clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0)));
+}

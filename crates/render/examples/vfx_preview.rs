@@ -107,6 +107,39 @@ fn landscape() -> Vec<u8> {
     v
 }
 
+/// A dark room with a bright window (four panes, bars between) high on the left,
+/// and a figure standing in the light; a few lamps glinting on a shelf.
+fn room() -> Vec<u8> {
+    let mut v = vec![0u8; (W * H * 4) as usize];
+    for y in 0..H {
+        for x in 0..W {
+            let (fx, fy) = (x as f32 / W as f32, y as f32 / H as f32);
+            let mut c = if fy > 0.8 { [40.0, 32.0, 26.0] } else { [28.0, 26.0, 30.0] };
+            let (wx, wy) = ((fx - 0.25) / 0.12, (fy - 0.3) / 0.18);
+            if wx.abs() < 1.0 && wy.abs() < 1.0 {
+                let bar = wx.abs() < 0.06 || wy.abs() < 0.06;
+                if !bar {
+                    c = [250.0, 246.0, 232.0];
+                }
+            }
+            let (dx, dy) = (fx - 0.55, fy - 0.55);
+            if (dx.abs() < 0.035 && (-0.15..0.25).contains(&dy)) || (dx * dx * 4.0 + (dy + 0.19).powi(2) * 9.0 < 0.004) {
+                c = [14.0, 14.0, 18.0];
+            }
+            // Lamps: small bright dots along a shelf.
+            for k in 0..5 {
+                let (lx, ly) = (0.68 + k as f32 * 0.06, 0.25 + (k % 2) as f32 * 0.03);
+                if ((fx - lx) * 16.0 / 9.0).powi(2) + (fy - ly).powi(2) < 0.00012 {
+                    c = [255.0, 236.0, 190.0];
+                }
+            }
+            let i = ((y * W + x) * 4) as usize;
+            v[i..i + 4].copy_from_slice(&[c[0] as u8, c[1] as u8, c[2] as u8, 255]);
+        }
+    }
+    v
+}
+
 fn shots() -> Vec<Shot> {
     vec![
         ("turbulent", EffectKind::TurbulentDisplace, vec![(turbulent::AMOUNT, 18.0), (turbulent::SIZE, 90.0)], 0.0),
@@ -140,6 +173,14 @@ fn shots() -> Vec<Shot> {
         ("vis-thermal", EffectKind::ThermalCamera, vec![(thermal::SCALE, 1.0)], 0.3),
         ("vis-infrared", EffectKind::Infrared, vec![(infrared::MODE, 1.0)], 0.3),
         ("vis-xray", EffectKind::XRay, vec![], 0.3),
+        ("light-spot", EffectKind::Spotlight, vec![], 0.0),
+        ("light-spot-leaves", EffectKind::Spotlight, vec![(spotlight::GOBO, 2.0), (spotlight::SIZE, 60.0)], 0.0),
+        ("light-room-gleam", EffectKind::Gleam, vec![(gleam::POINTS, 1.0), (gleam::RAINBOW, 40.0)], 0.0),
+        ("light-room-halation", EffectKind::Halation, vec![], 0.0),
+        ("light-room-vol", EffectKind::VolumetricLight, vec![(volumetric::X, 22.0), (volumetric::Y, 25.0)], 0.0),
+        ("light-flare", EffectKind::CustomFlare, vec![], 0.0),
+        ("light-room-flare2", EffectKind::CustomFlare, vec![(custom_flare::RAYS, 0.0), (custom_flare::GHOST_SHAPE, 1.0), (custom_flare::X, 70.0), (custom_flare::Y, 25.0)], 0.0),
+        ("light-land-vol", EffectKind::VolumetricLight, vec![(volumetric::Y, 15.0), (volumetric::X, 60.0)], 0.0),
         ("blur-dir", EffectKind::DirectionalBlur, vec![(dir_blur::LENGTH, 60.0), (dir_blur::ANGLE, 20.0)], 0.0),
         ("blur-spin", EffectKind::RadialBlur, vec![(radial_blur::AMOUNT, 25.0)], 0.0),
         ("blur-zoom", EffectKind::RadialBlur, vec![(radial_blur::TYPE, 1.0), (radial_blur::AMOUNT, 40.0), (radial_blur::X, 30.0), (radial_blur::Y, 30.0)], 0.0),
@@ -159,6 +200,7 @@ fn main() {
     let px = picture();
     let cut = cutout();
     let land = landscape();
+    let rm = room();
     for (n, (name, kind, set, t)) in shots().into_iter().enumerate() {
         if !only.is_empty() && !only.iter().any(|o| name.starts_with(o.as_str())) {
             continue;
@@ -166,7 +208,7 @@ fn main() {
         let layer = LayerInput {
             key: n as u64 + 1,
             content_id: n as u64 + 1,
-            pixels: PixelData::Rgba(if name.starts_with("cut") { &cut } else if name.contains("land") { &land } else { &px }),
+            pixels: PixelData::Rgba(if name.starts_with("cut") { &cut } else if name.contains("land") { &land } else if name.contains("room") { &rm } else { &px }),
             pixel_size: [W, H],
             layer_size: [W as f32, H as f32],
             transform: Transform::default(),
