@@ -1,6 +1,7 @@
-//! Echo: copies of a layer from moments before, each fainter, drawn with it.
+//! Echo: copies of a layer from moments before, each fainter, drawn with it;
+//! Hold frame and Time displacement, which also show other moments.
 
-use reelforge_core::effects::echo;
+use reelforge_core::effects::{echo, hold, time_displace as td};
 use reelforge_core::{Clip, ClipId, Effect, EffectKind, FrameRate, Layer, MediaAsset, MediaId, MediaInfo, Project, Rational, Sequence, Time, VideoStreamInfo};
 use reelforge_export::{FrameProvider, Picture, Scene};
 use reelforge_media::VideoFrame;
@@ -116,4 +117,53 @@ fn added_echoes_brighten_where_they_overlap() {
     let (one, two) = (grey(&img, 53), grey(&img, 57));
     assert!(about(one, 0.5), "one echo: {one}");
     assert!(two > 240, "two added: {two}");
+}
+
+/// The bar's footage with one effect of `kind` (its settings `set`) instead of Echo.
+fn with(kind: EffectKind, set: &[(usize, f32)]) -> Project {
+    let mut p = project(&[]);
+    let mut e = Effect::new(kind);
+    for &(i, v) in set {
+        e.params[i].value = v;
+    }
+    p.sequences[0].tracks[0].clips[0].effects = vec![e];
+    p
+}
+
+/// Where the bar's left edge is along a row (the first lit pixel).
+fn bar_at(img: &[u8], y: u32) -> Option<u32> {
+    (0..W).find(|&x| img[((y * W + x) * 4) as usize] > 200)
+}
+
+#[test]
+fn hold_frame_holds_the_picture_between_its_times() {
+    // Held from 0.5 s to 1.1 s: at 0.8 and 1.0 s the bar is where it was at 0.5 s
+    // (60 px); after 1.1 s it's where it would be (at 1.2 s, 130 px).
+    let p = with(EffectKind::HoldFrame, &[(hold::FROM, 0.5), (hold::UNTIL, 1.1)]);
+    let at = |t: f64| frame(&p, t).map(|img| bar_at(&img, 45));
+    let Some(before) = at(0.3) else { return };
+    assert_eq!(before, Some(40));
+    assert_eq!(at(0.8), Some(Some(60)), "held");
+    assert_eq!(at(1.0), Some(Some(60)), "still held");
+    assert_eq!(at(1.2), Some(Some(130)), "moving again");
+    // Until −1: to the clip's end.
+    let p = with(EffectKind::HoldFrame, &[(hold::FROM, 0.5), (hold::UNTIL, -1.0)]);
+    assert_eq!(frame(&p, 1.2).map(|img| bar_at(&img, 45)), Some(Some(60)));
+}
+
+#[test]
+fn time_displacement_shows_each_band_from_its_own_moment() {
+    // 4 bands down the frame, the bottom one 0.6 s back: at 1.0 s the bar's top
+    // band shows it at 110 px, the bottom band at 50 px (0.6 s earlier), the
+    // bands between in steps.
+    let p = with(EffectKind::TimeDisplacement, &[(td::DELAY, 0.6), (td::BANDS, 4.0)]);
+    let Some(img) = frame(&p, 1.0) else { return };
+    // The bar is drawn from 30 to 60 px down: band 1 (22–45) and band 2 (45–67).
+    let (b1, b2) = (bar_at(&img, 35), bar_at(&img, 55));
+    assert_eq!(b1, Some(90), "band 1: 0.2 s back");
+    assert_eq!(b2, Some(70), "band 2: 0.4 s back");
+    // Without delay: one moment everywhere.
+    let p = with(EffectKind::TimeDisplacement, &[(td::DELAY, 0.0)]);
+    let Some(img) = frame(&p, 1.0) else { return };
+    assert_eq!((bar_at(&img, 35), bar_at(&img, 55)), (Some(110), Some(110)));
 }

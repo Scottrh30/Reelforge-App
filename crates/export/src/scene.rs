@@ -241,6 +241,28 @@ fn motion_blur(project: &Project, seq: usize, l: &mut Layer, t: Time, frame_size
     }
 }
 
+/// A layer's Hold frame: between Hold from and Hold until (seconds into the
+/// clip; until −1: to its end) the picture is the frame at Hold from, while
+/// its transform and effects carry on. The effect itself then goes.
+fn hold_frame(project: &Project, seq: usize, l: &mut Layer, t: Time, fps: f64) {
+    use reelforge_core::effects::hold;
+    let Some(i) = l.effects.iter().position(|v| v.kind == reelforge_core::EffectKind::HoldFrame) else { return };
+    let v = l.effects.remove(i).values;
+    let (from, until) = (v[hold::FROM].max(0.0) as f64, v[hold::UNTIL] as f64);
+    let c = l.clip;
+    let into = (t - c.timeline_start).as_secs_f64();
+    if !from.is_finite() || into < from || (until >= 0.0 && into >= until) {
+        return;
+    }
+    let frame = project.sequences.get(seq).map_or(Time::from_secs_f64(1.0 / fps.max(1.0)), |s| s.frame_rate.frame_duration());
+    let at = c.timeline_start + Time::from_secs_f64(from);
+    if at < c.timeline_end() {
+        l.source_time = project.clip_layer(seq, l.track, c, at, frame).source_time;
+    }
+}
+
+/// Time displacement bands' clip ids (with the band's number above bit 48).
+const SLIT_KEY: u64 = 1 << 60;
 /// Echo copies' clip ids (with the copy's number above bit 48).
 const ECHO_KEY: u64 = 1 << 61;
 
@@ -477,10 +499,13 @@ impl Scene {
             match item {
                 VideoItem::Single(mut l) => {
                     motion_blur(project, seq, &mut l, t, frame_size, fps);
+                    hold_frame(project, seq, &mut l, t, fps);
                     let echo = l.effects.iter().find(|v| v.kind == reelforge_core::EffectKind::Echo).cloned();
-                    match echo {
-                        Some(echo) => self.gather_echoes(project, seq, &l, &echo, t, frame_size, fps, &scene3d, provider, depth, &mut items)?,
-                        None => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
+                    let slit = l.effects.iter().find(|v| v.kind == reelforge_core::EffectKind::TimeDisplacement).cloned();
+                    match (slit, echo) {
+                        (Some(slit), _) => self.gather_slit_scan(project, seq, &l, &slit, t, frame_size, fps, &scene3d, provider, depth, &mut items)?,
+                        (None, Some(echo)) => self.gather_echoes(project, seq, &l, &echo, t, frame_size, fps, &scene3d, provider, depth, &mut items)?,
+                        (None, None) => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
                     }
                 }
                 VideoItem::Dissolve { from, to, mix, kind } => {
@@ -545,6 +570,49 @@ impl Scene {
             .collect();
         compositor.retain_layers(|k| keys.contains(&k));
         Ok(signature)
+    }
+
+    /// A layer with Time displacement (slit-scan): the picture cut into bands
+    /// (rows or columns), each from a moment further back (or on) — band 0 now,
+    /// the last `delay` seconds away — by copies of the layer, each cropped to
+    /// its band and read through a decoder of its own. Moments outside the
+    /// clip hold its first or last frame.
+    #[allow(clippy::too_many_arguments)]
+    fn gather_slit_scan(&mut self, project: &Project, seq: usize, l: &Layer, slit: &EffectValues, t: Time, frame_size: [u32; 2], fps: f64, scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize, items: &mut Vec<Item>) -> Result<()> {
+        use reelforge_core::effects::time_displace as td;
+        let v = |i: usize| slit.values.get(i).copied().filter(|x| x.is_finite()).unwrap_or(0.0);
+        let delay = v(td::DELAY).clamp(-10.0, 10.0) as f64;
+        let bands = (v(td::BANDS).round().max(2.0) as usize).min(td::MAX);
+        let dir = v(td::DIRECTION).round() as i32;
+        let frame = project.sequences.get(seq).map_or(Time::from_secs_f64(1.0 / fps.max(1.0)), |s| s.frame_rate.frame_duration());
+        let c = l.clip;
+        let not_slit = |x: &EffectValues| x.kind != reelforge_core::EffectKind::TimeDisplacement;
+        let clips: Vec<reelforge_core::Clip> = (0..bands).map(|b| reelforge_core::Clip { id: if b == 0 { c.id } else { ClipId(c.id.0 ^ SLIT_KEY ^ ((b as u64) << 48)) }, ..c.clone() }).collect();
+        let last = c.timeline_end() - frame;
+        for (b, cb) in clips.iter().enumerate() {
+            let k = b as f64 / (bands - 1) as f64;
+            let mut at = Time::from_secs_f64((t.as_secs_f64() - delay * k).max(0.0));
+            at = at.max(c.timeline_start).min(last.max(c.timeline_start));
+            let then = project.clip_layer(seq, l.track, cb, at, frame);
+            let mut bl = l.clone();
+            bl.clip = cb;
+            bl.source_time = then.source_time;
+            bl.effects.retain(not_slit);
+            // This band only (with whatever the layer's own crop cuts too).
+            let (lo, hi) = (b as f32 / bands as f32, (b + 1) as f32 / bands as f32);
+            let cr = &mut bl.transform.crop;
+            match dir {
+                0 => { cr[1] = cr[1].max(lo); cr[3] = cr[3].max(1.0 - hi); }
+                1 => { cr[1] = cr[1].max(1.0 - hi); cr[3] = cr[3].max(lo); }
+                2 => { cr[0] = cr[0].max(lo); cr[2] = cr[2].max(1.0 - hi); }
+                _ => { cr[0] = cr[0].max(1.0 - hi); cr[2] = cr[2].max(lo); }
+            }
+            if cr[0] + cr[2] >= 1.0 || cr[1] + cr[3] >= 1.0 {
+                continue;
+            }
+            items.extend(self.gather_retimed(project, &bl, t, frame_size, fps, scene3d, provider, depth)?);
+        }
+        Ok(())
     }
 
     /// A layer with an Echo effect: copies of it from moments before (or

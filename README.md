@@ -434,6 +434,11 @@ What works now:
     holes** closes pinholes in the matte up to that size (grow, then shrink back) and **Remove
     specks** wipes out stray dots of leftover screen (shrink, then grow back); neither moves the
     subject's edge. **View → Matte** shows the cleaned matte
+  - **Light wrap** (Keying): for a keyed or cut-out subject, the light of whatever is behind it
+    (the layers below, blurred by **Background blur**) spills **Width** pixels in round its
+    edges, by **Amount** — **Over the edges** or **Screen** (brightening only) — so it sits in
+    the shot instead of looking pasted on. It's applied as the layer is drawn over the frame,
+    with any blend mode; flat layers only (not mesh-warped or 3D)
   - **Matte choker** (Keying): works on any layer's transparency, after a key or on a cut-out
     picture. **Choke** shrinks the edge inwards (negative grows it outwards, taking the colour
     from inside), **Softness** blurs only the matte, and **Matte contrast** firms up what's half
@@ -693,6 +698,22 @@ What works now:
       from each colour (green leaves bright, blue sky dark), so it works on any footage
     - **X-ray**: the picture inverted (**Invert**) and tinted cold (**Colour**), with glowing
       **Edges**, **Contrast**, a soft **Glow**, film **Noise** and **Brightness**
+  - **Gradient ramp** (Generate): a gradient — **Linear** or **Radial** from **Point 1** to
+    **Point 2** (drag Point 1 in the Viewer), **Colour 1** to **Colour 2**, or **Four colours**,
+    each at its own point, blended between (**Blend**: how far each reaches; for two colours,
+    more eases in and out, less holds the ends). **Mix with the picture**: **Over it** (at
+    **Opacity**), **Multiply**, **Screen**, **Overlay** or **Colour only**; **Dither** so long
+    ramps don't band
+  - **Strobe** (Light & stylize): the picture flashing so many times a second (**Flashes a
+    second**, **Flash length**), from **Start at**: **To a colour**, **Blank** (see-through),
+    **Invert** or **Brighten** (a strobe light), **Random** skipping some beats, **Strength**
+  - **Time displacement** (Light & stylize): slit-scan — the picture cut into **Bands** (rows
+    or columns), each from a moment further back, up to **Most delay** seconds (negative:
+    ahead) on the far side, so moving things stretch, bend and smear. Each band reads the
+    footage on its own, so many bands of long-GOP 4K are slow; proxies help
+  - **Hold frame** (Light & stylize): the picture frozen on the frame at **Hold from** until
+    **Hold until** (seconds into the clip; −1: to its end), while the clip goes on and its other
+    effects keep moving — nothing is cut or moved on the timeline
   - **Block displacement** (Distort): blocks of the picture shoved out of place, as a broken
     signal does — **Block width** and **height**, **Amount**, **Direction** (sideways, up and
     down, both), how many (**Blocks moved**), **Changes a second** (0: held), **Size variety**
@@ -1490,7 +1511,9 @@ What works now:
     Render preview use it too. Footage deeper than 8 bits (10-bit, HDR, EXR) keeps its precision
   - **Freeze frame** (`Shift+F`, the Edit menu, or the Speed section): holds the frame at the
     playhead for 2 s (trim it to taste), splitting the clip there and pushing the rest of it
-    (and its audio) later. A freeze frame's **Play from here** turns it back into motion
+    (and its audio) later. A freeze frame's **Play from here** turns it back into motion.
+    Its effects keep moving while the picture is held (grain, shake, particles, light sweeps run
+    on the clip's own time). To hold the picture without cutting the clip, use **Hold frame**
   - Reversed footage decodes backwards, which is slow for long-GOP files: proxies (all
     keyframes) make it smooth
 - **J / K / L**: play backwards / stop / play forwards; press J or L again for 2×, 4×, 8×. Shuttling

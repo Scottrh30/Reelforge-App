@@ -344,6 +344,9 @@ pub struct Compositor {
     layer_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
     /// Draws a premultiplied group texture over the frame, per blend mode.
     group_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
+    /// Layers with Light wrap: the layer's edges take on the blurred frame under them, then blended (per mode).
+    wrap_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
+    wrap_group_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
     /// The same, depth-tested, for runs of 3D layers.
     layer_pipelines_3d: HashMap<BlendMode, wgpu::RenderPipeline>,
     group_pipelines_3d: HashMap<BlendMode, wgpu::RenderPipeline>,
@@ -563,6 +566,9 @@ impl Compositor {
                 .collect()
         };
         let layer_pipelines = per_mode("fs_layer", "fs_blend");
+        let per_mode_wrap = |entry: &str| -> HashMap<BlendMode, wgpu::RenderPipeline> { BlendMode::ALL.into_iter().enumerate().map(|(i, m)| (m, make_with(m.label(), entry, blend_state(m), Some(i)))).collect() };
+        let wrap_pipelines = per_mode_wrap("fs_wrap");
+        let wrap_group_pipelines = per_mode_wrap("fs_wrap_premul");
         let group_pipelines = per_mode("fs_layer_premul", "fs_blend_premul");
         let layer_pipelines_3d = per_mode_3d("fs_layer", false);
         let group_pipelines_3d = per_mode_3d("fs_layer_premul", false);
@@ -621,7 +627,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -816,6 +822,8 @@ impl Compositor {
             queue: queue.clone(),
             layer_pipelines,
             group_pipelines,
+            wrap_pipelines,
+            wrap_group_pipelines,
             layer_pipelines_3d,
             group_pipelines_3d,
             solid_pipelines_3d,
@@ -1842,7 +1850,7 @@ impl Compositor {
                     }
                     // Camera and light settings are never drawn (they're filtered out earlier).
                     // (Echo is drawn as copies of the layer, by the scene.)
-                    EffectKind::Camera | EffectKind::Light | EffectKind::Point | EffectKind::OpenFx | EffectKind::Echo => {}
+                    EffectKind::Camera | EffectKind::Light | EffectKind::Point | EffectKind::OpenFx | EffectKind::Echo | EffectKind::LightWrap | EffectKind::TimeDisplacement | EffectKind::HoldFrame => {}
                     EffectKind::EnergyBlade => {
                         // A seed per blade (its place in the stack) so two blades flicker apart.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
@@ -2159,6 +2167,8 @@ impl Compositor {
                     | EffectKind::EnergyDistortion
                     | EffectKind::FluidDistortion
                     | EffectKind::SmokeDistortion
+                    | EffectKind::GradientRamp
+                    | EffectKind::Strobe
                     | EffectKind::Scanlines => {
                         // A number of its own (its place in the stack), the time and the layer's size.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
@@ -2193,6 +2203,8 @@ impl Compositor {
                             EffectKind::PrismBlur => "fs_prism",
                             EffectKind::TiltShift => "fs_tilt_shift",
                             EffectKind::Scanlines => "fs_scanlines",
+                            EffectKind::Strobe => "fs_strobe",
+                            EffectKind::GradientRamp => "fs_ramp",
                             EffectKind::SmokeDistortion => "fs_smoke_distort",
                             EffectKind::FluidDistortion => "fs_fluid_distort",
                             EffectKind::EnergyDistortion => "fs_energy_distort",
@@ -2312,6 +2324,8 @@ impl Compositor {
             }
         };
         let mut ops = Vec::new();
+        // Light wrap, by the draw's uniform slot: (width px, amount, background blur px, mode).
+        let mut wraps: HashMap<usize, [f32; 4]> = HashMap::new();
         for item in items {
             match item {
                 DrawItem::Layer(l) if matches!(l.pixels, PixelData::Below) => {
@@ -2323,6 +2337,14 @@ impl Compositor {
                 DrawItem::Layer(l) => {
                     let draw = Draw { slot: slot(&mut uniforms, (l.transform, l.layer_size, l.wipe), l.mesh.as_ref(), l.space), key: l.key, fx: processed.get(&l.key).copied() };
                     with_margin(&mut uniforms, draw.slot, draw.fx, draw.key);
+                    // (flat layers only: a mesh or 3D lighting has the uniform's room)
+                    if l.space.is_none() && uniforms[draw.slot].3.is_none() {
+                        if let Some(w) = l.effects.iter().find(|e| e.kind == EffectKind::LightWrap && !e.is_identity()) {
+                            use reelforge_core::effects::light_wrap as lw;
+                            let v = &w.values;
+                            wraps.insert(draw.slot, [v[lw::WIDTH].max(0.0), v[lw::AMOUNT].max(0.0) / 100.0, v[lw::SOFTNESS].max(0.0), v[lw::MODE]]);
+                        }
+                    }
                     ops.push(Op::Frame { draw, blend: l.blend })
                 }
                 DrawItem::Dissolve { from, to, mix, dip } => {
@@ -2489,7 +2511,12 @@ impl Compositor {
                     floats.extend(pts);
                 }
                 None => {
-                    floats.extend([0.0; 4]);
+                    // (mesh.w = 1: Light wrap, its numbers in the first point)
+                    let wrap = wraps.get(&i).filter(|_| lighting.is_none());
+                    floats.extend([0.0, 0.0, 0.0, if wrap.is_some() { 1.0 } else { 0.0 }]);
+                    if let Some(w) = wrap {
+                        floats.extend(w);
+                    }
                     // A lit 3D layer: its plane, the camera and the lights where the mesh would go.
                     if let Some(l) = lighting {
                         let n = l.lights.len().min(reelforge_core::space3d::MAX_LIGHTS);
@@ -2769,17 +2796,30 @@ impl Compositor {
                 }
                 Op::Frame { draw, blend } => {
                     let Some(bind) = source(draw) else { continue };
-                    if blend.reads_backdrop() || depth_run {
+                    let wrap = wraps.contains_key(&draw.slot);
+                    if blend.reads_backdrop() || depth_run || wrap {
                         drop(frame_pass.take());
                         depth_run = false;
                     }
-                    let read = copy_backdrop(&mut enc, *blend);
+                    let read = if wrap {
+                        let extent = wgpu::Extent3d { width: targets.size[0].max(1), height: targets.size[1].max(1), depth_or_array_layers: 1 };
+                        enc.copy_texture_to_texture(targets.accum.as_image_copy(), targets.backdrop.as_image_copy(), extent);
+                        true
+                    } else {
+                        copy_backdrop(&mut enc, *blend)
+                    };
                     let pass = frame_pass.get_or_insert_with(|| pass_on(&mut enc, &targets.accum_view, wgpu::LoadOp::Load));
                     if read {
                         pass.set_bind_group(2, &targets.backdrop_bind, &[]);
                     }
                     // Processed layers are already premultiplied: draw them like a group.
-                    pass.set_pipeline(if draw.fx.is_some() || premul(draw) { &self.group_pipelines[blend] } else { &self.layer_pipelines[blend] });
+                    let pre = draw.fx.is_some() || premul(draw);
+                    pass.set_pipeline(match (wrap, pre) {
+                        (true, true) => &self.wrap_group_pipelines[blend],
+                        (true, false) => &self.wrap_pipelines[blend],
+                        (false, true) => &self.group_pipelines[blend],
+                        (false, false) => &self.layer_pipelines[blend],
+                    });
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(draw.slot)]);
                     pass.set_bind_group(1, bind, &[]);
                     pass.draw(0..verts[draw.slot], 0..1);

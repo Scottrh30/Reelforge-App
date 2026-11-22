@@ -478,3 +478,52 @@ fn fs_solid_premul(in: VsOut) -> SolidOut {
     }
     return SolidOut(c, solid_depth(in));
 }
+
+// ---- Light wrap ----------------------------------------------------------
+// The frame under the layer (the backdrop), blurred, spills onto the layer
+// near its edges. pts[0] = (width px, amount, background blur px, mode), in
+// frame pixels; the layer's own alpha round about says how near an edge is.
+fn wrap_color(c: vec4<f32>, in: VsOut) -> vec4<f32> {
+    let du = dpdx(in.uv);
+    let dv = dpdy(in.uv);
+    let w = layer.pts[0];
+    var around = 0.0;
+    for (var k = 0; k < 16; k++) {
+        let r = select(w.x, w.x * 0.5, k < 8);
+        let a = f32(k) * 0.7853982 + select(0.0, 0.39, k >= 8);
+        let off = vec2(cos(a), sin(a)) * r;
+        around += textureSampleLevel(layer_tex, layer_sampler, in.uv + du * off.x + dv * off.y, 0.0).a;
+    }
+    let edge = clamp((1.0 - around / 16.0) * 2.0, 0.0, 1.0);
+    let dims = vec2<i32>(textureDimensions(backdrop));
+    var bg = textureLoad(backdrop, clamp(vec2<i32>(in.pos.xy), vec2(0), dims - 1), 0);
+    for (var k = 0; k < 12; k++) {
+        let a = f32(k) * 0.5235988;
+        let r = select(w.z, w.z * 0.5, k < 6);
+        let q = in.pos.xy + vec2(cos(a), sin(a)) * r;
+        bg += textureLoad(backdrop, clamp(vec2<i32>(q), vec2(0), dims - 1), 0);
+    }
+    bg /= 13.0;
+    if (c.a <= 1e-5) {
+        return c;
+    }
+    let bgc = select(vec3(0.0), bg.rgb / bg.a, bg.a > 1e-5);
+    let k = clamp(edge * w.y, 0.0, 1.0);
+    var rgb = c.rgb / c.a;
+    if (w.w > 0.5) {
+        rgb = vec3(1.0) - (vec3(1.0) - rgb) * (vec3(1.0) - bgc * k);
+    } else {
+        rgb = mix(rgb, bgc, k);
+    }
+    return vec4(rgb * c.a, c.a);
+}
+
+@fragment
+fn fs_wrap(in: VsOut) -> @location(0) vec4<f32> {
+    return blend_with_backdrop(wrap_color(layer_color(in), in), in.pos.xy);
+}
+
+@fragment
+fn fs_wrap_premul(in: VsOut) -> @location(0) vec4<f32> {
+    return blend_with_backdrop(wrap_color(layer_color_premul(in), in), in.pos.xy);
+}

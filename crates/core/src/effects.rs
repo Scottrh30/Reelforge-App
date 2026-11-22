@@ -113,6 +113,8 @@ pub enum EffectKind {
     TiltShift,
     /// Lines across the picture as on a screen.
     Scanlines,
+    Strobe,
+    GradientRamp,
     SmokeDistortion,
     FluidDistortion,
     EnergyDistortion,
@@ -147,6 +149,12 @@ pub enum EffectKind {
     VolumetricLight,
     /// A magic trail of sparkles behind a moving point.
     SparkleTrail,
+    /// A keyed subject picking up the background's light round its edges (applied as it's composited).
+    LightWrap,
+    /// Each part of the picture from a different moment (slit-scan), drawn as bands of copies by the scene.
+    TimeDisplacement,
+    /// The picture held on one frame for a while, its effects still moving (by the scene).
+    HoldFrame,
     ElectricArcs,
     LightSweep,
     Hud,
@@ -1675,6 +1683,55 @@ pub mod smoke_distort {
     pub const SEED: usize = 12;
     pub const HEIGHT: usize = 13;
 }
+pub mod ramp {
+    pub const SHAPE: usize = 0;
+    pub const X1: usize = 1;
+    pub const Y1: usize = 2;
+    pub const X2: usize = 3;
+    pub const Y2: usize = 4;
+    pub const COLOR1: usize = 5;
+    pub const COLOR2: usize = 6;
+    pub const X3: usize = 7;
+    pub const Y3: usize = 8;
+    pub const X4: usize = 9;
+    pub const Y4: usize = 10;
+    pub const COLOR3: usize = 11;
+    pub const COLOR4: usize = 12;
+    pub const BLEND: usize = 13;
+    pub const OPACITY: usize = 14;
+    pub const MODE: usize = 15;
+    pub const DITHER: usize = 16;
+}
+pub mod strobe {
+    pub const RATE: usize = 0;
+    pub const ON: usize = 1;
+    pub const MODE: usize = 2;
+    pub const COLOR: usize = 3;
+    pub const START: usize = 4;
+    pub const RANDOM: usize = 5;
+    pub const STRENGTH: usize = 6;
+    pub const SEED: usize = 7;
+}
+/// Light wrap's parameters (in frame pixels).
+pub mod light_wrap {
+    pub const WIDTH: usize = 0;
+    pub const AMOUNT: usize = 1;
+    pub const SOFTNESS: usize = 2;
+    pub const MODE: usize = 3;
+}
+/// Time displacement's parameters.
+pub mod time_displace {
+    pub const DELAY: usize = 0;
+    pub const DIRECTION: usize = 1;
+    pub const BANDS: usize = 2;
+    /// Most bands (copies of the layer) drawn.
+    pub const MAX: usize = 48;
+}
+/// Hold frame's parameters (seconds into the clip).
+pub mod hold {
+    pub const FROM: usize = 0;
+    pub const UNTIL: usize = 1;
+}
 pub mod ripple {
     pub const X: usize = 0;
     pub const Y: usize = 1;
@@ -3064,6 +3121,50 @@ const SMOKEDISTORTION: [ParamSpec; 14] = [
     spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
     spec("Height from the bottom", 50.0, 1.0, 100.0, " %", 0.5),
 ];
+const GRADIENTRAMP: [ParamSpec; 17] = [
+    choice("Shape", &["Linear", "Radial", "Four colours"]),
+    spec("Point 1 X", 0.0, -100.0, 200.0, " %", 0.2),
+    spec("Point 1 Y", 0.0, -100.0, 200.0, " %", 0.2),
+    spec("Point 2 X", 100.0, -100.0, 200.0, " %", 0.2),
+    spec("Point 2 Y", 100.0, -100.0, 200.0, " %", 0.2),
+    color("Colour 1", 0x1b2a6b),
+    color("Colour 2", 0xf2a65a),
+    spec("Point 3 X", 100.0, -100.0, 200.0, " %", 0.2),
+    spec("Point 3 Y", 0.0, -100.0, 200.0, " %", 0.2),
+    spec("Point 4 X", 0.0, -100.0, 200.0, " %", 0.2),
+    spec("Point 4 Y", 100.0, -100.0, 200.0, " %", 0.2),
+    color("Colour 3", 0xd04a8a),
+    color("Colour 4", 0x2fb5a8),
+    spec("Blend", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    choice("Mix with the picture", &["Over it", "Multiply", "Screen", "Overlay", "Colour only"]),
+    spec("Dither", 50.0, 0.0, 100.0, " %", 0.5),
+];
+const STROBE: [ParamSpec; 8] = [
+    spec("Flashes a second", 4.0, 0.05, 60.0, "", 0.05),
+    spec("Flash length", 30.0, 1.0, 100.0, " % of each", 0.5),
+    choice("Flash", &["To a colour", "Blank (see-through)", "Invert", "Brighten (a strobe light)"]),
+    color("Colour", 0xffffff),
+    spec("Start at", 0.0, 0.0, 36000.0, " s", 0.01),
+    spec("Random", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Strength", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const LIGHT_WRAP: [ParamSpec; 4] = [
+    spec("Width", 12.0, 0.0, 500.0, " px", 0.2),
+    spec("Amount", 60.0, 0.0, 200.0, " %", 0.5),
+    spec("Background blur", 20.0, 0.0, 500.0, " px", 0.2),
+    choice("Wrap", &["Over the edges", "Screen (brighten only)"]),
+];
+const TIME_DISPLACE: [ParamSpec; 3] = [
+    spec("Most delay", 1.0, -10.0, 10.0, " s", 0.01),
+    choice("Direction", &["Top now, bottom earlier", "Bottom now, top earlier", "Left now, right earlier", "Right now, left earlier"]),
+    spec("Bands", 24.0, 2.0, 48.0, "", 0.1),
+];
+const HOLD_FRAME: [ParamSpec; 2] = [
+    spec("Hold from", 1.0, 0.0, 36000.0, " s", 0.01),
+    spec("Hold until", 3.0, -1.0, 36000.0, " s", 0.01),
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -3273,7 +3374,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 101] = [
+    pub const ALL: [EffectKind; 106] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -3339,6 +3440,8 @@ impl EffectKind {
         EffectKind::PrismBlur,
         EffectKind::TiltShift,
         EffectKind::Scanlines,
+        EffectKind::Strobe,
+        EffectKind::GradientRamp,
         EffectKind::SmokeDistortion,
         EffectKind::FluidDistortion,
         EffectKind::EnergyDistortion,
@@ -3366,6 +3469,9 @@ impl EffectKind {
         EffectKind::PortraitBlur,
         EffectKind::VolumetricLight,
         EffectKind::SparkleTrail,
+        EffectKind::LightWrap,
+        EffectKind::TimeDisplacement,
+        EffectKind::HoldFrame,
         EffectKind::ElectricArcs,
         EffectKind::LightSweep,
         EffectKind::Hud,
@@ -3463,6 +3569,9 @@ impl EffectKind {
             EffectKind::LightSweep => "Light sweep",
             EffectKind::ElectricArcs => "Electric arcs",
             EffectKind::DepthMap => "Depth map",
+            EffectKind::LightWrap => "Light wrap",
+            EffectKind::TimeDisplacement => "Time displacement",
+            EffectKind::HoldFrame => "Hold frame",
             EffectKind::SparkleTrail => "Sparkle trail",
             EffectKind::VolumetricLight => "Volumetric light",
             EffectKind::PortraitBlur => "Portrait blur",
@@ -3489,6 +3598,8 @@ impl EffectKind {
             EffectKind::EnergyDistortion => "Energy distortion",
             EffectKind::FluidDistortion => "Fluid distortion",
             EffectKind::SmokeDistortion => "Smoke distortion",
+            EffectKind::GradientRamp => "Gradient ramp",
+            EffectKind::Strobe => "Strobe",
             EffectKind::Scanlines => "Scanlines",
 
             EffectKind::Lightning => "Lightning",
@@ -3541,6 +3652,8 @@ impl EffectKind {
             EffectKind::PortraitBlur => EffectCategory::BlurSharpen,
             EffectKind::VolumetricLight => EffectCategory::Stylize,
             EffectKind::SparkleTrail => EffectCategory::Generate,
+            EffectKind::LightWrap => EffectCategory::Keying,
+            EffectKind::TimeDisplacement | EffectKind::HoldFrame => EffectCategory::Stylize,
             EffectKind::DirectionalBlur => EffectCategory::BlurSharpen,
             EffectKind::RadialBlur => EffectCategory::BlurSharpen,
             EffectKind::MotionBlur => EffectCategory::BlurSharpen,
@@ -3561,6 +3674,8 @@ impl EffectKind {
             EffectKind::EnergyDistortion => EffectCategory::Distort,
             EffectKind::FluidDistortion => EffectCategory::Distort,
             EffectKind::SmokeDistortion => EffectCategory::Distort,
+            EffectKind::GradientRamp => EffectCategory::Generate,
+            EffectKind::Strobe => EffectCategory::Stylize,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -3608,6 +3723,9 @@ impl EffectKind {
             EffectKind::LightSweep => "A sheen of light passing over a title or logo, like light catching chrome or glass: its angle, width and softness, when it passes and how long it takes (or keyframe Position), and whether it lights only the shape, only its bright parts, or everything.",
             EffectKind::ElectricArcs => "Crackling electricity crawling over the edges of the layer’s shape — a keyed person, a title, a logo — and jumping off them: thin, branching, flickering arcs with a glow, in the colour you choose.",
             EffectKind::DepthMap => "How far away each part of the footage is, worked out by the depth model (Work out depth): shown as a picture (near is white), as fog that thickens with distance, or as a key that keeps what's near",
+            EffectKind::LightWrap => "For a keyed or cut-out subject: the light of whatever is behind it spills round its edges, so it sits in the shot instead of looking pasted on",
+            EffectKind::TimeDisplacement => "Slit-scan: each band of the picture from a different moment, so moving things stretch, bend and smear across it (rows or columns, earlier towards one side)",
+            EffectKind::HoldFrame => "Freezes the picture on one frame from a moment until another, while the clip goes on: its other effects keep moving, and nothing is cut or moved on the timeline",
             EffectKind::SparkleTrail => "A magic trail behind a moving point: a glowing streak and sparkles shed along it that drift, fall, twinkle and fade. Keyframe the Head (drag it in the Viewer) or send it along one of the layer's masks",
             EffectKind::VolumetricLight => "Shafts of light through hazy air from a light you place, shadowed by what stands in front of it: by the footage's depth (Work out depth), or by its dark parts",
             EffectKind::PortraitBlur => "A portrait mode: what's in focus stays sharp and everything nearer or farther blurs like a wide-open lens, round highlights and all, by the footage's depth (Work out depth)",
@@ -3634,6 +3752,8 @@ impl EffectKind {
             EffectKind::EnergyDistortion => "The air rippling with energy: a fast, crackling distortion that bends the picture, with an electric glow along its ridges if you like, everywhere or in a circle",
             EffectKind::FluidDistortion => "The picture seen through moving liquid: slow swirls and flowing ripples that bend it, drifting in a direction, everywhere or in a circle",
             EffectKind::SmokeDistortion => "Rising, curling smoke bending the picture behind it — the wavering air above a fire or out of a vent — with a faint smoky tint if you like, everywhere, from the bottom or in a circle",
+            EffectKind::GradientRamp => "A gradient: from one colour to another in a line or a circle, or four colours each at a point and blended between, over the picture or blended with it",
+            EffectKind::Strobe => "A strobe: the picture flashing to a colour, blanking out, inverting or lit by bright flashes, so many times a second, each flash so long, regularly or at random",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
@@ -3754,6 +3874,9 @@ impl EffectKind {
             EffectKind::PortraitBlur => &PORTRAIT,
             EffectKind::VolumetricLight => &VOLUMETRIC,
             EffectKind::SparkleTrail => &SPARKLE,
+            EffectKind::LightWrap => &LIGHT_WRAP,
+            EffectKind::TimeDisplacement => &TIME_DISPLACE,
+            EffectKind::HoldFrame => &HOLD_FRAME,
             EffectKind::DirectionalBlur => &DIRECTIONALBLUR,
             EffectKind::RadialBlur => &RADIALBLUR,
             EffectKind::MotionBlur => &MOTIONBLUR,
@@ -3774,6 +3897,8 @@ impl EffectKind {
             EffectKind::EnergyDistortion => &ENERGYDISTORTION,
             EffectKind::FluidDistortion => &FLUIDDISTORTION,
             EffectKind::SmokeDistortion => &SMOKEDISTORTION,
+            EffectKind::GradientRamp => &GRADIENTRAMP,
+            EffectKind::Strobe => &STROBE,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -3958,6 +4083,9 @@ impl EffectValues {
             EffectKind::ElectricArcs => v[arcs::AMOUNT] == 0.0 || v[arcs::BRIGHTNESS] == 0.0,
             EffectKind::DepthMap => self.table.is_none(),
             EffectKind::VolumetricLight => v[volumetric::INTENSITY] == 0.0,
+            EffectKind::LightWrap => v[light_wrap::AMOUNT] == 0.0 || v[light_wrap::WIDTH] < 0.25,
+            EffectKind::TimeDisplacement => v[time_displace::DELAY] == 0.0,
+            EffectKind::HoldFrame => false,
             EffectKind::SparkleTrail => self.table.is_none() || v[sparkle::BRIGHTNESS] == 0.0,
             EffectKind::PortraitBlur => self.table.is_none() || (v[portrait::BLUR] < 0.5 && v[portrait::SHOW] == 0.0),
             EffectKind::Relight => self.table.is_none() || (v[relight::INTENSITY] == 0.0 && v[relight::DARKEN] == 0.0),
@@ -3983,6 +4111,8 @@ impl EffectValues {
             EffectKind::EnergyDistortion => v[energy_distort::AMOUNT] == 0.0 && v[energy_distort::GLOW] == 0.0,
             EffectKind::FluidDistortion => v[fluid_distort::AMOUNT] == 0.0,
             EffectKind::SmokeDistortion => v[smoke_distort::AMOUNT] == 0.0 && v[smoke_distort::TINT] == 0.0,
+            EffectKind::GradientRamp => v[ramp::OPACITY] == 0.0,
+            EffectKind::Strobe => v[strobe::STRENGTH] == 0.0,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
 
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
@@ -4061,6 +4191,7 @@ impl EffectValues {
             || (self.kind == EffectKind::EnergyDistortion && (v[energy_distort::SPEED] > 0.0))
             || (self.kind == EffectKind::FluidDistortion && (v[fluid_distort::SPEED] > 0.0 || v[fluid_distort::FLOW] > 0.0))
             || (self.kind == EffectKind::SmokeDistortion && (v[smoke_distort::RISE] != 0.0 || v[smoke_distort::TURBULENCE] > 0.0))
+            || (self.kind == EffectKind::Strobe && (true))
             || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)
             || (self.kind == EffectKind::WaveWarp && v[wave::SPEED] != 0.0)
             || (self.kind == EffectKind::NeonPath && (v[neonpath::FLICKER] > 0.0 || v[neonpath::DASH_SPEED] != 0.0 || v[neonpath::SWITCH_ON] > 0.0))

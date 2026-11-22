@@ -4133,3 +4133,111 @@ fn fs_smoke_distort(in: VsOut) -> @location(0) vec4<f32> {
     let tint = wisp * fx.p1.x / 100.0;
     return vec4(mix(c.rgb, rgb_of(fx.p1.y) * max(c.a, tint), tint), max(c.a, tint));
 }
+
+// Gradient ramp: p0 = (shape, p1 x %, p1 y %, p2 x %), p1 = (p2 y %, colour 1,
+// colour 2, p3 x %), p2 = (p3 y %, p4 x %, p4 y %, colour 3), p3 = (colour 4,
+// blend %, opacity %, mix mode), p4.x = dither %. Colours blend as the eye
+// sees them (in display values), then back to linear.
+@fragment
+fn fs_ramp(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let a = vec2(fx.p0.y, fx.p0.z) / 100.0 * size;
+    let b = vec2(fx.p0.w, fx.p1.x) / 100.0 * size;
+    let c1 = to_display(rgb_of(fx.p1.y));
+    let c2 = to_display(rgb_of(fx.p1.z));
+    let shape = u32(round(fx.p0.x));
+    var g: vec3<f32>;
+    if (shape == 2u) {
+        // Four colours, each at its point: weighted by closeness (Blend: how far they reach).
+        let pts = array<vec2<f32>, 4>(a, b, vec2(fx.p1.w, fx.p2.x) / 100.0 * size, vec2(fx.p2.y, fx.p2.z) / 100.0 * size);
+        let cols = array<vec3<f32>, 4>(c1, c2, to_display(rgb_of(fx.p2.w)), to_display(rgb_of(fx.p3.x)));
+        let pw = mix(6.0, 1.2, clamp(fx.p3.y / 100.0, 0.0, 1.0));
+        var acc = vec3(0.0);
+        var wsum = 0.0;
+        let diag = length(size);
+        for (var i = 0; i < 4; i++) {
+            let w = 1.0 / pow(max(length(p - pts[i]) / diag, 1e-4), pw);
+            acc += cols[i] * w;
+            wsum += w;
+        }
+        g = acc / max(wsum, 1e-6);
+    } else {
+        let ab = b - a;
+        var t: f32;
+        if (shape == 1u) {
+            t = length(p - a) / max(length(ab), 1e-3);
+        } else {
+            t = dot(p - a, ab) / max(dot(ab, ab), 1e-3);
+        }
+        t = clamp(t, 0.0, 1.0);
+        // Blend: 50 % even; higher eases in and out, lower holds the ends longer.
+        let k = clamp(fx.p3.y / 100.0, 0.0, 1.0);
+        if (k >= 0.5) {
+            t = mix(t, smoothstep(0.0, 1.0, t), (k - 0.5) * 2.0);
+        } else {
+            t = mix(t, smoothstep(0.25, 0.75, t), (0.5 - k) * 2.0);
+        }
+        g = mix(c1, c2, t);
+    }
+    // Dither so long ramps don't band.
+    let n = rnd3(ibits(p.x), ibits(p.y), 913u) - 0.5;
+    g += vec3(n / 255.0 * fx.p4.x / 100.0 * 2.0);
+    let ramp = to_linear(clamp(g, vec3(0.0), vec3(1.0)));
+    let op = clamp(fx.p3.z / 100.0, 0.0, 1.0);
+    let base = unpremul(c);
+    let mode = u32(round(fx.p3.w));
+    if (mode == 0u) {
+        // Over it: the ramp in front, the picture showing through by opacity.
+        let a2 = mix(c.a, 1.0, op);
+        let rgb = mix(c.rgb, ramp, op);
+        return vec4(rgb, a2);
+    }
+    var mixed: vec3<f32>;
+    let bd = to_display(base);
+    let rd = to_display(ramp);
+    if (mode == 1u) {
+        mixed = base * ramp;
+    } else if (mode == 2u) {
+        mixed = 1.0 - (1.0 - base) * (1.0 - ramp);
+    } else if (mode == 3u) {
+        mixed = to_linear(select(1.0 - 2.0 * (1.0 - bd) * (1.0 - rd), 2.0 * bd * rd, bd < vec3(0.5)));
+    } else {
+        // Colour only: the ramp's hue and saturation, the picture's brightness.
+        let y = dot(bd, vec3(0.2126, 0.7152, 0.0722));
+        let ry = dot(rd, vec3(0.2126, 0.7152, 0.0722));
+        mixed = to_linear(clamp(rd + (y - ry), vec3(0.0), vec3(1.0)));
+    }
+    return vec4(mix(base, mixed, op) * c.a, c.a);
+}
+
+// Strobe: p0 = (flashes a second, flash length %, mode, colour), p1 = (start s,
+// random %, strength %, seed). With Random, each beat flashes or not by chance.
+@fragment
+fn fs_strobe(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let since = fx.extra.y - fx.p1.x;
+    if (since < 0.0) {
+        return c;
+    }
+    let beats = since * max(fx.p0.x, 0.01);
+    let beat = floor(beats);
+    var on = select(0.0, 1.0, beats - beat < clamp(fx.p0.y / 100.0, 0.0, 1.0));
+    if (fx.p1.y > 0.0 && rnd3(ibits(beat), u32(max(fx.p1.w, 0.0)), 7u) < fx.p1.y / 100.0) {
+        on = 0.0;
+    }
+    let k = on * clamp(fx.p1.z / 100.0, 0.0, 4.0);
+    let mode = u32(round(fx.p0.z));
+    if (mode == 1u) {
+        return c * (1.0 - min(k, 1.0));
+    }
+    if (mode == 2u) {
+        let inv = (vec3(1.0) - to_display(unpremul(c)));
+        return vec4(mix(c.rgb, to_linear(inv) * c.a, min(k, 1.0)), c.a);
+    }
+    if (mode == 3u) {
+        return vec4(c.rgb + c.rgb * rgb_of(fx.p0.w) * k * 2.0 + rgb_of(fx.p0.w) * c.a * k * 0.15, c.a);
+    }
+    return vec4(mix(c.rgb, rgb_of(fx.p0.w) * c.a, min(k, 1.0)), c.a);
+}

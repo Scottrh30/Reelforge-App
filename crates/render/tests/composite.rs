@@ -2759,6 +2759,63 @@ fn face_beauty_smooths_the_face_and_nothing_else() {
     assert_eq!(px(&px_out, w, 40, 50), px(&px_out, w, 41, 50));
 }
 
+/// Gradient ramp: its two ends' colours, and four colours at their corners;
+/// strobe: flashes on its beat and not between; light wrap: a cut-out's edge
+/// takes on the background's colour, its middle doesn't.
+#[test]
+fn ramps_strobes_and_light_wrap() {
+    use reelforge_core::effects::{light_wrap as lw, ramp as rp, strobe as sb};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [100u8, 100, 100, 255]).collect();
+    let mut n = 9600;
+    let mut draw = |c: &mut Compositor, kind: EffectKind, set: &[(usize, f32)], t: f32| {
+        n += 1;
+        let mut v = fx(kind, set);
+        v.time = t;
+        let mut l = layer(1, &grey, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let near = |a: [u8; 4], b: [u8; 3]| (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= 6);
+    // Linear, top-left to bottom-right, red to blue.
+    let lin = draw(&mut c, EffectKind::GradientRamp, &[(rp::COLOR1, 0xff0000 as f32), (rp::COLOR2, 0x0000ff as f32), (rp::DITHER, 0.0)], 0.0);
+    assert!(near(px(&lin, w, 0, 0), [255, 0, 0]) && near(px(&lin, w, 159, 89), [0, 0, 255]), "{:?} {:?}", px(&lin, w, 0, 0), px(&lin, w, 159, 89));
+    let mid = px(&lin, w, 80, 45);
+    assert!((100..160).contains(&mid[0]) && (100..160).contains(&mid[2]), "halfway: {mid:?}");
+    // Four colours: each corner its own.
+    let four = draw(&mut c, EffectKind::GradientRamp, &[(rp::SHAPE, 2.0), (rp::COLOR1, 0xff0000 as f32), (rp::COLOR2, 0x00ff00 as f32), (rp::COLOR3, 0x0000ff as f32), (rp::COLOR4, 0xffff00 as f32), (rp::DITHER, 0.0), (rp::BLEND, 0.0)], 0.0);
+    assert!(near(px(&four, w, 1, 1), [255, 0, 0]) && near(px(&four, w, 158, 88), [0, 255, 0]) && near(px(&four, w, 158, 1), [0, 0, 255]) && near(px(&four, w, 1, 88), [255, 255, 0]));
+    // Multiply at half: the picture kept, tinted.
+    let mul = draw(&mut c, EffectKind::GradientRamp, &[(rp::MODE, 1.0), (rp::COLOR1, 0xffffff as f32), (rp::COLOR2, 0xffffff as f32)], 0.0);
+    assert!(near(px(&mul, w, 80, 45), [100, 100, 100]), "white multiplies to the picture");
+    // Strobe, 2 a second, 25 % on, to white: on at 0.1 s, off at 0.3 s.
+    let on = draw(&mut c, EffectKind::Strobe, &[(sb::RATE, 2.0), (sb::ON, 25.0)], 0.1);
+    let off = draw(&mut c, EffectKind::Strobe, &[(sb::RATE, 2.0), (sb::ON, 25.0)], 0.3);
+    assert!(near(px(&on, w, 80, 45), [255, 255, 255]) && near(px(&off, w, 80, 45), [100, 100, 100]));
+    let blank = draw(&mut c, EffectKind::Strobe, &[(sb::MODE, 1.0)], 0.05);
+    assert!(near(px(&blank, w, 80, 45), [0, 0, 0]), "blanked: {:?}", px(&blank, w, 80, 45));
+    // Light wrap: a grey square cut-out over red.
+    let red: Vec<u8> = (0..w * h).flat_map(|_| [230u8, 20, 20, 255]).collect();
+    let square: Vec<u8> = (0..w * h).flat_map(|i| if (40..120).contains(&(i % w)) && (15..75).contains(&(i / w)) { [100u8, 100, 100, 255] } else { [0, 0, 0, 0] }).collect();
+    let mut wrapped = |c: &mut Compositor, amount: f32| {
+        n += 1;
+        let bg = layer(1, &red, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        let mut fg = layer(2, &square, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        fg.content_id = n;
+        c.render([w, h], &[bg, with_fx(fg, vec![fx(EffectKind::LightWrap, &[(lw::AMOUNT, amount), (lw::WIDTH, 10.0)])])]);
+        c.read_output().unwrap()
+    };
+    let lit = wrapped(&mut c, 100.0);
+    let edge = px(&lit, w, 41, 45);
+    assert!(edge[0] as i32 > edge[1] as i32 + 50, "the edge takes the red: {edge:?}");
+    assert!(near(px(&lit, w, 80, 45), [100, 100, 100]), "the middle doesn't: {:?}", px(&lit, w, 80, 45));
+    assert!(near(px(&lit, w, 10, 10), [230, 20, 20]), "the background as it was");
+    let none = wrapped(&mut c, 0.0);
+    assert!(near(px(&none, w, 41, 45), [100, 100, 100]), "no wrap: {:?}", px(&none, w, 41, 45));
+}
+
 /// The distortion pack moves the picture where and how it says: blocks only
 /// sideways, derez into flat blocks (and away), energy only in its circle,
 /// smoke only near the bottom; camera shake keeps still with no amounts, and a

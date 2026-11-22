@@ -449,6 +449,11 @@ mod tests {
         assert_eq!(q.tracks[2].clip_at(s(3.5)).unwrap().media_at(s(3.5)), s(3.5));
         // Trimming a freeze frame is unlimited (it's a still now).
         assert_eq!(p.clip_limits(f).0, Time(-(i64::MAX / 4)));
+        // Its picture holds, but its effects keep moving: they run on the clip's own time.
+        let mut f = f.clone();
+        f.effects.push(crate::effects::Effect::new(crate::effects::EffectKind::CameraShake));
+        let at = |t: f64| f.effects_sized(s(t), s(1.0 / 30.0), [100.0, 100.0])[0].time;
+        assert!(at(2.5) > at(1.5) + 0.9, "effects move on: {} → {}", at(1.5), at(2.5));
         u.undo(&mut p);
         assert_eq!(p.sequences[0].tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 3);
     }

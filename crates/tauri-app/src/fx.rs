@@ -285,6 +285,14 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 },
                 points: if let Some(d) = plug.as_ref().filter(|_| fx.kind == EffectKind::Plugin) {
                     d.points.iter().map(|p| PointView { param: p.x, label: p.name.clone(), relative: None, line_to: p.line_to }).collect()
+                } else if fx.kind == EffectKind::GradientRamp {
+                    use reelforge_core::effects::ramp;
+                    let mut v = vec![PointView { param: ramp::X1, label: "Point 1".into(), relative: None, line_to: None }, PointView { param: ramp::X2, label: "Point 2".into(), relative: None, line_to: None }];
+                    if fx.params.get(ramp::SHAPE).is_some_and(|p| p.value >= 1.5) {
+                        v.push(PointView { param: ramp::X3, label: "Point 3".into(), relative: None, line_to: None });
+                        v.push(PointView { param: ramp::X4, label: "Point 4".into(), relative: None, line_to: None });
+                    }
+                    v
                 } else if fx.kind == EffectKind::BlasterFire {
                     vec![PointView { param: 0, label: "Gun".into(), relative: None, line_to: None }, PointView { param: 2, label: "Target".into(), relative: None, line_to: None }]
                 } else if matches!(fx.kind, EffectKind::WireRemoval | EffectKind::Lightning) {
