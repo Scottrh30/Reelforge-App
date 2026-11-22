@@ -3662,3 +3662,140 @@ fn fs_custom_flare(in: VsOut) -> @location(0) vec4<f32> {
     let light_add = col * fx.p0.z / 100.0;
     return vec4(c.rgb + light_add, c.a);
 }
+
+// Force field: p0 = (x %, y %, radius % of the height, roundness %), p1 =
+// (colour, rim %, fill %, pattern), p2 = (pattern size px, pattern %, bend px,
+// shimmer %), p3 = (power %, hit at s, hit angle°, hit size %).
+fn ff_hex(p: vec2<f32>) -> f32 {
+    // Distance to the nearest hexagon edge (0 on the edge, 0.5 at the middle).
+    let s = vec2(1.0, 1.7320508);
+    let a = p - s * floor(p / s + 0.5);
+    let b = p - s * floor((p - s * 0.5) / s + 0.5) - s * 0.5;
+    let g = select(b, a, dot(a, a) < dot(b, b));
+    let q = abs(g);
+    return 0.5 - max(dot(q, normalize(vec2(1.0, 1.7320508))), q.x);
+}
+
+@fragment
+fn fs_force_field(in: VsOut) -> @location(0) vec4<f32> {
+    let c0 = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let t = fx.extra.y;
+    let power = clamp(fx.p3.x / 100.0, 0.0, 1.0);
+    let p = in.uv * size;
+    let centre = fx.p0.xy / 100.0 * size;
+    let r = max(fx.p0.z / 100.0 * size.y * 0.5 * smoothstep(0.0, 0.6, power), 0.5);
+    let q = (p - centre) / (r * vec2(1.0, max(fx.p0.w / 100.0, 0.1)));
+    let d = length(q);
+    if (d > 1.15) {
+        return c0;
+    }
+    let inside = 1.0 - smoothstep(0.985, 1.0, d);
+    let z = sqrt(max(1.0 - d * d, 0.0));
+    // The picture behind, bent as through a glass ball.
+    let bend = q * (1.0 - z) * fx.p2.z / size * inside;
+    let c = textureSampleLevel(src, src_sampler, to_tex(clamp(in.uv - bend, vec2(0.0), vec2(1.0))), 0.0);
+    let col = rgb_of(fx.p1.x);
+    // Rim (brighter where the surface turns away) and a faint glow just outside.
+    let fres = pow(1.0 - z, 3.0) * inside;
+    let halo = exp(-max(d - 1.0, 0.0) * 40.0) * (1.0 - inside) * select(0.0, 1.0, d >= 1.0);
+    var light = (fres + halo * 0.6) * fx.p1.y / 100.0 + fx.p1.z / 100.0 * inside;
+    // The pattern over the surface, flowing slowly, brighter towards the rim.
+    let ps = max(fx.p2.x, 1.0);
+    let sp = q * r / (0.55 + 0.45 * z) / ps + vec2(0.0, t * 0.05 * fx.p2.w / 100.0);
+    let kind = u32(round(fx.p1.w));
+    var pat = 0.0;
+    if (kind == 1u) {
+        pat = 1.0 - smoothstep(0.0, 0.06, ff_hex(sp));
+    } else if (kind == 2u) {
+        let f = abs(fract(sp) - 0.5);
+        pat = 1.0 - smoothstep(0.0, 0.06, 0.5 - max(f.x, f.y));
+    } else if (kind == 3u) {
+        pat = 0.5 + 0.5 * sin(d * r / ps * 6.2831853 - t * 3.0);
+        pat = pat * pat;
+    }
+    let shimmer = 0.6 + 0.4 * vnoise(23u, q * 3.0 + vec2(t * 0.3 * fx.p2.w / 100.0, -t * 0.2 * fx.p2.w / 100.0));
+    light += pat * fx.p2.y / 100.0 * (0.3 + 0.7 * (1.0 - z)) * shimmer * inside;
+    // A hit: ripples spreading over the surface from a point on its rim.
+    if (fx.p3.y >= 0.0 && t >= fx.p3.y) {
+        let since = t - fx.p3.y;
+        let ha = radians(fx.p3.z);
+        let hit = vec2(cos(ha), sin(ha)) * 0.92;
+        let dh = length(q - hit);
+        let ring = since * 2.2 * fx.p3.w / 100.0;
+        let w = 0.08 * fx.p3.w / 100.0 + 0.02;
+        let wave = exp(-pow((dh - ring) / w, 2.0)) * exp(-since * 2.5);
+        let flash = exp(-dh * dh / (w * w * 4.0)) * exp(-since * 8.0) * 2.0;
+        light += (wave * 2.5 + flash) * inside * (0.6 + pat);
+    }
+    light *= power;
+    let base = mix(c0, c, inside);
+    return vec4(base.rgb + col * light * max(base.a, 0.0) + col * light * (1.0 - base.a) * 0.7, max(base.a, clamp(light, 0.0, 1.0)));
+}
+
+// Teleport: p0 = (in/out, start s, takes s, style), p1 = (colour, glow %,
+// sparkles %, column width %), p2.x = seed. `a` is how far it has appeared.
+@fragment
+fn fs_teleport(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let t = fx.extra.y;
+    let p = clamp((t - fx.p0.y) / max(fx.p0.z, 0.01), 0.0, 1.0);
+    let a = select(p, 1.0 - p, round(fx.p0.x) >= 0.5);
+    let col = rgb_of(fx.p1.x);
+    let glow = fx.p1.y / 100.0;
+    let seed = u32(max(fx.p2.x, 0.0)) * 7919u + 1u;
+    let style = u32(round(fx.p0.w));
+    let px = in.uv * size;
+    // The layer's shape, a little spread (for light round it).
+    var shape = c.a;
+    for (var k = 0; k < 8; k++) {
+        let ang = f32(k) * 0.7853982;
+        shape = max(shape, textureSampleLevel(src, src_sampler, to_tex(clamp(in.uv + vec2(cos(ang), sin(ang)) * 6.0 / size, vec2(0.0), vec2(1.0))), 0.0).a * 0.6);
+    }
+    var shown = a;
+    var light = 0.0;
+    if (style == 0u) {
+        // Sparkle column: the layer shimmers in, cell by cell.
+        let cell = floor(px / 3.0);
+        let n = rnd3(ibits(cell.x), ibits(cell.y), seed);
+        shown = smoothstep(n - 0.15, n + 0.15, a * 1.3 - 0.15);
+        light = (1.0 - abs(a * 2.0 - 1.0)) * shape * 0.7;
+    } else if (style == 1u) {
+        // Scan line: a bright line sweeping up, the layer below it.
+        let line = 1.0 - in.uv.y;
+        let edge = a * 1.1 - 0.05;
+        shown = 1.0 - smoothstep(edge - 0.01, edge + 0.01, line);
+        light = exp(-pow((line - edge) * 60.0, 2.0)) * 1.5 * shape + (1.0 - shown) * shape * 0.25 * (0.5 + 0.5 * sin(px.y * 1.2 + t * 20.0));
+    } else if (style == 2u) {
+        // Pixel dissolve: blocks appearing at random.
+        let cell = floor(px / 8.0);
+        let n = rnd3(ibits(cell.x), ibits(cell.y), seed + 3u);
+        shown = step(n, a);
+        light = (1.0 - smoothstep(0.0, 0.08, abs(n - a))) * shape * 1.2;
+    } else {
+        // Pillar of light: a column of light flaring and fading as it comes in.
+        let cx = 0.5;
+        let w = max(fx.p1.w / 100.0 * 0.5, 0.01);
+        let col_d = abs(in.uv.x - cx) / w;
+        let pillar = exp(-col_d * col_d * 3.0) * sin(clamp(a, 0.0, 1.0) * 3.14159);
+        shown = smoothstep(0.35, 0.85, a);
+        light = pillar * 1.2 + (1.0 - shown) * shape * a;
+    }
+    // Sparkles over the shape while it's coming.
+    let busy = 1.0 - abs(a * 2.0 - 1.0);
+    if (fx.p1.z > 0.0 && busy > 0.0) {
+        let g = 10.0;
+        let cell = floor(px / g);
+        let r = rnd3(ibits(cell.x), ibits(cell.y), seed + 9u);
+        let ph = r * 6.2831853 + t * (6.0 + r * 8.0);
+        let o = (vec2(rnd3(ibits(cell.x), ibits(cell.y), seed + 11u), rnd3(ibits(cell.x), ibits(cell.y), seed + 13u)) * 0.6 + 0.2) * g;
+        let q = abs(px - (cell * g + o));
+        let star = exp(-q.x * 1.2) * exp(-q.y * 0.25) + exp(-q.y * 1.2) * exp(-q.x * 0.25);
+        let on = select(0.0, 1.0, r < fx.p1.z / 100.0 * 0.6) * max(sin(ph), 0.0);
+        light += star * on * busy * shape * 1.5;
+    }
+    let body = c * shown;
+    let add = col * light * glow;
+    return vec4(body.rgb + add, max(body.a, clamp(max(add.r, max(add.g, add.b)), 0.0, 1.0)));
+}

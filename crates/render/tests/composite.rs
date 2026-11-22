@@ -2759,6 +2759,63 @@ fn face_beauty_smooths_the_face_and_nothing_else() {
     assert_eq!(px(&px_out, w, 40, 50), px(&px_out, w, 41, 50));
 }
 
+/// Sci-fi pack 2: the force field's rim glows and the world outside is left
+/// alone; a teleport brings a layer in over its time (and takes it out); the
+/// sparkle trail lights the head's path and nowhere else.
+#[test]
+fn force_field_teleport_and_sparkles_land_where_they_should() {
+    use reelforge_core::effects::{force_field as ff, sparkle as sk, teleport as tp};
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [100u8, 100, 100, 255]).collect();
+    let mut n = 9000;
+    let mut draw = |c: &mut Compositor, img: &[u8], v: EffectValues| {
+        n += 1;
+        let mut l = layer(1, img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let lum = |p: [u8; 4]| p[0] as i32 + p[1] as i32 + p[2] as i32;
+    // Force field round the middle, radius 40 % of the height (18 px): the rim blue and bright.
+    let f = draw(&mut c, &grey, fx(EffectKind::ForceField, &[(ff::PATTERN, 0.0), (ff::FILL, 0.0), (ff::BEND, 0.0)]));
+    let rim = px(&f, w, 80 + 17, 45);
+    assert!(rim[2] as i32 > rim[0] as i32 + 40, "a blue rim: {rim:?}");
+    assert!(lum(px(&f, w, 80, 45)) < lum(rim) - 40, "dimmer in the middle");
+    assert_eq!(px(&f, w, 10, 10), [100, 100, 100, 255], "outside: untouched");
+    // Teleport in over 2 s: a square cut-out mostly hidden at the start, whole after.
+    let cut: Vec<u8> = (0..w * h).flat_map(|i| if (60..100).contains(&(i % w)) && (25..65).contains(&(i / w)) { [200u8, 60, 60, 255] } else { [0, 0, 0, 0] }).collect();
+    let mut tele = |c: &mut Compositor, t: f32, set: &[(usize, f32)]| {
+        let mut v = fx(EffectKind::Teleport, &[&[(tp::STYLE, 2.0), (tp::SPARKLES, 0.0), (tp::GLOW, 0.0)], set].concat());
+        v.time = t;
+        draw(c, &cut, v)
+    };
+    let covered = |img: &[u8]| (25..65).flat_map(|y| (60..100).map(move |x| (x, y))).filter(|&(x, y)| px(img, w, x, y)[0] > 150).count();
+    let (start, end) = (tele(&mut c, 0.0, &[]), tele(&mut c, 2.5, &[]));
+    assert!(covered(&start) < 100 && covered(&end) == 1600, "{} → {}", covered(&start), covered(&end));
+    let mid = tele(&mut c, 1.0, &[]);
+    assert!((300..1300).contains(&covered(&mid)), "half way (blocks of 8 px, so roughly): {}", covered(&mid));
+    let gone = tele(&mut c, 2.5, &[(tp::DIRECTION, 1.0)]);
+    assert_eq!(covered(&gone), 0, "beamed out");
+    // Sparkle trail: a head moving left to right along the middle over 2 s, seen at 1 s.
+    let black: Vec<u8> = (0..w * h).flat_map(|_| [0u8, 0, 0, 255]).collect();
+    let mut e = Effect::new(EffectKind::SparkleTrail);
+    e.params[sk::HEAD_X].keys.set(Time::ZERO, 0.0);
+    e.params[sk::HEAD_X].keys.set(Time::from_secs_f64(2.0), 100.0);
+    e.params[sk::SPREAD].value = 0.0;
+    e.params[sk::FALL].value = 0.0;
+    e.params[sk::TWINKLE].value = 0.0;
+    let at = Time::from_secs_f64(1.0);
+    let mut v = e.eval_sized(at, None, [w as f32, h as f32]);
+    reelforge_core::sparkle::fill_head(&e, &mut v, at, Time::ZERO, [w as f32, h as f32]);
+    assert!(!v.is_identity());
+    let s = draw(&mut c, &black, v);
+    assert!(lum(px(&s, w, 80, 45)) > 200, "at the head: {:?}", px(&s, w, 80, 45));
+    assert!(lum(px(&s, w, 60, 45)) > 60, "along the trail: {:?}", px(&s, w, 60, 45));
+    assert!(lum(px(&s, w, 120, 45)) < 50 && lum(px(&s, w, 70, 10)) < 50, "next to nothing elsewhere: {:?} {:?}", px(&s, w, 120, 45), px(&s, w, 70, 10));
+}
+
 /// The light pack: a spotlight lights its pool and darkens the rest; Gleam's
 /// spokes run at its angle; halation reddens round a highlight; a custom flare
 /// lights the frame from its light; volumetric light streams from a bright

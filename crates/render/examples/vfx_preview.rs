@@ -181,6 +181,12 @@ fn shots() -> Vec<Shot> {
         ("light-flare", EffectKind::CustomFlare, vec![], 0.0),
         ("light-room-flare2", EffectKind::CustomFlare, vec![(custom_flare::RAYS, 0.0), (custom_flare::GHOST_SHAPE, 1.0), (custom_flare::X, 70.0), (custom_flare::Y, 25.0)], 0.0),
         ("light-land-vol", EffectKind::VolumetricLight, vec![(volumetric::Y, 15.0), (volumetric::X, 60.0)], 0.0),
+        ("sci-ff", EffectKind::ForceField, vec![(force_field::PATTERN, 1.0)], 1.0),
+        ("sci-ff-hit", EffectKind::ForceField, vec![(force_field::PATTERN, 1.0), (force_field::HIT_AT, 0.8)], 1.0),
+        ("sci-cut-tele-sparkle", EffectKind::Teleport, vec![], 1.0),
+        ("sci-cut-tele-scan", EffectKind::Teleport, vec![(teleport::STYLE, 1.0)], 1.0),
+        ("sci-cut-tele-pillar", EffectKind::Teleport, vec![(teleport::STYLE, 3.0)], 0.9),
+        ("sci-room-sparkle", EffectKind::SparkleTrail, vec![], 1.2),
         ("blur-dir", EffectKind::DirectionalBlur, vec![(dir_blur::LENGTH, 60.0), (dir_blur::ANGLE, 20.0)], 0.0),
         ("blur-spin", EffectKind::RadialBlur, vec![(radial_blur::AMOUNT, 25.0)], 0.0),
         ("blur-zoom", EffectKind::RadialBlur, vec![(radial_blur::TYPE, 1.0), (radial_blur::AMOUNT, 40.0), (radial_blur::X, 30.0), (radial_blur::Y, 30.0)], 0.0),
@@ -205,15 +211,26 @@ fn main() {
         if !only.is_empty() && !only.iter().any(|o| name.starts_with(o.as_str())) {
             continue;
         }
+        let mut values = fx(kind, &set, t);
+        if kind == EffectKind::SparkleTrail {
+            // A head swooping across the frame in two seconds.
+            let mut e = Effect::new(kind);
+            e.params[sparkle::HEAD_X].keys.set(Time::ZERO, 10.0);
+            e.params[sparkle::HEAD_X].keys.set(Time::from_secs_f64(2.0), 90.0);
+            e.params[sparkle::HEAD_Y].keys.set(Time::ZERO, 70.0);
+            e.params[sparkle::HEAD_Y].keys.set(Time::from_secs_f64(1.0), 25.0);
+            e.params[sparkle::HEAD_Y].keys.set(Time::from_secs_f64(2.0), 60.0);
+            reelforge_core::sparkle::fill_head(&e, &mut values, Time::from_secs_f64(t as f64), Time::ZERO, [W as f32, H as f32]);
+        }
         let layer = LayerInput {
             key: n as u64 + 1,
             content_id: n as u64 + 1,
-            pixels: PixelData::Rgba(if name.starts_with("cut") { &cut } else if name.contains("land") { &land } else if name.contains("room") { &rm } else { &px }),
+            pixels: PixelData::Rgba(if name.contains("cut") { &cut } else if name.contains("land") { &land } else if name.contains("room") { &rm } else { &px }),
             pixel_size: [W, H],
             layer_size: [W as f32, H as f32],
             transform: Transform::default(),
             blend: BlendMode::Normal,
-            effects: vec![fx(kind, &set, t)],
+            effects: vec![values],
             mask: None,
             wipe: None,
             mesh: None,

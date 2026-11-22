@@ -1108,3 +1108,94 @@ fn fs_volumetric(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4(c.rgb + col, max(c.a, clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0)));
 }
+
+// Sparkle trail (see core's sparkle): row 0 of the table the head now and
+// where it was at moments `dt` apart (fx.extra2 = (dt, moments, how far past
+// the last whole moment now is, that moment's number)), row 1 which are inside
+// the clip. p0 = (head x, head y, path, progress), p1 = (trail s, sparkles %,
+// size px, spread px/s), p2 = (fall px/s², twinkle %, colour, second colour),
+// p3 = (streak px, streak %, brightness %, seed).
+fn sk_point(i: i32, size: vec2<f32>) -> vec2<f32> {
+    return lt_point(textureLoad(second, vec2(i, 0), 0), size);
+}
+
+fn sk_alive(i: i32) -> bool {
+    return textureLoad(second, vec2(i, 1), 0).r > 0.5;
+}
+
+fn sk_rand(a: u32, b: u32, c: u32) -> f32 {
+    var h = a * 747796405u + b * 2891336453u + c * 277803737u + 1013904223u;
+    h = (h ^ (h >> 16u)) * 2246822519u;
+    h = (h ^ (h >> 13u)) * 3266489917u;
+    h = h ^ (h >> 16u);
+    return f32(h >> 8u) / 16777216.0;
+}
+
+@fragment
+fn fs_sparkle(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let t = fx.extra.y;
+    let dt = max(fx.extra2.x, 1e-4);
+    let n = i32(clamp(fx.extra2.y, 1.0, 64.0));
+    let frac = fx.extra2.z;
+    let base = u32(max(fx.extra2.w, 0.0));
+    let trail = dt * f32(n);
+    let c1 = dp_rgb(fx.p2.z);
+    let c2 = dp_rgb(fx.p2.w);
+    // The streak: from the head back along the trail, thinning and fading.
+    var streak = 0.0;
+    let sw = max(fx.p3.x, 0.01);
+    for (var i = 0; i < n; i++) {
+        if (!sk_alive(i) || !sk_alive(i + 1)) {
+            continue;
+        }
+        let age = select(frac + f32(i - 1) * dt, 0.0, i == 0);
+        let fade = clamp(1.0 - age / trail, 0.0, 1.0);
+        let w = sw * (0.25 + 0.75 * fade);
+        let d = lt_dist(p, sk_point(i, size), sk_point(i + 1, size));
+        streak = max(streak, exp(-d * d / (w * w)) * fade * fade);
+    }
+    // Sparkles shed at each moment: flung out, falling, shrinking, twinkling.
+    var acc = vec3(0.0);
+    let seed = u32(max(fx.p3.w, 0.0)) * 9973u + 5u;
+    let amount = clamp(fx.p1.y / 100.0, 0.0, 1.0);
+    let sz0 = max(fx.p1.z, 0.5);
+    for (var k = 0; k < n; k++) {
+        let i = k + 1;
+        if (!sk_alive(i)) {
+            continue;
+        }
+        let age = frac + f32(k) * dt;
+        let id = base - u32(k);
+        let at = sk_point(i, size);
+        for (var j = 0u; j < 3u; j++) {
+            if (sk_rand(id, j, seed) > amount) {
+                continue;
+            }
+            let r1 = sk_rand(id, j, seed + 1u);
+            let r2 = sk_rand(id, j, seed + 2u);
+            let r3 = sk_rand(id, j, seed + 3u);
+            let r4 = sk_rand(id, j, seed + 4u);
+            let life = trail * (0.4 + 0.6 * r3);
+            if (age > life) {
+                continue;
+            }
+            let fade = 1.0 - age / life;
+            let a = r1 * 6.2831853;
+            let speed = fx.p1.w * (0.2 + 0.8 * r2);
+            let pos = at + vec2(cos(a), sin(a)) * speed * age + vec2(0.0, fx.p2.x * age * age * 0.5);
+            let sz = sz0 * (0.5 + r4) * (0.35 + 0.65 * fade);
+            let q = abs(p - pos);
+            if (q.x > sz * 4.0 || q.y > sz * 4.0) {
+                continue;
+            }
+            let star = exp(-length(q) / (sz * 0.3)) + 0.7 * (exp(-q.x / (sz * 0.1)) * exp(-q.y / (sz * 0.45)) + exp(-q.y / (sz * 0.1)) * exp(-q.x / (sz * 0.45)));
+            let tw = 1.0 - fx.p2.y / 100.0 * (0.5 + 0.5 * sin(t * (9.0 + r4 * 12.0) + r1 * 40.0));
+            acc += mix(c1, c2, r2) * star * fade * tw;
+        }
+    }
+    let light = (acc + c1 * streak * fx.p3.y / 100.0 * 1.5) * fx.p3.z / 100.0;
+    return vec4(c.rgb + light, max(c.a, clamp(max(light.r, max(light.g, light.b)), 0.0, 1.0)));
+}

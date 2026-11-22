@@ -766,6 +766,22 @@ What works now:
       off it), the air round it rippling (**Ripple round it**), **Stretch** for a tall doorway, and inside **a
       swirl of the picture** (by **Swirl**), **Dark**, or **See-through** to show the track
       below
+    - **Force field** (Generate): a shield bubble at a **Centre** (drag it in the Viewer),
+      **Radius** and **Roundness** — a glowing **Rim**, a faint **Fill**, a **Pattern**
+      (**Hexagons**, **Grid**, **Ripples**; size and brightness) flowing over it with a
+      **Shimmer**, the picture behind **bent** as through glass, and a **Hit**: at **Hit at**
+      seconds, ripples spread over the surface from a point on its rim (**Hit angle**, **Hit
+      size**). Keyframe **Power** from 0 to 100 % to raise it (it grows and brightens)
+    - **Teleport** (Light & stylize): a layer — a cut-out person or thing — beaming **In** or
+      **Out**, from **Start at**, over **Takes** seconds: in a **Sparkle column** (shimmering in
+      cell by cell), a **Scan line** sweeping up, a **Pixel dissolve**, or a **Pillar of light**;
+      **Colour**, **Glow**, **Sparkles** twinkling over its shape, **Column width**
+    - **Sparkle trail** (Generate): a magic trail behind a moving point — a glowing **Streak**
+      thinning and fading behind it, and **Sparkles** shed along it that fly out (**Spread**),
+      **Fall**, shrink, **Twinkle** and fade, in a **Colour** and a **Second colour**. Keyframe
+      the **Head** (drag it in the Viewer), or set **Path** to one of the layer's masks and
+      keyframe **Progress along the mask**. **Trail length** (seconds), **Sparkle size**,
+      **Brightness**, **Seed**
     - **HUD element** (Generate): a heads-up display piece drawn over the picture — a
       **Targeting reticle**, **Radar sweep**, **Turning rings**, **Readout bars** or **Corner
       brackets** — at a **Centre** and **Size**, in a **Colour**, with **Line width**,

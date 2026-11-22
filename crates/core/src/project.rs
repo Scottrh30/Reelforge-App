@@ -442,6 +442,14 @@ impl Clip {
             .filter(|e| e.enabled)
             .map(|e| {
                 let mut v = e.eval_sized(src, Some(prev), size);
+                if e.kind == crate::effects::EffectKind::SparkleTrail {
+                    // (where the head has been: its keyframes, or along a mask)
+                    if v.values[crate::effects::sparkle::PATH] < 0.5 {
+                        crate::sparkle::fill_head(e, &mut v, src, self.source_in, size);
+                    } else {
+                        crate::sparkle::fill_mask(e, &mut v, &self.masks, src, self.source_in, size);
+                    }
+                }
                 if e.kind == crate::effects::EffectKind::NeonPath {
                     let since = (src - self.source_in).as_secs_f64() as f32;
                     crate::neonpath::fill(&mut v, &self.masks, self.title_at(src).as_deref(), src, since, size);

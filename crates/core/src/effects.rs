@@ -113,6 +113,8 @@ pub enum EffectKind {
     TiltShift,
     /// Lines across the picture as on a screen.
     Scanlines,
+    Teleport,
+    ForceField,
     CustomFlare,
     Halation,
     Gleam,
@@ -136,6 +138,8 @@ pub enum EffectKind {
     PortraitBlur,
     /// Shafts of light through the air from a source, blocked by what's in front of it (by depth, or the dark parts).
     VolumetricLight,
+    /// A magic trail of sparkles behind a moving point.
+    SparkleTrail,
     ElectricArcs,
     LightSweep,
     Hud,
@@ -1509,6 +1513,54 @@ pub mod volumetric {
     pub const DECAY: usize = 9;
     pub const SHOW: usize = 10;
 }
+pub mod force_field {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const RADIUS: usize = 2;
+    pub const ROUNDNESS: usize = 3;
+    pub const COLOR: usize = 4;
+    pub const RIM: usize = 5;
+    pub const FILL: usize = 6;
+    pub const PATTERN: usize = 7;
+    pub const PATTERN_SIZE: usize = 8;
+    pub const PATTERN_BRIGHT: usize = 9;
+    pub const BEND: usize = 10;
+    pub const SHIMMER: usize = 11;
+    pub const POWER: usize = 12;
+    pub const HIT_AT: usize = 13;
+    pub const HIT_ANGLE: usize = 14;
+    pub const HIT_SIZE: usize = 15;
+}
+pub mod teleport {
+    pub const DIRECTION: usize = 0;
+    pub const START: usize = 1;
+    pub const DURATION: usize = 2;
+    pub const STYLE: usize = 3;
+    pub const COLOR: usize = 4;
+    pub const GLOW: usize = 5;
+    pub const SPARKLES: usize = 6;
+    pub const COLUMN: usize = 7;
+    pub const SEED: usize = 8;
+}
+/// Sparkle trail's parameters (see `crate::sparkle`).
+pub mod sparkle {
+    pub const HEAD_X: usize = 0;
+    pub const HEAD_Y: usize = 1;
+    pub const PATH: usize = 2;
+    pub const PROGRESS: usize = 3;
+    pub const TRAIL: usize = 4;
+    pub const AMOUNT: usize = 5;
+    pub const SIZE: usize = 6;
+    pub const SPREAD: usize = 7;
+    pub const FALL: usize = 8;
+    pub const TWINKLE: usize = 9;
+    pub const COLOR: usize = 10;
+    pub const COLOR2: usize = 11;
+    pub const CORE: usize = 12;
+    pub const CORE_BRIGHT: usize = 13;
+    pub const BRIGHTNESS: usize = 14;
+    pub const SEED: usize = 15;
+}
 pub mod ripple {
     pub const X: usize = 0;
     pub const Y: usize = 1;
@@ -2744,6 +2796,53 @@ const VOLUMETRIC: [ParamSpec; 11] = [
     spec("Fall-off", 50.0, 0.0, 100.0, " %", 0.5),
     choice("Show", &["The picture and its light", "The light only"]),
 ];
+const FORCEFIELD: [ParamSpec; 16] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Radius", 40.0, 0.0, 300.0, " %", 0.2),
+    spec("Roundness", 100.0, 10.0, 300.0, " %", 0.5),
+    color("Colour", 0x4fc3ff),
+    spec("Rim", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Fill", 12.0, 0.0, 100.0, " %", 0.5),
+    choice("Pattern", &["None", "Hexagons", "Grid", "Ripples"]),
+    spec("Pattern size", 30.0, 4.0, 400.0, " px", 0.2),
+    spec("Pattern brightness", 40.0, 0.0, 300.0, " %", 0.5),
+    spec("Bend the picture", 12.0, 0.0, 200.0, " px", 0.2),
+    spec("Shimmer", 50.0, 0.0, 300.0, " %", 0.5),
+    spec("Power", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Hit at", -1.0, -1.0, 36000.0, " s", 0.01),
+    spec("Hit angle", -45.0, -360.0, 360.0, "°", 0.5),
+    spec("Hit size", 100.0, 10.0, 400.0, " %", 0.5),
+];
+const TELEPORT: [ParamSpec; 9] = [
+    choice("Beam", &["In", "Out"]),
+    spec("Start at", 0.0, 0.0, 36000.0, " s", 0.01),
+    spec("Takes", 2.0, 0.05, 60.0, " s", 0.01),
+    choice("Style", &["Sparkle column", "Scan line", "Pixel dissolve", "Pillar of light"]),
+    color("Colour", 0x9fd8ff),
+    spec("Glow", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Sparkles", 60.0, 0.0, 200.0, " %", 0.5),
+    spec("Column width", 30.0, 1.0, 200.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const SPARKLE: [ParamSpec; 16] = [
+    spec("Head X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Head Y", 50.0, -100.0, 200.0, " %", 0.2),
+    choice("Path", &["The head (keyframe Head X and Y)", "Mask 1", "Mask 2", "Mask 3", "Mask 4"]),
+    spec("Progress along the mask", 0.0, 0.0, 100.0, " %", 0.2),
+    spec("Trail length", 1.0, 0.05, 30.0, " s", 0.01),
+    spec("Sparkles", 85.0, 0.0, 100.0, " %", 0.5),
+    spec("Sparkle size", 12.0, 0.5, 200.0, " px", 0.1),
+    spec("Spread", 40.0, 0.0, 2000.0, " px/s", 0.5),
+    spec("Fall", 60.0, -2000.0, 2000.0, " px/s²", 0.5),
+    spec("Twinkle", 60.0, 0.0, 100.0, " %", 0.5),
+    color("Colour", 0xffd76a),
+    color("Second colour", 0xa8e6ff),
+    spec("Streak width", 3.0, 0.0, 100.0, " px", 0.1),
+    spec("Streak brightness", 80.0, 0.0, 500.0, " %", 0.5),
+    spec("Brightness", 100.0, 0.0, 1000.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -2953,7 +3052,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 91] = [
+    pub const ALL: [EffectKind; 94] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -3019,6 +3118,8 @@ impl EffectKind {
         EffectKind::PrismBlur,
         EffectKind::TiltShift,
         EffectKind::Scanlines,
+        EffectKind::Teleport,
+        EffectKind::ForceField,
         EffectKind::CustomFlare,
         EffectKind::Halation,
         EffectKind::Gleam,
@@ -3036,6 +3137,7 @@ impl EffectKind {
         EffectKind::Relight,
         EffectKind::PortraitBlur,
         EffectKind::VolumetricLight,
+        EffectKind::SparkleTrail,
         EffectKind::ElectricArcs,
         EffectKind::LightSweep,
         EffectKind::Hud,
@@ -3133,6 +3235,7 @@ impl EffectKind {
             EffectKind::LightSweep => "Light sweep",
             EffectKind::ElectricArcs => "Electric arcs",
             EffectKind::DepthMap => "Depth map",
+            EffectKind::SparkleTrail => "Sparkle trail",
             EffectKind::VolumetricLight => "Volumetric light",
             EffectKind::PortraitBlur => "Portrait blur",
             EffectKind::Relight => "Relight",
@@ -3149,6 +3252,8 @@ impl EffectKind {
             EffectKind::Gleam => "Gleam",
             EffectKind::Halation => "Halation",
             EffectKind::CustomFlare => "Custom flare",
+            EffectKind::ForceField => "Force field",
+            EffectKind::Teleport => "Teleport",
             EffectKind::Scanlines => "Scanlines",
 
             EffectKind::Lightning => "Lightning",
@@ -3200,6 +3305,7 @@ impl EffectKind {
             EffectKind::DepthMap | EffectKind::Relight => EffectCategory::Stylize,
             EffectKind::PortraitBlur => EffectCategory::BlurSharpen,
             EffectKind::VolumetricLight => EffectCategory::Stylize,
+            EffectKind::SparkleTrail => EffectCategory::Generate,
             EffectKind::DirectionalBlur => EffectCategory::BlurSharpen,
             EffectKind::RadialBlur => EffectCategory::BlurSharpen,
             EffectKind::MotionBlur => EffectCategory::BlurSharpen,
@@ -3211,6 +3317,8 @@ impl EffectKind {
             EffectKind::Gleam => EffectCategory::Stylize,
             EffectKind::Halation => EffectCategory::Stylize,
             EffectKind::CustomFlare => EffectCategory::Stylize,
+            EffectKind::ForceField => EffectCategory::Generate,
+            EffectKind::Teleport => EffectCategory::Stylize,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -3258,6 +3366,7 @@ impl EffectKind {
             EffectKind::LightSweep => "A sheen of light passing over a title or logo, like light catching chrome or glass: its angle, width and softness, when it passes and how long it takes (or keyframe Position), and whether it lights only the shape, only its bright parts, or everything.",
             EffectKind::ElectricArcs => "Crackling electricity crawling over the edges of the layer’s shape — a keyed person, a title, a logo — and jumping off them: thin, branching, flickering arcs with a glow, in the colour you choose.",
             EffectKind::DepthMap => "How far away each part of the footage is, worked out by the depth model (Work out depth): shown as a picture (near is white), as fog that thickens with distance, or as a key that keeps what's near",
+            EffectKind::SparkleTrail => "A magic trail behind a moving point: a glowing streak and sparkles shed along it that drift, fall, twinkle and fade. Keyframe the Head (drag it in the Viewer) or send it along one of the layer's masks",
             EffectKind::VolumetricLight => "Shafts of light through hazy air from a light you place, shadowed by what stands in front of it: by the footage's depth (Work out depth), or by its dark parts",
             EffectKind::PortraitBlur => "A portrait mode: what's in focus stays sharp and everything nearer or farther blurs like a wide-open lens, round highlights and all, by the footage's depth (Work out depth)",
             EffectKind::Relight => "A light added after the shot: the depth model works out the footage's shape (Work out depth), and the light shades it, brighter where surfaces face it and nearer to it",
@@ -3274,6 +3383,8 @@ impl EffectKind {
             EffectKind::Gleam => "Star-shaped glints on the bright parts of the picture: 4, 6 or 8 points, in their own colour or a tint, rainbow-fringed if you like, twinkling",
             EffectKind::Halation => "The red-orange glow film gets round bright things: light spreading out from highlights into the darker parts next to them",
             EffectKind::CustomFlare => "A lens flare built from its parts: glow, starburst rays, a streak, a halo ring (rainbow if you like) and ghosts (round or many-sided) along the line through the middle, each part sized and as bright as you want",
+            EffectKind::ForceField => "A shield bubble: a glowing rim, a pattern of hexagons, a grid or ripples flowing over it, the picture behind bent as through glass, and ripples spreading from where it is hit",
+            EffectKind::Teleport => "Beaming in or out: the layer (a cut-out person or thing) appears or vanishes in a column of sparkles, a scan line, a pixel dissolve or a pillar of light",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
@@ -3393,6 +3504,7 @@ impl EffectKind {
             EffectKind::Relight => &RELIGHT,
             EffectKind::PortraitBlur => &PORTRAIT,
             EffectKind::VolumetricLight => &VOLUMETRIC,
+            EffectKind::SparkleTrail => &SPARKLE,
             EffectKind::DirectionalBlur => &DIRECTIONALBLUR,
             EffectKind::RadialBlur => &RADIALBLUR,
             EffectKind::MotionBlur => &MOTIONBLUR,
@@ -3404,6 +3516,8 @@ impl EffectKind {
             EffectKind::Gleam => &GLEAM,
             EffectKind::Halation => &HALATION,
             EffectKind::CustomFlare => &CUSTOMFLARE,
+            EffectKind::ForceField => &FORCEFIELD,
+            EffectKind::Teleport => &TELEPORT,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -3588,6 +3702,7 @@ impl EffectValues {
             EffectKind::ElectricArcs => v[arcs::AMOUNT] == 0.0 || v[arcs::BRIGHTNESS] == 0.0,
             EffectKind::DepthMap => self.table.is_none(),
             EffectKind::VolumetricLight => v[volumetric::INTENSITY] == 0.0,
+            EffectKind::SparkleTrail => self.table.is_none() || v[sparkle::BRIGHTNESS] == 0.0,
             EffectKind::PortraitBlur => self.table.is_none() || (v[portrait::BLUR] < 0.5 && v[portrait::SHOW] == 0.0),
             EffectKind::Relight => self.table.is_none() || (v[relight::INTENSITY] == 0.0 && v[relight::DARKEN] == 0.0),
             EffectKind::Liquify => self.table.is_none() || (v[liquify_params::AMOUNT] == 0.0 && v[liquify_params::MESH] == 0.0),
@@ -3603,6 +3718,8 @@ impl EffectValues {
             EffectKind::Gleam => v[gleam::BRIGHTNESS] == 0.0 || v[gleam::LENGTH] < 0.5,
             EffectKind::Halation => v[halation::AMOUNT] == 0.0 || v[halation::SIZE] < 0.25,
             EffectKind::CustomFlare => v[custom_flare::BRIGHTNESS] == 0.0,
+            EffectKind::ForceField => v[force_field::POWER] == 0.0,
+            EffectKind::Teleport => false,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
 
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
@@ -3672,6 +3789,9 @@ impl EffectValues {
             || (self.kind == EffectKind::Infrared && (v[infrared::GRAIN] > 0.0))
             || (self.kind == EffectKind::XRay && (v[xray::NOISE] > 0.0))
             || (self.kind == EffectKind::Gleam && (v[gleam::TWINKLE] > 0.0))
+            || (self.kind == EffectKind::ForceField && (v[force_field::SHIMMER] > 0.0 || v[force_field::HIT_AT] >= 0.0))
+            || (self.kind == EffectKind::Teleport && (true))
+            || self.kind == EffectKind::SparkleTrail
             || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)
             || (self.kind == EffectKind::WaveWarp && v[wave::SPEED] != 0.0)
             || (self.kind == EffectKind::NeonPath && (v[neonpath::FLICKER] > 0.0 || v[neonpath::DASH_SPEED] != 0.0 || v[neonpath::SWITCH_ON] > 0.0))
@@ -3988,6 +4108,8 @@ mod tests {
                 EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
+                // Its trail is worked out with the clip (see sparkle's tests).
+                EffectKind::SparkleTrail => assert!(v.is_identity()),
                 // Nothing has been born yet at the start, but soon is.
                 EffectKind::Particles => assert!(v.is_identity() && !e.eval(Time::from_secs_f64(0.5)).is_identity()),
                 // These need the layer's size (a shatter's pieces, a fluid's grid).
