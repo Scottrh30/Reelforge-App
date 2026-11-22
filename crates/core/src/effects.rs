@@ -113,6 +113,11 @@ pub enum EffectKind {
     TiltShift,
     /// Lines across the picture as on a screen.
     Scanlines,
+    SmokeDistortion,
+    FluidDistortion,
+    EnergyDistortion,
+    Derez,
+    BlockDisplacement,
     BloodSpatter,
     BlasterFire,
     Teleport,
@@ -1086,6 +1091,12 @@ pub mod shake {
     pub const ZOOM: usize = 4;
     pub const EDGES: usize = 5;
     pub const SEED: usize = 6;
+    pub const STYLE: usize = 7;
+    pub const SIDEWAYS: usize = 8;
+    pub const UP_DOWN: usize = 9;
+    pub const JOLT_AT: usize = 10;
+    pub const JOLT: usize = 11;
+    pub const BLUR: usize = 12;
 }
 pub mod film {
     pub const STOCK: usize = 0;
@@ -1596,6 +1607,73 @@ pub mod blood {
     pub const SHINE: usize = 9;
     pub const DRIP: usize = 10;
     pub const SEED: usize = 11;
+}
+pub mod block_displace {
+    pub const WIDTH: usize = 0;
+    pub const HEIGHT: usize = 1;
+    pub const AMOUNT: usize = 2;
+    pub const DIRECTION: usize = 3;
+    pub const DENSITY: usize = 4;
+    pub const SPEED: usize = 5;
+    pub const VARIETY: usize = 6;
+    pub const SPLIT: usize = 7;
+    pub const EDGES: usize = 8;
+    pub const SEED: usize = 9;
+}
+pub mod derez {
+    pub const PROGRESS: usize = 0;
+    pub const BLOCK: usize = 1;
+    pub const RANDOM: usize = 2;
+    pub const FADE: usize = 3;
+    pub const DIRECTION: usize = 4;
+    pub const SPREAD: usize = 5;
+    pub const SEED: usize = 6;
+}
+pub mod energy_distort {
+    pub const AMOUNT: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const SPEED: usize = 2;
+    pub const DETAIL: usize = 3;
+    pub const GLOW: usize = 4;
+    pub const COLOR: usize = 5;
+    pub const AREA: usize = 6;
+    pub const X: usize = 7;
+    pub const Y: usize = 8;
+    pub const RADIUS: usize = 9;
+    pub const FEATHER: usize = 10;
+    pub const EDGES: usize = 11;
+    pub const SEED: usize = 12;
+}
+pub mod fluid_distort {
+    pub const AMOUNT: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const SPEED: usize = 2;
+    pub const SWIRL: usize = 3;
+    pub const FLOW_ANGLE: usize = 4;
+    pub const FLOW: usize = 5;
+    pub const AREA: usize = 6;
+    pub const X: usize = 7;
+    pub const Y: usize = 8;
+    pub const RADIUS: usize = 9;
+    pub const FEATHER: usize = 10;
+    pub const EDGES: usize = 11;
+    pub const SEED: usize = 12;
+}
+pub mod smoke_distort {
+    pub const AMOUNT: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const RISE: usize = 2;
+    pub const TURBULENCE: usize = 3;
+    pub const TINT: usize = 4;
+    pub const COLOR: usize = 5;
+    pub const AREA: usize = 6;
+    pub const X: usize = 7;
+    pub const Y: usize = 8;
+    pub const RADIUS: usize = 9;
+    pub const FEATHER: usize = 10;
+    pub const EDGES: usize = 11;
+    pub const SEED: usize = 12;
+    pub const HEIGHT: usize = 13;
 }
 pub mod ripple {
     pub const X: usize = 0;
@@ -2410,7 +2488,7 @@ const NEON_PATH: [ParamSpec; 24] = [
     spec("Stutter", 70.0, 0.0, 100.0, " %", 0.5),
     choice("Order", &["Left to right", "Random", "All together"]),
 ];
-const CAMERA_SHAKE: [ParamSpec; 7] = [
+const CAMERA_SHAKE: [ParamSpec; 13] = [
     spec("Amount", 12.0, 0.0, 500.0, " px", 0.25),
     spec("Rotation", 0.8, 0.0, 45.0, "°", 0.05),
     spec("Speed", 3.0, 0.05, 30.0, " Hz", 0.05),
@@ -2418,6 +2496,12 @@ const CAMERA_SHAKE: [ParamSpec; 7] = [
     spec("Zoom", 104.0, 100.0, 200.0, " %", 0.1),
     choice("Edges", &["Mirror", "Repeat the edge", "Transparent"]),
     spec("Seed", 0.0, 0.0, 9999.0, "", 0.2),
+    choice("Style", &["Handheld", "Walking", "Vehicle", "Earthquake"]),
+    spec("Sideways", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Up and down", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Jolt at", -1.0, -1.0, 36000.0, " s", 0.01),
+    spec("Jolt", 300.0, 0.0, 2000.0, " %", 1.0),
+    spec("Motion blur", 0.0, 0.0, 100.0, " %", 0.5),
 ];
 const FILM_LOOK: [ParamSpec; 14] = [
     choice("Stock", &film::STOCKS),
@@ -2913,6 +2997,73 @@ const BLOODSPATTER: [ParamSpec; 12] = [
     spec("Run down", 0.0, 0.0, 100.0, " %", 0.5),
     spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
 ];
+const BLOCKDISPLACEMENT: [ParamSpec; 10] = [
+    spec("Block width", 80.0, 2.0, 4000.0, " px", 0.5),
+    spec("Block height", 24.0, 2.0, 4000.0, " px", 0.5),
+    spec("Amount", 40.0, 0.0, 2000.0, " px", 0.5),
+    choice("Direction", &["Sideways", "Up and down", "Both"]),
+    spec("Blocks moved", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Changes a second", 8.0, 0.0, 60.0, "", 0.1),
+    spec("Size variety", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Colour split", 0.0, 0.0, 200.0, " px", 0.2),
+    EDGES_STRETCH,
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const DEREZ: [ParamSpec; 7] = [
+    spec("Progress", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Biggest blocks", 64.0, 2.0, 1000.0, " px", 0.5),
+    spec("Randomness", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Fade out at the end", 100.0, 0.0, 100.0, " %", 0.5),
+    choice("Direction", &["Everywhere at once", "Left to right", "Right to left", "Top down", "Bottom up", "From the middle"]),
+    spec("Sweep softness", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const ENERGYDISTORTION: [ParamSpec; 13] = [
+    spec("Amount", 15.0, 0.0, 500.0, " px", 0.2),
+    spec("Size", 60.0, 2.0, 2000.0, " px", 0.5),
+    spec("Speed", 2.0, 0.0, 30.0, "", 0.05),
+    spec("Detail", 4.0, 1.0, 6.0, "", 0.05),
+    spec("Glow", 40.0, 0.0, 400.0, " %", 0.5),
+    color("Glow colour", 0x66ccff),
+    choice("Area", &["Everywhere", "In a circle"]),
+    spec("Area X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Area Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Area radius", 30.0, 0.0, 300.0, " %", 0.2),
+    spec("Area feather", 50.0, 0.0, 100.0, " %", 0.5),
+    EDGES_STRETCH,
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const FLUIDDISTORTION: [ParamSpec; 13] = [
+    spec("Amount", 20.0, 0.0, 500.0, " px", 0.2),
+    spec("Size", 150.0, 2.0, 4000.0, " px", 0.5),
+    spec("Speed", 0.5, 0.0, 10.0, "", 0.02),
+    spec("Swirl", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Flow direction", 90.0, -360.0, 360.0, "°", 0.5),
+    spec("Flow speed", 20.0, 0.0, 2000.0, " px/s", 0.5),
+    choice("Area", &["Everywhere", "In a circle"]),
+    spec("Area X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Area Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Area radius", 30.0, 0.0, 300.0, " %", 0.2),
+    spec("Area feather", 50.0, 0.0, 100.0, " %", 0.5),
+    EDGES_STRETCH,
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const SMOKEDISTORTION: [ParamSpec; 14] = [
+    spec("Amount", 12.0, 0.0, 500.0, " px", 0.2),
+    spec("Size", 90.0, 2.0, 4000.0, " px", 0.5),
+    spec("Rise", 80.0, -2000.0, 2000.0, " px/s", 0.5),
+    spec("Turbulence", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Smoke tint", 15.0, 0.0, 100.0, " %", 0.5),
+    color("Smoke colour", 0x9a9a9a),
+    choice("Area", &["Everywhere", "In a circle", "From the bottom"]),
+    spec("Area X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Area Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Area radius", 30.0, 0.0, 300.0, " %", 0.2),
+    spec("Area feather", 50.0, 0.0, 100.0, " %", 0.5),
+    EDGES_STRETCH,
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+    spec("Height from the bottom", 50.0, 1.0, 100.0, " %", 0.5),
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -3122,7 +3273,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 96] = [
+    pub const ALL: [EffectKind; 101] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -3188,6 +3339,11 @@ impl EffectKind {
         EffectKind::PrismBlur,
         EffectKind::TiltShift,
         EffectKind::Scanlines,
+        EffectKind::SmokeDistortion,
+        EffectKind::FluidDistortion,
+        EffectKind::EnergyDistortion,
+        EffectKind::Derez,
+        EffectKind::BlockDisplacement,
         EffectKind::BloodSpatter,
         EffectKind::BlasterFire,
         EffectKind::Teleport,
@@ -3328,6 +3484,11 @@ impl EffectKind {
             EffectKind::Teleport => "Teleport",
             EffectKind::BlasterFire => "Blaster fire",
             EffectKind::BloodSpatter => "Blood spatter",
+            EffectKind::BlockDisplacement => "Block displacement",
+            EffectKind::Derez => "Derez",
+            EffectKind::EnergyDistortion => "Energy distortion",
+            EffectKind::FluidDistortion => "Fluid distortion",
+            EffectKind::SmokeDistortion => "Smoke distortion",
             EffectKind::Scanlines => "Scanlines",
 
             EffectKind::Lightning => "Lightning",
@@ -3395,6 +3556,11 @@ impl EffectKind {
             EffectKind::Teleport => EffectCategory::Stylize,
             EffectKind::BlasterFire => EffectCategory::Generate,
             EffectKind::BloodSpatter => EffectCategory::Generate,
+            EffectKind::BlockDisplacement => EffectCategory::Distort,
+            EffectKind::Derez => EffectCategory::Distort,
+            EffectKind::EnergyDistortion => EffectCategory::Distort,
+            EffectKind::FluidDistortion => EffectCategory::Distort,
+            EffectKind::SmokeDistortion => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -3463,6 +3629,11 @@ impl EffectKind {
             EffectKind::Teleport => "Beaming in or out: the layer (a cut-out person or thing) appears or vanishes in a column of sparkles, a scan line, a pixel dissolve or a pillar of light",
             EffectKind::BlasterFire => "Blaster bolts that fire on their own, from a gun to a target you drag in the Viewer: when to fire, how many shots and how often, their speed, length, colour and glow, a little spread, muzzle and impact flashes, and scorch marks that glow and fade",
             EffectKind::BloodSpatter => "A spray of blood from a hit: a burst of drops flung out in a direction, landing as splats and streaks round the spot, glistening, and running down if you like",
+            EffectKind::BlockDisplacement => "Rectangular blocks of the picture shoved out of place, as a broken signal does: how big the blocks are, how far and which way they move, how many of them, how often they change, with their colours split apart if you like",
+            EffectKind::Derez => "The picture breaking down into ever bigger blocks and falling apart (or building back up, keyframed the other way): everywhere at once, sweeping across, or from the middle",
+            EffectKind::EnergyDistortion => "The air rippling with energy: a fast, crackling distortion that bends the picture, with an electric glow along its ridges if you like, everywhere or in a circle",
+            EffectKind::FluidDistortion => "The picture seen through moving liquid: slow swirls and flowing ripples that bend it, drifting in a direction, everywhere or in a circle",
+            EffectKind::SmokeDistortion => "Rising, curling smoke bending the picture behind it — the wavering air above a fire or out of a vent — with a faint smoky tint if you like, everywhere, from the bottom or in a circle",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
@@ -3598,6 +3769,11 @@ impl EffectKind {
             EffectKind::Teleport => &TELEPORT,
             EffectKind::BlasterFire => &BLASTERFIRE,
             EffectKind::BloodSpatter => &BLOODSPATTER,
+            EffectKind::BlockDisplacement => &BLOCKDISPLACEMENT,
+            EffectKind::Derez => &DEREZ,
+            EffectKind::EnergyDistortion => &ENERGYDISTORTION,
+            EffectKind::FluidDistortion => &FLUIDDISTORTION,
+            EffectKind::SmokeDistortion => &SMOKEDISTORTION,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -3802,6 +3978,11 @@ impl EffectValues {
             EffectKind::Teleport => false,
             EffectKind::BlasterFire => false,
             EffectKind::BloodSpatter => v[blood::AMOUNT] == 0.0,
+            EffectKind::BlockDisplacement => v[block_displace::AMOUNT] == 0.0 || v[block_displace::DENSITY] == 0.0,
+            EffectKind::Derez => v[derez::PROGRESS] == 0.0,
+            EffectKind::EnergyDistortion => v[energy_distort::AMOUNT] == 0.0 && v[energy_distort::GLOW] == 0.0,
+            EffectKind::FluidDistortion => v[fluid_distort::AMOUNT] == 0.0,
+            EffectKind::SmokeDistortion => v[smoke_distort::AMOUNT] == 0.0 && v[smoke_distort::TINT] == 0.0,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
 
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
@@ -3876,6 +4057,10 @@ impl EffectValues {
             || self.kind == EffectKind::SparkleTrail
             || (self.kind == EffectKind::BlasterFire && (true))
             || (self.kind == EffectKind::BloodSpatter && (true))
+            || (self.kind == EffectKind::BlockDisplacement && (v[block_displace::SPEED] > 0.0))
+            || (self.kind == EffectKind::EnergyDistortion && (v[energy_distort::SPEED] > 0.0))
+            || (self.kind == EffectKind::FluidDistortion && (v[fluid_distort::SPEED] > 0.0 || v[fluid_distort::FLOW] > 0.0))
+            || (self.kind == EffectKind::SmokeDistortion && (v[smoke_distort::RISE] != 0.0 || v[smoke_distort::TURBULENCE] > 0.0))
             || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)
             || (self.kind == EffectKind::WaveWarp && v[wave::SPEED] != 0.0)
             || (self.kind == EffectKind::NeonPath && (v[neonpath::FLICKER] > 0.0 || v[neonpath::DASH_SPEED] != 0.0 || v[neonpath::SWITCH_ON] > 0.0))

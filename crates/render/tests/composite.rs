@@ -2759,6 +2759,66 @@ fn face_beauty_smooths_the_face_and_nothing_else() {
     assert_eq!(px(&px_out, w, 40, 50), px(&px_out, w, 41, 50));
 }
 
+/// The distortion pack moves the picture where and how it says: blocks only
+/// sideways, derez into flat blocks (and away), energy only in its circle,
+/// smoke only near the bottom; camera shake keeps still with no amounts, and a
+/// jolt shakes harder.
+#[test]
+fn distortions_move_what_they_should() {
+    use reelforge_core::effects::{block_displace as bd, derez as dz, energy_distort as en, shake as sh, smoke_distort as sm};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    // Red: x, green: y (so where a pixel came from shows), blue a fine pattern.
+    let img: Vec<u8> = (0..w * h).flat_map(|i| [((i % w) * 255 / (w - 1)) as u8, ((i / w) * 255 / (h - 1)) as u8, if (i % w + i / w) % 4 < 2 { 200 } else { 40 }, 255]).collect();
+    let mut n = 9400;
+    let mut draw = |c: &mut Compositor, kind: EffectKind, set: &[(usize, f32)], t: f32| {
+        n += 1;
+        let mut v = fx(kind, set);
+        v.time = t;
+        let mut l = layer(1, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let moved = |out: &[u8], xs: std::ops::Range<u32>, ys: std::ops::Range<u32>| ys.flat_map(|y| xs.clone().map(move |x| (x, y))).filter(|&(x, y)| px(out, w, x, y)[..2] != px(&img, w, x, y)[..2]).count();
+    // Blocks, sideways only: y (green) never changes, x does somewhere.
+    let blocks = draw(&mut c, EffectKind::BlockDisplacement, &[(bd::DENSITY, 100.0), (bd::AMOUNT, 30.0)], 0.0);
+    let ys_kept = (0..h).all(|y| (0..w).all(|x| (px(&blocks, w, x, y)[1] as i32 - px(&img, w, x, y)[1] as i32).abs() <= 3));
+    assert!(ys_kept && moved(&blocks, 0..w, 0..h) > 2000, "sideways only");
+    // Derez fully, no fade: flat 64 px blocks.
+    let flat = draw(&mut c, EffectKind::Derez, &[(dz::PROGRESS, 100.0), (dz::FADE, 0.0), (dz::RANDOM, 0.0)], 0.0);
+    let corner = px(&flat, w, 1, 1);
+    assert!((0..60).all(|x| (0..60).all(|y| px(&flat, w, x, y) == corner)), "one flat block");
+    let gone = draw(&mut c, EffectKind::Derez, &[(dz::PROGRESS, 100.0), (dz::RANDOM, 0.0)], 0.0);
+    assert!(gone.chunks(4).all(|p| p[0] < 3 && p[1] < 3 && p[2] < 3), "faded out");
+    // Energy in a circle round the middle (radius 20 % of the height: 18 px): corners untouched.
+    let energy = draw(&mut c, EffectKind::EnergyDistortion, &[(en::AREA, 1.0), (en::RADIUS, 20.0), (en::FEATHER, 10.0), (en::GLOW, 0.0), (en::AMOUNT, 10.0)], 0.5);
+    assert_eq!(moved(&energy, 0..30, 0..20), 0, "outside the circle");
+    assert!(moved(&energy, 70..90, 35..55) > 50, "inside it");
+    // Fluid: everywhere.
+    let fluid = draw(&mut c, EffectKind::FluidDistortion, &[], 0.5);
+    assert!(moved(&fluid, 0..w, 0..h) > 4000);
+    // Smoke from the bottom, a fifth of the way up: the top untouched.
+    let smoke = draw(&mut c, EffectKind::SmokeDistortion, &[(sm::AREA, 2.0), (sm::HEIGHT, 20.0), (sm::TINT, 0.0)], 0.5);
+    assert_eq!(moved(&smoke, 0..w, 0..60), 0, "the top");
+    assert!(moved(&smoke, 0..w, 80..90) > 100, "the bottom");
+    // Camera shake with nothing to move by: the same picture at any moment.
+    let still = [(sh::SIDEWAYS, 0.0), (sh::UP_DOWN, 0.0), (sh::ROTATION, 0.0), (sh::ZOOM, 100.0)];
+    let (a, b) = (draw(&mut c, EffectKind::CameraShake, &still, 0.3), draw(&mut c, EffectKind::CameraShake, &still, 1.7));
+    assert_eq!(moved(&a, 0..w, 0..h), 0);
+    assert_eq!(moved(&b, 0..w, 0..h), 0);
+    // A jolt at 1 s: just after it the picture is pushed much further than without.
+    let shift = |out: &[u8]| (px(out, w, 80, 45)[0] as i32 - px(&img, w, 80, 45)[0] as i32).abs() + (px(out, w, 80, 45)[1] as i32 - px(&img, w, 80, 45)[1] as i32).abs();
+    let mut calm = 0;
+    let mut jolted = 0;
+    for k in 0..6 {
+        let t = 1.02 + k as f32 * 0.03;
+        calm += shift(&draw(&mut c, EffectKind::CameraShake, &[(sh::ROTATION, 0.0), (sh::ZOOM, 100.0)], t));
+        jolted += shift(&draw(&mut c, EffectKind::CameraShake, &[(sh::ROTATION, 0.0), (sh::ZOOM, 100.0), (sh::JOLT_AT, 1.0), (sh::JOLT, 800.0)], t));
+    }
+    assert!(jolted > calm * 3, "the jolt: {jolted} vs {calm}");
+}
+
 /// Blaster fire: nothing before it fires, a bolt on its way between gun and
 /// target, a glowing scorch at the target after; blood spatter: nothing before
 /// the hit, red round the hit after, the far side untouched.

@@ -1024,23 +1024,45 @@ fn flare_lib(lens: u32, p: vec2<f32>, light: vec2<f32>, size: vec2<f32>, k: f32,
 
 // Camera shake: p0 = (amount px, rotation °, speed Hz, roughness %),
 // p1 = (zoom %, edges, seed).
-@fragment
-fn fs_shake(in: VsOut) -> @location(0) vec4<f32> {
-    let size = fx.extra.zw;
+// The shake at time `secs`: (x, y, turn), each about −1–1 before scaling.
+// Handheld: a slow wander and a quicker jitter; walking adds the bob of each
+// step and a sway; a vehicle adds a buzz and now and then a bump; an
+// earthquake is a fast, heavy rumble. A jolt makes it all bigger for a moment.
+fn shake_at(secs: f32) -> vec3<f32> {
     let seed = seed_of(fx.p1.z);
-    let t = fx.extra.y * fx.p0.z;
+    let t = secs * fx.p0.z;
     let rough = fx.p0.w / 100.0;
-    // Two octaves: a slow wander and a quicker jitter.
-    let n = vec3(
+    var n = vec3(
         wander(seed, t) + rough * 0.5 * wander(seed + 11u, t * 2.7),
         wander(seed + 1u, t * 1.1) + rough * 0.5 * wander(seed + 12u, t * 2.9),
         wander(seed + 2u, t * 0.9) + rough * 0.5 * wander(seed + 13u, t * 2.3),
     ) / (1.0 + rough * 0.5);
+    let style = u32(round(fx.p1.w));
+    if (style == 1u) {
+        // Walking: two steps a second (at Speed 3), the camera dipping on each.
+        let step_ = secs * fx.p0.z * 0.6667 * 3.14159;
+        n = n * 0.5 + vec3(0.45 * sin(step_ * 0.5), 0.8 * (abs(sin(step_)) - 0.6), 0.4 * sin(step_ * 0.5 + 0.7));
+    } else if (style == 2u) {
+        let buzz = vec3(wander(seed + 21u, t * 9.0), wander(seed + 22u, t * 10.0), wander(seed + 23u, t * 8.0));
+        let bump = pow(max(wander(seed + 24u, secs * 0.8), 0.0), 6.0) * 4.0;
+        n = n * 0.6 + buzz * 0.35 + vec3(0.0, bump, bump * 0.3);
+    } else if (style == 3u) {
+        let rumble = vec3(wander(seed + 31u, t * 6.0), wander(seed + 32u, t * 6.5), wander(seed + 33u, t * 5.5));
+        n = n * 0.4 + rumble * 0.9;
+    }
+    if (fx.p2.z >= 0.0 && secs >= fx.p2.z) {
+        n *= 1.0 + fx.p2.w / 100.0 * exp(-(secs - fx.p2.z) * 4.0);
+    }
+    return n * vec3(fx.p2.x / 100.0, fx.p2.y / 100.0, 1.0);
+}
+
+fn shake_sample(in_uv: vec2<f32>, n: vec3<f32>) -> vec4<f32> {
+    let size = fx.extra.zw;
     let off = n.xy * fx.p0.x;
     let a = n.z * radians(fx.p0.y);
     let zoom = max(fx.p1.x / 100.0, 0.01);
     // Where this pixel comes from in the unshaken picture.
-    let p = in.uv * size - size * 0.5 - off;
+    let p = in_uv * size - size * 0.5 - off;
     let q = vec2(p.x * cos(a) + p.y * sin(a), -p.x * sin(a) + p.y * cos(a)) / zoom + size * 0.5;
     var uv = q / size;
     let edges = u32(round(fx.p1.y));
@@ -1053,6 +1075,22 @@ fn fs_shake(in: VsOut) -> @location(0) vec4<f32> {
         uv = clamp(uv, vec2(0.0), vec2(1.0));
     }
     return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+}
+
+@fragment
+fn fs_shake(in: VsOut) -> @location(0) vec4<f32> {
+    let secs = fx.extra.y;
+    let blur = clamp(fx.p3.x / 100.0, 0.0, 1.0);
+    if (blur <= 0.0) {
+        return shake_sample(in.uv, shake_at(secs));
+    }
+    // Motion blur: the shake through half a frame at 24 a second, averaged.
+    var acc = vec4(0.0);
+    for (var i = 0; i < 8; i++) {
+        let k = (f32(i) + 0.5) / 8.0;
+        acc += shake_sample(in.uv, shake_at(secs - k * blur / 48.0));
+    }
+    return acc / 8.0;
 }
 
 // Chromatic aberration: p0 = (amount px, direction, angle °, falloff %).
@@ -3932,4 +3970,166 @@ fn fs_blood(in: VsOut) -> @location(0) vec4<f32> {
     let col = rgb_of(fx.p2.x);
     let wet = col * (0.85 + 0.15 * cover) + vec3(1.0) * shine * fx.p2.y / 100.0 * 0.5;
     return vec4(mix(c.rgb, wet, cover), max(c.a, cover));
+}
+
+// --- Distortion pack (block displacement, derez, energy, fluid, smoke) ---
+
+// How much of the effect a pixel gets: everywhere, or in a soft circle
+// (centre % of the layer, radius % of its height, feather %).
+fn dz_area(uv: vec2<f32>, kind: f32, c: vec2<f32>, radius: f32, feather: f32) -> f32 {
+    if (round(kind) < 0.5) {
+        return 1.0;
+    }
+    let size = max(fx.extra.zw, vec2(1.0));
+    let r = max(radius / 100.0 * size.y, 1.0);
+    let d = length(uv * size - c / 100.0 * size) / r;
+    let f = clamp(feather / 100.0, 0.001, 1.0);
+    return 1.0 - smoothstep(1.0 - f, 1.0, d);
+}
+
+// Block displacement: p0 = (block w px, h px, amount px, direction), p1 =
+// (moved %, changes a second, variety %, split px), p2 = (edges, seed).
+@fragment
+fn fs_block_displace(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let seed = u32(max(fx.p2.y, 0.0)) * 7919u + 3u;
+    let step_ = u32(floor(max(fx.extra.y, 0.0) * max(fx.p1.y, 0.0)));
+    // Blocks on a grid, some split in two for variety.
+    let bs = max(fx.p0.xy, vec2(2.0));
+    var cell = floor(p / bs);
+    if (rnd3(ibits(cell.x), ibits(cell.y), seed ^ step_) < fx.p1.z / 100.0) {
+        cell = floor(p / (bs * vec2(0.5, 0.5))) + vec2(1000.0, 1000.0);
+    }
+    let cx = ibits(cell.x);
+    let cy = ibits(cell.y);
+    var off = vec2(0.0);
+    if (rnd3(cx, cy, seed + 1u + step_ * 31u) < fx.p1.x / 100.0) {
+        let r = vec2(rnd3(cx, cy, seed + 2u + step_ * 37u), rnd3(cx, cy, seed + 3u + step_ * 41u)) * 2.0 - 1.0;
+        let dir = u32(round(fx.p0.w));
+        let m = select(select(vec2(1.0, 1.0), vec2(0.0, 1.0), dir == 1u), vec2(1.0, 0.0), dir == 0u);
+        off = r * m * fx.p0.z;
+    }
+    let edges = u32(round(fx.p2.x));
+    let uv = in.uv - off / size;
+    var c = d_sample(uv, edges);
+    let split = fx.p1.w / size.x * select(0.0, 1.0, length(off) > 0.0);
+    if (split > 0.0) {
+        let r = d_sample(uv + vec2(split, 0.0), edges);
+        let b = d_sample(uv - vec2(split, 0.0), edges);
+        c = vec4(r.r, c.g, b.b, max(c.a, max(r.a, b.a)));
+    }
+    return c;
+}
+
+// Derez: p0 = (progress %, biggest block px, randomness %, fade %), p1 =
+// (direction, sweep softness %, seed).
+@fragment
+fn fs_derez(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let prog = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let seed = u32(max(fx.p1.z, 0.0)) * 104729u + 17u;
+    // Where in the sweep this part of the picture is (0 first, 1 last).
+    let dir = u32(round(fx.p1.x));
+    var order = 0.0;
+    if (dir == 1u) { order = in.uv.x; }
+    else if (dir == 2u) { order = 1.0 - in.uv.x; }
+    else if (dir == 3u) { order = in.uv.y; }
+    else if (dir == 4u) { order = 1.0 - in.uv.y; }
+    else if (dir == 5u) { order = length((in.uv - 0.5) * vec2(fx.extra.x, 1.0)) / (0.5 * length(vec2(fx.extra.x, 1.0))); }
+    // Each coarse block a little ahead or behind.
+    let big = max(fx.p0.y, 2.0);
+    let cc = floor(p / big);
+    let jitter = (rnd3(ibits(cc.x), ibits(cc.y), seed) - 0.5) * fx.p0.z / 100.0;
+    let soft = max(fx.p1.y / 100.0, 0.02);
+    let local = select(clamp((prog * (1.0 + soft) - order * soft) / 1.0 + jitter * 0.5, 0.0, 1.0), clamp(prog + jitter * 0.5, 0.0, 1.0), dir == 0u);
+    // Blocks double as it goes (1, 2, 4… px up to the biggest).
+    let levels = log2(big);
+    let s = exp2(floor(local * levels));
+    if (s <= 1.0) {
+        return textureSample(src, src_sampler, to_tex(in.uv));
+    }
+    let cell = floor(p / s);
+    let c = textureSampleLevel(src, src_sampler, to_tex((cell + 0.5) * s / size), 0.0);
+    // At the end each block winks out, at its own moment.
+    let gone = smoothstep(0.75, 0.95, local + 0.15 - rnd3(ibits(cell.x), ibits(cell.y), seed + 1u) * 0.15);
+    return c * (1.0 - gone * fx.p0.w / 100.0);
+}
+
+// Energy distortion: p0 = (amount px, size px, speed, detail), p1 = (glow %,
+// colour, area, x %), p2 = (y %, radius %, feather %, edges), p3.x = seed.
+@fragment
+fn fs_energy_distort(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size / max(fx.p0.y, 2.0);
+    let t = fx.extra.y * fx.p0.z;
+    let seed = u32(max(fx.p3.x, 0.0)) * 7919u + 23u;
+    // Ridged noise: sharp crests where the energy runs.
+    let n1 = tfbm(seed, vec3(p, t), fx.p0.w);
+    let n2 = tfbm(seed + 9u, vec3(p + 5.2, t * 1.3), fx.p0.w);
+    let ridge = pow(clamp(1.0 - abs(n1 * 2.0 - 1.0), 0.0, 1.0), 6.0);
+    let w = dz_area(in.uv, fx.p1.z, vec2(fx.p1.w, fx.p2.x), fx.p2.y, fx.p2.z);
+    let off = (vec2(n1, n2) - 0.5) * 2.0 * fx.p0.x * (0.4 + 0.6 * ridge) * w;
+    var c = d_sample(in.uv + off / size, u32(round(fx.p2.w)));
+    let glow = rgb_of(fx.p1.y) * ridge * ridge * fx.p1.x / 100.0 * w;
+    return vec4(c.rgb + glow * max(c.a, 0.3), max(c.a, clamp(max3(glow), 0.0, 1.0)));
+}
+
+// Fluid distortion: noise bent by noise (domain warping) for liquid swirls,
+// and a curl so it flows round rather than in and out. p0 = (amount px, size
+// px, speed, swirl %), p1 = (flow°, flow px/s, area, x %), p2 = (y %, radius %,
+// feather %, edges), p3.x = seed.
+@fragment
+fn fs_fluid_distort(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let t = fx.extra.y;
+    let fa = radians(fx.p1.x);
+    let drift = vec2(cos(fa), sin(fa)) * fx.p1.y * t;
+    let sc = max(fx.p0.y, 2.0);
+    let p = (in.uv * size - drift) / sc;
+    let seed = u32(max(fx.p3.x, 0.0)) * 7919u + 41u;
+    let z = t * fx.p0.z;
+    let warp = vec2(tfbm(seed, vec3(p, z), 3.0), tfbm(seed + 3u, vec3(p + 3.7, z), 3.0)) - 0.5;
+    let q = p + warp * 2.0 * fx.p0.w / 100.0;
+    // Curl of a potential: flow that goes round.
+    let e = 0.05;
+    let n = tfbm(seed + 7u, vec3(q, z * 0.7), 3.0);
+    let nx = tfbm(seed + 7u, vec3(q + vec2(e, 0.0), z * 0.7), 3.0);
+    let ny = tfbm(seed + 7u, vec3(q + vec2(0.0, e), z * 0.7), 3.0);
+    let curl = vec2(ny - n, -(nx - n)) / e;
+    let w = dz_area(in.uv, fx.p1.z, vec2(fx.p1.w, fx.p2.x), fx.p2.y, fx.p2.z);
+    let off = clamp(curl * 0.25, vec2(-1.5), vec2(1.5)) * fx.p0.x * w;
+    return d_sample(in.uv + off / size, u32(round(fx.p2.w)));
+}
+
+// Smoke distortion: wisps carried up (stretched up and down as smoke is),
+// curling more with turbulence, thinning as they rise from the bottom area.
+// p0 = (amount px, size px, rise px/s, turbulence %), p1 = (tint %, colour,
+// area, x %), p2 = (y %, radius %, feather %, edges), p3 = (seed, height %).
+@fragment
+fn fs_smoke_distort(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let t = fx.extra.y;
+    let sc = max(fx.p0.y, 2.0);
+    let seed = u32(max(fx.p3.x, 0.0)) * 7919u + 59u;
+    var p = (in.uv * size + vec2(0.0, fx.p0.z * t)) / (sc * vec2(1.0, 1.8));
+    let turb = fx.p0.w / 100.0;
+    p += (vec2(tfbm(seed, vec3(p * 0.7, t * 0.4), 3.0), tfbm(seed + 2u, vec3(p * 0.7 + 4.1, t * 0.4), 3.0)) - 0.5) * 2.5 * turb;
+    let n1 = tfbm(seed + 5u, vec3(p, t * 0.25), 4.0);
+    let n2 = tfbm(seed + 6u, vec3(p + 9.3, t * 0.25), 4.0);
+    // Where it is: everywhere, a circle, or rising from the bottom and thinning.
+    var w = 1.0;
+    let area = round(fx.p1.z);
+    if (area > 1.5) {
+        let h = max(fx.p3.y / 100.0, 0.01);
+        w = 1.0 - smoothstep(0.0, h, 1.0 - in.uv.y);
+    } else {
+        w = dz_area(in.uv, area, vec2(fx.p1.w, fx.p2.x), fx.p2.y, fx.p2.z);
+    }
+    let wisp = smoothstep(0.35, 0.75, n1) * w;
+    let off = (vec2(n1, n2) - 0.5) * 2.0 * fx.p0.x * (0.4 + 0.6 * wisp) * w;
+    let c = d_sample(in.uv + off / size, u32(round(fx.p2.w)));
+    let tint = wisp * fx.p1.x / 100.0;
+    return vec4(mix(c.rgb, rgb_of(fx.p1.y) * max(c.a, tint), tint), max(c.a, tint));
 }

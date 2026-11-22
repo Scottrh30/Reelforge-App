@@ -693,6 +693,26 @@ What works now:
       from each colour (green leaves bright, blue sky dark), so it works on any footage
     - **X-ray**: the picture inverted (**Invert**) and tinted cold (**Colour**), with glowing
       **Edges**, **Contrast**, a soft **Glow**, film **Noise** and **Brightness**
+  - **Block displacement** (Distort): blocks of the picture shoved out of place, as a broken
+    signal does — **Block width** and **height**, **Amount**, **Direction** (sideways, up and
+    down, both), how many (**Blocks moved**), **Changes a second** (0: held), **Size variety**
+    (some blocks split smaller), a **Colour split** on the moved blocks, **Edges**, **Seed**
+  - **Derez** (Distort): the picture breaking into ever bigger blocks (doubling up to
+    **Biggest blocks**) and winking out at the end (**Fade out at the end**); keyframe
+    **Progress** from 0 to 100 % (or back, to build it up). **Everywhere at once**, sweeping
+    **Left to right**, **Right to left**, **Top down**, **Bottom up** or **From the middle**,
+    with **Sweep softness** and **Randomness** (blocks a little ahead or behind)
+  - **Energy distortion** (Distort): the air crackling with energy — a fast, ridged
+    distortion (**Amount**, **Size**, **Speed**, **Detail**) with an electric **Glow** along
+    its crests in a **Glow colour**; everywhere, or **In a circle** (**Area X**, **Y**,
+    **radius**, **feather**)
+  - **Fluid distortion** (Distort): the picture through moving liquid — slow swirls (**Swirl**)
+    and flowing ripples (**Amount**, **Size**, **Speed**) drifting in a **Flow direction** at a
+    **Flow speed**; everywhere or in a circle
+  - **Smoke distortion** (Distort): rising, curling smoke bending what's behind it — the
+    wavering air above a fire or out of a vent: **Amount**, **Size**, **Rise** (px/s; negative
+    sinks), **Turbulence**, and a faint **Smoke tint** in a **Smoke colour**; everywhere, in a
+    circle, or **From the bottom** up to a **Height**. (For plain heat shimmer, **Heat haze**)
   - **Glitch** (Distort): slices and blocks jump sideways, colours split and scan lines
     flicker. **Amount** is how much of the picture glitches, **Speed** how often the pattern
     changes; keyframe Amount for bursts
@@ -702,7 +722,11 @@ What works now:
   - **Camera shake** (Distort): the picture wanders, turns and zooms a little, smoothly and
     differently every moment: **Amount** (px), **Rotation**, **Speed**, **Roughness** (adds a
     quicker jitter), and **Zoom** to hide the edges (or **Edges**: mirror, repeat or
-    transparent). Keyframe Amount for an impact. Shake, grain, glitches and leaks change
+    transparent). A **Style**: **Handheld**, **Walking** (the dip of each step and a sway),
+    **Vehicle** (a buzz and now and then a bump) or **Earthquake** (a fast, heavy rumble);
+    **Sideways** and **Up and down** scale each way on its own; **Jolt at** a moment shakes
+    it all harder (by **Jolt**) and settles; **Motion blur** smears the picture as it moves.
+    Keyframe Amount for an impact. Shake, grain, glitches and leaks change
     with time on their own, so every frame is drawn (and render-cached) separately
   - **Distort pack** (Distort). Those with a centre show a handle in the Viewer to drag it:
     - **Bulge**: a round area swelled out like a magnifying glass (**Centre**, **Radius** as a
