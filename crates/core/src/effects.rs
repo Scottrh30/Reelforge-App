@@ -113,6 +113,9 @@ pub enum EffectKind {
     TiltShift,
     /// Lines across the picture as on a screen.
     Scanlines,
+    MotionBlur,
+    RadialBlur,
+    DirectionalBlur,
     /// Copies of the layer from moments before (or after), drawn with it: trails.
     Echo,
     /// The picture pushed, twirled, pinched and swelled with a brush in the Viewer.
@@ -121,6 +124,8 @@ pub enum EffectKind {
     DepthMap,
     /// A light added to footage after it was shot, shading it by its depth.
     Relight,
+    /// The background (or anything out of focus) blurred by its depth, as a portrait mode.
+    PortraitBlur,
     ElectricArcs,
     LightSweep,
     Hud,
@@ -1351,6 +1356,35 @@ pub mod relight {
     pub const BUMPS: usize = 7;
     pub const KIND: usize = 8;
 }
+pub mod dir_blur {
+    pub const ANGLE: usize = 0;
+    pub const LENGTH: usize = 1;
+    pub const SHAPE: usize = 2;
+}
+pub mod radial_blur {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const TYPE: usize = 2;
+    pub const AMOUNT: usize = 3;
+    pub const QUALITY: usize = 4;
+}
+pub mod motion_blur {
+    pub const SHUTTER: usize = 0;
+    pub const PHASE: usize = 1;
+    pub const SAMPLES: usize = 2;
+    /// Values from here (not parameters): the two moments' maps (a, b, c, d,
+    /// tx, ty each), filled in by the scene from the layer's movement.
+    pub const FROM: usize = 3;
+}
+/// Portrait blur's parameters.
+pub mod portrait {
+    pub const FOCUS: usize = 0;
+    pub const RANGE: usize = 1;
+    pub const BLUR: usize = 2;
+    pub const FRONT: usize = 3;
+    pub const HIGHLIGHTS: usize = 4;
+    pub const SHOW: usize = 5;
+}
 pub mod ripple {
     pub const X: usize = 0;
     pub const Y: usize = 1;
@@ -2448,6 +2482,31 @@ const RELIGHT: [ParamSpec; 9] = [
     spec("Surface detail", 50.0, 0.0, 400.0, " %", 0.5),
     choice("Light", &["A lamp (from a point)", "The sun (from a direction)"]),
 ];
+const DIRECTIONALBLUR: [ParamSpec; 3] = [
+    spec("Angle", 0.0, -360.0, 360.0, "°", 0.5),
+    spec("Length", 30.0, 0.0, 2000.0, " px", 0.5),
+    choice("Shape", &["Even", "Smooth", "Trail one way"]),
+];
+const RADIALBLUR: [ParamSpec; 5] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    choice("Type", &["Spin", "Zoom"]),
+    spec("Amount", 10.0, 0.0, 360.0, "", 0.1),
+    spec("Quality", 48.0, 4.0, 128.0, " samples", 0.5),
+];
+const MOTIONBLUR: [ParamSpec; 3] = [
+    spec("Shutter angle", 180.0, 0.0, 720.0, "°", 1.0),
+    spec("Shutter phase", -90.0, -360.0, 360.0, "°", 1.0),
+    spec("Samples", 16.0, 2.0, 64.0, "", 0.2),
+];
+const PORTRAIT: [ParamSpec; 6] = [
+    spec("Focus at", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("In focus range", 15.0, 0.0, 100.0, " %", 0.5),
+    spec("Blur", 16.0, 0.0, 80.0, " px", 0.2),
+    ParamSpec { name: "Blur what's nearer too", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Bright spots", 30.0, 0.0, 200.0, " %", 0.5),
+    ParamSpec { name: "Show what's in focus", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -2657,7 +2716,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 78] = [
+    pub const ALL: [EffectKind; 82] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -2723,10 +2782,14 @@ impl EffectKind {
         EffectKind::PrismBlur,
         EffectKind::TiltShift,
         EffectKind::Scanlines,
+        EffectKind::MotionBlur,
+        EffectKind::RadialBlur,
+        EffectKind::DirectionalBlur,
         EffectKind::Echo,
         EffectKind::Liquify,
         EffectKind::DepthMap,
         EffectKind::Relight,
+        EffectKind::PortraitBlur,
         EffectKind::ElectricArcs,
         EffectKind::LightSweep,
         EffectKind::Hud,
@@ -2824,9 +2887,13 @@ impl EffectKind {
             EffectKind::LightSweep => "Light sweep",
             EffectKind::ElectricArcs => "Electric arcs",
             EffectKind::DepthMap => "Depth map",
+            EffectKind::PortraitBlur => "Portrait blur",
             EffectKind::Relight => "Relight",
             EffectKind::Liquify => "Liquify",
             EffectKind::Echo => "Echo",
+            EffectKind::DirectionalBlur => "Directional blur",
+            EffectKind::RadialBlur => "Radial blur",
+            EffectKind::MotionBlur => "Motion blur",
             EffectKind::Scanlines => "Scanlines",
 
             EffectKind::Lightning => "Lightning",
@@ -2876,6 +2943,10 @@ impl EffectKind {
             EffectKind::Echo => EffectCategory::Stylize,
             EffectKind::Liquify => EffectCategory::Distort,
             EffectKind::DepthMap | EffectKind::Relight => EffectCategory::Stylize,
+            EffectKind::PortraitBlur => EffectCategory::BlurSharpen,
+            EffectKind::DirectionalBlur => EffectCategory::BlurSharpen,
+            EffectKind::RadialBlur => EffectCategory::BlurSharpen,
+            EffectKind::MotionBlur => EffectCategory::BlurSharpen,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -2923,9 +2994,13 @@ impl EffectKind {
             EffectKind::LightSweep => "A sheen of light passing over a title or logo, like light catching chrome or glass: its angle, width and softness, when it passes and how long it takes (or keyframe Position), and whether it lights only the shape, only its bright parts, or everything.",
             EffectKind::ElectricArcs => "Crackling electricity crawling over the edges of the layer’s shape — a keyed person, a title, a logo — and jumping off them: thin, branching, flickering arcs with a glow, in the colour you choose.",
             EffectKind::DepthMap => "How far away each part of the footage is, worked out by the depth model (Work out depth): shown as a picture (near is white), as fog that thickens with distance, or as a key that keeps what's near",
+            EffectKind::PortraitBlur => "A portrait mode: what's in focus stays sharp and everything nearer or farther blurs like a wide-open lens, round highlights and all, by the footage's depth (Work out depth)",
             EffectKind::Relight => "A light added after the shot: the depth model works out the footage's shape (Work out depth), and the light shades it, brighter where surfaces face it and nearer to it",
             EffectKind::Liquify => "Push, twirl, pinch and swell the picture with a brush in the Viewer",
             EffectKind::Echo => "Copies of the layer from a moment before, fading behind it: trails, ghosting and stutter",
+            EffectKind::DirectionalBlur => "A blur one way only, as if the picture moved in a straight line: at an angle, so long, evenly, smoothly or as a trail behind",
+            EffectKind::RadialBlur => "A blur round a point (Spin, as if turning) or out from it (Zoom, as if rushing towards it)",
+            EffectKind::MotionBlur => "Blur from the layer's own movement (its position, scale and rotation keyframes, and its parent's), as a camera's shutter would: longer with a wider Shutter angle",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
@@ -3043,6 +3118,10 @@ impl EffectKind {
             EffectKind::Liquify => &LIQUIFY,
             EffectKind::DepthMap => &DEPTH_MAP,
             EffectKind::Relight => &RELIGHT,
+            EffectKind::PortraitBlur => &PORTRAIT,
+            EffectKind::DirectionalBlur => &DIRECTIONALBLUR,
+            EffectKind::RadialBlur => &RADIALBLUR,
+            EffectKind::MotionBlur => &MOTIONBLUR,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -3226,9 +3305,13 @@ impl EffectValues {
             EffectKind::LightSweep => v[sweep::BRIGHTNESS] == 0.0,
             EffectKind::ElectricArcs => v[arcs::AMOUNT] == 0.0 || v[arcs::BRIGHTNESS] == 0.0,
             EffectKind::DepthMap => self.table.is_none(),
+            EffectKind::PortraitBlur => self.table.is_none() || (v[portrait::BLUR] < 0.5 && v[portrait::SHOW] == 0.0),
             EffectKind::Relight => self.table.is_none() || (v[relight::INTENSITY] == 0.0 && v[relight::DARKEN] == 0.0),
             EffectKind::Liquify => self.table.is_none() || (v[liquify_params::AMOUNT] == 0.0 && v[liquify_params::MESH] == 0.0),
             EffectKind::Echo => v[echo::COUNT] < 0.5 || v[echo::FIRST] == 0.0 || v[echo::DELAY] == 0.0,
+            EffectKind::DirectionalBlur => v[dir_blur::LENGTH] < 0.5,
+            EffectKind::RadialBlur => v[radial_blur::AMOUNT] == 0.0,
+            EffectKind::MotionBlur => v[motion_blur::SHUTTER] == 0.0,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
 
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
@@ -3453,11 +3536,19 @@ impl Effect {
         for (i, v) in values.iter_mut().enumerate().take(self.param_specs().len()) {
             *v = self.value_at(i, t);
         }
+        if self.kind == EffectKind::MotionBlur {
+            // Until the scene says how the layer moves: standing still.
+            for m in [motion_blur::FROM, motion_blur::FROM + 6] {
+                if let Some(v) = values.get_mut(m..m + 6) {
+                    v.copy_from_slice(&[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+                }
+            }
+        }
         let plugin = if self.kind == EffectKind::Plugin { self.plugin_def() } else { None };
         let particles = (self.kind == EffectKind::Particles).then(|| Arc::new(crate::particles::simulate(self, t)));
         let (mut table, mut gpu, mut table2) = (self.table(), [0.0; 4], None);
         match (&self.data, self.kind) {
-            (Some(EffectData::Depth(dir)), EffectKind::DepthMap | EffectKind::Relight) => {
+            (Some(EffectData::Depth(dir)), EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur) => {
                 if let Some((tb, _)) = crate::fillstore::load(dir, t) {
                     table = Some(tb);
                 }
@@ -3590,7 +3681,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
                 // Nothing has been born yet at the start, but soon is.

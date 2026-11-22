@@ -599,7 +599,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let mut fx2_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_liquify", "fs_depth_map", "fs_relight", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add", "fs_hue_curves", "fs_audio_vis"]
+        let mut fx2_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_liquify", "fs_depth_map", "fs_relight", "fs_portrait", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add", "fs_hue_curves", "fs_audio_vis"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -621,7 +621,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1990,14 +1990,19 @@ impl Compositor {
                         push("fs_liquify", cur, Second::Table(i), o1, u);
                         cur = o1;
                     }
-                    EffectKind::DepthMap | EffectKind::Relight => {
+                    EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur => {
                         if !self.tables.contains_key(&(key, i)) {
                             continue;
                         }
                         let mut u = uniform(&e.values, [0.0; 2]);
                         u[14] = l.layer_size[0];
                         u[15] = l.layer_size[1];
-                        push(if e.kind == EffectKind::DepthMap { "fs_depth_map" } else { "fs_relight" }, cur, Second::Table(i), o1, u);
+                        let entry = match e.kind {
+                            EffectKind::DepthMap => "fs_depth_map",
+                            EffectKind::Relight => "fs_relight",
+                            _ => "fs_portrait",
+                        };
+                        push(entry, cur, Second::Table(i), o1, u);
                         cur = o1;
                     }
                     EffectKind::FaceBeauty => {
@@ -2120,6 +2125,9 @@ impl Compositor {
                     | EffectKind::Hud
                     | EffectKind::LightSweep
                     | EffectKind::ElectricArcs
+                    | EffectKind::DirectionalBlur
+                    | EffectKind::RadialBlur
+                    | EffectKind::MotionBlur
                     | EffectKind::Scanlines => {
                         // A number of its own (its place in the stack), the time and the layer's size.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
@@ -2152,6 +2160,9 @@ impl Compositor {
                             EffectKind::PrismBlur => "fs_prism",
                             EffectKind::TiltShift => "fs_tilt_shift",
                             EffectKind::Scanlines => "fs_scanlines",
+                            EffectKind::MotionBlur => "fs_motion_blur",
+                            EffectKind::RadialBlur => "fs_radial_blur",
+                            EffectKind::DirectionalBlur => "fs_dir_blur",
                             EffectKind::ElectricArcs => "fs_arcs",
                             EffectKind::LightSweep => "fs_sweep",
                             EffectKind::Hud => "fs_hud",
@@ -3167,6 +3178,39 @@ fn effect_margin(effects: &[EffectValues], px: [u32; 2], layer: [f32; 2]) -> [u3
             EffectKind::ElectricArcs => {
                 use reelforge_core::effects::arcs;
                 let r = e.values[arcs::REACH].max(0.0) * 1.2 + e.values[arcs::THICKNESS].max(0.0) * 4.0;
+                x += r * kx;
+                y += r * ky;
+            }
+            EffectKind::DirectionalBlur => {
+                use reelforge_core::effects::dir_blur;
+                let (l, a) = (e.values[dir_blur::LENGTH].max(0.0), e.values[dir_blur::ANGLE].to_radians());
+                x += (a.cos() * l).abs() * kx;
+                y += (a.sin() * l).abs() * ky;
+            }
+            EffectKind::RadialBlur => {
+                use reelforge_core::effects::radial_blur;
+                let amt = e.values[radial_blur::AMOUNT].abs();
+                let reach = if e.values[radial_blur::TYPE] >= 0.5 { amt / 100.0 * 0.5 } else { (amt / 90.0).min(1.0) * 0.3 };
+                x += reach * layer[0] * kx;
+                y += reach * layer[1] * ky;
+            }
+            EffectKind::MotionBlur => {
+                use reelforge_core::effects::motion_blur as mb;
+                let v = &e.values;
+                let mut reach = [0.0f32; 2];
+                for m in [&v[mb::FROM..mb::FROM + 6], &v[mb::FROM + 6..mb::FROM + 12]] {
+                    for q in [[-0.5f32, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]] {
+                        let q = [q[0] * layer[0], q[1] * layer[1]];
+                        let p = [m[0] * q[0] + m[2] * q[1] + m[4], m[1] * q[0] + m[3] * q[1] + m[5]];
+                        reach = [reach[0].max((p[0] - q[0]).abs()), reach[1].max((p[1] - q[1]).abs())];
+                    }
+                }
+                x += reach[0].min(4.0 * layer[0]) * kx;
+                y += reach[1].min(4.0 * layer[1]) * ky;
+            }
+            EffectKind::PortraitBlur => {
+                use reelforge_core::effects::portrait;
+                let r = e.values[portrait::BLUR].max(0.0);
                 x += r * kx;
                 y += r * ky;
             }

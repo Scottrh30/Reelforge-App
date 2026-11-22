@@ -96,6 +96,9 @@ fn shots() -> Vec<Shot> {
         ("cut-arcs", EffectKind::ElectricArcs, vec![], 0.3),
         ("cut-arcs-more", EffectKind::ElectricArcs, vec![(arcs::AMOUNT, 90.0), (arcs::REACH, 50.0)], 0.7),
         ("cut-hologram", EffectKind::Hologram, vec![], 0.3),
+        ("blur-dir", EffectKind::DirectionalBlur, vec![(dir_blur::LENGTH, 60.0), (dir_blur::ANGLE, 20.0)], 0.0),
+        ("blur-spin", EffectKind::RadialBlur, vec![(radial_blur::AMOUNT, 25.0)], 0.0),
+        ("blur-zoom", EffectKind::RadialBlur, vec![(radial_blur::TYPE, 1.0), (radial_blur::AMOUNT, 40.0), (radial_blur::X, 30.0), (radial_blur::Y, 30.0)], 0.0),
     ]
 }
 

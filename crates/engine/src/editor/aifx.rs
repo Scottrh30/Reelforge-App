@@ -179,7 +179,7 @@ impl Editor {
     /// frame so it doesn't flicker.
     pub fn start_find_depth(&mut self, id: ClipId, index: usize) {
         let kind = match self.seq().find_clip(id).and_then(|(_, c)| c.effects.get(index)).map(|f| f.kind) {
-            Some(k @ (EffectKind::DepthMap | EffectKind::Relight)) => k,
+            Some(k @ (EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur)) => k,
             _ => return,
         };
         let every = if self.seq().frame_rate.fps() > 31.0 { 2 } else { 1 };

@@ -1012,3 +1012,53 @@ fn fs_relight(in: VsOut) -> @location(0) vec4<f32> {
     let keep = 1.0 - clamp(fx.p1.y / 100.0, 0.0, 1.0);
     return vec4(orig.rgb * keep + orig.rgb * dp_rgb(fx.p0.w) * lit, orig.a);
 }
+
+// Portrait blur: how big a pixel's blur disc is (layer pixels) at depth `d`.
+fn pb_coc(d: f32) -> f32 {
+    var off = d - fx.p0.x / 100.0;
+    if (fx.p0.w < 0.5 && off > 0.0) {
+        off = 0.0;
+    }
+    return max(fx.p0.z, 0.0) * clamp((abs(off) - fx.p0.y / 100.0) / 0.3, 0.0, 1.0);
+}
+
+// Portrait blur: a gather over a disc (golden-angle spiral), each sample
+// counting only where its own blur disc reaches this pixel, and something
+// farther never spilling over something nearer and sharper; bright samples
+// weigh more (round highlights).
+@fragment
+fn fs_portrait(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let centre = textureSample(src, src_sampler, to_tex(in.uv));
+    let dc = dp_at(in.uv);
+    let cc = pb_coc(dc);
+    let blur = max(fx.p0.z, 0.0);
+    if (fx.p1.y > 0.5) {
+        // What's in focus, tinted.
+        let sharp = 1.0 - clamp(cc / max(blur * 0.25, 1.0), 0.0, 1.0);
+        return mix(centre, vec4(1.0, 0.15, 0.1, 1.0) * centre.a, 0.5 * sharp);
+    }
+    if (blur < 0.5) {
+        return centre;
+    }
+    let boost = fx.p1.x / 100.0;
+    let lum = vec3(0.2126, 0.7152, 0.0722);
+    var w0 = 1.0 / max(cc * cc, 1.0) * (1.0 + boost * 8.0 * max(dot(centre.rgb, lum) - 0.7, 0.0));
+    var acc = centre * w0;
+    var wsum = w0;
+    let N = 96;
+    for (var k = 1; k < N; k++) {
+        let r = blur * sqrt(f32(k) / f32(N));
+        let th = f32(k) * 2.39996323;
+        let uv = in.uv + vec2(cos(th), sin(th)) * r / size;
+        let ds = dp_at(uv);
+        let cs = textureSampleLevel(src, src_sampler, to_tex(clamp(uv, vec2(0.0), vec2(1.0))), 0.0);
+        let cos_ = pb_coc(ds);
+        let reach = select(cos_, min(cos_, cc), ds < dc - 0.01);
+        var w = clamp(reach - r + 1.0, 0.0, 1.0) / max(reach * reach, 1.0);
+        w *= 1.0 + boost * 8.0 * max(dot(cs.rgb, lum) - 0.7, 0.0);
+        acc += cs * w;
+        wsum += w;
+    }
+    return acc / max(wsum, 1e-5);
+}

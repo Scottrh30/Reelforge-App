@@ -2759,6 +2759,66 @@ fn face_beauty_smooths_the_face_and_nothing_else() {
     assert_eq!(px(&px_out, w, 40, 50), px(&px_out, w, 41, 50));
 }
 
+/// The blur pack: directional, radial (spin and zoom), motion blur from given
+/// maps, and portrait blur by depth.
+#[test]
+fn blurs_smear_the_way_they_say() {
+    use reelforge_core::effects::{dir_blur as db, motion_blur as mb, portrait as pb, radial_blur as rb};
+    use reelforge_core::fillstore::{write_frame, write_index, FillFrame, FillIndex};
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    // A white dot 4 px across at (100, 45) on black.
+    let dot: Vec<u8> = (0..w * h).flat_map(|i| if (98..102).contains(&(i % w)) && (43..47).contains(&(i / w)) { [255u8, 255, 255, 255] } else { [0, 0, 0, 255] }).collect();
+    let mut n = 8400;
+    let mut draw = |c: &mut Compositor, px_: &[u8], v: EffectValues| {
+        n += 1;
+        let mut l = layer(1, px_, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let lit = |img: &[u8], x: u32, y: u32| px(img, w, x, y)[0] > 4;
+    // Directional, across: spread left and right, not up or down.
+    let across = draw(&mut c, &dot, fx(EffectKind::DirectionalBlur, &[(db::LENGTH, 30.0)]));
+    assert!(lit(&across, 88, 45) && lit(&across, 112, 45) && !lit(&across, 100, 35), "across");
+    let down = draw(&mut c, &dot, fx(EffectKind::DirectionalBlur, &[(db::LENGTH, 30.0), (db::ANGLE, 90.0)]));
+    assert!(lit(&down, 100, 33) && lit(&down, 100, 57) && !lit(&down, 88, 45), "down");
+    let trail = draw(&mut c, &dot, fx(EffectKind::DirectionalBlur, &[(db::LENGTH, 30.0), (db::SHAPE, 2.0)]));
+    assert!(lit(&trail, 112, 45) && !lit(&trail, 92, 45), "a trail one way");
+    // Spin round the middle (80, 45): the dot 20 px right smears up and down; zoom: along the line.
+    let spin = draw(&mut c, &dot, fx(EffectKind::RadialBlur, &[(rb::AMOUNT, 40.0)]));
+    assert!(lit(&spin, 99, 39) && lit(&spin, 99, 51) && !lit(&spin, 92, 45), "spin");
+    let zoom = draw(&mut c, &dot, fx(EffectKind::RadialBlur, &[(rb::TYPE, 1.0), (rb::AMOUNT, 60.0)]));
+    assert!(lit(&zoom, 97, 45) && lit(&zoom, 106, 45) && !lit(&zoom, 92, 45) && !lit(&zoom, 100, 38), "zoom");
+    // Motion blur: content that was 20 px to the left at the shutter's opening smears back there.
+    let mut v = fx(EffectKind::MotionBlur, &[]);
+    v.values[mb::FROM..mb::FROM + 6].copy_from_slice(&[1.0, 0.0, 0.0, 1.0, -20.0, 0.0]);
+    let moved = draw(&mut c, &dot, v);
+    assert!(lit(&moved, 90, 45) && !lit(&moved, 110, 45) && !lit(&moved, 100, 38), "motion");
+    let still = draw(&mut c, &dot, fx(EffectKind::MotionBlur, &[]));
+    assert!(lit(&still, 100, 45) && !lit(&still, 95, 45), "still: as it was");
+    // Portrait: checks; the right half near (in focus), the left far: the left blurs to grey, the right stays sharp.
+    let checks: Vec<u8> = (0..w * h).flat_map(|i| if ((i % w) / 2 + (i / w) / 2) % 2 == 0 { [255u8, 255, 255, 255] } else { [0, 0, 0, 255] }).collect();
+    let dir = std::env::temp_dir().join(format!("rf-portrait-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let table: Vec<u8> = (0..w * h).flat_map(|i| if i % w >= 80 { [255u8, 255, 0, 255] } else { [0, 0, 0, 255] }).collect();
+    let file = write_frame(&dir, 0, [0, 0, w, h], &table).unwrap();
+    write_index(&dir, &FillIndex { size: [w, h], frames: vec![FillFrame { at: 0, file, rect: [0, 0, w, h], shift: None }], preview: None }).unwrap();
+    let mut e = Effect::new(EffectKind::PortraitBlur);
+    e.params[pb::HIGHLIGHTS].value = 0.0;
+    e.data = Some(reelforge_core::effects::EffectData::Depth(dir.clone()));
+    let pv = e.eval_sized(Time::ZERO, None, [w as f32, h as f32]);
+    assert!(!pv.is_identity());
+    let out = draw(&mut c, &checks, pv);
+    let spread = |x0: u32| (x0..x0 + 8).map(|x| px(&out, w, x, 40)[0] as i32).fold((255, 0), |(lo, hi), v| (lo.min(v), hi.max(v)));
+    let (lo, hi) = spread(20);
+    assert!(hi - lo < 60 && (80..220).contains(&lo), "far: blurred to grey ({lo}–{hi})");
+    let (lo, hi) = spread(130);
+    assert!(lo < 20 && hi > 235, "near: sharp ({lo}–{hi})");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Depth map and Relight, from a depth folder: the left half far (0), the
 /// right half a slope rising to near (1) at the right edge.
 #[test]

@@ -384,6 +384,23 @@ What works now:
     (**Focus at**, **Angle**, **Sharp band**) and the rest blurs more and more away from it
     (**Falloff**, **Blur**, drawn as a lens blurs: round discs), with a touch of extra
     **Saturation** and **Contrast**, as toy-town shots have
+  - **Directional blur** (Blur & sharpen): a blur one way only, at an **Angle**, **Length**
+    px long: **Even**, **Smooth** (Gaussian) or a **Trail one way** that fades behind
+  - **Radial blur** (Blur & sharpen): round a **Centre** (drag it in the Viewer): **Spin**,
+    turned by **Amount** degrees, or **Zoom**, rushing in or out by **Amount** % of the distance;
+    **Quality** is how many samples it takes (more for big amounts). The layer's edge pixels
+    repeat past it, so full-frame footage doesn't darken at the edges
+  - **Motion blur** (Blur & sharpen): blur from the layer's own movement — its position,
+    scale and rotation keyframes (and its parent's) — as a camera's shutter would: **Shutter
+    angle** (180° is open half of each frame; 360° the whole frame), **Shutter phase** (when it
+    opens: −90° centres it on the frame), **Samples**. A still layer is left alone; 3D and
+    corner-pinned layers aren't blurred this way. Echo's copies blur too
+  - **Portrait blur** (Blur & sharpen): a portrait mode from the footage's depth (press **Work
+    out depth**, as for Depth map): what's at **Focus at** (100 %: the nearest things) within
+    the **In focus range** stays sharp, and the rest blurs by up to **Blur** px with round
+    discs like a wide-open lens — **Blur what's nearer too** or only what's behind, **Bright
+    spots** to make highlights bloom into discs, **Show what's in focus** to see what's kept
+    sharp. Keyframe Focus at for a focus pull
   - **Sharpen**: unsharp mask with amount and radius
   - **Chroma key**: **Pick key colour**, then click the screen in the Viewer (or drag a box
     over it to average a patch: best on an uneven screen) to aim the key at it; for a dull or

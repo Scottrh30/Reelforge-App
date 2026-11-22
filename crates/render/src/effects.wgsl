@@ -3151,3 +3151,92 @@ fn fs_arcs(in: VsOut) -> @location(0) vec4<f32> {
     let a = max(base.a, clamp(core + hl, 0.0, 1.0));
     return vec4(base.rgb + light, a);
 }
+
+// Directional blur: samples along a line through the pixel (angle 0 = across,
+// 90 = down), evenly, Gaussian-weighted, or behind only, fading.
+@fragment
+fn fs_dir_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let a = radians(fx.p0.x);
+    let len = max(fx.p0.y, 0.0);
+    let dir = vec2(cos(a), sin(a)) / size;
+    let mode = u32(round(fx.p0.z));
+    let n = i32(clamp(ceil(len / 1.5), 2.0, 96.0));
+    var acc = vec4(0.0);
+    var wsum = 0.0;
+    for (var i = 0; i < n; i++) {
+        let f = (f32(i) + 0.5) / f32(n);
+        var off = (f - 0.5) * len;
+        var w = 1.0;
+        if (mode == 2u) {
+            off = -f * len;
+            w = 1.0 - f * 0.9;
+        } else if (mode == 1u) {
+            let g = (f - 0.5) * 3.0;
+            w = exp(-g * g * 2.0);
+        }
+        // (the edge pixels repeat past the layer's edge, so footage doesn't darken there)
+        let uv = clamp(in.uv + dir * off, vec2(0.0), vec2(1.0));
+        acc += textureSampleLevel(src, src_sampler, to_tex(uv), 0.0) * w;
+        wsum += w;
+    }
+    return acc / max(wsum, 1e-5);
+}
+
+// Radial blur: samples turned round the centre (Spin: Amount in degrees) or
+// along the line to it (Zoom: Amount in % of the distance).
+@fragment
+fn fs_radial_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let c = fx.p0.xy / 100.0 * size;
+    let d = in.uv * size - c;
+    let zoom = u32(round(fx.p0.z)) == 1u;
+    let n = i32(clamp(round(fx.p1.x), 4.0, 128.0));
+    var acc = vec4(0.0);
+    for (var i = 0; i < n; i++) {
+        let f = (f32(i) + 0.5) / f32(n) - 0.5;
+        var q: vec2<f32>;
+        if (zoom) {
+            q = c + d * (1.0 + f * fx.p0.w / 100.0);
+        } else {
+            let t = radians(fx.p0.w) * f;
+            let cs = cos(t);
+            let sn = sin(t);
+            q = c + vec2(cs * d.x - sn * d.y, sn * d.x + cs * d.y);
+        }
+        let uv = clamp(q / size, vec2(0.0), vec2(1.0));
+        acc += textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+    }
+    return acc / f32(n);
+}
+
+// Motion blur: the layer drawn at moments through the shutter and averaged.
+// Values 3–8 and 9–14 are where content now at a layer point q was at the
+// shutter's opening and closing, in layer pixels from the centre: x = a·qx +
+// c·qy + tx, y = b·qx + d·qy + ty (filled in by the scene); in between, mixed.
+@fragment
+fn fs_motion_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size - size * 0.5;
+    let m0 = vec4(fx.p0.w, fx.p1.x, fx.p1.y, fx.p1.z);
+    let t0 = vec2(fx.p1.w, fx.p2.x);
+    let m1 = vec4(fx.p2.y, fx.p2.z, fx.p2.w, fx.p3.x);
+    let t1 = vec2(fx.p3.y, fx.p3.z);
+    let n = i32(clamp(round(fx.p0.z), 2.0, 64.0));
+    var acc = vec4(0.0);
+    var count = 0.0;
+    for (var i = 0; i < n; i++) {
+        let s = (f32(i) + 0.5) / f32(n);
+        let m = mix(m0, m1, s);
+        let r = p - mix(t0, t1, s);
+        let det = m.x * m.w - m.y * m.z;
+        if (abs(det) < 1e-6) {
+            continue;
+        }
+        let q = vec2(m.w * r.x - m.z * r.y, -m.y * r.x + m.x * r.y) / det;
+        let uv = (q + size * 0.5) / size;
+        acc += textureSampleLevel(src, src_sampler, to_tex(uv), 0.0) * inside(uv);
+        count += 1.0;
+    }
+    return acc / max(count, 1.0);
+}

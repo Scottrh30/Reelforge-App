@@ -196,6 +196,51 @@ pub fn nested_zoom(scale: [f32; 2], outer: f32, size: [u32; 2]) -> f32 {
 
 /// The second frame of a blend has a key of its own (it's another layer for the compositor).
 const NEXT_FRAME_KEY: u64 = 1 << 62;
+/// A layer's Motion blur: where its content was at the shutter's opening and
+/// closing (around `t`, as the effect's angle and phase say), as maps from
+/// where it is now (layer pixels from its centre), written into the effect's
+/// spare values for the GPU. A layer that doesn't move then, or one in 3D or
+/// corner-pinned (not blurred this way), loses the effect.
+fn motion_blur(project: &Project, seq: usize, l: &mut Layer, t: Time, frame_size: [u32; 2], fps: f64) {
+    use reelforge_core::effects::motion_blur as mb;
+    let Some(i) = l.effects.iter().position(|v| v.kind == reelforge_core::EffectKind::MotionBlur) else { return };
+    let full = [frame_size[0] as f32, frame_size[1] as f32];
+    let flat = |tr: &Transform| !tr.three_d && tr.valid_pin().is_none();
+    let frame = project.sequences.get(seq).map_or(Time::from_secs_f64(1.0 / fps.max(1.0)), |s| s.frame_rate.frame_duration());
+    let maps = (|| {
+        if !flat(&l.transform) || !fps.is_finite() || fps <= 0.0 {
+            return None;
+        }
+        let v = l.effects.get(i)?.values;
+        let (open, phase) = ((v[mb::SHUTTER].clamp(0.0, 720.0) / 360.0) as f64, (v[mb::PHASE].clamp(-360.0, 360.0) / 360.0) as f64);
+        let inv = l.transform.matrix(full).inverse()?;
+        let at = |frames: f64| -> Option<[f32; 6]> {
+            let when = Time::from_secs_f64((t.as_secs_f64() + frames / fps).max(0.0));
+            let then = project.clip_layer(seq, l.track, l.clip, when, frame).transform;
+            if !flat(&then) {
+                return None;
+            }
+            let m = then.matrix(full);
+            // inv ∘ m: where content now at q (layer pixels) was then, in today's layer pixels.
+            let r = [inv.a * m.a + inv.c * m.b, inv.b * m.a + inv.d * m.b, inv.a * m.c + inv.c * m.d, inv.b * m.c + inv.d * m.d, inv.a * m.tx + inv.c * m.ty + inv.tx, inv.b * m.tx + inv.d * m.ty + inv.ty];
+            r.iter().all(|x| x.is_finite()).then_some(r)
+        };
+        Some((at(phase)?, at(phase + open)?))
+    })();
+    let still = |m: &[f32; 6]| (m[0] - 1.0).abs() < 1e-4 && m[1].abs() < 1e-4 && m[2].abs() < 1e-4 && (m[3] - 1.0).abs() < 1e-4 && m[4].abs() < 0.05 && m[5].abs() < 0.05;
+    match (maps, l.effects.get_mut(i)) {
+        (Some((a, b)), Some(e)) if !(still(&a) && still(&b)) => {
+            if let Some(slot) = e.values.get_mut(mb::FROM..mb::FROM + 12) {
+                slot[..6].copy_from_slice(&a);
+                slot[6..].copy_from_slice(&b);
+            }
+        }
+        _ => {
+            l.effects.remove(i);
+        }
+    }
+}
+
 /// Echo copies' clip ids (with the copy's number above bit 48).
 const ECHO_KEY: u64 = 1 << 61;
 
@@ -430,10 +475,14 @@ impl Scene {
                 VideoItem::Dissolve { to, .. } => (to.track, None),
             };
             match item {
-                VideoItem::Single(l) => match l.effects.iter().find(|v| v.kind == reelforge_core::EffectKind::Echo).cloned() {
-                    Some(echo) => self.gather_echoes(project, seq, &l, &echo, t, frame_size, fps, &scene3d, provider, depth, &mut items)?,
-                    None => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
-                },
+                VideoItem::Single(mut l) => {
+                    motion_blur(project, seq, &mut l, t, frame_size, fps);
+                    let echo = l.effects.iter().find(|v| v.kind == reelforge_core::EffectKind::Echo).cloned();
+                    match echo {
+                        Some(echo) => self.gather_echoes(project, seq, &l, &echo, t, frame_size, fps, &scene3d, provider, depth, &mut items)?,
+                        None => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
+                    }
+                }
                 VideoItem::Dissolve { from, to, mix, kind } => {
                     match (self.gather(project, &from, t, frame_size, fps, &scene3d, provider, depth)?, self.gather(project, &to, t, frame_size, fps, &scene3d, provider, depth)?) {
                         (Some(mut a), Some(mut b)) => {
@@ -538,6 +587,7 @@ impl Scene {
             }
             let mut el = project.clip_layer(seq, l.track, ck, at, frame);
             el.effects.retain(not_echo);
+            motion_blur(project, seq, &mut el, at, frame_size, fps);
             el.transform.opacity *= opacity;
             el.blend = blend;
             copies.extend(self.gather_retimed(project, &el, at, frame_size, fps, scene3d, provider, depth)?);

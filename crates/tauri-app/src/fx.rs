@@ -304,6 +304,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::Fluid | EffectKind::Liquid | EffectKind::Liquid3D => Some("Source"),
                     EffectKind::LightRays => Some("Source"),
                     EffectKind::Bulge | EffectKind::Twirl | EffectKind::Ripple | EffectKind::Mirror | EffectKind::LensDistortion => Some("Centre"),
+                    EffectKind::RadialBlur => Some("Centre"),
                     EffectKind::Relight => Some("Light"),
                     EffectKind::Portal => Some("Centre"),
                     EffectKind::Shockwave => Some("Centre"),
