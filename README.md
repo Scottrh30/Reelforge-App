@@ -829,9 +829,17 @@ What works now:
       **Brightness**, **Seed**
     - **HUD element** (Generate): a heads-up display piece drawn over the picture — a
       **Targeting reticle**, **Radar sweep**, **Turning rings**, **Readout bars** or **Corner
-      brackets** — at a **Centre** and **Size**, in a **Colour**, with **Line width**,
+      brackets** — or one of 30 reticle styles: scopes (**Scope**, **Double-ring scope**,
+      **Sniper scope**, **Chevron dial**), compasses (**Star**, **Diamond**), squares
+      (**Notched**, **Framed**, **Bracketed**), hexagons (**In pieces**, **Hexagon**, **Double**),
+      arcs and X sights (**Side arcs**, **Bow tie**, **Hooked arcs**, **Swept X**, **Bracketed
+      X**, **Long X**), data panels with moving readouts (**Wireframe callouts**, **Wireframe
+      hexagon**, **Scanner panel**, **Data scope**, **Data X**, **Data cross**) and rings and
+      gauges (**Bullseye**, **Heavy ring**, **Tick dial**, **Segment gauge**, **Lock-on**,
+      **Segmented shield**) — at a **Centre** and **Size**, in a **Colour**, with **Line width**,
       **Spin**, **Detail**, **Opacity** and **Flicker**; keyframe **Draw on** from 0 to 100 % to
-      draw it in
+      draw it in. For the reticle styles, **Glow** adds a soft lit halo round the lines and
+      **Fill** faint scanlines inside
   - **Light sweep** (Light & stylize): a band of light sliding across the layer — **Lights**: **The
     shape** (a logo or title), **Its bright parts** or **Everything** — at an **Angle**,
     **Width** and **Softness**, starting at **Start at**, taking **Takes** seconds and coming again

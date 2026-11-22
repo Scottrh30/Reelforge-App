@@ -1399,6 +1399,22 @@ fn sci_fi_and_light_effects_draw_where_they_should() {
     let none = draw(&mut c, &grey, EffectKind::Hud, &[(hud::DRAW_ON, 0.0)], 0.0);
     assert_eq!(differ(&none, &grey), 0, "not drawn on yet");
 
+    // The 30 reticle styles: each draws something of its own near the centre, nothing far
+    // away (Glow off), and nothing before it's drawn on; with Glow up, a halo beyond it.
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    for e in 5..35 {
+        let el = e as f32;
+        let img = draw(&mut c, &grey, EffectKind::Hud, &[(hud::ELEMENT, el), (hud::SIZE, 50.0)], 0.5);
+        assert!(differ(&img, &grey) > 20, "style {e} draws");
+        assert_eq!(at(&img, 2, 2), at(&grey, 2, 2), "style {e}: far away, untouched");
+        assert!(seen.iter().all(|o| differ(o, &img) > 0), "style {e} is its own");
+        let none = draw(&mut c, &grey, EffectKind::Hud, &[(hud::ELEMENT, el), (hud::DRAW_ON, 0.0), (hud::GLOW, 100.0), (hud::FILL, 100.0)], 0.5);
+        assert_eq!(differ(&none, &grey), 0, "style {e}: not drawn on yet");
+        let lit = draw(&mut c, &grey, EffectKind::Hud, &[(hud::ELEMENT, el), (hud::SIZE, 50.0), (hud::GLOW, 100.0)], 0.5);
+        assert!(differ(&lit, &grey) > differ(&img, &grey), "style {e}: the glow reaches further");
+        seen.push(img);
+    }
+
     // Light sweep, 1 s from 0: halfway through, a bright band across the square, none
     // outside it; before it starts, nothing.
     let mid = draw(&mut c, &cut, EffectKind::LightSweep, &[(sweep::ANGLE, 0.0), (sweep::WIDTH, 20.0), (sweep::SOFTNESS, 0.0)], 0.5);

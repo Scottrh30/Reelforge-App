@@ -2961,8 +2961,483 @@ fn hud_line(d: f32, w: f32) -> f32 {
     return 1.0 - smoothstep(w * 0.5 - 0.6, w * 0.5 + 0.6, abs(d));
 }
 
+// ---- HUD reticle styles (elements 5 on): drawn from distances in units of the radius ----
+
+// What's been drawn so far at this pixel: x = ink, y = glow.
+var<private> HK: vec2<f32>;
+// The radius (px), line width (px), glow reach (px), and whether this pixel is drawn on yet.
+var<private> HR: f32;
+var<private> HW: f32;
+var<private> HG: f32;
+var<private> HREV: f32;
+
+// A line of `wm` line widths along distance `du` (units of the radius), at strength `k`.
+fn hk(du: f32, wm: f32, k: f32) {
+    hk_px(du * HR - HW * wm * 0.5, k);
+}
+
+// A band `wu` units wide (it scales with the size; never thinner than a line).
+fn hkb(du: f32, wu: f32, k: f32) {
+    hk_px(du * HR - max(wu * HR, HW) * 0.5, k);
+}
+
+// Ink where the edge distance `e` (px) is below 0, glow falling off beyond it.
+fn hk_px(e: f32, k: f32) {
+    let s = k * HREV;
+    HK.x = max(HK.x, (1.0 - smoothstep(-0.6, 0.6, e)) * s);
+    HK.y = max(HK.y, exp(-max(e, 0.0) / HG) * s);
+}
+
+// Ink at a coverage `c` (0..1) without an edge distance (ticks, glyphs).
+fn hk_cov(c: f32, k: f32) {
+    let s = clamp(c, 0.0, 1.0) * k * HREV;
+    HK.x = max(HK.x, s);
+    HK.y = max(HK.y, s * 0.6);
+}
+
+fn hs_seg(q: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let pa = q - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+// Turns clockwise from the top, 0..1.
+fn hs_ang(q: vec2<f32>) -> f32 {
+    return fract(atan2(q.x, -q.y) / 6.2831853 + 1.0);
+}
+
+fn hs_dir(a: f32) -> vec2<f32> {
+    return vec2(sin(a * 6.2831853), -cos(a * 6.2831853));
+}
+
+// Distance to an arc of radius `rad` from `a0` turns clockwise for `len` turns.
+fn hs_arc(q: vec2<f32>, rad: f32, a0: f32, len: f32) -> f32 {
+    let rel = fract(hs_ang(q) - a0);
+    if (rel <= len) {
+        return abs(length(q) - rad);
+    }
+    return min(length(q - hs_dir(a0) * rad), length(q - hs_dir(a0 + len) * rad));
+}
+
+// Turned by `turns` clockwise.
+fn hs_rot(q: vec2<f32>, turns: f32) -> vec2<f32> {
+    let a = -turns * 6.2831853;
+    let c = cos(a);
+    let s = sin(a);
+    return vec2(c * q.x - s * q.y, s * q.x + c * q.y);
+}
+
+// Distance to a box's outline (half size `h`).
+fn hs_box(q: vec2<f32>, h: vec2<f32>) -> f32 {
+    let d = abs(q) - h;
+    return abs(length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0));
+}
+
+// Distance to the outline of a hexagon with corners left and right at `s`
+// (in the first quadrant: `a` folded with abs).
+fn hs_hex(a: vec2<f32>, s: f32) -> f32 {
+    let v0 = vec2(1.0, 0.0) * s;
+    let v1 = vec2(0.5, 0.866) * s;
+    return min(hs_seg(a, v0, v1), hs_seg(a, v1, vec2(0.0, 0.866 * s)));
+}
+
+// `n` arcs round a ring, each `len` turns, the first starting at `a0`.
+fn hk_arcs(q: vec2<f32>, rad: f32, n: f32, a0: f32, len: f32, wm: f32, band: bool) {
+    let step_a = 1.0 / max(n, 1.0);
+    // The arc this pixel's angle is nearest.
+    let i = floor(fract(hs_ang(q) - a0 + (step_a - len) * 0.5) / step_a);
+    let d = hs_arc(q, rad, a0 + i * step_a, len);
+    if (band) {
+        hkb(d, wm, 1.0);
+    } else {
+        hk(d, wm, 1.0);
+    }
+}
+
+// `n` arcs round a ring like hk_arcs, keeping only those within `sides` turns of the
+// left and right (the rest left out), so each pixel glows from its own nearest arc.
+fn hk_arcs_sides(q: vec2<f32>, rad: f32, n: f32, len: f32, wu: f32, sides: f32) {
+    let step_a = 1.0 / max(n, 1.0);
+    let i = floor(fract(hs_ang(q) + (step_a - len) * 0.5) / step_a);
+    let mid = i * step_a + len * 0.5;
+    let keep = step(abs(fract(mid * 2.0 + 0.5) - 0.5), sides * 2.0);
+    hkb(hs_arc(q, rad, i * step_a, len), wu, keep);
+}
+
+// Distance to dashes along u (0 to `hi`), `n` a unit, each `duty` of its step; v across.
+fn hs_dash(u: f32, v: f32, n: f32, duty: f32, hi: f32) -> f32 {
+    let uu = clamp(u, 0.0, hi);
+    let c = (floor(uu * n) + 0.5) / n;
+    let h = duty * 0.5 / n;
+    return length(vec2(max(abs(u - c) - h, 0.0), v));
+}
+
+// The small + in the middle.
+fn hk_plus(q: vec2<f32>) {
+    let s = 0.07;
+    hk(min(hs_seg(q, vec2(-s, 0.0), vec2(s, 0.0)), hs_seg(q, vec2(0.0, -s), vec2(0.0, s))), 0.6, 1.0);
+}
+
+// Three prongs from the middle (a Y), from `r0` to `r1`, turned by `spin`.
+fn hk_prongs(q: vec2<f32>, r0: f32, r1: f32, spin: f32) {
+    for (var k = 0; k < 3; k++) {
+        let d = hs_dir(f32(k) / 3.0 + spin);
+        hk(hs_seg(q, d * r0, d * r1), 0.8, 1.0);
+    }
+}
+
+// Ticks across a ring between `r0` and `r1`, `n` round, each a fraction `on` of its step,
+// only where `mask` is set.
+fn hk_ticks(q: vec2<f32>, a: f32, r0: f32, r1: f32, n: f32, on: f32, mask: f32) {
+    let l = length(q);
+    let c = step(fract(a * n), on) * step(r0, l) * step(l, r1) * mask;
+    hk_cov(c, 0.9);
+}
+
+// Readout text: rows of tiny made-up glyphs in a box, changing now and then.
+fn hk_text(q: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>, seed: u32, t: f32, amount: f32) {
+    if (q.x < lo.x || q.y < lo.y || q.x > hi.x || q.y > hi.y) {
+        return;
+    }
+    let ch = max(0.055, 6.0 / max(HR, 1.0));
+    let cell = vec2(ch * 0.7, ch * 1.5);
+    let g = (q - lo) / cell;
+    let row = u32(min(floor(g.y), 4096.0));
+    let col = u32(min(floor(g.x), 4096.0));
+    let f = fract(g);
+    let cols = (hi.x - lo.x) / cell.x;
+    let len = floor(cols * (0.25 + 0.75 * rnd3(seed, row, 7u)) * clamp(amount, 0.2, 1.0));
+    if (f32(col) >= len || rnd3(seed, row, 11u) < 0.15) {
+        return;
+    }
+    // A 3 × 5 glyph in the top of the cell, with a gap after it.
+    let gx = f.x / 0.8;
+    let gy = f.y / 0.66;
+    if (gx >= 1.0 || gy >= 1.0) {
+        return;
+    }
+    let tick = u32(floor(max(t, 0.0) * 2.0 + rnd3(seed, row, 8u) * 7.0)) % 64u;
+    let changes = select(0u, tick, rnd3(seed, row * 31u + col, 9u) < 0.25);
+    let bit = u32(gx * 3.0) + u32(gy * 5.0) * 3u;
+    let lit = step(0.45, rnd3(seed + changes * 7919u, row * 131u + col, bit));
+    hk_cov(lit, 0.85);
+}
+
+// Bars rising and falling between `lo` and `hi` (their bottoms on hi.y).
+fn hk_bars(q: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>, n: f32, seed: u32, t: f32) {
+    if (q.x < lo.x || q.y < lo.y || q.x > hi.x || q.y > hi.y) {
+        return;
+    }
+    let g = (q.x - lo.x) / (hi.x - lo.x) * n;
+    let i = floor(g);
+    let lvl = 0.2 + 0.8 * vnoise(seed, vec2(i * 0.9, t * 1.5));
+    let top = hi.y - (hi.y - lo.y) * lvl;
+    hk_cov(step(fract(g), 0.6) * step(top, q.y), 0.9);
+}
+
+// A wireframe of `n` points wandering slowly about `c` (half size `h`), most pairs joined.
+fn hk_wire(q: vec2<f32>, c: vec2<f32>, h: vec2<f32>, n: u32, seed: u32, t: f32) {
+    var pts: array<vec2<f32>, 10>;
+    let m = min(n, 10u);
+    for (var i = 0u; i < m; i++) {
+        let a = vec2(rnd3(seed, i, 21u), rnd3(seed, i, 22u)) * 2.0 - 1.0;
+        let drift = vec2(vnoise(seed + i, vec2(t * 0.3, 1.0)), vnoise(seed + i, vec2(2.0, t * 0.3))) - 0.5;
+        pts[i] = c + (a * 0.85 + drift * 0.3) * h;
+    }
+    var d = 1e6;
+    for (var i = 0u; i < m; i++) {
+        for (var j = i + 1u; j < m; j++) {
+            if (rnd3(seed, i * 16u + j, 23u) < 0.55) {
+                d = min(d, hs_seg(q, pts[i], pts[j]));
+            }
+        }
+    }
+    hk(d, 0.5, 0.9);
+}
+
+// The outline of an ellipse (half sizes `h`), near enough.
+fn hs_ellipse(q: vec2<f32>, h: vec2<f32>) -> f32 {
+    let k = length(q / h);
+    return abs(k - 1.0) * min(h.x, h.y);
+}
+
+// The reticle style `e` (5 on) at `q` (units of the radius from the centre, y down).
+fn hud_shape(e: u32, q: vec2<f32>, spin: f32, detail: f32, seed: u32, t: f32) {
+    let a = abs(q);
+    let l = length(q);
+    let ang = hs_ang(q);
+    let rq = hs_rot(q, spin);
+    let ra = hs_ang(rq);
+    let nt = floor(mix(24.0, 96.0, detail));
+    switch (e) {
+        case 5u: {
+            // Scope: a ring broken at the cross, the cross running past it, dashes inside.
+            hk_arcs(rq, 0.8, 4.0, 0.035, 0.18, 2.2, false);
+            hk(min(hs_seg(a, vec2(0.33, 0.0), vec2(1.08, 0.0)), hs_seg(a, vec2(0.0, 0.33), vec2(0.0, 1.08))), 2.4, 1.0);
+            hk(min(hs_dash(a.x, a.y, 14.0, 0.55, 0.3), hs_dash(a.y, a.x, 14.0, 0.55, 0.3)), 0.8, 1.0);
+        }
+        case 6u: {
+            // Double-ring scope: a heavy ring, two thin ones, heavy bars into the middle.
+            hk_arcs(q, 0.95, 4.0, 0.03, 0.19, 0.06, true);
+            hk_arcs(q, 0.82, 4.0, 0.025, 0.2, 1.0, false);
+            hk_arcs(rq, 0.6, 4.0, 0.06, 0.13, 0.8, false);
+            hkb(min(hs_seg(a, vec2(0.14, 0.0), vec2(0.62, 0.0)), hs_seg(a, vec2(0.0, 0.14), vec2(0.0, 0.62))), 0.05, 1.0);
+            hk(min(hs_dash(a.x, a.y, 20.0, 0.5, 0.12), hs_dash(a.y, a.x, 20.0, 0.5, 0.12)), 0.6, 1.0);
+        }
+        case 7u: {
+            // Sniper: a long cross, heavier at its ends, broken rings, a little ring in the middle.
+            hk(min(hs_seg(a, vec2(0.13, 0.0), vec2(1.15, 0.0)), hs_seg(a, vec2(0.0, 0.13), vec2(0.0, 1.15))), 1.4, 1.0);
+            hk(min(hs_seg(a, vec2(0.62, 0.0), vec2(1.15, 0.0)), hs_seg(a, vec2(0.0, 0.62), vec2(0.0, 1.15))), 3.0, 1.0);
+            hk_arcs(q, 0.9, 4.0, 0.03, 0.19, 1.2, false);
+            hk_arcs(rq, 0.75, 4.0, 0.06, 0.13, 1.0, false);
+            hk_arcs(q, 0.14, 4.0, 0.05, 0.15, 1.4, false);
+        }
+        case 8u: {
+            // Dial: a ring with scales across it, a ring in the middle, four bent chevrons.
+            hk(abs(l - 0.95), 2.0, 1.0);
+            hkb(abs(l - 0.11), 0.04, 1.0);
+            hk(min(hs_seg(a, vec2(0.16, 0.0), vec2(0.85, 0.0)), hs_seg(q, vec2(0.0, -0.9), vec2(0.0, -0.2))), 0.7, 1.0);
+            hk(hs_seg(q, vec2(0.0, 0.2), vec2(0.0, 0.9)), 0.7, 1.0);
+            let tx = step(fract(a.x * 16.0), 0.18) * step(a.y, 0.035) * step(0.16, a.x) * step(a.x, 0.85);
+            let long_y = mix(0.04, 0.12, step(fract(q.y * 4.0), 0.25));
+            let ty = step(fract(q.y * 16.0), 0.18) * step(0.2, a.y) * step(a.y, 0.9) * step(0.0, q.x * sign(-q.y)) * step(a.x, long_y);
+            hk_cov(tx + ty, 0.9);
+            let ca = abs(rq);
+            hk(min(hs_seg(ca, vec2(0.3, 0.74), vec2(0.45, 0.42)), hs_seg(ca, vec2(0.45, 0.42), vec2(0.8, 0.42))), 1.6, 1.0);
+        }
+        case 9u: {
+            // Star compass: a four-point star, a ring, four heavy arcs turning round it.
+            let s = min(hs_seg(a, vec2(0.0, 1.0), vec2(0.2, 0.2)), hs_seg(a, vec2(0.2, 0.2), vec2(1.0, 0.0)));
+            hk(s, 2.4, 1.0);
+            hk(abs(l - 0.6), 1.6, 1.0);
+            hk_arcs(rq, 0.88, 4.0, 0.125 - 0.075, 0.15, 0.09, true);
+            hk_plus(q);
+        }
+        case 10u: {
+            // Diamond compass: a diamond, its points marked, rings inside.
+            hk(abs(a.x + a.y - 1.0) * 0.7071, 1.8, 1.0);
+            hk(min(hs_seg(a, vec2(0.0, 1.0), vec2(0.28, 0.56)), hs_seg(a, vec2(1.0, 0.0), vec2(0.56, 0.28))), 1.4, 1.0);
+            hk(abs(l - 0.55), 1.8, 1.0);
+            hk_arcs(rq, 0.42, 32.0, 0.0, 0.6 / 32.0, 0.8, false);
+            hk_plus(q);
+        }
+        case 11u: {
+            // Notched square: a frame with heavy, stepped corners.
+            hk(hs_box(q, vec2(0.78)), 1.6, 1.0);
+            let c = min(hs_seg(a, vec2(0.55, 0.84), vec2(0.84, 0.84)), hs_seg(a, vec2(0.84, 0.55), vec2(0.84, 0.84)));
+            hkb(c, 0.06, 1.0);
+            hk_plus(q);
+        }
+        case 12u: {
+            // Framed square: a heavy frame broken near each corner, small brackets inside.
+            let fr = min(min(hs_seg(a, vec2(0.0, 0.82), vec2(0.5, 0.82)), hs_seg(a, vec2(0.6, 0.82), vec2(0.82, 0.82))), min(hs_seg(a, vec2(0.82, 0.0), vec2(0.82, 0.5)), hs_seg(a, vec2(0.82, 0.6), vec2(0.82, 0.82))));
+            hkb(fr, 0.05, 1.0);
+            let c = min(hs_seg(a, vec2(0.45, 0.62), vec2(0.62, 0.62)), hs_seg(a, vec2(0.62, 0.45), vec2(0.62, 0.62)));
+            hk(c, 1.0, 1.0);
+            hk_plus(q);
+        }
+        case 13u: {
+            // Brackets: heavy corners, thin ones inside them.
+            let c = min(hs_seg(a, vec2(0.5, 0.85), vec2(0.85, 0.85)), hs_seg(a, vec2(0.85, 0.5), vec2(0.85, 0.85)));
+            hkb(c, 0.07, 1.0);
+            let i = min(hs_seg(a, vec2(0.45, 0.68), vec2(0.68, 0.68)), hs_seg(a, vec2(0.68, 0.45), vec2(0.68, 0.68)));
+            hk(i, 1.0, 1.0);
+            hk_plus(q);
+        }
+        case 14u: {
+            // Hexagon in pieces: brackets at its corners, chevrons inside left and right.
+            let v0 = vec2(1.0, 0.0);
+            let v1 = vec2(0.5, 0.866);
+            let b = min(min(hs_seg(a, v0, mix(v0, v1, 0.32)), hs_seg(a, v1, mix(v1, v0, 0.32))), hs_seg(a, v1, vec2(0.22, 0.866)));
+            hkb(b, 0.045, 1.0);
+            hk(hs_seg(a, vec2(0.78, 0.0), vec2(0.66, 0.2)), 1.6, 1.0);
+            hk_plus(q);
+        }
+        case 15u: {
+            // Hexagon: its outline, chevrons outside left and right, bars above and below.
+            hk(hs_hex(a, 0.8), 1.6, 1.0);
+            hkb(hs_seg(a, vec2(1.02, 0.0), vec2(0.86, 0.3)), 0.04, 1.0);
+            hkb(min(hs_seg(a, vec2(0.25, 0.98), vec2(0.56, 0.98)), hs_seg(a, vec2(0.56, 0.98), vec2(0.66, 0.84))), 0.04, 1.0);
+            hk_plus(q);
+        }
+        case 16u: {
+            // Double hexagon, with the chevrons and bars.
+            hkb(hs_hex(a, 0.82), 0.035, 1.0);
+            hk(hs_hex(a, 0.68), 1.0, 1.0);
+            hkb(hs_seg(a, vec2(1.04, 0.0), vec2(0.9, 0.3)), 0.04, 1.0);
+            hkb(min(hs_seg(a, vec2(0.28, 0.98), vec2(0.58, 0.98)), hs_seg(a, vec2(0.58, 0.98), vec2(0.68, 0.84))), 0.04, 1.0);
+            hk_plus(q);
+        }
+        case 17u: {
+            // Two arcs, left and right.
+            hkb(min(hs_arc(q, 1.0, 0.25 - 0.11, 0.22), hs_arc(q, 1.0, 0.75 - 0.11, 0.22)), 0.045, 1.0);
+            hk_plus(q);
+        }
+        case 18u: {
+            // Bow tie: arcs, lines in from their tops, ticks across, prongs in the middle.
+            hkb(min(hs_arc(q, 1.0, 0.25 - 0.13, 0.26), hs_arc(q, 1.0, 0.75 - 0.13, 0.26)), 0.035, 1.0);
+            let top = abs(hs_dir(0.12));
+            hk(min(hs_seg(a, top, vec2(0.4, 0.42)), hs_seg(a, vec2(0.38, 0.0), vec2(0.76, 0.0))), 1.6, 1.0);
+            hk_prongs(q, 0.0, 0.08, spin);
+        }
+        case 19u: {
+            // Hooked arcs, a Y in the middle.
+            let d = min(hs_arc(q, 0.95, 0.25 - 0.12, 0.24), hs_arc(q, 0.95, 0.75 - 0.12, 0.24));
+            hkb(d, 0.035, 1.0);
+            let hook = abs(hs_dir(0.13)) * 0.95;
+            hkb(hs_seg(a, hook, hook + vec2(0.1, 0.0)), 0.035, 1.0);
+            hkb(hs_seg(a, vec2(0.97, 0.33), vec2(0.88, 0.33)), 0.03, 1.0);
+            hk_prongs(q, 0.08, 0.32, spin);
+            hk_plus(q);
+        }
+        case 20u: {
+            // An X that sweeps out into hooks.
+            let d = min(min(hs_seg(a, vec2(0.1, 0.07), vec2(0.55, 0.42)), hs_seg(a, vec2(0.55, 0.42), vec2(0.68, 0.42))), hs_seg(a, vec2(0.68, 0.42), vec2(0.95, 0.62)));
+            hk(d, 2.0, 1.0);
+            hkb(hs_arc(a - vec2(0.82, 0.62), 0.18, 0.12, 0.18), 0.035, 1.0);
+            hk_plus(q);
+        }
+        case 21u: {
+            // An X into bracketed corners.
+            let d = min(min(hs_seg(a, vec2(0.1, 0.075), vec2(0.82, 0.62)), hs_seg(a, vec2(0.82, 0.62), vec2(1.0, 0.62))), hs_seg(a, vec2(1.0, 0.62), vec2(1.0, 0.42)));
+            hkb(d, 0.03, 1.0);
+            hk_plus(q);
+        }
+        case 22u: {
+            // An X with its ends run out flat.
+            let d = min(hs_seg(a, vec2(0.1, 0.075), vec2(0.88, 0.68)), hs_seg(a, vec2(0.88, 0.68), vec2(1.2, 0.68)));
+            hk(d, 2.4, 1.0);
+            hk_plus(q);
+        }
+        case 23u: {
+            // Wireframe with callouts: a net of points, leaders out to readouts.
+            hk_wire(q, vec2(0.0), vec2(0.5, 0.6), u32(mix(6.0, 10.0, detail)), seed, t);
+            let lead = min(min(hs_seg(q, vec2(-0.45, -0.5), vec2(-1.1, -0.5)), hs_seg(q, vec2(0.45, -0.2), vec2(0.6, -0.4))), min(hs_seg(q, vec2(0.6, -0.4), vec2(1.1, -0.4)), hs_seg(q, vec2(-0.3, 0.55), vec2(-0.6, 0.75))));
+            hk(min(lead, min(hs_seg(q, vec2(-0.6, 0.75), vec2(-1.1, 0.75)), hs_seg(q, vec2(0.5, 0.3), vec2(1.1, 0.3)))), 0.8, 1.0);
+            hk_text(q, vec2(-1.1, -0.66), vec2(-0.6, -0.55), seed, t, detail);
+            hk_text(q, vec2(0.65, -0.56), vec2(1.1, -0.45), seed + 1u, t, detail);
+            hk_text(q, vec2(0.6, 0.15), vec2(1.1, 0.26), seed + 2u, t, detail);
+            hk_text(q, vec2(-1.1, 0.6), vec2(-0.7, 0.71), seed + 3u, t, detail);
+        }
+        case 24u: {
+            // Wireframe hexagon, turning, with callouts.
+            let turn = cos(spin * 6.2831853);
+            var d = 1e6;
+            for (var i = 0; i < 6; i++) {
+                let pi = hs_dir(f32(i) / 6.0) * 0.6 * vec2(turn, 1.0);
+                for (var j = i + 1; j < 6; j++) {
+                    d = min(d, hs_seg(q, pi, hs_dir(f32(j) / 6.0) * 0.6 * vec2(turn, 1.0)));
+                }
+            }
+            hk(d, 0.6, 1.0);
+            hk(hs_hex(abs(q.yx), 0.6), 1.4, 1.0);
+            let lead = min(min(hs_seg(a, vec2(0.52, 0.3), vec2(0.7, 0.55)), hs_seg(a, vec2(0.7, 0.55), vec2(1.2, 0.55))), hs_seg(a, vec2(0.62, 0.0), vec2(1.2, 0.0)));
+            hk(lead, 0.8, 1.0);
+            hk_text(q, vec2(0.75, -0.7), vec2(1.2, -0.6), seed, t, detail);
+            hk_text(q, vec2(-1.2, -0.7), vec2(-0.75, -0.6), seed + 1u, t, detail);
+            hk_text(q, vec2(0.7, 0.4), vec2(1.2, 0.5), seed + 2u, t, detail);
+            hk_text(q, vec2(-1.2, -0.15), vec2(-0.7, -0.05), seed + 3u, t, detail);
+        }
+        case 25u: {
+            // Scanner panel: wide arcs, brackets, a crossed box with an ellipse, a strip of bars.
+            hkb(min(hs_arc(q, 1.35, 0.25 - 0.09, 0.18), hs_arc(q, 1.35, 0.75 - 0.09, 0.18)), 0.03, 1.0);
+            hk_ticks(q, ang, 1.22, 1.28, nt * 2.0, 0.4, step(1.0, a.x));
+            hk(hs_seg(a, vec2(0.85, 0.82), vec2(1.2, 0.82)), 1.6, 1.0);
+            hk(min(hs_box(q, vec2(0.75, 0.45)) + 0.0, hs_seg(a, vec2(0.0), vec2(0.75, 0.45))), 0.8, 1.0);
+            hk(hs_ellipse(hs_rot(q, spin * 0.1), vec2(0.3, 0.15)), 1.2, 1.0);
+            let strip = step(fract(q.x * 40.0), 0.5) * step(0.62, q.y) * step(q.y, 0.7) * step(a.x, 0.55);
+            hk_cov(strip, 0.9);
+        }
+        case 26u: {
+            // Data scope: arcs, a level line with a marker, a bar graph, a gauge and readouts.
+            hkb(min(hs_arc(q, 0.95, 0.25 - 0.14, 0.28), hs_arc(q, 0.95, 0.75 - 0.14, 0.28)), 0.035, 1.0);
+            hk(min(hs_arc(q, 0.75, 0.25 - 0.1, 0.2), hs_arc(q, 0.75, 0.75 - 0.1, 0.2)), 1.0, 1.0);
+            hk(min(hs_seg(a, vec2(0.12, 0.0), vec2(0.55, 0.0)), hs_seg(a, vec2(0.55, 0.0), vec2(0.55, 0.1))), 1.0, 1.0);
+            let tri = step(q.y, 0.0) * step(-0.09, q.y) * step(a.x, (q.y + 0.09) * 0.6);
+            hk_cov(tri, 1.0);
+            hk_bars(q, vec2(-0.25, 0.45), vec2(0.25, 0.72), floor(mix(5.0, 12.0, detail)), seed, t);
+            let lvl = 0.5 + 0.4 * sin(t * 0.7);
+            let gauge = step(-1.32, q.x) * step(q.x, -1.18) * step(-0.4, q.y) * step(q.y, 0.7) * step(0.7 - 1.1 * lvl, q.y) * step(fract(q.y * 18.0), 0.6);
+            hk_cov(gauge, 0.9);
+            hk(hs_arc(q - vec2(-0.1, 0.0), 1.3, 0.62, 0.26), 0.7, 1.0);
+            hk_text(q, vec2(1.1, -0.75), vec2(1.45, 0.75), seed, t, detail);
+        }
+        case 27u: {
+            // Data X: arcs, a bow tie in the middle, columns of readouts.
+            hkb(min(hs_arc(q, 0.95, 0.25 - 0.15, 0.3), hs_arc(q, 0.95, 0.75 - 0.15, 0.3)), 0.03, 1.0);
+            let d = min(min(hs_seg(a, vec2(0.12, 0.1), vec2(0.42, 0.36)), hs_seg(a, vec2(0.42, 0.36), vec2(0.6, 0.36))), hs_seg(a, vec2(0.55, 0.0), vec2(0.85, 0.0)));
+            hk(d, 1.2, 1.0);
+            hk_text(q, vec2(-1.45, -0.8), vec2(-1.08, 0.8), seed, t, detail);
+            hk_text(q, vec2(1.08, -0.85), vec2(1.45, 0.4), seed + 1u, t, detail);
+        }
+        case 28u: {
+            // Data cross: heavy arcs, a turning dashed ring, an X to a dot, readouts.
+            hkb(min(hs_arc(q, 0.95, 0.25 - 0.13, 0.26), hs_arc(q, 0.95, 0.75 - 0.13, 0.26)), 0.07, 1.0);
+            hk_arcs(rq, 0.32, 12.0, 0.0, 0.6 / 12.0, 0.8, false);
+            hk(hs_seg(a, vec2(0.08, 0.08), vec2(0.26, 0.26)), 1.0, 1.0);
+            hk_cov(1.0 - smoothstep(0.045, 0.055, l), 1.0);
+            hk_text(q, vec2(-1.45, -0.85), vec2(-1.05, -0.55), seed, t, detail);
+            hk_text(q, vec2(-1.45, 0.55), vec2(-1.05, 0.85), seed + 1u, t, detail);
+            hk_text(q, vec2(1.08, 0.75), vec2(1.45, 0.85), seed + 2u, t, detail);
+        }
+        case 29u: {
+            // Bullseye: thin rings, a heavy ring inside, a dot.
+            hk(abs(l - 0.95), 1.0, 1.0);
+            if (detail >= 0.5) {
+                let nd = floor(nt * 0.25);
+                hk_arcs(rq, 0.85, nd, 0.0, 0.7 / nd, 1.0, false);
+            } else {
+                hk(abs(l - 0.85), 1.0, 1.0);
+            }
+            hk(abs(l - 0.76), 1.6, 1.0);
+            hkb(abs(l - 0.42), 0.13, 1.0);
+            hk_cov(1.0 - smoothstep(0.02, 0.03, l), 1.0);
+        }
+        case 30u: {
+            // Heavy ring, a thin one, arcs turning inside, a dot.
+            hkb(abs(l - 0.9), 0.1, 1.0);
+            hk(abs(l - 0.68), 1.2, 1.0);
+            hk_arcs(rq, 0.42, 2.0, 0.25 - 0.14, 0.28, 1.8, false);
+            hk_cov(1.0 - smoothstep(0.025, 0.035, l), 1.0);
+        }
+        case 31u: {
+            // Tick dial: a ring with runs of ticks, crosshair ticks, arcs winding in.
+            hk(abs(l - 0.8), 1.4, 1.0);
+            let runs = step(0.08, fract(ang * 4.0)) * step(fract(ang * 4.0), 0.42);
+            hk_ticks(q, ang, 0.88, 0.98, nt * 1.5, 0.45, runs);
+            hk(min(hs_seg(a, vec2(0.6, 0.0), vec2(1.05, 0.0)), hs_seg(a, vec2(0.0, 0.6), vec2(0.0, 1.05))), 0.8, 1.0);
+            hk(hs_arc(hs_rot(q, spin * 1.3), 0.52, 0.0, 0.35), 1.4, 1.0);
+            hk(hs_arc(hs_rot(q, -spin), 0.36, 0.5, 0.3), 1.4, 1.0);
+            hk(hs_arc(hs_rot(q, spin * 0.6), 0.22, 0.2, 0.55), 1.4, 1.0);
+            hk(abs(l - 0.06), 1.2, 1.0);
+        }
+        case 32u: {
+            // Segment gauge: outer arcs, heavy blocks either side, a dot.
+            hk_arcs(q, 1.0, 4.0, 0.06, 0.13, 1.4, false);
+            hk_arcs_sides(q, 0.55, 30.0, 0.78 / 30.0, 0.17, 0.09);
+            hk(min(hs_arc(q, 0.38, 0.25 - 0.08, 0.16), hs_arc(q, 0.38, 0.75 - 0.08, 0.16)), 1.0, 1.0);
+            hk_cov(1.0 - smoothstep(0.05, 0.06, l), 1.0);
+        }
+        case 33u: {
+            // Lock-on: heavy arcs turning outside, a broken ring, a cross with a gap.
+            hk_arcs(rq, 0.95, 4.0, -0.075, 0.15, 0.07, true);
+            hk_arcs(q, 0.55, 4.0, 0.015, 0.22, 0.05, true);
+            hk(min(hs_seg(a, vec2(0.08, 0.0), vec2(0.32, 0.0)), hs_seg(a, vec2(0.0, 0.08), vec2(0.0, 0.32))), 1.4, 1.0);
+        }
+        default: {
+            // Segmented shield: heavy banks of segments either side, a dashed ring turning, a Y.
+            hk_arcs_sides(q, 0.92, 36.0, 0.8 / 36.0, 0.13, 0.16);
+            hk(min(hs_arc(q, 1.03, 0.25 - 0.2, 0.4), hs_arc(q, 1.03, 0.75 - 0.2, 0.4)), 1.0, 1.0);
+            hk_arcs(rq, 0.6, 18.0, 0.0, 0.55 / 18.0, 1.0, false);
+            hk_prongs(q, 0.07, 0.3, 0.5);
+            hk_plus(q);
+        }
+    }
+}
+
 // HUD: p0 = (element, centre x %, y %, size % of height), p1 = (colour, line px, spin turns/s,
-// detail %), p2 = (draw on %, opacity %, flicker %, seed).
+// detail %), p2 = (draw on %, opacity %, flicker %, seed), p3 = (glow %, fill %).
 @fragment
 fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
     let size = fx.extra.zw;
@@ -2980,6 +3455,8 @@ fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
     let spin = t * fx.p1.z;
     let seed = u32(max(fx.p2.w, 0.0)) * 197u + 5u;
     var ink = 0.0;
+    var glow = 0.0;
+    var fill = 0.0;
     switch (u32(round(fx.p0.x))) {
         case 0u: {
             // Reticle: an outer ring broken in four, an inner ring, a cross with a gap, ticks.
@@ -3041,7 +3518,7 @@ fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
             let bar = step(fract(q.x / box.x * n), 0.7) * step(box.y * (1.0 - lvl * on), q.y);
             ink += bar * inbox * 0.8;
         }
-        default: {
+        case 4u: {
             // Corner brackets round a box, closing in as it draws on.
             let half = vec2(r * 1.4, r) * (1.4 - 0.4 * on);
             let q = abs(d) - half;
@@ -3049,13 +3526,37 @@ fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
             let corner = (hud_line(q.x, w) * step(-arm, q.y) * step(q.y, w)) + (hud_line(q.y, w) * step(-arm, q.x) * step(q.x, w));
             ink += clamp(corner, 0.0, 1.0) * step(0.05, on);
         }
+        default: {
+            // The reticle styles: drawn on clockwise from the top.
+            let el = min(u32(round(fx.p0.x)), 34u);
+            HR = r;
+            HW = w;
+            HG = max(r * 0.12, w * 2.0);
+            HREV = step(ang, on) * step(0.0001, on);
+            HK = vec2(0.0);
+            let q = d / r;
+            hud_shape(el, q, spin, detail, seed, t);
+            ink = HK.x;
+            glow = HK.y * clamp(fx.p3.x / 100.0, 0.0, 2.0) * 0.7;
+            // Faint scanlines inside it, if Fill is up.
+            var region = 1.0 - smoothstep(0.92, 0.96, length(q));
+            if (el >= 11u && el <= 16u) {
+                region = 1.0 - smoothstep(0.82, 0.86, max(abs(q.x), abs(q.y)));
+            } else if (el >= 17u && el <= 28u) {
+                region = 1.0 - smoothstep(0.95, 1.0, length(q / vec2(1.05, 0.92)));
+            }
+            let scan = 0.55 + 0.45 * step(fract(p.y / max(3.0, w * 1.5)), 0.5);
+            fill = region * scan * clamp(fx.p3.y / 100.0, 0.0, 1.0) * 0.22 * on;
+        }
     }
     let f = fx.p2.z / 100.0;
     let flick = 1.0 - f * step(0.75, rnd3(seed + 3u, bitcast<u32>(i32(floor(t * 20.0))), 9u));
-    let a = clamp(ink, 0.0, 1.0) * fx.p2.y / 100.0 * flick;
-    let light = rgb_of(fx.p1.x) * a;
+    let k = fx.p2.y / 100.0 * flick;
+    let a = clamp(ink, 0.0, 1.0) * k;
+    let halo = clamp(glow + fill, 0.0, 1.0) * k * (1.0 - a);
+    let col = rgb_of(fx.p1.x);
     let base = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
-    return vec4(base.rgb * (1.0 - a) + light, max(base.a, a));
+    return vec4(base.rgb * (1.0 - a) + col * (a + halo), max(base.a, max(a, halo)));
 }
 
 // ---- Light sweep, electric arcs ----

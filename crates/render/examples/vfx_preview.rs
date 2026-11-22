@@ -201,6 +201,12 @@ fn shots() -> Vec<Shot> {
         ("blur-spin", EffectKind::RadialBlur, vec![(radial_blur::AMOUNT, 25.0)], 0.0),
         ("blur-zoom", EffectKind::RadialBlur, vec![(radial_blur::TYPE, 1.0), (radial_blur::AMOUNT, 40.0), (radial_blur::X, 30.0), (radial_blur::Y, 30.0)], 0.0),
     ]
+    .into_iter()
+    .chain((5..35).map(|e| {
+        let name: &'static str = Box::leak(format!("hud-style-{e:02}-room").into_boxed_str());
+        (name, EffectKind::Hud, vec![(hud::ELEMENT, e as f32), (hud::SIZE, 55.0), (hud::GLOW, 80.0), (hud::FILL, 50.0)], 0.5)
+    }))
+    .collect()
 }
 
 fn main() {
