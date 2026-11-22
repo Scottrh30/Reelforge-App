@@ -1248,6 +1248,176 @@ fn distort_effects_read_from_where_they_should() {
     assert!(px(&out, w, 2, 2)[0] < 8 && px(&out, w, 2, 2)[1] < 8, "past the edge: {:?}", px(&out, w, 2, 2));
 }
 
+/// Turbulent displace, heat haze and a shockwave move pixels where (and when)
+/// they should, and leave the rest alone. The picture encodes where every pixel
+/// came from (red: x, green: y).
+#[test]
+fn turbulence_haze_and_shockwaves_move_what_they_should() {
+    use reelforge_core::effects::{haze, shockwave as sw, turbulent as tu};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let coords: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| [(x * 255 / (w - 1)) as u8, (y * 255 / (h - 1)) as u8, 0, 255])).collect();
+    let mut key = 1900u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, kind: EffectKind, set: &[(usize, f32)], t: f32| {
+        let mut v = fx(kind, set);
+        v.time = t;
+        key += 1;
+        let mut l = layer(1, &coords, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = coords.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let from = |img: &[u8], x: u32, y: u32| {
+        let p = px(img, w, x, y);
+        (p[0] as f32 * (w - 1) as f32 / 255.0, p[1] as f32 * (h - 1) as f32 / 255.0)
+    };
+    // Pixels that aren't the same (by more than a code or two).
+    let differ = |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p.iter().zip(q.iter()).any(|(x, y)| x.abs_diff(*y) > 2)).count();
+    // How far each pixel was moved: the largest and the mean, over the picture (rows y0..y1).
+    let moved = |img: &[u8], y0: u32, y1: u32| {
+        let (mut most, mut sum, mut n) = (0.0f32, 0.0f32, 0.0f32);
+        for y in y0..y1 {
+            for x in 4..w - 4 {
+                let (fx_, fy) = from(img, x, y);
+                let d = ((fx_ - x as f32).powi(2) + (fy - y as f32).powi(2)).sqrt();
+                most = most.max(d);
+                sum += d;
+                n += 1.0;
+            }
+        }
+        (most, sum / n.max(1.0))
+    };
+
+    // Turbulent displace: pixels moved by up to about Amount, not all one way; none at 0.
+    let t = draw(&mut c, EffectKind::TurbulentDisplace, &[(tu::AMOUNT, 12.0), (tu::SIZE, 30.0)], 0.0);
+    let (most, mean) = moved(&t, 4, h - 4);
+    assert!(most > 5.0 && most < 26.0 && mean > 1.5, "turbulent: moved up to {most:.1} px, {mean:.1} on average");
+    let still = draw(&mut c, EffectKind::TurbulentDisplace, &[(tu::AMOUNT, 0.0)], 0.0);
+    assert!(moved(&still, 4, h - 4).0 < 1.6, "no amount: still");
+    // Sideways only: nothing moves up or down.
+    let side = draw(&mut c, EffectKind::TurbulentDisplace, &[(tu::AMOUNT, 12.0), (tu::SIZE, 30.0), (tu::TYPE, 2.0)], 0.0);
+    let vertical = (8..h - 8).step_by(7).flat_map(|y| (8..w - 8).step_by(7).map(move |x| (x, y))).map(|(x, y)| (from(&side, x, y).1 - y as f32).abs()).fold(0.0f32, f32::max);
+    assert!(vertical < 1.6, "sideways only: {vertical:.1} px up or down");
+    // Evolution changes it.
+    let evolved = draw(&mut c, EffectKind::TurbulentDisplace, &[(tu::AMOUNT, 12.0), (tu::SIZE, 30.0), (tu::EVOLUTION, 180.0)], 0.0);
+    assert!(differ(&t, &evolved) > (w * h) as usize / 4, "evolved");
+
+    // Heat haze rising from the bottom: the bottom shimmers, the top is still.
+    let hz = draw(&mut c, EffectKind::HeatHaze, &[(haze::STRENGTH, 5.0), (haze::AREA, 1.0), (haze::HEIGHT, 40.0)], 0.5);
+    let (bottom, _) = moved(&hz, h - 20, h - 4);
+    let (top, _) = moved(&hz, 4, 30);
+    assert!(bottom > 1.8 && bottom < 12.0, "haze at the bottom: {bottom:.1} px");
+    assert!(top < 1.6, "none at the top: {top:.1} px");
+    // It changes from moment to moment.
+    let later = draw(&mut c, EffectKind::HeatHaze, &[(haze::STRENGTH, 5.0), (haze::AREA, 1.0), (haze::HEIGHT, 40.0)], 0.9);
+    assert!(differ(&hz, &later) > 200, "shimmers over time");
+
+    // Shockwave from the middle at 400 px/s, 20 px wide: at 0.1 s the ring is 40 px out.
+    let set = [(sw::SPEED, 400.0), (sw::WIDTH, 20.0), (sw::STRENGTH, 10.0), (sw::SPLIT, 0.0), (sw::FADE, 400.0)];
+    let before = draw(&mut c, EffectKind::Shockwave, &[(sw::START, 0.5), (sw::SPEED, 400.0)], 0.1);
+    assert!(moved(&before, 4, h - 4).0 < 1.6, "nothing before it starts");
+    let s = draw(&mut c, EffectKind::Shockwave, &set, 0.1);
+    // On the ring's leading half (50 px from the middle, beyond 40) it reads from nearer the middle.
+    let (ax, _) = from(&s, 80 + 46, 45);
+    assert!(ax < 80.0 + 46.0 - 3.0, "ahead of the crest, pulled in: reads {ax:.1}");
+    // Behind the crest (34 px out) it reads from further out.
+    let (bx, _) = from(&s, 80 + 34, 45);
+    assert!(bx > 80.0 + 34.0 + 3.0, "behind the crest, pushed out: reads {bx:.1}");
+    // Well inside or outside the ring: untouched.
+    let (ix, iy) = from(&s, 80 + 5, 45);
+    assert!((ix - 85.0).abs() < 1.6 && (iy - 45.0).abs() < 1.6, "inside the ring: untouched");
+    let (ox, _) = from(&s, 80 + 75, 45);
+    assert!((ox - 155.0).abs() < 1.6, "outside the ring: untouched");
+    // Repeating: a second ring at 0.1 s into each 0.3 s.
+    let again = draw(&mut c, EffectKind::Shockwave, &[(sw::SPEED, 400.0), (sw::WIDTH, 20.0), (sw::STRENGTH, 10.0), (sw::SPLIT, 0.0), (sw::FADE, 400.0), (sw::REPEAT, 0.3)], 0.4);
+    assert!(differ(&s, &again) < 40, "repeats");
+}
+
+/// Starfield, hologram, portal, HUD, light sweep and electric arcs draw where (and when)
+/// they should.
+#[test]
+fn sci_fi_and_light_effects_draw_where_they_should() {
+    use reelforge_core::effects::{arcs, hologram as hg, hud, portal as pt, stars, sweep};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    // A mid-grey picture; and a cut-out: a grey square in the middle, see-through round it.
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [100u8, 100, 100, 255]).collect();
+    let cut: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if (55..105).contains(&x) && (20..70).contains(&y) { [100u8, 100, 100, 255] } else { [0, 0, 0, 0] })).collect();
+    let mut key = 2900u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)], t: f32| {
+        let mut v = fx(kind, set);
+        v.time = t;
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let at = |img: &[u8], x: u32, y: u32| px(img, w, x, y);
+    let lum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    let lit = |img: &[u8], min: u32| img.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > min).count();
+    let differ = |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p.iter().zip(q.iter()).any(|(x, y)| x.abs_diff(*y) > 2)).count();
+    let n = (w * h) as usize;
+
+    // Starfield on black: a sprinkling of stars, not a fill; warp speed is another picture;
+    // the sky twinkles.
+    let sky = draw(&mut c, &grey, EffectKind::Starfield, &[(stars::DRAW, 1.0)], 0.0);
+    let stars_lit = lit(&sky, 120);
+    assert!(stars_lit > 10 && stars_lit < n / 4, "a sprinkling of stars: {stars_lit}");
+    let later = draw(&mut c, &grey, EffectKind::Starfield, &[(stars::DRAW, 1.0)], 0.7);
+    assert!(differ(&sky, &later) > 5, "twinkles");
+    let warp = draw(&mut c, &grey, EffectKind::Starfield, &[(stars::DRAW, 1.0), (stars::MODE, 2.0)], 0.5);
+    assert!(differ(&sky, &warp) > 50 && lit(&warp, 120) > 10, "warp speed");
+    // Over the picture: the picture shows between the stars.
+    let over = draw(&mut c, &grey, EffectKind::Starfield, &[], 0.0);
+    assert!(over.chunks(4).filter(|p| p[0] > 80).count() > n * 3 / 4, "over the picture");
+
+    // Hologram: the grey square takes the colour (cyan: blue and green over red).
+    let holo = draw(&mut c, &cut, EffectKind::Hologram, &[(hg::FLICKER, 0.0), (hg::GLITCH, 0.0)], 0.0);
+    let p = at(&holo, 80, 45);
+    assert!(p[2] > p[0] + 20 && p[1] > p[0], "tinted: {p:?}");
+    assert!(lum(at(&holo, 10, 10)) < 10, "nothing round it");
+
+    // Portal: closed, nothing; open, a lit rim at the radius, the swirl inside.
+    let closed = draw(&mut c, &grey, EffectKind::Portal, &[(pt::OPEN, 0.0)], 0.5);
+    assert!(differ(&closed, &grey) == 0, "closed: as it was");
+    let open = draw(&mut c, &grey, EffectKind::Portal, &[(pt::RADIUS, 30.0), (pt::RIM, 6.0), (pt::RIPPLE, 0.0)], 0.5);
+    // Radius 30 % of 90 px is 27 px: right of the middle by 27.
+    assert!(lum(at(&open, 107, 45)) > lum(at(&grey, 107, 45)) + 60, "lit rim: {:?}", at(&open, 107, 45));
+    let dark = draw(&mut c, &grey, EffectKind::Portal, &[(pt::RADIUS, 60.0), (pt::INSIDE, 1.0), (pt::RIPPLE, 0.0)], 0.5);
+    assert!(lum(at(&dark, 80, 45)) < 30, "dark inside");
+    let hole = draw(&mut c, &grey, EffectKind::Portal, &[(pt::RADIUS, 60.0), (pt::INSIDE, 2.0), (pt::RIPPLE, 0.0)], 0.5);
+    // (the output is over black)
+    assert!(lum(at(&hole, 80, 45)) < 30, "see-through inside: {:?}", at(&hole, 80, 45));
+
+    // HUD: the reticle's ring is in its colour at its radius; far away, untouched.
+    let reticle = draw(&mut c, &grey, EffectKind::Hud, &[(hud::SIZE, 60.0), (hud::WIDTH, 3.0)], 0.0);
+    // Size 60 % of 90 px, a radius of 27 px: the top of the ring is 27 px up.
+    let ring = (14..22).map(|y| at(&reticle, 80, y)).max_by_key(|p| p[2]).unwrap();
+    assert!(ring[2] > 180 && ring[0] < 150, "the ring: {ring:?}");
+    assert_eq!(at(&reticle, 5, 5), at(&grey, 5, 5), "far away: untouched");
+    let none = draw(&mut c, &grey, EffectKind::Hud, &[(hud::DRAW_ON, 0.0)], 0.0);
+    assert_eq!(differ(&none, &grey), 0, "not drawn on yet");
+
+    // Light sweep, 1 s from 0: halfway through, a bright band across the square, none
+    // outside it; before it starts, nothing.
+    let mid = draw(&mut c, &cut, EffectKind::LightSweep, &[(sweep::ANGLE, 0.0), (sweep::WIDTH, 20.0), (sweep::SOFTNESS, 0.0)], 0.5);
+    assert!(lum(at(&mid, 80, 45)) > lum(at(&cut, 80, 45)) + 100, "the band in the middle: {:?}", at(&mid, 80, 45));
+    assert!(lum(at(&mid, 60, 45)) < lum(at(&cut, 60, 45)) + 10, "beside it, unlit");
+    assert!(lum(at(&mid, 10, 45)) < 10, "not outside the shape");
+    let before = draw(&mut c, &cut, EffectKind::LightSweep, &[(sweep::START, 1.0)], 0.5);
+    // (the cut-out as drawn with nothing on it: a closed portal does nothing)
+    let plain = draw(&mut c, &cut, EffectKind::Portal, &[(pt::OPEN, 0.0)], 0.5);
+    assert_eq!(differ(&before, &plain), 0, "before it starts");
+
+    // Electric arcs: light along the square's edge, none far from it, none deep inside.
+    let arcs_img = draw(&mut c, &cut, EffectKind::ElectricArcs, &[(arcs::AMOUNT, 100.0), (arcs::REACH, 10.0), (arcs::INSIDE, 0.0), (arcs::FLICKER, 0.0)], 0.2);
+    let edge_lit = (20..70).map(|y| lum(at(&arcs_img, 55, y)).max(lum(at(&arcs_img, 54, y))).max(lum(at(&arcs_img, 56, y)))).filter(|&l| l > 400).count();
+    assert!(edge_lit > 5, "lit along the edge: {edge_lit} of 50 rows");
+    assert!(lum(at(&arcs_img, 5, 5)) < 10, "nothing far away");
+    assert!(lum(at(&arcs_img, 80, 45)) < lum(at(&cut, 80, 45)) + 30, "not deep inside: {:?}", at(&arcs_img, 80, 45));
+}
+
 #[test]
 fn stylise_effects_do_what_they_say() {
     use reelforge_core::effects::{aberration as ab, flare as fl, glitch as gl, grain as gr, leaks as lk, shake as sh};

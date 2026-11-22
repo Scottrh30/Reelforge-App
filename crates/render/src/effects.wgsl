@@ -2524,3 +2524,630 @@ fn fs_scanlines(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4(to_linear(clamp(d, vec3(0.0), vec3(1.0))) * c0.a, c0.a);
 }
+
+// ---- Turbulent displace, heat haze, shockwave ----
+
+// Value noise in 3D (the third coordinate: evolution over time), 0..1.
+fn vnoise3(seed: u32, p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    let z0 = pcg(seed ^ ibits(i.z));
+    let z1 = pcg(seed ^ ibits(i.z + 1.0));
+    let a = mix(mix(rnd3(z0, ibits(i.x), ibits(i.y)), rnd3(z0, ibits(i.x + 1.0), ibits(i.y)), u.x), mix(rnd3(z0, ibits(i.x), ibits(i.y + 1.0)), rnd3(z0, ibits(i.x + 1.0), ibits(i.y + 1.0)), u.x), u.y);
+    let b = mix(mix(rnd3(z1, ibits(i.x), ibits(i.y)), rnd3(z1, ibits(i.x + 1.0), ibits(i.y)), u.x), mix(rnd3(z1, ibits(i.x), ibits(i.y + 1.0)), rnd3(z1, ibits(i.x + 1.0), ibits(i.y + 1.0)), u.x), u.y);
+    return mix(a, b, u.z);
+}
+
+// Octaves of it (up to 6, the last partly), about -1..1.
+fn tfbm(seed: u32, p: vec3<f32>, octaves: f32) -> f32 {
+    var s = 0.0;
+    var amp = 0.5;
+    var norm = 0.0;
+    var q = p;
+    let n = clamp(octaves, 1.0, 6.0);
+    for (var k = 0; k < 6; k++) {
+        let w = clamp(n - f32(k), 0.0, 1.0);
+        if (w <= 0.0) {
+            break;
+        }
+        s += (vnoise3(seed + u32(k) * 7919u, q) * 2.0 - 1.0) * amp * w;
+        norm += amp * w;
+        amp *= 0.5;
+        q = vec3(q.xy * 2.03 + vec2(17.1, 9.7), q.z * 1.7);
+    }
+    return s / max(norm, 1e-4) * 1.6;
+}
+
+// How much of a pinned distortion is left this close to the edge (uv).
+fn d_pin(uv: vec2<f32>) -> f32 {
+    let e = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    return smoothstep(0.0, 0.12, e);
+}
+
+// Turbulent displace: p0 = (amount px, size px, complexity, evolution °),
+// p1 = (evolution turns/s, offset x px, offset y px, type), p2 = (pin, edges).
+@fragment
+fn fs_turbulent(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let scale = max(fx.p0.y, 1.0);
+    let q = (p + fx.p1.yz) / scale;
+    let evo = fx.p0.w / 360.0 + fx.p1.x * fx.extra.y;
+    let kind = u32(round(fx.p1.w));
+    // Smooth: just the broad swirls.
+    let octaves = select(fx.p0.z, 1.0, kind == 1u);
+    var d = vec2(tfbm(11u, vec3(q, evo), octaves), tfbm(23u, vec3(q + vec2(5.2, 1.3), evo + 0.37), octaves));
+    if (kind == 2u) {
+        d.y = 0.0;
+    }
+    if (kind == 3u) {
+        d.x = 0.0;
+    }
+    var amount = fx.p0.x;
+    if (u32(round(fx.p2.x)) == 1u) {
+        amount *= d_pin(in.uv);
+    }
+    return d_sample((p + d * amount) / size, u32(round(fx.p2.y)));
+}
+
+// Heat haze: p0 = (strength px, size px, rise px/s, shimmer /s), p1 = (area,
+// height %, centre x %, centre y %), p2 = (radius % of height, rises towards °, edges).
+@fragment
+fn fs_heat_haze(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let t = fx.extra.y;
+    let a = radians(fx.p2.y);
+    // Up the screen is −y.
+    let up = vec2(cos(a), -sin(a));
+    let scale = max(fx.p0.y, 1.0);
+    // Little cells of hot air, stretched along the way they rise, carried along it.
+    let along = dot(p, up);
+    let across = dot(p, vec2(-up.y, up.x));
+    let q = vec2(across / scale, (along - fx.p0.z * t) / (scale * 2.2));
+    let z = fx.p0.w * t;
+    let d = vec2(tfbm(31u, vec3(q, z), 3.0), tfbm(47u, vec3(q + vec2(3.7, 8.1), z + 0.5), 3.0) * 0.5);
+    // Mostly sideways wobble (across the way it rises).
+    let push = vec2(-up.y, up.x) * d.x + up * d.y;
+    var k = 1.0;
+    switch (u32(round(fx.p1.x))) {
+        case 1u: {
+            // Strongest at the bottom, gone by Height.
+            let h = max(fx.p1.y / 100.0, 0.01);
+            k = 1.0 - smoothstep(0.0, h, 1.0 - in.uv.y);
+        }
+        case 2u: {
+            let c = fx.p1.zw / 100.0 * size;
+            let r = max(fx.p2.x / 100.0 * size.y, 1.0);
+            k = 1.0 - smoothstep(0.55, 1.0, length(p - c) / r);
+        }
+        default: {}
+    }
+    return d_sample((p + push * fx.p0.x * k) / size, u32(round(fx.p2.z)));
+}
+
+// Shockwave: p0 = (centre x %, y %, start s, speed px/s), p1 = (width px,
+// strength px, fade out at % of the diagonal, repeat every s), p2 = (colour
+// split %, ring brightness %, ring colour, edges).
+@fragment
+fn fs_shockwave(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let edges = u32(round(fx.p2.w));
+    var age = fx.extra.y - fx.p0.z;
+    if (fx.p1.w > 0.0 && age > 0.0) {
+        age = age - floor(age / fx.p1.w) * fx.p1.w;
+    }
+    let base = d_sample(in.uv, edges);
+    if (age <= 0.0) {
+        return base;
+    }
+    let c = fx.p0.xy / 100.0 * size;
+    let d = p - c;
+    let dist = length(d);
+    let dir = select(vec2(0.0), d / max(dist, 1e-4), dist > 1e-4);
+    let r = age * fx.p0.w;
+    let w = max(fx.p1.x, 1.0);
+    let x = (dist - r) / w;
+    if (abs(x) >= 1.0) {
+        return base;
+    }
+    // Weaker as it spreads, gone by "Fade out at".
+    let fade_r = max(fx.p1.z / 100.0 * length(size), 1.0);
+    let fade = 1.0 - smoothstep(0.0, fade_r, r);
+    let bump = cos(x * 1.5707963);
+    let shape = sin(x * 3.1415927) * bump;
+    let off = dir * fx.p1.y * shape * fade;
+    // The colours bent by different amounts.
+    let k = fx.p2.x / 100.0;
+    let rr = d_sample((p - off * (1.0 + k)) / size, edges);
+    let gg = d_sample((p - off) / size, edges);
+    let bb = d_sample((p - off * (1.0 - k)) / size, edges);
+    var out = vec4(rr.r, gg.g, bb.b, max(max(rr.a, gg.a), bb.a));
+    // A glint along the ring's crest (added light).
+    // (a thin line just behind the crest, as light caught by the bent air)
+    let crest = exp(-pow((x + 0.15) * 6.0, 2.0));
+    let glint = fx.p2.y / 100.0 * crest * fade;
+    out = vec4(out.rgb + rgb_of(fx.p2.z) * glint * max(out.a, 0.0), out.a);
+    return out;
+}
+
+// ---- Starfield, hologram, portal, HUD ----
+
+// What a generator draws over (draw: 0 the picture, 1 black, 2 nothing), with
+// light `add` (linear, premultiplied as light).
+fn gen_over(uv: vec2<f32>, add: vec3<f32>, cover: f32, draw: u32) -> vec4<f32> {
+    if (draw == 1u) {
+        return vec4(add, 1.0);
+    }
+    if (draw == 2u) {
+        let a = clamp(cover, 0.0, 1.0);
+        return vec4(add, a);
+    }
+    let c = textureSample(src, src_sampler, to_tex(uv)) * inside(uv);
+    return vec4(c.rgb + add, max(c.a, clamp(cover, 0.0, 1.0)));
+}
+
+// A star's colour: the colour, varied towards red or blue.
+fn star_tint(base: vec3<f32>, h: f32, variety: f32) -> vec3<f32> {
+    let warm = vec3(1.0, 0.72, 0.45);
+    let cool = vec3(0.6, 0.75, 1.0);
+    let k = (h * 2.0 - 1.0) * variety;
+    return base * mix(vec3(1.0), select(cool, warm, k > 0.0), abs(k));
+}
+
+// Starfield: p0 = (mode, amount %, size px, speed px/s), p1 = (direction °, centre x %, y %,
+// streaks %), p2 = (twinkle %, brightness %, colour, colour variety %), p3 = (draw, seed).
+@fragment
+fn fs_starfield(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let p = in.uv * size;
+    let t = fx.extra.y;
+    let mode = u32(round(fx.p0.x));
+    let amount = clamp(fx.p0.y / 100.0, 0.0, 1.0);
+    let star = max(fx.p0.z, 0.3);
+    let seed = u32(max(fx.p3.y, 0.0)) * 977u + 13u;
+    let base = rgb_of(fx.p2.z) * fx.p2.y / 100.0;
+    let variety = fx.p2.w / 100.0;
+    let twinkle = fx.p2.x / 100.0;
+    var light = vec3(0.0);
+    if (mode == 2u) {
+        // Warp: stars flying out from the centre, in slices of angle; each comes from far
+        // (near the centre, dim) and speeds up as it nears (out, bright, streaked).
+        let c = fx.p1.yz / 100.0 * size;
+        let d = p - c;
+        let r = length(d);
+        let reach = length(size) * 0.75;
+        let slices = mix(60.0, 520.0, amount);
+        let a = (atan2(d.y, d.x) / 6.2831853 + 0.5) * slices;
+        for (var s = -1; s <= 1; s++) {
+            let cell = floor(a) + f32(s);
+            let wrapped = cell - floor(cell / slices) * slices;
+            let id = u32(wrapped);
+            for (var k = 0u; k < 3u; k++) {
+                let h = rnd3(seed, id, k);
+                let h2 = rnd3(seed + 1u, id, k);
+                // Where along its flight: 0 far, 1 here (it loops).
+                let speed = fx.p0.w / 400.0 * (0.6 + 0.8 * h2);
+                let u = fract(h + t * speed);
+                let rr = reach * u * u * u;
+                let ang = (cell + 0.2 + 0.6 * rnd3(seed + 2u, id, k)) / slices;
+                let dir = vec2(cos((ang - 0.5) * 6.2831853), sin((ang - 0.5) * 6.2831853));
+                let head = c + dir * rr;
+                let tail = c + dir * rr * (1.0 - fx.p1.w / 100.0 * 0.5 * u);
+                // Distance from the streak from tail to head.
+                let ab = head - tail;
+                let tt = clamp(dot(p - tail, ab) / max(dot(ab, ab), 1e-4), 0.0, 1.0);
+                let dist = length(p - (tail + ab * tt));
+                let w = star * (0.4 + 1.2 * u);
+                let glow = exp(-dist * dist / (w * w)) * (0.15 + 1.2 * u * u) * (0.35 + 0.65 * tt);
+                light += star_tint(base, rnd3(seed + 3u, id, k), variety) * glow;
+            }
+        }
+    } else {
+        // Layers of stars on a grid (one at a random place in each cell), nearer layers
+        // bigger, brighter and (drifting) faster.
+        let a = radians(fx.p1.x);
+        let dir = vec2(cos(a), -sin(a));
+        let cell = mix(90.0, 14.0, amount);
+        for (var layer = 0u; layer < 3u; layer++) {
+            let depth = 0.45 + 0.35 * f32(layer);
+            var q = p;
+            if (mode == 1u) {
+                q = p - dir * fx.p0.w * t * depth;
+            }
+            let c = cell / depth;
+            let g = floor(q / c);
+            for (var j = -1; j <= 1; j++) {
+                for (var i = -1; i <= 1; i++) {
+                    let gi = g + vec2(f32(i), f32(j));
+                    let ix = bitcast<u32>(i32(gi.x));
+                    let iy = bitcast<u32>(i32(gi.y));
+                    let s = seed + layer * 101u;
+                    let h = rnd3(s, ix, iy);
+                    // Most cells have a faint star; a few are bright.
+                    let bright = pow(rnd3(s + 1u, ix, iy), 6.0) * 3.0 + 0.15;
+                    let pos = (gi + vec2(rnd3(s + 2u, ix, iy), rnd3(s + 3u, ix, iy))) * c;
+                    let dist = length(q - pos);
+                    let w = star * depth * (0.6 + 0.8 * rnd3(s + 4u, ix, iy));
+                    let tw = 1.0 - twinkle * (0.5 + 0.5 * sin(t * (2.0 + 5.0 * h) + h * 40.0));
+                    light += star_tint(base, rnd3(s + 5u, ix, iy), variety) * exp(-dist * dist / (w * w)) * bright * depth * tw;
+                }
+            }
+        }
+    }
+    let cover = dot(light, LUMA);
+    return gen_over(in.uv, light, cover, u32(round(fx.p3.x)));
+}
+
+// Hologram: p0 = (colour, opacity %, scanlines %, spacing px), p1 = (line speed px/s,
+// flicker %, glitches %, edge glow %), p2 = (colour split px, keep colours %, seed).
+@fragment
+fn fs_hologram(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let t = fx.extra.y;
+    let seed = u32(max(fx.p2.z, 0.0)) * 331u + 7u;
+    let tex = vec2(1.0) / size;
+    var uv = in.uv;
+    // Glitches: now and then a band of rows torn sideways.
+    let g = fx.p1.z / 100.0;
+    let slot = floor(t * 8.0);
+    if (g > 0.0 && rnd3(seed, bitcast<u32>(i32(slot)), 1u) < g * 0.6) {
+        let y0 = rnd3(seed, bitcast<u32>(i32(slot)), 2u);
+        let hgt = 0.02 + 0.1 * rnd3(seed, bitcast<u32>(i32(slot)), 3u);
+        if (abs(uv.y - y0) < hgt) {
+            uv.x += (rnd3(seed, bitcast<u32>(i32(slot)), 4u) - 0.5) * 0.12 * g;
+        }
+    }
+    let split = vec2(fx.p2.x, 0.0) * tex;
+    let c = textureSample(src, src_sampler, to_tex(uv)) * inside(uv);
+    let cr = textureSample(src, src_sampler, to_tex(uv + split)) * inside(uv + split);
+    let cb = textureSample(src, src_sampler, to_tex(uv - split)) * inside(uv - split);
+    let a = max(c.a, max(cr.a, cb.a));
+    if (a <= 0.0) {
+        return vec4(0.0);
+    }
+    // One colour, by brightness (a little of the split at the sides).
+    let lum = dot(unpremul(c), LUMA);
+    let tint = rgb_of(fx.p0.x);
+    var col = tint * (0.25 + 1.1 * lum);
+    col.r += (unpremul(cr).r - unpremul(c).r) * 0.5;
+    col.b += (unpremul(cb).b - unpremul(c).b) * 0.5;
+    col = mix(col, unpremul(c), fx.p2.y / 100.0);
+    // Edges glow: where the shape's edge is (the alpha's slope over a few pixels).
+    let e = 2.0 * tex;
+    let ax = textureSample(src, src_sampler, to_tex(uv + vec2(e.x, 0.0))).a - textureSample(src, src_sampler, to_tex(uv - vec2(e.x, 0.0))).a;
+    let ay = textureSample(src, src_sampler, to_tex(uv + vec2(0.0, e.y))).a - textureSample(src, src_sampler, to_tex(uv - vec2(0.0, e.y))).a;
+    let edge = clamp(length(vec2(ax, ay)), 0.0, 1.0);
+    col += tint * edge * fx.p1.w / 100.0 * 1.5;
+    // Scanlines rolling down it.
+    let spacing = max(fx.p0.w, 1.0);
+    let line = 0.5 + 0.5 * sin((uv.y * size.y - fx.p1.x * t) / spacing * 6.2831853);
+    let lines = 1.0 - fx.p0.z / 100.0 * 0.7 * line;
+    // A brighter band passing down now and then.
+    let band = exp(-pow((fract(uv.y - t * 0.25) - 0.5) * 14.0, 2.0)) * 0.35;
+    // Flicker.
+    let f = fx.p1.y / 100.0;
+    let flick = 1.0 - f * 0.6 * step(0.8, rnd3(seed + 9u, bitcast<u32>(i32(floor(t * 24.0))), 5u)) - f * 0.15 * (0.5 + 0.5 * sin(t * 37.0));
+    col = col * lines * flick + tint * band;
+    let op = fx.p0.y / 100.0 * clamp(0.55 + 0.45 * lum + edge, 0.0, 1.0);
+    let alpha = a * op * flick;
+    return vec4(col * alpha, alpha);
+}
+
+// Portal: p0 = (centre x %, y %, radius % of height, open %), p1 = (rim px, colour,
+// second colour, spin turns/s), p2 = (sparks %, inside, swirl °, ripple px), p3 =
+// (brightness %, stretch %, seed).
+@fragment
+fn fs_portal(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let t = fx.extra.y;
+    let p = in.uv * size;
+    let open = clamp(fx.p0.w / 100.0, 0.0, 1.0);
+    let c = fx.p0.xy / 100.0 * size;
+    // Taller than wide with Stretch above 100 %.
+    let stretch = max(fx.p3.y / 100.0, 0.1);
+    let rad = max(fx.p0.z / 100.0 * size.y * open, 0.5);
+    var d = p - c;
+    d.y /= stretch;
+    let dist = length(d);
+    let ang = atan2(d.y, d.x);
+    let rim = max(fx.p1.x, 1.0);
+    let seed = u32(max(fx.p3.z, 0.0)) * 613u + 3u;
+    // The air round it ripples.
+    let x = (dist - rad) / (rim * 3.0);
+    let ripple = fx.p2.w * exp(-x * x) * sin(dist * 0.15 - t * 9.0) * open;
+    let dir = select(vec2(0.0), normalize(p - c), dist > 1e-3);
+    var base = textureSample(src, src_sampler, to_tex((p + dir * ripple) / size)) * inside((p + dir * ripple) / size);
+    // Inside.
+    let inner = 1.0 - smoothstep(rad - rim * 0.6, rad, dist);
+    let mode = u32(round(fx.p2.y));
+    if (inner > 0.0) {
+        var ins: vec4<f32>;
+        if (mode == 0u) {
+            // The picture swirled, more at the middle, turning.
+            let k = 1.0 - dist / max(rad, 1.0);
+            let turn = radians(fx.p2.z) * k * k + t * fx.p1.w * 6.2831853 * 0.5;
+            let cs = cos(turn);
+            let sn = sin(turn);
+            let r = vec2(cs * (p.x - c.x) - sn * (p.y - c.y), sn * (p.x - c.x) + cs * (p.y - c.y));
+            let q = (c + r * (0.6 + 0.4 * (1.0 - k))) / size;
+            ins = textureSample(src, src_sampler, to_tex(q)) * inside(q);
+        } else if (mode == 1u) {
+            ins = vec4(0.0, 0.0, 0.0, 1.0);
+        } else {
+            ins = vec4(0.0);
+        }
+        base = mix(base, ins, inner);
+    }
+    // The rim: a band of light, and sparks streaming round it.
+    let spin = t * fx.p1.w * 6.2831853;
+    let band = exp(-pow((dist - rad) / (rim * 0.45), 2.0));
+    var light = rgb_of(fx.p1.y) * band;
+    let sparks = fx.p2.x / 100.0;
+    if (sparks > 0.0) {
+        // Rings of sparks at a few radii, each a dashed stream of short arcs.
+        for (var k = 0u; k < 4u; k++) {
+            let rr = rad + (rnd3(seed, k, 1u) - 0.5) * rim * 1.6;
+            let n = 40.0 + 60.0 * rnd3(seed, k, 2u);
+            let speed = (0.7 + 0.8 * rnd3(seed, k, 3u)) * select(-1.0, 1.0, k % 2u == 0u);
+            let u = (ang + spin * speed) / 6.2831853 * n;
+            let cell = floor(u);
+            let f = fract(u);
+            let on = step(1.0 - sparks * 0.8, rnd3(seed + k, bitcast<u32>(i32(cell)), 7u));
+            let streak = smoothstep(0.0, 0.15, f) * (1.0 - smoothstep(0.35, 0.9, f));
+            let radial = exp(-pow((dist - rr) / 1.6, 2.0));
+            light += mix(rgb_of(fx.p1.y), rgb_of(fx.p1.z), rnd3(seed, k, 4u)) * on * streak * radial * 1.6;
+        }
+        // Sparks thrown off the rim: short dashes flying out along it and away, fading.
+        for (var k = 0u; k < 3u; k++) {
+            let n = 90.0 + 40.0 * f32(k);
+            let u = (ang + spin * (1.2 + 0.3 * f32(k))) / 6.2831853 * n;
+            let cell = floor(u);
+            let h = rnd3(seed + 20u + k, bitcast<u32>(i32(cell)), 1u);
+            // How far out this one has flown (it loops), and its dash.
+            let life = fract(h * 7.0 + t * (0.8 + h));
+            let out = rad + rim * (0.3 + 4.0 * life);
+            let dash = exp(-pow((fract(u) - 0.5) * 9.0, 2.0)) * exp(-pow((dist - out) / 2.0, 2.0));
+            light += rgb_of(fx.p1.z) * dash * step(1.0 - sparks * 0.5, h) * (1.0 - life) * 2.0;
+        }
+    }
+    light *= fx.p3.x / 100.0 * open;
+    let a = max(base.a, clamp(dot(light, LUMA), 0.0, 1.0));
+    return vec4(base.rgb + light, a);
+}
+
+// A line `w` px wide at distance `d` (antialiased), 0..1.
+fn hud_line(d: f32, w: f32) -> f32 {
+    return 1.0 - smoothstep(w * 0.5 - 0.6, w * 0.5 + 0.6, abs(d));
+}
+
+// HUD: p0 = (element, centre x %, y %, size % of height), p1 = (colour, line px, spin turns/s,
+// detail %), p2 = (draw on %, opacity %, flicker %, seed).
+@fragment
+fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let t = fx.extra.y;
+    let p = in.uv * size;
+    let c = fx.p0.yz / 100.0 * size;
+    let r = max(fx.p0.w / 100.0 * size.y * 0.5, 2.0);
+    let d = p - c;
+    let dist = length(d);
+    // Angle 0..1 clockwise from the top.
+    let ang = fract(atan2(d.x, -d.y) / 6.2831853 + 1.0);
+    let w = max(fx.p1.y, 0.3);
+    let on = clamp(fx.p2.x / 100.0, 0.0, 1.0);
+    let detail = fx.p1.w / 100.0;
+    let spin = t * fx.p1.z;
+    let seed = u32(max(fx.p2.w, 0.0)) * 197u + 5u;
+    var ink = 0.0;
+    switch (u32(round(fx.p0.x))) {
+        case 0u: {
+            // Reticle: an outer ring broken in four, an inner ring, a cross with a gap, ticks.
+            let gap = 0.04;
+            let q = fract(ang + 0.125);
+            let broken = step(gap, fract(q * 4.0)) * step(fract(q * 4.0), 1.0 - gap);
+            ink += hud_line(dist - r, w) * broken * step(ang, on);
+            ink += hud_line(dist - r * 0.55, w * 0.8) * step(fract(ang - spin), on);
+            let cross = min(hud_line(d.x, w), step(r * 0.15, abs(d.y)) * step(abs(d.y), r * 0.85)) + min(hud_line(d.y, w), step(r * 0.15, abs(d.x)) * step(abs(d.x), r * 0.85));
+            ink += clamp(cross, 0.0, 1.0) * step(0.3, on);
+            let n = floor(mix(12.0, 72.0, detail));
+            let tick = step(fract(ang * n + 0.04), 0.08) * step(r * 1.04, dist) * step(dist, r * (1.1 + 0.06 * step(fract(ang * n / 4.0), 0.25)));
+            ink += tick * step(ang, on);
+            ink += (1.0 - smoothstep(w, w + 1.2, dist)) * step(0.6, on);
+        }
+        case 1u: {
+            // Radar: rings, the sweep with its fading wake, blips that glow as it passes.
+            for (var k = 1; k <= 4; k++) {
+                ink += hud_line(dist - r * f32(k) / 4.0, w * select(0.6, 1.0, k == 4)) * step(ang, on);
+            }
+            ink += (hud_line(d.x, w * 0.5) + hud_line(d.y, w * 0.5)) * step(dist, r) * 0.5 * on;
+            let behind = fract(spin - ang);
+            ink += exp(-behind * 7.0) * 0.55 * step(dist, r) * on;
+            ink += hud_line(behind * dist * 6.2831853, w) * step(dist, r) * on;
+            let nb = u32(mix(3.0, 12.0, detail));
+            for (var b = 0u; b < nb; b++) {
+                let ba = rnd3(seed, b, 1u);
+                let br = r * (0.2 + 0.75 * rnd3(seed, b, 2u));
+                let bp = c + vec2(sin(ba * 6.2831853), -cos(ba * 6.2831853)) * br;
+                let fade = exp(-fract(spin - ba) * 4.0);
+                ink += (1.0 - smoothstep(w * 1.5, w * 3.0, length(p - bp))) * fade * on;
+            }
+        }
+        case 2u: {
+            // Rings of ticks and arcs turning at their own speeds, each way.
+            let rings = u32(mix(2.0, 6.0, detail));
+            for (var k = 0u; k < rings; k++) {
+                let rr = r * (0.35 + 0.65 * f32(k + 1u) / f32(rings));
+                let speed = (0.3 + rnd3(seed, k, 1u)) * select(-1.0, 1.0, k % 2u == 0u);
+                let a2 = fract(ang + spin * speed);
+                let segs = floor(2.0 + rnd3(seed, k, 2u) * 6.0);
+                let arc = step(0.25 + 0.5 * rnd3(seed, k, 3u), fract(a2 * segs));
+                let ticks = step(fract(a2 * (24.0 + 48.0 * rnd3(seed, k, 4u))), 0.15);
+                let style = rnd3(seed, k, 5u);
+                let shape = select(arc * hud_line(dist - rr, w), ticks * step(abs(dist - rr), w * 3.0), style > 0.5);
+                ink += shape * step(ang, on);
+            }
+        }
+        case 3u: {
+            // Bars in a box, rising and falling like a readout.
+            let box = vec2(r * 1.6, r);
+            let q = d + box * 0.5;
+            let inbox = step(0.0, q.x) * step(q.x, box.x) * step(0.0, q.y) * step(q.y, box.y);
+            let frame = (hud_line(q.x, w) + hud_line(q.x - box.x, w)) * step(0.0, q.y) * step(q.y, box.y) + (hud_line(q.y, w) + hud_line(q.y - box.y, w)) * step(0.0, q.x) * step(q.x, box.x);
+            ink += clamp(frame, 0.0, 1.0) * step(0.1, on);
+            let n = floor(mix(6.0, 40.0, detail));
+            let i = floor(q.x / box.x * n);
+            let lvl = 0.15 + 0.8 * (0.5 + 0.5 * sin(t * (1.5 + 3.0 * rnd3(seed, bitcast<u32>(i32(i)), 1u)) + i * 1.7)) * vnoise(seed, vec2(i * 0.7, t * 1.3));
+            let bar = step(fract(q.x / box.x * n), 0.7) * step(box.y * (1.0 - lvl * on), q.y);
+            ink += bar * inbox * 0.8;
+        }
+        default: {
+            // Corner brackets round a box, closing in as it draws on.
+            let half = vec2(r * 1.4, r) * (1.4 - 0.4 * on);
+            let q = abs(d) - half;
+            let arm = r * 0.35;
+            let corner = (hud_line(q.x, w) * step(-arm, q.y) * step(q.y, w)) + (hud_line(q.y, w) * step(-arm, q.x) * step(q.x, w));
+            ink += clamp(corner, 0.0, 1.0) * step(0.05, on);
+        }
+    }
+    let f = fx.p2.z / 100.0;
+    let flick = 1.0 - f * step(0.75, rnd3(seed + 3u, bitcast<u32>(i32(floor(t * 20.0))), 9u));
+    let a = clamp(ink, 0.0, 1.0) * fx.p2.y / 100.0 * flick;
+    let light = rgb_of(fx.p1.x) * a;
+    let base = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    return vec4(base.rgb * (1.0 - a) + light, max(base.a, a));
+}
+
+// ---- Light sweep, electric arcs ----
+
+// Light sweep: p0 = (angle °, width px, softness %, start s), p1 = (takes s, repeat s,
+// position % (below 0: timed), brightness %), p2 = (colour, lights, second sweep %).
+@fragment
+fn fs_sweep(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    if (c.a <= 0.0) {
+        return c;
+    }
+    let p = in.uv * size;
+    let a = radians(fx.p0.x);
+    let n = vec2(cos(a), -sin(a));
+    // Where the band is, 0..1 across the layer along n.
+    let ext = abs(n.x) * size.x + abs(n.y) * size.y;
+    let lo = min(0.0, n.x * size.x) + min(0.0, n.y * size.y);
+    var pos = fx.p1.z / 100.0;
+    if (fx.p1.z < 0.0) {
+        var age = fx.extra.y - fx.p0.w;
+        if (fx.p1.y > 0.0 && age > 0.0) {
+            age = age - floor(age / fx.p1.y) * fx.p1.y;
+        }
+        pos = age / max(fx.p1.x, 1e-3);
+        if (age < 0.0 || pos > 1.0) {
+            return c;
+        }
+    }
+    let w = max(fx.p0.y, 1.0);
+    // From just before the layer to just past it.
+    let centre = lo - w + pos * (ext + 2.0 * w);
+    let d = abs(dot(p, n) - centre);
+    let soft = clamp(fx.p0.z / 100.0, 0.0, 1.0);
+    let band = 1.0 - smoothstep(w * 0.5 * (1.0 - soft), w * 0.5, d);
+    // A thinner second band trailing it.
+    let d2 = abs(dot(p, n) - (centre - w * 1.3));
+    let band2 = (1.0 - smoothstep(w * 0.12 * (1.0 - soft), w * 0.12 + 0.5, d2)) * fx.p2.z / 100.0;
+    let lin = unpremul(c);
+    var k = 1.0;
+    switch (u32(round(fx.p2.y))) {
+        case 1u: { k = smoothstep(0.25, 0.9, dot(pow(max(lin, vec3(0.0)), vec3(1.0 / 2.2)), LUMA)); }
+        default: {}
+    }
+    let light = rgb_of(fx.p2.x) * (band + band2) * k * fx.p1.w / 100.0;
+    return vec4(c.rgb + light * c.a, c.a);
+}
+
+// The shape smoothed over a disc `r` px round layer uv `uv`: how much of it is there (x)
+// and how fast that changes per px (yz).
+fn arc_cover(uv: vec2<f32>, r: f32, size: vec2<f32>) -> vec3<f32> {
+    var s = textureSampleLevel(src, src_sampler, to_tex(uv), 0.0).a * inside(uv);
+    var g = vec2(0.0);
+    var rs = 0.0;
+    for (var j = 1; j <= 3; j++) {
+        let rr = r * f32(j) / 3.0;
+        rs += rr;
+        for (var k = 0; k < 16; k++) {
+            let a = (f32(k) + 0.5 * f32(j)) * 0.3926991;
+            let d = vec2(cos(a), sin(a));
+            let q = uv + d * rr / size;
+            let v = textureSampleLevel(src, src_sampler, to_tex(q), 0.0).a * inside(q);
+            s += v;
+            g += v * d;
+        }
+    }
+    // (for a straight ramp, the taps' pull along d is its slope × 8 × the radii)
+    return vec3(s / 49.0, g / max(8.0 * rs, 1e-3));
+}
+
+// Jagged noise for an arc: broad bends, then finer and finer kinks.
+fn arc_noise(seed: u32, q: vec2<f32>, z: f32) -> f32 {
+    return vnoise3(seed, vec3(q, z)) * 2.0 - 1.0 + (vnoise3(seed + 5u, vec3(q * 2.7, z * 1.4)) * 2.0 - 1.0) * 0.4 + (vnoise3(seed + 6u, vec3(q * 7.3, z * 2.1)) * 2.0 - 1.0) * 0.12;
+}
+
+// Electric arcs: p0 = (colour, amount %, reach px, thickness px), p1 = (speed /s, flicker %,
+// glow %, brightness %), p2 = (over the shape %, scale px, seed).
+// Each strand is where the smoothed shape crosses a level, nudged by noise: so it hugs the
+// outline, jagged, and where the noise is strong it leaps off it.
+@fragment
+fn fs_arcs(in: VsOut) -> @location(0) vec4<f32> {
+    let size = fx.extra.zw;
+    let t = fx.extra.y;
+    let base = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let reach = max(fx.p0.z, 1.0);
+    let cg = arc_cover(in.uv, max(reach * 0.35, 1.5), size);
+    // Nothing anywhere near: nothing to draw.
+    if (cg.x <= 0.0005 && length(cg.yz) <= 1e-5) {
+        return base;
+    }
+    let seed = u32(max(fx.p2.z, 0.0)) * 811u + 17u;
+    let p = in.uv * size;
+    let scale = max(fx.p2.y, 4.0);
+    let thick = max(fx.p0.w, 0.3);
+    let amount = fx.p0.y / 100.0;
+    // The arcs re-form a few times a second, crawling between.
+    let step_t = floor(t * fx.p1.x);
+    let crawl = fract(t * fx.p1.x);
+    let fl = fx.p1.y / 100.0;
+    var core = 0.0;
+    var halo = 0.0;
+    for (var k = 0u; k < 4u; k++) {
+        let ks = seed + k * 131u;
+        let z = step_t * 1.37 + crawl * 0.4 + f32(k) * 11.0;
+        // Two of them sit over the shape (Over the shape), the rest on its edge.
+        let level = select(0.5, mix(0.5, 0.9, fx.p2.x / 100.0), k >= 2u);
+        // How hard the noise pushes it off the edge: more for later strands.
+        let push = (0.3 + 0.18 * f32(k)) * (0.4 + 0.6 * reach / 30.0);
+        let e = 1.0;
+        let q = p / scale;
+        let n0 = arc_noise(ks, q, z);
+        let nx = arc_noise(ks, (p + vec2(e, 0.0)) / scale, z);
+        let ny = arc_noise(ks, (p + vec2(0.0, e)) / scale, z);
+        let f = cg.x - level + n0 * push;
+        let grad = cg.yz + vec2(nx - n0, ny - n0) / e * push;
+        // Distance in px to where f is 0.
+        let dist = abs(f) / max(length(grad), 1e-4);
+        // Only some stretches of each strand are lit (Amount), changing as it jumps.
+        let lit = smoothstep(1.0 - amount, 1.0 - amount + 0.08, vnoise3(ks + 9u, vec3(q * 0.45, step_t * 0.9 + f32(k))));
+        let flick = 1.0 - fl * step(0.55, rnd3(ks, bitcast<u32>(i32(floor(t * 30.0))), 3u));
+        // (only where the shape is near: no strands made of noise alone)
+        let near = smoothstep(0.0, 0.06, cg.x) * (1.0 - smoothstep(0.97, 1.0, cg.x) * select(1.0, 0.0, k >= 2u));
+        let w = lit * flick * near * select(1.0, 0.6, k >= 2u);
+        core += exp(-pow(dist / thick, 2.0)) * w;
+        halo += exp(-dist / (thick * 4.0)) * w * exp(-abs(f) * 6.0);
+    }
+    let col = rgb_of(fx.p0.x);
+    let hl = halo * fx.p1.z / 100.0 * 0.25;
+    let light = (col * hl + mix(col, vec3(1.0), 0.7) * min(core, 1.5)) * fx.p1.w / 100.0;
+    let a = max(base.a, clamp(core + hl, 0.0, 1.0));
+    return vec4(base.rgb + light, a);
+}

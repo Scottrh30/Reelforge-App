@@ -663,8 +663,52 @@ What works now:
     - **Lens distortion**: **barrel** (positive) or **pincushion** (negative) distortion, with
       **Cubic** for the edges and **Zoom** to fill the frame again; add a wide lens's look or
       take one out
-    - Ripple, Wave warp and Lens distortion choose what shows past the layer's edge:
-      **Transparent**, **Stretch**, **Mirror** or **Repeat**
+    - **Turbulent displace**: the picture bent by rolling, cloudy noise, like After Effects'
+      Turbulent Displace: **Amount**, **Size**, **Complexity** (1–6 layers of finer detail),
+      **Evolution** and **Evolution speed** (it changes smoothly, and loops round as it turns),
+      **Offset**, **Displacement** (**Turbulent**, **Smooth**, **Sideways only**, **Up and down
+      only**) and **Pin** (all edges stay put)
+    - **Heat haze**: the shimmer over a hot road, a fire or an engine — little cells of hot air
+      rising (**Rise speed**, **Rises towards**) and changing (**Shimmer**), bending the
+      picture mostly sideways by **Strength**: over the **Whole picture**, **Rising from the
+      bottom** (gone by **Height**) or **In a circle** (drag its centre in the Viewer)
+    - **Shockwave**: a ring of bent air bursting from a point (drag it in the Viewer) from
+      **Start at**, travelling out at **Speed**, **Width** wide, bending the picture by
+      **Strength** (in ahead of the crest, out behind it) and fading out by **Fade out at** (a
+      share of the diagonal); **Colour split** bends red, green and blue by different amounts,
+      **Ring brightness** and **Ring colour** add a glint along it, **Repeat every** makes a
+      pulse
+    - Ripple, Wave warp, Lens distortion, Turbulent displace, Heat haze and Shockwave choose
+      what shows past the layer's edge: **Transparent**, **Stretch**, **Mirror** or **Repeat**
+  - **Sci-fi pack**:
+    - **Starfield** (Generate): stars (**Draw**: **Over the picture**, **On black** or **On its own**, see-through), as a still **Night sky** that twinkles, stars **Drifting past** in any
+      **Direction**, or **Warp speed** — stars streaming out of a point (its **Centre**) and
+      stretched into lines by **Streaks**. **Amount**, **Size**, **Speed**, **Brightness**,
+      **Colour** and **Colour variety** (blue to warm white), **Twinkle**, **Seed**
+    - **Hologram** (Light & stylize): a layer turned into a see-through projection in a
+      **Colour**, at an **Opacity**, **Edge glow**, moving **Scanlines** (**Line spacing**,
+      **Line speed**), **Flicker**, sideways **Glitches** and a **Colour split**; **Keep its
+      colours** mixes some of the original back
+    - **Portal**: a ring of fire or energy (**Colour**, **Second colour**, **Rim width**,
+      **Brightness**) at a **Centre** (drag it in the Viewer) and **Radius**; keyframe **Open**
+      from 0 to 100 % to open it. **Spin**, **Sparks** (streaming round the rim and flying
+      off it), the air round it rippling (**Ripple round it**), **Stretch** for a tall doorway, and inside **a
+      swirl of the picture** (by **Swirl**), **Dark**, or **See-through** to show the track
+      below
+    - **HUD element** (Generate): a heads-up display piece drawn over the picture — a
+      **Targeting reticle**, **Radar sweep**, **Turning rings**, **Readout bars** or **Corner
+      brackets** — at a **Centre** and **Size**, in a **Colour**, with **Line width**,
+      **Spin**, **Detail**, **Opacity** and **Flicker**; keyframe **Draw on** from 0 to 100 % to
+      draw it in
+  - **Light sweep** (Light & stylize): a band of light sliding across the layer — **Lights**: **The
+    shape** (a logo or title), **Its bright parts** or **Everything** — at an **Angle**,
+    **Width** and **Softness**, starting at **Start at**, taking **Takes** seconds and coming again
+    every **Repeat every**; or set **Position** to place it by hand (and keyframe it).
+    **Brightness**, **Colour**, and a thinner **Second sweep** following it
+  - **Electric arcs** (Light & stylize): lightning crawling along the edges of a layer's shape
+    (a cut-out, a title, a logo): **Colour**, **Amount** of the edge that's lit, **Reach** out
+    from it, **Thickness**, **Speed**, **Flicker**, **Glow** and **Brightness**, **Scale** of
+    the wiggles; **Over the shape** lets the arcs cross it too
   - **Particles & simulation** (their own category in the browser, and **Timeline → Particles &
     simulation** for ready-made layers):
     - **Particles**: sparks, embers, fire, smoke, rain, snow, fog, dust, debris, confetti, magic

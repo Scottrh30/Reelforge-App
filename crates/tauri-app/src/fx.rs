@@ -293,6 +293,11 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::Fluid | EffectKind::Liquid | EffectKind::Liquid3D => Some("Source"),
                     EffectKind::LightRays => Some("Source"),
                     EffectKind::Bulge | EffectKind::Twirl | EffectKind::Ripple | EffectKind::Mirror | EffectKind::LensDistortion => Some("Centre"),
+                    EffectKind::Hud => Some("Centre"),
+                    EffectKind::Portal => Some("Centre"),
+                    EffectKind::Starfield => Some("Centre"),
+                    EffectKind::Shockwave => Some("Centre"),
+                    EffectKind::HeatHaze => Some("Centre"),
                     EffectKind::LensDirt if fx.params.get(reelforge_core::effects::dirt::LIT_BY).is_some_and(|p| p.value >= 0.5) => Some("Light"),
                     _ => None,
                     }

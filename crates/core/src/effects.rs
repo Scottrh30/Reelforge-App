@@ -113,6 +113,15 @@ pub enum EffectKind {
     TiltShift,
     /// Lines across the picture as on a screen.
     Scanlines,
+    ElectricArcs,
+    LightSweep,
+    Hud,
+    Portal,
+    Hologram,
+    Starfield,
+    Shockwave,
+    HeatHaze,
+    TurbulentDisplace,
     /// Film grain, moving from frame to frame.
     FilmGrain,
     /// Digital glitches: sliced, shifted blocks, colour splits and scan lines.
@@ -1160,6 +1169,131 @@ pub mod distort {
 }
 /// How a distortion fills in where it reaches past the layer.
 pub const EDGES: [&str; 4] = ["Transparent", "Stretch", "Mirror", "Repeat"];
+pub mod turbulent {
+    pub const AMOUNT: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const COMPLEXITY: usize = 2;
+    pub const EVOLUTION: usize = 3;
+    pub const SPEED: usize = 4;
+    pub const OFFSET_X: usize = 5;
+    pub const OFFSET_Y: usize = 6;
+    pub const TYPE: usize = 7;
+    pub const PIN: usize = 8;
+    pub const EDGES: usize = 9;
+}
+pub mod haze {
+    pub const STRENGTH: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const RISE: usize = 2;
+    pub const SHIMMER: usize = 3;
+    pub const AREA: usize = 4;
+    pub const HEIGHT: usize = 5;
+    pub const X: usize = 6;
+    pub const Y: usize = 7;
+    pub const RADIUS: usize = 8;
+    pub const DIRECTION: usize = 9;
+    pub const EDGES: usize = 10;
+}
+pub mod shockwave {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const START: usize = 2;
+    pub const SPEED: usize = 3;
+    pub const WIDTH: usize = 4;
+    pub const STRENGTH: usize = 5;
+    pub const FADE: usize = 6;
+    pub const REPEAT: usize = 7;
+    pub const SPLIT: usize = 8;
+    pub const BRIGHTNESS: usize = 9;
+    pub const COLOR: usize = 10;
+    pub const EDGES: usize = 11;
+}
+pub mod stars {
+    pub const MODE: usize = 0;
+    pub const AMOUNT: usize = 1;
+    pub const SIZE: usize = 2;
+    pub const SPEED: usize = 3;
+    pub const DIRECTION: usize = 4;
+    pub const X: usize = 5;
+    pub const Y: usize = 6;
+    pub const STREAK: usize = 7;
+    pub const TWINKLE: usize = 8;
+    pub const BRIGHTNESS: usize = 9;
+    pub const COLOR: usize = 10;
+    pub const VARIETY: usize = 11;
+    pub const DRAW: usize = 12;
+    pub const SEED: usize = 13;
+}
+pub mod hologram {
+    pub const COLOR: usize = 0;
+    pub const OPACITY: usize = 1;
+    pub const LINES: usize = 2;
+    pub const SPACING: usize = 3;
+    pub const LINE_SPEED: usize = 4;
+    pub const FLICKER: usize = 5;
+    pub const GLITCH: usize = 6;
+    pub const EDGES: usize = 7;
+    pub const SPLIT: usize = 8;
+    pub const KEEP: usize = 9;
+    pub const SEED: usize = 10;
+}
+pub mod portal {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const RADIUS: usize = 2;
+    pub const OPEN: usize = 3;
+    pub const RIM: usize = 4;
+    pub const COLOR_A: usize = 5;
+    pub const COLOR_B: usize = 6;
+    pub const SPIN: usize = 7;
+    pub const SPARKS: usize = 8;
+    pub const INSIDE: usize = 9;
+    pub const SWIRL: usize = 10;
+    pub const RIPPLE: usize = 11;
+    pub const BRIGHTNESS: usize = 12;
+    pub const STRETCH: usize = 13;
+    pub const SEED: usize = 14;
+}
+pub mod hud {
+    pub const ELEMENT: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const SIZE: usize = 3;
+    pub const COLOR: usize = 4;
+    pub const WIDTH: usize = 5;
+    pub const SPIN: usize = 6;
+    pub const DETAIL: usize = 7;
+    pub const DRAW_ON: usize = 8;
+    pub const OPACITY: usize = 9;
+    pub const FLICKER: usize = 10;
+    pub const SEED: usize = 11;
+}
+pub mod sweep {
+    pub const ANGLE: usize = 0;
+    pub const WIDTH: usize = 1;
+    pub const SOFTNESS: usize = 2;
+    pub const START: usize = 3;
+    pub const DURATION: usize = 4;
+    pub const REPEAT: usize = 5;
+    pub const POSITION: usize = 6;
+    pub const BRIGHTNESS: usize = 7;
+    pub const COLOR: usize = 8;
+    pub const ON: usize = 9;
+    pub const SECOND: usize = 10;
+}
+pub mod arcs {
+    pub const COLOR: usize = 0;
+    pub const AMOUNT: usize = 1;
+    pub const REACH: usize = 2;
+    pub const THICKNESS: usize = 3;
+    pub const SPEED: usize = 4;
+    pub const FLICKER: usize = 5;
+    pub const GLOW: usize = 6;
+    pub const BRIGHTNESS: usize = 7;
+    pub const INSIDE: usize = 8;
+    pub const SCALE: usize = 9;
+    pub const SEED: usize = 10;
+}
 pub mod ripple {
     pub const X: usize = 0;
     pub const Y: usize = 1;
@@ -2095,6 +2229,131 @@ const TWIRL: [ParamSpec; 5] = [
     spec("Angle", 180.0, -3600.0, 3600.0, "°", 1.0),
     choice("Falloff", &["Smooth", "Even"]),
 ];
+const TURBULENTDISPLACE: [ParamSpec; 10] = [
+    spec("Amount", 20.0, -500.0, 500.0, " px", 0.1),
+    spec("Size", 80.0, 2.0, 4000.0, " px", 0.2),
+    spec("Complexity", 3.0, 1.0, 6.0, "", 0.02),
+    spec("Evolution", 0.0, -36000.0, 36000.0, "°", 1.0),
+    spec("Evolution speed", 0.0, -20.0, 20.0, " turns/s", 0.01),
+    spec("Offset X", 0.0, -10000.0, 10000.0, " px", 0.5),
+    spec("Offset Y", 0.0, -10000.0, 10000.0, " px", 0.5),
+    choice("Displacement", &["Turbulent", "Smooth", "Sideways only", "Up and down only"]),
+    choice("Pin", &["Nothing", "All edges"]),
+    EDGES_STRETCH,
+];
+const HEATHAZE: [ParamSpec; 11] = [
+    spec("Strength", 4.0, 0.0, 200.0, " px", 0.05),
+    spec("Size", 24.0, 2.0, 1000.0, " px", 0.2),
+    spec("Rise speed", 80.0, -2000.0, 2000.0, " px/s", 1.0),
+    spec("Shimmer", 1.5, 0.0, 20.0, " /s", 0.02),
+    choice("Area", &["Whole picture", "Rising from the bottom", "In a circle"]),
+    spec("Height", 50.0, 1.0, 100.0, " %", 0.5),
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 70.0, -100.0, 200.0, " %", 0.2),
+    spec("Radius", 30.0, 1.0, 200.0, " %", 0.2),
+    spec("Rises towards", 90.0, -360.0, 360.0, "°", 0.5),
+    EDGES_STRETCH,
+];
+const SHOCKWAVE: [ParamSpec; 12] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Start at", 0.0, -3600.0, 3600.0, " s", 0.01),
+    spec("Speed", 700.0, 1.0, 20000.0, " px/s", 2.0),
+    spec("Width", 60.0, 2.0, 2000.0, " px", 0.5),
+    spec("Strength", 25.0, -500.0, 500.0, " px", 0.2),
+    spec("Fade out at", 100.0, 1.0, 400.0, " %", 0.5),
+    spec("Repeat every", 0.0, 0.0, 60.0, " s", 0.01),
+    spec("Colour split", 20.0, 0.0, 100.0, " %", 0.5),
+    spec("Ring brightness", 0.0, 0.0, 400.0, " %", 0.5),
+    color("Ring colour", 0xdff4ff),
+    EDGES_STRETCH,
+];
+const STARFIELD: [ParamSpec; 14] = [
+    choice("Stars", &["Night sky", "Drifting past", "Warp speed"]),
+    spec("Amount", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Size", 1.6, 0.3, 20.0, " px", 0.02),
+    spec("Speed", 40.0, -5000.0, 5000.0, " px/s", 0.5),
+    spec("Direction", 180.0, -360.0, 360.0, "°", 0.5),
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Streaks", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Twinkle", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Brightness", 100.0, 0.0, 400.0, " %", 0.5),
+    color("Colour", 0xeef3ff),
+    spec("Colour variety", 40.0, 0.0, 100.0, " %", 0.5),
+    choice("Draw", &["Over the picture", "On black", "On its own (see-through)"]),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const HOLOGRAM: [ParamSpec; 11] = [
+    color("Colour", 0x4fd8ff),
+    spec("Opacity", 70.0, 0.0, 100.0, " %", 0.5),
+    spec("Scanlines", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Line spacing", 4.0, 1.0, 100.0, " px", 0.05),
+    spec("Line speed", 20.0, -2000.0, 2000.0, " px/s", 0.5),
+    spec("Flicker", 25.0, 0.0, 100.0, " %", 0.5),
+    spec("Glitches", 25.0, 0.0, 100.0, " %", 0.5),
+    spec("Edge glow", 60.0, 0.0, 300.0, " %", 0.5),
+    spec("Colour split", 2.0, 0.0, 50.0, " px", 0.05),
+    spec("Keep its colours", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const PORTAL: [ParamSpec; 15] = [
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Radius", 30.0, 1.0, 200.0, " %", 0.2),
+    spec("Open", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Rim width", 18.0, 1.0, 400.0, " px", 0.2),
+    color("Colour", 0xff9a2e),
+    color("Second colour", 0xffe48a),
+    spec("Spin", 0.5, -10.0, 10.0, " turns/s", 0.01),
+    spec("Sparks", 60.0, 0.0, 100.0, " %", 0.5),
+    choice("Inside", &["A swirl of the picture", "Dark", "See-through (shows the track below)"]),
+    spec("Swirl", 180.0, -1440.0, 1440.0, "°", 1.0),
+    spec("Ripple round it", 8.0, 0.0, 200.0, " px", 0.1),
+    spec("Brightness", 150.0, 0.0, 500.0, " %", 0.5),
+    spec("Stretch", 100.0, 10.0, 400.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const HUD: [ParamSpec; 12] = [
+    choice("Element", &["Targeting reticle", "Radar sweep", "Turning rings", "Readout bars", "Corner brackets"]),
+    spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Size", 30.0, 1.0, 200.0, " %", 0.2),
+    color("Colour", 0x5ce1ff),
+    spec("Line width", 2.0, 0.3, 40.0, " px", 0.05),
+    spec("Spin", 0.25, -10.0, 10.0, " turns/s", 0.01),
+    spec("Detail", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Draw on", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Flicker", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const LIGHTSWEEP: [ParamSpec; 11] = [
+    spec("Angle", 60.0, -360.0, 360.0, "°", 0.5),
+    spec("Width", 60.0, 1.0, 4000.0, " px", 0.5),
+    spec("Softness", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Start at", 0.0, -3600.0, 3600.0, " s", 0.01),
+    spec("Takes", 1.0, 0.0, 60.0, " s", 0.01),
+    spec("Repeat every", 0.0, 0.0, 60.0, " s", 0.01),
+    spec("Position", -1.0, -1.0, 200.0, " %", 0.5),
+    spec("Brightness", 150.0, 0.0, 1000.0, " %", 0.5),
+    color("Colour", 0xffffff),
+    choice("Lights", &["The shape", "Its bright parts", "Everything"]),
+    spec("Second sweep", 0.0, 0.0, 100.0, " %", 0.5),
+];
+const ELECTRICARCS: [ParamSpec; 11] = [
+    color("Colour", 0x8fc8ff),
+    spec("Amount", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Reach", 30.0, 1.0, 400.0, " px", 0.5),
+    spec("Thickness", 1.5, 0.3, 20.0, " px", 0.05),
+    spec("Speed", 4.0, 0.0, 50.0, " /s", 0.05),
+    spec("Flicker", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Glow", 60.0, 0.0, 300.0, " %", 0.5),
+    spec("Brightness", 150.0, 0.0, 1000.0, " %", 0.5),
+    spec("Over the shape", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Scale", 40.0, 4.0, 1000.0, " px", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -2304,7 +2563,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 65] = [
+    pub const ALL: [EffectKind; 74] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -2370,6 +2629,15 @@ impl EffectKind {
         EffectKind::PrismBlur,
         EffectKind::TiltShift,
         EffectKind::Scanlines,
+        EffectKind::ElectricArcs,
+        EffectKind::LightSweep,
+        EffectKind::Hud,
+        EffectKind::Portal,
+        EffectKind::Hologram,
+        EffectKind::Starfield,
+        EffectKind::Shockwave,
+        EffectKind::HeatHaze,
+        EffectKind::TurbulentDisplace,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -2448,6 +2716,15 @@ impl EffectKind {
             EffectKind::Abstraction => "Abstraction",
             EffectKind::PrismBlur => "Prism blur",
             EffectKind::TiltShift => "Tilt-shift",
+            EffectKind::TurbulentDisplace => "Turbulent displace",
+            EffectKind::HeatHaze => "Heat haze",
+            EffectKind::Shockwave => "Shockwave",
+            EffectKind::Starfield => "Starfield",
+            EffectKind::Hologram => "Hologram",
+            EffectKind::Portal => "Portal",
+            EffectKind::Hud => "HUD element",
+            EffectKind::LightSweep => "Light sweep",
+            EffectKind::ElectricArcs => "Electric arcs",
             EffectKind::Scanlines => "Scanlines",
 
             EffectKind::Lightning => "Lightning",
@@ -2485,6 +2762,15 @@ impl EffectKind {
             | EffectKind::PolarCoordinates
             | EffectKind::Mirror
             | EffectKind::LensDistortion => EffectCategory::Distort,
+            EffectKind::TurbulentDisplace => EffectCategory::Distort,
+            EffectKind::HeatHaze => EffectCategory::Distort,
+            EffectKind::Shockwave => EffectCategory::Distort,
+            EffectKind::Starfield => EffectCategory::Generate,
+            EffectKind::Hologram => EffectCategory::Stylize,
+            EffectKind::Portal => EffectCategory::Generate,
+            EffectKind::Hud => EffectCategory::Generate,
+            EffectKind::LightSweep => EffectCategory::Stylize,
+            EffectKind::ElectricArcs => EffectCategory::Generate,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -2522,6 +2808,15 @@ impl EffectKind {
             EffectKind::Abstraction => "Turn footage into a painted, simplified picture: flat areas of colour that keep their edges (a Kuwahara filter), with dark outlines and fewer colours if wanted.",
             EffectKind::PrismBlur => "A blur that splits light into its colours as a prism does: out from a centre or one way, red one side and blue the other.",
             EffectKind::TiltShift => "The miniature look: a band of the picture sharp and the rest blurred more and more away from it, at any angle, with a little extra saturation and contrast.",
+            EffectKind::TurbulentDisplace => "Bends the picture with rolling, cloudy noise, like the Turbulent Displace in After Effects: how far and how big the swirls are, how detailed, and how they change over time. For heat, water, flags, dreams and magic.",
+            EffectKind::HeatHaze => "The shimmer over a hot road, a fire or an engine: the picture wobbles as rising air bends the light. Over the whole picture, rising from the bottom, or in a circle you place.",
+            EffectKind::Shockwave => "A ring of bent air bursting out from a point, as from an explosion, a landing or a power-up: it travels out at the speed you set from the moment you set, fading as it goes, with a split of colour and a glint along the ring. Repeat it for a pulse. Drag its centre in the Viewer.",
+            EffectKind::Starfield => "Stars: a night sky that twinkles, stars drifting past in layers (nearer ones faster), or the jump to warp speed, stars streaking out from a point you place. Over the picture, on black, or on their own to put behind something.",
+            EffectKind::Hologram => "Turns the layer into a projected hologram: one glowing colour, see-through, with scanlines rolling over it, edges that glow, flicker, and glitches that tear across it now and then.",
+            EffectKind::Portal => "A ring of energy that opens in the air: sparks spinning round its rim in two colours, the air rippling round it, and inside a swirl of the picture, darkness, or a hole you can see another shot through (put it on the track below). Keyframe Open to open and close it. Drag its centre in the Viewer.",
+            EffectKind::Hud => "Sci-fi screen graphics drawn over the picture: a targeting reticle, a radar sweep, rings of ticks turning at different speeds, a readout of moving bars, or corner brackets. Drag it in the Viewer, keyframe Draw on to bring it in. Add a Glow for the lit look.",
+            EffectKind::LightSweep => "A sheen of light passing over a title or logo, like light catching chrome or glass: its angle, width and softness, when it passes and how long it takes (or keyframe Position), and whether it lights only the shape, only its bright parts, or everything.",
+            EffectKind::ElectricArcs => "Crackling electricity crawling over the edges of the layer’s shape — a keyed person, a title, a logo — and jumping off them: thin, branching, flickering arcs with a glow, in the colour you choose.",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
@@ -2626,6 +2921,15 @@ impl EffectKind {
             EffectKind::Abstraction => &ABSTRACTION,
             EffectKind::PrismBlur => &PRISM,
             EffectKind::TiltShift => &TILT_SHIFT,
+            EffectKind::TurbulentDisplace => &TURBULENTDISPLACE,
+            EffectKind::HeatHaze => &HEATHAZE,
+            EffectKind::Shockwave => &SHOCKWAVE,
+            EffectKind::Starfield => &STARFIELD,
+            EffectKind::Hologram => &HOLOGRAM,
+            EffectKind::Portal => &PORTAL,
+            EffectKind::Hud => &HUD,
+            EffectKind::LightSweep => &LIGHTSWEEP,
+            EffectKind::ElectricArcs => &ELECTRICARCS,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -2799,6 +3103,15 @@ impl EffectValues {
             EffectKind::Abstraction => v[abstraction::SIZE] <= 0.0 && v[abstraction::EDGES] == 0.0 && v[abstraction::LEVELS] == 0.0,
             EffectKind::PrismBlur => v[prism::AMOUNT] == 0.0,
             EffectKind::TiltShift => v[tilt::BLUR] == 0.0 && v[tilt::SATURATION] == 100.0 && v[tilt::CONTRAST] == 100.0,
+            EffectKind::TurbulentDisplace => v[turbulent::AMOUNT] == 0.0,
+            EffectKind::HeatHaze => v[haze::STRENGTH] == 0.0,
+            EffectKind::Shockwave => v[shockwave::STRENGTH] == 0.0 && v[shockwave::BRIGHTNESS] == 0.0,
+            EffectKind::Starfield => v[stars::BRIGHTNESS] == 0.0 && v[stars::DRAW] == 0.0,
+            EffectKind::Hologram => false,
+            EffectKind::Portal => v[portal::OPEN] == 0.0,
+            EffectKind::Hud => v[hud::OPACITY] == 0.0 || v[hud::DRAW_ON] == 0.0,
+            EffectKind::LightSweep => v[sweep::BRIGHTNESS] == 0.0,
+            EffectKind::ElectricArcs => v[arcs::AMOUNT] == 0.0 || v[arcs::BRIGHTNESS] == 0.0,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
 
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
@@ -2854,6 +3167,15 @@ impl EffectValues {
             || (self.kind == EffectKind::Scanlines && v[scan::ROLL] != 0.0)
             || (self.kind == EffectKind::FractalNoise && (v[fractal::SPEED] != 0.0 || v[fractal::DRIFT_X] != 0.0 || v[fractal::DRIFT_Y] != 0.0))
             || (self.kind == EffectKind::Crt && (v[crt::WOBBLE] > 0.0 || v[crt::NOISE] > 0.0 || v[crt::TRACKING] > 0.0))
+            || (self.kind == EffectKind::TurbulentDisplace && (v[turbulent::SPEED] != 0.0))
+            || (self.kind == EffectKind::HeatHaze && (v[haze::RISE] != 0.0 || v[haze::SHIMMER] != 0.0))
+            || (self.kind == EffectKind::Shockwave && (true))
+            || (self.kind == EffectKind::Starfield && (v[stars::SPEED] != 0.0 || v[stars::TWINKLE] > 0.0))
+            || (self.kind == EffectKind::Hologram && (v[hologram::LINE_SPEED] != 0.0 || v[hologram::FLICKER] > 0.0 || v[hologram::GLITCH] > 0.0))
+            || (self.kind == EffectKind::Portal && (v[portal::OPEN] > 0.0))
+            || (self.kind == EffectKind::Hud && (true))
+            || (self.kind == EffectKind::LightSweep && (v[sweep::POSITION] < 0.0))
+            || (self.kind == EffectKind::ElectricArcs && (true))
             || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)
             || (self.kind == EffectKind::WaveWarp && v[wave::SPEED] != 0.0)
             || (self.kind == EffectKind::NeonPath && (v[neonpath::FLICKER] > 0.0 || v[neonpath::DASH_SPEED] != 0.0 || v[neonpath::SWITCH_ON] > 0.0))

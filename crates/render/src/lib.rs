@@ -621,7 +621,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2089,6 +2089,15 @@ impl Compositor {
                     | EffectKind::Abstraction
                     | EffectKind::PrismBlur
                     | EffectKind::TiltShift
+                    | EffectKind::TurbulentDisplace
+                    | EffectKind::HeatHaze
+                    | EffectKind::Shockwave
+                    | EffectKind::Starfield
+                    | EffectKind::Hologram
+                    | EffectKind::Portal
+                    | EffectKind::Hud
+                    | EffectKind::LightSweep
+                    | EffectKind::ElectricArcs
                     | EffectKind::Scanlines => {
                         // A number of its own (its place in the stack), the time and the layer's size.
                         let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
@@ -2121,6 +2130,15 @@ impl Compositor {
                             EffectKind::PrismBlur => "fs_prism",
                             EffectKind::TiltShift => "fs_tilt_shift",
                             EffectKind::Scanlines => "fs_scanlines",
+                            EffectKind::ElectricArcs => "fs_arcs",
+                            EffectKind::LightSweep => "fs_sweep",
+                            EffectKind::Hud => "fs_hud",
+                            EffectKind::Portal => "fs_portal",
+                            EffectKind::Hologram => "fs_hologram",
+                            EffectKind::Starfield => "fs_starfield",
+                            EffectKind::Shockwave => "fs_shockwave",
+                            EffectKind::HeatHaze => "fs_heat_haze",
+                            EffectKind::TurbulentDisplace => "fs_turbulent",
                             _ => "fs_leaks",
                         };
                         push(entry, cur, Second::None, o1, u);
@@ -3123,6 +3141,12 @@ fn effect_margin(effects: &[EffectValues], px: [u32; 2], layer: [f32; 2]) -> [u3
                     x += r * kx;
                     y += r * ky;
                 }
+            }
+            EffectKind::ElectricArcs => {
+                use reelforge_core::effects::arcs;
+                let r = e.values[arcs::REACH].max(0.0) * 1.2 + e.values[arcs::THICKNESS].max(0.0) * 4.0;
+                x += r * kx;
+                y += r * ky;
             }
             EffectKind::DropShadow => {
                 let (d, a) = (e.values[0].max(0.0), e.values[1].to_radians());
