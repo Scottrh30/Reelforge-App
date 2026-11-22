@@ -688,7 +688,8 @@
     e.stopPropagation();
     e.preventDefault();
     const at = toLayer(e);
-    if (e.altKey) {
+    const liquify = paintFx?.kind === "Liquify";
+    if (e.altKey && !liquify) {
       app.paint = { ...painting, source: at };
       say("Clone source set: paint where it should go");
       return;
@@ -696,13 +697,18 @@
     const el = e.currentTarget as SVGElement;
     el.setPointerCapture(e.pointerId);
     stroke = { fg: true, points: [at] };
+    let here = at;
     const move = (ev: PointerEvent) => {
       if (!stroke) return;
       const p = toLayer(ev);
+      here = p;
       const last = stroke.points[stroke.points.length - 1];
       if (Math.hypot(p[0] - last[0], p[1] - last[1]) * layerScale() >= 2) stroke = { fg: true, points: [...stroke.points, p] };
     };
+    // Liquify: the brush held still keeps working (a point again every 50 ms).
+    const held = liquify ? setInterval(() => { if (stroke && stroke.points.length < 4000) stroke = { fg: true, points: [...stroke.points, here] }; }, 50) : null;
     const up = async () => {
+      if (held) clearInterval(held);
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       const s = stroke;
@@ -1019,7 +1025,7 @@
         <line x1={sp[0]} y1={sp[1] - 9} x2={sp[0]} y2={sp[1] + 9} class="brush" />
       {/if}
       {#if stroke && stroke.points.length}
-        <polyline points={pts(stroke.points)} class="rotostroke paint" stroke-width={paintRadius * 2 * layerScale()} />
+        <polyline points={pts(stroke.points)} class="rotostroke paint" stroke-width={paintFx?.kind === "Liquify" ? 2 : paintRadius * 2 * layerScale()} />
       {/if}
       {#if brushAt}
         <circle cx={brushAt[0]} cy={brushAt[1]} r={paintRadius * layerScale()} class="brush" />

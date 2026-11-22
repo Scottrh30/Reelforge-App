@@ -29,6 +29,7 @@ pub mod collect;
 pub mod edit;
 pub mod disintegrate;
 pub mod lightning;
+pub mod liquify;
 pub mod inpaint;
 pub mod fillstore;
 pub mod faces;

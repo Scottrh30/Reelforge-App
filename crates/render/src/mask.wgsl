@@ -891,3 +891,42 @@ fn fs_audio_vis(in: VsOut) -> @location(0) vec4<f32> {
     let base = src_c * clamp(fx.p4.x / 100.0, 0.0, 1.0);
     return vec4(col * alpha + base.rgb * (1.0 - alpha), alpha + base.a * (1.0 - alpha));
 }
+
+// Liquify: the picture taken from where the warp table says (see core's
+// liquify): each texel a grid point fx.extra2.x layer pixels apart, its x and
+// y offsets as 16-bit numbers in eighths of a pixel (32768: none).
+fn lq_shift(g: vec2<i32>, dims: vec2<i32>) -> vec2<f32> {
+    let c = clamp(g, vec2(0), dims - vec2(1));
+    return (pt_u16(textureLoad(second, c, 0)) - 32768.0) / 8.0;
+}
+
+@fragment
+fn fs_liquify(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let cell = max(fx.extra2.x, 0.001);
+    let dims = max(vec2<i32>(i32(fx.extra2.y), i32(fx.extra2.z)), vec2(1));
+    let p = in.uv * size;
+    let g = clamp(p / cell, vec2(0.0), vec2<f32>(dims - vec2(1)));
+    let g0 = vec2<i32>(floor(g));
+    let f = g - floor(g);
+    let a = lq_shift(g0, dims);
+    let b = lq_shift(g0 + vec2(1, 0), dims);
+    let c = lq_shift(g0 + vec2(0, 1), dims);
+    let d = lq_shift(g0 + vec2(1, 1), dims);
+    let shift = mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * clamp(fx.p0.w / 100.0, 0.0, 4.0);
+    let q = (p + shift) / size;
+    let stretch = u32(round(fx.p1.x)) == 1u;
+    let qs = select(q, clamp(q, vec2(0.0), vec2(1.0)), stretch);
+    var out = textureSample(src, src_sampler, to_tex(qs));
+    let ok = stretch || (all(q >= vec2(0.0)) && all(q <= vec2(1.0)));
+    out = select(vec4(0.0), out, ok);
+    if (fx.p1.y > 0.5) {
+        // The mesh: straight lines over the picture, bent with it.
+        let spacing = max(32.0, cell * 8.0);
+        let m = fract(q * size / spacing);
+        let dist = min(m, vec2(1.0) - m) * spacing;
+        let line = (1.0 - smoothstep(0.4, 1.2, min(dist.x, dist.y))) * 0.8;
+        out = out * (1.0 - line) + vec4(0.3, 0.8, 1.0, 1.0) * line;
+    }
+    return out;
+}

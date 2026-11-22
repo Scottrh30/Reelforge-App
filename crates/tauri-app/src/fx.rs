@@ -257,6 +257,7 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 environment_error,
                 strokes: match &fx.data {
                     Some(EffectData::Paint(s)) => s.len(),
+                    Some(EffectData::Liquify(s)) => s.len(),
                     _ => 0,
                 },
                 faces: match &fx.data {

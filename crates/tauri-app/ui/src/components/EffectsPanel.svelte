@@ -351,6 +351,17 @@
             <p class="note">Drag in the Viewer to paint. For <b>Clone</b>, Alt-click where to copy from first; the next stroke copies from there, keeping the same distance for later strokes. Undo takes the last stroke away.</p>
           {/if}
         {/if}
+        {#if fx.kind === "Liquify"}
+          {@const on = app.paint?.clip === ins.id && app.paint.index === i}
+          <div class="row lut">
+            <span class="file">{fx.strokes} stroke{fx.strokes === 1 ? "" : "s"}</span>
+            <button class="small" class:on onclick={() => (app.paint = on ? null : { clip: ins.id, index: i, source: null })} title="Brush the picture in the Viewer with this effect's tool (Esc stops)">{on ? "Stop" : "Liquify in Viewer"}</button>
+            <button class="small" disabled={!fx.strokes} onclick={() => run(api.paintClear(ins.id, i))} title="Take every stroke off (undo brings them back)">Reset all</button>
+          </div>
+          {#if on}
+            <p class="note">Drag in the Viewer to <b>Push</b> the picture along; hold the brush still to keep twirling, pinching or swelling. <b>Reconstruct</b> brushes earlier strokes away. Undo takes the last stroke away; keyframe <b>Amount</b> to bring the warp in or out.</p>
+          {/if}
+        {/if}
         {#if fx.kind === "FaceBeauty"}
           {@const busy = app.live?.tracking && app.live.tracking[0] === ins.id ? app.live.tracking[1] : null}
           <div class="row lut">

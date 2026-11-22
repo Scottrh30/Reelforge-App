@@ -115,6 +115,8 @@ pub enum EffectKind {
     Scanlines,
     /// Copies of the layer from moments before (or after), drawn with it: trails.
     Echo,
+    /// The picture pushed, twirled, pinched and swelled with a brush in the Viewer.
+    Liquify,
     ElectricArcs,
     LightSweep,
     Hud,
@@ -273,6 +275,8 @@ pub enum EffectData {
     Fill(PathBuf),
     /// Paint's strokes (see `crate::paint`).
     Paint(Vec<crate::paint::PaintStroke>),
+    /// Liquify's strokes (see `crate::liquify`).
+    Liquify(Vec<crate::liquify::LiquifyStroke>),
     /// Face beauty's faces, followed through the clip.
     Faces(Vec<crate::faces::FaceTrack>),
     /// Sky replacement: the new sky (a picture), and the sky found in each
@@ -1306,6 +1310,16 @@ pub mod echo {
     pub const ORIGINAL: usize = 5;
     /// Most copies drawn.
     pub const MAX: usize = 16;
+}
+/// Liquify's parameters: the brush (used as strokes are painted) and how the
+/// warp shows.
+pub mod liquify_params {
+    pub const TOOL: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const PRESSURE: usize = 2;
+    pub const AMOUNT: usize = 3;
+    pub const EDGES: usize = 4;
+    pub const MESH: usize = 5;
 }
 pub mod ripple {
     pub const X: usize = 0;
@@ -2375,6 +2389,14 @@ const ECHO: [ParamSpec; 6] = [
     choice("Draw echoes", &["Behind the layer", "In front of it", "Added (light trails)", "Screen", "Lighten"]),
     spec("Original", 100.0, 0.0, 100.0, " %", 0.5),
 ];
+const LIQUIFY: [ParamSpec; 6] = [
+    choice("Tool", &["Push", "Twirl clockwise", "Twirl anticlockwise", "Pucker (pinch in)", "Bloat (swell out)", "Reconstruct"]),
+    spec("Brush size", 120.0, 2.0, 4000.0, " px", 0.5),
+    spec("Pressure", 50.0, 1.0, 100.0, " %", 0.5),
+    spec("Amount", 100.0, 0.0, 400.0, " %", 0.5),
+    choice("Edges", &["Transparent", "Stretch"]),
+    ParamSpec { name: "Show mesh", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -2584,7 +2606,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 75] = [
+    pub const ALL: [EffectKind; 76] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -2651,6 +2673,7 @@ impl EffectKind {
         EffectKind::TiltShift,
         EffectKind::Scanlines,
         EffectKind::Echo,
+        EffectKind::Liquify,
         EffectKind::ElectricArcs,
         EffectKind::LightSweep,
         EffectKind::Hud,
@@ -2747,6 +2770,7 @@ impl EffectKind {
             EffectKind::Hud => "HUD element",
             EffectKind::LightSweep => "Light sweep",
             EffectKind::ElectricArcs => "Electric arcs",
+            EffectKind::Liquify => "Liquify",
             EffectKind::Echo => "Echo",
             EffectKind::Scanlines => "Scanlines",
 
@@ -2795,6 +2819,7 @@ impl EffectKind {
             EffectKind::LightSweep => EffectCategory::Stylize,
             EffectKind::ElectricArcs => EffectCategory::Generate,
             EffectKind::Echo => EffectCategory::Stylize,
+            EffectKind::Liquify => EffectCategory::Distort,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -2841,6 +2866,7 @@ impl EffectKind {
             EffectKind::Hud => "Sci-fi screen graphics drawn over the picture: a targeting reticle, a radar sweep, rings of ticks turning at different speeds, a readout of moving bars, or corner brackets. Drag it in the Viewer, keyframe Draw on to bring it in. Add a Glow for the lit look.",
             EffectKind::LightSweep => "A sheen of light passing over a title or logo, like light catching chrome or glass: its angle, width and softness, when it passes and how long it takes (or keyframe Position), and whether it lights only the shape, only its bright parts, or everything.",
             EffectKind::ElectricArcs => "Crackling electricity crawling over the edges of the layer’s shape — a keyed person, a title, a logo — and jumping off them: thin, branching, flickering arcs with a glow, in the colour you choose.",
+            EffectKind::Liquify => "Push, twirl, pinch and swell the picture with a brush in the Viewer",
             EffectKind::Echo => "Copies of the layer from a moment before, fading behind it: trails, ghosting and stutter",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
@@ -2956,6 +2982,7 @@ impl EffectKind {
             EffectKind::LightSweep => &LIGHTSWEEP,
             EffectKind::ElectricArcs => &ELECTRICARCS,
             EffectKind::Echo => &ECHO,
+            EffectKind::Liquify => &LIQUIFY,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -3138,6 +3165,7 @@ impl EffectValues {
             EffectKind::Hud => v[hud::OPACITY] == 0.0 || v[hud::DRAW_ON] == 0.0,
             EffectKind::LightSweep => v[sweep::BRIGHTNESS] == 0.0,
             EffectKind::ElectricArcs => v[arcs::AMOUNT] == 0.0 || v[arcs::BRIGHTNESS] == 0.0,
+            EffectKind::Liquify => self.table.is_none() || (v[liquify_params::AMOUNT] == 0.0 && v[liquify_params::MESH] == 0.0),
             EffectKind::Echo => v[echo::COUNT] < 0.5 || v[echo::FIRST] == 0.0 || v[echo::DELAY] == 0.0,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
 
@@ -3413,6 +3441,19 @@ impl Effect {
                     }
                 }
             }
+            EffectKind::Liquify => {
+                let strokes = match &self.data {
+                    Some(EffectData::Liquify(s)) => s.as_slice(),
+                    _ => &[],
+                };
+                match crate::liquify::table(strokes, size) {
+                    Some((tb, cell)) => {
+                        v.gpu = [cell, tb.width as f32, tb.height as f32, 0.0];
+                        v.table = Some(tb);
+                    }
+                    None => v.table = None,
+                }
+            }
             EffectKind::Lightning => {
                 let b = crate::lightning::bolts(self, t, size);
                 v.table = crate::lightning::table(&b, size);
@@ -3482,7 +3523,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
                 // Nothing has been born yet at the start, but soon is.

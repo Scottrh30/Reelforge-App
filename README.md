@@ -678,6 +678,15 @@ What works now:
       share of the diagonal); **Colour split** bends red, green and blue by different amounts,
       **Ring brightness** and **Ring colour** add a glint along it, **Repeat every** makes a
       pulse
+    - **Liquify**: push, twirl, pinch and swell the picture with a brush, as in Photoshop.
+      Press **Liquify in Viewer** and drag: **Push** drags the picture along with the brush;
+      **Twirl clockwise** / **anticlockwise**, **Pucker** (pinch in) and **Bloat** (swell out)
+      keep working while the brush is held still; **Reconstruct** brushes earlier strokes away.
+      **Brush size** and **Pressure** are used as you paint; every stroke is kept (undo takes
+      the last away, **Reset all** takes them all), and **Amount** fades the whole warp
+      (keyframe it to make it grow or settle). **Show mesh** draws a grid bent with the
+      picture; **Edges** past the layer: transparent or stretched. The warp holds for the
+      whole clip, in layer pixels
     - Ripple, Wave warp, Lens distortion, Turbulent displace, Heat haze and Shockwave choose
       what shows past the layer's edge: **Transparent**, **Stretch**, **Mirror** or **Repeat**
   - **Sci-fi pack**:

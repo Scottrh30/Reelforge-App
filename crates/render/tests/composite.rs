@@ -2677,6 +2677,43 @@ fn paint_clones_brushes_and_erases() {
     assert!(near(px(&out, w, 60, 30), [0, 0, 255]), "erased: {:?}", px(&out, w, 60, 30));
 }
 
+/// Liquify: a push stroke drags the picture along it (what's there comes from
+/// behind the brush); Amount 0 undoes it; the mesh shows as lines.
+#[test]
+fn liquify_pushes_the_picture_along_the_stroke() {
+    use reelforge_core::effects::liquify_params as lp;
+    use reelforge_core::liquify::{LiquifyStroke, Tool};
+    use reelforge_core::Time;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    // Red rising left to right, so where a pixel came from shows in its red.
+    let img: Vec<u8> = (0..w * h).flat_map(|i| [((i % w) * 255 / (w - 1)) as u8, 60, 60, 255]).collect();
+    let mut n = 7600;
+    let mut draw = |c: &mut Compositor, set: &[(usize, f32)]| {
+        let mut e = Effect::new(EffectKind::Liquify);
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        e.data = Some(reelforge_core::effects::EffectData::Liquify(vec![LiquifyStroke { tool: Tool::Push, points: vec![[40.0, 45.0], [110.0, 45.0]], radius: 30.0, pressure: 100.0 }]));
+        n += 1;
+        let mut l = layer(1, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        let v = e.eval_sized(Time::ZERO, None, [w as f32, h as f32]);
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let out = draw(&mut c, &[]);
+    let red = |img: &[u8], x: u32, y: u32| px(img, w, x, y)[0] as i32;
+    let was = (100 * 255 / (w - 1)) as i32;
+    assert!(red(&out, 100, 45) < was - 30, "dragged from the left: {} (was {was})", red(&out, 100, 45));
+    assert!((red(&out, 100, 5) - was).abs() <= 3, "far from it: untouched");
+    let none = draw(&mut c, &[(lp::AMOUNT, 0.0), (lp::MESH, 0.0)]);
+    assert!((red(&none, 100, 45) - was).abs() <= 3, "amount 0: untouched");
+    let mesh = draw(&mut c, &[(lp::MESH, 1.0)]);
+    let bluish = mesh.chunks(4).filter(|p| p[2] > 150 && p[1] > 120).count();
+    assert!(bluish > 100, "mesh lines: {bluish}");
+}
+
 /// Face beauty: the skin of a face found is smoothed (its blotches evened
 /// out), the picture outside it isn't; Pixelate turns the face into blocks.
 #[test]
