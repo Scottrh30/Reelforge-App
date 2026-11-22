@@ -1415,6 +1415,24 @@ fn sci_fi_and_light_effects_draw_where_they_should() {
         seen.push(img);
     }
 
+    // Glow on the first five too; a bigger Glow size reaches further; its own colour.
+    for e in 0..5 {
+        let el = e as f32;
+        let plain = draw(&mut c, &grey, EffectKind::Hud, &[(hud::ELEMENT, el), (hud::SIZE, 50.0)], 0.5);
+        let lit = draw(&mut c, &grey, EffectKind::Hud, &[(hud::ELEMENT, el), (hud::SIZE, 50.0), (hud::GLOW, 100.0)], 0.5);
+        assert!(differ(&lit, &grey) > differ(&plain, &grey), "element {e} glows");
+    }
+    let near = draw(&mut c, &grey, EffectKind::Hud, &[(hud::ELEMENT, 33.0), (hud::GLOW, 100.0), (hud::GLOW_SIZE, 5.0)], 0.5);
+    let far = draw(&mut c, &grey, EffectKind::Hud, &[(hud::ELEMENT, 33.0), (hud::GLOW, 100.0), (hud::GLOW_SIZE, 60.0)], 0.5);
+    assert!(differ(&far, &grey) > differ(&near, &grey), "a bigger glow reaches further");
+    // A red glow round cyan lines: just outside the lock-on's outer arc (radius 0.95 of
+    // 27 px, straight up), more red than the cyan glow gives.
+    let set = |own: f32| [(hud::ELEMENT, 33.0), (hud::SIZE, 60.0), (hud::SPIN, 0.0), (hud::GLOW, 150.0), (hud::GLOW_SIZE, 30.0), (hud::GLOW_COLOR, 0xff2020 as f32), (hud::OWN_GLOW_COLOR, own)];
+    let cyan = draw(&mut c, &grey, EffectKind::Hud, &set(0.0), 0.5);
+    let red = draw(&mut c, &grey, EffectKind::Hud, &set(1.0), 0.5);
+    let (pc, pr) = (at(&cyan, 80, 12), at(&red, 80, 12));
+    assert!(pr[0] > pc[0] + 20 && pr[2] < pc[2], "the glow in its own colour: {pr:?} vs {pc:?}");
+
     // Light sweep, 1 s from 0: halfway through, a bright band across the square, none
     // outside it; before it starts, nothing.
     let mid = draw(&mut c, &cut, EffectKind::LightSweep, &[(sweep::ANGLE, 0.0), (sweep::WIDTH, 20.0), (sweep::SOFTNESS, 0.0)], 0.5);

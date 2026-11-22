@@ -206,6 +206,15 @@ fn shots() -> Vec<Shot> {
         let name: &'static str = Box::leak(format!("hud-style-{e:02}-room").into_boxed_str());
         (name, EffectKind::Hud, vec![(hud::ELEMENT, e as f32), (hud::SIZE, 55.0), (hud::GLOW, 80.0), (hud::FILL, 50.0)], 0.5)
     }))
+    .chain((0..5).map(|e| {
+        let name: &'static str = Box::leak(format!("hud-glow-{e:02}-room").into_boxed_str());
+        (name, EffectKind::Hud, vec![(hud::ELEMENT, e as f32), (hud::SIZE, 55.0), (hud::GLOW, 80.0)], 0.5)
+    }))
+    .chain([
+        ("hud-glowcol-room", EffectKind::Hud, vec![(hud::ELEMENT, 33.0), (hud::SIZE, 55.0), (hud::GLOW, 120.0), (hud::GLOW_SIZE, 25.0), (hud::COLOR, 0xfff0c0 as f32), (hud::GLOW_COLOR, 0xff5a1e as f32), (hud::OWN_GLOW_COLOR, 1.0)], 0.5),
+        ("hud-glowsmall-room", EffectKind::Hud, vec![(hud::ELEMENT, 5.0), (hud::SIZE, 55.0), (hud::GLOW, 120.0), (hud::GLOW_SIZE, 4.0), (hud::COLOR, 0x7dff6a as f32)], 0.5),
+        ("hud-glowbig-room", EffectKind::Hud, vec![(hud::ELEMENT, 5.0), (hud::SIZE, 55.0), (hud::GLOW, 120.0), (hud::GLOW_SIZE, 45.0), (hud::COLOR, 0x7dff6a as f32)], 0.5),
+    ])
     .collect()
 }
 

@@ -2956,11 +2956,6 @@ fn fs_portal(in: VsOut) -> @location(0) vec4<f32> {
     return vec4(base.rgb + light, a);
 }
 
-// A line `w` px wide at distance `d` (antialiased), 0..1.
-fn hud_line(d: f32, w: f32) -> f32 {
-    return 1.0 - smoothstep(w * 0.5 - 0.6, w * 0.5 + 0.6, abs(d));
-}
-
 // ---- HUD reticle styles (elements 5 on): drawn from distances in units of the radius ----
 
 // What's been drawn so far at this pixel: x = ink, y = glow.
@@ -2985,14 +2980,14 @@ fn hkb(du: f32, wu: f32, k: f32) {
 fn hk_px(e: f32, k: f32) {
     let s = k * HREV;
     HK.x = max(HK.x, (1.0 - smoothstep(-0.6, 0.6, e)) * s);
-    HK.y = max(HK.y, exp(-max(e, 0.0) / HG) * s);
+    HK.y = 1.0 - (1.0 - HK.y) * (1.0 - exp(-max(e, 0.0) / HG) * s);
 }
 
 // Ink at a coverage `c` (0..1) without an edge distance (ticks, glyphs).
 fn hk_cov(c: f32, k: f32) {
     let s = clamp(c, 0.0, 1.0) * k * HREV;
     HK.x = max(HK.x, s);
-    HK.y = max(HK.y, s * 0.6);
+    HK.y = 1.0 - (1.0 - HK.y) * (1.0 - s * 0.6);
 }
 
 fn hs_seg(q: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
@@ -3436,8 +3431,15 @@ fn hud_shape(e: u32, q: vec2<f32>, spin: f32, detail: f32, seed: u32, t: f32) {
     }
 }
 
+// Ink `c` without an edge distance (ticks, bars, dots): it glows a little too.
+fn hg(c: f32) -> f32 {
+    HK.y = 1.0 - (1.0 - HK.y) * (1.0 - clamp(c, 0.0, 1.0) * 0.6);
+    return c;
+}
+
 // HUD: p0 = (element, centre x %, y %, size % of height), p1 = (colour, line px, spin turns/s,
-// detail %), p2 = (draw on %, opacity %, flicker %, seed), p3 = (glow %, fill %).
+// detail %), p2 = (draw on %, opacity %, flicker %, seed), p3 = (glow %, fill %, glow size %
+// of the radius, glow colour), p4.x = use the glow colour.
 @fragment
 fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
     let size = fx.extra.zw;
@@ -3455,54 +3457,65 @@ fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
     let spin = t * fx.p1.z;
     let seed = u32(max(fx.p2.w, 0.0)) * 197u + 5u;
     var ink = 0.0;
-    var glow = 0.0;
     var fill = 0.0;
+    HR = r;
+    HW = w;
+    HG = max(r * clamp(fx.p3.z, 0.5, 200.0) / 100.0, w);
+    HK = vec2(0.0);
     switch (u32(round(fx.p0.x))) {
         case 0u: {
             // Reticle: an outer ring broken in four, an inner ring, a cross with a gap, ticks.
-            let gap = 0.04;
-            let q = fract(ang + 0.125);
-            let broken = step(gap, fract(q * 4.0)) * step(fract(q * 4.0), 1.0 - gap);
-            ink += hud_line(dist - r, w) * broken * step(ang, on);
-            ink += hud_line(dist - r * 0.55, w * 0.8) * step(fract(ang - spin), on);
-            let cross = min(hud_line(d.x, w), step(r * 0.15, abs(d.y)) * step(abs(d.y), r * 0.85)) + min(hud_line(d.y, w), step(r * 0.15, abs(d.x)) * step(abs(d.x), r * 0.85));
-            ink += clamp(cross, 0.0, 1.0) * step(0.3, on);
+            let q = d / r;
+            HREV = step(ang, on);
+            hk_arcs(q, 1.0, 4.0, -0.125 + 0.01, 0.23, 1.0, false);
+            HREV = step(fract(ang - spin), on);
+            hk(abs(length(q) - 0.55), 0.8, 1.0);
+            HREV = step(0.3, on);
+            hk(min(hs_seg(abs(q), vec2(0.15, 0.0), vec2(0.85, 0.0)), hs_seg(abs(q), vec2(0.0, 0.15), vec2(0.0, 0.85))), 1.0, 1.0);
             let n = floor(mix(12.0, 72.0, detail));
             let tick = step(fract(ang * n + 0.04), 0.08) * step(r * 1.04, dist) * step(dist, r * (1.1 + 0.06 * step(fract(ang * n / 4.0), 0.25)));
-            ink += tick * step(ang, on);
-            ink += (1.0 - smoothstep(w, w + 1.2, dist)) * step(0.6, on);
+            ink += hg(tick * step(ang, on));
+            ink += hg((1.0 - smoothstep(w, w + 1.2, dist)) * step(0.6, on));
         }
         case 1u: {
             // Radar: rings, the sweep with its fading wake, blips that glow as it passes.
+            let q = d / r;
+            HREV = step(ang, on);
             for (var k = 1; k <= 4; k++) {
-                ink += hud_line(dist - r * f32(k) / 4.0, w * select(0.6, 1.0, k == 4)) * step(ang, on);
+                hk(abs(length(q) - f32(k) / 4.0), select(0.6, 1.0, k == 4), 1.0);
             }
-            ink += (hud_line(d.x, w * 0.5) + hud_line(d.y, w * 0.5)) * step(dist, r) * 0.5 * on;
+            HREV = on;
+            hk(min(hs_seg(q, vec2(-1.0, 0.0), vec2(1.0, 0.0)), hs_seg(q, vec2(0.0, -1.0), vec2(0.0, 1.0))), 0.5, 0.5);
+            hk(hs_seg(q, vec2(0.0), hs_dir(fract(spin))), 1.0, 1.0);
             let behind = fract(spin - ang);
             ink += exp(-behind * 7.0) * 0.55 * step(dist, r) * on;
-            ink += hud_line(behind * dist * 6.2831853, w) * step(dist, r) * on;
             let nb = u32(mix(3.0, 12.0, detail));
             for (var b = 0u; b < nb; b++) {
                 let ba = rnd3(seed, b, 1u);
                 let br = r * (0.2 + 0.75 * rnd3(seed, b, 2u));
                 let bp = c + vec2(sin(ba * 6.2831853), -cos(ba * 6.2831853)) * br;
                 let fade = exp(-fract(spin - ba) * 4.0);
-                ink += (1.0 - smoothstep(w * 1.5, w * 3.0, length(p - bp))) * fade * on;
+                ink += hg((1.0 - smoothstep(w * 1.5, w * 3.0, length(p - bp))) * fade * on);
             }
         }
         case 2u: {
             // Rings of ticks and arcs turning at their own speeds, each way.
+            let q = d / r;
+            HREV = step(ang, on);
             let rings = u32(mix(2.0, 6.0, detail));
             for (var k = 0u; k < rings; k++) {
                 let rr = r * (0.35 + 0.65 * f32(k + 1u) / f32(rings));
                 let speed = (0.3 + rnd3(seed, k, 1u)) * select(-1.0, 1.0, k % 2u == 0u);
                 let a2 = fract(ang + spin * speed);
                 let segs = floor(2.0 + rnd3(seed, k, 2u) * 6.0);
-                let arc = step(0.25 + 0.5 * rnd3(seed, k, 3u), fract(a2 * segs));
-                let ticks = step(fract(a2 * (24.0 + 48.0 * rnd3(seed, k, 4u))), 0.15);
+                let th = 0.25 + 0.5 * rnd3(seed, k, 3u);
                 let style = rnd3(seed, k, 5u);
-                let shape = select(arc * hud_line(dist - rr, w), ticks * step(abs(dist - rr), w * 3.0), style > 0.5);
-                ink += shape * step(ang, on);
+                if (style > 0.5) {
+                    let ticks = step(fract(a2 * (24.0 + 48.0 * rnd3(seed, k, 4u))), 0.15);
+                    ink += hg(ticks * step(abs(dist - rr), w * 3.0) * step(ang, on));
+                } else {
+                    hk_arcs(q, rr / r, segs, fract(th / segs - spin * speed), (1.0 - th) / segs, 1.0, false);
+                }
             }
         }
         case 3u: {
@@ -3510,34 +3523,29 @@ fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
             let box = vec2(r * 1.6, r);
             let q = d + box * 0.5;
             let inbox = step(0.0, q.x) * step(q.x, box.x) * step(0.0, q.y) * step(q.y, box.y);
-            let frame = (hud_line(q.x, w) + hud_line(q.x - box.x, w)) * step(0.0, q.y) * step(q.y, box.y) + (hud_line(q.y, w) + hud_line(q.y - box.y, w)) * step(0.0, q.x) * step(q.x, box.x);
-            ink += clamp(frame, 0.0, 1.0) * step(0.1, on);
+            HREV = step(0.1, on);
+            hk(hs_box(d / r, vec2(0.8, 0.5)), 1.0, 1.0);
             let n = floor(mix(6.0, 40.0, detail));
             let i = floor(q.x / box.x * n);
             let lvl = 0.15 + 0.8 * (0.5 + 0.5 * sin(t * (1.5 + 3.0 * rnd3(seed, bitcast<u32>(i32(i)), 1u)) + i * 1.7)) * vnoise(seed, vec2(i * 0.7, t * 1.3));
             let bar = step(fract(q.x / box.x * n), 0.7) * step(box.y * (1.0 - lvl * on), q.y);
-            ink += bar * inbox * 0.8;
+            ink += hg(bar * inbox * 0.8);
         }
         case 4u: {
             // Corner brackets round a box, closing in as it draws on.
-            let half = vec2(r * 1.4, r) * (1.4 - 0.4 * on);
-            let q = abs(d) - half;
-            let arm = r * 0.35;
-            let corner = (hud_line(q.x, w) * step(-arm, q.y) * step(q.y, w)) + (hud_line(q.y, w) * step(-arm, q.x) * step(q.x, w));
-            ink += clamp(corner, 0.0, 1.0) * step(0.05, on);
+            let half = vec2(1.4, 1.0) * (1.4 - 0.4 * on);
+            let a = abs(d / r);
+            let arm = 0.35;
+            HREV = step(0.05, on);
+            hk(min(hs_seg(a, half - vec2(arm, 0.0), half), hs_seg(a, half - vec2(0.0, arm), half)), 1.0, 1.0);
         }
         default: {
             // The reticle styles: drawn on clockwise from the top.
             let el = min(u32(round(fx.p0.x)), 34u);
-            HR = r;
-            HW = w;
-            HG = max(r * 0.12, w * 2.0);
             HREV = step(ang, on) * step(0.0001, on);
-            HK = vec2(0.0);
             let q = d / r;
             hud_shape(el, q, spin, detail, seed, t);
             ink = HK.x;
-            glow = HK.y * clamp(fx.p3.x / 100.0, 0.0, 2.0) * 0.7;
             // Faint scanlines inside it, if Fill is up.
             var region = 1.0 - smoothstep(0.92, 0.96, length(q));
             if (el >= 11u && el <= 16u) {
@@ -3549,14 +3557,17 @@ fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
             fill = region * scan * clamp(fx.p3.y / 100.0, 0.0, 1.0) * 0.22 * on;
         }
     }
+    ink = max(ink, HK.x);
     let f = fx.p2.z / 100.0;
     let flick = 1.0 - f * step(0.75, rnd3(seed + 3u, bitcast<u32>(i32(floor(t * 20.0))), 9u));
     let k = fx.p2.y / 100.0 * flick;
     let a = clamp(ink, 0.0, 1.0) * k;
-    let halo = clamp(glow + fill, 0.0, 1.0) * k * (1.0 - a);
+    let glow = clamp(HK.y * clamp(fx.p3.x / 100.0, 0.0, 2.0) * 0.7, 0.0, 1.0) * k * (1.0 - a);
+    let haze = clamp(fill, 0.0, 1.0) * k * (1.0 - a);
     let col = rgb_of(fx.p1.x);
+    let gcol = select(col, rgb_of(fx.p3.w), fx.p4.x > 0.5);
     let base = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
-    return vec4(base.rgb * (1.0 - a) + col * (a + halo), max(base.a, max(a, halo)));
+    return vec4(base.rgb * (1.0 - a) + col * (a + haze) + gcol * glow, max(base.a, clamp(a + glow + haze, 0.0, 1.0)));
 }
 
 // ---- Light sweep, electric arcs ----

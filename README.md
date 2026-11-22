@@ -838,8 +838,9 @@ What works now:
       gauges (**Bullseye**, **Heavy ring**, **Tick dial**, **Segment gauge**, **Lock-on**,
       **Segmented shield**) — at a **Centre** and **Size**, in a **Colour**, with **Line width**,
       **Spin**, **Detail**, **Opacity** and **Flicker**; keyframe **Draw on** from 0 to 100 % to
-      draw it in. For the reticle styles, **Glow** adds a soft lit halo round the lines and
-      **Fill** faint scanlines inside
+      draw it in. **Glow** adds a soft lit halo round the lines of any element, reaching as far
+      as **Glow size** says, in the line colour or, with **Own glow colour** on, in its own
+      **Glow colour**; **Fill** adds faint scanlines inside the reticle styles
   - **Light sweep** (Light & stylize): a band of light sliding across the layer — **Lights**: **The
     shape** (a logo or title), **Its bright parts** or **Everything** — at an **Angle**,
     **Width** and **Softness**, starting at **Start at**, taking **Takes** seconds and coming again

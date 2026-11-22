@@ -1320,10 +1320,15 @@ pub mod hud {
     pub const OPACITY: usize = 9;
     pub const FLICKER: usize = 10;
     pub const SEED: usize = 11;
-    /// A soft glow round the reticle styles' lines (elements 5 on).
+    /// A soft glow round the lines.
     pub const GLOW: usize = 12;
     /// Faint scanlines inside the reticle styles.
     pub const FILL: usize = 13;
+    /// How far the glow reaches, as a share of the element's radius.
+    pub const GLOW_SIZE: usize = 14;
+    /// The glow's own colour (when Own glow colour is on; otherwise the line colour).
+    pub const GLOW_COLOR: usize = 15;
+    pub const OWN_GLOW_COLOR: usize = 16;
 }
 pub mod sweep {
     pub const ANGLE: usize = 0;
@@ -2762,7 +2767,7 @@ const PORTAL: [ParamSpec; 15] = [
     spec("Stretch", 100.0, 10.0, 400.0, " %", 0.5),
     spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
 ];
-const HUD: [ParamSpec; 14] = [
+const HUD: [ParamSpec; 17] = [
     choice(
         "Element",
         &[
@@ -2816,6 +2821,9 @@ const HUD: [ParamSpec; 14] = [
     spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
     spec("Glow", 0.0, 0.0, 200.0, " %", 0.5),
     spec("Fill", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Glow size", 12.0, 0.5, 200.0, " %", 0.2),
+    color("Glow colour", 0x5ce1ff),
+    ParamSpec { name: "Own glow colour", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
 ];
 const LIGHTSWEEP: [ParamSpec; 11] = [
     spec("Angle", 60.0, -360.0, 360.0, "°", 0.5),
@@ -3764,7 +3772,7 @@ impl EffectKind {
             EffectKind::Starfield => "Stars: a night sky that twinkles, stars drifting past in layers (nearer ones faster), or the jump to warp speed, stars streaking out from a point you place. Over the picture, on black, or on their own to put behind something.",
             EffectKind::Hologram => "Turns the layer into a projected hologram: one glowing colour, see-through, with scanlines rolling over it, edges that glow, flicker, and glitches that tear across it now and then.",
             EffectKind::Portal => "A ring of energy that opens in the air: sparks spinning round its rim in two colours, the air rippling round it, and inside a swirl of the picture, darkness, or a hole you can see another shot through (put it on the track below). Keyframe Open to open and close it. Drag its centre in the Viewer.",
-            EffectKind::Hud => "Sci-fi screen graphics drawn over the picture: a targeting reticle, a radar sweep, rings of ticks turning at different speeds, a readout of moving bars, corner brackets, or one of 30 reticle styles (scopes, compasses, squares, hexagons, arcs, X sights, wireframes with readouts, rings and gauges). Drag it in the Viewer, keyframe Draw on to bring it in. Turn up Glow for the lit look and Fill for scanlines inside.",
+            EffectKind::Hud => "Sci-fi screen graphics drawn over the picture: a targeting reticle, a radar sweep, rings of ticks turning at different speeds, a readout of moving bars, corner brackets, or one of 30 reticle styles (scopes, compasses, squares, hexagons, arcs, X sights, wireframes with readouts, rings and gauges). Drag it in the Viewer, keyframe Draw on to bring it in. Turn up Glow for the lit look (its Glow size and, with Own glow colour, its own Glow colour) and Fill for scanlines inside.",
             EffectKind::LightSweep => "A sheen of light passing over a title or logo, like light catching chrome or glass: its angle, width and softness, when it passes and how long it takes (or keyframe Position), and whether it lights only the shape, only its bright parts, or everything.",
             EffectKind::ElectricArcs => "Crackling electricity crawling over the edges of the layer’s shape — a keyed person, a title, a logo — and jumping off them: thin, branching, flickering arcs with a glow, in the colour you choose.",
             EffectKind::DepthMap => "How far away each part of the footage is, worked out by the depth model (Work out depth): shown as a picture (near is white), as fog that thickens with distance, or as a key that keeps what's near",
