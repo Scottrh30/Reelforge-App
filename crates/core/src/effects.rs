@@ -113,6 +113,10 @@ pub enum EffectKind {
     TiltShift,
     /// Lines across the picture as on a screen.
     Scanlines,
+    XRay,
+    Infrared,
+    ThermalCamera,
+    NightVision,
     MotionBlur,
     RadialBlur,
     DirectionalBlur,
@@ -1385,6 +1389,47 @@ pub mod portrait {
     pub const HIGHLIGHTS: usize = 4;
     pub const SHOW: usize = 5;
 }
+pub mod night_vision {
+    pub const GAIN: usize = 0;
+    pub const COLOR: usize = 1;
+    pub const NOISE: usize = 2;
+    pub const GLOW: usize = 3;
+    pub const GOGGLES: usize = 4;
+    pub const SOFTNESS: usize = 5;
+    pub const SCANLINES: usize = 6;
+    pub const FLICKER: usize = 7;
+    pub const SEED: usize = 8;
+}
+pub mod thermal {
+    pub const PALETTE: usize = 0;
+    pub const HEAT_FROM: usize = 1;
+    pub const COLDEST: usize = 2;
+    pub const HOTTEST: usize = 3;
+    pub const SMOOTH: usize = 4;
+    pub const NOISE: usize = 5;
+    pub const SCALE: usize = 6;
+    pub const SEED: usize = 7;
+}
+pub mod infrared {
+    pub const MODE: usize = 0;
+    pub const FOLIAGE: usize = 1;
+    pub const SKY: usize = 2;
+    pub const GLOW: usize = 3;
+    pub const CONTRAST: usize = 4;
+    pub const GRAIN: usize = 5;
+    pub const MIX: usize = 6;
+    pub const SEED: usize = 7;
+}
+pub mod xray {
+    pub const COLOR: usize = 0;
+    pub const INVERT: usize = 1;
+    pub const EDGES: usize = 2;
+    pub const CONTRAST: usize = 3;
+    pub const GLOW: usize = 4;
+    pub const NOISE: usize = 5;
+    pub const BRIGHTNESS: usize = 6;
+    pub const SEED: usize = 7;
+}
 pub mod ripple {
     pub const X: usize = 0;
     pub const Y: usize = 1;
@@ -2507,6 +2552,47 @@ const PORTRAIT: [ParamSpec; 6] = [
     spec("Bright spots", 30.0, 0.0, 200.0, " %", 0.5),
     ParamSpec { name: "Show what's in focus", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
 ];
+const NIGHTVISION: [ParamSpec; 9] = [
+    spec("Gain", 250.0, 0.0, 2000.0, " %", 1.0),
+    color("Colour", 0x7dff6a),
+    spec("Noise", 35.0, 0.0, 100.0, " %", 0.5),
+    spec("Glow", 50.0, 0.0, 300.0, " %", 0.5),
+    choice("Goggles", &["None", "One eyepiece", "Binoculars"]),
+    spec("Edge softness", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Scan lines", 0.0, 0.0, 100.0, " %", 0.5),
+    spec("Flicker", 10.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const THERMALCAMERA: [ParamSpec; 8] = [
+    choice("Palette", &["Iron", "Rainbow", "White hot", "Black hot", "Lava"]),
+    choice("Heat from", &["Both", "Brightness", "Warm colours (skin, fire)"]),
+    spec("Coldest at", 5.0, 0.0, 100.0, " %", 0.5),
+    spec("Hottest at", 95.0, 0.0, 100.0, " %", 0.5),
+    spec("Smoothing", 3.0, 0.0, 40.0, " px", 0.1),
+    spec("Noise", 8.0, 0.0, 100.0, " %", 0.5),
+    ParamSpec { name: "Scale bar", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const INFRARED: [ParamSpec; 8] = [
+    choice("Look", &["Black and white infrared", "Colour infrared (false colour)", "Golden (warm foliage)"]),
+    spec("Foliage brightness", 100.0, 0.0, 300.0, " %", 0.5),
+    spec("Sky darkness", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Glow", 40.0, 0.0, 200.0, " %", 0.5),
+    spec("Contrast", 110.0, 0.0, 300.0, " %", 0.5),
+    spec("Grain", 15.0, 0.0, 100.0, " %", 0.5),
+    spec("Mix", 100.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const XRAY: [ParamSpec; 8] = [
+    color("Colour", 0xbfe4ff),
+    ParamSpec { name: "Invert", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Edges", 60.0, 0.0, 300.0, " %", 0.5),
+    spec("Contrast", 130.0, 0.0, 400.0, " %", 0.5),
+    spec("Glow", 50.0, 0.0, 300.0, " %", 0.5),
+    spec("Noise", 10.0, 0.0, 100.0, " %", 0.5),
+    spec("Brightness", 100.0, 0.0, 300.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
 const RIPPLE: [ParamSpec; 9] = [
     spec("Centre X", 50.0, -100.0, 200.0, " %", 0.2),
     spec("Centre Y", 50.0, -100.0, 200.0, " %", 0.2),
@@ -2716,7 +2802,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 82] = [
+    pub const ALL: [EffectKind; 86] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -2782,6 +2868,10 @@ impl EffectKind {
         EffectKind::PrismBlur,
         EffectKind::TiltShift,
         EffectKind::Scanlines,
+        EffectKind::XRay,
+        EffectKind::Infrared,
+        EffectKind::ThermalCamera,
+        EffectKind::NightVision,
         EffectKind::MotionBlur,
         EffectKind::RadialBlur,
         EffectKind::DirectionalBlur,
@@ -2894,6 +2984,10 @@ impl EffectKind {
             EffectKind::DirectionalBlur => "Directional blur",
             EffectKind::RadialBlur => "Radial blur",
             EffectKind::MotionBlur => "Motion blur",
+            EffectKind::NightVision => "Night vision",
+            EffectKind::ThermalCamera => "Thermal camera",
+            EffectKind::Infrared => "Infrared",
+            EffectKind::XRay => "X-ray",
             EffectKind::Scanlines => "Scanlines",
 
             EffectKind::Lightning => "Lightning",
@@ -2947,6 +3041,10 @@ impl EffectKind {
             EffectKind::DirectionalBlur => EffectCategory::BlurSharpen,
             EffectKind::RadialBlur => EffectCategory::BlurSharpen,
             EffectKind::MotionBlur => EffectCategory::BlurSharpen,
+            EffectKind::NightVision => EffectCategory::Stylize,
+            EffectKind::ThermalCamera => EffectCategory::Stylize,
+            EffectKind::Infrared => EffectCategory::Stylize,
+            EffectKind::XRay => EffectCategory::Stylize,
             EffectKind::Plugin => EffectCategory::Plugins,
             EffectKind::OpenFx => EffectCategory::OpenFx,
         }
@@ -3001,6 +3099,10 @@ impl EffectKind {
             EffectKind::DirectionalBlur => "A blur one way only, as if the picture moved in a straight line: at an angle, so long, evenly, smoothly or as a trail behind",
             EffectKind::RadialBlur => "A blur round a point (Spin, as if turning) or out from it (Zoom, as if rushing towards it)",
             EffectKind::MotionBlur => "Blur from the layer's own movement (its position, scale and rotation keyframes, and its parent's), as a camera's shutter would: longer with a wider Shutter angle",
+            EffectKind::NightVision => "The look through night-vision goggles: the dark lifted and tinted green, glowing highlights, crawling noise, and the round eyepiece if you like",
+            EffectKind::ThermalCamera => "A heat camera: the picture as heat, from its brightness or its warm colours, in a thermal palette (iron, rainbow, white hot, black hot, lava), with a scale bar if you like",
+            EffectKind::Infrared => "Infrared photography: leaves and grass turn white (or pink and red in colour infrared), skies go dark, with the soft glow infrared film has",
+            EffectKind::XRay => "An X-ray film look: the picture inverted and tinted cold, edges and dense parts glowing, with soft bloom and film noise",
             EffectKind::Scanlines => "Lines across the picture as on a screen: their spacing, thickness, softness and angle, rolling if wanted, darkening or as red, green and blue stripes.",
             EffectKind::AudioSpectrum => "An audio visualiser: the sound as bars, a line, dots or a waveform, drawn along a line across the layer (its start and end), rising with the sound. The sound is the clip's own (or its linked audio), or whatever plays on an audio track — put it on a solid or an adjustment layer over a music track. Bands are spaced by pitch between the lowest and highest notes shown.",
             EffectKind::FractalNoise => "Clouds, smoke, liquid, marble or turbulent patterns that drift and evolve: in your colours over the layer, or as its transparency (a smoky reveal, a texture for other effects).",
@@ -3122,6 +3224,10 @@ impl EffectKind {
             EffectKind::DirectionalBlur => &DIRECTIONALBLUR,
             EffectKind::RadialBlur => &RADIALBLUR,
             EffectKind::MotionBlur => &MOTIONBLUR,
+            EffectKind::NightVision => &NIGHTVISION,
+            EffectKind::ThermalCamera => &THERMALCAMERA,
+            EffectKind::Infrared => &INFRARED,
+            EffectKind::XRay => &XRAY,
             EffectKind::Scanlines => &SCANLINES,
             EffectKind::Lightning => &LIGHTNING,
             EffectKind::PatchReplacer => &PATCH,
@@ -3312,6 +3418,10 @@ impl EffectValues {
             EffectKind::DirectionalBlur => v[dir_blur::LENGTH] < 0.5,
             EffectKind::RadialBlur => v[radial_blur::AMOUNT] == 0.0,
             EffectKind::MotionBlur => v[motion_blur::SHUTTER] == 0.0,
+            EffectKind::NightVision => false,
+            EffectKind::ThermalCamera => false,
+            EffectKind::Infrared => v[infrared::MIX] == 0.0,
+            EffectKind::XRay => false,
             EffectKind::Scanlines => v[scan::AMOUNT] == 0.0,
 
             EffectKind::Lightning => v[lightning::OPACITY] == 0.0 || self.table.is_none(),
@@ -3376,6 +3486,10 @@ impl EffectValues {
             || (self.kind == EffectKind::Hud && (true))
             || (self.kind == EffectKind::LightSweep && (v[sweep::POSITION] < 0.0))
             || (self.kind == EffectKind::ElectricArcs && (true))
+            || (self.kind == EffectKind::NightVision && (v[night_vision::NOISE] > 0.0 || v[night_vision::FLICKER] > 0.0))
+            || (self.kind == EffectKind::ThermalCamera && (v[thermal::NOISE] > 0.0))
+            || (self.kind == EffectKind::Infrared && (v[infrared::GRAIN] > 0.0))
+            || (self.kind == EffectKind::XRay && (v[xray::NOISE] > 0.0))
             || (self.kind == EffectKind::Ripple && v[ripple::SPEED] != 0.0)
             || (self.kind == EffectKind::WaveWarp && v[wave::SPEED] != 0.0)
             || (self.kind == EffectKind::NeonPath && (v[neonpath::FLICKER] > 0.0 || v[neonpath::DASH_SPEED] != 0.0 || v[neonpath::SWITCH_ON] > 0.0))

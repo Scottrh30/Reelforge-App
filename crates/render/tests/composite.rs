@@ -2759,6 +2759,63 @@ fn face_beauty_smooths_the_face_and_nothing_else() {
     assert_eq!(px(&px_out, w, 40, 50), px(&px_out, w, 41, 50));
 }
 
+/// Vision looks: night vision tints green and lifts the dark, goggles black out
+/// the corners; thermal maps heat to its palette; infrared turns leaves bright
+/// (red in false colour); X-ray inverts and tints cold.
+#[test]
+fn vision_looks_read_the_picture_as_they_should() {
+    use reelforge_core::effects::{infrared as ir, night_vision as nv, thermal as th, xray as xr};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    // Left to right: dark grey, leaf green, sky blue, skin, red cloth, white.
+    let patches: [[u8; 3]; 6] = [[30, 30, 30], [40, 130, 40], [110, 160, 235], [225, 175, 140], [200, 40, 40], [255, 255, 255]];
+    let img: Vec<u8> = (0..w * h).flat_map(|i| {
+        let p = patches[((i % w) * 6 / w) as usize];
+        [p[0], p[1], p[2], 255]
+    }).collect();
+    let mut n = 8600;
+    let mut draw = |c: &mut Compositor, kind: EffectKind, set: &[(usize, f32)]| {
+        n += 1;
+        let mut l = layer(1, &img, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = n;
+        c.render([w, h], &[with_fx(l, vec![fx(kind, set)])]);
+        c.read_output().unwrap()
+    };
+    let at = |img: &[u8], k: u32| px(img, w, k * w / 6 + w / 12, 45);
+    let lum = |p: [u8; 4]| p[0] as i32 + p[1] as i32 + p[2] as i32;
+    // Night vision: green, and the dark grey lifted well above where it was.
+    let nvi = draw(&mut c, EffectKind::NightVision, &[(nv::NOISE, 0.0), (nv::FLICKER, 0.0)]);
+    let g = at(&nvi, 3);
+    assert!(g[1] as i32 > g[0] as i32 + 30 && g[1] as i32 > g[2] as i32 + 30, "green: {g:?}");
+    assert!(at(&nvi, 0)[1] > 2 * at(&img, 0)[1] + 20, "the dark lifted: {:?}", at(&nvi, 0));
+    let goggles = draw(&mut c, EffectKind::NightVision, &[(nv::NOISE, 0.0), (nv::GOGGLES, 1.0)]);
+    assert!(lum(px(&goggles, w, 2, 2)) < 6 && lum(px(&goggles, w, 80, 45)) > 60, "the eyepiece");
+    // Thermal, white hot by brightness: dark is dark, white is white, in order.
+    let wh = draw(&mut c, EffectKind::ThermalCamera, &[(th::PALETTE, 2.0), (th::HEAT_FROM, 1.0), (th::NOISE, 0.0), (th::SMOOTH, 0.0)]);
+    assert!(lum(at(&wh, 0)) < 60 && lum(at(&wh, 5)) > 700, "{:?} {:?}", at(&wh, 0), at(&wh, 5));
+    // By warmth: skin and red cloth hotter than leaves and sky.
+    let warm = draw(&mut c, EffectKind::ThermalCamera, &[(th::PALETTE, 2.0), (th::HEAT_FROM, 2.0), (th::NOISE, 0.0), (th::SMOOTH, 0.0)]);
+    for hot in [3, 4] {
+        for cold in [1, 2] {
+            assert!(lum(at(&warm, hot)) > lum(at(&warm, cold)) + 100, "{hot} hotter than {cold}");
+        }
+    }
+    // The scale bar's white frame down the right.
+    let bar = draw(&mut c, EffectKind::ThermalCamera, &[(th::SCALE, 1.0), (th::NOISE, 0.0)]);
+    assert!((140..158).any(|x| lum(px(&bar, w, x, 13)) > 740), "the scale bar's frame");
+    // Infrared: leaves bright, sky dark; in false colour, leaves red.
+    let bw = draw(&mut c, EffectKind::Infrared, &[(ir::GRAIN, 0.0)]);
+    assert!(lum(at(&bw, 1)) > lum(at(&bw, 2)) + 150, "leaves {:?} over sky {:?}", at(&bw, 1), at(&bw, 2));
+    let cir = draw(&mut c, EffectKind::Infrared, &[(ir::GRAIN, 0.0), (ir::MODE, 1.0)]);
+    let leaf = at(&cir, 1);
+    assert!(leaf[0] as i32 > leaf[1] as i32 + 60, "leaves red: {leaf:?}");
+    // X-ray: white comes out darker than dark grey; cold tint.
+    let x = draw(&mut c, EffectKind::XRay, &[(xr::NOISE, 0.0), (xr::GLOW, 0.0), (xr::EDGES, 0.0)]);
+    assert!(lum(at(&x, 0)) > lum(at(&x, 5)) + 150, "inverted");
+    let d = at(&x, 0);
+    assert!(d[2] > d[0], "cold: {d:?}");
+}
+
 /// The blur pack: directional, radial (spin and zoom), motion blur from given
 /// maps, and portrait blur by depth.
 #[test]

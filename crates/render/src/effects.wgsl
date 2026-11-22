@@ -3240,3 +3240,225 @@ fn fs_motion_blur(in: VsOut) -> @location(0) vec4<f32> {
     }
     return acc / max(count, 1.0);
 }
+
+// --- Vision looks (night vision, thermal, infrared, X-ray) ---
+
+// The picture's brightness as the eye sees it (0–1), from premultiplied colour.
+fn vl_bright(c: vec4<f32>) -> f32 {
+    return pow(max(dot(unpremul(c), LUMA), 0.0), 1.0 / 2.2);
+}
+
+// The picture round uv, averaged over a ring `r` layer pixels out (a cheap glow).
+fn vl_ring(uv: vec2<f32>, r: f32) -> vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    var acc = vec4(0.0);
+    for (var k = 0; k < 12; k++) {
+        let a = f32(k) * 0.5235988;
+        let q = clamp(uv + vec2(cos(a), sin(a)) * r / size, vec2(0.0), vec2(1.0));
+        acc += textureSampleLevel(src, src_sampler, to_tex(q), 0.0);
+    }
+    return acc / 12.0;
+}
+
+// Grain that changes every frame (−0.5–0.5), in cells `cell` layer pixels across.
+fn vl_grain(uv: vec2<f32>, cell: f32, seed: u32) -> f32 {
+    let p = uv * max(fx.extra.zw, vec2(1.0)) / max(cell, 0.5);
+    let frame = u32(max(fx.extra.y, 0.0) * 30.0);
+    return rnd3(ibits(p.x), ibits(p.y), seed ^ (frame * 9781u)) - 0.5;
+}
+
+// How much of the picture a goggle mask leaves (1 inside): 0 none, 1 one round
+// eyepiece, 2 binoculars; `soft` 0–1.
+fn vl_goggles(uv: vec2<f32>, kind: u32, soft: f32) -> f32 {
+    if (kind == 0u) {
+        return 1.0;
+    }
+    let aspect = fx.extra.x;
+    let p = (uv - 0.5) * vec2(aspect, 1.0);
+    var d: f32;
+    if (kind == 1u) {
+        d = length(p) / 0.48;
+    } else {
+        let x = abs(p.x) - min(0.36, aspect * 0.25);
+        d = length(vec2(x, p.y)) / 0.46;
+    }
+    let s = max(soft, 0.01) * 0.3;
+    return 1.0 - smoothstep(1.0 - s, 1.0, d);
+}
+
+@fragment
+fn fs_night_vision(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    if (c.a <= 0.0) {
+        return vec4(0.0);
+    }
+    let seed = u32(max(fx.p2.x, 0.0)) * 7919u + 11u;
+    let gain = max(fx.p0.x / 100.0, 0.0);
+    // Amplified light (lifting the dark most), with highlights blooming.
+    var b = 1.0 - exp(-vl_bright(c) * gain * 1.3);
+    let glow = vl_bright(vl_ring(in.uv, 6.0));
+    b += max(glow * gain * 0.25 - 0.4, 0.0) * fx.p0.w / 100.0;
+    // Noise: fine grain, stronger in the dark (as the tube's).
+    b += vl_grain(in.uv, 1.5, seed) * fx.p0.z / 100.0 * (0.6 - 0.4 * b);
+    // Scan lines and a slow flicker.
+    let y = in.uv.y * fx.extra.w;
+    b *= 1.0 - fx.p1.z / 100.0 * 0.5 * (0.5 + 0.5 * cos(y * 3.14159));
+    let t = fx.extra.y;
+    b *= 1.0 - fx.p1.w / 100.0 * 0.15 * (0.5 + 0.5 * sin(t * 37.0) * sin(t * 13.3 + 1.0));
+    b = clamp(b, 0.0, 1.5);
+    let tint = rgb_of(fx.p0.y);
+    var col = to_linear(vec3(b)) * tint + vec3(max(b - 1.0, 0.0));
+    let mask = vl_goggles(in.uv, u32(round(fx.p1.x)), fx.p1.y / 100.0);
+    return vec4(col * mask * c.a, c.a);
+}
+
+// A thermal palette at heat h (0–1), as display colour (sRGB).
+fn th_palette(kind: u32, h: f32) -> vec3<f32> {
+    let x = clamp(h, 0.0, 1.0);
+    if (kind == 2u) {
+        return vec3(x);
+    }
+    if (kind == 3u) {
+        return vec3(1.0 - x);
+    }
+    if (kind == 1u) {
+        // Rainbow: dark blue, blue, cyan, green, yellow, red, white.
+        let k = array<vec3<f32>, 7>(vec3(0.0, 0.0, 0.25), vec3(0.0, 0.2, 1.0), vec3(0.0, 0.9, 1.0), vec3(0.1, 1.0, 0.2), vec3(1.0, 1.0, 0.0), vec3(1.0, 0.1, 0.0), vec3(1.0, 1.0, 1.0));
+        let f = x * 6.0;
+        let i = u32(min(floor(f), 5.0));
+        return mix(k[i], k[i + 1u], f - f32(i));
+    }
+    if (kind == 4u) {
+        // Lava: black, deep red, orange, yellow.
+        let k = array<vec3<f32>, 4>(vec3(0.0, 0.0, 0.0), vec3(0.6, 0.0, 0.05), vec3(1.0, 0.45, 0.0), vec3(1.0, 1.0, 0.6));
+        let f = x * 3.0;
+        let i = u32(min(floor(f), 2.0));
+        return mix(k[i], k[i + 1u], f - f32(i));
+    }
+    // Iron: black, indigo, purple, red, orange, yellow, white.
+    let k = array<vec3<f32>, 7>(vec3(0.0, 0.0, 0.0), vec3(0.15, 0.0, 0.45), vec3(0.55, 0.0, 0.6), vec3(0.9, 0.15, 0.25), vec3(1.0, 0.5, 0.0), vec3(1.0, 0.85, 0.1), vec3(1.0, 1.0, 0.9));
+    let f = x * 6.0;
+    let i = u32(min(floor(f), 5.0));
+    return mix(k[i], k[i + 1u], f - f32(i));
+}
+
+// Heat at uv: both (0), brightness (1), or warmth (2: reds and skin over blues).
+fn th_heat(c: vec4<f32>, hsrc: u32) -> f32 {
+    let rgb = pow(unpremul(c), vec3(1.0 / 2.2));
+    let bright = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+    // Reds and skin (red over green over blue) warm; greens and blues cold.
+    let warm = clamp((rgb.r - max(rgb.g, rgb.b)) * 1.6 + (rgb.r - rgb.b) * 0.5 + 0.15, 0.0, 1.0) * (0.4 + 0.6 * max(rgb.r, max(rgb.g, rgb.b)));
+    if (hsrc == 1u) {
+        return bright;
+    }
+    if (hsrc == 2u) {
+        return warm;
+    }
+    return 0.3 * bright + 0.7 * warm;
+}
+
+@fragment
+fn fs_thermal(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    if (c.a <= 0.0) {
+        return vec4(0.0);
+    }
+    let hsrc = u32(round(fx.p0.y));
+    let kind = u32(round(fx.p0.x));
+    // Heat spreads: the picture's heat smoothed a little (the camera's blur).
+    var h = th_heat(c, hsrc);
+    let r = max(fx.p1.x, 0.0);
+    if (r > 0.25) {
+        h = 0.4 * h + 0.6 * th_heat(vl_ring(in.uv, r), hsrc);
+    }
+    let lo = fx.p0.z / 100.0;
+    let hi = fx.p0.w / 100.0;
+    h = clamp((h - lo) / max(hi - lo, 0.001), 0.0, 1.0);
+    h = clamp(h + vl_grain(in.uv, 2.0, u32(max(fx.p1.w, 0.0)) * 104729u + 7u) * fx.p1.y / 100.0 * 0.15, 0.0, 1.0);
+    var col = th_palette(kind, h);
+    // The scale bar: down the right-hand edge, hottest at the top.
+    if (fx.p1.z > 0.5) {
+        let size = max(fx.extra.zw, vec2(1.0));
+        let p = in.uv * size;
+        let bx = size.x - size.y * 0.06;
+        let top = size.y * 0.15;
+        let bottom = size.y * 0.85;
+        let w = size.y * 0.025;
+        if (p.x > bx && p.x < bx + w && p.y > top && p.y < bottom) {
+            col = th_palette(kind, 1.0 - (p.y - top) / (bottom - top));
+        } else if (p.x > bx - 2.0 && p.x < bx + w + 2.0 && p.y > top - 2.0 && p.y < bottom + 2.0) {
+            col = vec3(1.0);
+        }
+    }
+    return vec4(to_linear(col) * c.a, c.a);
+}
+
+// The near-infrared a scene might give off, guessed from its colour: green
+// leaves bright, blue sky and water dark, other things by their brightness.
+fn ir_guess(rgb: vec3<f32>, foliage: f32, sky: f32) -> f32 {
+    let green = clamp((rgb.g - max(rgb.r, rgb.b) * 0.8) * 3.0, 0.0, 1.0);
+    let blue = clamp((rgb.b - max(rgb.r, rgb.g)) * 3.0, 0.0, 1.0);
+    let base = dot(rgb, vec3(0.45, 0.4, 0.15));
+    return clamp(base + green * foliage * 0.8 - blue * sky * 0.7, 0.0, 1.5);
+}
+
+@fragment
+fn fs_infrared(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    if (c.a <= 0.0) {
+        return vec4(0.0);
+    }
+    let rgb = pow(unpremul(c), vec3(1.0 / 2.2));
+    let foliage = fx.p0.y / 100.0;
+    let sky = fx.p0.z / 100.0;
+    var ir = ir_guess(rgb, foliage, sky);
+    // Halation: infrared light spreading in the film.
+    let around = pow(unpremul(vl_ring(in.uv, 8.0)), vec3(1.0 / 2.2));
+    ir += max(ir_guess(around, foliage, sky) - 0.6, 0.0) * fx.p0.w / 100.0;
+    ir = clamp((ir - 0.5) * fx.p1.x / 100.0 + 0.5, 0.0, 1.0);
+    ir = clamp(ir + vl_grain(in.uv, 1.2, u32(max(fx.p1.w, 0.0)) * 15485863u + 3u) * fx.p1.y / 100.0 * 0.25, 0.0, 1.0);
+    var out: vec3<f32>;
+    let mode = u32(round(fx.p0.x));
+    if (mode == 1u) {
+        // False colour: infrared shown as red, red as green, green as blue.
+        out = vec3(ir, rgb.r, rgb.g);
+    } else if (mode == 2u) {
+        // Golden: foliage warm gold, the rest in its own colours, darker skies.
+        let green = clamp((rgb.g - max(rgb.r, rgb.b) * 0.8) * 3.0, 0.0, 1.0) * min(foliage, 1.5);
+        out = mix(rgb * vec3(1.0, 1.0, 1.0 - sky * 0.3), vec3(1.0, 0.78, 0.35) * (0.4 + ir * 0.7), clamp(green, 0.0, 1.0));
+    } else {
+        out = vec3(ir);
+    }
+    let mixed = mix(rgb, clamp(out, vec3(0.0), vec3(1.0)), fx.p1.z / 100.0);
+    return vec4(to_linear(mixed) * c.a, c.a);
+}
+
+@fragment
+fn fs_xray(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    if (c.a <= 0.0) {
+        return vec4(0.0);
+    }
+    let size = max(fx.extra.zw, vec2(1.0));
+    let e = 1.5 / size;
+    // Brightness here and round about (for the edges, a Sobel).
+    let b = vl_bright(c);
+    let s = array<vec2<f32>, 8>(vec2(-1.0, -1.0), vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(-1.0, 1.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+    var v: array<f32, 8>;
+    for (var k = 0; k < 8; k++) {
+        v[k] = vl_bright(textureSampleLevel(src, src_sampler, to_tex(clamp(in.uv + s[k] * e, vec2(0.0), vec2(1.0))), 0.0));
+    }
+    let gx = (v[2] + 2.0 * v[4] + v[7]) - (v[0] + 2.0 * v[3] + v[5]);
+    let gy = (v[5] + 2.0 * v[6] + v[7]) - (v[0] + 2.0 * v[1] + v[2]);
+    let edge = clamp(length(vec2(gx, gy)) * 0.5, 0.0, 1.0);
+    var x = select(b, 1.0 - b, fx.p0.y > 0.5);
+    x = clamp((x - 0.5) * fx.p0.w / 100.0 + 0.5, 0.0, 1.0);
+    x += edge * fx.p0.z / 100.0 * 0.8;
+    // Bloom from the bright parts round it.
+    let around = vl_bright(vl_ring(in.uv, 7.0));
+    x += max(select(around, 1.0 - around, fx.p0.y > 0.5) - 0.55, 0.0) * fx.p1.x / 100.0;
+    x += vl_grain(in.uv, 1.3, u32(max(fx.p1.w, 0.0)) * 3571u + 5u) * fx.p1.y / 100.0 * 0.2;
+    x = clamp(x * fx.p1.z / 100.0, 0.0, 1.5);
+    let col = rgb_of(fx.p0.x) * to_linear(vec3(min(x, 1.0))) + vec3(max(x - 1.0, 0.0));
+    return vec4(col * c.a, c.a);
+}

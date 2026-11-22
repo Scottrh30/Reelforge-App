@@ -648,6 +648,24 @@ What works now:
     **Spacing**, **Thickness**, **Softness**, **Angle**, **Roll** (px a second, so they crawl),
     and **Kind**: *Dark lines* or *Red, green and blue stripes* (a screen's phosphors up
     close), with **Brighten** to make up for the dark
+  - **Vision looks** (Light & stylize):
+    - **Night vision**: the view through night-vision goggles — the dark lifted by **Gain** and
+      tinted (**Colour**, phosphor green), highlights glowing (**Glow**), crawling **Noise**
+      (stronger in the dark), **Scan lines**, a slight **Flicker**, and **Goggles**: none, **One
+      eyepiece** or **Binoculars**, with **Edge softness**
+    - **Thermal camera**: the picture as heat in a thermal **Palette** (**Iron**, **Rainbow**,
+      **White hot**, **Black hot**, **Lava**). **Heat from**: **Both** (the default), the
+      picture's **Brightness**, or **Warm colours** (skin, reds and fire hot; leaves, sky and
+      water cold); **Coldest at** and **Hottest at** set the range, **Smoothing** spreads heat
+      a little as a heat camera's soft picture does, **Noise**, and a **Scale bar** down the
+      right
+    - **Infrared**: infrared photography — **Black and white infrared** (leaves and grass
+      white, skies dark), **Colour infrared** (false colour: leaves pink and red, skies deep
+      blue) or **Golden** (leaves turned warm gold); **Foliage brightness**, **Sky darkness**,
+      the **Glow** infrared film has, **Contrast**, **Grain**, **Mix**. The infrared is guessed
+      from each colour (green leaves bright, blue sky dark), so it works on any footage
+    - **X-ray**: the picture inverted (**Invert**) and tinted cold (**Colour**), with glowing
+      **Edges**, **Contrast**, a soft **Glow**, film **Noise** and **Brightness**
   - **Glitch** (Distort): slices and blocks jump sideways, colours split and scan lines
     flicker. **Amount** is how much of the picture glitches, **Speed** how often the pattern
     changes; keyframe Amount for bursts
