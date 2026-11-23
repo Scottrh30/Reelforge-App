@@ -3,3 +3,4 @@ target/
 node_modules/
 crates/tauri-app/ui/dist/
 crates/tauri-app/gen/
+/--list/
