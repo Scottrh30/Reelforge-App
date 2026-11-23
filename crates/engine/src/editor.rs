@@ -5006,7 +5006,7 @@ mod tests {
             assert!(!fx.params[pr::SOURCE_X].keys.is_animated());
         }
         // Lights follow the shot: each light effect's position moves 10% with the prop.
-        for kind in [EffectKind::LensFlare, EffectKind::LightRays, EffectKind::AnamorphicFlare, EffectKind::LensDirt] {
+        for kind in [EffectKind::LensFlare, EffectKind::LightRays, EffectKind::AnamorphicFlare, EffectKind::LensDirt, EffectKind::Hud] {
             let (px, py, _) = kind.tracked_point().unwrap();
             let mut v = e.visual(id).unwrap();
             v.effects.push(Effect::new(kind));

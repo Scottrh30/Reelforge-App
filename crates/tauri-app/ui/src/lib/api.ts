@@ -655,6 +655,8 @@ export interface EffectView {
   fill_preview: boolean;
   /// Paint: how many strokes.
   strokes: number;
+  /** A HUD element's readout text. */
+  text: string | null;
   /// Face beauty: the faces found (null: not looked for yet).
   faces: { on: boolean; frames: number; at: number; rect: [number, number, number, number] }[] | null;
   /// Sky replacement: the new sky's picture, and frames the sky was found in (null: not yet).
@@ -1187,6 +1189,7 @@ export const api = {
   trackCancel: () => invoke("track_cancel"),
   paintStroke: (id: number, index: number, points: Pt[], source: Pt | null) => invoke("paint_stroke", { id, index, points, source }),
   paintClear: (id: number, index: number) => invoke("paint_clear", { id, index }),
+  setHudText: (id: number, index: number, text: string) => invoke("set_hud_text", { id, index, text }),
   objectRemoval: (id: number, index: number, preview = false) => invoke("object_removal", { id, index, preview }),
   findFaces: (id: number, index: number) => invoke("find_faces", { id, index }),
   faceOn: (id: number, index: number, face: number, on: boolean) => invoke("face_on", { id, index, face, on }),

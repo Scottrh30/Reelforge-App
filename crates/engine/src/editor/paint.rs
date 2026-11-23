@@ -114,11 +114,59 @@ impl Editor {
         self.commit_live_edit();
         self.status = "Strokes cleared".into();
     }
+
+    /// A HUD element's readout text (live values in braces; empty for none): one undo step.
+    pub fn set_hud_text(&mut self, id: ClipId, index: usize, text: &str) {
+        self.commit_live_edit();
+        let Some(mut v) = self.visual(id) else { return };
+        let Some(fx) = v.effects.get_mut(index).filter(|f| f.kind == EffectKind::Hud) else { return };
+        // A readout, not a novel.
+        let text: String = text.chars().take(2000).collect();
+        let new = (!text.trim().is_empty()).then_some(EffectData::Text(text));
+        if fx.data == new {
+            return;
+        }
+        let had = fx.data.is_some();
+        fx.data = new;
+        let has = fx.data.is_some();
+        self.set_visual_live(id, v);
+        self.commit_live_edit();
+        self.status = match (had, has) {
+            (_, true) => "HUD readout set".into(),
+            (true, false) => "HUD readout taken off".into(),
+            _ => String::new(),
+        };
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hud_readout_text_is_set_and_taken_off() {
+        let mut e = Editor::new(None, None);
+        let id = ClipId(e.project.alloc_id());
+        let mut c = Clip::new_plane(id, Time::ZERO, Time::from_secs_f64(2.0), [10, 20, 30, 255]);
+        c.effects.push(Effect::new(EffectKind::Hud));
+        c.effects.push(Effect::new(EffectKind::Glow));
+        e.project.sequences[e.active].tracks[0].clips.push(c);
+        e.touch();
+        let data = |e: &Editor| e.seq().find_clip(id).unwrap().1.effects[0].data.clone();
+        e.set_hud_text(id, 0, "TARGET {x}");
+        assert_eq!(data(&e), Some(EffectData::Text("TARGET {x}".into())));
+        assert_eq!(e.status, "HUD readout set");
+        // The values, with the text, reach the GPU as a picture of it.
+        let v = e.seq().find_clip(id).unwrap().1.effects[0].eval_sized(Time::ZERO, None, [1920.0, 1080.0]);
+        assert!(v.table.is_some() && v.gpu[0] > 0.0);
+        // Only a HUD takes text; blank takes it off; undo brings it back.
+        e.set_hud_text(id, 1, "no");
+        assert_eq!(e.seq().find_clip(id).unwrap().1.effects[1].data, None);
+        e.set_hud_text(id, 0, "  ");
+        assert_eq!(data(&e), None);
+        e.undo();
+        assert_eq!(data(&e), Some(EffectData::Text("TARGET {x}".into())));
+    }
 
     #[test]
     fn liquify_strokes_take_the_brush_and_clear() {

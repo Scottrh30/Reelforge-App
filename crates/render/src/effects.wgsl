@@ -22,6 +22,8 @@ struct Fx {
     // Where the layer sits in the target (the target can be bigger, so glows
     // and shadows have room): layer uv = target uv × xy + zw.
     map: vec4<f32>,
+    // Params 20–23 (the few effects with that many).
+    p5: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> fx: Fx;
@@ -3437,6 +3439,25 @@ fn hg(c: f32) -> f32 {
     return c;
 }
 
+// HUD lock-on at clip time `t` (p4.y on, p4.z when, p4.w how long): x = how visible
+// (hidden before it starts, fading in, blinking once locked), y = how far it has closed
+// in (eased, 0–1; 1 without a lock-on), z = 1 once locked (the Locked colour).
+fn hud_lock(t: f32) -> vec3<f32> {
+    if (fx.p4.y < 0.5) {
+        return vec3(1.0, 1.0, 0.0);
+    }
+    let k = clamp((t - fx.p4.z) / max(fx.p4.w, 0.01), 0.0, 1.0);
+    let eased = 1.0 - pow(1.0 - k, 3.0);
+    var vis = select(0.0, smoothstep(0.0, 0.12, k) * 0.5 + 0.5 * eased, t >= fx.p4.z);
+    let after = t - (fx.p4.z + max(fx.p4.w, 0.01));
+    if (after >= 0.0 && after < 0.6) {
+        vis = step(fract(after * 5.0), 0.55);
+    } else if (after >= 0.6) {
+        vis = 1.0;
+    }
+    return vec3(vis, eased, step(0.0, after));
+}
+
 // HUD: p0 = (element, centre x %, y %, size % of height), p1 = (colour, line px, spin turns/s,
 // detail %), p2 = (draw on %, opacity %, flicker %, seed), p3 = (glow %, fill %, glow size %
 // of the radius, glow colour), p4.x = use the glow colour.
@@ -3446,7 +3467,9 @@ fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
     let t = fx.extra.y;
     let p = in.uv * size;
     let c = fx.p0.yz / 100.0 * size;
-    let r = max(fx.p0.w / 100.0 * size.y * 0.5, 2.0);
+    let lk = hud_lock(t);
+    // Closing in: from big and turned, shrinking and turning onto the target.
+    let r = max(fx.p0.w / 100.0 * size.y * 0.5, 2.0) * mix(2.6, 1.0, lk.y);
     let d = p - c;
     let dist = length(d);
     // Angle 0..1 clockwise from the top.
@@ -3454,7 +3477,7 @@ fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
     let w = max(fx.p1.y, 0.3);
     let on = clamp(fx.p2.x / 100.0, 0.0, 1.0);
     let detail = fx.p1.w / 100.0;
-    let spin = t * fx.p1.z;
+    let spin = t * fx.p1.z + (1.0 - lk.y) * 0.4;
     let seed = u32(max(fx.p2.w, 0.0)) * 197u + 5u;
     var ink = 0.0;
     var fill = 0.0;
@@ -3560,12 +3583,12 @@ fn fs_hud(in: VsOut) -> @location(0) vec4<f32> {
     ink = max(ink, HK.x);
     let f = fx.p2.z / 100.0;
     let flick = 1.0 - f * step(0.75, rnd3(seed + 3u, bitcast<u32>(i32(floor(t * 20.0))), 9u));
-    let k = fx.p2.y / 100.0 * flick;
+    let k = fx.p2.y / 100.0 * flick * lk.x;
     let a = clamp(ink, 0.0, 1.0) * k;
     let glow = clamp(HK.y * clamp(fx.p3.x / 100.0, 0.0, 2.0) * 0.7, 0.0, 1.0) * k * (1.0 - a);
     let haze = clamp(fill, 0.0, 1.0) * k * (1.0 - a);
-    let col = rgb_of(fx.p1.x);
-    let gcol = select(col, rgb_of(fx.p3.w), fx.p4.x > 0.5);
+    let col = select(rgb_of(fx.p1.x), rgb_of(fx.p5.x), lk.z > 0.5);
+    let gcol = select(col, rgb_of(fx.p3.w), fx.p4.x > 0.5 && lk.z < 0.5);
     let base = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
     return vec4(base.rgb * (1.0 - a) + col * (a + haze) + gcol * glow, max(base.a, clamp(a + glow + haze, 0.0, 1.0)));
 }

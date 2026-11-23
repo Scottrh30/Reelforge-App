@@ -340,6 +340,19 @@
           </div>
           {#if fx.environment_error}<p class="warn">{fx.environment_error}</p>{:else if !fx.environment}<p class="note">An environment light lights 3D layers from a panorama all round the scene, and shiny 3D text, shapes and models reflect it (Reflections, under Environment). Choose an .hdr or .exr panorama.</p>{/if}
         {/if}
+        {#if fx.kind === "Hud"}
+          <label class="hud-text" title="Your own readout beside the element (Text position, Text size). Live values in braces: {'{x}'} {'{y}'} where it is, {'{size}'}, {'{time}'} the clip's time, {'{rand}'} a changing number, {'{lock}'} SEARCHING / LOCKING / LOCKED and {'{lock%}'} with Lock-on.">
+            <span>Readout</span>
+            <textarea
+              rows="2"
+              spellcheck="false"
+              placeholder={"TARGET {lock}\nX {x}  Y {y}"}
+              value={fx.text ?? ""}
+              onchange={(e) => run(api.setHudText(ins.id, i, (e.currentTarget as HTMLTextAreaElement).value))}
+            ></textarea>
+          </label>
+          <p class="note">Live values: <code>{"{x}"}</code> <code>{"{y}"}</code> <code>{"{size}"}</code> <code>{"{time}"}</code> <code>{"{rand}"}</code> <code>{"{lock}"}</code> <code>{"{lock%}"}</code>. To follow a face or object, track it in the Track panel and choose <b>HUD element: centre</b> under Apply to.</p>
+        {/if}
         {#if fx.kind === "Paint"}
           {@const on = app.paint?.clip === ins.id && app.paint.index === i}
           <div class="row lut">
@@ -713,5 +726,15 @@
     flex-direction: column;
     gap: 2px;
     margin: 4px 0;
+  }
+  .hud-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 4px 0;
+  }
+  .hud-text textarea {
+    font-family: ui-monospace, monospace;
+    resize: vertical;
   }
 </style>

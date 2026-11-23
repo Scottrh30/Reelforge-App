@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+# HUD readouts: their text drawn in a font compiled in.
+ab_glyph.workspace = true
+epaint_default_fonts.workspace = true
 serde.workspace = true
 log.workspace = true
 # Plugin manifests (plugin.toml).

@@ -213,6 +213,9 @@ fn shots() -> Vec<Shot> {
     .chain([
         ("hud-glowcol-room", EffectKind::Hud, vec![(hud::ELEMENT, 33.0), (hud::SIZE, 55.0), (hud::GLOW, 120.0), (hud::GLOW_SIZE, 25.0), (hud::COLOR, 0xfff0c0 as f32), (hud::GLOW_COLOR, 0xff5a1e as f32), (hud::OWN_GLOW_COLOR, 1.0)], 0.5),
         ("hud-glowsmall-room", EffectKind::Hud, vec![(hud::ELEMENT, 5.0), (hud::SIZE, 55.0), (hud::GLOW, 120.0), (hud::GLOW_SIZE, 4.0), (hud::COLOR, 0x7dff6a as f32)], 0.5),
+        ("hud-read-lock-closing-room", EffectKind::Hud, vec![(hud::ELEMENT, 33.0), (hud::X, 60.0), (hud::Y, 45.0), (hud::SIZE, 30.0), (hud::GLOW, 90.0), (hud::LOCK_ON, 1.0), (hud::LOCK_AT, 0.0), (hud::LOCK_TIME, 1.0), (hud::TEXT_SIZE, 3.5)], 0.35),
+        ("hud-read-lock-locked-room", EffectKind::Hud, vec![(hud::ELEMENT, 33.0), (hud::X, 60.0), (hud::Y, 45.0), (hud::SIZE, 30.0), (hud::GLOW, 90.0), (hud::LOCK_ON, 1.0), (hud::LOCK_AT, 0.0), (hud::LOCK_TIME, 1.0), (hud::TEXT_SIZE, 3.5)], 2.0),
+        ("hud-read-scan-room", EffectKind::Hud, vec![(hud::ELEMENT, 26.0), (hud::X, 40.0), (hud::Y, 50.0), (hud::SIZE, 30.0), (hud::GLOW, 80.0), (hud::TEXT_POS, 3.0), (hud::TEXT_SIZE, 3.0)], 1.25),
         ("hud-glowbig-room", EffectKind::Hud, vec![(hud::ELEMENT, 5.0), (hud::SIZE, 55.0), (hud::GLOW, 120.0), (hud::GLOW_SIZE, 45.0), (hud::COLOR, 0x7dff6a as f32)], 0.5),
     ])
     .collect()
@@ -246,6 +249,10 @@ fn main() {
             e.params[sparkle::HEAD_Y].keys.set(Time::from_secs_f64(1.0), 25.0);
             e.params[sparkle::HEAD_Y].keys.set(Time::from_secs_f64(2.0), 60.0);
             reelforge_core::sparkle::fill_head(&e, &mut values, Time::from_secs_f64(t as f64), Time::ZERO, [W as f32, H as f32]);
+        }
+        if name.starts_with("hud-read") {
+            let text = if name.contains("lock") { "TARGET {lock}\nRANGE {rand} M\nX {x} Y {y}" } else { "SCAN 07\nSIGNAL {rand}\nT+{time}" };
+            reelforge_core::hud_text::fill(&mut values, text, [W as f32, H as f32]);
         }
         let layer = LayerInput {
             key: n as u64 + 1,

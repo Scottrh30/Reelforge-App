@@ -3749,3 +3749,77 @@ fn water_effects_draw_what_they_say() {
     let img = draw(&mut c, &screen, EffectKind::Liquid, &keyed, 2.0);
     assert!(a(&img, 96, 65) > 250 && a(&img, 5, 60) < 10);
 }
+
+/// HUD lock-on (hidden before it starts, closing in from big, blinking, then the Locked
+/// colour) and a readout beside the element, where Text position says.
+#[test]
+fn hud_locks_on_and_shows_its_readout() {
+    use reelforge_core::effects::{hud, EffectData};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [100u8, 100, 100, 255]).collect();
+    let mut key = 7700u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, set: &[(usize, f32)], text: Option<&str>, t: f32| {
+        let mut e = Effect::new(EffectKind::Hud);
+        for &(i, v) in set {
+            e.params[i].value = v;
+        }
+        e.data = text.map(|s| EffectData::Text(s.into()));
+        let mut v = e.eval_sized(reelforge_core::Time::from_secs_f64(t as f64), None, [w as f32, h as f32]);
+        v.time = t;
+        if let Some(EffectData::Text(s)) = &e.data {
+            reelforge_core::hud_text::fill(&mut v, s, [w as f32, h as f32]);
+        }
+        key += 1;
+        let mut l = layer(1, &grey, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let changed = |img: &[u8], keep: &dyn Fn(u32, u32) -> bool| {
+        (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| keep(x, y)).filter(|&(x, y)| px(img, w, x, y)[0].abs_diff(100) > 3 || px(img, w, x, y)[2].abs_diff(100) > 3).count()
+    };
+    let everywhere = |_: u32, _: u32| true;
+    // Lock-on: from 1 s over 1 s; the element 18 px round (40 % of 90 / 2), at the middle.
+    let lock = [(hud::ELEMENT, 33.0), (hud::SIZE, 40.0), (hud::SPIN, 0.0), (hud::LOCK_ON, 1.0), (hud::LOCK_AT, 1.0), (hud::LOCK_TIME, 1.0)];
+    let far = |x: u32, y: u32| ((x as f32 - 80.0).powi(2) + (y as f32 - 45.0).powi(2)).sqrt() > 23.0;
+    assert_eq!(changed(&draw(&mut c, &lock, None, 0.5), &everywhere), 0, "nothing before it starts");
+    let closing = draw(&mut c, &lock, None, 1.3);
+    assert!(changed(&closing, &far) > 10, "big as it closes in");
+    let locked = draw(&mut c, &lock, None, 2.8);
+    assert!(changed(&locked, &everywhere) > 20 && changed(&locked, &far) == 0, "on its target");
+    let red = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| {
+        let p = px(&locked, w, x, y);
+        p[0] > p[2] + 60
+    });
+    assert!(red.count() > 10, "the Locked colour");
+    // Blinking just after locking: off a moment after on.
+    assert!(changed(&draw(&mut c, &lock, None, 2.05), &everywhere) > 0);
+    assert_eq!(changed(&draw(&mut c, &lock, None, 2.15), &everywhere), 0, "blinked off");
+    // Without a lock-on, the same element as ever.
+    assert!(changed(&draw(&mut c, &[(hud::ELEMENT, 33.0), (hud::SIZE, 40.0)], None, 0.0), &everywhere) > 20);
+
+    // A readout: to the right of the element (past 18 px out), none to the left.
+    let base = [(hud::ELEMENT, 29.0), (hud::SIZE, 40.0), (hud::TEXT_SIZE, 12.0)];
+    let right = |x: u32, _: u32| x > 100;
+    let left = |x: u32, _: u32| x < 60;
+    let plain = draw(&mut c, &base, None, 0.0);
+    assert_eq!(changed(&plain, &right), 0);
+    let read = draw(&mut c, &base, Some("LOCK 42"), 0.0);
+    assert!(changed(&read, &right) > 15 && changed(&read, &left) == 0, "beside it, on the right");
+    let mut on_left = base.to_vec();
+    on_left.push((hud::TEXT_POS, 1.0));
+    let read_left = draw(&mut c, &on_left, Some("LOCK 42"), 0.0);
+    assert!(changed(&read_left, &left) > 15 && changed(&read_left, &right) == 0, "or on the left");
+    // Typed on: half drawn on, less of it shows.
+    let mut half = base.to_vec();
+    half.push((hud::DRAW_ON, 50.0));
+    let typing = draw(&mut c, &half, Some("LOCK 42"), 0.0);
+    assert!(changed(&typing, &right) < changed(&read, &right), "typed on");
+    // Live values change it.
+    let a = draw(&mut c, &base, Some("{time}"), 0.0);
+    let mut later = base.to_vec();
+    later.push((hud::SEED, 1.0));
+    let b = draw(&mut c, &later, Some("{time}"), 3.0);
+    assert!(a.chunks(4).zip(b.chunks(4)).any(|(p, q)| p != q), "the time moves on");
+}

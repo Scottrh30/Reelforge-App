@@ -318,6 +318,8 @@ pub enum EffectData {
     /// Depth map and Relight: the footage's depth in each frame (a folder, see
     /// `crate::fillstore`; red and green hold it, 16 bits, bigger nearer).
     Depth(PathBuf),
+    /// A HUD element's readout text (with live values in braces, see `crate::hud_text`).
+    Text(String),
     /// Face beauty's faces, followed through the clip.
     Faces(Vec<crate::faces::FaceTrack>),
     /// Sky replacement: the new sky (a picture), and the sky found in each
@@ -1329,6 +1331,17 @@ pub mod hud {
     /// The glow's own colour (when Own glow colour is on; otherwise the line colour).
     pub const GLOW_COLOR: usize = 15;
     pub const OWN_GLOW_COLOR: usize = 16;
+    /// Lock-on: the element closes in on its target, turning and shrinking from
+    /// big, over Lock-on time from Lock-on at (clip time), then blinks and turns the
+    /// Locked colour.
+    pub const LOCK_ON: usize = 17;
+    pub const LOCK_AT: usize = 18;
+    pub const LOCK_TIME: usize = 19;
+    pub const LOCKED_COLOR: usize = 20;
+    /// The readout text (the effect's data): where by the element, and how big
+    /// (% of the layer's height).
+    pub const TEXT_POS: usize = 21;
+    pub const TEXT_SIZE: usize = 22;
 }
 pub mod sweep {
     pub const ANGLE: usize = 0;
@@ -2767,7 +2780,7 @@ const PORTAL: [ParamSpec; 15] = [
     spec("Stretch", 100.0, 10.0, 400.0, " %", 0.5),
     spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
 ];
-const HUD: [ParamSpec; 17] = [
+const HUD: [ParamSpec; 23] = [
     choice(
         "Element",
         &[
@@ -2824,6 +2837,12 @@ const HUD: [ParamSpec; 17] = [
     spec("Glow size", 12.0, 0.5, 200.0, " %", 0.2),
     color("Glow colour", 0x5ce1ff),
     ParamSpec { name: "Own glow colour", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Lock-on", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Lock-on at", 0.0, 0.0, 36000.0, " s", 0.01),
+    spec("Lock-on time", 1.0, 0.05, 30.0, " s", 0.01),
+    color("Locked colour", 0xff3b30),
+    choice("Text position", &["Right", "Left", "Above", "Below", "Centre"]),
+    spec("Text size", 4.0, 0.5, 30.0, " %", 0.05),
 ];
 const LIGHTSWEEP: [ParamSpec; 11] = [
     spec("Angle", 60.0, -360.0, 360.0, "°", 0.5),
@@ -3546,6 +3565,7 @@ impl EffectKind {
             EffectKind::LightRays => (rays::X, rays::Y, "source"),
             EffectKind::LensDirt => (dirt::X, dirt::Y, "light"),
             EffectKind::AnamorphicFlare => (streak::X, streak::Y, "light"),
+            EffectKind::Hud => (hud::X, hud::Y, "centre"),
             _ => return None,
         })
     }
@@ -3772,7 +3792,7 @@ impl EffectKind {
             EffectKind::Starfield => "Stars: a night sky that twinkles, stars drifting past in layers (nearer ones faster), or the jump to warp speed, stars streaking out from a point you place. Over the picture, on black, or on their own to put behind something.",
             EffectKind::Hologram => "Turns the layer into a projected hologram: one glowing colour, see-through, with scanlines rolling over it, edges that glow, flicker, and glitches that tear across it now and then.",
             EffectKind::Portal => "A ring of energy that opens in the air: sparks spinning round its rim in two colours, the air rippling round it, and inside a swirl of the picture, darkness, or a hole you can see another shot through (put it on the track below). Keyframe Open to open and close it. Drag its centre in the Viewer.",
-            EffectKind::Hud => "Sci-fi screen graphics drawn over the picture: a targeting reticle, a radar sweep, rings of ticks turning at different speeds, a readout of moving bars, corner brackets, or one of 30 reticle styles (scopes, compasses, squares, hexagons, arcs, X sights, wireframes with readouts, rings and gauges). Drag it in the Viewer, keyframe Draw on to bring it in. Turn up Glow for the lit look (its Glow size and, with Own glow colour, its own Glow colour) and Fill for scanlines inside.",
+            EffectKind::Hud => "Sci-fi screen graphics drawn over the picture: a targeting reticle, a radar sweep, rings of ticks turning at different speeds, a readout of moving bars, corner brackets, or one of 30 reticle styles (scopes, compasses, squares, hexagons, arcs, X sights, wireframes with readouts, rings and gauges). Drag it in the Viewer, keyframe Draw on to bring it in. Turn up Glow for the lit look (its Glow size and, with Own glow colour, its own Glow colour) and Fill for scanlines inside. Lock-on closes it in on its target, then it blinks and turns the Locked colour. Add a readout beside it in your own words, with live values ({x}, {y}, {time}, {rand}, {lock}). Attach it to a track (Track panel → Apply to) to follow a face or object.",
             EffectKind::LightSweep => "A sheen of light passing over a title or logo, like light catching chrome or glass: its angle, width and softness, when it passes and how long it takes (or keyframe Position), and whether it lights only the shape, only its bright parts, or everything.",
             EffectKind::ElectricArcs => "Crackling electricity crawling over the edges of the layer’s shape — a keyed person, a title, a logo — and jumping off them: thin, branching, flickering arcs with a glow, in the colour you choose.",
             EffectKind::DepthMap => "How far away each part of the footage is, worked out by the depth model (Work out depth): shown as a picture (near is white), as fog that thickens with distance, or as a key that keeps what's near",
@@ -4487,6 +4507,11 @@ impl Effect {
                         v.table = Some(tb);
                     }
                     None => v.table = None,
+                }
+            }
+            EffectKind::Hud => {
+                if let Some(EffectData::Text(s)) = &self.data {
+                    crate::hud_text::fill(&mut v, s, size);
                 }
             }
             EffectKind::Lightning => {

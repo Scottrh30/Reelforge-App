@@ -841,6 +841,17 @@ What works now:
       draw it in. **Glow** adds a soft lit halo round the lines of any element, reaching as far
       as **Glow size** says, in the line colour or, with **Own glow colour** on, in its own
       **Glow colour**; **Fill** adds faint scanlines inside the reticle styles
+    - **Lock-on**: the element closes in on its target, shrinking and turning from big, over
+      **Lock-on time** from **Lock-on at** (clip time; hidden before), then blinks and turns the
+      **Locked colour**
+    - **Readout**: your own text beside the element (in the Controls panel; **Text position**
+      right, left, above, below or centre, **Text size**), in a monospaced readout font, glowing
+      and flickering with it and typed on with **Draw on**. Live values in braces: `{x}` `{y}`
+      (where it is, in pixels), `{size}`, `{time}` (the clip's time), `{rand}` (a number that
+      keeps changing), `{lock}` (SEARCHING, LOCKING or LOCKED) and `{lock%}`
+    - **Following a face or object**: track it in the **Track** panel, then pick *HUD element:
+      centre* under **Apply to** (on the tracked clip or a HUD layer over it): the element keeps
+      where it is at the playhead and moves with the tracked points, as keyframes
   - **Light sweep** (Light & stylize): a band of light sliding across the layer — **Lights**: **The
     shape** (a logo or title), **Its bright parts** or **Everything** — at an **Angle**,
     **Width** and **Softness**, starting at **Start at**, taking **Takes** seconds and coming again

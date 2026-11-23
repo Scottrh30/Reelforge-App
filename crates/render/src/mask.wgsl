@@ -12,6 +12,8 @@ struct Fx {
     p4: vec4<f32>,
     // Layer uv = target uv × xy + zw (see effects.wgsl).
     map: vec4<f32>,
+    // Params 20–23.
+    p5: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> fx: Fx;
@@ -1198,4 +1200,94 @@ fn fs_sparkle(in: VsOut) -> @location(0) vec4<f32> {
     }
     let light = (acc + c1 * streak * fx.p3.y / 100.0 * 1.5) * fx.p3.z / 100.0;
     return vec4(c.rgb + light, max(c.a, clamp(max(light.r, max(light.g, light.b)), 0.0, 1.0)));
+}
+
+// ---- HUD readout: the element's text (the table, white on clear) placed beside it ----
+// Its uniform is the HUD's (see effects.wgsl's fs_hud); extra2.xy: the text picture's size
+// in layer pixels.
+
+fn ht_pcg(v: u32) -> u32 {
+    let s = v * 747796405u + 2891336453u;
+    let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+fn ht_rnd3(a: u32, b: u32, c: u32) -> f32 {
+    return f32(ht_pcg(a ^ ht_pcg(b ^ ht_pcg(c))) >> 8u) / 16777216.0;
+}
+fn ht_rgb(v: f32) -> vec3<f32> {
+    let c = u32(clamp(round(v), 0.0, 16777215.0));
+    return to_linear(vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0);
+}
+// The text's ink at `q` (0–1 across its picture).
+fn ht_ink(q: vec2<f32>) -> f32 {
+    let inside = step(0.0, q.x) * step(q.x, 1.0) * step(0.0, q.y) * step(q.y, 1.0);
+    return textureSampleLevel(second, second_sampler, clamp(q, vec2(0.0), vec2(1.0)), 0.0).a * inside;
+}
+// As fs_hud's lock-on (x visible, y closed in, z locked).
+fn ht_lock(t: f32) -> vec3<f32> {
+    if (fx.p4.y < 0.5) {
+        return vec3(1.0, 1.0, 0.0);
+    }
+    let k = clamp((t - fx.p4.z) / max(fx.p4.w, 0.01), 0.0, 1.0);
+    let eased = 1.0 - pow(1.0 - k, 3.0);
+    var vis = select(0.0, smoothstep(0.0, 0.12, k) * 0.5 + 0.5 * eased, t >= fx.p4.z);
+    let after = t - (fx.p4.z + max(fx.p4.w, 0.01));
+    if (after >= 0.0 && after < 0.6) {
+        vis = step(fract(after * 5.0), 0.55);
+    } else if (after >= 0.6) {
+        vis = 1.0;
+    }
+    return vec3(vis, eased, step(0.0, after));
+}
+
+@fragment
+fn fs_hud_text(in: VsOut) -> @location(0) vec4<f32> {
+    let base = textureSample(src, src_sampler, to_tex(in.uv));
+    let size = max(fx.extra.zw, vec2(1.0));
+    let p = in.uv * size;
+    let t = fx.extra.y;
+    let c = fx.p0.yz / 100.0 * size;
+    let r = max(fx.p0.w / 100.0 * size.y * 0.5, 2.0);
+    let box = max(fx.extra2.xy, vec2(1.0));
+    // Beside the element (as it ends up once locked on), a little way off.
+    let gap = r * 1.12 + size.y * 0.01;
+    var origin = vec2(c.x + gap, c.y - box.y * 0.5);
+    switch (u32(round(fx.p5.y))) {
+        case 1u: {
+            origin = vec2(c.x - gap - box.x, c.y - box.y * 0.5);
+        }
+        case 2u: {
+            origin = vec2(c.x - box.x * 0.5, c.y - gap - box.y);
+        }
+        case 3u: {
+            origin = vec2(c.x - box.x * 0.5, c.y + gap);
+        }
+        case 4u: {
+            origin = c - box * 0.5;
+        }
+        default: {}
+    }
+    let q = (p - origin) / box;
+    let ink = ht_ink(q);
+    // The glow: the ink round about, softly.
+    let reach = max(r * clamp(fx.p3.z, 0.5, 200.0) / 100.0 * 0.35, 1.0) / box;
+    var halo = 0.0;
+    for (var i = 0; i < 12; i++) {
+        let a = f32(i) / 12.0 * 6.2831853;
+        let dir = vec2(cos(a), sin(a));
+        halo += ht_ink(q + dir * reach * 0.5) * 0.6 + ht_ink(q + dir * reach) * 0.4;
+    }
+    halo = clamp(halo / 12.0 * 1.6, 0.0, 1.0);
+    // Typed on from the left as Draw on goes; in step with the element's flicker and lock-on.
+    let on = clamp(fx.p2.x / 100.0, 0.0, 1.0);
+    let shown = step(q.x, on);
+    let seed = u32(max(fx.p2.w, 0.0)) * 197u + 5u;
+    let flick = 1.0 - fx.p2.z / 100.0 * step(0.75, ht_rnd3(seed + 3u, bitcast<u32>(i32(floor(t * 20.0))), 9u));
+    let lk = ht_lock(t);
+    let k = clamp(fx.p2.y / 100.0, 0.0, 1.0) * flick * lk.x * shown;
+    let a = clamp(ink, 0.0, 1.0) * k;
+    let glow = halo * clamp(fx.p3.x / 100.0, 0.0, 2.0) * 0.6 * k * (1.0 - a);
+    let col = select(ht_rgb(fx.p1.x), ht_rgb(fx.p5.x), lk.z > 0.5);
+    let gcol = select(col, ht_rgb(fx.p3.w), fx.p4.x > 0.5 && lk.z < 0.5);
+    return vec4(base.rgb * (1.0 - a) + col * a + gcol * glow, max(base.a, clamp(a + glow, 0.0, 1.0)));
 }

@@ -3664,6 +3664,8 @@ dependencies = [
 name = "reelforge-core"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
+ "epaint_default_fonts",
  "flate2",
  "log",
  "roxmltree",

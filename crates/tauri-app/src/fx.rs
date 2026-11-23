@@ -80,6 +80,8 @@ pub struct EffectView {
     pub fill_preview: bool,
     /// Paint: how many strokes.
     pub strokes: usize,
+    /// A HUD element's readout text.
+    pub text: Option<String>,
     /// Face beauty: the faces found (`None`: not looked for yet): whether
     /// each is on, the frames it's in, and where it is first.
     pub faces: Option<Vec<FaceView>>,
@@ -257,6 +259,10 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                 plate_error,
                 environment,
                 environment_error,
+                text: match &fx.data {
+                    Some(EffectData::Text(s)) => Some(s.clone()),
+                    _ => None,
+                },
                 strokes: match &fx.data {
                     Some(EffectData::Paint(s)) => s.len(),
                     Some(EffectData::Liquify(s)) => s.len(),
@@ -737,6 +743,12 @@ pub fn paint_stroke(id: u64, index: usize, points: Vec<[f32; 2]>, source: Option
 #[tauri::command]
 pub fn paint_clear(id: u64, index: usize) -> Res<()> {
     ed(|e| e.paint_clear(reelforge_core::ClipId(id), index))
+}
+
+/// Set a HUD element's readout text (empty takes it off).
+#[tauri::command]
+pub fn set_hud_text(id: u64, index: usize, text: String) -> Res<()> {
+    ed(|e| e.set_hud_text(reelforge_core::ClipId(id), index, &text))
 }
 
 /// Keyframe the blade's Length so it switches on (0 → 100 %) or off

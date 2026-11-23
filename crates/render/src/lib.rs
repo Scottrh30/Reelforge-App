@@ -605,7 +605,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let mut fx2_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_liquify", "fs_depth_map", "fs_relight", "fs_portrait", "fs_volumetric", "fs_sparkle", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add", "fs_hue_curves", "fs_audio_vis"]
+        let mut fx2_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_liquify", "fs_depth_map", "fs_relight", "fs_portrait", "fs_volumetric", "fs_sparkle", "fs_hud_text", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add", "fs_hue_curves", "fs_audio_vis"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1998,6 +1998,23 @@ impl Compositor {
                         push("fs_liquify", cur, Second::Table(i), o1, u);
                         cur = o1;
                     }
+                    EffectKind::Hud => {
+                        // The element, then its readout (when it has one) beside it.
+                        let mut u = uniform(&e.values, [i as f32 + 1.0, 0.0]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        u[28..32].copy_from_slice(&e.values[16..20]);
+                        u[FX_P5..FX_P5 + 4].copy_from_slice(&e.values[20..24]);
+                        push("fs_hud", cur, Second::None, o1, u);
+                        cur = o1;
+                        if e.table.is_some() && self.tables.contains_key(&(key, i)) {
+                            let (o1, _) = others(cur);
+                            u[24..28].copy_from_slice(&e.gpu);
+                            push("fs_hud_text", cur, Second::Table(i), o1, u);
+                            cur = o1;
+                        }
+                    }
                     EffectKind::SparkleTrail => {
                         if !self.tables.contains_key(&(key, i)) {
                             continue;
@@ -2144,7 +2161,6 @@ impl Compositor {
                     | EffectKind::Starfield
                     | EffectKind::Hologram
                     | EffectKind::Portal
-                    | EffectKind::Hud
                     | EffectKind::LightSweep
                     | EffectKind::ElectricArcs
                     | EffectKind::DirectionalBlur
@@ -2227,7 +2243,6 @@ impl Compositor {
                             EffectKind::DirectionalBlur => "fs_dir_blur",
                             EffectKind::ElectricArcs => "fs_arcs",
                             EffectKind::LightSweep => "fs_sweep",
-                            EffectKind::Hud => "fs_hud",
                             EffectKind::Portal => "fs_portal",
                             EffectKind::Hologram => "fs_hologram",
                             EffectKind::Starfield => "fs_starfield",
