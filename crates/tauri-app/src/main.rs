@@ -103,6 +103,8 @@ struct Live {
     render: Option<f32>,
     /// The render-preview run going is Simulate now.
     simulating: bool,
+    /// Rendering heavy parts in the background (while idle).
+    background_render: bool,
     /// Bumped when the render cache gains or loses frames.
     render_gen: u64,
     /// What the Viewer is working from, for its performance readout.
@@ -199,6 +201,7 @@ fn tick() -> Res<Live> {
             matching: e.color_match.as_ref().map(|j| j.progress),
             render: e.render_progress(),
             simulating: e.simulating(),
+            background_render: e.background_rendering(),
             render_gen: e.render_cache.generation,
             viewer: viewer_info(e),
             disk: e.disk_low.clone().filter(|_| !e.disk_dismissed),
@@ -613,7 +616,7 @@ fn set_prefs(prefs: Prefs) -> Res<()> {
     })
 }
 
-/// The Viewer's playback quality: 1 full, 2 half, 4 quarter resolution.
+/// The Viewer's playback quality: 1 full, 2 half, 4 quarter, 8 eighth resolution (0 automatic).
 #[tauri::command]
 fn set_playback_quality(q: u32) -> Res<()> {
     ed(|e| {

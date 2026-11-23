@@ -151,7 +151,7 @@ pub struct Preview {
     pub from_cache: bool,
     /// Bumped whenever the picture changes (so a viewer knows to fetch it again).
     pub picture_rev: u64,
-    /// Playback quality: the Viewer's picture at 1/this of full resolution (1, 2 or 4).
+    /// Playback quality: the Viewer's picture at 1/this of full resolution (1, 2, 4 or 8).
     quality: u32,
     /// Show the paused picture at full resolution whatever the playback quality.
     pub full_when_paused: bool,
@@ -194,7 +194,7 @@ impl Preview {
     }
 
     /// Playback quality: draw the Viewer's picture at 1/`q` of full
-    /// resolution (1, 2 or 4), decoding footage that much smaller too, so big
+    /// resolution (1, 2, 4 or 8), decoding footage that much smaller too, so big
     /// or heavy projects play smoothly. Renders for the render cache stay full.
     pub fn set_quality(&mut self, q: u32) {
         let q = match q {
@@ -202,13 +202,19 @@ impl Preview {
             0 => 0,
             1 => 1,
             2..=3 => 2,
-            _ => 4,
+            4..=7 => 4,
+            _ => 8,
         };
         self.quality = q;
     }
 
     pub fn quality(&self) -> u32 {
         self.quality
+    }
+
+    /// Whether there's a graphics device to draw with.
+    pub fn has_gpu(&self) -> bool {
+        self.gpu.is_some()
     }
 
     /// The resolution divisor the picture was last drawn at.
@@ -451,11 +457,11 @@ impl Preview {
 
 /// The viewer's frames: whatever each clip's preview-size decoder has ready.
 /// Automatic playback quality: steps the Viewer's resolution down (full →
-/// ½ → ¼) when playing falls behind, and back up once it's had room to
+/// ½ → ¼ → ⅛) when playing falls behind, and back up once it's had room to
 /// spare for a while.
 #[derive(Debug, Clone)]
 pub struct AutoQuality {
-    /// The divisor now (1, 2 or 4).
+    /// The divisor now (1, 2, 4 or 8).
     pub level: u32,
     window_start: Option<Instant>,
     frames: u32,
@@ -492,7 +498,7 @@ impl AutoQuality {
         let late_share = self.late as f64 / self.frames as f64;
         // Drawing time against the time a frame has.
         let load = self.busy.as_secs_f64() / self.frames as f64 / frame.as_secs_f64().max(1e-3);
-        if (late_share > 0.25 || load > 0.85) && self.level < 4 {
+        if (late_share > 0.25 || load > 0.85) && self.level < 8 {
             self.level *= 2;
             self.calm = 0;
             self.last_down = Some(now);
@@ -597,13 +603,14 @@ mod tests {
         let mut a = AutoQuality::default();
         let mut t = Instant::now();
         assert_eq!(play(&mut a, &mut t, 3.0, 10.0, 0), 1, "keeping up: full");
-        // Slow drawing (38 of 40 ms): half within a second or so, then quarter.
+        // Slow drawing (38 of 40 ms): half within a second or so, then quarter, then eighth.
         assert!(play(&mut a, &mut t, 1.6, 38.0, 0) >= 2);
-        assert_eq!(play(&mut a, &mut t, 3.0, 38.0, 0), 4, "no lower than a quarter");
+        assert_eq!(play(&mut a, &mut t, 3.0, 38.0, 0), 8, "no lower than an eighth");
         // Easy again, soon after stepping down: it waits about 8 s.
-        assert_eq!(play(&mut a, &mut t, 5.0, 5.0, 0), 4);
-        assert_eq!(play(&mut a, &mut t, 4.0, 5.0, 0), 2);
-        // Later, about 3 s does.
+        assert_eq!(play(&mut a, &mut t, 5.0, 5.0, 0), 8);
+        assert_eq!(play(&mut a, &mut t, 4.0, 5.0, 0), 4);
+        // Later, about 3 s does, a step at a time.
+        assert_eq!(play(&mut a, &mut t, 3.5, 5.0, 0), 2);
         assert_eq!(play(&mut a, &mut t, 3.5, 5.0, 0), 1);
         // Frames not ready in time (the decoder behind) count too.
         let l = play(&mut a, &mut t, 1.6, 5.0, 2);

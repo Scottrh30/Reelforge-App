@@ -175,14 +175,14 @@ impl Proxies {
         h.finish()
     }
 
-    /// Make the project's proxies that are in another format again in the
-    /// current one (deleting the old files). Returns how many were queued.
+    /// Make the project's proxies that are in another format or size again in
+    /// the current ones (deleting the old files). Returns how many were queued.
     pub fn remake_all(&mut self, project: &Project) -> usize {
-        let now = proxy::format();
+        let (now, big) = (proxy::format(), proxy::size());
         let mut n = 0;
         for m in &project.media {
             let Some(old) = proxy::existing_proxy(&m.path) else { continue };
-            if proxy::format_of(&old) == Some(now) || m.info.video.is_none() {
+            if (proxy::format_of(&old) == Some(now) && proxy::size_of(&old) == big) || m.info.video.is_none() {
                 continue;
             }
             let _ = std::fs::remove_file(&old);
@@ -249,6 +249,15 @@ mod tests {
         assert_eq!(n, 1);
         assert!(!old.exists(), "the old one is deleted");
         assert!(!matches!(px.state(&src), Some(ProxyState::Ready(_))), "and a new one is on its way");
+        // A proxy of another size is made again at the size chosen.
+        let mut px = Proxies::new();
+        let small = proxy::proxy_path_for(&src, proxy::ProxyFormat::H264, proxy::ProxySize::Small);
+        std::fs::write(&small, b"small proxy").unwrap();
+        px.refresh(&p, false);
+        assert!(matches!(px.state(&src), Some(ProxyState::Ready(f)) if *f == small), "used meanwhile");
+        let n = px.remake_all(&p);
+        assert_eq!(n, 1);
+        assert!(!small.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -20,13 +20,20 @@
   // Proxy formats, as the Media panel names them.
   const formatLabels: Record<string, string> = { ProResProxy: "ProRes 422 Proxy", DnxhrLb: "DNxHR LB", H264: "H.264 (all keyframes)" };
   const formatLabel = (f: string) => formatLabels[f] ?? f;
-  // Ready proxies in another format than the one chosen.
+  // Proxy sizes, as the Media panel names them.
+  const sizeLabels: Record<string, string> = { Small: "360p", Standard: "540p", Large: "720p", FullHd: "1080p" };
+  const sizeLabel = (s: string | undefined) => sizeLabels[s ?? "Standard"] ?? "540p";
+  // Ready proxies in another format or size than the ones chosen.
   const remakeFrom = $derived(
-    prefs ? (app.s?.media ?? []).filter((m) => m.proxy === "ready" && m.proxy_format && m.proxy_format !== formatLabel(prefs!.proxy_format)).map((m) => m.proxy_format!) : [],
+    prefs
+      ? (app.s?.media ?? [])
+          .filter((m) => m.proxy === "ready" && m.proxy_format && (m.proxy_format !== formatLabel(prefs!.proxy_format) || (m.proxy_size ?? "540p") !== sizeLabel(prefs!.proxy_size)))
+          .map((m) => `${m.proxy_format}, ${m.proxy_size ?? "540p"}`)
+      : [],
   );
   async function remake() {
     if (!prefs) return;
-    await run(api.proxiesRemake(prefs.proxy_format));
+    await run(api.proxiesRemake(prefs.proxy_format, prefs.proxy_size ?? "Standard"));
     info = await api.settingsInfo();
   }
 
@@ -101,6 +108,11 @@
         <div class="row"><input type="number" min="256" max="32768" step="256" bind:value={prefs.render_cache_mb} style="width:100px" /> MB</div>
       </label>
       {#if info}<p class="info">Holding {info.render_frames} rendered frames ({info.render_mb} MB)</p>{/if}
+      <label class="check" title="When you haven't edited, played or moved the playhead for a few seconds, the heavy parts of the sequence (effects, transitions, compositions, stacked layers) are rendered into the render cache by themselves, so they play smoothly. It stops the moment you do anything, and waits while exporting, tracking or making proxies."><input type="checkbox" bind:checked={prefs.background_render} /> Render in the background when idle</label>
+      <label class="field" title="How long nothing has to happen before background rendering starts.">
+        <span>…after</span>
+        <div class="row"><input type="number" min="1" max="600" step="1" disabled={!prefs.background_render} bind:value={prefs.background_render_after_s} style="width:70px" /> seconds idle</div>
+      </label>
       <label class="field" title="Rendered previews are also kept on disk, in the cache folder, so reopening a project (or another using the same clips and effects) finds them again. The least recently used go first when it's full. 0 keeps them in memory only.">
         <span>…and on disk</span>
         <div class="row"><input type="number" min="0" max="1048576" step="1024" bind:value={prefs.render_cache_disk_mb} style="width:100px" /> MB</div>
@@ -132,10 +144,19 @@
           <option value="DnxhrLb">DNxHR LB (4:2:2, lightest to decode)</option>
         </select>
       </label>
+      <label class="field" title="How big proxies are made. Smaller ones play more easily on slow computers and with very heavy 4K/8K projects; bigger ones are sharper, for judging focus, and take more disk space and decoding.">
+        <span>Proxy size</span>
+        <select bind:value={prefs.proxy_size}>
+          <option value="Small">360p (640×360, lightest)</option>
+          <option value="Standard">540p (960×540, the standard)</option>
+          <option value="Large">720p (1280×720, sharper)</option>
+          <option value="FullHd">1080p (1920×1080, sharpest)</option>
+        </select>
+      </label>
       {#if remakeFrom.length}
         <p class="info">
-          {remakeFrom.length} {remakeFrom.length === 1 ? "proxy is" : "proxies are"} in another format ({[...new Set(remakeFrom)].join(", ")}). They're still used.
-          <button class="link" onclick={remake}>Make {remakeFrom.length === 1 ? "it" : "them"} again as {formatLabel(prefs.proxy_format)}</button>
+          {remakeFrom.length} {remakeFrom.length === 1 ? "proxy is" : "proxies are"} in another format or size ({[...new Set(remakeFrom)].join("; ")}). They're still used.
+          <button class="link" onclick={remake}>Make {remakeFrom.length === 1 ? "it" : "them"} again as {formatLabel(prefs.proxy_format)}, {sizeLabel(prefs.proxy_size)}</button>
         </p>
       {/if}
       {#if info}<p class="info">{info.proxies} prox{info.proxies === 1 ? "y" : "ies"}, {info.proxy_bytes >= 1e9 ? `${(info.proxy_bytes / 1e9).toFixed(1)} GB` : `${Math.round(info.proxy_bytes / 1e6)} MB`}</p>{/if}

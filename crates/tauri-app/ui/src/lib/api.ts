@@ -42,6 +42,7 @@ export type Blend =
   | "Luminosity";
 
 export type ProxyFormat = "ProResProxy" | "DnxhrLb" | "H264";
+export type ProxySize = "Small" | "Standard" | "Large" | "FullHd";
 
 export interface TitleSpec {
   text: string;
@@ -97,6 +98,8 @@ export interface MediaView {
   proxy_error: string | null;
   /** What a ready proxy is made as ("ProRes 422 Proxy"…). */
   proxy_format: string | null;
+  /** …and its size ("540p"). */
+  proxy_size: string | null;
   proxyable: boolean;
   detail: string;
 }
@@ -458,6 +461,7 @@ export interface Prefs {
   use_proxies: boolean;
   auto_proxies: boolean;
   proxy_format: ProxyFormat;
+  proxy_size: ProxySize;
   autosave_minutes: number;
   render_cache_mb: number;
   /// Rendered frames kept on disk too, MB (0: not).
@@ -478,6 +482,8 @@ export interface Prefs {
   timeline_video_waveforms: boolean;
   /// The Viewer's picture at 1/this of full resolution (1, 2 or 4).
   playback_quality: number;
+  background_render: boolean;
+  background_render_after_s: number;
   /// …but the paused picture at full resolution.
   full_when_paused: boolean;
   viewer_snapping: boolean;
@@ -967,6 +973,7 @@ export interface Live {
   render: number | null;
   /// The render-preview run going is Simulate now.
   simulating: boolean;
+  background_render: boolean;
   render_gen: number;
   /// What the Viewer works from, for its performance readout.
   viewer: { layers: number; proxied: number; proxies_on: boolean; decode: string; gpu: string | null; quality: number };
@@ -1304,7 +1311,7 @@ export const api = {
   upscaleCancel: () => invoke("upscale_cancel"),
   proxyDelete: (media: number) => invoke("proxy_delete", { media }),
   proxiesDeleteAll: () => invoke("proxies_delete_all"),
-  proxiesRemake: (format: ProxyFormat) => invoke<number>("proxies_remake", { format }),
+  proxiesRemake: (format: ProxyFormat, size: ProxySize) => invoke<number>("proxies_remake", { format, size }),
   proxiesUse: (on: boolean) => invoke("proxies_use", { on }),
   proxyFolder: () => invoke<string>("proxy_folder"),
   relinkMedia: (media: number) => invoke("relink_media", { media }),

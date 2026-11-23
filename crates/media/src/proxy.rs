@@ -2,7 +2,9 @@
 //!
 //! 4K and HEVC files are slow to decode, and long-GOP codecs make seeking
 //! slower still (every seek decodes forward from a keyframe). A proxy is the
-//! same footage at no more than 960×540, with every frame a keyframe, so the
+//! same footage at no more than 960×540 (or another [`ProxySize`] chosen in
+//! Settings: 640×360 for slow computers, 1280×720 or 1920×1080 to judge
+//! focus), with every frame a keyframe, so the
 //! viewer can jump anywhere instantly. Proxies are only for the viewer:
 //! export always reads the original files.
 //!
@@ -25,8 +27,77 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// Proxies fit inside this size.
+/// Proxies fit inside this size (the standard [`ProxySize`]).
 pub const PROXY_MAX: (u32, u32) = (960, 540);
+
+/// How big proxies are made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ProxySize {
+    /// 640×360: the lightest, for slow computers and very heavy projects.
+    Small,
+    /// 960×540 (the standard).
+    #[default]
+    Standard,
+    /// 1280×720: sharper, for judging focus.
+    Large,
+    /// 1920×1080: as sharp as HD, still all keyframes and light to decode.
+    FullHd,
+}
+
+impl ProxySize {
+    pub const ALL: [ProxySize; 4] = [ProxySize::Small, ProxySize::Standard, ProxySize::Large, ProxySize::FullHd];
+
+    /// The size proxies fit inside.
+    pub fn max(self) -> (u32, u32) {
+        match self {
+            ProxySize::Small => (640, 360),
+            ProxySize::Standard => PROXY_MAX,
+            ProxySize::Large => (1280, 720),
+            ProxySize::FullHd => (1920, 1080),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ProxySize::Small => "360p",
+            ProxySize::Standard => "540p",
+            ProxySize::Large => "720p",
+            ProxySize::FullHd => "1080p",
+        }
+    }
+
+    /// Part of the file name (none for the standard size, so proxies made before sizes
+    /// could be chosen keep their names).
+    fn tag(self) -> &'static str {
+        match self {
+            ProxySize::Small => "-360p",
+            ProxySize::Standard => "",
+            ProxySize::Large => "-720p",
+            ProxySize::FullHd => "-1080p",
+        }
+    }
+}
+
+static SIZE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+
+/// The size new proxies are made at (Settings).
+pub fn set_size(s: ProxySize) {
+    SIZE.store(ProxySize::ALL.iter().position(|x| *x == s).unwrap_or(1) as u8, Ordering::Relaxed);
+}
+
+pub fn size() -> ProxySize {
+    ProxySize::ALL.get(SIZE.load(Ordering::Relaxed) as usize).copied().unwrap_or_default()
+}
+
+/// Which size a proxy file is (from its name).
+pub fn size_of(path: &Path) -> ProxySize {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    ProxySize::ALL
+        .into_iter()
+        .filter(|s| !s.tag().is_empty())
+        .find(|s| ProxyFormat::ALL.iter().any(|f| name.ends_with(&format!("{}{}", s.tag(), f.suffix()))))
+        .unwrap_or(ProxySize::Standard)
+}
 
 /// What proxies are made as.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -112,8 +183,13 @@ pub fn proxy_path(src: &Path) -> PathBuf {
     proxy_path_as(src, format())
 }
 
-/// The proxy file for `src` in format `f`.
+/// The proxy file for `src` in format `f` (at the current size).
 pub fn proxy_path_as(src: &Path, f: ProxyFormat) -> PathBuf {
+    proxy_path_for(src, f, size())
+}
+
+/// The proxy file for `src` in format `f` at size `s`.
+pub fn proxy_path_for(src: &Path, f: ProxyFormat, s: ProxySize) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     std::path::absolute(src).unwrap_or_else(|_| src.to_owned()).hash(&mut h);
@@ -125,7 +201,7 @@ pub fn proxy_path_as(src: &Path, f: ProxyFormat) -> PathBuf {
     }
     let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let stem: String = stem.chars().filter(|c| c.is_alphanumeric() || "-_ ".contains(*c)).take(40).collect();
-    media_cache_dir().join("proxies").join(format!("{stem}-{:016x}{}", h.finish(), f.suffix()))
+    media_cache_dir().join("proxies").join(format!("{stem}-{:016x}{}{}", h.finish(), s.tag(), f.suffix()))
 }
 
 /// Which format a proxy file is in (from its name).
@@ -135,10 +211,13 @@ pub fn format_of(path: &Path) -> Option<ProxyFormat> {
     ProxyFormat::ALL.into_iter().rev().find(|f| name.ends_with(f.suffix()) && f.suffix() != ".mp4").or_else(|| name.ends_with(".mp4").then_some(ProxyFormat::H264))
 }
 
-/// The proxy for `src`, if one has been made: in the current format, else in any other.
+/// The proxy for `src`, if one has been made: at the current size and in the current
+/// format, else at the current size in another format, else at any other size.
 pub fn existing_proxy(src: &Path) -> Option<PathBuf> {
-    let now = format();
-    std::iter::once(now).chain(ProxyFormat::ALL.into_iter().filter(|f| *f != now)).map(|f| proxy_path_as(src, f)).find(|p| p.is_file())
+    let (now, big) = (format(), size());
+    let formats = || std::iter::once(now).chain(ProxyFormat::ALL.into_iter().filter(move |f| *f != now));
+    let sizes = std::iter::once(big).chain(ProxySize::ALL.into_iter().filter(|s| *s != big));
+    sizes.flat_map(|s| formats().map(move |f| (f, s))).map(|(f, s)| proxy_path_for(src, f, s)).find(|p| p.is_file())
 }
 
 /// Is this footage heavy enough that a proxy is worth making automatically?
@@ -161,7 +240,8 @@ pub fn make_proxy(src: &Path, info: &MediaInfo, cancel: &AtomicBool, progress: i
 
 /// The same, in format `fmt`.
 pub fn make_proxy_as(src: &Path, info: &MediaInfo, fmt: ProxyFormat, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<PathBuf> {
-    let dst = proxy_path_as(src, fmt);
+    let big = size();
+    let dst = proxy_path_for(src, fmt, big);
     if dst.is_file() {
         return Ok(dst);
     }
@@ -175,7 +255,7 @@ pub fn make_proxy_as(src: &Path, info: &MediaInfo, fmt: ProxyFormat, cancel: &At
     let ext = dst.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
     let tmp = dst.with_extension(format!("partial.{ext}"));
 
-    let mut source = FrameSource::open(src, Some(PROXY_MAX))?;
+    let mut source = FrameSource::open(src, Some(big.max()))?;
     let first = source.frame_at_blocking(Time::ZERO, Duration::from_secs(30)).ok_or_else(|| anyhow!("no frames"))?;
     let mut writer = MovieWriter::create(&tmp, &WriterSettings {
         width: first.width,
@@ -245,6 +325,36 @@ mod tests {
         }
         assert_eq!(names[0].extension().unwrap(), "mp4", "H.264 proxies keep their old names");
         assert_eq!(format(), ProxyFormat::H264, "the default");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_size_has_its_own_file_and_the_chosen_one_comes_first() {
+        let dir = std::env::temp_dir().join(format!("rf-proxysize-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("clip.mov");
+        std::fs::write(&src, b"x").unwrap();
+        // The standard size keeps the names proxies always had; the others are tagged.
+        assert_eq!(proxy_path_for(&src, ProxyFormat::H264, ProxySize::Standard), proxy_path_as(&src, ProxyFormat::H264));
+        for f in ProxyFormat::ALL {
+            for s in ProxySize::ALL {
+                let p = proxy_path_for(&src, f, s);
+                assert_eq!((size_of(&p), format_of(&p)), (s, Some(f)), "{}", p.display());
+            }
+        }
+        assert_eq!(ProxySize::default().max(), PROXY_MAX);
+        assert_eq!(ProxySize::Small.max(), (640, 360));
+        // Only a 720p one made: it's used whatever size is chosen now.
+        let big = proxy_path_for(&src, ProxyFormat::DnxhrLb, ProxySize::Large);
+        std::fs::create_dir_all(big.parent().unwrap()).unwrap();
+        std::fs::write(&big, b"p").unwrap();
+        assert_eq!(existing_proxy(&src), Some(big.clone()));
+        // A standard-size one (the size chosen) comes before it.
+        let std_one = proxy_path_for(&src, ProxyFormat::ProResProxy, ProxySize::Standard);
+        std::fs::write(&std_one, b"p").unwrap();
+        assert_eq!(existing_proxy(&src), Some(std_one.clone()));
+        let _ = std::fs::remove_file(&big);
+        let _ = std::fs::remove_file(&std_one);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -47,6 +47,8 @@ pub struct Prefs {
     pub auto_proxies: bool,
     /// What new proxies are made as.
     pub proxy_format: reelforge_media::proxy::ProxyFormat,
+    /// …and how big.
+    pub proxy_size: reelforge_media::proxy::ProxySize,
     /// Autosave every this many minutes (0 = never).
     pub autosave_minutes: u32,
     /// Size limit of the render cache.
@@ -65,11 +67,15 @@ pub struct Prefs {
     pub timeline_filmstrip: bool,
     /// A waveform of a video clip's linked sound along its lower edge.
     pub timeline_video_waveforms: bool,
-    /// Playback quality: the Viewer draws at 1/this of full resolution (1, 2
-    /// or 4; 0: automatic, lower while playing falls behind).
+    /// Playback quality: the Viewer draws at 1/this of full resolution (1, 2,
+    /// 4 or 8; 0: automatic, lower while playing falls behind).
     pub playback_quality: u32,
     /// …but the paused picture at full resolution.
     pub full_when_paused: bool,
+    /// Render the heavy parts of the sequence by itself when nothing's been done for a while.
+    pub background_render: bool,
+    /// …after this many seconds of quiet.
+    pub background_render_after_s: u32,
     /// Layers dragged in the viewer snap to the frame and to each other (Alt: free).
     pub viewer_snapping: bool,
     /// Decode video on the graphics card when possible.
@@ -140,6 +146,7 @@ impl Default for Prefs {
             use_proxies: true,
             auto_proxies: true,
             proxy_format: Default::default(),
+            proxy_size: Default::default(),
             autosave_minutes: 2,
             shadow_quality: 1,
             render_cache_mb: 2048,
@@ -151,6 +158,8 @@ impl Default for Prefs {
             timeline_video_waveforms: false,
             playback_quality: 1,
             full_when_paused: false,
+            background_render: true,
+            background_render_after_s: 5,
             viewer_snapping: true,
             hw_decode: true,
             cache_mb: reelforge_media::cache::DEFAULT_BUDGET_MB,
@@ -219,6 +228,7 @@ impl Editor {
         reelforge_core::frame::zero_copy::set_enabled(self.prefs.zero_copy);
         reelforge_media::FrameCache::global().set_budget_mb(self.prefs.cache_mb.clamp(128, 65536));
         reelforge_media::proxy::set_format(self.prefs.proxy_format);
+        reelforge_media::proxy::set_size(self.prefs.proxy_size);
         self.preview.set_quality(self.prefs.playback_quality);
         self.preview.full_when_paused = self.prefs.full_when_paused;
     }
@@ -263,8 +273,8 @@ impl Editor {
         self.status = if on { "Full resolution when paused".into() } else { "Paused picture at the playback quality".into() };
     }
 
-    /// Set the Viewer's playback quality (1 full, 2 half, 4 quarter resolution,
-    /// 0 automatic).
+    /// Set the Viewer's playback quality (1 full, 2 half, 4 quarter, 8 eighth
+    /// resolution, 0 automatic).
     pub fn set_playback_quality(&mut self, q: u32) {
         self.prefs.playback_quality = q;
         self.preview.set_quality(q);
@@ -275,7 +285,8 @@ impl Editor {
                 0 => "automatic (lower while playing falls behind)",
                 1 => "full resolution",
                 2 => "half resolution",
-                _ => "quarter resolution",
+                4 => "quarter resolution",
+                _ => "eighth resolution",
             }
         );
     }
@@ -287,9 +298,9 @@ impl Editor {
         self.preview.reset();
         let n = self.proxies.remake_all(&self.project);
         self.status = match n {
-            0 => format!("Every proxy is already {}", reelforge_media::proxy::format().label()),
-            1 => format!("Making 1 proxy again as {}", reelforge_media::proxy::format().label()),
-            n => format!("Making {n} proxies again as {}", reelforge_media::proxy::format().label()),
+            0 => format!("Every proxy is already {}, {}", reelforge_media::proxy::format().label(), reelforge_media::proxy::size().label()),
+            1 => format!("Making 1 proxy again as {}, {}", reelforge_media::proxy::format().label(), reelforge_media::proxy::size().label()),
+            n => format!("Making {n} proxies again as {}, {}", reelforge_media::proxy::format().label(), reelforge_media::proxy::size().label()),
         };
         n
     }
@@ -489,6 +500,10 @@ pub struct Editor {
     pub upscale: Option<upscale::UpscaleJob>,
     /// Match colour, while it measures.
     pub color_match: Option<colormatch::MatchJob>,
+    /// Watching for the editor going quiet, to render in the background.
+    pub idle: crate::background::Idle,
+    /// An export is running (set by the app; background rendering waits for it).
+    pub exporting: bool,
     /// A preset shown on a clip while it's hovered in the effects browser:
     /// the clip, and its look and title style before (put back by
     /// [`Editor::end_preset_preview`], and before anything else is done).
@@ -550,6 +565,8 @@ impl Editor {
             proxies: Default::default(),
             conversions: Default::default(),
             proxied_rev: 0,
+            idle: Default::default(),
+            exporting: false,
             disk_low: None,
             disk_dismissed: false,
             import_report: None,
@@ -1192,7 +1209,7 @@ impl Editor {
         }
         let (first, last) = reelforge_export::frame_range(s.frame_rate, start, end);
         self.playback.pause();
-        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end: last, first, rendered: 0, started: std::time::Instant::now(), simulating: false });
+        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end: last, first, rendered: 0, started: std::time::Instant::now(), simulating: false, background: false, queue: Default::default() });
         self.status = format!("Rendering preview: {} frames (Esc to stop)", last - first);
     }
 
@@ -1221,7 +1238,7 @@ impl Editor {
             return;
         }
         self.playback.pause();
-        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end: last, first, rendered: 0, started: std::time::Instant::now(), simulating: true });
+        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end: last, first, rendered: 0, started: std::time::Instant::now(), simulating: true, background: false, queue: Default::default() });
         self.status = format!("Simulating {n} clip{}: {} frames (Esc to stop)", if n == 1 { "" } else { "s" }, last - first);
     }
 
@@ -1237,9 +1254,48 @@ impl Editor {
         }
     }
 
-    /// How far a render-preview run has got (0–1), while one runs.
+    /// How far a render-preview run has got (0–1), while one runs (not a background one).
     pub fn render_progress(&self) -> Option<f32> {
-        self.render_cache.job.as_ref().map(|j| j.fraction())
+        self.render_cache.job.as_ref().filter(|j| !j.background).map(|j| j.fraction())
+    }
+
+    /// Rendering in the background now.
+    pub fn background_rendering(&self) -> bool {
+        self.render_cache.job.as_ref().is_some_and(|j| j.background)
+    }
+
+    /// Other heavy work going on, which background rendering leaves the computer to.
+    fn other_work(&self) -> bool {
+        self.exporting || self.tracking.is_some() || self.upscale.is_some() || self.color_match.is_some() || self.proxies.busy() || self.conversions.busy() || self.disk_low.is_some()
+    }
+
+    /// Background rendering: stop it the moment anything happens; start it once things
+    /// have been quiet for long enough and there's something heavy not yet rendered.
+    fn background_render(&mut self) {
+        let now = std::time::Instant::now();
+        let woke = self.idle.observe(self.rev, self.playback.playhead, self.playback.playing, self.active, now);
+        let allowed = self.prefs.background_render && !self.other_work() && !self.render_cache.nearly_full();
+        if self.background_rendering() {
+            if woke || !allowed {
+                self.render_cache.job = None;
+            }
+            return;
+        }
+        if !allowed || self.render_cache.job.is_some() || self.idle.done == Some((self.rev, self.active)) {
+            return;
+        }
+        let wait = std::time::Duration::from_secs(self.prefs.background_render_after_s.clamp(1, 3600) as u64);
+        if self.idle.quiet_for(now) < wait {
+            return;
+        }
+        let s = self.seq();
+        let from = crate::render_cache::frame_index(self.playback.playhead, s.frame_rate);
+        let mut queue: std::collections::VecDeque<(i64, i64)> = crate::background::frame_order(&crate::background::heavy_ranges(s), s.frame_rate, from).into();
+        let Some((first, end)) = queue.pop_front() else {
+            self.idle.done = Some((self.rev, self.active));
+            return;
+        };
+        self.render_cache.job = Some(crate::render_cache::RenderJob { seq: self.active, next: first, end, first, rendered: 0, started: std::time::Instant::now(), simulating: false, background: true, queue });
     }
 
     /// A small JPEG of composition `seq` at its time `t` (for composition
@@ -1317,6 +1373,9 @@ impl Editor {
     /// Render the next frames of a render-preview run, for up to ~40 ms.
     fn step_render_job(&mut self, sources: &HashMap<MediaId, PathBuf>) {
         let Some(mut job) = self.render_cache.job.take() else { return };
+        if job.background && (self.playback.playing || job.seq != self.active) {
+            return;
+        }
         if self.playback.playing {
             self.status = format!("Stopped {} to play ({} of {} frames done)", if job.simulating { "simulating" } else { "rendering the preview" }, job.next - job.first, job.end - job.first);
             return;
@@ -1327,7 +1386,19 @@ impl Editor {
         }
         let rate = self.project.sequences[job.seq].frame_rate;
         let budget = std::time::Instant::now();
-        while job.next < job.end && budget.elapsed() < std::time::Duration::from_millis(40) {
+        // In the background, less each tick, so the app stays quick to answer.
+        let slice = std::time::Duration::from_millis(if job.background { 25 } else { 40 });
+        while budget.elapsed() < slice {
+            if job.next >= job.end {
+                match job.queue.pop_front() {
+                    Some((a, b)) => (job.next, job.end, job.first) = (a, b, a),
+                    None => break,
+                }
+                continue;
+            }
+            if job.background && self.render_cache.nearly_full() {
+                break;
+            }
             let t = Time::from_frame(job.next, rate);
             let recipe = reelforge_export::frame_recipe(&self.project, job.seq, t, sources);
             if !self.render_cache.has(job.seq, job.next, recipe) {
@@ -1337,6 +1408,12 @@ impl Editor {
                         self.render_cache.insert(job.seq, job.next, recipe, size, rgba.into());
                         job.rendered += 1;
                     }
+                    None if job.background => {
+                        // Leave it for Render preview to report; don't try again until something changes.
+                        self.preview.error = None;
+                        self.idle.done = Some((self.rev, self.active));
+                        return;
+                    }
                     None => {
                         self.status = format!("Couldn't render the preview at {t}: {}", self.preview.error.take().unwrap_or_else(|| "no picture".into()));
                         return;
@@ -1344,6 +1421,18 @@ impl Editor {
                 }
             }
             job.next += 1;
+        }
+        if job.background {
+            let finished = (job.next >= job.end && job.queue.is_empty()) || self.render_cache.nearly_full();
+            if finished {
+                self.idle.done = Some((self.rev, self.active));
+                if job.rendered > 0 {
+                    self.status = format!("Rendered {} frame{} in the background, so they play smoothly", job.rendered, if job.rendered == 1 { "" } else { "s" });
+                }
+            } else {
+                self.render_cache.job = Some(job);
+            }
+            return;
         }
         if job.next >= job.end && job.simulating {
             let total = job.end - job.first;
@@ -4067,6 +4156,7 @@ impl Editor {
         let sources = self.decode_paths();
         // Rendered previews are of the edit, never the angle grid.
         reelforge_core::multicam::set_grid(false);
+        self.background_render();
         self.step_render_job(&sources);
         self.apply_view();
         reelforge_core::multicam::set_grid(self.multicam_grid);
@@ -5426,7 +5516,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_quality_is_full_half_or_quarter() {
+    fn playback_quality_is_full_half_quarter_or_eighth() {
         let mut e = editor();
         assert_eq!(e.prefs.playback_quality, 1);
         e.set_playback_quality(2);
@@ -5435,8 +5525,13 @@ mod tests {
         // Anything else rounds to the nearest offered.
         e.set_playback_quality(3);
         assert_eq!(e.prefs.playback_quality, 2);
-        e.set_playback_quality(8);
+        e.set_playback_quality(6);
         assert_eq!(e.prefs.playback_quality, 4);
+        e.set_playback_quality(8);
+        assert_eq!((e.prefs.playback_quality, e.preview.quality()), (8, 8));
+        assert!(e.status.contains("eighth"));
+        e.set_playback_quality(64);
+        assert_eq!(e.prefs.playback_quality, 8, "no lower than an eighth");
         e.set_playback_quality(0);
         assert_eq!(e.prefs.playback_quality, 0, "automatic");
         assert!(e.status.contains("automatic"));
@@ -5629,6 +5724,66 @@ mod tests {
         e.stop_render_preview();
         assert!(e.render_progress().is_none());
         assert!(e.status.starts_with("Stopped rendering"));
+    }
+
+    /// Background rendering: after a quiet spell, the heavy part (a solid with a glow) is
+    /// rendered by itself, the plain part after it isn't; anything done stops it; it
+    /// doesn't start again until something changes; switched off, never.
+    #[test]
+    fn renders_heavy_parts_in_the_background_when_idle() {
+        use reelforge_core::effects::{Effect, EffectKind};
+        let mut e = editor();
+        let s = Time::from_secs_f64;
+        let mut glowing = Clip::new(ClipId(30), MediaId::GENERATED, s(0.0), s(0.0), s(1.0), None);
+        glowing.plane = Some([200, 40, 40, 255]);
+        glowing.effects.push(Effect::new(EffectKind::Glow));
+        let mut plain = Clip::new(ClipId(31), MediaId::GENERATED, s(1.0), s(0.0), s(1.0), None);
+        plain.plane = Some([40, 40, 200, 255]);
+        e.project.sequences[e.active].tracks[0].clips = vec![glowing, plain];
+        e.touch();
+        let frames = |e: &Editor| e.render_cache.stats().1;
+        e.tick();
+        assert!(!e.background_rendering(), "not before it's been quiet a while");
+        e.idle.backdate(std::time::Duration::from_secs(60));
+        e.tick();
+        if !e.preview.has_gpu() {
+            return; // no graphics device here
+        }
+        assert!(e.background_rendering());
+        assert!(e.render_progress().is_none(), "not shown as a Render preview run");
+        for _ in 0..400 {
+            if !e.background_rendering() {
+                break;
+            }
+            e.tick();
+        }
+        assert!(!e.background_rendering(), "it finishes");
+        let rate = e.seq().frame_rate;
+        let heavy = reelforge_export::frame_range(rate, s(0.0), s(1.0));
+        assert_eq!(frames(&e) as i64, heavy.1 - heavy.0, "the glowing second, not the plain one");
+        assert!(e.status.contains("in the background"), "{}", e.status);
+        // Done: quiet again, nothing more to do.
+        e.idle.backdate(std::time::Duration::from_secs(60));
+        e.tick();
+        assert!(!e.background_rendering());
+        // An edit (a glow on the second clip too): it starts again after a quiet spell, and
+        // moving the playhead stops it at once.
+        let id = ClipId(31);
+        e.project.sequences[e.active].find_clip_mut(id).unwrap().1.effects.push(Effect::new(EffectKind::Glow));
+        e.touch();
+        e.tick();
+        assert!(!e.background_rendering());
+        e.idle.backdate(std::time::Duration::from_secs(60));
+        e.tick();
+        assert!(e.background_rendering());
+        e.seek(s(0.5));
+        e.tick();
+        assert!(!e.background_rendering(), "stopped by moving the playhead");
+        // Switched off: never.
+        e.prefs.background_render = false;
+        e.idle.backdate(std::time::Duration::from_secs(60));
+        e.tick();
+        assert!(!e.background_rendering());
     }
 
     #[test]

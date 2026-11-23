@@ -8,13 +8,14 @@
   import ViewerTools from "./ViewerTools.svelte";
   import { openMenu } from "../lib/menu.svelte";
 
-  // Playback quality: the picture at full, half or quarter resolution.
-  const QUALITY: Record<number, string> = { 1: "Full", 2: "½ res", 4: "¼ res" };
+  // Playback quality: the picture at full, half, quarter or eighth resolution.
+  const QUALITY: Record<number, string> = { 1: "Full", 2: "½ res", 4: "¼ res", 8: "⅛ res" };
+  const FRACTION: Record<number, string> = { 2: "½", 4: "¼", 8: "⅛" };
   const quality = $derived.by(() => {
     const q = app.s?.prefs.playback_quality ?? 1;
     if (q !== 0) return QUALITY[q] ?? "Full";
     const now = app.live?.viewer?.quality ?? 1;
-    return now === 1 ? "Auto" : `Auto ${now === 2 ? "½" : "¼"}`;
+    return now === 1 ? "Auto" : `Auto ${FRACTION[now] ?? "¼"}`;
   });
   function qualityMenu(e: MouseEvent) {
     const p = app.s?.prefs;
@@ -26,8 +27,10 @@
       { label: "Full resolution", checked: q === 1, run: () => run(api.setPlaybackQuality(1)) },
       { label: "Half resolution", checked: q === 2, run: () => run(api.setPlaybackQuality(2)) },
       { label: "Quarter resolution", checked: q === 4, run: () => run(api.setPlaybackQuality(4)) },
+      { label: "Eighth resolution (very heavy 4K/8K, slower computers)", checked: q === 8, run: () => run(api.setPlaybackQuality(8)) },
       { separator: true },
       { label: "Full resolution when paused", checked: !!p.full_when_paused, run: () => run(api.setFullWhenPaused(!p.full_when_paused)) },
+      { label: "Render in the background when idle", checked: !!p.background_render, run: () => run(api.setPrefs({ ...p, background_render: !p.background_render })) },
       { separator: true },
       { label: "Show frame rate while playing", checked: app.showFps, run: () => setShowFps(!app.showFps) },
     ]);
@@ -439,6 +442,7 @@
     <button class="ghost settings" onclick={() => (app.seqSettingsOpen = true)} title="Sequence settings: frame size, frame rate and pixel aspect">{app.s ? `${app.s.seq.width}×${app.s.seq.height}${app.s.seq.par !== 1 ? ` · ${app.s.seq.par_name} pixels` : ""} · ${(app.s.seq.rate_num / app.s.seq.rate_den).toFixed(3).replace(".000", "")} fps` : ""}</button>
     <span class="grow"></span>
     {#if app.live?.from_cache}<span class="rendered" title="Shown from Render preview">Rendered</span>{/if}
+    {#if app.live?.background_render}<span class="rendering" title="Rendering the heavy parts of the sequence (effects, transitions, stacked layers) while you're not editing, so they play smoothly. It stops the moment you do something. Turn it off in the Quality menu or Settings.">Rendering in background…</span>{/if}
     {#if app.showFps && perf && (perf.label || playing)}<span
         class="perf {perf.level}"
         role="status"
@@ -457,7 +461,7 @@
       class="chip quality"
       class:low={(app.live?.viewer?.quality ?? 1) > 1}
       aria-haspopup="menu"
-      title="Playback quality: draw the Viewer's picture at full, half or quarter resolution (footage is decoded that much smaller too), so heavy projects play smoothly; Automatic steps down by itself when playing falls behind and back up when it can. Export and Render preview always use full resolution."
+      title="Playback quality: draw the Viewer's picture at full, half, quarter or eighth resolution (footage is decoded that much smaller too), so heavy projects play smoothly; Automatic steps down by itself when playing falls behind and back up when it can. Export and Render preview always use full resolution."
       onclick={qualityMenu}>{quality}{#if app.s?.prefs.full_when_paused && (app.s?.prefs.playback_quality ?? 1) !== 1}<span class="paused-full" title="Full resolution when paused"> ⏸ full</span>{/if} ▾</button
     >
     {#if app.live?.multicam}
@@ -718,6 +722,13 @@
     font-size: calc(12px * var(--text-scale));
     font-weight: 600;
   }
+  .rendering {
+    color: var(--green);
+    font-size: calc(12px * var(--text-scale));
+    font-weight: 600;
+    opacity: 0.75;
+  }
+
   .stage {
     flex: 1;
     position: relative;

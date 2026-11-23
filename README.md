@@ -1296,14 +1296,18 @@ What works now:
   (**Hide frame rate**) or untick **Show frame rate while playing** in the Viewer's quality menu
   or **Viewer: frame rate while playing** in the Window menu; the choice is remembered on that
   computer. The Viewer's **playback quality**
-  (Full, ½ res, ¼ res) draws its picture at that fraction of full resolution and decodes footage
+  (Full, ½ res, ¼ res, ⅛ res) draws its picture at that fraction of full resolution and decodes footage
   that much smaller too, so heavy projects play smoothly; layers, effects and wipes keep their
-  places, and export and Render preview stay full. **Automatic** steps down by itself (full → ½ →
-  ¼) when playing falls behind (frames taking most of their time to draw, or a quarter of them
+  places, and export and Render preview stay full. ⅛ is for very heavy 4K/8K projects and slower
+  laptops. **Automatic** steps down by itself (full → ½ → ¼ → ⅛) when playing falls behind (frames taking most of their time to draw, or a quarter of them
   not ready in time) and back up after about 3 s with room to spare (8 s just after stepping
   down, so it doesn't see-saw); the button shows what it picked. In its menu, **Full resolution when paused**
   keeps the still picture sharp while playback stays light. Proxies are kept per file in your cache folder, so other
-  projects using the same footage reuse them. **Settings → Make proxies as** picks the format:
+  projects using the same footage reuse them. **Settings → Proxy size** picks how big they're
+  made: **360p** (640×360, the lightest, for slow computers and very heavy projects), **540p**
+  (960×540, the standard), **720p** or **1080p** (sharper, for judging focus; more disk space and
+  decoding). A proxy of another size is still used until Settings makes it again at the new one.
+  **Settings → Make proxies as** picks the format:
   - **H.264** (the default): the smallest files, decoded on the graphics card
   - **ProRes 422 Proxy**: 10-bit 4:2:2 colour, so grading looks closer to the original; about
     three times the size
@@ -1346,6 +1350,18 @@ What works now:
   RGB as it draws. Decoding 1080p is about twice as fast as before (3.1 ms a frame instead of
   6.0 ms in testing) and each frame takes 3.1 MB of memory instead of 8.3 MB, so the frame cache
   holds 2.7× as many
+- **Render in the background when idle** (Settings, or the Viewer's quality menu; on by
+  default): when nothing has been edited, played or moved for a few seconds (5 by default,
+  **…after** in Settings), the heavy parts of the sequence are rendered into the render cache by
+  themselves, as Render preview would, starting from the playhead: clips with an effect switched
+  on, masks, mesh warps, blend modes, track mattes, 3D, frame blending or optical flow,
+  compositions, transitions, and wherever pictures are stacked. Plain clips on their own aren't
+  (they play straight from their decoder). The Viewer says **Rendering in background…** while it
+  works; anything you do (editing, playing, moving the playhead) stops it at once, and it carries
+  on with what's left after the next quiet spell. It waits while exporting, tracking, upscaling,
+  matching colour, making proxies or converting camera RAW, and when the drive is nearly full;
+  with rendered previews kept in memory only, it stops when the render cache is nearly full
+  rather than push out frames already rendered
 - **Render preview** (`Enter`, or **Edit → Render preview**): renders every frame between the
   in and out marks (or the whole sequence) exactly, once, and keeps it, so stacks of effects and
   compositions play back smoothly. A green bar along the top of the ruler shows which frames are

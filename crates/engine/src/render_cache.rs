@@ -283,6 +283,10 @@ pub struct RenderJob {
     pub started: Instant,
     /// Run to work simulations out (Simulate now): said so as it goes.
     pub simulating: bool,
+    /// Started by itself while the editor was idle (stops quietly when anything happens).
+    pub background: bool,
+    /// More frame ranges to do after this one (background runs).
+    pub queue: std::collections::VecDeque<(i64, i64)>,
 }
 
 impl RenderJob {
@@ -312,6 +316,12 @@ pub struct RenderCache {
 impl RenderCache {
     pub fn new(budget_mb: usize) -> Self {
         Self { frames: HashMap::new(), lru: BTreeMap::new(), used: 0, budget: budget_mb << 20, clock: 0, generation: 0, job: None, disk: None, sims: None }
+    }
+
+    /// Memory nearly full, with nowhere on disk to keep more (rendering on would only push
+    /// out frames already rendered).
+    pub fn nearly_full(&self) -> bool {
+        self.disk.is_none() && self.used.saturating_mul(10) >= self.budget.saturating_mul(9)
     }
 
     pub fn set_budget_mb(&mut self, mb: usize) {

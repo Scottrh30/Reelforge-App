@@ -111,12 +111,15 @@ pub fn proxies_delete_all() -> Res<()> {
     })
 }
 
-/// Make new proxies as `format` (saved in the settings), and remake the
-/// project's existing ones in it. Returns how many are being remade.
+/// Make new proxies as `format` at `size` (saved in the settings), and remake
+/// the project's existing ones so. Returns how many are being remade.
 #[tauri::command]
-pub fn proxies_remake(format: reelforge_media::proxy::ProxyFormat) -> Res<usize> {
+pub fn proxies_remake(format: reelforge_media::proxy::ProxyFormat, size: Option<reelforge_media::proxy::ProxySize>) -> Res<usize> {
     ed(|e| {
         e.prefs.proxy_format = format;
+        if let Some(s) = size {
+            e.prefs.proxy_size = s;
+        }
         e.apply_prefs();
         crate::save_settings(e);
         e.remake_proxies()

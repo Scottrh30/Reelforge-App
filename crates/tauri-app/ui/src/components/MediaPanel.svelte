@@ -164,7 +164,7 @@
             {#if m.missing}
               <button class="flag bad" onclick={(e) => (e.stopPropagation(), run(api.relinkMedia(m.id)))} onpointerdown={(e) => e.stopPropagation()} title="Can't be found at {m.path}. Click to find it">Missing · Relink</button>
             {:else if m.proxy}
-              <span class="flag" class:bad={m.proxy === "failed"} class:ready={m.proxy === "ready"} title={m.proxy_error ?? (m.proxy === "ready" ? `A small ${m.proxy_format ?? ""} copy for smooth editing; export uses the original` : "")}>{proxyLabel(m)}</span>
+              <span class="flag" class:bad={m.proxy === "failed"} class:ready={m.proxy === "ready"} title={m.proxy_error ?? (m.proxy === "ready" ? `A small ${m.proxy_format ?? ""}${m.proxy_size ? `, ${m.proxy_size}` : ""} copy for smooth editing; export uses the original` : "")}>{proxyLabel(m)}</span>
             {/if}
             {#if app.live?.upscaling && app.live.upscaling[0] === m.id}<span class="flag ready" title="An AI-upscaled copy is being made (right-click to stop)">Upscaling {Math.round(app.live.upscaling[1] * 100)}%</span>{/if}
             {#if m.hdr}<span class="hdr" title="HDR footage ({m.hdr === 'PQ' ? 'HDR10, PQ' : 'HLG'}): its highlights are kept above white for HDR export; SDR shows and exports them cut at white">HDR</span>{/if}

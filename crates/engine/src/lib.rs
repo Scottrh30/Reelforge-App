@@ -13,6 +13,7 @@
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
 
 pub mod audio;
+pub mod background;
 pub mod camraw;
 pub mod collect;
 pub mod disk;

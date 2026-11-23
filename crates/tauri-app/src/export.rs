@@ -494,6 +494,7 @@ pub fn export_clear() {
 /// Called every tick: collect what running jobs report, and start the next
 /// waiting job when nothing is running.
 pub fn pump(e: &mut Editor) {
+    e.exporting = queue(|q| q.jobs.iter().any(|j| matches!(j.state, JobState::Running { .. })));
     queue(|q| {
         for job in &mut q.jobs {
             let JobState::Running { run, .. } = &job.state else { continue };
