@@ -1593,7 +1593,14 @@ What works now:
     and where two things land on the same spot the one in front wins, so they don't smear into
     each other. **Flow quality**: **Fast** (works out the motion on a quarter-HD copy), **Balanced**
     (half HD, the default) or **Best** (full size, refined more); better is slower. Export and
-    Render preview use it too. Footage deeper than 8 bits (10-bit, HDR, EXR) keeps its precision
+    Render preview use it too. Footage deeper than 8 bits (10-bit, HDR, EXR) keeps its precision.
+    On an **NVIDIA RTX** card (Windows) the motion comes from the card's **optical flow engine**
+    (NVOFA, separate hardware from the shaders, through NVIDIA's Optical Flow API in the driver:
+    nothing to install): quicker, better with fast motion, and worked out at more of the picture
+    (Fast 960 pixels across, Balanced 1920, Best up to 3840); the shaders still sort out what's
+    hidden and draw the frame. **Settings → Renders → Optical flow on NVIDIA's optical flow
+    engine** turns it off; Settings shows whether the engine was found. If it ever can't take a
+    pair, the shaders work out the motion as before
   - **Freeze frame** (`Shift+F`, the Edit menu, or the Speed section): holds the frame at the
     playhead for 2 s (trim it to taste), splitting the clip there and pushing the rest of it
     (and its audio) later. A freeze frame's **Play from here** turns it back into motion.

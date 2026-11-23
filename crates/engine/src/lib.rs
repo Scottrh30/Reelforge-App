@@ -22,6 +22,7 @@ pub mod editor;
 pub mod fx_presets;
 pub mod gizmo;
 pub mod gizmo3d;
+pub mod hwflow;
 pub mod meters;
 pub mod playback;
 pub mod plugins;

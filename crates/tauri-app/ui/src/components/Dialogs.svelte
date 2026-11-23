@@ -8,9 +8,14 @@
   let prefs = $state<Prefs | null>(null);
   let info = $state<SettingsInfo | null>(null);
   let rend = $state<Awaited<ReturnType<typeof api.renderers>> | null>(null);
+  let nvflow = $state("");
   $effect(() => {
     if (app.settingsOpen && app.s) {
       prefs = { ...app.s.prefs };
+      api
+        .nvidiaAvailable()
+        .then((v) => (nvflow = v?.flow_status ?? ""))
+        .catch(() => (nvflow = ""));
       api.settingsInfo().then((i) => (info = i));
       api.renderers().then((r) => (rend = r)).catch(() => (rend = null));
     }
@@ -83,6 +88,9 @@
           {/each}
         </select>
       </label>
+
+      <label class="check" title="Optical-flow slow motion and frame interpolation take their motion from the optical flow engine built into NVIDIA RTX cards (separate hardware from the shaders): quicker at large sizes, better with fast motion, and it lets the motion be worked out at more of the picture's size. Without it (or with this off) the shaders work it out as before."><input type="checkbox" bind:checked={prefs.flow_hardware} /> Optical flow on NVIDIA's optical flow engine</label>
+      {#if nvflow}<p class="info">Optical flow engine: {nvflow}</p>{/if}
 
       <h3>Playback</h3>
       <label class="check" title="Decode on the graphics card. Falls back to software by itself if it doesn't work. Applies to clips opened from now on."><input type="checkbox" bind:checked={prefs.hw_decode} /> Hardware video decoding{info ? ` (${info.hw_api})` : ""}</label>

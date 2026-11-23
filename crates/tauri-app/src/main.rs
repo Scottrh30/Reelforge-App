@@ -1226,11 +1226,14 @@ fn nvidia_media(media: u64, effect: reelforge_media::nvfx::NvEffect, replace: bo
 struct NvidiaHere {
     fx: bool,
     rtx: bool,
+    /// The optical flow engine: whether it opened, and what became of it.
+    flow: bool,
+    flow_status: String,
 }
 
 #[tauri::command]
 fn nvidia_available() -> NvidiaHere {
-    NvidiaHere { fx: reelforge_media::nvfx::available(), rtx: reelforge_media::rtxvideo::available() }
+    NvidiaHere { fx: reelforge_media::nvfx::available(), rtx: reelforge_media::rtxvideo::available(), flow: reelforge_engine::hwflow::ready(), flow_status: reelforge_engine::hwflow::status() }
 }
 
 #[tauri::command]
@@ -1796,6 +1799,7 @@ fn main() {
         return;
     }
     reelforge_media::init();
+    reelforge_engine::hwflow::start();
     let app = tauri::Builder::default()
         .setup(|app| {
             use tauri::Manager;

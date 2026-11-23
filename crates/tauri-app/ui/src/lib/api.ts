@@ -484,6 +484,7 @@ export interface Prefs {
   proxy_format: ProxyFormat;
   proxy_size: ProxySize;
   proxy_gpu: boolean;
+  flow_hardware: boolean;
   color_depth: ColorDepth;
   autosave_minutes: number;
   render_cache_mb: number;
@@ -1339,7 +1340,7 @@ export const api = {
   upscaleMedia: (media: number, factor: number, replace: boolean) => invoke("upscale_media", { media, factor, replace }),
   upscaleCancel: () => invoke("upscale_cancel"),
   nvidiaMedia: (media: number, effect: NvEffect, replace: boolean) => invoke("nvidia_media", { media, effect, replace }),
-  nvidiaAvailable: () => invoke<{ fx: boolean; rtx: boolean }>("nvidia_available"),
+  nvidiaAvailable: () => invoke<{ fx: boolean; rtx: boolean; flow: boolean; flow_status: string }>("nvidia_available"),
   proxyDelete: (media: number) => invoke("proxy_delete", { media }),
   proxiesDeleteAll: () => invoke("proxies_delete_all"),
   proxiesRemake: (format: ProxyFormat, size: ProxySize) => invoke<number>("proxies_remake", { format, size }),

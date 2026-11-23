@@ -13,6 +13,73 @@ use reelforge_core::FlowQuality;
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
+/// Motion worked out by dedicated hardware rather than these shaders: NVIDIA's optical
+/// flow engine (`reelforge_media::nvof`), handed over by the app at start-up.
+pub trait HardwareFlow: Send {
+    /// Grey frames `a`, `b` (`w` × `h`, a byte a pixel) → the motion A to B and B to A, a
+    /// vector per pixel in pixels (`a[p] ≈ b[p + ab[p]]`). `None`: it couldn't (the
+    /// shaders work it out instead).
+    fn flow(&mut self, a: &[u8], b: &[u8], w: u32, h: u32, quality: FlowQuality) -> Option<(Vec<[f32; 2]>, Vec<[f32; 2]>)>;
+}
+
+static HARDWARE: std::sync::OnceLock<std::sync::Mutex<Box<dyn HardwareFlow>>> = std::sync::OnceLock::new();
+static USE_HARDWARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Use `h` for optical flow's motion from now on (once; later calls are ignored).
+pub fn set_hardware_flow(h: Box<dyn HardwareFlow>) {
+    let _ = HARDWARE.set(std::sync::Mutex::new(h));
+}
+
+/// Switch the hardware on or off (a setting).
+pub fn use_hardware_flow(on: bool) {
+    USE_HARDWARE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Optical flow's motion comes from the hardware.
+pub fn hardware_flow_on() -> bool {
+    HARDWARE.get().is_some() && USE_HARDWARE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The working size (longer side) with the hardware: it's fast enough to look at more.
+fn hardware_long(q: FlowQuality) -> u32 {
+    match q {
+        FlowQuality::Fast => 960,
+        FlowQuality::Balanced => 1920,
+        FlowQuality::Best => 3840,
+    }
+}
+
+/// A frame as grey bytes at `out` (area-averaged down from `size`), for the hardware.
+pub fn grey_at(f: &Pixels, size: [u32; 2], out: [u32; 2]) -> Vec<u8> {
+    let rgba = f.to_rgba();
+    let [w, h] = size;
+    let [ow, oh] = out;
+    let mut g = Vec::with_capacity((ow as usize).saturating_mul(oh as usize));
+    if w == 0 || h == 0 || ow == 0 || oh == 0 {
+        return g;
+    }
+    for y in 0..oh {
+        let y0 = (y as u64 * h as u64 / oh as u64) as u32;
+        let y1 = (((y + 1) as u64 * h as u64).div_ceil(oh as u64) as u32).clamp(y0 + 1, h);
+        for x in 0..ow {
+            let x0 = (x as u64 * w as u64 / ow as u64) as u32;
+            let x1 = (((x + 1) as u64 * w as u64).div_ceil(ow as u64) as u32).clamp(x0 + 1, w);
+            let (mut sum, mut n) = (0u64, 0u64);
+            for yy in y0..y1 {
+                for xx in x0..x1 {
+                    let i = (yy as usize * w as usize + xx as usize) * 4;
+                    if let Some(p) = rgba.get(i..i + 3) {
+                        sum += (p[0] as u64 * 54 + p[1] as u64 * 183 + p[2] as u64 * 19) >> 8;
+                        n += 1;
+                    }
+                }
+            }
+            g.push(sum.checked_div(n).unwrap_or(0).min(255) as u8);
+        }
+    }
+    g
+}
+
 /// Settings per quality: working size (longer side), match radius, iterations per level.
 fn settings(q: FlowQuality) -> (u32, i32, u32) {
     match q {
@@ -89,6 +156,8 @@ struct Pair {
     b: Option<Input>,
     target: wgpu::Texture,
     estimated: bool,
+    /// The motion came from the hardware.
+    hw: bool,
     used: u64,
 }
 
@@ -153,7 +222,9 @@ impl FlowInterp {
                 self.pairs.remove(&old);
             }
         }
-        let (long, radius, iters) = settings(quality);
+        let (soft_long, radius, iters) = settings(quality);
+        let hw = hardware_flow_on();
+        let long = if hw { hardware_long(quality) } else { soft_long };
         let k = (w.max(h) as f32 / long as f32).max(1.0);
         let lw = ((w as f32 / k).round() as u32).max(8);
         let lh = ((h as f32 / k).round() as u32).max(8);
@@ -164,12 +235,17 @@ impl FlowInterp {
         }
         let mut pair = self.pairs.remove(&slot)?;
         pair.used = tick;
-        if pair.key != key || !pair.estimated {
+        if pair.key != key || !pair.estimated || pair.hw != hw {
             pair.a = Some(self.upload(pair.a.take(), a, size));
             pair.b = Some(self.upload(pair.b.take(), b, size));
-            self.estimate(&pair, radius, iters);
+            let by_hardware = hw && self.estimate_hw(&pair, a, b, size, quality);
+            if !by_hardware {
+                // (The working size may be the hardware's: the shaders manage any size.)
+                self.estimate(&pair, radius, iters);
+            }
             pair.key = key;
             pair.estimated = true;
+            pair.hw = hw;
         }
         let result = self.synthesise(&pair, t);
         self.pairs.insert(slot, pair);
@@ -251,6 +327,7 @@ impl FlowInterp {
             b: None,
             target,
             estimated: false,
+            hw: false,
             used: 0,
         }
     }
@@ -348,10 +425,47 @@ impl FlowInterp {
                 }
             }
         }
+        self.finish(&mut enc, p);
+        self.queue.submit([enc.finish()]);
+    }
+
+    /// The motion from the hardware: grey frames to it at the working size, its vectors
+    /// into the finest level, then the same visibility check and filling as the shaders'
+    /// own. `false`: it couldn't (nothing changed).
+    fn estimate_hw(&self, p: &Pair, a: &Pixels, b: &Pixels, size: [u32; 2], quality: FlowQuality) -> bool {
+        let Some(ia) = &p.a else { return false };
+        let Some(ib) = &p.b else { return false };
+        let Some(&l0) = p.levels.first() else { return false };
+        let (ga, gb) = (grey_at(a, size, l0), grey_at(b, size, l0));
+        let Some(hw) = HARDWARE.get() else { return false };
+        let got = hw.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flow(&ga, &gb, l0[0], l0[1], quality);
+        let Some((ab, ba)) = got else { return false };
+        let n = l0[0] as usize * l0[1] as usize;
+        if ab.len() != n || ba.len() != n {
+            return false;
+        }
+        let (Some(fab), Some(fba), Some(gra), Some(grb)) = (p.ab.first(), p.ba.first(), p.grey_a.first(), p.grey_b.first()) else { return false };
+        let bytes = |v: &[[f32; 2]]| -> Vec<u8> { v.iter().flat_map(|f| [f[0], f[1], 0.0, 0.0]).flat_map(|x| x.to_le_bytes()).collect() };
+        self.queue.write_buffer(fab, 0, &bytes(&ab));
+        self.queue.write_buffer(fba, 0, &bytes(&ba));
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        let samp = wgpu::BindingResource::Sampler(&self.sampler);
+        for (tex, grey) in [(&ia.view, gra), (&ib.view, grb)] {
+            self.dispatch(&mut enc, "grey_tex", Params::level(l0[0], l0[1]), l0, &[(1, wgpu::BindingResource::TextureView(tex)), (3, samp.clone()), (6, grey.as_entire_binding())]);
+        }
+        self.finish(&mut enc, p);
+        self.queue.submit([enc.finish()]);
+        true
+    }
+
+    /// After the motion: what each frame sees that the other doesn't, and motion for
+    /// what's hidden.
+    fn finish(&self, enc: &mut wgpu::CommandEncoder, p: &Pair) {
+        let l0 = p.levels[0];
         // What each frame sees that the other doesn't.
         let n0 = l0[0] as u64 * l0[1] as u64 * 16;
         for (this, other) in [(&p.ab[0], &p.ba[0]), (&p.ba[0], &p.ab[0])] {
-            self.dispatch(&mut enc, "occlusion", Params::level(l0[0], l0[1]), l0, &[(7, this.as_entire_binding()), (9, other.as_entire_binding()), (8, p.tmp.as_entire_binding())]);
+            self.dispatch(enc, "occlusion", Params::level(l0[0], l0[1]), l0, &[(7, this.as_entire_binding()), (9, other.as_entire_binding()), (8, p.tmp.as_entire_binding())]);
             enc.copy_buffer_to_buffer(&p.tmp, 0, this, 0, n0);
         }
         // Motion for what's hidden, from what's around it.
@@ -366,11 +480,10 @@ impl FlowInterp {
         for (grey, flow) in [(&p.grey_a[0], &p.ab[0]), (&p.grey_b[0], &p.ba[0])] {
             for &(stride, any) in &passes {
                 let prm = Params { radius: stride, wide: any, ..Params::level(l0[0], l0[1]) };
-                self.dispatch(&mut enc, "fill", prm, l0, &[(4, grey.as_entire_binding()), (7, flow.as_entire_binding()), (8, p.tmp.as_entire_binding())]);
+                self.dispatch(enc, "fill", prm, l0, &[(4, grey.as_entire_binding()), (7, flow.as_entire_binding()), (8, p.tmp.as_entire_binding())]);
                 enc.copy_buffer_to_buffer(&p.tmp, 0, flow, 0, n0);
             }
         }
-        self.queue.submit([enc.finish()]);
     }
 
     fn synthesise(&self, p: &Pair, t: f32) -> Option<FloatPixels> {

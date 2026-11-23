@@ -23,6 +23,7 @@ pub mod hw;
 mod zerocopy;
 pub mod mixer;
 pub mod native;
+pub mod nvof;
 pub mod nvfx;
 pub mod probe;
 pub mod prores_raw;
