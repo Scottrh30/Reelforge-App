@@ -4,7 +4,7 @@
   import { app, run, say, setPanel, setShowFps } from "../lib/session.svelte";
   import { actions, askText, checkUnsaved, question } from "../lib/actions.svelte";
   import { openMenu, type MenuItem } from "../lib/menu.svelte";
-  import { api, type RecentView } from "../lib/api";
+  import { api, COLOR_DEPTHS, type RecentView } from "../lib/api";
   import { openPrefs } from "../lib/prefs.svelte";
   import { view } from "../lib/timeline.svelte";
 
@@ -121,6 +121,23 @@
       { label: "Effects…", hint: "E", run: () => (app.effectsOpen = true) },
       { label: "Plugins…", run: () => (app.pluginsOpen = true) },
       { separator: true },
+      {
+        label: "Settings",
+        submenu: [
+          { label: "Renders", heading: true },
+          {
+            label: "Default Color Bit Depth",
+            hint: COLOR_DEPTHS.find(([d]) => d === (app.s?.prefs?.color_depth ?? "HalfLinear"))?.[1],
+            submenu: COLOR_DEPTHS.map(([d, label]) => ({
+              label,
+              checked: (app.s?.prefs?.color_depth ?? "HalfLinear") === d,
+              run: () => run(api.setColorDepth(d)),
+            })),
+          },
+          { separator: true },
+          { label: "All settings…", run: () => (app.settingsOpen = true) },
+        ],
+      },
       {
         label: "Preferences",
         submenu: [

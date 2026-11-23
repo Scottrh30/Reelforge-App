@@ -10,6 +10,27 @@ fn vs_fullscreen(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> 
     return vec4(x, y, 0.0, 1.0);
 }
 
+// The frame holds gamma-encoded display values (8-bit, 16/32-bit float without linear
+// colour): decoded to linear light as it's read (see composite.wgsl).
+override GAMMA: bool = false;
+
+// The frame at `p`, premultiplied linear light.
+fn frame_at(p: vec4<f32>) -> vec4<f32> {
+    let c = textureLoad(accum, vec2<i32>(p.xy), 0);
+    if (!GAMMA || c.a <= 1e-6) {
+        return c;
+    }
+    let s = max(c.rgb / c.a, vec3(0.0));
+    let lin = select(pow((s + 0.055) / 1.055, vec3(2.4)), s / 12.92, s <= vec3(0.04045));
+    return vec4(lin * c.a, c.a);
+}
+
+// The frame as premultiplied linear half floats (read back for compositions).
+@fragment
+fn fs_linear(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return frame_at(p);
+}
+
 fn srgb_from_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c * 12.92;
     let hi = 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
@@ -18,7 +39,7 @@ fn srgb_from_linear(c: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_output(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(accum, vec2<i32>(p.xy), 0);
+    let c = frame_at(p);
     return vec4(srgb_from_linear(clamp(c.rgb, vec3(0.0), vec3(1.0))), 1.0);
 }
 
@@ -26,7 +47,7 @@ fn fs_output(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
 // coverage, as straight (not premultiplied) alpha.
 @fragment
 fn fs_output_alpha(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(accum, vec2<i32>(p.xy), 0);
+    let c = frame_at(p);
     let a = clamp(c.a, 0.0, 1.0);
     if (a <= 0.0) {
         return vec4(0.0);
@@ -74,14 +95,14 @@ const HLG_SDR_WHITE = 0.26496256;
 
 @fragment
 fn fs_deep_srgb(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(accum, vec2<i32>(p.xy), 0);
+    let c = frame_at(p);
     return vec4(srgb_from_linear(clamp(c.rgb, vec3(0.0), vec3(1.0))), 1.0);
 }
 
 // The same with the coverage kept, as straight alpha (transparent exports).
 @fragment
 fn fs_deep_srgb_alpha(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(accum, vec2<i32>(p.xy), 0);
+    let c = frame_at(p);
     let a = clamp(c.a, 0.0, 1.0);
     if (a <= 0.0) {
         return vec4(0.0);
@@ -91,14 +112,14 @@ fn fs_deep_srgb_alpha(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32>
 
 @fragment
 fn fs_deep_pq(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(accum, vec2<i32>(p.xy), 0);
+    let c = frame_at(p);
     let wide = max(BT709_TO_2020 * c.rgb, vec3(0.0));
     return vec4(pq_from_linear(wide * (SDR_WHITE_NITS / 10000.0)), 1.0);
 }
 
 @fragment
 fn fs_deep_hlg(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(accum, vec2<i32>(p.xy), 0);
+    let c = frame_at(p);
     let wide = max(BT709_TO_2020 * c.rgb, vec3(0.0));
     return vec4(hlg_from_linear(wide * HLG_SDR_WHITE), 1.0);
 }

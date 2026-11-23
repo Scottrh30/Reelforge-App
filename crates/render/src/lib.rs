@@ -113,7 +113,59 @@ pub mod flowgpu;
 pub mod bench;
 pub use solid::SolidInput;
 
+/// The standard working format (16-bit float); see [`Formats`] for the others.
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub use reelforge_core::depth::ColorDepth;
+
+/// The textures a colour bit depth works in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Formats {
+    /// The depth worked at (the one asked for, or the nearest this graphics card can do).
+    pub depth: ColorDepth,
+    /// The frame being composited (and its backdrop copy).
+    pub accum: wgpu::TextureFormat,
+    /// Everything in between: effects, dissolves, mattes (always linear light).
+    pub inter: wgpu::TextureFormat,
+    /// The frame holds gamma-encoded values (layers blend in display values), else
+    /// linear light.
+    pub gamma: bool,
+}
+
+impl Formats {
+    /// The formats for `depth` on a device with `features` (32-bit float needs it to
+    /// filter and blend 32-bit float textures; without, 16-bit).
+    pub fn for_depth(depth: ColorDepth, features: wgpu::Features) -> Formats {
+        use wgpu::TextureFormat as F;
+        let f32_ok = features.contains(wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::FLOAT32_BLENDABLE);
+        let depth = if depth.bits() == 32 && !f32_ok { depth.at_most_half() } else { depth };
+        let (accum, inter) = match depth.bits() {
+            // The frame as 8-bit display values; what's in between kept linear in 8-bit
+            // sRGB textures (so darks don't band).
+            8 => (F::Rgba8Unorm, F::Rgba8UnormSrgb),
+            32 => (F::Rgba32Float, F::Rgba32Float),
+            _ => (F::Rgba16Float, F::Rgba16Float),
+        };
+        Formats { depth, accum, inter, gamma: !depth.linear() }
+    }
+}
+
+static DEFAULT_DEPTH: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+
+/// The colour bit depth compositors made from now on work at (Settings).
+pub fn set_default_depth(d: ColorDepth) {
+    let i = ColorDepth::ALL.iter().position(|x| *x == d).unwrap_or(2);
+    DEFAULT_DEPTH.store(i as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn default_depth() -> ColorDepth {
+    ColorDepth::ALL.get(DEFAULT_DEPTH.load(std::sync::atomic::Ordering::Relaxed) as usize).copied().unwrap_or_default()
+}
+
+/// The device features worth having when the graphics card offers them: 32-bit float
+/// textures to filter and blend (for 32-bit float rendering).
+fn wanted_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    adapter.features() & (wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::FLOAT32_BLENDABLE)
+}
 const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// For floating-point pictures (EXR).
 const FLOAT_LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -337,6 +389,11 @@ struct Targets {
 }
 
 pub struct Compositor {
+    /// The colour bit depth worked at, and its textures.
+    formats: Formats,
+    /// Dissolves and mattes mixed in display values, drawn onto a frame of them (only
+    /// when the frame holds display values).
+    encoded_group_pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
     /// A clear 1 × 1 texture, for an effect pass whose second texture is optional.
     blank_second: wgpu::BindGroup,
     device: wgpu::Device,
@@ -368,7 +425,8 @@ pub struct Compositor {
     /// Track mattes, by kind (see [`DrawItem::Matted`]).
     matte_pipelines: [wgpu::RenderPipeline; 4],
     /// 16-bit export outputs: sRGB, PQ, HLG.
-    deep_pipelines: [wgpu::RenderPipeline; 4],
+    /// (and the frame as linear half floats, last)
+    deep_pipelines: [wgpu::RenderPipeline; 5],
     /// Render over transparency and keep the alpha in the output (for composite
     /// shots, which are layered again), instead of over opaque black.
     pub transparent: bool,
@@ -441,7 +499,20 @@ fn blend_state(mode: BlendMode) -> wgpu::BlendState {
 }
 
 impl Compositor {
+    /// A compositor at the default colour bit depth ([`set_default_depth`]).
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        Self::with_depth(device, queue, default_depth())
+    }
+
+    /// The colour bit depth worked at (the one asked for, or the nearest the graphics
+    /// card can do).
+    pub fn depth(&self) -> ColorDepth {
+        self.formats.depth
+    }
+
+    /// A compositor working at colour bit depth `depth`.
+    pub fn with_depth(device: &wgpu::Device, queue: &wgpu::Queue, depth: ColorDepth) -> Self {
+        let formats = Formats::for_depth(depth, device.features());
         // (Neon path can follow a title's letters, which only the renderer can lay out.)
         reelforge_core::neonpath::set_letter_outlines(text3d::letter_outlines);
         let layer_shader = device.create_shader_module(wgpu::include_wgsl!("composite.wgsl"));
@@ -521,8 +592,20 @@ impl Compositor {
             bind_group_layouts: &[Some(&uniform_layout), Some(&texture_layout), Some(&output_layout)],
             immediate_size: 0,
         });
-        let make_full = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>, depth: bool, third: bool| {
-            let constants: Vec<(&str, f64)> = mode.map(|m| ("MODE", m as f64)).into_iter().chain(depth.then_some(("DEPTH_CUT", DEPTH_CUT))).collect();
+        // `onto_frame`: draws onto the frame (else onto a dissolve's or matte's scratch):
+        // at the frame's format, gamma-encoding what it draws when the frame holds
+        // display values.
+        // In display values (no linear colour), a dissolve's or matte's scratch is summed
+        // encoded too (`onto_frame` false), and drawn onto the frame as it is (`encoded`).
+        let make_enc = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>, depth: bool, third: bool, onto_frame: bool, encoded: bool| {
+            let constants: Vec<(&str, f64)> = mode
+                .map(|m| ("MODE", m as f64))
+                .into_iter()
+                .chain(depth.then_some(("DEPTH_CUT", DEPTH_CUT)))
+                .chain(formats.gamma.then_some(("GAMMA", 1.0)))
+                .chain(encoded.then_some(("SRC_ENCODED", 1.0)))
+                .collect();
+            let target = if onto_frame { formats.accum } else { formats.inter };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(if mode.is_some() || third { &blend_pl } else { &layer_pl }),
@@ -536,7 +619,7 @@ impl Compositor {
                     module: &layer_shader,
                     entry_point: Some(entry),
                     compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
-                    targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format: target, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 primitive: wgpu::PrimitiveState::default(), // no culling: flips/negative scale are fine
                 depth_stencil: depth.then(|| wgpu::DepthStencilState {
@@ -551,12 +634,13 @@ impl Compositor {
                 cache: None,
             })
         };
-        let make_with = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>| make_full(label, entry, blend, mode, false, false);
+        let make_full = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>, depth: bool, third: bool, onto_frame: bool| make_enc(label, entry, blend, mode, depth, third, onto_frame, false);
+        let make_with = |label: &str, entry: &str, blend: wgpu::BlendState, mode: Option<usize>| make_full(label, entry, blend, mode, false, false, true);
         let make = |label: &str, entry: &str, blend: wgpu::BlendState| make_with(label, entry, blend, None);
         // 3D runs: depth-tested, for every blend mode that doesn't read the frame under it.
         // (3D text brings its own depth picture as the third texture.)
         let per_mode_3d = |entry: &str, third: bool| -> HashMap<BlendMode, wgpu::RenderPipeline> {
-            BlendMode::ALL.into_iter().filter(|m| !m.reads_backdrop()).map(|m| (m, make_full(m.label(), entry, blend_state(m), None, true, third))).collect()
+            BlendMode::ALL.into_iter().filter(|m| !m.reads_backdrop()).map(|m| (m, make_full(m.label(), entry, blend_state(m), None, true, third, true))).collect()
         };
         let per_mode = |plain: &str, blend_entry: &str| -> HashMap<BlendMode, wgpu::RenderPipeline> {
             BlendMode::ALL
@@ -570,13 +654,26 @@ impl Compositor {
         let wrap_pipelines = per_mode_wrap("fs_wrap");
         let wrap_group_pipelines = per_mode_wrap("fs_wrap_premul");
         let group_pipelines = per_mode("fs_layer_premul", "fs_blend_premul");
+        // A dissolve or matte mixed in display values, drawn onto a frame of them.
+        let encoded_group_pipelines: HashMap<BlendMode, wgpu::RenderPipeline> = if formats.gamma {
+            BlendMode::ALL
+                .into_iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let (entry, mode) = if m.reads_backdrop() { ("fs_blend_premul", Some(i)) } else { ("fs_layer_premul", None) };
+                    (m, make_enc(m.label(), entry, blend_state(m), mode, false, false, true, true))
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
         let layer_pipelines_3d = per_mode_3d("fs_layer", false);
         let group_pipelines_3d = per_mode_3d("fs_layer_premul", false);
         let solid_pipelines_3d = per_mode_3d("fs_solid", true);
         let solid_group_pipelines_3d = per_mode_3d("fs_solid_premul", true);
         let sum = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-        let sum_pipeline = make("dissolve sum", "fs_layer", wgpu::BlendState { color: sum, alpha: sum });
-        let sum_premul_pipeline = make("dissolve sum (premultiplied)", "fs_layer_premul", wgpu::BlendState { color: sum, alpha: sum });
+        let sum_pipeline = make_full("dissolve sum", "fs_layer", wgpu::BlendState { color: sum, alpha: sum }, None, false, false, false);
+        let sum_premul_pipeline = make_full("dissolve sum (premultiplied)", "fs_layer_premul", wgpu::BlendState { color: sum, alpha: sum }, None, false, false, false);
 
         // Effect passes.
         let fx_shader = device.create_shader_module(wgpu::include_wgsl!("effects.wgsl"));
@@ -616,7 +713,7 @@ impl Compositor {
                         module: &mask_shader,
                         entry_point: Some(entry),
                         compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                        targets: &[Some(wgpu::ColorTargetState { format: formats.inter, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                     }),
                     primitive: wgpu::PrimitiveState::default(),
                     depth_stencil: None,
@@ -627,7 +724,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -643,7 +740,7 @@ impl Compositor {
                         module: &fx_shader,
                         entry_point: Some(entry),
                         compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                        targets: &[Some(wgpu::ColorTargetState { format: formats.inter, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                     }),
                     primitive: wgpu::PrimitiveState::default(),
                     depth_stencil: None,
@@ -667,7 +764,7 @@ impl Compositor {
                     module: &water_shader,
                     entry_point: Some(entry),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format: formats.inter, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
@@ -701,6 +798,8 @@ impl Compositor {
             bind_group_layouts: &[Some(&output_layout)],
             immediate_size: 0,
         });
+        // The frame's values decoded from gamma first, where it holds display values.
+        let output_constants: Vec<(&str, f64)> = if formats.gamma { vec![("GAMMA", 1.0)] } else { vec![] };
         let output_pipeline_with = |entry: &str, format: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
@@ -714,7 +813,7 @@ impl Compositor {
                 fragment: Some(wgpu::FragmentState {
                     module: &output_shader,
                     entry_point: Some(entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions { constants: &output_constants, ..Default::default() },
                     targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 primitive: wgpu::PrimitiveState::default(),
@@ -726,7 +825,7 @@ impl Compositor {
         };
         let output_pipeline = output_pipeline_with("fs_output", OUTPUT_FORMAT);
         let output_alpha_pipeline = output_pipeline_with("fs_output_alpha", OUTPUT_FORMAT);
-        let deep_pipelines = ["fs_deep_srgb", "fs_deep_pq", "fs_deep_hlg", "fs_deep_srgb_alpha"].map(|e| output_pipeline_with(e, DEEP_FORMAT));
+        let deep_pipelines = ["fs_deep_srgb", "fs_deep_pq", "fs_deep_hlg", "fs_deep_srgb_alpha", "fs_linear"].map(|e| output_pipeline_with(e, DEEP_FORMAT));
         let matte_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("track mattes"), source: wgpu::ShaderSource::Wgsl(include_str!("matte.wgsl").into()) });
         let matte_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("track mattes"), bind_group_layouts: &[Some(&output_layout), Some(&output_layout)], immediate_size: 0 });
         let matte_pipelines = ["fs_matte_alpha", "fs_matte_alpha_inv", "fs_matte_luma", "fs_matte_luma_inv"].map(|entry| {
@@ -734,7 +833,7 @@ impl Compositor {
                 label: Some(entry),
                 layout: Some(&matte_pl),
                 vertex: wgpu::VertexState { module: &matte_shader, entry_point: Some("vs_fullscreen"), compilation_options: Default::default(), buffers: &[] },
-                fragment: Some(wgpu::FragmentState { module: &matte_shader, entry_point: Some(entry), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+                fragment: Some(wgpu::FragmentState { module: &matte_shader, entry_point: Some(entry), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: formats.inter, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
@@ -841,7 +940,9 @@ impl Compositor {
             deep_pipelines,
             yuv: yuv::YuvConverter::new(device, LAYER_FORMAT, FLOAT_LAYER_FORMAT),
             solid: solid::SolidRenderer::new(device, queue, LAYER_FORMAT),
-            particles: particles::ParticleRenderer::new(device, &fx_pl, ACCUM_FORMAT),
+            particles: particles::ParticleRenderer::new(device, &fx_pl, formats.inter),
+            formats,
+            encoded_group_pipelines,
             fluid: fluidgpu::FluidGpu::new(device, queue),
             water: watergpu::WaterGpu::new(device, queue),
             liquid3d: liquid3dgpu::Liquid3dGpu::new(device, queue),
@@ -907,7 +1008,7 @@ impl Compositor {
                                 module: &module,
                                 entry_point: Some(&entry),
                                 compilation_options: Default::default(),
-                                targets: &[Some(wgpu::ColorTargetState { format: ACCUM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                                targets: &[Some(wgpu::ColorTargetState { format: self.formats.inter, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                             }),
                             primitive: wgpu::PrimitiveState::default(),
                             depth_stencil: None,
@@ -957,14 +1058,14 @@ impl Compositor {
             })
         };
         use wgpu::TextureUsages as U;
-        let accum = tex("accum", ACCUM_FORMAT, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC);
-        let backdrop = tex("backdrop", ACCUM_FORMAT, U::TEXTURE_BINDING | U::COPY_DST);
+        let accum = tex("accum", self.formats.accum, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC);
+        let backdrop = tex("backdrop", self.formats.accum, U::TEXTURE_BINDING | U::COPY_DST);
         let backdrop_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("backdrop"),
             layout: &self.output_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&backdrop.create_view(&Default::default())) }],
         });
-        let group = tex("dissolve group", ACCUM_FORMAT, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING);
+        let group = tex("dissolve group", self.formats.inter, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING);
         let group_view = group.create_view(&Default::default());
         let group_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("dissolve group"),
@@ -994,10 +1095,10 @@ impl Compositor {
         let load = |label, view: &wgpu::TextureView| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(label), layout: &self.output_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) }] })
         };
-        let matte_view = tex("track matte", ACCUM_FORMAT, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING).create_view(&Default::default());
+        let matte_view = tex("track matte", self.formats.inter, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING).create_view(&Default::default());
         let matte_load = load("track matte", &matte_view);
         let group_load = load("matted layer", &group_view);
-        let matted_view = tex("matted", ACCUM_FORMAT, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING).create_view(&Default::default());
+        let matted_view = tex("matted", self.formats.inter, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING).create_view(&Default::default());
         let matted_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("matted"),
             layout: &self.texture_layout,
@@ -1229,7 +1330,7 @@ impl Compositor {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: ACCUM_FORMAT,
+                format: self.formats.inter,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
@@ -1548,7 +1649,7 @@ impl Compositor {
             // The frame so far is premultiplied already: copied as it is.
             // A float layer is premultiplied already, so it's copied rather than imported.
             let float = self.layers.get(&l.key).is_some_and(|t| t.float);
-            let (entry, src) = if below { ("fs_copy", Src::Below) } else if float { ("fs_import_float", Src::Layer) } else { ("fs_import", Src::Layer) };
+            let (entry, src) = if below { (if self.formats.gamma { "fs_from_gamma" } else { "fs_copy" }, Src::Below) } else if float { ("fs_import_float", Src::Layer) } else { ("fs_import", Src::Layer) };
             fx_passes.push(FxPass { key, entry, src, second: Second::None, dst: 0, uniform: [0.0; FX_FLOATS], plugin: None, particles: None });
             let mut cur = 0usize;
             // Plugin passes pushed for this layer: (index in fx_passes, revision, pass).
@@ -2879,7 +2980,7 @@ impl Compositor {
                     if read {
                         pass.set_bind_group(2, &targets.backdrop_bind, &[]);
                     }
-                    pass.set_pipeline(&self.group_pipelines[blend]);
+                    pass.set_pipeline(self.encoded_group_pipelines.get(blend).unwrap_or(&self.group_pipelines[blend]));
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(*over)]);
                     pass.set_bind_group(1, &targets.matted_bind, &[]);
                     pass.draw(0..6, 0..1);
@@ -2901,7 +3002,7 @@ impl Compositor {
                     if read {
                         pass.set_bind_group(2, &targets.backdrop_bind, &[]);
                     }
-                    pass.set_pipeline(&self.group_pipelines[blend]);
+                    pass.set_pipeline(self.encoded_group_pipelines.get(blend).unwrap_or(&self.group_pipelines[blend]));
                     pass.set_bind_group(0, &self.uniform_bind, &[offset(*over)]);
                     pass.set_bind_group(1, &targets.group_bind, &[]);
                     pass.draw(0..6, 0..1);
@@ -2945,9 +3046,50 @@ impl Compositor {
     /// picture loses nothing on the way into the outer sequence). Blocks on the GPU.
     pub fn read_output_linear(&self) -> Option<reelforge_core::frame::FloatPixels> {
         let t = self.targets.as_ref()?;
-        let raw = self.read_texture(&t.accum, t.size, 8)?;
+        let raw = if self.formats.accum == ACCUM_FORMAT && !self.formats.gamma {
+            self.read_texture(&t.accum, t.size, 8)?
+        } else {
+            // Another format, or display values: through the output pass to half floats.
+            self.read_through(4)?
+        };
         let rgba = raw.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
         Some(reelforge_core::frame::FloatPixels { width: t.size[0], height: t.size[1], rgba })
+    }
+
+    /// The frame drawn by deep pipeline `i` into a half-float texture and read back
+    /// (8 bytes a pixel, rows packed). Blocks on the GPU.
+    fn read_through(&self, i: usize) -> Option<Vec<u8>> {
+        let t = self.targets.as_ref()?;
+        let [w, h] = t.size;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("frame readout"),
+            size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEEP_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("frame readout"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(self.deep_pipelines.get(i)?);
+            pass.set_bind_group(0, &t.output_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+        self.read_texture(&texture, t.size, 8)
     }
 
     /// A layer texture as 8 bits per channel (a half-float one scaled to
@@ -3209,7 +3351,7 @@ pub fn renderers() -> Vec<RendererInfo> {
 /// hasn't one of that kind.
 pub fn device_for(kind: RenderDevice) -> Option<(wgpu::Device, wgpu::Queue)> {
     let adapter = adapter_for(kind)?;
-    let (d, q) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+    let (d, q) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_features: wanted_features(&adapter), ..Default::default() })).ok()?;
     if let Ok(mut g) = ADAPTER.lock() {
         *g = Some(describe(&adapter));
     }
@@ -3220,7 +3362,7 @@ pub fn device_for(kind: RenderDevice) -> Option<(wgpu::Device, wgpu::Queue)> {
 pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    let dev = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+    let dev = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_features: wanted_features(&adapter), ..Default::default() })).ok()?;
     if let Ok(mut g) = ADAPTER.lock() {
         if g.is_none() {
             *g = Some(describe(&adapter));

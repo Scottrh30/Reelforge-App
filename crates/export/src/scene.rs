@@ -947,6 +947,12 @@ fn solid_layer(l: &Layer, spec: &reelforge_core::TitleSpec, frame_size: [u32; 2]
 pub fn frame_recipe(project: &Project, seq: usize, t: Time, sources: &HashMap<MediaId, std::path::PathBuf>) -> u64 {
     let mut h = DefaultHasher::new();
     recipe_into(project, seq, None, t, sources, 0, &mut h);
+    // Rendered at another colour bit depth, it's another picture (the standard one
+    // leaves recipes as they always were, so rendered previews kept on disk still match).
+    let depth = reelforge_render::default_depth();
+    if depth != reelforge_render::ColorDepth::HalfLinear {
+        std::hash::Hash::hash(&depth, &mut h);
+    }
     h.finish()
 }
 

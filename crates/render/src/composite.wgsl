@@ -272,13 +272,35 @@ fn lighting(local: vec2<f32>) -> vec3<f32> {
 // out, so they don't hide what's behind them. 0 elsewhere.
 override DEPTH_CUT: f32 = 0.0;
 
+// The frame holds gamma-encoded display values (8-bit, and 16/32-bit float without
+// linear colour), not linear light: what's drawn onto it is encoded first, so layers
+// blend as display values. Set per pipeline (never for a dissolve's or matte's scratch).
+override GAMMA: bool = false;
+// What's drawn is display values already (a dissolve or matte mixed from layers encoded
+// as they were summed): drawn as it is.
+override SRC_ENCODED: bool = false;
+
+// sRGB encoding, not clipped above white (float frames keep highlights).
+fn gamma_enc(c: vec3<f32>) -> vec3<f32> {
+    let v = max(c, vec3(0.0));
+    return select(1.055 * pow(v, vec3(1.0 / 2.4)) - 0.055, v * 12.92, v <= vec3(0.0031308));
+}
+
+// Premultiplied linear light as the frame holds it.
+fn onto_frame(c: vec4<f32>) -> vec4<f32> {
+    if (!GAMMA || SRC_ENCODED || c.a <= 1e-6) {
+        return c;
+    }
+    return vec4(gamma_enc(c.rgb / c.a) * c.a, c.a);
+}
+
 @fragment
 fn fs_layer(in: VsOut) -> @location(0) vec4<f32> {
     let c = layer_color(in);
     if (c.a < DEPTH_CUT) {
         discard;
     }
-    return c;
+    return onto_frame(c);
 }
 
 fn layer_color(in: VsOut) -> vec4<f32> {
@@ -299,7 +321,7 @@ fn fs_layer_premul(in: VsOut) -> @location(0) vec4<f32> {
     if (c.a < DEPTH_CUT) {
         discard;
     }
-    return c;
+    return onto_frame(c);
 }
 
 fn layer_color_premul(in: VsOut) -> vec4<f32> {
@@ -430,10 +452,15 @@ fn blend_with_backdrop(src: vec4<f32>, pos: vec2<f32>) -> vec4<f32> {
     }
     let under = textureLoad(backdrop, vec2<i32>(pos), 0);
     let ab = clamp(under.a, 0.0, 1.0);
-    let cs = enc(src.rgb / a);
-    let cb = enc(select(vec3(0.0), under.rgb / under.a, under.a > 1e-6));
-    let mixed = dec(mix(cs, blend_fn(cb, cs), ab));
-    return vec4(mixed * a, a);
+    let cs = select(enc(src.rgb / a), clamp(src.rgb / a, vec3(0.0), vec3(1.0)), SRC_ENCODED);
+    let ub = select(vec3(0.0), under.rgb / under.a, under.a > 1e-6);
+    // (a frame of display values is encoded already)
+    let cb = select(enc(ub), clamp(ub, vec3(0.0), vec3(1.0)), GAMMA);
+    let blended = mix(cs, blend_fn(cb, cs), ab);
+    if (GAMMA) {
+        return vec4(blended * a, a);
+    }
+    return vec4(dec(blended) * a, a);
 }
 
 @fragment
@@ -467,7 +494,7 @@ fn fs_solid(in: VsOut) -> SolidOut {
     if (c.a < DEPTH_CUT) {
         discard;
     }
-    return SolidOut(c, solid_depth(in));
+    return SolidOut(onto_frame(c), solid_depth(in));
 }
 
 @fragment
@@ -476,7 +503,7 @@ fn fs_solid_premul(in: VsOut) -> SolidOut {
     if (c.a < DEPTH_CUT) {
         discard;
     }
-    return SolidOut(c, solid_depth(in));
+    return SolidOut(onto_frame(c), solid_depth(in));
 }
 
 // ---- Light wrap ----------------------------------------------------------
@@ -507,7 +534,9 @@ fn wrap_color(c: vec4<f32>, in: VsOut) -> vec4<f32> {
     if (c.a <= 1e-5) {
         return c;
     }
-    let bgc = select(vec3(0.0), bg.rgb / bg.a, bg.a > 1e-5);
+    let bg_raw = select(vec3(0.0), bg.rgb / bg.a, bg.a > 1e-5);
+    // (the layer is linear light; a frame of display values is decoded to match)
+    let bgc = select(bg_raw, dec(bg_raw), GAMMA);
     let k = clamp(edge * w.y, 0.0, 1.0);
     var rgb = c.rgb / c.a;
     if (w.w > 0.5) {

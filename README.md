@@ -106,6 +106,19 @@ What works now:
 
 - **GPU compositor**: every visible video track is blended into the frame on the GPU
   (wgpu), in linear light with float precision
+  - **Default Color Bit Depth** (**Edit → Settings → Renders**, or the Settings dialog's
+    **Renders** section): **8-bit Integer**, **16-bit Float**, **16-bit Float (Linear Color)**
+    (the standard), **32-bit Float** or **32-bit Float (Linear Color)**. It sets what the frame is
+    composited in, for the Viewer, Render preview and exports: 8-bit is fastest and lightest
+    but bands and clips at white; float keeps highlights above white; 32-bit is the most precise.
+    **Linear Color** mixes layers, dissolves, track mattes and blend modes as light does;
+    without it they mix as display (gamma-encoded) values, the way older editors look: the frame
+    holds encoded values, what's drawn onto it is encoded as it goes, and it's decoded again for
+    effects on adjustment layers, for compositions and for output. Effects on a layer always
+    work in linear light (8-bit ones in 8-bit sRGB textures, so darks don't band). 32-bit float
+    needs a graphics card that can filter and blend 32-bit float textures (most can, the
+    software renderer too); on one that can't, the nearest 16-bit depth is used and the status
+    bar says so. Previews rendered at one depth aren't reused at another
 - **Per-clip transform** in the Controls panel: position, scale (with a lock for uniform
   scaling), rotation, opacity, **anchor point**, **crop**, and **blend modes**, plus Reset /
   Fit / Fill buttons. Clips sit at their native pixel size by default, like HitFilm

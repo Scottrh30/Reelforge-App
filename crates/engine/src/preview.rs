@@ -179,6 +179,22 @@ impl Preview {
         Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1, full_when_paused: false, active: 1, auto: AutoQuality::default() }
     }
 
+    /// Composite at colour bit depth `d` (from now on: the compositors are made
+    /// afresh when it changes). Returns the depth worked at (32-bit float only where
+    /// the graphics card can).
+    pub fn set_depth(&mut self, d: reelforge_render::ColorDepth) -> Option<reelforge_render::ColorDepth> {
+        let gpu = self.gpu.as_mut()?;
+        let now = gpu.compositor.depth();
+        let want = reelforge_render::Formats::for_depth(d, gpu.device.features()).depth;
+        if want != now {
+            gpu.compositor = Compositor::with_depth(&gpu.device, &gpu.queue, d);
+            gpu.cache_render = None;
+            self.last_signature = 0;
+            self.picture_rev = self.picture_rev.wrapping_add(1);
+        }
+        Some(gpu.compositor.depth())
+    }
+
     /// Draw with another device (the GPU or the CPU): its compositor and
     /// scene are made afresh, and what was drawn or decoded on the old one
     /// is let go; the playback settings stay.

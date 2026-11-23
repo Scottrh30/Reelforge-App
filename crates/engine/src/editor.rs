@@ -49,6 +49,8 @@ pub struct Prefs {
     pub proxy_format: reelforge_media::proxy::ProxyFormat,
     /// …and how big.
     pub proxy_size: reelforge_media::proxy::ProxySize,
+    /// Settings → Renders: the colour bit depth frames are composited at.
+    pub color_depth: reelforge_render::ColorDepth,
     /// Autosave every this many minutes (0 = never).
     pub autosave_minutes: u32,
     /// Size limit of the render cache.
@@ -147,6 +149,7 @@ impl Default for Prefs {
             auto_proxies: true,
             proxy_format: Default::default(),
             proxy_size: Default::default(),
+            color_depth: Default::default(),
             autosave_minutes: 2,
             shadow_quality: 1,
             render_cache_mb: 2048,
@@ -231,6 +234,21 @@ impl Editor {
         reelforge_media::proxy::set_size(self.prefs.proxy_size);
         self.preview.set_quality(self.prefs.playback_quality);
         self.preview.full_when_paused = self.prefs.full_when_paused;
+        reelforge_render::set_default_depth(self.prefs.color_depth);
+        self.preview.set_depth(self.prefs.color_depth);
+    }
+
+    /// Settings → Renders → Default color bit depth: what frames are composited at from
+    /// now on (the Viewer, Render preview and exports).
+    pub fn set_color_depth(&mut self, d: reelforge_render::ColorDepth) {
+        self.prefs.color_depth = d;
+        self.apply_prefs();
+        let got = self.preview.set_depth(d).unwrap_or(d);
+        self.status = if got == d {
+            format!("Rendering at {}", d.label())
+        } else {
+            format!("This graphics card can't render {}: rendering at {} instead", d.label(), got.label())
+        };
     }
 
     /// Open the rendered previews kept on disk again (after files moved in).
@@ -5513,6 +5531,28 @@ mod tests {
         e.set_track_waveforms(v, None);
         // Not written when it follows Settings (older projects read the same).
         assert!(!serde_json::to_string(&e.seq().tracks[v]).unwrap().contains("waveforms"));
+    }
+
+    /// Settings → Renders → Default color bit depth: the Viewer composites at it from
+    /// then on, and frames rendered at another depth aren't taken for this one's.
+    #[test]
+    fn colour_bit_depth_changes_the_render_and_its_recipe() {
+        use reelforge_render::ColorDepth;
+        let mut e = editor();
+        e.add_plane([200, 100, 50, 255]);
+        let s = e.decode_paths();
+        let recipe = |e: &Editor| reelforge_export::frame_recipe(&e.project, e.active, Time::ZERO, &s);
+        let standard = recipe(&e);
+        e.set_color_depth(ColorDepth::Int8);
+        assert_eq!(e.prefs.color_depth, ColorDepth::Int8);
+        assert!(e.status.contains("8-bit Integer"), "{}", e.status);
+        assert_ne!(recipe(&e), standard, "another picture");
+        if e.preview.has_gpu() {
+            assert_eq!(e.preview.set_depth(ColorDepth::Int8), Some(ColorDepth::Int8));
+        }
+        e.set_color_depth(ColorDepth::HalfLinear);
+        assert_eq!(recipe(&e), standard, "the standard depth's recipes are as they were");
+        assert_eq!(reelforge_render::default_depth(), ColorDepth::HalfLinear);
     }
 
     #[test]

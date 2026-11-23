@@ -610,7 +610,22 @@ fn clear_render_cache() -> Res<()> {
 #[tauri::command]
 fn set_prefs(prefs: Prefs) -> Res<()> {
     ed(|e| {
+        let depth = (prefs.color_depth != e.prefs.color_depth).then_some(prefs.color_depth);
         e.set_prefs(prefs);
+        // Say what it renders at now (32-bit float only where the graphics card can).
+        if let Some(d) = depth {
+            e.set_color_depth(d);
+        }
+        e.touch();
+        save_settings(e);
+    })
+}
+
+/// Settings → Renders → Default Color Bit Depth.
+#[tauri::command]
+fn set_color_depth(depth: reelforge_render::ColorDepth) -> Res<()> {
+    ed(|e| {
+        e.set_color_depth(depth);
         e.touch();
         save_settings(e);
     })
@@ -1830,6 +1845,7 @@ fn main() {
             audio_fx_kinds,
             set_playback_quality,
             set_full_when_paused,
+            set_color_depth,
             new_project,
             open_dialog,
             open_path,

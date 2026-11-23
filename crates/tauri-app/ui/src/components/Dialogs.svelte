@@ -2,7 +2,7 @@
   // The modal windows: Settings, questions, and crash recovery (Export is ExportDialog).
   import { untrack } from "svelte";
   import { app, run } from "../lib/session.svelte";
-  import { api, type Prefs, type SettingsInfo } from "../lib/api";
+  import { api, COLOR_DEPTHS, type Prefs, type SettingsInfo } from "../lib/api";
   import { ask } from "../lib/actions.svelte";
 
   let prefs = $state<Prefs | null>(null);
@@ -73,6 +73,16 @@
         </select>
       </label>
       {#if rend?.device}<p class="info">Drawing on: {rend.device}</p>{/if}
+
+      <h3>Renders</h3>
+      <label class="field" title="How precisely frames are composited, in the Viewer, Render preview and exports, and how layers mix. 8-bit Integer is fastest and lightest on memory, but smooth gradients can band and nothing brighter than white survives. Float keeps highlights above white. Linear Color mixes layers, dissolves, glows and blurs as light does (the most natural, and the standard); without it they mix as display values, the way older editors and most 8-bit work look. 32-bit Float is the most precise, for VFX and grading, and needs a graphics card that can blend 32-bit float (if yours can't, 16-bit is used).">
+        <span>Default Color Bit Depth</span>
+        <select bind:value={prefs.color_depth}>
+          {#each COLOR_DEPTHS as [d, label] (d)}
+            <option value={d}>{label}</option>
+          {/each}
+        </select>
+      </label>
 
       <h3>Playback</h3>
       <label class="check" title="Decode on the graphics card. Falls back to software by itself if it doesn't work. Applies to clips opened from now on."><input type="checkbox" bind:checked={prefs.hw_decode} /> Hardware video decoding{info ? ` (${info.hw_api})` : ""}</label>

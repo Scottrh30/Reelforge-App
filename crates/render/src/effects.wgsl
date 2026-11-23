@@ -655,6 +655,19 @@ fn fs_copy(in: VsOut) -> @location(0) vec4<f32> {
     return textureSample(src, src_sampler, to_tex(in.uv));
 }
 
+// The frame so far for an adjustment layer, when the frame holds gamma-encoded display
+// values: decoded to premultiplied linear light, as effects work in.
+@fragment
+fn fs_from_gamma(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    if (c.a <= 1e-6) {
+        return vec4(0.0);
+    }
+    let s = max(c.rgb / c.a, vec3(0.0));
+    let lin = select(pow((s + 0.055) / 1.055, vec3(2.4)), s / 12.92, s <= vec3(0.04045));
+    return vec4(lin * c.a, c.a);
+}
+
 // ---- Stylise effects ----------------------------------------------------------
 // Each reads the layer (premultiplied, linear) and its parameters (core
 // crate effects.rs: flare, shake, aberration, grain, glitch, leaks). Time

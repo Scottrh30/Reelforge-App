@@ -43,6 +43,15 @@ export type Blend =
 
 export type ProxyFormat = "ProResProxy" | "DnxhrLb" | "H264";
 export type ProxySize = "Small" | "Standard" | "Large" | "FullHd";
+/** Settings → Renders: the colour bit depth frames are composited at. */
+export type ColorDepth = "Int8" | "Half" | "HalfLinear" | "Float" | "FloatLinear";
+export const COLOR_DEPTHS: [ColorDepth, string][] = [
+  ["Int8", "8-bit Integer"],
+  ["Half", "16-bit Float"],
+  ["HalfLinear", "16-bit Float (Linear Color)"],
+  ["Float", "32-bit Float"],
+  ["FloatLinear", "32-bit Float (Linear Color)"],
+];
 
 export interface TitleSpec {
   text: string;
@@ -462,6 +471,7 @@ export interface Prefs {
   auto_proxies: boolean;
   proxy_format: ProxyFormat;
   proxy_size: ProxySize;
+  color_depth: ColorDepth;
   autosave_minutes: number;
   render_cache_mb: number;
   /// Rendered frames kept on disk too, MB (0: not).
@@ -1057,6 +1067,7 @@ export const api = {
   clearRenderCache: () => invoke("clear_render_cache"),
   setPlaybackQuality: (q: number) => invoke("set_playback_quality", { q }),
   setFullWhenPaused: (on: boolean) => invoke("set_full_when_paused", { on }),
+  setColorDepth: (depth: ColorDepth) => invoke("set_color_depth", { depth }),
   audioFxKinds: () => invoke<AudioFxInfo[]>("audio_fx_kinds"),
   compThumbnail: (seq: number, at: Ticks) => invoke<ArrayBuffer>("comp_thumbnail", { seq, at }),
   effectThumb: (id: number, kind: EffectKind, plugin: string | null, step = 0) => invoke<ArrayBuffer>("effect_thumb", { id, kind, plugin, step }),

@@ -44,6 +44,7 @@ pub mod water;
 pub mod frame;
 pub mod imageseq;
 pub mod interchange;
+pub mod depth;
 pub mod hud_text;
 pub mod lut;
 pub mod mask;
