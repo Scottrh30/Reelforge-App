@@ -43,6 +43,16 @@ export type Blend =
 
 export type ProxyFormat = "ProResProxy" | "DnxhrLb" | "H264";
 export type ProxySize = "Small" | "Standard" | "Large" | "FullHd";
+/** NVIDIA's Video Effects (RTX cards), as the engine names them. */
+export type NvEffect =
+  | { RemoveBackground: { quality: boolean } }
+  | { BlurBackground: { strength: number } }
+  | { SuperResolution: { scale: number; clean: boolean } }
+  | { Upscale: { scale: number; strength: number } }
+  | { ArtifactReduction: { heavy: boolean } }
+  | { Denoise: { strong: boolean } };
+
+export type GpuSpeed = "Fast" | "Balanced" | "Best";
 /** Settings → Renders: the colour bit depth frames are composited at. */
 export type ColorDepth = "Int8" | "Half" | "HalfLinear" | "Float" | "FloatLinear";
 export const COLOR_DEPTHS: [ColorDepth, string][] = [
@@ -471,6 +481,7 @@ export interface Prefs {
   auto_proxies: boolean;
   proxy_format: ProxyFormat;
   proxy_size: ProxySize;
+  proxy_gpu: boolean;
   color_depth: ColorDepth;
   autosave_minutes: number;
   render_cache_mb: number;
@@ -868,6 +879,8 @@ export interface Spec {
   quality: Quality;
   fit: Fit;
   hardware: boolean;
+  /** How hard the GPU encoder works. */
+  gpu_speed?: GpuSpeed;
   color: ColorOut;
   bitrate_kbps: number | null;
   /// A transparent background (codecs with alpha only).
@@ -1323,6 +1336,8 @@ export const api = {
   proxyMake: (media: number) => invoke("proxy_make", { media }),
   upscaleMedia: (media: number, factor: number, replace: boolean) => invoke("upscale_media", { media, factor, replace }),
   upscaleCancel: () => invoke("upscale_cancel"),
+  nvidiaMedia: (media: number, effect: NvEffect, replace: boolean) => invoke("nvidia_media", { media, effect, replace }),
+  nvidiaAvailable: () => invoke<boolean>("nvidia_available"),
   proxyDelete: (media: number) => invoke("proxy_delete", { media }),
   proxiesDeleteAll: () => invoke("proxies_delete_all"),
   proxiesRemake: (format: ProxyFormat, size: ProxySize) => invoke<number>("proxies_remake", { format, size }),

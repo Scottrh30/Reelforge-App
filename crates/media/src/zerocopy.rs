@@ -153,7 +153,7 @@ impl Shared {
 
     /// A free shared texture like `desc` (same format and size), made if there's room.
     fn take(&self, format: DXGI_FORMAT, w: u32, h: u32) -> Option<Slot> {
-        let mut pools = self.pools.lock().unwrap();
+        let mut pools = self.pools.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let bytes = |w: u32, h: u32| (w as u64 * h as u64 * 3 / 2) * if format == DXGI_FORMAT_P010 { 2 } else { 1 };
         let in_use: u64 = pools.iter().map(|((f, pw, ph), p)| p.made as u64 * if *f == DXGI_FORMAT_P010.0 { 2 } else { 1 } * (*pw as u64 * *ph as u64 * 3 / 2)).sum();
         let pool = pools.entry((format.0, w, h)).or_default();
@@ -196,7 +196,7 @@ impl Shared {
     }
 
     fn give_back(&self, format: DXGI_FORMAT, w: u32, h: u32, slot: Slot) {
-        self.pools.lock().unwrap().entry((format.0, w, h)).or_default().free.push(slot);
+        self.pools.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry((format.0, w, h)).or_default().free.push(slot);
     }
 
     /// Wait (on this thread) until the fence reaches `value`.

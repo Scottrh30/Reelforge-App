@@ -59,6 +59,9 @@ pub struct Spec {
     pub quality: Quality,
     pub fit: Fit,
     pub hardware: bool,
+    /// How hard the GPU encoder works.
+    #[serde(default)]
+    pub gpu_speed: reelforge_media::encode::GpuSpeed,
     #[serde(default)]
     pub color: ColorOut,
     /// Target bitrate (kbit/s) instead of the quality setting.
@@ -151,7 +154,7 @@ impl Preset {
     }
 
     pub fn spec(self) -> Option<Spec> {
-        let s = |video, size, quality, fit, hardware| Some(Spec { video, size, quality, fit, hardware, color: ColorOut::Sdr8, bitrate_kbps: None, alpha: false, frame_rate: None, between: None });
+        let s = |video, size, quality, fit, hardware| Some(Spec { video, size, quality, fit, hardware, gpu_speed: Default::default(), color: ColorOut::Sdr8, bitrate_kbps: None, alpha: false, frame_rate: None, between: None });
         use VideoCodec as V;
         match self {
             Preset::YouTube1080 => s(Some(V::H264), Size::Fixed(1920, 1080), Quality::High, Fit::Letterbox, false),

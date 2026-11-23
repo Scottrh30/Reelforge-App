@@ -329,6 +329,7 @@ impl WaterElement {
             end: self.end,
             video: Some(VideoCodec::ProRes4444),
             hardware: false,
+            gpu_speed: Default::default(),
             fit: Fit::Letterbox,
             sequence: self.seq,
             color: ColorOut::Sdr8,

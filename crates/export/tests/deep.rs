@@ -38,6 +38,7 @@ fn settings(path: PathBuf) -> ExportSettings {
         end: Time::from_secs_f64(0.125),
         video: Some(VideoCodec::ProRes422Hq),
         hardware: false,
+        gpu_speed: Default::default(),
         fit: Fit::Letterbox,
         sequence: 0,
         color: ColorOut::Sdr10,

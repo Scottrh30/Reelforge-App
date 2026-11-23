@@ -1,8 +1,33 @@
 <script lang="ts">
   import { app, run, shortTime } from "../lib/session.svelte";
-  import { api, type MediaView } from "../lib/api";
+  import { api, type MediaView, type NvEffect } from "../lib/api";
   import { openMenu } from "../lib/menu.svelte";
   import Thumb from "./Thumb.svelte";
+
+  // NVIDIA's Video Effects (RTX cards): offered once the redistributable is found.
+  let nvidia = $state(false);
+  api.nvidiaAvailable().then((v) => (nvidia = !!v)).catch(() => {});
+
+  function nvidiaMenu(m: MediaView) {
+    const fx = (label: string, effect: NvEffect, hint = "", disabled = false) => ({ label, hint, disabled, run: () => run(api.nvidiaMedia(m.id, effect, false)) });
+    const big = (k: number) => m.width * k > 7680;
+    if (!nvidia) return [{ label: "Needs NVIDIA's Video Effects for RTX (see the README)", disabled: true }];
+    return [
+      fx("Remove the background (AI green screen)", { RemoveBackground: { quality: true } }, "transparent .mov", m.width < 512 || m.height < 288),
+      fx("Remove the background — faster", { RemoveBackground: { quality: false } }, "", m.width < 512 || m.height < 288),
+      fx("Blur the background", { BlurBackground: { strength: 0.6 } }, "", m.width < 512 || m.height < 288),
+      { separator: true },
+      fx("Super resolution 2×", { SuperResolution: { scale: 2, clean: false } }, `${m.width * 2}×${m.height * 2}`, big(2)),
+      fx("Super resolution 4×", { SuperResolution: { scale: 4, clean: false } }, `${m.width * 4}×${m.height * 4}`, big(4)),
+      fx("Super resolution 2× — compressed footage", { SuperResolution: { scale: 2, clean: true } }, "removes more artefacts", big(2)),
+      fx("Upscale 2× (lighter, sharpened)", { Upscale: { scale: 2, strength: 0.4 } }, `${m.width * 2}×${m.height * 2}`, big(2)),
+      { separator: true },
+      fx("Reduce compression artefacts", { ArtifactReduction: { heavy: false } }),
+      fx("Reduce compression artefacts — strong", { ArtifactReduction: { heavy: true } }, "for low bitrates"),
+      fx("Remove noise", { Denoise: { strong: false } }, "up to 1080p", m.height > 1080),
+      fx("Remove noise — strong", { Denoise: { strong: true } }, "up to 1080p", m.height > 1080),
+    ];
+  }
 
   let filter = $state("");
   const media = $derived((app.s?.media ?? []).filter((m) => m.name.toLowerCase().includes(filter.trim().toLowerCase())));
@@ -38,7 +63,7 @@
       ...(m.kind !== "audio" && !m.missing
         ? [
             app.live?.upscaling
-              ? { label: "Stop the AI upscale", run: () => run(api.upscaleCancel()) }
+              ? { label: "Stop the AI job", run: () => run(api.upscaleCancel()) }
               : {
                   label: "AI upscale",
                   submenu: [
@@ -49,6 +74,7 @@
                     { label: "4× — use it in place of this", hint: "keeps every edit", disabled: m.width * 4 > 7680, run: () => run(api.upscaleMedia(m.id, 4, true)) },
                   ],
                 },
+            ...(app.live?.upscaling ? [] : [{ label: "NVIDIA RTX effects", submenu: nvidiaMenu(m) }]),
           ]
         : []),
       { separator: true },
@@ -166,7 +192,7 @@
             {:else if m.proxy}
               <span class="flag" class:bad={m.proxy === "failed"} class:ready={m.proxy === "ready"} title={m.proxy_error ?? (m.proxy === "ready" ? `A small ${m.proxy_format ?? ""}${m.proxy_size ? `, ${m.proxy_size}` : ""} copy for smooth editing; export uses the original` : "")}>{proxyLabel(m)}</span>
             {/if}
-            {#if app.live?.upscaling && app.live.upscaling[0] === m.id}<span class="flag ready" title="An AI-upscaled copy is being made (right-click to stop)">Upscaling {Math.round(app.live.upscaling[1] * 100)}%</span>{/if}
+            {#if app.live?.upscaling && app.live.upscaling[0] === m.id}<span class="flag ready" title="An AI copy is being made (right-click to stop)">Working {Math.round(app.live.upscaling[1] * 100)}%</span>{/if}
             {#if m.hdr}<span class="hdr" title="HDR footage ({m.hdr === 'PQ' ? 'HDR10, PQ' : 'HLG'}): its highlights are kept above white for HDR export; SDR shows and exports them cut at white">HDR</span>{/if}
           </div>
           <div class="name" title={m.path}>{m.name}</div>

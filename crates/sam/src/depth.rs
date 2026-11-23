@@ -7,7 +7,9 @@
 //! patches), and the map comes back the same size: relative inverse depth,
 //! bigger nearer, 0 at the far distance (sky). Its weights ship with the app
 //! (`depth.bin`: the big tensors int8 with a scale per output channel, the
-//! rest f16; about 25 MB). A frame takes a few seconds.
+//! rest f16; about 25 MB). On a graphics card (the same compute kernels as the
+//! roto brush's, `gpu.rs`) a frame takes a fraction of a second; on the CPU, a
+//! second or more.
 
 use super::*;
 
@@ -32,15 +34,34 @@ pub fn model() -> Option<&'static DepthModel> {
 }
 
 /// The depth of a picture (RGBA, `w` × `h`): [`SIDE`] × [`SIDE`] values,
-/// row by row, bigger nearer (`None` if it couldn't be worked out).
+/// row by row, bigger nearer (`None` if it couldn't be worked out). On the
+/// graphics card when there's one that can, else on the CPU.
 pub fn depth(rgba: &[u8], w: usize, h: usize) -> Option<Vec<f32>> {
     guard(|| {
         let m = model()?;
         if w == 0 || h == 0 || rgba.len() < w.checked_mul(h)?.checked_mul(4)? {
             return None;
         }
-        Some(m.run(&prepare_depth(rgba, w, h)))
+        let img = prepare_depth(rgba, w, h);
+        if let Some(d) = gpu().and_then(|g| guard(|| g.depth(&img))) {
+            return Some(d);
+        }
+        Some(m.run(&img))
     })
+}
+
+/// The depth model on the graphics card (`None` without one that can run it, or
+/// with REELFORGE_DEPTH_CPU set).
+pub fn gpu() -> Option<&'static crate::GpuEncoder> {
+    static G: std::sync::OnceLock<Option<crate::GpuEncoder>> = std::sync::OnceLock::new();
+    G.get_or_init(|| if std::env::var_os("REELFORGE_DEPTH_CPU").is_some() { None } else { crate::GpuEncoder::open_depth(model()?, false) }).as_ref()
+}
+
+impl DepthModel {
+    /// Its weights (for the graphics card's copy).
+    pub(crate) fn weights(&self) -> &Sam {
+        &self.0
+    }
 }
 
 /// The picture squeezed to the input and normalised as the network was
@@ -359,6 +380,37 @@ mod tests {
         }
         // (int8 weights: within a few per cent of the range)
         assert!(worst < 0.3, "worst block off by {worst}");
+    }
+
+    /// The graphics card's run (a software one will do here) matches the reference
+    /// as the CPU's does, and the CPU's own result closely.
+    #[test]
+    fn depth_on_the_graphics_card_matches() {
+        let Some(g) = crate::GpuEncoder::open_depth(model().expect("model"), true) else {
+            eprintln!("no graphics device; skipping");
+            return;
+        };
+        let img = prepare_depth(&scene(), SIDE, SIDE);
+        let d = g.depth(&img).expect("depth on the graphics card");
+        assert_eq!(d.len(), SIDE * SIDE);
+        let cpu = model().unwrap().run(&img);
+        let worst = d.iter().zip(&cpu).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 0.05, "GPU and CPU differ by up to {worst}");
+        let mut off = 0.0f32;
+        for by in 0..14 {
+            for bx in 0..14 {
+                let mut s = 0.0;
+                for y in by * 37..by * 37 + 37 {
+                    for x in bx * 37..bx * 37 + 37 {
+                        s += d[y * SIDE + x];
+                    }
+                }
+                off = off.max((s / (37.0 * 37.0) - REFERENCE[by * 14 + bx]).abs());
+            }
+        }
+        assert!(off < 0.3, "worst block off by {off}");
+        // The wrong input size is refused.
+        assert!(g.depth(&[0.0; 12]).is_none());
     }
 
     #[test]

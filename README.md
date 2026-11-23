@@ -231,7 +231,13 @@ What works now:
     default for vertical and square presets) or **Stretch**
   - **GPU encoders**: tick "Use the graphics card" to encode H.264/H.265 with NVENC (NVIDIA),
     Quick Sync (Intel) or AMF (AMD), several times faster. If none works on the PC it quietly
-    falls back to the software encoder; the queue shows which encoder was used
+    falls back to the software encoder; the queue shows which encoder was used. **GPU speed**
+    picks how hard it works: **Fast**, **Balanced** (the default) or **Best quality**. On NVIDIA
+    that's NVENC preset P2, P5 or P7 at constant quality (like the software encoders' CRF,
+    following Quality), with, at Balanced and Best, look-ahead (16 or 32 frames), spatial and
+    temporal adaptive quantisation, B-frames as references and a two-pass encode (quarter or full
+    resolution first pass): smaller files at the same quality. A card that won't take all of
+    those (older NVIDIA cards) is tried again with the plain preset before anything else is
   - **Export queue** (**File → Export queue…**): "Add to queue" collects several exports (each
     a snapshot of the project at that moment, so you can keep editing or queue versions), then
     **Start queue** renders them one after another, with progress, time left, cancel, retry,
@@ -877,7 +883,8 @@ What works now:
   - **Depth map** and **Relight** (Light & stylize): the depth model (Depth Anything V2
     Small, built in; Apache-2.0) works out how far away each part of the footage is — press
     **Work out depth** on the effect; it looks at every frame in the background (every other
-    above 30 a second; a second or two a frame on the CPU), fits the depth to the picture's
+    above 30 a second; a fraction of a second a frame on the graphics card, a second or two on
+    the CPU), fits the depth to the picture's
     edges and keeps its scale steady from frame to frame
     - **Depth map** shows **The depth** (near is white; **Invert** for near black), **Fog by
       depth** (thickening with distance, in a **Fog colour**) or **Keep what's near** (a depth
@@ -1331,6 +1338,10 @@ What works now:
   made: **360p** (640×360, the lightest, for slow computers and very heavy projects), **540p**
   (960×540, the standard), **720p** or **1080p** (sharper, for judging focus; more disk space and
   decoding). A proxy of another size is still used until Settings makes it again at the new one.
+  H.264 proxies are made on the graphics card (NVENC, Quick Sync or AMF, every frame a
+  keyframe, constant quality) when it has an encoder, several times quicker and leaving the
+  processor free (**Settings → Make H.264 proxies on the graphics card**, on by default);
+  otherwise in software as before.
   **Settings → Make proxies as** picks the format:
   - **H.264** (the default): the smallest files, decoded on the graphics card
   - **ProRes 422 Proxy**: 10-bit 4:2:2 colour, so grading looks closer to the original; about
@@ -1495,6 +1506,20 @@ What works now:
   in the original's place everywhere it's used (*use it in place of this*: laid out at the old
   size, so framing, masks and keyframes stay as they were). Up to 7680 pixels wide; 4× of
   anything wider than 1920 becomes 2×
+- **NVIDIA RTX effects** (right-click footage or a picture in the Media panel; Windows, RTX
+  cards): NVIDIA's own AI video effects, run on the card's tensor cores, frame by frame in the
+  background like an AI upscale — **remove the background** (an AI green screen with no green
+  screen: the person kept, the rest transparent, written as ProRes 4444 with alpha), **blur the
+  background**, **super resolution** 2× or 4× (one model for clean footage, one that also takes
+  out compression artefacts), a lighter **upscale** with sharpening, **reduce compression
+  artefacts**, and **remove noise** (low-light grain, up to 1080p). Results go into a
+  **Reelforge NVIDIA** folder beside the original and are added to the Media panel. The effects
+  come with NVIDIA's free **Video Effects SDK redistributable** — install the one for your
+  card's generation (e.g. *for RTX 30 Series*) from
+  <https://www.nvidia.com/en-us/geforce/broadcasting/broadcast-sdk/resources/>; Reelforge finds
+  it where it installs (or at `NV_VIDEO_EFFECTS_PATH`) and loads it at run time. Nothing of
+  NVIDIA's ships with Reelforge; without it the menu says what it needs. (Background removal
+  needs pictures at least 512 × 288)
 - **Replace footage** (right-click footage in the Media panel, or a clip in the timeline →
   **Replace footage**): swap a file for another (a new grade, a re-render, the final VFX shot, a
   higher resolution) and keep everything done with it: every cut, trim, speed change, effect,
@@ -2995,7 +3020,11 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   perspective. Hit testing, the gizmo, masks and the tracker overlay all go through
   `layer_map`, so they agree with what's drawn. Pin keys are a `Curve<Pin>` like any property
 - **Depth** (`sam/src/depth.rs`, `engine/src/editor/aifx.rs`): Depth Anything V2 Small (a
-  DINOv2 ViT-S/14 encoder and a DPT head, 24.8 M weights) written out in Rust on the CPU, the
+  DINOv2 ViT-S/14 encoder and a DPT head, 24.8 M weights) written out in Rust on the CPU, and
+  on the graphics card with the roto brush's compute kernels (`sam/src/gpu.rs`: global
+  attention, layer scale, the DPT head's transposed convolutions, resizes, and convolutions too
+  big for one buffer done a band of rows at a time, so cards that allow 128 MB a buffer can run
+  it; within 0.05 of the CPU's result; `REELFORGE_DEPTH_CPU` forces the CPU), the
   weights packed like MobileSAM's (`sam/depth.bin`: int8 with a scale per output channel for
   the big tensors, f16 for the rest, ~25 MB). The picture is squeezed to 518 × 518; the
   output (relative inverse depth) is stretched back, scaled so the 2nd–98th percentiles are

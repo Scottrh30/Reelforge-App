@@ -49,6 +49,8 @@ pub struct Prefs {
     pub proxy_format: reelforge_media::proxy::ProxyFormat,
     /// …and how big.
     pub proxy_size: reelforge_media::proxy::ProxySize,
+    /// H.264 proxies made on the graphics card (NVENC, Quick Sync, AMF) when it can.
+    pub proxy_gpu: bool,
     /// Settings → Renders: the colour bit depth frames are composited at.
     pub color_depth: reelforge_render::ColorDepth,
     /// Autosave every this many minutes (0 = never).
@@ -149,6 +151,7 @@ impl Default for Prefs {
             auto_proxies: true,
             proxy_format: Default::default(),
             proxy_size: Default::default(),
+            proxy_gpu: true,
             color_depth: Default::default(),
             autosave_minutes: 2,
             shadow_quality: 1,
@@ -232,6 +235,7 @@ impl Editor {
         reelforge_media::FrameCache::global().set_budget_mb(self.prefs.cache_mb.clamp(128, 65536));
         reelforge_media::proxy::set_format(self.prefs.proxy_format);
         reelforge_media::proxy::set_size(self.prefs.proxy_size);
+        reelforge_media::proxy::set_gpu(self.prefs.proxy_gpu);
         self.preview.set_quality(self.prefs.playback_quality);
         self.preview.full_when_paused = self.prefs.full_when_paused;
         reelforge_render::set_default_depth(self.prefs.color_depth);

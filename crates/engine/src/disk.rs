@@ -290,6 +290,7 @@ mod tests {
             end: Time::from_secs_f64(60.0),
             video,
             hardware: false,
+            gpu_speed: Default::default(),
             fit: Default::default(),
             sequence: 0,
             color: Default::default(),

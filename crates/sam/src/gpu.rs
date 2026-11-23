@@ -21,6 +21,10 @@ pub struct GpuEncoder {
     pub adapter: String,
 }
 
+/// Most unrolled-patch values one convolution step holds (64 MB of them; bigger
+/// convolutions go a band of rows at a time).
+const BAND: usize = 16 << 20;
+
 /// A buffer of f32s on the card, and how many.
 #[derive(Clone)]
 struct T {
@@ -28,7 +32,7 @@ struct T {
     len: usize,
 }
 
-const ENTRIES: [&str; 14] = ["gemm", "im2col", "dwconv", "gelu", "add", "copy", "layernorm", "layernorm2d", "transpose", "windows", "unwindow", "attention", "prelu", "shuffle"];
+const ENTRIES: [&str; 22] = ["put_rows", "gemm", "im2col", "dwconv", "gelu", "add", "copy", "layernorm", "layernorm2d", "transpose", "windows", "unwindow", "attention", "prelu", "shuffle", "relu", "scale_add", "tokens", "unpatch", "vit_attention", "resize", "deblock"];
 
 impl GpuEncoder {
     /// A graphics card to run on, with the weights loaded onto it (`None`
@@ -39,6 +43,37 @@ impl GpuEncoder {
 
     /// As [`Self::new`]; `software`: a software renderer will do (for tests).
     pub fn open(sam: &Sam, software: bool) -> Option<GpuEncoder> {
+        let mut g = Self::device(software, 80 << 20, "roto brush model")?;
+        let mut w = HashMap::new();
+        for (k, (shape, v)) in &sam.w {
+            if k.starts_with("image_encoder.") {
+                w.insert(k.clone(), (shape.clone(), g.upload_weight(k, v)));
+            }
+        }
+        for (k, v) in &sam.biases {
+            w.insert(format!("{k}.table"), (vec![v.len()], g.upload_weight(k, v)));
+        }
+        g.w = w;
+        Some(g)
+    }
+
+    /// The depth model (Depth Anything V2, `crate::depth`) on a graphics card, its
+    /// weights loaded (`None` without a usable card: one that can hold buffers of
+    /// 120 MB; its big convolutions go a band of rows at a time).
+    pub fn open_depth(m: &crate::depth::DepthModel, software: bool) -> Option<GpuEncoder> {
+        let mut g = Self::device(software, 120 << 20, "depth model")?;
+        let w = m.weights().w.iter().map(|(k, (shape, v))| (k.clone(), (shape.clone(), g.upload_weight(k, v)))).collect();
+        g.w = w;
+        Some(g)
+    }
+
+    fn upload_weight(&self, label: &str, v: &[f32]) -> wgpu::Buffer {
+        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytes(v), usage: wgpu::BufferUsages::STORAGE })
+    }
+
+    /// A device on the best graphics card with the kernels built and no weights yet;
+    /// `min_binding`: the biggest buffer a step needs.
+    fn device(software: bool, min_binding: u32, label: &str) -> Option<GpuEncoder> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() })).ok()?;
         let info = adapter.get_info();
@@ -48,10 +83,10 @@ impl GpuEncoder {
         }
         let want = adapter.limits();
         let limits = wgpu::Limits { max_storage_buffer_binding_size: want.max_storage_buffer_binding_size.min(1 << 30), max_buffer_size: want.max_buffer_size.min(1 << 30), ..wgpu::Limits::default() };
-        if limits.max_storage_buffer_binding_size < 80 << 20 {
+        if limits.max_storage_buffer_binding_size < min_binding as u64 {
             return None;
         }
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("roto brush model"), required_limits: limits, ..Default::default() })).ok()?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some(label), required_limits: limits, ..Default::default() })).ok()?;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sam encoder"), source: wgpu::ShaderSource::Wgsl(include_str!("encoder.wgsl").into()) });
         let pipes = ENTRIES
             .iter()
@@ -60,18 +95,21 @@ impl GpuEncoder {
                 (*e, p)
             })
             .collect();
-        let up = |label: &str, v: &[f32]| device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytes(v), usage: wgpu::BufferUsages::STORAGE });
-        let mut w = HashMap::new();
-        for (k, (shape, v)) in &sam.w {
-            if k.starts_with("image_encoder.") {
-                w.insert(k.clone(), (shape.clone(), up(k, v)));
-            }
+        let dummy = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("dummy"), contents: bytes(&[0.0; 4]), usage: wgpu::BufferUsages::STORAGE });
+        Some(GpuEncoder { device, queue, pipes, w: HashMap::new(), dummy, up: Default::default(), adapter: format!("{} ({:?})", info.name, info.backend) })
+    }
+
+    /// The depth network on the card: a normalised 3 × 518 × 518 picture in
+    /// (`crate::depth::prepare_depth`), 518 × 518 depth out, as `DepthModel::run`.
+    pub fn depth(&self, img: &[f32]) -> Option<Vec<f32>> {
+        use crate::depth::SIDE;
+        if img.len() != 3 * SIDE * SIDE {
+            return None;
         }
-        for (k, v) in &sam.biases {
-            w.insert(format!("{k}.table"), (vec![v.len()], up(k, v)));
-        }
-        let dummy = up("dummy", &[0.0; 4]);
-        Some(GpuEncoder { device, queue, pipes, w, dummy, up: Default::default(), adapter: format!("{} ({:?})", info.name, info.backend) })
+        let mut r = Run { g: self, enc: self.device.create_command_encoder(&Default::default()), keep: Vec::new() };
+        let x = r.upload(img);
+        let out = r.depth_net(x);
+        self.read(r, &out).filter(|d| d.len() == SIDE * SIDE)
     }
 
     /// One upscaler tile (see `crate::upscale`): `rgb` three planes h × w,
@@ -255,6 +293,26 @@ impl Run<'_> {
         let bias = g.w.get(&format!("{pre}.bias")).map(|(_, b)| (b, true));
         let out = if kh == 1 && stride == 1 && pad == 0 {
             self.gemm(o, k, n, wt, &x.buf.clone(), false, bias)
+        } else if k * n > BAND {
+            // Too many unrolled patches for one buffer: a band of output rows at a time.
+            let out = g.new_t(o * n);
+            let band = (BAND / (k * wo).max(1)).clamp(1, ho);
+            let mut y0 = 0;
+            while y0 < ho {
+                let rows = band.min(ho - y0);
+                let m = rows * wo;
+                let cols = g.new_t(k * m);
+                let mut u = [0u32; 16];
+                u[..9].copy_from_slice(&[c as u32, h as u32, w as u32, kh as u32, stride as u32, pad as u32, rows as u32, wo as u32, y0 as u32]);
+                self.go("im2col", u, [m.div_ceil(256) as u32, k as u32, 1], &[(1, &x.buf), (3, &cols.buf)]);
+                let part = self.gemm(o, k, m, wt, &cols.buf.clone(), false, bias);
+                let mut u = [0u32; 16];
+                u[..4].copy_from_slice(&[o as u32, m as u32, n as u32, (y0 * wo) as u32]);
+                self.go("put_rows", u, Self::flat(o * m), &[(1, &part.buf), (3, &out.buf)]);
+                self.flush();
+                y0 += rows;
+            }
+            out
         } else {
             let cols = g.new_t(k * n);
             let mut u = [0u32; 16];
@@ -372,6 +430,145 @@ impl Run<'_> {
         self.gelu(&y);
         let (y, _, _) = self.conv(&y, out, h2, w2, &format!("{pre}.conv3"), 1, 0);
         (y, h2, w2)
+    }
+
+    // ---- Depth Anything V2 (as depth.rs, step for step) ----
+
+    fn relu(&mut self, x: &T) {
+        let mut u = [0u32; 16];
+        u[0] = x.len as u32;
+        self.go("relu", u, Self::flat(x.len), &[(3, &x.buf)]);
+    }
+
+    fn resize(&mut self, x: &T, c: usize, h: usize, w: usize, ho: usize, wo: usize) -> T {
+        let out = self.g.new_t(c * ho * wo);
+        let mut u = [0u32; 16];
+        u[..5].copy_from_slice(&[c as u32, h as u32, w as u32, ho as u32, wo as u32]);
+        self.go("resize", u, Self::flat(out.len), &[(1, &x.buf), (3, &out.buf)]);
+        out
+    }
+
+    /// A transposed convolution whose kernel is its stride (weight Cin × Cout × k × k).
+    fn conv_t(&mut self, x: &T, c: usize, h: usize, w: usize, pre: &str) -> (T, usize, usize) {
+        let s = self.g.shape(&format!("{pre}.weight")).to_vec();
+        let (co, k) = (s[1], s[2]);
+        let m = co * k * k;
+        // The weight read as (Cout·k·k) × Cin.
+        let wt_t = self.g.new_t(c * m);
+        let mut u = [0u32; 16];
+        u[..2].copy_from_slice(&[c as u32, m as u32]);
+        let wt = self.g.wt(&format!("{pre}.weight"));
+        self.go("transpose", u, [m.div_ceil(256) as u32, c as u32, 1], &[(1, wt), (3, &wt_t.buf)]);
+        let blocks = self.gemm(m, c, h * w, &wt_t.buf.clone(), &x.buf.clone(), false, None);
+        let out = self.g.new_t(co * h * k * w * k);
+        let mut u = [0u32; 16];
+        u[..4].copy_from_slice(&[co as u32, k as u32, h as u32, w as u32]);
+        let b = self.g.wt(&format!("{pre}.bias"));
+        self.go("deblock", u, Self::flat(out.len), &[(1, &blocks.buf), (3, &out.buf), (4, b)]);
+        (out, h * k, w * k)
+    }
+
+    /// x + conv2(relu(conv1(relu(x)))).
+    fn rcu(&mut self, x: &T, h: usize, w: usize, pre: &str) -> T {
+        let o = self.copy(x);
+        self.relu(&o);
+        let (o, ..) = self.conv(&o, 64, h, w, &format!("{pre}.conv1"), 1, 1);
+        self.relu(&o);
+        let (o, ..) = self.conv(&o, 64, h, w, &format!("{pre}.conv2"), 1, 1);
+        self.add(&o, x);
+        o
+    }
+
+    fn fusion(&mut self, i: usize, x: &T, skip: Option<&T>, h: usize, w: usize, size: Option<(usize, usize)>) -> (T, usize, usize) {
+        let pre = format!("depth_head.scratch.refinenet{i}");
+        let o = self.copy(x);
+        if let Some(s) = skip {
+            let r = self.rcu(s, h, w, &format!("{pre}.resConfUnit1"));
+            self.add(&o, &r);
+        }
+        let o = self.rcu(&o, h, w, &format!("{pre}.resConfUnit2"));
+        let (ho, wo) = size.unwrap_or((h * 2, w * 2));
+        let o = self.resize(&o, 64, h, w, ho, wo);
+        self.conv(&o, 64, ho, wo, &format!("{pre}.out_conv"), 1, 0)
+    }
+
+    fn depth_net(&mut self, img: T) -> T {
+        use crate::depth::SIDE;
+        const P: usize = 37;
+        const DIM: usize = 384;
+        const HEADS: usize = 6;
+        let n = P * P + 1;
+        let (patches, ..) = self.conv(&img, 3, SIDE, SIDE, "pretrained.patch_embed.proj", 14, 0);
+        let x = self.g.new_t(n * DIM);
+        let mut u = [0u32; 16];
+        u[..3].copy_from_slice(&[n as u32, DIM as u32, (P * P) as u32]);
+        let (cls, pos) = (self.g.wt("pretrained.cls_token"), self.g.wt("pretrained.pos_embed"));
+        self.go("tokens", u, Self::flat(n * DIM), &[(1, &patches.buf), (2, cls), (3, &x.buf), (4, pos)]);
+        let mut feats = Vec::with_capacity(4);
+        for k in 0..12 {
+            let pre = format!("pretrained.blocks.{k}");
+            let h = self.copy(&x);
+            self.layernorm(&h, DIM, &format!("{pre}.norm1"), 1e-6);
+            let qkv = self.linear(&h, n, &format!("{pre}.attn.qkv"));
+            let att = self.g.new_t(n * DIM);
+            let mut u = [0u32; 16];
+            u[..4].copy_from_slice(&[n as u32, HEADS as u32, (DIM / HEADS) as u32, (1.0 / ((DIM / HEADS) as f32).sqrt()).to_bits()]);
+            self.go("vit_attention", u, [n.div_ceil(64) as u32, HEADS as u32, 1], &[(1, &qkv.buf), (3, &att.buf)]);
+            let a = self.linear(&att, n, &format!("{pre}.attn.proj"));
+            self.scale_add(&x, &a, &format!("{pre}.ls1.gamma"), DIM);
+            let h = self.copy(&x);
+            self.layernorm(&h, DIM, &format!("{pre}.norm2"), 1e-6);
+            let h = self.linear(&h, n, &format!("{pre}.mlp.fc1"));
+            self.gelu(&h);
+            let h = self.linear(&h, n, &format!("{pre}.mlp.fc2"));
+            self.scale_add(&x, &h, &format!("{pre}.ls2.gamma"), DIM);
+            if matches!(k, 2 | 5 | 8 | 11) {
+                let f = self.copy(&x);
+                self.layernorm(&f, DIM, "pretrained.norm", 1e-6);
+                let map = self.g.new_t(DIM * P * P);
+                let mut u = [0u32; 16];
+                u[..2].copy_from_slice(&[DIM as u32, (P * P) as u32]);
+                self.go("unpatch", u, Self::flat(map.len), &[(1, &f.buf), (3, &map.buf)]);
+                feats.push(map);
+            }
+            self.flush();
+        }
+        let mut layers = Vec::with_capacity(4);
+        for (i, f) in feats.iter().enumerate() {
+            let (t, ..) = self.conv(f, DIM, P, P, &format!("depth_head.projects.{i}"), 1, 0);
+            let c = self.g.shape(&format!("depth_head.projects.{i}.weight"))[0];
+            let (t, h, w) = match i {
+                0 | 1 => self.conv_t(&t, c, P, P, &format!("depth_head.resize_layers.{i}")),
+                3 => self.conv(&t, c, P, P, "depth_head.resize_layers.3", 2, 1),
+                _ => (t, P, P),
+            };
+            let (t, h, w) = self.conv(&t, c, h, w, &format!("depth_head.scratch.layer{}_rn", i + 1), 1, 1);
+            layers.push((t, h, w));
+        }
+        self.flush();
+        let [l1, l2, l3, l4] = layers.as_slice() else {
+            return img;
+        };
+        let p4 = self.fusion(4, &l4.0, None, l4.1, l4.2, Some((l3.1, l3.2)));
+        let p3 = self.fusion(3, &p4.0, Some(&l3.0), l3.1, l3.2, Some((l2.1, l2.2)));
+        let p2 = self.fusion(2, &p3.0, Some(&l2.0), l2.1, l2.2, Some((l1.1, l1.2)));
+        let (p1, h, w) = self.fusion(1, &p2.0, Some(&l1.0), l1.1, l1.2, None);
+        self.flush();
+        let (o, h, w) = self.conv(&p1, 64, h, w, "depth_head.scratch.output_conv1", 1, 1);
+        let o = self.resize(&o, 32, h, w, SIDE, SIDE);
+        let (o, ..) = self.conv(&o, 32, SIDE, SIDE, "depth_head.scratch.output_conv2.0", 1, 1);
+        self.relu(&o);
+        let (o, ..) = self.conv(&o, 32, SIDE, SIDE, "depth_head.scratch.output_conv2.2", 1, 0);
+        self.relu(&o);
+        o
+    }
+
+    /// x += y × the weight `gamma` (per column, `dim` of them).
+    fn scale_add(&mut self, x: &T, y: &T, gamma: &str, dim: usize) {
+        let mut u = [0u32; 16];
+        u[..2].copy_from_slice(&[x.len as u32, dim as u32]);
+        let g = self.g.wt(gamma);
+        self.go("scale_add", u, Self::flat(x.len), &[(1, &y.buf), (2, g), (3, &x.buf)]);
     }
 
     /// As [`Sam::encode`].

@@ -154,6 +154,7 @@
           <option value="DnxhrLb">DNxHR LB (4:2:2, lightest to decode)</option>
         </select>
       </label>
+      <label class="check" title="H.264 proxies are encoded on the graphics card (NVIDIA NVENC, Intel Quick Sync or AMD AMF) when it has an encoder: several times quicker, and the processor stays free for editing. Without one, the software encoder makes them as before. ProRes and DNxHR proxies are always made in software."><input type="checkbox" bind:checked={prefs.proxy_gpu} disabled={prefs.proxy_format !== "H264"} /> Make H.264 proxies on the graphics card</label>
       <label class="field" title="How big proxies are made. Smaller ones play more easily on slow computers and with very heavy 4K/8K projects; bigger ones are sharper, for judging focus, and take more disk space and decoding.">
         <span>Proxy size</span>
         <select bind:value={prefs.proxy_size}>

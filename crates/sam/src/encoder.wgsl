@@ -110,7 +110,8 @@ fn gemm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l: v
 }
 
 // ---- Convolution columns: a (C × H × W) → c ((C·kh·kw) × (Ho·Wo)).
-// u: 0 C, 1 H, 2 W, 3 kernel, 4 stride, 5 pad, 6 Ho, 7 Wo.
+// u: 0 C, 1 H, 2 W, 3 kernel, 4 stride, 5 pad, 6 Ho, 7 Wo, 8 the first output row
+// (a band of rows from there: Ho of them).
 @compute @workgroup_size(256)
 fn im2col(@builtin(global_invocation_id) gid: vec3<u32>) {
     let n = u(6) * u(7);
@@ -123,7 +124,7 @@ fn im2col(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ci = row / (kk * kk);
     let ki = (row / kk) % kk;
     let kj = row % kk;
-    let yo = col / u(7);
+    let yo = col / u(7) + u(8);
     let xo = col % u(7);
     let yi = i32(yo * u(4) + ki) - i32(u(5));
     let xi = i32(xo * u(4) + kj) - i32(u(5));
@@ -389,4 +390,171 @@ fn shuffle(@builtin(global_invocation_id) gid: vec3<u32>) {
     let k = ch * 16u + (y % 4u) * 4u + (x % 4u);
     let v = a[(k * h + r) * w + cc] + b[(ch * h + r) * w + cc];
     c[row * ow + x] = clamp(v, 0.0, 1.0);
+}
+
+// ======== Depth Anything V2 (depth.rs) on the graphics card ========
+
+// ---- c = max(c, 0) in place. u: 0 count.
+@compute @workgroup_size(256)
+fn relu(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = flat(gid);
+    if (i >= u(0)) {
+        return;
+    }
+    c[i] = max(c[i], 0.0);
+}
+
+// ---- c += a × b (b per column, the layer scale). u: 0 count, 1 columns.
+@compute @workgroup_size(256)
+fn scale_add(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = flat(gid);
+    if (i >= u(0)) {
+        return;
+    }
+    c[i] += a[i] * b[i % u(1)];
+}
+
+// ---- The tokens: the class token then each patch (a: dim × patches), plus the
+// position embedding d. u: 0 tokens, 1 dim, 2 patches. b: the class token.
+@compute @workgroup_size(256)
+fn tokens(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = flat(gid);
+    let dim = u(1);
+    if (i >= u(0) * dim) {
+        return;
+    }
+    let t = i / dim;
+    let e = i % dim;
+    var v = b[e];
+    if (t > 0u) {
+        v = a[e * u(2) + t - 1u];
+    }
+    c[i] = v + d[i];
+}
+
+// ---- The patch tokens (after the class token) as a dim × patches map.
+// u: 0 dim, 1 patches.
+@compute @workgroup_size(256)
+fn unpatch(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = flat(gid);
+    let pp = u(1);
+    if (i >= u(0) * pp) {
+        return;
+    }
+    let e = i / pp;
+    let q = i % pp;
+    c[i] = a[(q + 1u) * u(0) + e];
+}
+
+// ---- Global self-attention: qkv (n × 3·dim, the heads' q, then k, then v) →
+// c (n × dim). One thread a query and head. u: 0 n, 1 heads, 2 head size (≤ 64),
+// 3 scale (f32 bits).
+@compute @workgroup_size(64)
+fn vit_attention(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let n = u(0);
+    let heads = u(1);
+    let kd = u(2);
+    let q = gid.x;
+    let h = gid.y;
+    if (q >= n || h >= heads) {
+        return;
+    }
+    let dim = heads * kd;
+    let stride = 3u * dim;
+    let scale = bitcast<f32>(u(3));
+    var acc: array<f32, 64>;
+    for (var e = 0u; e < kd; e++) {
+        acc[e] = 0.0;
+    }
+    var mx = -1e30;
+    var sum = 0.0;
+    let qo = q * stride + h * kd;
+    for (var j = 0u; j < n; j++) {
+        let ko = j * stride + dim + h * kd;
+        var s = 0.0;
+        for (var e = 0u; e < kd; e++) {
+            s += a[qo + e] * a[ko + e];
+        }
+        s *= scale;
+        let nm = max(mx, s);
+        let f = exp(mx - nm);
+        let wj = exp(s - nm);
+        sum = sum * f + wj;
+        let vo = j * stride + 2u * dim + h * kd;
+        for (var e = 0u; e < kd; e++) {
+            acc[e] = acc[e] * f + wj * a[vo + e];
+        }
+        mx = nm;
+    }
+    for (var e = 0u; e < kd; e++) {
+        c[q * dim + h * kd + e] = acc[e] / sum;
+    }
+}
+
+// ---- Bilinear resize of a (C × H × W) to c (C × Ho × Wo), corners lined up.
+// u: 0 C, 1 H, 2 W, 3 Ho, 4 Wo.
+@compute @workgroup_size(256)
+fn resize(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = flat(gid);
+    let ho = u(3);
+    let wo = u(4);
+    if (i >= u(0) * ho * wo) {
+        return;
+    }
+    let h = u(1);
+    let w = u(2);
+    let ch = i / (ho * wo);
+    let yo = (i / wo) % ho;
+    let xo = i % wo;
+    var sy = 0.0;
+    if (ho > 1u) {
+        sy = f32(yo) * f32(h - 1u) / f32(ho - 1u);
+    }
+    var sx = 0.0;
+    if (wo > 1u) {
+        sx = f32(xo) * f32(w - 1u) / f32(wo - 1u);
+    }
+    let y0 = min(u32(floor(sy)), h - 1u);
+    let x0 = min(u32(floor(sx)), w - 1u);
+    let y1 = min(y0 + 1u, h - 1u);
+    let x1 = min(x0 + 1u, w - 1u);
+    let fy = sy - f32(y0);
+    let fx = sx - f32(x0);
+    let o = ch * h * w;
+    let top = a[o + y0 * w + x0] * (1.0 - fx) + a[o + y0 * w + x1] * fx;
+    let bottom = a[o + y1 * w + x0] * (1.0 - fx) + a[o + y1 * w + x1] * fx;
+    c[i] = top * (1.0 - fy) + bottom * fy;
+}
+
+// ---- A transposed convolution whose kernel is its stride, from its blocks
+// (a: (Cout·k·k) × (H·W)) to c (Cout × H·k × W·k), plus the bias d.
+// u: 0 Cout, 1 k, 2 H, 3 W.
+@compute @workgroup_size(256)
+fn deblock(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = flat(gid);
+    let k = u(1);
+    let h = u(2);
+    let w = u(3);
+    let ho = h * k;
+    let wo = w * k;
+    if (i >= u(0) * ho * wo) {
+        return;
+    }
+    let o = i / (ho * wo);
+    let yo = (i / wo) % ho;
+    let xo = i % wo;
+    let blk = (o * k + yo % k) * k + xo % k;
+    c[i] = a[blk * h * w + (yo / k) * w + xo / k] + d[o];
+}
+
+// ---- A band's output (a: O × n) into its place in the whole (c: O × total, from
+// offset on). u: 0 O, 1 n, 2 total, 3 offset.
+@compute @workgroup_size(256)
+fn put_rows(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = flat(gid);
+    let n = u(1);
+    if (i >= u(0) * n) {
+        return;
+    }
+    c[(i / n) * u(2) + u(3) + i % n] = a[i];
 }

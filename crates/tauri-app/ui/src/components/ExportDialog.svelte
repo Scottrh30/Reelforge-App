@@ -2,7 +2,7 @@
   // File > Export…: presets (built in and your own), every setting, and
   // Export (runs the queue now) or Add to queue (to set up another first).
   import { app, run, timecode, tps, fps } from "../lib/session.svelte";
-  import { api, type ExportOptions, type Spec, type Size, type UserPreset, type VideoCodec } from "../lib/api";
+  import { api, type ExportOptions, type Spec, type Size, type UserPreset, type VideoCodec, type GpuSpeed } from "../lib/api";
 
   let opts = $state<ExportOptions | null>(null);
   let spec = $state<Spec | null>(null);
@@ -49,7 +49,7 @@
   const busy = $derived((app.live?.export.jobs ?? []).some((j) => j.state === "waiting" || j.state === "running"));
 
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  const norm = (s: Spec): Spec => ({ video: s.video, size: s.size, quality: s.quality, fit: s.fit, hardware: s.hardware, color: s.color, bitrate_kbps: s.bitrate_kbps ?? null, alpha: !!s.alpha, frame_rate: s.frame_rate ?? null, between: s.between ?? null });
+  const norm = (s: Spec): Spec => ({ video: s.video, size: s.size, quality: s.quality, fit: s.fit, hardware: s.hardware, gpu_speed: s.gpu_speed ?? "Balanced", color: s.color, bitrate_kbps: s.bitrate_kbps ?? null, alpha: !!s.alpha, frame_rate: s.frame_rate ?? null, between: s.between ?? null });
   // Frame rates to write at; the sequence's own is the first choice.
   const RATES: [string, number, number][] = [["23.976", 24000, 1001], ["24", 24, 1], ["25", 25, 1], ["29.97", 30000, 1001], ["30", 30, 1], ["50", 50, 1], ["59.94", 60000, 1001], ["60", 60, 1], ["120", 120, 1]];
   const outFps = $derived(spec?.frame_rate ? spec.frame_rate.num / spec.frame_rate.den : fps());
@@ -434,6 +434,18 @@
             <input type="checkbox" checked={spec.hardware && codec.hardware} disabled={!codec.hardware} onchange={(e) => (spec!.hardware = e.currentTarget.checked)} />
             Use the graphics card (NVENC / Quick Sync / AMF)
           </label>
+          {#if spec.hardware && codec.hardware}
+            <span class="lbl">GPU speed</span>
+            <select
+              title="How hard the graphics card's encoder works. Fast: quickest. Balanced: a slower preset with look-ahead, adaptive quantisation and a quarter-resolution first pass: smaller files at the same quality, still several times quicker than software. Best quality: the slowest preset with a full two-pass encode. On NVIDIA (NVENC) these are presets P2, P5 and P7 at constant quality; an older card that can't take all the extras gets the plain preset."
+              value={spec.gpu_speed ?? "Balanced"}
+              onchange={(e) => (spec!.gpu_speed = e.currentTarget.value as GpuSpeed)}
+            >
+              <option value="Fast">Fast</option>
+              <option value="Balanced">Balanced</option>
+              <option value="Best">Best quality</option>
+            </select>
+          {/if}
         {/if}
 
         <span class="lbl">Sound</span>

@@ -48,6 +48,8 @@ pub struct ExportSettings {
     pub video: Option<VideoCodec>,
     /// Use a GPU encoder (NVENC, Quick Sync, AMF…) when there is one.
     pub hardware: bool,
+    /// …and how hard it works.
+    pub gpu_speed: reelforge_media::encode::GpuSpeed,
     /// What to do when the output's shape differs from the sequence's.
     pub fit: Fit,
     /// Which sequence of the project (0 is the main edit; others are compositions).
@@ -429,6 +431,7 @@ pub fn export_sequence(
         proxy: false,
         video: settings.video,
         hardware: settings.hardware,
+        gpu_speed: settings.gpu_speed,
         fit: settings.fit,
         color: settings.color,
         bitrate_kbps: settings.bitrate_kbps,

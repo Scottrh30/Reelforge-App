@@ -55,6 +55,64 @@ impl Quality {
     }
 }
 
+/// How hard a GPU encoder works (Export → Use the graphics card): quicker, or
+/// smaller files at the same quality. NVIDIA's NVENC gets presets P2, P5 or P7, with
+/// look-ahead, adaptive quantisation and two-pass at the better two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+pub enum GpuSpeed {
+    Fast,
+    #[default]
+    Balanced,
+    Best,
+}
+
+/// NVENC's options for an encode (`name` h264_nvenc, hevc_nvenc or av1_nvenc):
+/// constant quality like the software encoders' CRF (unless `target`: a bitrate is
+/// set), the preset for `speed`, and for an editing proxy the quickest settings.
+/// `full`: with look-ahead, adaptive quantisation and two-pass (an older card may
+/// refuse some of those; the plain set is tried next).
+pub fn nvenc_options(name: &str, quality: Quality, speed: GpuSpeed, proxy: bool, target: bool, full: bool) -> Vec<(&'static str, String)> {
+    let mut o: Vec<(&'static str, String)> = Vec::new();
+    // Its constant-quality scale (0–51) runs a little above x264's CRF for the same
+    // look; HEVC and AV1 need less again.
+    let crf: u32 = quality.crf().parse().unwrap_or(21);
+    let cq = if proxy {
+        25
+    } else if name.starts_with("h264") {
+        crf + 1
+    } else {
+        crf + 4
+    };
+    if proxy {
+        o.push(("preset", "p2".into()));
+        o.push(("tune", "hq".into()));
+        o.push(("rc", "vbr".into()));
+        o.push(("cq", cq.to_string()));
+        return o;
+    }
+    o.push(("preset", match speed {
+        GpuSpeed::Fast => "p2",
+        GpuSpeed::Balanced => "p5",
+        GpuSpeed::Best => "p7",
+    }
+    .into()));
+    o.push(("tune", "hq".into()));
+    o.push(("rc", "vbr".into()));
+    if !target {
+        o.push(("cq", cq.to_string()));
+    }
+    if full && speed != GpuSpeed::Fast {
+        o.push(("multipass", if speed == GpuSpeed::Best { "fullres" } else { "qres" }.into()));
+        o.push(("rc-lookahead", if speed == GpuSpeed::Best { "32" } else { "16" }.into()));
+        o.push(("spatial-aq", "1".into()));
+        o.push(("temporal-aq", "1".into()));
+        o.push(("b_ref_mode", "middle".into()));
+    } else if full {
+        o.push(("spatial-aq", "1".into()));
+    }
+    o
+}
+
 /// What kind of video to write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub enum VideoCodec {
@@ -437,6 +495,8 @@ pub struct WriterSettings {
     pub video: Option<VideoCodec>,
     /// Try GPU encoders before software ones.
     pub hardware: bool,
+    /// How hard a GPU encoder works.
+    pub gpu_speed: GpuSpeed,
     /// What to do when the input's shape differs from the output's.
     pub fit: Fit,
     /// Dynamic range and bit depth (10-bit and HDR only for codecs that support them).
@@ -518,6 +578,7 @@ impl Default for WriterSettings {
             proxy: false,
             video: Some(VideoCodec::H264),
             hardware: false,
+            gpu_speed: GpuSpeed::Balanced,
             fit: Fit::Letterbox,
             color: ColorOut::Sdr8,
             bitrate_kbps: None,
@@ -1062,7 +1123,14 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
     let tb = ff::Rational::new(s.frame_rate.0.den as i32, s.frame_rate.0.num as i32);
     let fps = ff::Rational::new(s.frame_rate.0.num as i32, s.frame_rate.0.den as i32);
     let mut errors = Vec::new();
-    for name in kind.encoders(s.hardware && !s.proxy) {
+    // NVENC first with its full set of options, then plain (an older card may not
+    // take them all), before moving on to the next encoder.
+    let tries = kind.encoders(s.hardware).into_iter().flat_map(|n| if n.contains("_nvenc") { vec![(n, true), (n, false)] } else { vec![(n, false)] });
+    for (name, full) in tries {
+        // Proxies on the graphics card only with the encoders that do all-keyframe video well.
+        if s.proxy && is_hardware_encoder(name) && !["_nvenc", "_qsv", "_amf"].iter().any(|k| name.contains(k)) {
+            continue;
+        }
         let Some(codec) = ff::encoder::find_by_name(name) else { continue };
         let Ok(vcodec) = codec.video() else { continue };
         let formats: Vec<ff::format::Pixel> = vcodec.formats().map(|f| f.collect()).unwrap_or_default();
@@ -1103,6 +1171,8 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
             enc.set_gop(if s.proxy { 1 } else { (s.frame_rate.fps() * 2.0).round().max(1.0) as u32 });
             if s.proxy {
                 enc.set_max_b_frames(0);
+            } else if name.contains("_nvenc") && full && s.gpu_speed != GpuSpeed::Fast {
+                enc.set_max_b_frames(3);
             }
             // Closed GOPs: every keyframe is a clean random-access point, so files
             // seek cleanly in editors (including this one) and play everywhere.
@@ -1253,6 +1323,15 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
                 }
                 opts.set("speed", "6");
             }
+            // NVENC: constant quality and its presets (see `nvenc_options`).
+            (_, n) if n.contains("_nvenc") => {
+                for (k, v) in nvenc_options(n, s.quality, s.gpu_speed, s.proxy, target.is_some(), full) {
+                    opts.set(k, &v);
+                }
+                if target.is_none() {
+                    enc.set_bit_rate(0);
+                }
+            }
             // GPU AV1 and VP9: a bitrate, a little under HEVC's.
             (VideoCodec::Av1, _) => enc.set_bit_rate(bitrate(s.quality.bits_per_pixel() * 0.5)),
             (VideoCodec::Vp9, _) => enc.set_bit_rate(bitrate(s.quality.bits_per_pixel() * 0.6)),
@@ -1278,7 +1357,7 @@ fn open_video_encoder(kind: VideoCodec, w: u32, h: u32, s: &WriterSettings, glob
         enc.set_flags(flags);
         match enc.open_with(opts) {
             Ok(opened) => {
-                log::info!("video encoder: {name} ({pix:?})");
+                log::info!("video encoder: {name} ({pix:?}{})", if name.contains("_nvenc") && !full { ", plain settings" } else { "" });
                 return Ok((opened, codec, name.to_string()));
             }
             Err(e) => errors.push(format!("{name}: {e}")),
@@ -1347,6 +1426,32 @@ fn open_audio_encoder(octx: &mut ff::format::context::Output, rate: u32, global_
 #[cfg(test)]
 mod fit_tests {
     use super::*;
+
+    #[test]
+    fn nvenc_gets_constant_quality_and_its_presets() {
+        let get = |o: &[(&str, String)], k: &str| o.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+        let o = nvenc_options("h264_nvenc", Quality::Medium, GpuSpeed::Balanced, false, false, true);
+        assert_eq!((get(&o, "preset"), get(&o, "rc"), get(&o, "cq")), (Some("p5".into()), Some("vbr".into()), Some("22".into())));
+        assert_eq!((get(&o, "multipass"), get(&o, "rc-lookahead"), get(&o, "temporal-aq")), (Some("qres".into()), Some("16".into()), Some("1".into())));
+        // HEVC a little lower on the scale; Best: full two-pass; Fast: none of the extras.
+        let o = nvenc_options("hevc_nvenc", Quality::High, GpuSpeed::Best, false, false, true);
+        assert_eq!((get(&o, "preset"), get(&o, "cq"), get(&o, "multipass")), (Some("p7".into()), Some("21".into()), Some("fullres".into())));
+        let o = nvenc_options("h264_nvenc", Quality::Low, GpuSpeed::Fast, false, false, true);
+        assert_eq!((get(&o, "preset"), get(&o, "multipass"), get(&o, "b_ref_mode")), (Some("p2".into()), None, None));
+        // A target bitrate: no constant quality; the plain set: no extras.
+        assert_eq!(get(&nvenc_options("h264_nvenc", Quality::Medium, GpuSpeed::Best, false, true, true), "cq"), None);
+        let plain = nvenc_options("hevc_nvenc", Quality::Medium, GpuSpeed::Best, false, false, false);
+        assert!(get(&plain, "rc-lookahead").is_none() && get(&plain, "spatial-aq").is_none() && get(&plain, "cq").is_some());
+        // Proxies: quick, constant quality.
+        let o = nvenc_options("h264_nvenc", Quality::High, GpuSpeed::Best, true, false, true);
+        assert_eq!((get(&o, "preset"), get(&o, "cq"), get(&o, "multipass")), (Some("p2".into()), Some("25".into()), None));
+    }
+
+    #[test]
+    fn hardware_goes_first_for_proxies_too_when_asked() {
+        assert_eq!(VideoCodec::H264.encoders(true).first(), Some(&"h264_nvenc"));
+        assert_eq!(VideoCodec::H264.encoders(false).first(), Some(&"libx264"));
+    }
 
     #[test]
     fn dnxhd_picks_avids_usual_bitrates() {

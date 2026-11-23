@@ -78,6 +78,17 @@ impl ProxySize {
     }
 }
 
+static GPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Make H.264 proxies on the graphics card when it has an encoder (Settings).
+pub fn set_gpu(on: bool) {
+    GPU.store(on, Ordering::Relaxed);
+}
+
+pub fn gpu() -> bool {
+    GPU.load(Ordering::Relaxed)
+}
+
 static SIZE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
 
 /// The size new proxies are made at (Settings).
@@ -266,6 +277,8 @@ pub fn make_proxy_as(src: &Path, info: &MediaInfo, fmt: ProxyFormat, cancel: &At
         audio_rate: None,
         proxy: true,
         video: Some(fmt.codec()),
+        // H.264 proxies on the graphics card when it has an encoder (NVENC, Quick Sync, AMF).
+        hardware: gpu(),
         ..Default::default()
     })?;
     let blank = vec![0u8; (first.width * first.height * 4) as usize];

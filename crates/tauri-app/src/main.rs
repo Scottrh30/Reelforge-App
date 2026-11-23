@@ -1213,6 +1213,19 @@ fn upscale_media(media: u64, factor: u32, replace: bool) -> Res<()> {
     ed(|e| e.start_upscale(MediaId(media), factor, replace))
 }
 
+/// Run NVIDIA's Video Effect `effect` (RTX cards) over media `media`; `replace` puts the
+/// result in the original's place.
+#[tauri::command]
+fn nvidia_media(media: u64, effect: reelforge_media::nvfx::NvEffect, replace: bool) -> Res<()> {
+    ed(|e| e.start_nvidia(MediaId(media), effect, replace))
+}
+
+/// NVIDIA's Video Effects are installed (the Media panel offers them).
+#[tauri::command]
+fn nvidia_available() -> bool {
+    reelforge_media::nvfx::available()
+}
+
 #[tauri::command]
 fn upscale_cancel() -> Res<()> {
     ed(|e| e.cancel_upscale())
@@ -1942,6 +1955,8 @@ fn main() {
             roto_prepare,
             upscale_media,
             upscale_cancel,
+            nvidia_media,
+            nvidia_available,
             color_match,
             color_match_cancel,
             color_match_pick,
