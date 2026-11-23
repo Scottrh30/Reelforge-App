@@ -37,13 +37,18 @@ pub enum NvEffect {
     ArtifactReduction { heavy: bool },
     /// Low-light camera noise taken out (`strong`: more of it).
     Denoise { strong: bool },
+    /// RTX Video Super Resolution (see [`crate::rtxvideo`]): AI upscaling that also cleans
+    /// up compression, `scale` 1–4, `quality` 1–4.
+    RtxSuperResolution { scale: f32, quality: u32 },
+    /// RTX Video HDR: SDR made into HDR10 (BT.2020, PQ), with this look.
+    RtxHdr { look: crate::rtxvideo::HdrLook },
 }
 
 impl NvEffect {
     /// How much bigger the result is.
     pub fn scale(self) -> f32 {
         match self {
-            NvEffect::SuperResolution { scale, .. } | NvEffect::Upscale { scale, .. } => scale,
+            NvEffect::SuperResolution { scale, .. } | NvEffect::Upscale { scale, .. } | NvEffect::RtxSuperResolution { scale, .. } => scale,
             _ => 1.0,
         }
     }
@@ -51,6 +56,25 @@ impl NvEffect {
     /// The result has see-through parts (and wants a format that keeps them).
     pub fn alpha(self) -> bool {
         matches!(self, NvEffect::RemoveBackground { .. })
+    }
+
+    /// One of RTX Video's effects (rather than a Video Effects SDK one).
+    pub fn rtx(self) -> bool {
+        matches!(self, NvEffect::RtxSuperResolution { .. } | NvEffect::RtxHdr { .. })
+    }
+
+    /// The result is HDR10 (and wants a 10-bit HDR format).
+    pub fn hdr(self) -> bool {
+        matches!(self, NvEffect::RtxHdr { .. })
+    }
+
+    /// What it needs is there.
+    pub fn installed(self) -> bool {
+        if self.rtx() {
+            crate::rtxvideo::available()
+        } else {
+            available()
+        }
     }
 
     pub fn label(self) -> String {
@@ -61,6 +85,8 @@ impl NvEffect {
             NvEffect::Upscale { scale, .. } => format!("upscaled {scale}x"),
             NvEffect::ArtifactReduction { .. } => "artefacts reduced".into(),
             NvEffect::Denoise { .. } => "denoised".into(),
+            NvEffect::RtxSuperResolution { scale, .. } => format!("RTX super resolution {scale}x"),
+            NvEffect::RtxHdr { .. } => "RTX HDR".into(),
         }
     }
 
@@ -79,6 +105,7 @@ impl NvEffect {
         match self {
             NvEffect::RemoveBackground { .. } | NvEffect::BlurBackground { .. } if w < 512 || h < 288 => Some("background removal needs a picture at least 512 × 288".into()),
             NvEffect::Denoise { .. } if !(80..=1080).contains(&h) => Some("noise removal takes pictures from 80 to 1080 lines".into()),
+            NvEffect::RtxSuperResolution { scale, .. } if !(1.0..=4.0).contains(&scale) || scale <= 1.0 => Some(format!("RTX super resolution scales from 1× to 4×, not {scale}×")),
             NvEffect::SuperResolution { scale, .. } | NvEffect::Upscale { scale, .. } if ![1.5, 2.0, 3.0, 4.0, 4.0 / 3.0].iter().any(|s| (s - scale).abs() < 0.01) => Some(format!("it can't scale {scale}×")),
             _ => None,
         }
@@ -329,6 +356,9 @@ mod imp {
             if let Some(why) = effect.refuses(w, h) {
                 bail!("{why}");
             }
+            if effect.rtx() {
+                bail!("RTX Video isn't one of the Video Effects");
+            }
             let api = api()?;
             let models = install_dir().map(|d| d.join("models")).unwrap_or_default();
             let mut stream: Stream = null_mut();
@@ -366,6 +396,7 @@ mod imp {
                 NvEffect::Upscale { .. } => &["Upscale"],
                 NvEffect::ArtifactReduction { .. } => &["ArtifactReduction", "Artifact Reduction"],
                 NvEffect::Denoise { .. } => &["Denoising"],
+                NvEffect::RtxSuperResolution { .. } | NvEffect::RtxHdr { .. } => bail!("RTX Video isn't one of the Video Effects"),
             };
             let mut fx = mk(names)?;
             let mut matte = None;

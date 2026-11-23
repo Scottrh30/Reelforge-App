@@ -6,13 +6,30 @@
 
   // NVIDIA's Video Effects (RTX cards): offered once the redistributable is found.
   let nvidia = $state(false);
-  api.nvidiaAvailable().then((v) => (nvidia = !!v)).catch(() => {});
+  let rtx = $state(false);
+  api
+    .nvidiaAvailable()
+    .then((v) => {
+      nvidia = !!v?.fx;
+      rtx = !!v?.rtx;
+    })
+    .catch(() => {});
 
   function nvidiaMenu(m: MediaView) {
     const fx = (label: string, effect: NvEffect, hint = "", disabled = false) => ({ label, hint, disabled, run: () => run(api.nvidiaMedia(m.id, effect, false)) });
     const big = (k: number) => m.width * k > 7680;
-    if (!nvidia) return [{ label: "Needs NVIDIA's Video Effects for RTX (see the README)", disabled: true }];
+    const rtxItems = rtx
+      ? [
+          fx("RTX Video Super Resolution 2×", { RtxSuperResolution: { scale: 2, quality: 4 } }, `${m.width * 2}×${m.height * 2}`, big(2)),
+          fx("RTX Video Super Resolution 4×", { RtxSuperResolution: { scale: 4, quality: 4 } }, `${m.width * 4}×${m.height * 4}`, big(4)),
+          fx("RTX Video HDR (SDR → HDR10)", { RtxHdr: { look: { contrast: 100, saturation: 100, middle_gray: 50, peak: 1000 } } }, "HEVC 10-bit", m.kind === "image"),
+          fx("RTX Video HDR — brighter (peak 2000 nits)", { RtxHdr: { look: { contrast: 110, saturation: 105, middle_gray: 55, peak: 2000 } } }, "", m.kind === "image"),
+          { separator: true },
+        ]
+      : [];
+    if (!nvidia) return [...rtxItems, { label: "Video Effects: needs NVIDIA's redistributable (see the README)", disabled: true }];
     return [
+      ...rtxItems,
       fx("Remove the background (AI green screen)", { RemoveBackground: { quality: true } }, "transparent .mov", m.width < 512 || m.height < 288),
       fx("Remove the background — faster", { RemoveBackground: { quality: false } }, "", m.width < 512 || m.height < 288),
       fx("Blur the background", { BlurBackground: { strength: 0.6 } }, "", m.width < 512 || m.height < 288),

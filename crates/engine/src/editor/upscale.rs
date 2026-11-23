@@ -11,7 +11,7 @@
 use super::Editor;
 use crossbeam_channel::{unbounded, Receiver};
 use reelforge_core::{MediaId, Time};
-use reelforge_media::encode::{MovieWriter, Quality, VideoCodec, WriterSettings};
+use reelforge_media::encode::{ColorOut, MovieWriter, Quality, VideoCodec, WriterSettings};
 use reelforge_media::nvfx::NvEffect;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,6 +64,8 @@ pub fn nvidia_path(src: &Path, fx: NvEffect, still: bool) -> PathBuf {
 /// how far into the frame it is.
 struct Proc {
     size: (u32, u32),
+    /// The frames come out as HDR10 (packed 10-bit PQ, see `reelforge_media::rtxvideo`).
+    hdr: bool,
     f: Box<dyn FnMut(&[u8], &mut dyn FnMut(f32)) -> Result<Vec<u8>, String>>,
 }
 
@@ -96,6 +98,7 @@ impl Editor {
         let make: MakeProc = Box::new(move |w, h| {
             Ok(Proc {
                 size: (w.saturating_mul(factor), h.saturating_mul(factor)),
+                hdr: false,
                 f: Box::new(move |rgba: &[u8], p: &mut dyn FnMut(f32)| {
                     let (w, h) = (w as usize, h as usize);
                     let big = reelforge_sam::upscale::upscale(rgba, w, h, &mut *p).ok_or("the upscaling model didn't load")?;
@@ -115,8 +118,12 @@ impl Editor {
             self.status = "An AI job is already running: wait for it (or stop it)".into();
             return;
         }
-        if !reelforge_media::nvfx::available() {
-            self.status = format!("NVIDIA's Video Effects aren't installed: get the Video Effects SDK redistributable for your RTX card from {}", reelforge_media::nvfx::DOWNLOAD);
+        if !fx.installed() {
+            self.status = if fx.rtx() {
+                "NVIDIA RTX Video isn't in this copy of Reelforge (it comes with the Windows download)".into()
+            } else {
+                format!("NVIDIA's Video Effects aren't installed: get the Video Effects SDK redistributable for your RTX card from {}", reelforge_media::nvfx::DOWNLOAD)
+            };
             return;
         }
         let Some(m) = self.project.media(id).cloned() else { return };
@@ -134,9 +141,27 @@ impl Editor {
         }
         let still = self.project.is_still(id);
         let dst = nvidia_path(&m.path, fx, still);
+        if fx.hdr() && still {
+            self.status = "RTX Video HDR is for footage: pictures stay SDR".into();
+            return;
+        }
         let make: MakeProc = Box::new(move |w, h| {
-            let mut runner = reelforge_media::nvfx::Runner::new(fx, w, h).map_err(|e| format!("{e:#}"))?;
-            Ok(Proc { size: fx.out_size(w, h), f: Box::new(move |rgba: &[u8], _p: &mut dyn FnMut(f32)| runner.process(rgba).map_err(|e| format!("{e:#}"))) })
+            let size = fx.out_size(w, h);
+            let mut run: Box<dyn FnMut(&[u8]) -> anyhow::Result<Vec<u8>>> = match fx {
+                NvEffect::RtxSuperResolution { quality, .. } => {
+                    let mut r = reelforge_media::rtxvideo::Runner::new(Some((size.0, size.1, quality)), None, w, h).map_err(|e| format!("{e:#}"))?;
+                    Box::new(move |rgba| r.process(rgba))
+                }
+                NvEffect::RtxHdr { look } => {
+                    let mut r = reelforge_media::rtxvideo::Runner::new(None, Some(look), w, h).map_err(|e| format!("{e:#}"))?;
+                    Box::new(move |rgba| r.process(rgba))
+                }
+                _ => {
+                    let mut r = reelforge_media::nvfx::Runner::new(fx, w, h).map_err(|e| format!("{e:#}"))?;
+                    Box::new(move |rgba| r.process(rgba))
+                }
+            };
+            Ok(Proc { size, hdr: fx.hdr(), f: Box::new(move |rgba: &[u8], _p: &mut dyn FnMut(f32)| run(rgba).map_err(|e| format!("{e:#}"))) })
         });
         let status = format!("NVIDIA: {} — {}…", m.name, fx.label());
         self.spawn_job(id, &m, dst, still, fx.alpha(), make, "NVIDIA effect", status, replace);
@@ -232,8 +257,15 @@ fn run(src: &Path, dst: &Path, info: &reelforge_core::MediaInfo, rate: reelforge
     let ext = dst.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
     let tmp = dst.with_extension(format!("partial.{ext}"));
     let audio_rate = info.audio.as_ref().map(|_| 48_000u32);
-    let video = if alpha { VideoCodec::ProRes4444 } else { VideoCodec::H264 };
-    let mut writer = MovieWriter::create(&tmp, &WriterSettings { width: p.size.0, height: p.size.1, frame_rate: rate, quality: Quality::High, audio_rate, video: Some(video), hardware: !alpha, alpha, ..Default::default() })
+    let video = if alpha {
+        VideoCodec::ProRes4444
+    } else if p.hdr {
+        VideoCodec::H265
+    } else {
+        VideoCodec::H264
+    };
+    let color = if p.hdr { ColorOut::HdrPq } else { ColorOut::Sdr8 };
+    let mut writer = MovieWriter::create(&tmp, &WriterSettings { width: p.size.0, height: p.size.1, frame_rate: rate, quality: Quality::High, audio_rate, video: Some(video), hardware: !alpha, alpha, color, ..Default::default() })
     .map_err(|e| format!("{e:#}"))?;
     let mut audio = audio_rate.and_then(|r| reelforge_media::audio::AudioReader::open(src, r).ok());
     let fps = rate.0.num as f64 / rate.0.den.max(1) as f64;
@@ -252,7 +284,11 @@ fn run(src: &Path, dst: &Path, info: &reelforge_core::MediaInfo, rate: reelforge
         };
         let out = (p.f)(&rgba, &mut |k| progress((i as f32 + k) / frames as f32))?;
         progress((i + 1) as f32 / frames as f32);
-        writer.write_video(&out).map_err(|e| format!("{e:#}"))?;
+        if p.hdr {
+            writer.write_video_deep(&reelforge_media::rtxvideo::unpack_10bit(&out)).map_err(|e| format!("{e:#}"))?;
+        } else {
+            writer.write_video(&out).map_err(|e| format!("{e:#}"))?;
+        }
         if let (Some(a), Some(r)) = (audio.as_mut(), audio_rate) {
             let s0 = (i as f64 * r as f64 / fps).round() as i64;
             let s1 = ((i + 1) as f64 * r as f64 / fps).round() as i64;
@@ -318,5 +354,10 @@ mod tests {
         e.start_nvidia(MediaId(1), fx, false);
         assert!(e.upscale.is_none());
         assert!(e.status.contains("aren't installed"), "{}", e.status);
+        if !reelforge_media::rtxvideo::available() {
+            e.start_nvidia(MediaId(1), NvEffect::RtxHdr { look: Default::default() }, false);
+            assert!(e.upscale.is_none());
+            assert!(e.status.contains("RTX Video isn't in this copy"), "{}", e.status);
+        }
     }
 }

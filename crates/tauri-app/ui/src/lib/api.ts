@@ -50,7 +50,9 @@ export type NvEffect =
   | { SuperResolution: { scale: number; clean: boolean } }
   | { Upscale: { scale: number; strength: number } }
   | { ArtifactReduction: { heavy: boolean } }
-  | { Denoise: { strong: boolean } };
+  | { Denoise: { strong: boolean } }
+  | { RtxSuperResolution: { scale: number; quality: number } }
+  | { RtxHdr: { look: { contrast: number; saturation: number; middle_gray: number; peak: number } } };
 
 export type GpuSpeed = "Fast" | "Balanced" | "Best";
 /** Settings → Renders: the colour bit depth frames are composited at. */
@@ -1337,7 +1339,7 @@ export const api = {
   upscaleMedia: (media: number, factor: number, replace: boolean) => invoke("upscale_media", { media, factor, replace }),
   upscaleCancel: () => invoke("upscale_cancel"),
   nvidiaMedia: (media: number, effect: NvEffect, replace: boolean) => invoke("nvidia_media", { media, effect, replace }),
-  nvidiaAvailable: () => invoke<boolean>("nvidia_available"),
+  nvidiaAvailable: () => invoke<{ fx: boolean; rtx: boolean }>("nvidia_available"),
   proxyDelete: (media: number) => invoke("proxy_delete", { media }),
   proxiesDeleteAll: () => invoke("proxies_delete_all"),
   proxiesRemake: (format: ProxyFormat, size: ProxySize) => invoke<number>("proxies_remake", { format, size }),

@@ -1220,10 +1220,17 @@ fn nvidia_media(media: u64, effect: reelforge_media::nvfx::NvEffect, replace: bo
     ed(|e| e.start_nvidia(MediaId(media), effect, replace))
 }
 
-/// NVIDIA's Video Effects are installed (the Media panel offers them).
+/// Which of NVIDIA's AI effects are here (the Media panel offers them): the Video Effects
+/// (installed by NVIDIA's redistributable) and RTX Video (shipped beside Reelforge).
+#[derive(serde::Serialize)]
+struct NvidiaHere {
+    fx: bool,
+    rtx: bool,
+}
+
 #[tauri::command]
-fn nvidia_available() -> bool {
-    reelforge_media::nvfx::available()
+fn nvidia_available() -> NvidiaHere {
+    NvidiaHere { fx: reelforge_media::nvfx::available(), rtx: reelforge_media::rtxvideo::available() }
 }
 
 #[tauri::command]

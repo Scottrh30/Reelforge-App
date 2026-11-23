@@ -1520,6 +1520,17 @@ What works now:
   it where it installs (or at `NV_VIDEO_EFFECTS_PATH`) and loads it at run time. Nothing of
   NVIDIA's ships with Reelforge; without it the menu says what it needs. (Background removal
   needs pictures at least 512 × 288)
+- **NVIDIA RTX Video** (in the same **NVIDIA RTX effects** menu; Windows, RTX cards, driver
+  R550 or newer): the AI effects NVIDIA's driver applies to video in web browsers, applied
+  to footage. **RTX Video Super Resolution** 2× or 4× upscales and cleans up compression at
+  the same time; **RTX Video HDR** turns SDR footage into HDR10 (BT.2020, PQ), written as
+  10-bit HEVC with HDR10 metadata — the brighter variant aims at 2000-nit screens. It comes
+  from NVIDIA's RTX Video SDK, which isn't open source and so isn't in this repository: the
+  Windows download carries `reelforge_rtxvideo.dll` (a small library built against the SDK)
+  and NVIDIA's `nvngx_vsr.dll` and `nvngx_truehdr.dll` beside `reelforge.exe`, and Reelforge
+  loads them when they're there (or from the folder `REELFORGE_RTX_VIDEO` names). A build from
+  source works without them; the menu just leaves RTX Video out. NVIDIA's licence for the
+  SDK is in `licenses/` in the download, and the About box credits it
 - **Replace footage** (right-click footage in the Media panel, or a clip in the timeline →
   **Replace footage**): swap a file for another (a new grade, a re-render, the final VFX shot, a
   higher resolution) and keep everything done with it: every cut, trim, speed change, effect,

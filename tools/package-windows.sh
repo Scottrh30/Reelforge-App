@@ -23,6 +23,13 @@ cp "$exe" "$p/"
 cp -r plugins licenses "$p/"
 cp PLUGINS.md README.md THIRD-PARTY-NOTICES.txt LICENSE-MIT LICENSE-APACHE NOTICE "$p/"
 cp "tools/windows/Get FFmpeg.bat" "$p/"
+# NVIDIA RTX Video (optional, never in the repo: NVIDIA's SDK isn't open source):
+# REELFORGE_RTX_VIDEO names a folder holding reelforge_rtxvideo.dll (built against the
+# RTX Video SDK), NVIDIA's nvngx_vsr.dll and nvngx_truehdr.dll, and the SDK's licence.
+if [ -n "${REELFORGE_RTX_VIDEO:-}" ]; then
+  for f in reelforge_rtxvideo.dll nvngx_vsr.dll nvngx_truehdr.dll; do cp "$REELFORGE_RTX_VIDEO/$f" "$p/"; done
+  cp "$REELFORGE_RTX_VIDEO/NVIDIA RTX SDKs License.pdf" "$p/licenses/" 2>/dev/null || true
+fi
 rm -f "$out"
 (cd "$stage" && zip -qr "$out" Reelforge)
 echo "$out"

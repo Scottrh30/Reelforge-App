@@ -5,6 +5,12 @@
   import { api, type DecoderCheck, type ZeroCopyReport, type BenchReport } from "../lib/api";
 
   let report = $state("");
+  // NVIDIA's licence for RTX Video asks for credit where it ships.
+  let rtx = $state(false);
+  api
+    .nvidiaAvailable()
+    .then((v) => (rtx = !!v?.rtx))
+    .catch(() => {});
   let notices = $state("");
   let find = $state("");
   let checking = $state(false);
@@ -116,6 +122,7 @@
       <div class="top">
         <h2 id="about-title">Reelforge</h2>
         <span class="copyright" title="Licensed under the MIT or Apache 2.0 licence, at your option (LICENSE-MIT, LICENSE-APACHE)">Created by Scott Hambach · © 2026 Scott Hambach (Reelforge - SRH) · MIT or Apache-2.0</span>
+        {#if rtx}<span class="copyright">Includes NVIDIA® RTX™ Video (Video Super Resolution and RTX Video HDR), from the NVIDIA RTX Video SDK · © NVIDIA Corporation</span>{/if}
         <nav class="tabs" aria-label="About">
           <button class:on={app.aboutTab === "diagnostics"} onclick={() => (app.aboutTab = "diagnostics")}>Diagnostics</button>
           <button class:on={app.aboutTab === "check"} onclick={() => (app.aboutTab = "check")}>Check decoders</button>

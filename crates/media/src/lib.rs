@@ -28,6 +28,7 @@ pub mod probe;
 pub mod prores_raw;
 pub mod selfcheck;
 pub mod proxy;
+pub mod rtxvideo;
 pub mod source;
 pub mod tracker;
 
