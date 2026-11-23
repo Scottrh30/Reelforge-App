@@ -2420,10 +2420,24 @@ WebM is FFmpeg's work; what's fuzzed is everything of Reelforge's around it. Inp
 failed are kept in `fuzz/regressions/` and replayed by `cargo test`. See `fuzz/README.md` to
 run it.
 
-## Camera RAW (Blackmagic RAW, RED R3D, ARRIRAW)
+## Camera RAW (ProRes RAW, Blackmagic RAW, RED R3D, ARRIRAW)
 
-Camera RAW opens through the camera makers' own software, found on your computer when it's
-there (Settings → Playback lists what was found):
+- **Apple ProRes RAW** and **ProRes RAW HQ** (`.mov`, as Atomos recorders and some Nikon,
+  Panasonic, DJI and Apple cameras record) open like any other clip, with nothing to install:
+  FFmpeg (8.0 and later) decodes the sensor's mosaic, and Reelforge develops it with the
+  camera's own settings from each frame (`crates/media/src/prores_raw.rs`): black and white
+  levels, demosaicing (Malvar–He–Cutler, or 2 × 2 superpixels when the viewer wants half size
+  or less), the camera's white balance, its colour matrix and its gain (ISO), into linear
+  Rec.709 half floats. Highlights above white are kept, as with EXR, so grading can bring
+  them back. What the colour matrix maps to isn't published: one that keeps white white is
+  taken as Apple's wide gamut (linear Rec.2020), one that maps white to D65 or D50 as XYZ.
+  Not tried on real footage (none could be had here); the developing is tested on made-up
+  mosaics. Changing ISO or white balance after the fact isn't supported yet, and frames that
+  carry their own linearisation curve are decoded with the standard one (FFmpeg 8 doesn't read
+  it; FFmpeg 9 does).
+
+The other camera RAW formats open through the camera makers' own software, found on your
+computer when it's there (Settings → Playback lists what was found):
 
 - **Blackmagic RAW** (`.braw`) decodes through Blackmagic's SDK, loaded when a `.braw` file is
   opened. It comes with Blackmagic RAW Player and DaVinci Resolve (both free); Reelforge

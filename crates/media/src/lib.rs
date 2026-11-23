@@ -24,6 +24,7 @@ mod zerocopy;
 pub mod mixer;
 pub mod native;
 pub mod probe;
+pub mod prores_raw;
 pub mod selfcheck;
 pub mod proxy;
 pub mod source;

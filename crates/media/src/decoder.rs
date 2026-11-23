@@ -405,6 +405,9 @@ struct DecodeState {
     /// The first such frame also carries the usual copy, for the compositor to check.
     #[cfg_attr(not(windows), allow(dead_code))]
     gpu_checked: bool,
+    /// ProRes RAW: the camera's settings from the latest frames' headers, by pts, for
+    /// developing their mosaics.
+    raw: std::collections::VecDeque<(Option<i64>, crate::prores_raw::RawParams)>,
 }
 
 /// Open a decoder for `params`: on the GPU if `hw`, else in software (multi-threaded).
@@ -488,6 +491,7 @@ impl DecodeState {
             pending: Default::default(),
             gpu_frames: false,
             gpu_checked: false,
+            raw: Default::default(),
         })
     }
 
@@ -617,6 +621,12 @@ impl DecodeState {
                     continue;
                 }
                 eof = false;
+                if let Some(p) = packet.data().and_then(crate::prores_raw::parse) {
+                    if self.raw.len() >= 64 {
+                        self.raw.pop_front();
+                    }
+                    self.raw.push_back((packet.pts(), p));
+                }
                 match self.decoder.send_packet(&packet) {
                     Err(e) => {
                         log::warn!("Reelforge's decoder: {e}");
@@ -769,6 +779,11 @@ impl DecodeState {
         let space = crate::color::effective_space(src.color_space(), sh);
         let range = src.color_range();
 
+        // ProRes RAW's sensor mosaic, developed with the camera's settings.
+        if let Some(f) = self.develop_raw(src, dw, dh) {
+            return Ok(VideoFrame { pts, width: f.width, height: f.height, pixels: Pixels::Float(Arc::new(f)), generation: self.generation });
+        }
+
         // Floating point (OpenEXR) stays floating point, for the compositor's linear float pipeline.
         if let Some(f) = float_frame(src, dw, dh) {
             return Ok(VideoFrame { pts, width: f.width, height: f.height, pixels: Pixels::Float(Arc::new(f)), generation: self.generation });
@@ -843,6 +858,32 @@ impl DecodeState {
         frame
             .or_else(|| self.ictx.stream(self.stream_index).and_then(|st| of(unsafe { (*st.parameters().as_ptr()).color_trc })))
             .unwrap_or(Transfer::Sdr)
+    }
+
+    /// A ProRes RAW frame (a 16-bit RGGB mosaic from FFmpeg, its header read as it was sent)
+    /// developed into linear half floats at `dw` × `dh`. `None` for anything else.
+    fn develop_raw(&self, src: &ff::frame::Video, dw: u32, dh: u32) -> Option<FloatPixels> {
+        use ff::format::Pixel as P;
+        let big = match src.format() {
+            P::BAYER_RGGB16LE => false,
+            P::BAYER_RGGB16BE => true,
+            _ => return None,
+        };
+        // This frame's settings (by its pts), else the latest.
+        let pts = src.pts();
+        let params = self.raw.iter().rev().find(|(t, _)| *t == pts && pts.is_some()).or_else(|| self.raw.back())?.1;
+        let (w, h) = (src.width() as usize, src.height() as usize);
+        let (stride, data) = (src.stride(0), src.data(0));
+        let mut samples = vec![0u16; w * h];
+        for (y, row) in samples.chunks_exact_mut(w.max(1)).enumerate() {
+            let Some(line) = data.get(y * stride..y * stride + w * 2) else { break };
+            for (o, b) in row.iter_mut().zip(line.chunks_exact(2)) {
+                let b = [b.first().copied().unwrap_or(0), b.get(1).copied().unwrap_or(0)];
+                *o = if big { u16::from_be_bytes(b) } else { u16::from_le_bytes(b) };
+            }
+        }
+        let mosaic = crate::prores_raw::Mosaic { data: &samples, stride: w, w, h };
+        Some(crate::prores_raw::develop(&mosaic, &params, dw, dh))
     }
 
     /// `src` (more than 8 bits, not YUV kept as YUV) as half floats, linear
