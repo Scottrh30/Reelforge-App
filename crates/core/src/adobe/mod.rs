@@ -1,5 +1,6 @@
-//! Opening Adobe projects: Premiere Pro (`.prproj`, see [`prproj`]) and
-//! After Effects (`.aep`, see [`aep`]). Each becomes a Reelforge project:
+//! Opening other editors' projects: Premiere Pro (`.prproj`, see [`prproj`]),
+//! After Effects (`.aep`, see [`aep`]) and HitFilm (`.hfp` projects and `.hfcs`
+//! composite shots, see [`hitfilm`]). Each becomes a Reelforge project:
 //! its media (by path, found again beside the project if it moved), its
 //! sequences or compositions (composition clips where one is used inside
 //! another), their tracks or layers, every clip's timing and speed, its
@@ -17,6 +18,7 @@
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 pub mod aep;
+pub mod hitfilm;
 pub mod prproj;
 
 use crate::project::Project;
@@ -43,24 +45,40 @@ pub const MAX_UNPACKED: u64 = 1 << 30;
 pub enum Kind {
     Premiere,
     AfterEffects,
+    HitFilm,
+}
+
+impl Kind {
+    /// The program's name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Premiere => "Premiere Pro",
+            Kind::AfterEffects => "After Effects",
+            Kind::HitFilm => "HitFilm",
+        }
+    }
 }
 
 pub fn kind_of(path: &Path, head: &[u8]) -> Option<Kind> {
     if head.starts_with(b"RIFX") {
         return Some(Kind::AfterEffects);
     }
+    if hitfilm::sniff(head) {
+        return Some(Kind::HitFilm);
+    }
     let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     match ext.as_str() {
         "prproj" => Some(Kind::Premiere),
         "aep" => Some(Kind::AfterEffects),
+        "hfp" | "hfcs" => Some(Kind::HitFilm),
         _ if head.starts_with(&[0x1f, 0x8b]) || head.starts_with(b"<?xml") => Some(Kind::Premiere),
         _ => None,
     }
 }
 
-/// Is `path` an Adobe project this can open?
+/// Is `path` another editor's project this can open (Premiere, After Effects, HitFilm)?
 pub fn is_adobe_project(path: &Path) -> bool {
-    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("prproj") || e.eq_ignore_ascii_case("aep"))
+    path.extension().is_some_and(|e| ["prproj", "aep", "hfp", "hfcs"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
 /// Read the Adobe project at `path`.
@@ -73,7 +91,8 @@ pub fn import(path: &Path) -> Result<Imported, String> {
     match kind_of(path, &bytes) {
         Some(Kind::Premiere) => prproj::read(&bytes, path.parent()),
         Some(Kind::AfterEffects) => aep::read(&bytes, path.parent()),
-        None => Err("That isn't a Premiere Pro or After Effects project".into()),
+        Some(Kind::HitFilm) => hitfilm::read(&bytes, path.parent()),
+        None => Err("That isn't a Premiere Pro, After Effects or HitFilm project".into()),
     }
 }
 
@@ -195,5 +214,9 @@ mod tests {
         assert_eq!(kind_of(Path::new("x.bin"), b"RIFX\0\0"), Some(Kind::AfterEffects));
         assert_eq!(kind_of(Path::new("x.prproj"), b"\x1f\x8b"), Some(Kind::Premiere));
         assert_eq!(kind_of(Path::new("x.txt"), b"hello"), None);
+        assert_eq!(kind_of(Path::new("x.hfp"), b"<?xml version=\"1.0\"?><BiffProject>"), Some(Kind::HitFilm));
+        assert_eq!(kind_of(Path::new("x.xml"), b"<?xml version=\"1.0\"?><BiffCompositeShot>"), Some(Kind::HitFilm), "by its content, before Premiere's XML");
+        assert_eq!(kind_of(Path::new("x.hfcs"), b""), Some(Kind::HitFilm));
+        assert!(is_adobe_project(Path::new("a/b.HFP")));
     }
 }

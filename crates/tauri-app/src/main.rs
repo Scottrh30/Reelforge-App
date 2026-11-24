@@ -362,10 +362,18 @@ fn renderers() -> Res<Renderers> {
     ed(|e| Renderers { available, active: e.renderer, device: reelforge_render::adapter_info() })
 }
 
-/// File > Open a Premiere Pro or After Effects project…: it becomes a new, unsaved project.
+/// File > Open a Premiere Pro, After Effects or HitFilm project…: it becomes a new, unsaved project.
 #[tauri::command]
 fn open_adobe_dialog() -> Res<()> {
-    let Some(path) = rfd::FileDialog::new().add_filter("Premiere Pro or After Effects project", &["prproj", "aep"]).add_filter("Premiere Pro project", &["prproj"]).add_filter("After Effects project", &["aep"]).pick_file() else { return Ok(()) };
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("Premiere Pro, After Effects or HitFilm project", &["prproj", "aep", "hfp", "hfcs"])
+        .add_filter("Premiere Pro project", &["prproj"])
+        .add_filter("After Effects project", &["aep"])
+        .add_filter("HitFilm project or composite shot", &["hfp", "hfcs"])
+        .pick_file()
+    else {
+        return Ok(());
+    };
     ed(|e| e.import_adobe_project(&path))
 }
 
@@ -435,7 +443,7 @@ fn import_paths(paths: Vec<String>) -> Res<Vec<u64>> {
             e.open_project_path((*p).clone());
             return Vec::new();
         }
-        // A Premiere Pro or After Effects project dropped: opened as a new project.
+        // A Premiere Pro, After Effects or HitFilm project dropped: opened as a new project.
         if let Some(p) = paths.iter().find(|p| reelforge_core::adobe::is_adobe_project(p)) {
             e.import_adobe_project(p);
             return Vec::new();

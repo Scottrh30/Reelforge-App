@@ -365,7 +365,7 @@ pub mod magnetic;
 pub mod simulate;
 pub use multicam::MulticamAt;
 
-/// What opening a Premiere Pro or After Effects project brought across.
+/// What opening a Premiere Pro, After Effects or HitFilm project brought across.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ImportReport {
     /// "Premiere Pro" or "After Effects".
@@ -504,7 +504,7 @@ pub struct Editor {
     /// Space running short where the app writes (shown until dismissed), when last looked, and below what it counts as low.
     pub disk_low: Option<crate::disk::DiskLow>,
     pub disk_dismissed: bool,
-    /// What the last Premiere Pro or After Effects project opened brought
+    /// What the last Premiere Pro, After Effects or HitFilm project opened brought
     /// across and left out (shown until dismissed).
     pub import_report: Option<ImportReport>,
     /// What's drawing the pictures now (see `Prefs::renderer`).
@@ -4061,7 +4061,7 @@ impl Editor {
         };
     }
 
-    /// File → Open a Premiere Pro or After Effects project: it becomes a new,
+    /// File → Open a Premiere Pro, After Effects or HitFilm project: it becomes a new,
     /// unsaved Reelforge project (see `reelforge_core::adobe`). Each media
     /// file that's there is looked at again, so its details are exactly
     /// right; what couldn't come across is listed in `import_report`.
@@ -4080,10 +4080,14 @@ impl Editor {
                 }
             }
         }
-        let from = match reelforge_core::adobe::kind_of(path, b"") {
-            Some(reelforge_core::adobe::Kind::AfterEffects) => "After Effects",
-            _ => "Premiere Pro",
-        };
+        self.find_title_fonts(&mut im);
+        let head = std::fs::File::open(path).ok().and_then(|mut f| {
+            let mut b = vec![0u8; 4096];
+            let n = std::io::Read::read(&mut f, &mut b).ok()?;
+            b.truncate(n);
+            Some(b)
+        });
+        let from = reelforge_core::adobe::kind_of(path, head.as_deref().unwrap_or(b"")).map_or("Premiere Pro", |k| k.name());
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let missing = im.project.media.iter().filter(|m| !m.path.exists()).count();
         self.replace_project(im.project, None);
@@ -4092,6 +4096,39 @@ impl Editor {
         self.after_load();
         self.status = format!("Opened the {from} project {name}: {}{}", im.summary, if missing > 0 { format!(" ({missing} media file{} to relink)", if missing == 1 { "" } else { "s" }) } else { String::new() });
         self.import_report = Some(ImportReport { from: from.into(), name, summary: im.summary, notes: im.notes, missing });
+    }
+
+    /// Titles an opened project names a font for by name only (HitFilm's): the
+    /// installed font of that family (its regular style if there's a choice), or
+    /// Reelforge's own when it isn't installed (said in the report).
+    fn find_title_fonts(&mut self, im: &mut reelforge_core::adobe::Imported) {
+        let wanted = |c: &Clip| c.title.as_ref().is_some_and(|t| t.font.path.is_none() && !t.font.name.is_empty() && t.font.name != reelforge_core::title::FontChoice::builtin().name);
+        if !im.project.sequences.iter().flat_map(|s| &s.tracks).flat_map(|t| &t.clips).any(wanted) {
+            return;
+        }
+        let fonts = self.fonts().unwrap_or_else(|| Arc::new(reelforge_render::text::system_fonts()));
+        let mut missing: Vec<String> = Vec::new();
+        for c in im.project.sequences.iter_mut().flat_map(|s| s.tracks.iter_mut()).flat_map(|t| t.clips.iter_mut()) {
+            if !wanted(c) {
+                continue;
+            }
+            let Some(t) = c.title.as_mut() else { continue };
+            let family = t.font.name.clone();
+            let same: Vec<&FontEntry> = fonts.iter().filter(|f| f.family.eq_ignore_ascii_case(&family)).collect();
+            let pick = same.iter().find(|f| f.style.eq_ignore_ascii_case("Regular")).or(same.first());
+            match pick {
+                Some(f) => t.font = f.choice(),
+                None => {
+                    t.font = reelforge_render::text::default_title_font(&fonts);
+                    if !missing.contains(&family) {
+                        missing.push(family);
+                    }
+                }
+            }
+        }
+        if !missing.is_empty() {
+            im.notes.push(format!("Fonts that aren't installed here came across as Reelforge's: {}", missing.join(", ")));
+        }
     }
 
     pub fn dismiss_import_report(&mut self) {
@@ -4415,6 +4452,36 @@ mod tests {
         e.import_adobe_project(&junk);
         assert_eq!(e.seq().name, "Cut");
         assert!(e.status.contains("After Effects") && e.import_report.is_none(), "{}", e.status);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hitfilm_projects_open_with_their_fonts_found_by_name() {
+        let dir = std::env::temp_dir().join(format!("rf-hitfilm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = |font: &str, id: &str| format!(r#"<TextVisualObject Version="0"><TextBox Version="0"><MinX>0</MinX><MaxX>10</MaxX><MinY>0</MinY><MaxY>10</MaxY><Tokens><Tk Tp="1" Jf="1"/><Tk Tp="0" Ch="72" Ft="f"/></Tokens><Formats><Format ID="f" Size="90"><Family>{font}</Family></Format></Formats></TextBox><VisualObject Version="9"><ObjectBase Version="2"><ID>{id}</ID><StartFrame>0</StartFrame><EndFrame>50</EndFrame><PropertyManager/></ObjectBase></VisualObject></TextVisualObject>"#);
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><BiffProject Version="0"><Project Version="7"><AssetList Version="7"><Assets/></AssetList><EditorSequence Version="5"><Name>Editor</Name><AudioVideoSettings Version="1"><Width>1280</Width><Height>720</Height><FrameRate>25</FrameRate></AudioVideoSettings><Video><VideoTrack Version="3"><Name>Video 1</Name><Objects>{}{}</Objects></VideoTrack></Video><Audio/></EditorSequence></Project></BiffProject>"#,
+            text("No Such Font Anywhere", "a"),
+            text("DejaVu Sans", "b")
+        );
+        // (Named as a plain .xml: found to be HitFilm's by what's in it.)
+        let path = dir.join("Edit.xml");
+        std::fs::write(&path, xml).unwrap();
+        let mut e = editor();
+        e.import_adobe_project(&path);
+        let s = e.seq();
+        assert_eq!((s.name.as_str(), s.width, s.frame_rate), ("Editor", 1280, FrameRate::new(25, 1)), "{}", e.status);
+        let titles: Vec<&reelforge_core::title::TitleSpec> = s.tracks[0].clips.iter().filter_map(|c| c.title.as_ref()).collect();
+        assert_eq!(titles.len(), 2);
+        assert!(titles.iter().all(|t| t.font.name != "No Such Font Anywhere"), "a font that isn't there isn't kept by name");
+        let r = e.import_report.clone().unwrap();
+        assert_eq!(r.from, "HitFilm");
+        assert!(r.notes.iter().any(|n| n.contains("No Such Font Anywhere")), "{:?}", r.notes);
+        // A font that is installed is used (where DejaVu Sans is, as on most Linux machines).
+        if reelforge_render::text::system_fonts().iter().any(|f| f.family == "DejaVu Sans") {
+            assert!(titles[1].font.path.is_some() && titles[1].font.name.starts_with("DejaVu Sans"), "{:?}", titles[1].font);
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

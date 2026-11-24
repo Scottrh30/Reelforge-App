@@ -156,7 +156,7 @@
         </div>
         <span class="grow"></span>
         <button onclick={openOther}>Open a project…</button>
-        <button onclick={openAdobe} title="A Premiere Pro (.prproj) or After Effects (.aep) project, opened as a new Reelforge project">From Premiere or After Effects…</button>
+        <button onclick={openAdobe} title="A Premiere Pro (.prproj), After Effects (.aep) or HitFilm (.hfp project, .hfcs composite shot) project, opened as a new Reelforge project">From Premiere, After Effects or HitFilm…</button>
         <button class="ghost close" onclick={() => (app.startOpen = false)} title={view.has_project ? "Back to the project that's open" : "Start with an empty 1080p project"} aria-label="Close the start screen">✕</button>
       </header>
 

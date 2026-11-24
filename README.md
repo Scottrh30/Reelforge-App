@@ -1455,10 +1455,11 @@ What works now:
   Effects, colour, masks, keyframes and titles stay in Reelforge; titles, solids and
   compositions become named gaps. All four have been read back with OpenTimelineIO's own
   readers. AAF isn't written yet
-- **Open Premiere Pro and After Effects projects** (**File > Open a Premiere Pro or After
-  Effects project…**, **From Premiere or After Effects…** on the start screen, or drop a
-  `.prproj` or `.aep` on the window): the project opens as a new, unsaved Reelforge project
-  (the original is untouched), and a report lists what came across and what didn't.
+- **Open Premiere Pro, After Effects and HitFilm projects** (**File > Open a Premiere Pro,
+  After Effects or HitFilm project…**, **From Premiere, After Effects or HitFilm…** on the start
+  screen, or drop a `.prproj`, `.aep`, `.hfp` or `.hfcs` on the window): the project opens as a
+  new, unsaved Reelforge project (the original is untouched), and a report lists what came
+  across and what didn't.
   - From **Premiere Pro**: every sequence (the longest edit first; nests as compositions),
     its tracks (names, locked, muted), every clip's place, in and out points and speed, linked
     picture and sound, Motion (position, scale and scale width, rotation, anchor point, crop)
@@ -1475,12 +1476,26 @@ What works now:
     **parenting**: each parent (a null or any layer) becomes a point the children follow, at
     its anchor point, turned and scaled as it is, keyed every frame where it turns or scales,
     and parents of parents nest
+  - From **HitFilm** (a `.hfp` project, or a `.hfcs` composite shot exported on its own): the
+    editor timeline (its size and frame rate, its tracks bottom first, hidden, muted and
+    locked ones), every clip's place, in point and speed, linked picture and sound, position,
+    anchor point, scale, rotation and opacity with their keyframes (linear, constant, and
+    smooth or eased as ease), clip and track sound levels and their keyframes, transitions
+    between clips (cross dissolve, fade or dip to a colour, slide, push, wipe, iris) and fades
+    at either end, text as titles (their words, lines, alignment, size, colour, background
+    box and font, found by name among the installed fonts), planes in their colour and size,
+    and every **composite shot** as a composition (used in the editor as a composition clip):
+    one track per layer, its timing, media, picture and plane layers, text layers, grade
+    layers as adjustment layers, and its transform; and all the media in the project, used
+    or not
   - Media is found where the project saved it, or (moved with the project) beside it or in a
     *media* or *footage* folder next to it; whatever isn't is listed to relink. Each file found
     is looked at again, so its details are exactly right
   - Left out, and listed: most effects (by name), masks, shape layers, cameras and lights,
     expressions, time remapping (the layer's or clip's plain timing is kept), and text styling
-    (the words come across; font, size and animators are Reelforge's defaults)
+    from Premiere and After Effects (the words come across; font, size and animators are
+    Reelforge's defaults); from HitFilm also blend modes, 3D (Z position, X and Y rotation),
+    parenting, particles and models
 - **Project versions** (**File > Project versions…**, or **Save version…** / Ctrl+Alt+S): keep
   the project as it is now under a name and a note (*Rough cut for the client*), in a
   "*project* versions" folder beside the project file. Every Save also keeps one by itself when

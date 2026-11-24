@@ -968,7 +968,7 @@ export interface State {
   inspector: Inspector | null;
   trackers: TrackSource[];
   recoveries: string[];
-  /// What an opened Premiere Pro or After Effects project brought across (until dismissed).
+  /// What an opened Premiere Pro, After Effects or HitFilm project brought across (until dismissed).
   import_report: { from: string; name: string; summary: string; notes: string[]; missing: number } | null;
   /// The Viewer's view (see viewSet).
   view: ViewMode;

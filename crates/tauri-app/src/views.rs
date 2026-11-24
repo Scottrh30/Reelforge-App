@@ -34,7 +34,7 @@ pub struct State {
     /// can work with one while something else is selected).
     pub trackers: Vec<TrackSource>,
     pub recoveries: Vec<String>,
-    /// What an opened Premiere Pro or After Effects project brought across (until dismissed).
+    /// What an opened Premiere Pro, After Effects or HitFilm project brought across (until dismissed).
     pub import_report: Option<reelforge_engine::editor::ImportReport>,
     pub prefs: reelforge_engine::editor::Prefs,
     /// The Viewer's view: "Active" (through the sequence's camera), "Front", "Top", "Left" or "Custom".
