@@ -14,7 +14,30 @@
     ["50", "50/1"],
     ["59.94", "60000/1001"],
     ["60", "60/1"],
+    ["100", "100/1"],
     ["120", "120/1"],
+  ];
+
+  // Common formats (frame size and rate together): picking one fills in both; any other
+  // size or rate is Custom.
+  const r = (fps: string) => RATES.find(([l]) => l === fps)?.[1] ?? "30/1";
+  const fmt = (name: string, w: number, h: number, rates: string[]) => rates.map((fps) => ({ label: `${name} @ ${fps} fps`, w, h, rate: r(fps) }));
+  const FORMATS = [
+    ...fmt("720p HD", 1280, 720, ["23.976", "25", "29.97", "30"]),
+    ...fmt("Instagram Square", 1080, 1080, ["30"]),
+    ...fmt("1080p Full HD", 1920, 1080, ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60"]),
+    ...fmt("Vertical 1080p", 1080, 1920, ["25", "30"]),
+    ...fmt("2K DCI", 2048, 1080, ["24", "25", "29.97", "30"]),
+    ...fmt("2K 16:9 QWXGA", 2048, 1152, ["24", "25", "29.97", "30"]),
+    ...fmt("1440p GoPro", 1920, 1440, ["24", "25", "30", "48", "60"]),
+    ...fmt("2.5K BMCC", 2432, 1366, ["23.976", "24", "25", "29.97", "30"]),
+    ...fmt("1440p QHD", 2560, 1440, ["24", "25", "30", "48", "60"]),
+    ...fmt("2.7K GoPro", 2704, 1520, ["24", "25", "30", "48", "60"]),
+    ...fmt("4K UHD", 3840, 2160, ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60", "100"]),
+    ...fmt("4K DCI 2160p", 4096, 2160, ["24", "25", "29.97", "30"]),
+    ...fmt("5K RED EPIC", 5120, 2700, ["24", "25", "30", "48", "60", "100"]),
+    ...fmt("6K RED DRAGON", 6144, 3160, ["24", "25", "30", "48", "60", "100"]),
+    ...fmt("8K UHD", 7680, 4320, ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60", "100"]),
   ];
 
   let aspects = $state<[string, number, number][]>([]);
@@ -58,6 +81,16 @@
 
   const pair = (s: string) => s.split("/").map(Number) as [number, number];
   const even = (v: number) => (Math.min(16384, Math.max(16, Math.round(v || 0))) + 1) & ~1;
+  // The format the settings match (square pixels), else "-1" (Custom).
+  const format = $derived(f.aspect === "1/1" ? String(FORMATS.findIndex((x) => x.w === even(f.w) && x.h === even(f.h) && x.rate === f.rate)) : "-1");
+  function pickFormat(v: string) {
+    const x = FORMATS[+v];
+    if (!x) return;
+    f.w = x.w;
+    f.h = x.h;
+    f.rate = x.rate;
+    f.aspect = "1/1";
+  }
   const par = $derived.by(() => {
     const [a, b] = pair(f.aspect);
     return a / b;
@@ -127,6 +160,12 @@
         <div class="grid">
           <label for="seqset-name">Name</label>
           <input id="seqset-name" type="text" bind:value={f.name} />
+
+          <label for="seqset-format">Format</label>
+          <select id="seqset-format" value={format} onchange={(e) => pickFormat(e.currentTarget.value)} title="A common frame size and rate together; change either below for anything else">
+            {#each FORMATS as x, i (x.label)}<option value={String(i)}>{x.label}</option>{/each}
+            <option value="-1">Custom</option>
+          </select>
 
           <label for="seqset-w">Frame size</label>
           <div class="row">

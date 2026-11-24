@@ -22,6 +22,9 @@ pub struct Preset {
     pub rate: (u32, u32),
     /// Its pixels' shape (width, height; 1, 1 square): see `PIXEL_ASPECTS`.
     pub aspect: (u32, u32),
+    /// More frame rates it's usually shot or delivered at (beyond its own and `EXTRA_RATES`).
+    #[serde(skip)]
+    pub more: &'static [(u32, u32)],
 }
 
 impl Preset {
@@ -29,11 +32,11 @@ impl Preset {
         FrameRate::new(self.rate.0 as i64, self.rate.1 as i64)
     }
 
-    /// The frame rates it can start at: its own, and 25, 30, 50 and 60 fps,
-    /// slowest first.
+    /// The frame rates it can start at: its own, those it's usually shot at, and 25, 30,
+    /// 50 and 60 fps, slowest first.
     pub fn rates(&self) -> Vec<(u32, u32)> {
         let mut v = vec![self.rate];
-        for r in EXTRA_RATES {
+        for &r in self.more.iter().chain(EXTRA_RATES.iter()) {
             if !v.iter().any(|&(n, d)| n as u64 * r.1 as u64 == r.0 as u64 * d as u64) {
                 v.push(r);
             }
@@ -65,12 +68,26 @@ pub fn rate_label(r: FrameRate) -> String {
 }
 
 const fn p(id: &'static str, group: &'static str, name: &'static str, detail: &'static str, width: u32, height: u32, rate: (u32, u32)) -> Preset {
-    Preset { id, group, name, detail, width, height, rate, aspect: (1, 1) }
+    Preset { id, group, name, detail, width, height, rate, aspect: (1, 1), more: &[] }
 }
+
+/// A preset with more frame rates on offer.
+#[allow(clippy::too_many_arguments)]
+const fn pr(id: &'static str, group: &'static str, name: &'static str, detail: &'static str, width: u32, height: u32, rate: (u32, u32), more: &'static [(u32, u32)]) -> Preset {
+    Preset { id, group, name, detail, width, height, rate, aspect: (1, 1), more }
+}
+
+// Frame rates, as fractions.
+const R23976: (u32, u32) = (24000, 1001);
+const R24: (u32, u32) = (24, 1);
+const R2997: (u32, u32) = (30000, 1001);
+const R48: (u32, u32) = (48, 1);
+const R5994: (u32, u32) = (60000, 1001);
+const R100: (u32, u32) = (100, 1);
 
 /// A preset with non-square pixels.
 const fn pa(id: &'static str, name: &'static str, detail: &'static str, width: u32, height: u32, rate: (u32, u32), aspect: (u32, u32)) -> Preset {
-    Preset { id, group: "Broadcast & anamorphic", name, detail, width, height, rate, aspect }
+    Preset { id, group: "Broadcast & anamorphic", name, detail, width, height, rate, aspect, more: &[] }
 }
 
 /// Frame rates every preset also offers.
@@ -82,21 +99,29 @@ pub const PRESETS: &[Preset] = &[
     p("vertical-60", "Social", "Vertical 9:16, 60 fps", "Smooth motion, gameplay", 1080, 1920, (60, 1)),
     p("portrait-30", "Social", "Portrait 4:5", "Instagram and Facebook feed", 1080, 1350, (30, 1)),
     p("square-30", "Social", "Square 1:1", "Feeds, ads, carousels", 1080, 1080, (30, 1)),
-    p("hd-30", "Web & TV", "HD 1080p", "YouTube, the web", 1920, 1080, (30, 1)),
+    pr("hd-30", "Web & TV", "HD 1080p", "YouTube, the web", 1920, 1080, (30, 1), &[R23976, R24, R2997, R5994]),
     p("hd-60", "Web & TV", "HD 1080p, 60 fps", "Sport, gameplay, screen recordings", 1920, 1080, (60, 1)),
     p("hd-25", "Web & TV", "HD 1080p, 25 fps", "PAL broadcast (Europe, Australia…)", 1920, 1080, (25, 1)),
     p("hd-2997", "Web & TV", "HD 1080p, 29.97 fps", "NTSC broadcast (Americas, Japan)", 1920, 1080, (30000, 1001)),
-    p("uhd-30", "Web & TV", "4K UHD", "YouTube 4K, TVs", 3840, 2160, (30, 1)),
+    pr("uhd-30", "Web & TV", "4K UHD", "YouTube 4K, TVs", 3840, 2160, (30, 1), &[R23976, R24, R2997, R5994, R100]),
     p("uhd-60", "Web & TV", "4K UHD, 60 fps", "High-frame-rate 4K", 3840, 2160, (60, 1)),
     p("uhd-24", "Web & TV", "4K UHD, 24 fps", "Film look at 4K", 3840, 2160, (24, 1)),
-    p("hd-720", "Web & TV", "HD 720p", "Light and quick", 1280, 720, (30, 1)),
+    pr("hd-720", "Web & TV", "HD 720p", "Light and quick", 1280, 720, (30, 1), &[R23976, R2997]),
+    pr("qhd", "Web & TV", "1440p QHD", "2.5K monitors, YouTube 1440p", 2560, 1440, (30, 1), &[R24, R48]),
+    pr("qwxga", "Web & TV", "2K 16:9 (QWXGA)", "2K at 16:9", 2048, 1152, (24, 1), &[R2997]),
+    pr("uhd-8k", "Web & TV", "8K UHD", "8K TVs, reframing room", 7680, 4320, (30, 1), &[R23976, R24, R2997, R5994, R100]),
     p("film-hd", "Cinema", "Film look 1080p", "24 fps, HD", 1920, 1080, (24, 1)),
     p("film-2398", "Cinema", "1080p 23.976", "Most cinema cameras' \"24p\"", 1920, 1080, (24000, 1001)),
     p("scope-uhd", "Cinema", "Scope 2.39:1, 4K", "Widescreen, UHD width", 3840, 1608, (24, 1)),
     p("flat-uhd", "Cinema", "Flat 1.85:1, 4K", "Theatrical flat, DCI height", 3996, 2160, (24, 1)),
-    p("dci-2k", "Cinema", "DCI 2K", "Digital cinema, full container", 2048, 1080, (24, 1)),
-    p("dci-4k", "Cinema", "DCI 4K", "Digital cinema, full container", 4096, 2160, (24, 1)),
+    pr("dci-2k", "Cinema", "DCI 2K", "Digital cinema, full container", 2048, 1080, (24, 1), &[R2997]),
+    pr("dci-4k", "Cinema", "DCI 4K", "Digital cinema, full container", 4096, 2160, (24, 1), &[R2997]),
     p("scope-2k", "Cinema", "DCI 2K Scope", "Digital cinema 2.39:1", 2048, 858, (24, 1)),
+    pr("gopro-1440", "Cameras", "1440p GoPro", "GoPro 4:3", 1920, 1440, (30, 1), &[R24, R48]),
+    pr("gopro-27k", "Cameras", "2.7K GoPro", "GoPro 2.7K 16:9", 2704, 1520, (30, 1), &[R24, R48]),
+    pr("bmcc-25k", "Cameras", "2.5K BMCC", "Blackmagic Cinema Camera 2.5K", 2432, 1366, (24, 1), &[R23976, R2997]),
+    pr("red-5k", "Cameras", "5K RED EPIC", "RED EPIC 5K full frame", 5120, 2700, (24, 1), &[R48, R100]),
+    pr("red-6k", "Cameras", "6K RED DRAGON", "RED DRAGON 6K full frame", 6144, 3160, (24, 1), &[R48, R100]),
     pa("dv-ntsc", "DV NTSC", "SD 4:3, Americas and Japan", 720, 480, (30000, 1001), (10, 11)),
     pa("dv-ntsc-wide", "DV NTSC Widescreen", "SD 16:9, Americas and Japan", 720, 480, (30000, 1001), (40, 33)),
     pa("dv-pal", "DV PAL", "SD 4:3, Europe and Australia", 720, 576, (25, 1), (12, 11)),
@@ -258,7 +283,7 @@ mod tests {
         for p in PRESETS {
             assert!(ids.insert(p.id), "{} twice", p.id);
             assert!(p.width % 2 == 0 && p.height % 2 == 0, "{}: even sizes", p.id);
-            assert!(["Social", "Web & TV", "Cinema", "Broadcast & anamorphic"].contains(&p.group));
+            assert!(["Social", "Web & TV", "Cinema", "Cameras", "Broadcast & anamorphic"].contains(&p.group));
         }
         let v = preset("vertical-30").unwrap();
         assert_eq!((v.width, v.height, v.summary()), (1080, 1920, "1080 × 1920 · 30 fps".to_string()));
@@ -280,7 +305,34 @@ mod tests {
             assert!(fps.windows(2).all(|w| w[0] < w[1]), "{}: slowest first, no repeats: {fps:?}", p.id);
         }
         assert_eq!(preset("film-2398").unwrap().rates(), vec![(24000, 1001), (25, 1), (30, 1), (50, 1), (60, 1)]);
-        assert_eq!(preset("hd-30").unwrap().rates(), vec![(25, 1), (30, 1), (50, 1), (60, 1)]);
+        assert_eq!(preset("hd-720").unwrap().rates(), vec![R23976, (25, 1), R2997, (30, 1), (50, 1), (60, 1)]);
+    }
+
+    /// Every format from the usual list (size and frame rate) can be started from a preset.
+    #[test]
+    fn the_common_camera_and_delivery_formats_are_there() {
+        let wanted: &[(u32, u32, &[(u32, u32)])] = &[
+            (1280, 720, &[R23976, (25, 1), R2997, (30, 1)]),
+            (1080, 1080, &[(30, 1)]),
+            (1920, 1080, &[R23976, R24, (25, 1), R2997, (30, 1), (50, 1), R5994, (60, 1)]),
+            (1080, 1920, &[(25, 1), (30, 1)]),
+            (2048, 1080, &[R24, (25, 1), R2997, (30, 1)]),
+            (2048, 1152, &[R24, (25, 1), R2997, (30, 1)]),
+            (1920, 1440, &[R24, (25, 1), (30, 1), R48, (60, 1)]),
+            (2432, 1366, &[R23976, R24, (25, 1), R2997, (30, 1)]),
+            (2560, 1440, &[R24, (25, 1), (30, 1), R48, (60, 1)]),
+            (2704, 1520, &[R24, (25, 1), (30, 1), R48, (60, 1)]),
+            (3840, 2160, &[R23976, R24, (25, 1), R2997, (30, 1), (50, 1), R5994, (60, 1), R100]),
+            (4096, 2160, &[R24, (25, 1), R2997, (30, 1)]),
+            (5120, 2700, &[R24, (25, 1), (30, 1), R48, (60, 1), R100]),
+            (6144, 3160, &[R24, (25, 1), (30, 1), R48, (60, 1), R100]),
+            (7680, 4320, &[R23976, R24, (25, 1), R2997, (30, 1), (50, 1), R5994, (60, 1), R100]),
+        ];
+        for &(w, h, rates) in wanted {
+            for r in rates {
+                assert!(PRESETS.iter().any(|p| p.width == w && p.height == h && p.rates().contains(r)), "{w}×{h} at {r:?}");
+            }
+        }
     }
 
     #[test]

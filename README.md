@@ -1668,11 +1668,14 @@ What works now:
 - **Start screen** (when Reelforge opens, and **File → Start screen…**, **Ctrl+Shift+N**): start
   a new project from a preset, drawn to its shape — **Social** (Vertical 9:16 at 30 or 60 fps for
   Reels/TikTok/Shorts, Portrait 4:5, Square 1:1), **Web & TV** (1080p at 30, 60, 25 and 29.97
-  fps, 4K UHD at 30, 60 and 24, 720p) and **Cinema** (1080p at 24 and 23.976, Scope 2.39:1 and
-  Flat 1.85:1 at 4K, DCI 2K, 4K and 2K Scope, and **Broadcast & anamorphic**: DV NTSC and DV NTSC
+  fps, 4K UHD at 30, 60 and 24, 720p, 1440p QHD, 2K 16:9 (QWXGA, 2048×1152) and 8K UHD), **Cinema**
+  (1080p at 24 and 23.976, Scope 2.39:1 and Flat 1.85:1 at 4K, DCI 2K, 4K and 2K Scope),
+  **Cameras** (1440p GoPro 1920×1440, 2.7K GoPro 2704×1520, 2.5K BMCC 2432×1366, 5K RED EPIC
+  5120×2700 and 6K RED DRAGON 6144×3160) and **Broadcast & anamorphic** (DV NTSC and DV NTSC
   Wide 720×480, DV PAL and DV PAL Wide 720×576, HDV 1440×1080, DVCPro HD 1280×1080 and Anamorphic
-  2:1). Click a card for its usual frame rate (outlined),
-  or one of the rates under it: every preset also offers 25, 30, 50 and 60 fps. Each section
+  2:1)). Click a card for its usual frame rate (outlined),
+  or one of the rates under it: every preset also offers 25, 30, 50 and 60 fps, and most the
+  rates they're usually shot at too (23.976, 24, 29.97, 48, 59.94, 100). Each section
   folds shut with a click on its heading (remembered). **Pixel aspect** (beside the tabs, and in
   **any size**) gives a new project any of the pixel shapes HitFilm offers — Square (1.0), DV NTSC
   (0.91), DV NTSC Wide (1.21), DV PAL (1.09), DV PAL Wide (1.46), HD Anamorphic 1080 (1.33),
@@ -1685,7 +1688,11 @@ What works now:
   shape into the file, so players stretch it the same way; at any other size the picture is
   resized to square pixels. To change an existing sequence's pixel aspect (or its name, frame
   size or frame rate), use **Timeline → Sequence settings…** (**Composition settings…** inside
-  a composition), or click the size line at the top of the Viewer. When the frame's size or
+  a composition), or click the size line at the top of the Viewer. Its **Format** list sets the
+  size and rate together from the common formats — 720p HD, Instagram Square, 1080p Full HD,
+  Vertical 1080p, 2K DCI, 2K 16:9 QWXGA, 1440p GoPro, 2.5K BMCC, 1440p QHD, 2.7K GoPro, 4K UHD,
+  4K DCI 2160p, 5K RED EPIC, 6K RED DRAGON and 8K UHD, each at the rates it's used at (from
+  23.976 to 100 fps) — or shows **Custom** for anything else. When the frame's size or
   pixel shape changes, choose what the **Layers** do: **Scale to fit** (every layer's size and
   its distance from the middle, keyframes too, scaled with the frame so all of the old frame
   still shows; solids and adjustment layers keep filling it), **Scale to fill** (scaled so the
