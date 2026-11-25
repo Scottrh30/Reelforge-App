@@ -1206,7 +1206,11 @@ What works now:
   is one undo step, is saved with the project, and carries over when clips are split, copied
   or duplicated. It's only a label: the picture doesn't change. A coloured clip with picture
   thumbnails keeps a strip of its colour along the top. Planes also have **Plane colour…**
-  there, which changes the colour they fill the frame with
+  there, which changes the colour they fill the frame with (also the swatch under **Layer** in
+  the Controls panel). These colours are picked in Reelforge's own picker: a saturation and
+  brightness square, a hue strip, the hex code, the colour before and after (click *before* to
+  go back to it), an eyedropper for anything on screen, and **OK** to take the colour (or
+  Enter) or **Cancel** (or Escape, or a click outside) to leave it as it was
 - **Text titles** (**Edit → Add title at playhead**, `Ctrl+T`, or **New title** in the Media
   panel): a 5 s title on the top free video track (a new track is made if none has room).
   In the Controls panel: multi-line text, any installed font (with a search box), size, colour,

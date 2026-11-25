@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { app, run, timecode } from "../lib/session.svelte";
+  import { pickColor } from "../lib/colorpick.svelte";
   import { api, type Transform, type Blend, type TrackMatte, type TitleSpec, type ClipAudio, type TrackAudio } from "../lib/api";
   import NumberField from "./NumberField.svelte";
   import MasksPanel from "./MasksPanel.svelte";
@@ -278,7 +279,17 @@
           {#if ins.plane}
             <span class="lbl">Colour</span>
             <div class="row">
-              <input type="color" value={ins.plane} aria-label="Plane colour" title="The plane's colour" onchange={(e) => run(api.setPlaneColor(ins.id, e.currentTarget.value))} />
+              <button
+                class="swatch"
+                style="background:{ins.plane}"
+                aria-label="Plane colour"
+                title="The plane's colour (click to change it; OK to take the new one)"
+                data-automation-id="plane-colour"
+                onclick={(e) => {
+                  const id = ins.id;
+                  pickColor(ins.plane ?? "#808080", (hex) => run(api.setPlaneColor(id, hex)), e.currentTarget, "Plane colour");
+                }}
+              ></button>
               <span class="tc muted">{ins.plane}</span>
             </div>
           {/if}
@@ -820,5 +831,13 @@
   }
   .muted {
     color: var(--muted);
+  }
+  .swatch {
+    width: 36px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    cursor: pointer;
   }
 </style>

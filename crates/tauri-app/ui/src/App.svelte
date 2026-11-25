@@ -17,6 +17,7 @@
   import Meters from "./components/Meters.svelte";
   import Splitter from "./components/Splitter.svelte";
   import ContextMenu from "./components/ContextMenu.svelte";
+  import ColorPicker from "./components/ColorPicker.svelte";
   import Dialogs from "./components/Dialogs.svelte";
   import DuckDialog from "./components/DuckDialog.svelte";
   import SequenceSettingsDialog from "./components/SequenceSettingsDialog.svelte";
@@ -160,6 +161,7 @@
 
 {#if fileHover}<div class="filehover">Drop to import</div>{/if}
 <ContextMenu />
+<ColorPicker />
 <Dialogs />
 <ExportDialog />
 <DuckDialog />

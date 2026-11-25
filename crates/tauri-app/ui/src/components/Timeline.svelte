@@ -4,7 +4,8 @@
   import { MIN_DB, MAX_DB, volKeys, volumeAt, setVolKey, clampedFades, fadeCurve, tidyDb, dbText, dbGain } from "../lib/audio";
   import { api, type ClipAudio, type ClipView, type MediaView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind, type KeyRef, type CopiedKey } from "../lib/api";
   import { livePump } from "../lib/live";
-  import { openMenu } from "../lib/menu.svelte";
+  import { pickColor as openPicker } from "../lib/colorpick.svelte";
+  import { openMenu, menu } from "../lib/menu.svelte";
   import { view, geo, perSequence, TRACK_H, MIN_TRACK_H, MAX_TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack, rowH, rowAtY, EXPANDED_TOP } from "../lib/timeline.svelte";
   import Thumb from "./Thumb.svelte";
   import CurvesPanel from "./CurvesPanel.svelte";
@@ -753,15 +754,10 @@
     ["Grey", "#666b74"],
   ];
   /// Ask for any colour with the system colour picker.
-  function pickColor(start: string, done: (hex: string) => void) {
-    const input = document.createElement("input");
-    input.type = "color";
-    input.value = start;
-    input.style.cssText = "position:fixed;left:-100px;top:0;opacity:0";
-    document.body.appendChild(input);
-    input.addEventListener("change", () => (done(input.value), input.remove()), { once: true });
-    input.addEventListener("blur", () => setTimeout(() => input.remove(), 1000), { once: true });
-    input.click();
+  // Colours picked from a menu open Reelforge's picker where the menu was (OK to take it).
+  function pickColor(start: string, done: (hex: string) => void, title = "Colour") {
+    const at = new MouseEvent("click", { clientX: menu.x, clientY: menu.y });
+    openPicker(start, done, at, title);
   }
   function colorMenu(c: ClipView) {
     const now = c.label?.toLowerCase() ?? null;
@@ -776,7 +772,7 @@
           label: "Other colour…",
           swatch: now && !labelColors.some(([, h]) => h === now) ? now : undefined,
           checked: !!now && !labelColors.some(([, h]) => h === now),
-          run: () => pickColor(now ?? "#3d6cba", (hex) => run(api.setClipLabel(hex))),
+          run: () => pickColor(now ?? "#3d6cba", (hex) => run(api.setClipLabel(hex)), "Clip colour"),
         },
       ],
     };
@@ -802,7 +798,7 @@
             {
               label: "Plane colour…",
               swatch: app.s?.inspector?.id === c.id ? (app.s.inspector.plane ?? undefined) : undefined,
-              run: () => pickColor((app.s?.inspector?.id === c.id && app.s.inspector.plane) || "#808080", (hex) => run(api.setPlaneColor(c.id, hex))),
+              run: () => pickColor((app.s?.inspector?.id === c.id && app.s.inspector.plane) || "#808080", (hex) => run(api.setPlaneColor(c.id, hex)), "Plane colour"),
             },
           ]
         : []),
