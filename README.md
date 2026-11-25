@@ -1328,14 +1328,7 @@ What works now:
   panel; **Make proxy** does it for any clip. Proxies are 960×540 with every frame a keyframe,
   so jumping around is instant (8 s of 4K: ~1.5 s per random seek on the original, 3 ms on the
   proxy). The **Proxies on/off** button in the viewer switches between proxies and originals;
-  export always uses the originals. Beside it, the Viewer's **performance readout** says what it
-  plays from (Proxies, Proxies 2/3, Originals) and, while playing, how many frames a second it
-  keeps up with against the sequence's rate, with a dot (green: all of them; amber: most;
-  red: falling behind) and the frames dropped each second; its tooltip adds hardware decoding
-  and the graphics card, and what to do when it can't keep up. To hide it, right-click it
-  (**Hide frame rate**) or untick **Show frame rate while playing** in the Viewer's quality menu
-  or **Viewer: frame rate while playing** in the Window menu; the choice is remembered on that
-  computer. The Viewer's **playback quality**
+  export always uses the originals. The Viewer's **playback quality**
   (Full, ½ res, ¼ res, ⅛ res) draws its picture at that fraction of full resolution and decodes footage
   that much smaller too, so heavy projects play smoothly; layers, effects and wipes keep their
   places, and export and Render preview stay full. ⅛ is for very heavy 4K/8K projects and slower

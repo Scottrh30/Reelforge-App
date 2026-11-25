@@ -79,14 +79,6 @@ export const app = $state({
       return 0;
     }
   })(),
-  /// The Viewer shows the frame rate it's keeping up with (and frames dropped) while playing.
-  showFps: (() => {
-    try {
-      return localStorage.getItem("reelforge.showFps") !== "0";
-    } catch {
-      return true;
-    }
-  })(),
   /// How far (in cells) points around a dragged mesh point follow it, fading out; 0: none.
   meshFalloff: (() => {
     try {
@@ -327,12 +319,3 @@ export function snapToFrame(t: Ticks): Ticks {
   return Math.round(t / f) * f;
 }
 
-/// Show or hide the Viewer's frame rate readout (remembered on this computer).
-export function setShowFps(on: boolean) {
-  app.showFps = on;
-  try {
-    localStorage.setItem("reelforge.showFps", on ? "1" : "0");
-  } catch {
-    // Not kept: it still applies now.
-  }
-}
