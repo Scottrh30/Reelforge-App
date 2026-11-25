@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { app, run, timecode } from "../lib/session.svelte";
-  import { pickColor } from "../lib/colorpick.svelte";
+  import { openPlaneProps } from "../lib/planedialog.svelte";
   import { api, type Transform, type Blend, type TrackMatte, type TitleSpec, type ClipAudio, type TrackAudio } from "../lib/api";
   import NumberField from "./NumberField.svelte";
   import MasksPanel from "./MasksPanel.svelte";
@@ -283,12 +283,9 @@
                 class="swatch"
                 style="background:{ins.plane}"
                 aria-label="Plane colour"
-                title="The plane's colour (click to change it; OK to take the new one)"
+                title="The plane's colour and size (Plane Properties)"
                 data-automation-id="plane-colour"
-                onclick={(e) => {
-                  const id = ins.id;
-                  pickColor(ins.plane ?? "#808080", (hex) => run(api.setPlaneColor(id, hex)), e.currentTarget, "Plane colour");
-                }}
+                onclick={() => openPlaneProps(ins.id)}
               ></button>
               <span class="tc muted">{ins.plane}</span>
             </div>

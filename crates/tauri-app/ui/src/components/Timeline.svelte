@@ -5,6 +5,7 @@
   import { api, type ClipAudio, type ClipView, type MediaView, type TrackView, type MarkerColor, type TransitionMark, type Transition, type TransitionKind, type KeyRef, type CopiedKey } from "../lib/api";
   import { livePump } from "../lib/live";
   import { pickColor as openPicker } from "../lib/colorpick.svelte";
+  import { openPlaneProps } from "../lib/planedialog.svelte";
   import { openMenu, menu } from "../lib/menu.svelte";
   import { view, geo, perSequence, TRACK_H, MIN_TRACK_H, MAX_TRACK_H, RULER_H, MIN_PPS, MAX_PPS, MIN_HEADER, MAX_HEADER, zoomAround, clipEnd, rulerStep, hitTrack, rowH, rowAtY, EXPANDED_TOP } from "../lib/timeline.svelte";
   import Thumb from "./Thumb.svelte";
@@ -796,9 +797,9 @@
       ...(c.kind === "plane"
         ? [
             {
-              label: "Plane colour…",
+              label: "Plane properties…",
               swatch: app.s?.inspector?.id === c.id ? (app.s.inspector.plane ?? undefined) : undefined,
-              run: () => pickColor((app.s?.inspector?.id === c.id && app.s.inspector.plane) || "#808080", (hex) => run(api.setPlaneColor(c.id, hex)), "Plane colour"),
+              run: () => openPlaneProps(c.id),
             },
           ]
         : []),

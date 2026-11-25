@@ -1205,9 +1205,14 @@ What works now:
   to go back to its kind's colour. It applies to every selected clip and what's linked to them,
   is one undo step, is saved with the project, and carries over when clips are split, copied
   or duplicated. It's only a label: the picture doesn't change. A coloured clip with picture
-  thumbnails keeps a strip of its colour along the top. Planes also have **Plane colour…**
-  there, which changes the colour they fill the frame with (also the swatch under **Layer** in
-  the Controls panel). These colours are picked in Reelforge's own picker: a saturation and
+  thumbnails keeps a strip of its colour along the top. Planes also have **Plane properties…**
+  there (and the colour swatch under **Layer** in the Controls panel opens it too): the
+  plane's **Width** and **Height** in pixels (**Match Timeline** for the sequence's own), its
+  pixels' **Aspect Ratio** (square, DV NTSC and PAL, HDV, DVCPRO HD, anamorphic 2:1), and its
+  **Color** — a swatch that opens the colour picker, an eyedropper, and transparent, white,
+  grey and black at a click. Nothing changes until **OK**, and then it's one undo step (the
+  size is the plane's scale; keyed scale is resized with it). Colours are picked in
+  Reelforge's own picker: a saturation and
   brightness square, a hue strip, the hex code, the colour before and after (click *before* to
   go back to it), an eyedropper for anything on screen, and **OK** to take the colour (or
   Enter) or **Cancel** (or Escape, or a click outside) to leave it as it was

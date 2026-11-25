@@ -54,6 +54,9 @@ export type NvEffect =
   | { RtxSuperResolution: { scale: number; quality: number } }
   | { RtxHdr: { look: { contrast: number; saturation: number; middle_gray: number; peak: number } } };
 
+/** A plane's colour (RGBA 0–255) and size in pixels, and its sequence's size. */
+export type PlaneProps = { color: [number, number, number, number]; width: number; height: number; seq: [number, number] };
+
 export type GpuSpeed = "Fast" | "Balanced" | "Best";
 /** Settings → Renders: the colour bit depth frames are composited at. */
 export type ColorDepth = "Int8" | "Half" | "HalfLinear" | "Float" | "FloatLinear";
@@ -374,6 +377,7 @@ export interface Inspector {
   scene_points: { which: "position" | "target"; at: Pt }[];
   /// A plane's colour (#rrggbb).
   plane: string | null;
+  plane_props: PlaneProps | null;
   /// The point clip it's parented to, and the ones it can be: [id, name].
   parent: number | null;
   parents: [number, string][];
@@ -1123,6 +1127,9 @@ export const api = {
   /// The New menu: a plane ("layer", of `color`), a light, a point, a camera or an adjustment layer.
   addNew: (what: "layer" | "light" | "point" | "camera" | "adjustment", light = 0, color: string | null = null) => invoke("add_new", { what, light, color }),
   setPlaneColor: (id: number, color: string) => invoke("set_plane_color", { id, color }),
+  planeProps: (id: number) => invoke<PlaneProps | null>("plane_props", { id }),
+  setPlaneProps: (id: number, color: string, alpha: number, width: number, height: number, parNum: number, parDen: number) =>
+    invoke("set_plane_props", { id, color, alpha, width, height, parNum, parDen }),
   setClipLabel: (color: string | null) => invoke("set_clip_label", { color }),
   setParent: (id: number, parent: number | null) => invoke("set_parent", { id, parent }),
   /// Drag a camera's or light's point by `d` frame pixels (live; `start` on the first call).

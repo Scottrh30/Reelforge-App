@@ -340,6 +340,8 @@ pub struct Inspector {
     pub scene_points: Vec<crate::scene::ScenePoint>,
     /// A plane's colour, #rrggbb.
     pub plane: Option<String>,
+    /// A plane's colour (with its alpha) and size, for Plane Properties.
+    pub plane_props: Option<reelforge_engine::editor::PlaneProps>,
     /// The point clip it's parented to, and the ones it can be: (id, name).
     pub parent: Option<u64>,
     pub parents: Vec<(u64, String)>,
@@ -862,6 +864,7 @@ pub fn state(e: &Editor) -> State {
             mesh_keys: c.mesh.as_ref().map(|m| m.keys.len()),
             scene_points: crate::scene::points(e),
             plane: c.plane.map(|[r, g, b, _]| format!("#{r:02x}{g:02x}{b:02x}")),
+            plane_props: e.plane_props(c.id),
             parent: c.parent.map(|p| p.0),
             parent_link: crate::scene::parent_link(e, c),
             parents: if tr.kind == TrackKind::Video { e.parent_choices(c.id).into_iter().map(|(id, n)| (id.0, n)).collect() } else { Vec::new() },

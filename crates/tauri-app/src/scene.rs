@@ -276,6 +276,23 @@ pub fn set_plane_color(id: u64, color: String) -> Res<()> {
     })
 }
 
+/// A plane's colour and size, for its Plane Properties dialog.
+#[tauri::command]
+pub fn plane_props(id: u64) -> Res<Option<reelforge_engine::editor::PlaneProps>> {
+    ed(|e| e.plane_props(ClipId(id)))
+}
+
+/// Plane Properties' OK: colour (#rrggbb and alpha 0–255) and size (pixels of shape
+/// `par_num` ÷ `par_den`), as one undo step.
+#[tauri::command]
+pub fn set_plane_props(id: u64, color: String, alpha: u8, width: u32, height: u32, par_num: u32, par_den: u32) -> Res<()> {
+    ed(|e| {
+        if let Some([r, g, b, _]) = parse_hex(&color) {
+            e.set_plane_props(ClipId(id), [r, g, b, alpha], width, height, (par_num, par_den));
+        }
+    })
+}
+
 /// Colour the selected clips on the timeline (#rrggbb), or `None` for their usual colour.
 #[tauri::command]
 pub fn set_clip_label(color: Option<String>) -> Res<()> {

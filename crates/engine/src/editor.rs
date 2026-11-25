@@ -365,6 +365,16 @@ pub mod magnetic;
 pub mod simulate;
 pub use multicam::MulticamAt;
 
+/// A plane's colour and size, for its Plane Properties dialog.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct PlaneProps {
+    pub color: [u8; 4],
+    /// Its size in pixels (from its scale), and the sequence's.
+    pub width: u32,
+    pub height: u32,
+    pub seq: [u32; 2],
+}
+
 /// What opening a Premiere Pro, After Effects or HitFilm project brought across.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ImportReport {
@@ -2255,6 +2265,53 @@ impl Editor {
         let Some(old) = self.seq().find_clip(id).and_then(|(_, c)| c.plane) else { return };
         if old != color {
             self.execute(Box::new(reelforge_core::undo::SetPlane { seq: self.active, id, old, new: color }));
+        }
+    }
+
+    /// A plane's properties as its Plane Properties dialog shows them: its colour, its
+    /// size in pixels (planes fill the frame; their scale makes them any other size, at
+    /// square pixels), and the sequence's size.
+    pub fn plane_props(&self, id: ClipId) -> Option<PlaneProps> {
+        let s = self.seq();
+        let (_, c) = s.find_clip(id)?;
+        let color = c.plane?;
+        let px = |scale: f32, side: u32| (scale.abs() * side as f32).round().clamp(1.0, 32768.0) as u32;
+        Some(PlaneProps { color, width: px(c.transform.scale[0], s.width), height: px(c.transform.scale[1], s.height), seq: [s.width, s.height] })
+    }
+
+    /// Plane Properties' OK: the plane's colour, and its size (`width` × `height` pixels
+    /// of shape `par`, width ÷ height of a pixel) as its scale; keyed scale keeps its
+    /// movement, resized in proportion. One undo step.
+    pub fn set_plane_props(&mut self, id: ClipId, color: [u8; 4], width: u32, height: u32, par: (u32, u32)) {
+        self.commit_live_edit();
+        let seq = self.active;
+        let s = self.seq();
+        let (fw, fh) = (s.width.max(1) as f32, s.height.max(1) as f32);
+        let Some((_, c)) = s.find_clip(id) else { return };
+        let Some(old_color) = c.plane else { return };
+        let par = if par.0 == 0 || par.1 == 0 { 1.0 } else { (par.0 as f32 / par.1 as f32).clamp(0.1, 10.0) };
+        let want = [(width.clamp(1, 32768) as f32 * par) / fw, height.clamp(1, 32768) as f32 / fh];
+        let old = c.visual();
+        let mut new = old.clone();
+        let base = old.transform.scale;
+        // Keep a flip's direction.
+        let target = [want[0].copysign(if base[0] == 0.0 { 1.0 } else { base[0] }), want[1].copysign(if base[1] == 0.0 { 1.0 } else { base[1] })];
+        if (target[0] - base[0]).abs() > 1e-6 || (target[1] - base[1]).abs() > 1e-6 {
+            let k = [if base[0].abs() > 1e-6 { target[0] / base[0] } else { 1.0 }, if base[1].abs() > 1e-6 { target[1] / base[1] } else { 1.0 }];
+            new.transform.scale = target;
+            for key in &mut new.anim.scale.0 {
+                key.value = [key.value[0] * k[0], key.value[1] * k[1]];
+            }
+        }
+        let mut cmds: Vec<Box<dyn reelforge_core::undo::Command>> = Vec::new();
+        if new.transform.scale != old.transform.scale {
+            cmds.push(Box::new(reelforge_core::undo::SetClipVisual { seq, id, old, new }));
+        }
+        if color != old_color {
+            cmds.push(Box::new(reelforge_core::undo::SetPlane { seq, id, old: old_color, new: color }));
+        }
+        if !cmds.is_empty() {
+            self.execute(Box::new(reelforge_core::undo::Batch { name: "Plane properties".into(), cmds }));
         }
     }
 
@@ -4453,6 +4510,32 @@ mod tests {
         assert_eq!(e.seq().name, "Cut");
         assert!(e.status.contains("After Effects") && e.import_report.is_none(), "{}", e.status);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn plane_properties_set_colour_and_size_in_one_step() {
+        let mut e = editor();
+        let id = ClipId(e.project.alloc_id());
+        let mut c = Clip::new_plane(id, Time::ZERO, Time::from_secs_f64(2.0), [0, 0, 0, 255]);
+        c.anim.scale = reelforge_core::anim::Curve(vec![reelforge_core::anim::Key::new(Time::ZERO, [1.0, 1.0], reelforge_core::anim::Interp::Linear)]);
+        e.project.sequences[0].tracks[0].clips.push(c);
+        let (w, h) = (e.seq().width, e.seq().height);
+        let p = e.plane_props(id).unwrap();
+        assert_eq!((p.width, p.height, p.seq), (w, h, [w, h]), "a frame-filling plane");
+        // Half the width, red, at once; a 2:1 pixel doubles its width on screen.
+        e.set_plane_props(id, [255, 0, 0, 255], w / 2, h, (1, 1));
+        let p = e.plane_props(id).unwrap();
+        assert_eq!((p.color, p.width, p.height), ([255, 0, 0, 255], w / 2, h));
+        let c = e.seq().find_clip(id).unwrap().1;
+        assert!((c.anim.scale.0[0].value[0] - 0.5).abs() < 1e-5, "keyed scale resized too");
+        e.undo();
+        let p = e.plane_props(id).unwrap();
+        assert_eq!((p.color, p.width), ([0, 0, 0, 255], w), "one undo step");
+        e.set_plane_props(id, [255, 255, 255, 0], w / 2, h, (2, 1));
+        let p = e.plane_props(id).unwrap();
+        assert_eq!((p.color[3], p.width), (0, w), "transparent; 2:1 pixels");
+        // Not a plane: nothing.
+        assert!(e.plane_props(ClipId(999_999)).is_none());
     }
 
     #[test]
