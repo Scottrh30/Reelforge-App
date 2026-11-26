@@ -339,7 +339,7 @@ What works now:
   on the ruler, and **Export** then offers "In to out" as well as the whole sequence
 - **New layer menu** (the **New…** list at the top of the timeline, or the Timeline menu): adds,
   on a new top track from the playhead, a **New Layer** (a plain plane of colour the size of the
-  frame; pick its colour under Layer in Controls), **New Light**, **New Point**, **New Camera** or
+  frame, black to start; pick its colour under Layer in Controls), **New Light**, **New Point**, **New Camera** or
   **New Adjustment Layer**. An adjustment layer has no picture: its effects (with its opacity,
   crop, masks and blend mode) change everything below it. Draw a mask on it to grade or blur
   just part of the frame (a face, the sky): inside the mask the layers below are changed,

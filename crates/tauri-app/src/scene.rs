@@ -250,7 +250,7 @@ pub fn add_scene(camera: bool, light: usize) -> Res<()> {
 #[tauri::command]
 pub fn add_new(what: String, light: usize, color: Option<String>) -> Res<()> {
     ed(|e| match what.as_str() {
-        "layer" => e.add_plane(color.as_deref().and_then(parse_hex).unwrap_or([128, 128, 128, 255])),
+        "layer" => e.add_plane(color.as_deref().and_then(parse_hex).unwrap_or([0, 0, 0, 255])),
         "light" => e.add_scene_object(SceneObject::Light, light),
         "point" => e.add_scene_object(SceneObject::Point, 0),
         "camera" => e.add_scene_object(SceneObject::Camera, 0),
