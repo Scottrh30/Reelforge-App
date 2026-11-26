@@ -794,6 +794,21 @@
       { separator: true },
       colorMenu(c),
       ...(c.kind === "video" || c.kind === "image" || c.kind === "comp" ? [{ label: "Match colour…", run: () => (app.matchColorOpen = true) }] : []),
+      ...(c.kind === "video"
+        ? [
+            {
+              label: "Stabilise automatically",
+              submenu: [
+                { label: "Smooth the camera's move", run: () => run(api.autoStabilise(c.id, 15, "Fixed")) },
+                { label: "Smooth it gently (keep more of the move)", run: () => run(api.autoStabilise(c.id, 6, "Fixed")) },
+                { label: "Hold the camera still (at the playhead)", run: () => run(api.autoStabilise(c.id, 0, "Fixed")) },
+                { separator: true },
+                { label: "Smooth, without zooming in", run: () => run(api.autoStabilise(c.id, 15, "Off")) },
+              ],
+            },
+            { label: "Deflicker", run: () => run(api.deflicker(c.id)) },
+          ]
+        : []),
       ...(c.kind === "plane"
         ? [
             {

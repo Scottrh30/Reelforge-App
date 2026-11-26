@@ -1518,6 +1518,20 @@ fn camtrack_stabilise(id: u64, smoothing: f32, zoom: reelforge_core::track::Stab
     })
 }
 
+/// Stabilise clip `id` with nothing to set up (worked out in the background):
+/// keep camera moves slower than `smoothing` frames, or (0) hold still where
+/// the camera is at the playhead.
+#[tauri::command]
+fn auto_stabilise(id: u64, smoothing: f32, zoom: reelforge_core::track::StabZoom) -> Res<()> {
+    ed(|e| e.start_auto_stabilise(clip(id), smoothing, zoom))
+}
+
+/// Deflicker clip `id` (measured in the background; keys a Deflicker effect).
+#[tauri::command]
+fn deflicker(id: u64) -> Res<()> {
+    ed(|e| e.start_deflicker(clip(id)))
+}
+
 /// Import a camera: a `.chan` path becomes a camera clip; a Reelforge solve goes onto the selected clip.
 #[tauri::command]
 fn camtrack_import() -> Res<()> {
@@ -2007,6 +2021,8 @@ fn main() {
             camtrack_export,
             camtrack_import,
             camtrack_stabilise,
+            auto_stabilise,
+            deflicker,
             track_cancel,
             mask_track,
             track_apply,

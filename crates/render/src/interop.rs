@@ -68,9 +68,8 @@ impl Importer {
         if !matches!(g.layout, YuvLayout::Nv12 | YuvLayout::P010) {
             return Err(format!("unexpected shared frame layout {:?}", g.layout));
         }
-        if !self.opened.contains_key(&g.texture_id) {
-            let o = Self::open(device, yuv, g)?;
-            self.opened.insert(g.texture_id, o);
+        if let std::collections::hash_map::Entry::Vacant(v) = self.opened.entry(g.texture_id) {
+            v.insert(Self::open(device, yuv, g)?);
             self.order.push_back(g.texture_id);
             while self.order.len() > MAX_OPEN {
                 if let Some(old) = self.order.pop_front() {
@@ -85,7 +84,7 @@ impl Importer {
             let q = unsafe { queue.as_hal::<Dx12>() }.ok_or("the compositor isn't on Direct3D 12")?;
             q.add_wait_fence(fence, g.fence_value);
         }
-        let o = &self.opened[&g.texture_id];
+        let o = self.opened.get(&g.texture_id).ok_or("the shared frame's texture was let go")?;
         yuv.convert_bound(device, queue, &o.group, &g.params(), g.layout, [g.width, g.height], target, g.layout.deep());
         // The decoder mustn't reuse the texture until the GPU has read it.
         let hold = g.hold.clone();

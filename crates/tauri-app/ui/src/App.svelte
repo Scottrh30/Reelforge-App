@@ -148,6 +148,13 @@
   </div>
   <footer class="status">
     <span class="msg">{app.note || app.live?.status || ""}</span>
+    {#if app.live?.tracking}
+      <span class="job" data-automation-id="status-job">
+        <span class="jobbar"><span style="width:{Math.round(app.live.tracking[1] * 100)}%"></span></span>
+        {Math.round(app.live.tracking[1] * 100)}%
+        <button class="ghost link" title="Stop the job running in the background (nothing is changed)" onclick={() => run(api.trackCancel())} data-automation-id="status-job-stop">Stop</button>
+      </span>
+    {/if}
     {#if app.live?.collect?.running && !app.collectOpen}
       <button class="ghost link" onclick={() => (app.collectOpen = true)}>Collecting {Math.round((app.live.collect.bytes / Math.max(1, app.live.collect.total)) * 100)}%</button>
     {/if}
@@ -230,6 +237,23 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text);
+  }
+  .job {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .jobbar {
+    width: 80px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--line);
+    overflow: hidden;
+  }
+  .jobbar span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
   }
   .link {
     color: var(--accent);

@@ -11,7 +11,7 @@ use reelforge_core::track::StabZoom;
 use reelforge_core::camtrack_io::{self, CamFormat};
 use reelforge_core::effects::{camera as cam, point as pt};
 use reelforge_core::space3d::SceneObject;
-use reelforge_core::undo::{AddClip, Batch, Command, SetCameraTrack, SetClipVisual};
+use reelforge_core::undo::{AddClip, Batch, Command, SetCameraTrack};
 use reelforge_core::*;
 use std::path::Path;
 use std::sync::Arc;
@@ -542,43 +542,12 @@ impl Editor {
             self.status = LOCKED.into();
             return;
         }
-        let (layer, frame) = (self.layer_size(c), self.frame_px());
         let maps = ct.stabilising_maps(path);
-        let mut anim = c.anim.clone();
-        let mut keys = Vec::new();
-        let mut times = Vec::new();
-        for (k, h) in maps.iter().enumerate() {
-            let Some(t) = c.timeline_of_media(ct.times[k]) else { continue };
-            if t < c.timeline_start || t >= c.timeline_end() {
-                continue;
-            }
-            let base = c.transform_at(t);
-            let still = base.valid_pin().unwrap_or_else(|| base.pin_of_transform(layer, frame));
-            let pin = still.map(|p| h.apply(p));
-            if pin.is_valid() {
-                keys.push((c.source_time(t), pin));
-                times.push(t);
-            }
-        }
-        let (Some(a), Some(b)) = (keys.iter().map(|k| k.0).min(), keys.iter().map(|k| k.0).max()) else {
-            self.status = "Nothing to stabilise: the solve doesn't overlap the clip".into();
+        let times = ct.times.clone();
+        if let Err(e) = self.pin_stabilising_maps(id, &maps, &times, path, zoom) {
+            self.status = if e.starts_with("Nothing") { "Nothing to stabilise: the solve doesn't overlap the clip".into() } else { e.into() };
             return;
-        };
-        anim.pin.0.retain(|k| k.at < a || k.at > b);
-        for (at, pin) in keys {
-            anim.pin.set(at, pin);
         }
-        if zoom != StabZoom::Off {
-            let smoothing = match path {
-                StabPath::Smooth(s) => s,
-                StabPath::Lock(_) => 0.0,
-            };
-            let opts = reelforge_core::track::ApplyOptions { stabilise: true, smoothing, axes: reelforge_core::track::Axes::ALL, zoom };
-            reelforge_core::track::zoom_to_cover(&mut anim, c, layer, frame, &times, true, opts);
-        }
-        let old = c.visual();
-        let new = ClipVisual { anim, ..old.clone() };
-        self.execute(Box::new(SetClipVisual { seq: self.active, id, old, new }));
         self.status = match path {
             StabPath::Lock(_) => "Stabilised with the solved camera, held still: the shot looks locked off (corner-pinned each frame)".into(),
             StabPath::Smooth(_) => "Stabilised with the solved camera: the shake is gone, the move stays (corner-pinned each frame)".into(),

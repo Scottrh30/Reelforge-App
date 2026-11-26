@@ -815,6 +815,27 @@ What works now:
       whole clip, in layer pixels
     - Ripple, Wave warp, Lens distortion, Turbulent displace, Heat haze and Shockwave choose
       what shows past the layer's edge: **Transparent**, **Stretch**, **Mirror** or **Repeat**
+  - **Skies, colour and burns**:
+    - **Gradient map** (Color): the picture's shades mapped to two colours (**Duotone**:
+      **Shadows** and **Highlights**) or three (**Tritone**, with **Midtones** at the
+      **Balance**), with **Contrast** and **Mix** with the original
+    - **Aurora** (Generate): glowing northern-lights curtains (**Colour low**, **Colour
+      high**) at a **Height** and **Size**, waving (**Waves**, **Speed**) with vertical
+      **Rays**, one to four **Curtains**; **Draw** over the picture (added as light), on black
+      or on its own, see-through. **Brightness**, **Seed**
+    - **Nebula** (Generate): swirling clouds of gas in two colours with a **Glow** where it's
+      thickest, **Density**, **Scale**, **Detail**, dark **Dust lanes** and **Stars**, slowly
+      turning (**Swirl speed**); drawn the same three ways
+    - **Clouds** (Generate): a **Drifting sky** (clouds moving across at a **Speed** and
+      **Direction**, lit from above and shaded underneath) or **Flying through** them, layers
+      rushing past towards the camera. **Coverage**, **Softness**, **Scale**, **Cloud colour**
+      and **Shade colour**; **Draw** over the picture, **With a sky** (**Sky top** and **Sky
+      horizon**) or on their own, see-through
+    - **Burn away** (Stylize): keyframe **Burnt** from 0 to 100 % and the layer burns away
+      with a ragged, glowing edge (**Glowing edge**, **Glow colour**, **Glow**), charred just
+      ahead of it (**Charred edge**), with rising **Embers**. **From**: everywhere at once,
+      a side, the middle or **A point** (drag the **Burn point** in the Viewer, or track it).
+      **Raggedness**, **Seed**
   - **Sci-fi pack**:
     - **Starfield** (Generate): stars (**Draw**: **Over the picture**, **On black** or **On its own**, see-through), as a still **Night sky** that twinkles, stars **Drifting past** in any
       **Direction**, or **Warp speed** — stars streaming out of a point (its **Centre**) and
@@ -1890,6 +1911,23 @@ What works now:
     goes up in quarter steps of doubling (a slow zoom redraws now and then, not every frame),
     up to 4× and 8192 pixels across, and carries through compositions inside compositions
   - Exporting while inside a shot exports that shot
+- **Stabilise automatically** (a video clip's right-click menu, or **Timeline → Stabilise
+  selected clip automatically**), like Warp Stabilizer, with nothing to set up: it follows
+  hundreds of details through the shot in the background (its progress shows at the foot of
+  the window, with **Stop**), works out the camera's shake from how they move together between frames — a
+  shift, turn and zoom fitted robustly, so people and cars moving on their own are outvoted —
+  and takes it out. **Smooth the camera's move** keeps pans and walks (moves slower than 15
+  frames), **Smooth it gently** keeps more of the move, and **Hold the camera still** locks
+  the shot off where it is at the playhead. The clip is corner-pinned every frame and zoomed
+  in just enough that the uncovered edges never show (or not, with **without zooming in**):
+  ordinary keyframes, one undo step
+- **Deflicker** (a video clip's right-click menu, or **Timeline → Deflicker selected clip**):
+  measures each frame's brightness and colour in the background and keys a **Deflicker**
+  effect (Repair) to even it out — flickering lights, timelapses' changing exposure, old
+  film's uneven frames — while slow changes (a cloud passing, a fade) stay. **Smoothing**
+  (frames, 15 to start) is how slow a change has to be to stay: change it and deflicker
+  again. **Even out colour too** steadies the colour balance as well as the brightness. Its
+  **Brightness**, **Red**, **Green** and **Blue** can be set or keyed by hand too
 - **Motion tracking** (the **Track** panel, docked next to Controls; for footage clips). It
   works on the selected clip, and keeps working on a tracked clip after you select something
   else (pick which tracked clip at the top when there are several). Pick a **Method** (Single
@@ -2989,6 +3027,18 @@ suites can be cross-built the same way (`cargo test --no-run --target …`) and 
   Z = 0, and turns each pose into camera settings (position, point of interest, roll measured
   as `space3d::Camera::basis` builds it). Making layers uses `CameraTrack::plane` (PCA of the
   picked points, facing the camera) and `orientation_facing`
+- **Automatic stabilising** (`reelforge_core::autostab`): the scene follower's tracks give,
+  for each pair of frames, the details seen in both; a similarity (shift, turn, zoom) is
+  fitted by RANSAC over pairs of them (1.5 px agreement), then least squares over those that
+  agree. A step that zooms or turns implausibly (a cut, a bad fit) counts as no movement.
+  The chained steps are the camera's path, parametrised as shift, turn (unwrapped) and log
+  zoom about the frame's middle; that is smoothed with a Gaussian (ends clamped) or held at
+  one frame, and each frame's correction is the steady similarity after the inverse of the
+  real one, keyed as corner pins (shared with 3D stabilising), with `zoom_to_cover` after.
+  **Deflicker** (`reelforge_core::deflicker`): each frame's mean colour in linear light
+  (`reelforge_media::frame_means`, about 40 000 samples a frame); brightness and each
+  channel's share of it are smoothed in log space, and the gains are the smoothed over the
+  actual, keyed per frame on the effect, which multiplies the light
 - **3D stabilising** (`CameraTrack::stabilising_maps`): the steady path is the solved one
   smoothed with a Gaussian (positions averaged, rotation matrices averaged and made a
   rotation again), with the window kept centred near the ends so it doesn't lag, or one

@@ -724,7 +724,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent", "fs_gradient_map", "fs_aurora", "fs_nebula", "fs_clouds", "fs_burn", "fs_deflicker"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2257,6 +2257,12 @@ impl Compositor {
                     | EffectKind::PrismBlur
                     | EffectKind::TiltShift
                     | EffectKind::TurbulentDisplace
+                    | EffectKind::GradientMap
+                    | EffectKind::Aurora
+                    | EffectKind::Nebula
+                    | EffectKind::Clouds
+                    | EffectKind::BurnAway
+                    | EffectKind::Deflicker
                     | EffectKind::HeatHaze
                     | EffectKind::Shockwave
                     | EffectKind::Starfield
@@ -2350,6 +2356,12 @@ impl Compositor {
                             EffectKind::Shockwave => "fs_shockwave",
                             EffectKind::HeatHaze => "fs_heat_haze",
                             EffectKind::TurbulentDisplace => "fs_turbulent",
+                            EffectKind::GradientMap => "fs_gradient_map",
+                            EffectKind::Aurora => "fs_aurora",
+                            EffectKind::Nebula => "fs_nebula",
+                            EffectKind::Clouds => "fs_clouds",
+                            EffectKind::BurnAway => "fs_burn",
+                            EffectKind::Deflicker => "fs_deflicker",
                             _ => "fs_leaks",
                         };
                         push(entry, cur, Second::None, o1, u);

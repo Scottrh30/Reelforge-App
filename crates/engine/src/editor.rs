@@ -348,7 +348,13 @@ enum TrackMsg {
     RotoDone(Result<Option<roto::RotoRun>, String>),
     /// Face beauty's faces or sky replacement's sky (`None`: stopped).
     AiDone(Result<Option<aifx::AiResult>, String>),
+    /// An automatic stabilise (`None`: stopped).
+    StabDone(Result<Option<autofix::AutoStab>, String>),
+    /// A deflicker's measurements (`None`: stopped).
+    DeflickerDone(Result<Option<autofix::Deflickered>, String>),
 }
+
+mod autofix;
 
 mod camtrack;
 mod fill;
@@ -3599,6 +3605,8 @@ impl Editor {
         let mut fill = None;
         let mut roto = None;
         let mut ai = None;
+        let mut stab = None;
+        let mut deflick = None;
         let mut moved = false;
         // (the job's thread gone without saying it's done: it couldn't start,
         // or it failed part way)
@@ -3634,6 +3642,8 @@ impl Editor {
                 TrackMsg::FillDone(r) => fill = Some(r),
                 TrackMsg::RotoDone(r) => roto = Some(r),
                 TrackMsg::AiDone(r) => ai = Some(r),
+                TrackMsg::StabDone(r) => stab = Some(r),
+                TrackMsg::DeflickerDone(r) => deflick = Some(r),
             }
         }
         // (Even when the last frames and the end arrive together: the
@@ -3641,7 +3651,7 @@ impl Editor {
         if moved && roto.is_none() {
             self.follow_tracking();
         }
-        let finished = ai.is_some() || roto.is_some() || fill.is_some() || camera.is_some() || done.is_some();
+        let finished = stab.is_some() || deflick.is_some() || ai.is_some() || roto.is_some() || fill.is_some() || camera.is_some() || done.is_some();
         if gone && !finished {
             self.tracking = None;
             self.status = "The job stopped unexpectedly (nothing was changed): try it again".into();
@@ -3651,6 +3661,14 @@ impl Editor {
             return;
         }
         let Some(job) = self.tracking.take() else { return };
+        if let Some(r) = stab {
+            self.finish_auto_stabilise(&job, r);
+            return;
+        }
+        if let Some(r) = deflick {
+            self.finish_deflicker(&job, r);
+            return;
+        }
         if let Some(r) = ai {
             self.finish_ai(&job, r);
             return;

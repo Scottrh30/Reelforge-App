@@ -411,3 +411,47 @@ pub fn track_scene(
     let (fol, ..) = follower.ok_or_else(|| anyhow!("no frames to track"))?;
     Ok(Some((fol.tracks(), times)))
 }
+
+/// Each frame's average colour from media time `from` to `until` (later), as
+/// linear light 0–1 (red, green, blue), and its media time; for deflickering.
+/// Every few pixels are sampled. `None`: stopped.
+pub fn frame_means(path: &Path, info: &MediaInfo, from: Time, until: Time, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<Option<(Vec<[f32; 3]>, Vec<Time>)>> {
+    let v = info.video.as_ref().ok_or_else(|| anyhow!("this clip has no video to deflicker"))?;
+    let step = v.frame_rate.frame_duration();
+    if step.0 <= 0 {
+        return Err(anyhow!("this clip's frame rate is unknown"));
+    }
+    let mut src = FrameSource::open(path, None)?;
+    let wait = Duration::from_secs(20);
+    let total = ((until - from).0 / step.0).max(1) as f32 + 1.0;
+    // sRGB code → linear light.
+    let lin: Vec<f32> = (0..256).map(|i| {
+        let c = i as f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    }).collect();
+    let (mut means, mut times) = (Vec::new(), Vec::new());
+    let mut t = from;
+    while t <= until {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let f = src.frame_at_blocking(t, wait).ok_or_else(|| anyhow!("no frame at {t}"))?;
+        let rgba = f.rgba();
+        let px = rgba.len() / 4;
+        // About 40 000 samples a frame.
+        let every = (px / 40_000).max(1);
+        let (mut sum, mut n) = ([0.0f64; 3], 0u64);
+        for p in rgba.chunks_exact(4).step_by(every) {
+            for (s, &c) in sum.iter_mut().zip(p) {
+                *s += lin.get(c as usize).copied().unwrap_or(0.0) as f64;
+            }
+            n += 1;
+        }
+        let k = 1.0 / n.max(1) as f64;
+        means.push(sum.map(|s| (s * k) as f32));
+        times.push(t);
+        progress((times.len() as f32 / total).min(1.0));
+        t = t + step;
+    }
+    Ok(Some((means, times)))
+}

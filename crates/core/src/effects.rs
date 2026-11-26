@@ -164,6 +164,19 @@ pub enum EffectKind {
     Shockwave,
     HeatHaze,
     TurbulentDisplace,
+    /// Duotone / gradient map: the picture redrawn in two or three colours by its brightness.
+    GradientMap,
+    /// The northern lights: glowing curtains rippling across the sky.
+    Aurora,
+    /// Coloured clouds of gas and dust in space, with stars.
+    Nebula,
+    /// Soft clouds: a sky drifting by, or flying through them.
+    Clouds,
+    /// The layer burns away with glowing, charred edges and embers.
+    BurnAway,
+    /// Evens out flicker: brightness and colour gains, keyed frame by frame by
+    /// Deflicker's analysis (Clip menu), or set by hand.
+    Deflicker,
     /// Film grain, moving from frame to frame.
     FilmGrain,
     /// Digital glitches: sliced, shifted blocks, colour splits and scan lines.
@@ -1278,6 +1291,78 @@ pub mod stars {
     pub const VARIETY: usize = 11;
     pub const DRAW: usize = 12;
     pub const SEED: usize = 13;
+}
+pub mod gradient_map {
+    pub const MODE: usize = 0;
+    pub const SHADOWS: usize = 1;
+    pub const MIDTONES: usize = 2;
+    pub const HIGHLIGHTS: usize = 3;
+    pub const BALANCE: usize = 4;
+    pub const CONTRAST: usize = 5;
+    pub const MIX: usize = 6;
+}
+pub mod aurora {
+    pub const LOW: usize = 0;
+    pub const HIGH: usize = 1;
+    pub const HEIGHT: usize = 2;
+    pub const SIZE: usize = 3;
+    pub const BRIGHTNESS: usize = 4;
+    pub const SPEED: usize = 5;
+    pub const WAVES: usize = 6;
+    pub const RAYS: usize = 7;
+    pub const CURTAINS: usize = 8;
+    pub const DRAW: usize = 9;
+    pub const SEED: usize = 10;
+}
+pub mod nebula {
+    pub const COLOR1: usize = 0;
+    pub const COLOR2: usize = 1;
+    pub const GLOW: usize = 2;
+    pub const DENSITY: usize = 3;
+    pub const SCALE: usize = 4;
+    pub const DETAIL: usize = 5;
+    pub const BRIGHTNESS: usize = 6;
+    pub const SWIRL: usize = 7;
+    pub const STARS: usize = 8;
+    pub const DUST: usize = 9;
+    pub const DRAW: usize = 10;
+    pub const SEED: usize = 11;
+}
+pub mod clouds {
+    pub const MODE: usize = 0;
+    pub const COVERAGE: usize = 1;
+    pub const SOFTNESS: usize = 2;
+    pub const SCALE: usize = 3;
+    pub const SPEED: usize = 4;
+    pub const DIRECTION: usize = 5;
+    pub const COLOR: usize = 6;
+    pub const SHADE: usize = 7;
+    pub const SKY_TOP: usize = 8;
+    pub const SKY_LOW: usize = 9;
+    pub const DRAW: usize = 10;
+    pub const BRIGHTNESS: usize = 11;
+    pub const SEED: usize = 12;
+}
+pub mod burn {
+    pub const PROGRESS: usize = 0;
+    pub const FROM: usize = 1;
+    pub const X: usize = 2;
+    pub const Y: usize = 3;
+    pub const EDGE: usize = 4;
+    pub const CHAR: usize = 5;
+    pub const COLOR: usize = 6;
+    pub const GLOW: usize = 7;
+    pub const RAGGED: usize = 8;
+    pub const EMBERS: usize = 9;
+    pub const SEED: usize = 10;
+}
+pub mod deflicker {
+    pub const BRIGHTNESS: usize = 0;
+    pub const RED: usize = 1;
+    pub const GREEN: usize = 2;
+    pub const BLUE: usize = 3;
+    pub const SMOOTHING: usize = 4;
+    pub const COLOUR: usize = 5;
 }
 pub mod hologram {
     pub const COLOR: usize = 0;
@@ -2750,6 +2835,78 @@ const STARFIELD: [ParamSpec; 14] = [
     choice("Draw", &["Over the picture", "On black", "On its own (see-through)"]),
     spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
 ];
+const GRADIENT_MAP: [ParamSpec; 7] = [
+    choice("Colours", &["Two (duotone)", "Three (tritone)"]),
+    color("Shadows", 0x1b2a4a),
+    color("Midtones", 0xd0566b),
+    color("Highlights", 0xf6e7c8),
+    spec("Balance", 50.0, 1.0, 99.0, " %", 0.3),
+    spec("Contrast", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Mix", 100.0, 0.0, 100.0, " %", 0.5),
+];
+const AURORA: [ParamSpec; 11] = [
+    color("Colour low", 0x39ff8f),
+    color("Colour high", 0xa64dff),
+    spec("Height", 60.0, -50.0, 150.0, " %", 0.2),
+    spec("Size", 35.0, 1.0, 150.0, " %", 0.2),
+    spec("Brightness", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Speed", 30.0, -500.0, 500.0, " %", 0.5),
+    spec("Waves", 50.0, 0.0, 200.0, " %", 0.5),
+    spec("Rays", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Curtains", 2.0, 1.0, 4.0, "", 1.0),
+    choice("Draw", &["Over the picture", "On black", "On its own (see-through)"]),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const NEBULA: [ParamSpec; 12] = [
+    color("Colour", 0x6a2fa0),
+    color("Second colour", 0x2c8ef0),
+    color("Glow", 0xff6fa8),
+    spec("Density", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Scale", 100.0, 5.0, 1000.0, " %", 0.5),
+    spec("Detail", 60.0, 0.0, 100.0, " %", 0.5),
+    spec("Brightness", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Swirl speed", 10.0, -500.0, 500.0, " %", 0.5),
+    spec("Stars", 40.0, 0.0, 100.0, " %", 0.5),
+    spec("Dust lanes", 40.0, 0.0, 100.0, " %", 0.5),
+    choice("Draw", &["Over the picture", "On black", "On its own (see-through)"]),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const CLOUDS: [ParamSpec; 13] = [
+    choice("Clouds", &["Drifting sky", "Flying through"]),
+    spec("Coverage", 55.0, 0.0, 100.0, " %", 0.5),
+    spec("Softness", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Scale", 100.0, 5.0, 1000.0, " %", 0.5),
+    spec("Speed", 30.0, -1000.0, 1000.0, " %", 0.5),
+    spec("Direction", 0.0, -360.0, 360.0, "°", 0.5),
+    color("Cloud colour", 0xffffff),
+    color("Shade colour", 0x8c98ab),
+    color("Sky top", 0x2f66b3),
+    color("Sky horizon", 0xa8c8ea),
+    choice("Draw", &["Over the picture", "With a sky", "On their own (see-through)"]),
+    spec("Brightness", 100.0, 0.0, 300.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const BURN: [ParamSpec; 11] = [
+    spec("Burnt", 50.0, 0.0, 100.0, " %", 0.3),
+    choice("From", &["Everywhere at once", "The left", "The right", "The top", "The bottom", "The middle", "A point"]),
+    spec("Point X", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Point Y", 50.0, -100.0, 200.0, " %", 0.2),
+    spec("Glowing edge", 6.0, 0.0, 400.0, " px", 0.2),
+    spec("Charred edge", 18.0, 0.0, 400.0, " px", 0.2),
+    color("Glow colour", 0xff7a1c),
+    spec("Glow", 150.0, 0.0, 1000.0, " %", 0.5),
+    spec("Raggedness", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Embers", 50.0, 0.0, 100.0, " %", 0.5),
+    spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
+];
+const DEFLICKER: [ParamSpec; 6] = [
+    spec("Brightness", 100.0, 0.0, 400.0, " %", 0.2),
+    spec("Red", 100.0, 0.0, 400.0, " %", 0.2),
+    spec("Green", 100.0, 0.0, 400.0, " %", 0.2),
+    spec("Blue", 100.0, 0.0, 400.0, " %", 0.2),
+    spec("Smoothing", 15.0, 1.0, 250.0, " frames", 0.5),
+    ParamSpec { name: "Even out colour too", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
 const HOLOGRAM: [ParamSpec; 11] = [
     color("Colour", 0x4fd8ff),
     spec("Opacity", 70.0, 0.0, 100.0, " %", 0.5),
@@ -3446,7 +3603,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 106] = [
+    pub const ALL: [EffectKind; 112] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -3553,6 +3710,12 @@ impl EffectKind {
         EffectKind::Shockwave,
         EffectKind::HeatHaze,
         EffectKind::TurbulentDisplace,
+        EffectKind::GradientMap,
+        EffectKind::Aurora,
+        EffectKind::Nebula,
+        EffectKind::Clouds,
+        EffectKind::BurnAway,
+        EffectKind::Deflicker,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -3566,6 +3729,7 @@ impl EffectKind {
             EffectKind::LensDirt => (dirt::X, dirt::Y, "light"),
             EffectKind::AnamorphicFlare => (streak::X, streak::Y, "light"),
             EffectKind::Hud => (hud::X, hud::Y, "centre"),
+            EffectKind::BurnAway => (burn::X, burn::Y, "burn point"),
             _ => return None,
         })
     }
@@ -3636,6 +3800,12 @@ impl EffectKind {
             EffectKind::HeatHaze => "Heat haze",
             EffectKind::Shockwave => "Shockwave",
             EffectKind::Starfield => "Starfield",
+            EffectKind::GradientMap => "Gradient map",
+            EffectKind::Aurora => "Aurora",
+            EffectKind::Nebula => "Nebula",
+            EffectKind::Clouds => "Clouds",
+            EffectKind::BurnAway => "Burn away",
+            EffectKind::Deflicker => "Deflicker",
             EffectKind::Hologram => "Hologram",
             EffectKind::Portal => "Portal",
             EffectKind::Hud => "HUD element",
@@ -3714,6 +3884,10 @@ impl EffectKind {
             EffectKind::HeatHaze => EffectCategory::Distort,
             EffectKind::Shockwave => EffectCategory::Distort,
             EffectKind::Starfield => EffectCategory::Generate,
+            EffectKind::Aurora | EffectKind::Nebula | EffectKind::Clouds => EffectCategory::Generate,
+            EffectKind::GradientMap => EffectCategory::Color,
+            EffectKind::BurnAway => EffectCategory::Stylize,
+            EffectKind::Deflicker => EffectCategory::Repair,
             EffectKind::Hologram => EffectCategory::Stylize,
             EffectKind::Portal => EffectCategory::Generate,
             EffectKind::Hud => EffectCategory::Generate,
@@ -3789,6 +3963,12 @@ impl EffectKind {
             EffectKind::TurbulentDisplace => "Bends the picture with rolling, cloudy noise, like the Turbulent Displace in After Effects: how far and how big the swirls are, how detailed, and how they change over time. For heat, water, flags, dreams and magic.",
             EffectKind::HeatHaze => "The shimmer over a hot road, a fire or an engine: the picture wobbles as rising air bends the light. Over the whole picture, rising from the bottom, or in a circle you place.",
             EffectKind::Shockwave => "A ring of bent air bursting out from a point, as from an explosion, a landing or a power-up: it travels out at the speed you set from the moment you set, fading as it goes, with a split of colour and a glint along the ring. Repeat it for a pulse. Drag its centre in the Viewer.",
+            EffectKind::GradientMap => "Duotone and tritone: the picture redrawn in two or three colours of your choosing by how bright each part is (shadows, midtones, highlights), with where the middle falls, contrast, and how much of it to mix in.",
+            EffectKind::Aurora => "The northern lights: glowing curtains of colour rippling across the sky, green at the foot fading to purple above, with fine rays, as many curtains as you like. Over the picture, on black, or on its own to put behind something.",
+            EffectKind::Nebula => "Space: swirling clouds of coloured gas with a glowing heart, dark lanes of dust and stars, slowly turning if you like. Over the picture, on black, or on its own.",
+            EffectKind::Clouds => "Soft clouds: a sky of them drifting by (choose the wind's direction and speed), or flying forwards through them. Over the picture, with a sky of their own, or on their own to put behind something.",
+            EffectKind::BurnAway => "The layer burns away like paper: a ragged front of glowing embers and charred edges sweeps across it (everywhere at once, from a side, the middle or a point you place) as Burnt goes from 0 to 100 %. Key Burnt to animate it.",
+            EffectKind::Deflicker => "Evens out flicker in timelapses and under flickering lights. To analyse the clip, right-click it and choose Deflicker (or Timeline → Deflicker selected clip): it keys Brightness (and Red, Green and Blue) frame by frame to follow its brightness, smoothed over the frames you choose. Or set them by hand.",
             EffectKind::Starfield => "Stars: a night sky that twinkles, stars drifting past in layers (nearer ones faster), or the jump to warp speed, stars streaking out from a point you place. Over the picture, on black, or on their own to put behind something.",
             EffectKind::Hologram => "Turns the layer into a projected hologram: one glowing colour, see-through, with scanlines rolling over it, edges that glow, flicker, and glitches that tear across it now and then.",
             EffectKind::Portal => "A ring of energy that opens in the air: sparks spinning round its rim in two colours, the air rippling round it, and inside a swirl of the picture, darkness, or a hole you can see another shot through (put it on the track below). Keyframe Open to open and close it. Drag its centre in the Viewer.",
@@ -3935,6 +4115,12 @@ impl EffectKind {
             EffectKind::HeatHaze => &HEATHAZE,
             EffectKind::Shockwave => &SHOCKWAVE,
             EffectKind::Starfield => &STARFIELD,
+            EffectKind::GradientMap => &GRADIENT_MAP,
+            EffectKind::Aurora => &AURORA,
+            EffectKind::Nebula => &NEBULA,
+            EffectKind::Clouds => &CLOUDS,
+            EffectKind::BurnAway => &BURN,
+            EffectKind::Deflicker => &DEFLICKER,
             EffectKind::Hologram => &HOLOGRAM,
             EffectKind::Portal => &PORTAL,
             EffectKind::Hud => &HUD,
@@ -4032,6 +4218,9 @@ impl EffectKind {
             EffectKind::LensDirt => &[(0, "Light"), (3, "Dirt")],
             EffectKind::LightRays => &[(0, "Source"), (2, "Rays")],
             EffectKind::AnamorphicFlare => &[(0, "Streaks"), (7, "Light")],
+            EffectKind::Clouds => &[(0, "Clouds"), (6, "Colours"), (10, "Draw")],
+            EffectKind::BurnAway => &[(0, "Burn"), (4, "Edge"), (9, "Embers")],
+            EffectKind::Deflicker => &[(0, "Gains"), (4, "Analysis")],
             EffectKind::PatchReplacer => &[(0, "Target"), (2, "Source"), (4, "Shape"), (9, "Fill")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
             _ => &[],
@@ -4149,6 +4338,12 @@ impl EffectValues {
             EffectKind::HeatHaze => v[haze::STRENGTH] == 0.0,
             EffectKind::Shockwave => v[shockwave::STRENGTH] == 0.0 && v[shockwave::BRIGHTNESS] == 0.0,
             EffectKind::Starfield => v[stars::BRIGHTNESS] == 0.0 && v[stars::DRAW] == 0.0,
+            EffectKind::GradientMap => v[gradient_map::MIX] == 0.0,
+            EffectKind::Aurora => v[aurora::BRIGHTNESS] == 0.0 && v[aurora::DRAW] == 0.0,
+            EffectKind::Nebula => v[nebula::BRIGHTNESS] == 0.0 && v[nebula::DRAW] == 0.0,
+            EffectKind::Clouds => (v[clouds::COVERAGE] == 0.0 || v[clouds::BRIGHTNESS] == 0.0) && v[clouds::DRAW] == 0.0,
+            EffectKind::BurnAway => v[burn::PROGRESS] <= 0.0 && v[burn::FROM] >= 1.0,
+            EffectKind::Deflicker => v[deflicker::BRIGHTNESS] == 100.0 && v[deflicker::RED] == 100.0 && v[deflicker::GREEN] == 100.0 && v[deflicker::BLUE] == 100.0,
             EffectKind::Hologram => false,
             EffectKind::Portal => v[portal::OPEN] == 0.0,
             EffectKind::Hud => v[hud::OPACITY] == 0.0 || v[hud::DRAW_ON] == 0.0,
@@ -4245,6 +4440,10 @@ impl EffectValues {
             || (self.kind == EffectKind::HeatHaze && (v[haze::RISE] != 0.0 || v[haze::SHIMMER] != 0.0))
             || (self.kind == EffectKind::Shockwave && (true))
             || (self.kind == EffectKind::Starfield && (v[stars::SPEED] != 0.0 || v[stars::TWINKLE] > 0.0))
+            || (self.kind == EffectKind::Aurora && v[aurora::SPEED] != 0.0)
+            || (self.kind == EffectKind::Nebula && (v[nebula::SWIRL] != 0.0 || v[nebula::STARS] > 0.0))
+            || (self.kind == EffectKind::Clouds && v[clouds::SPEED] != 0.0)
+            || (self.kind == EffectKind::BurnAway && v[burn::EMBERS] > 0.0 && v[burn::PROGRESS] > 0.0)
             || (self.kind == EffectKind::Hologram && (v[hologram::LINE_SPEED] != 0.0 || v[hologram::FLICKER] > 0.0 || v[hologram::GLITCH] > 0.0))
             || (self.kind == EffectKind::Portal && (v[portal::OPEN] > 0.0))
             || (self.kind == EffectKind::Hud && (true))
@@ -4583,7 +4782,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace | EffectKind::Deflicker => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
                 // Its trail is worked out with the clip (see sparkle's tests).

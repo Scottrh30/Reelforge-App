@@ -4789,3 +4789,293 @@ fn fs_strobe(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4(mix(c.rgb, rgb_of(fx.p0.w) * c.a, min(k, 1.0)), c.a);
 }
+
+// ---- Gradient map, aurora, nebula, clouds, burn away, deflicker ----
+
+// Gradient map: p0 = (colours: 0 two / 1 three, shadows, midtones, highlights),
+// p1 = (balance %, contrast %, mix %).
+@fragment
+fn fs_gradient_map(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    if (c.a <= 0.0) {
+        return vec4(0.0);
+    }
+    let rgb = to_display(unpremul(c));
+    var l = clamp(dot(rgb, LUMA), 0.0, 1.0);
+    l = clamp((l - 0.5) * fx.p1.y / 100.0 + 0.5, 0.0, 1.0);
+    // The balance is where the middle colour falls.
+    let b = clamp(fx.p1.x / 100.0, 0.01, 0.99);
+    l = pow(l, log(0.5) / log(b));
+    let sh = to_display(rgb_of(fx.p0.y));
+    let mid = to_display(rgb_of(fx.p0.z));
+    let hi = to_display(rgb_of(fx.p0.w));
+    var out: vec3<f32>;
+    if (u32(round(fx.p0.x)) == 1u) {
+        out = select(mix(mid, hi, l * 2.0 - 1.0), mix(sh, mid, l * 2.0), l < 0.5);
+    } else {
+        out = mix(sh, hi, l);
+    }
+    let m = mix(rgb, out, clamp(fx.p1.z / 100.0, 0.0, 1.0));
+    return vec4(to_linear(m) * c.a, c.a);
+}
+
+// Aurora: p0 = (colour low, colour high, height %, size %), p1 = (brightness %, speed %,
+// waves %, rays %), p2 = (curtains, draw, seed).
+@fragment
+fn fs_aurora(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let t = fx.extra.y * fx.p1.y / 100.0;
+    let seed = u32(max(fx.p2.z, 0.0)) * 613u + 29u;
+    let low = rgb_of(fx.p0.x);
+    let high = rgb_of(fx.p0.y);
+    let tall = max(fx.p0.w / 100.0, 0.01);
+    let waves = fx.p1.z / 100.0;
+    let rays = clamp(fx.p1.w / 100.0, 0.0, 1.0);
+    let n = u32(clamp(round(fx.p2.x), 1.0, 4.0));
+    // In units of the picture's height, x across.
+    let x = in.uv.x * size.x / size.y;
+    let y = in.uv.y;
+    var light = vec3(0.0);
+    for (var k = 0u; k < n; k++) {
+        let s = seed + k * 71u;
+        let fk = f32(k);
+        // The curtain's foot: a slow wave across the sky.
+        let base = fx.p0.z / 100.0 - fk * 0.07 * tall / 0.35
+            + waves * 0.12 * (fbm2(s, vec2(x * 0.9 + t * 0.05 + fk * 3.1, t * 0.03)) - 0.5) * 2.0
+            + waves * 0.03 * sin(x * 7.0 + t * 0.6 + fk * 2.0);
+        // How far up from its foot, in its height.
+        let d = (base - y) / tall;
+        if (d < -0.3 || d > 3.0) {
+            continue;
+        }
+        // Bright at the foot, fading up (and out, well above); a little glow below.
+        var body = select(exp(d * 18.0) * 0.6, exp(-d * 2.2) * (0.6 + 0.4 * smoothstep(0.0, 0.06, d)) * smoothstep(3.0, 1.6, d), d >= 0.0);
+        // Where along the sky it shows (it comes and goes).
+        let gaps = smoothstep(0.25, 0.65, fbm2(s + 5u, vec2(x * 0.6 - t * 0.04 + fk * 9.0, fk)));
+        // Fine vertical rays, drifting sideways.
+        let r = fbm2(s + 9u, vec2(x * 26.0 + t * 0.4, d * 0.6 + fk * 4.0));
+        let ray = mix(1.0, 0.25 + 1.5 * r * r, rays);
+        body = body * gaps * ray;
+        let col = mix(low, high, clamp(d * 1.1, 0.0, 1.0));
+        light += col * body * (1.0 - fk * 0.18);
+    }
+    light *= fx.p1.x / 100.0 * 0.9;
+    let cover = clamp(dot(light, LUMA), 0.0, 1.0);
+    return gen_over(in.uv, light, cover, u32(round(fx.p2.y)));
+}
+
+// A noise for space and clouds: `oct` octaves of value noise, 0..1.
+fn sky_fbm(seed: u32, p: vec2<f32>, oct: u32) -> f32 {
+    var sum = 0.0;
+    var amp = 0.5;
+    var q = p;
+    var total = 0.0;
+    for (var i = 0u; i < oct; i++) {
+        sum += vnoise(seed + i * 13u, q) * amp;
+        total += amp;
+        amp *= 0.5;
+        // (Turned each octave, so the noise's grid doesn't show.)
+        q = vec2(q.x * 1.6 - q.y * 1.2, q.x * 1.2 + q.y * 1.6) + vec2(17.3, 9.1);
+    }
+    return sum / max(total, 1e-4);
+}
+
+// Nebula: p0 = (colour, second colour, glow, density %), p1 = (scale %, detail %,
+// brightness %, swirl speed %), p2 = (stars %, dust lanes %, draw, seed).
+@fragment
+fn fs_nebula(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let t = fx.extra.y * fx.p1.w / 100.0;
+    let seed = u32(max(fx.p2.w, 0.0)) * 409u + 61u;
+    let p = (in.uv - 0.5) * size / size.y / max(fx.p1.x / 100.0, 0.05) * 2.2;
+    let oct = 3u + u32(clamp(fx.p1.y / 100.0, 0.0, 1.0) * 4.0);
+    // Warped twice, so the gas swirls.
+    let w1 = vec2(sky_fbm(seed, p + vec2(0.0, t * 0.03), 4u), sky_fbm(seed + 40u, p + vec2(5.2, 1.3) - vec2(t * 0.02, 0.0), 4u));
+    let w2 = vec2(sky_fbm(seed + 80u, p + w1 * 1.6 + vec2(1.7, 9.2), oct), sky_fbm(seed + 120u, p + w1 * 1.6 + vec2(8.3, 2.8), oct));
+    let gas = sky_fbm(seed + 160u, p + w2 * 1.4, oct);
+    let tint = sky_fbm(seed + 200u, p * 0.7 + w1, 3u);
+    let dens = clamp(fx.p0.w / 100.0, 0.0, 1.0);
+    let cloud = smoothstep(0.62 - dens * 0.45, 0.95, gas);
+    var col = mix(rgb_of(fx.p0.x), rgb_of(fx.p0.y), smoothstep(0.3, 0.7, tint)) * cloud;
+    // The glowing heart where it's thickest.
+    col += rgb_of(fx.p0.z) * pow(smoothstep(0.55, 1.0, gas), 3.0) * 1.6 * (0.5 + dens);
+    // Dark lanes of dust across it.
+    let lane = 1.0 - smoothstep(0.0, 0.06, abs(sky_fbm(seed + 240u, p * 1.3 + w2 * 0.6, oct) - 0.5));
+    col *= 1.0 - fx.p2.y / 100.0 * lane * 0.9;
+    col *= fx.p1.z / 100.0;
+    // Stars: one at a random place in some cells, twinkling a little.
+    let sa = clamp(fx.p2.x / 100.0, 0.0, 1.0);
+    if (sa > 0.0) {
+        let px = in.uv * size;
+        let cell = mix(60.0, 16.0, sa);
+        let g = floor(px / cell);
+        for (var j = -1; j <= 1; j++) {
+            for (var i = -1; i <= 1; i++) {
+                let gi = g + vec2(f32(i), f32(j));
+                let ix = ibits(gi.x);
+                let iy = ibits(gi.y);
+                let pos = (gi + vec2(rnd3(seed + 3u, ix, iy), rnd3(seed + 4u, ix, iy))) * cell;
+                let dist = length(px - pos);
+                let bright = pow(rnd3(seed + 5u, ix, iy), 5.0) * 2.5 + 0.08;
+                let w = 0.8 + 1.4 * rnd3(seed + 6u, ix, iy);
+                let tw = 0.75 + 0.25 * sin(fx.extra.y * (1.5 + 4.0 * rnd3(seed + 7u, ix, iy)) + rnd3(seed + 8u, ix, iy) * 30.0);
+                col += vec3(0.85, 0.9, 1.0) * exp(-dist * dist / (w * w)) * bright * tw;
+            }
+        }
+    }
+    let cover = clamp(dot(col, LUMA) * 1.5, 0.0, 1.0);
+    return gen_over(in.uv, col, cover, u32(round(fx.p2.z)));
+}
+
+// How thick the clouds are at `p` (in units of the cloud size), 0..1.
+fn cloud_density(seed: u32, p: vec2<f32>, cover: f32, soft: f32) -> f32 {
+    let n = sky_fbm(seed, p, 5u);
+    let edge = 1.0 - cover;
+    return smoothstep(edge - soft * 0.35, edge + 0.05 + soft * 0.35, n);
+}
+
+// Clouds: p0 = (mode, coverage %, softness %, scale %), p1 = (speed %, direction °,
+// cloud colour, shade colour), p2 = (sky top, sky horizon, draw, brightness %), p3.x = seed.
+@fragment
+fn fs_clouds(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let t = fx.extra.y * fx.p1.x / 100.0;
+    let seed = u32(max(fx.p3.x, 0.0)) * 199u + 41u;
+    let cover = clamp(fx.p0.y / 100.0, 0.0, 1.0);
+    let soft = clamp(fx.p0.z / 100.0, 0.0, 1.0);
+    let scale = max(fx.p0.w / 100.0, 0.05) * 0.45;
+    let lit = rgb_of(fx.p1.z);
+    let shade = rgb_of(fx.p1.w);
+    let draw = u32(round(fx.p2.z));
+    let bright = fx.p2.w / 100.0;
+    let aspect = size.x / size.y;
+    var col = vec3(0.0);
+    var alpha = 0.0;
+    if (u32(round(fx.p0.x)) == 1u) {
+        // Flying through: sheets of cloud coming towards the camera from far off, far first.
+        let q = (in.uv - 0.5) * vec2(aspect, 1.0);
+        let n = 7u;
+        for (var k = 0u; k < n; k++) {
+            let phase = f32(k) / f32(n);
+            let z = fract(phase - t * 0.06);
+            let zz = 1.0 - z;
+            let depth = mix(0.05, 1.0, zz);
+            let p = q / (depth * scale) + vec2(f32(k) * 7.31, f32(k) * 3.17);
+            let d = cloud_density(seed + k * 31u, p, cover * 0.75, soft);
+            // Lit from above: thinner just above means brighter.
+            let above = cloud_density(seed + k * 31u, p - vec2(0.0, 0.08), cover * 0.75, soft);
+            let c = mix(shade, lit, clamp(1.0 - (d - above) * 2.5, 0.0, 1.0)) * bright;
+            // Fading in from far away, and out as it passes the camera.
+            let a = d * smoothstep(1.0, 0.75, zz) * smoothstep(0.0, 0.3, zz) * 0.55;
+            col = c * a + col * (1.0 - a);
+            alpha = a + alpha * (1.0 - a);
+        }
+    } else {
+        // A sky drifting by: the wind blows the big shapes slowly, the detail faster.
+        let dir = vec2(cos(radians(fx.p1.y)), -sin(radians(fx.p1.y)));
+        let p = (in.uv * vec2(aspect, 1.0)) / scale - dir * t * 0.12;
+        let d = cloud_density(seed, p, cover, soft);
+        let above = cloud_density(seed, p - vec2(0.0, 0.06), cover, soft);
+        col = mix(shade, lit, clamp(1.0 - (d - above) * 3.0 - (d - 0.5) * 0.3, 0.0, 1.0)) * bright;
+        alpha = d;
+        col *= alpha;
+    }
+    // (col is premultiplied by alpha here.)
+    if (draw == 2u) {
+        return vec4(col, alpha);
+    }
+    var under: vec4<f32>;
+    if (draw == 1u) {
+        under = vec4(mix(rgb_of(fx.p2.x), rgb_of(fx.p2.y), smoothstep(0.0, 1.0, in.uv.y)), 1.0);
+    } else {
+        under = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    }
+    return vec4(col + under.rgb * (1.0 - alpha), alpha + under.a * (1.0 - alpha));
+}
+
+// Burn away: p0 = (burnt %, from, point x %, point y %), p1 = (glowing edge px, charred
+// edge px, glow colour, glow %), p2 = (raggedness %, embers %, seed).
+@fragment
+fn fs_burn(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let seed = u32(max(fx.p2.z, 0.0)) * 271u + 17u;
+    let px = in.uv * size;
+    // Where it burns first (0) to last (1), and how far that is from the front in pixels
+    // (from the field's slope, measured a pixel either way).
+    let v = burn_field(px, size, seed);
+    let gx = burn_field(px + vec2(1.0, 0.0), size, seed) - burn_field(px - vec2(1.0, 0.0), size, seed);
+    let gy = burn_field(px + vec2(0.0, 1.0), size, seed) - burn_field(px - vec2(0.0, 1.0), size, seed);
+    let slope = max(length(vec2(gx, gy)) * 0.5, 1e-5);
+    let th = fx.p0.x / 100.0 * 1.3 - 0.15;
+    let dist = (v - th) / slope;
+    let edge = max(fx.p1.x, 0.01);
+    let charw = max(fx.p1.y, 0.01);
+    let glow_col = rgb_of(fx.p1.z) * fx.p1.w / 100.0;
+    let t = fx.extra.y;
+    // Embers: sparks just behind the front, rising and flickering.
+    var embers = vec3(0.0);
+    let ea = clamp(fx.p2.y / 100.0, 0.0, 1.0);
+    if (ea > 0.0 && dist < 0.0 && dist > -edge * 6.0 - 40.0) {
+        let q = px + vec2(0.0, t * 30.0);
+        let cell = 9.0;
+        let gc = floor(q / cell);
+        let h = rnd3(seed + 9u, ibits(gc.x), ibits(gc.y));
+        if (h < ea * 0.3) {
+            let pos = (gc + vec2(rnd3(seed + 10u, ibits(gc.x), ibits(gc.y)), rnd3(seed + 11u, ibits(gc.x), ibits(gc.y)))) * cell;
+            let d2 = length(q - pos);
+            let fl = 0.5 + 0.5 * sin(t * 9.0 + h * 60.0);
+            embers = glow_col * exp(-d2 * d2 / 2.0) * fl * exp(dist / (edge * 3.0 + 12.0)) * 1.2;
+        }
+    }
+    if (dist < 0.0) {
+        // Burnt: gone, but for the glow just past the front (where there was something).
+        let a = c.a * exp(dist / (edge * 0.6)) * 0.8;
+        let e = embers * c.a;
+        return vec4(glow_col * a + e, clamp(a + dot(e, LUMA), 0.0, 1.0));
+    }
+    // Not burnt: charred near the front, with the glow on its very edge.
+    // (The slope only says how far the front is close to it: far off, nothing.)
+    let near = 1.0 - smoothstep(0.08, 0.2, v - th);
+    let char_k = exp(-dist * dist / (charw * charw)) * near;
+    let rgb = unpremul(c);
+    let charred = mix(rgb, rgb * vec3(0.08, 0.05, 0.03), clamp(char_k * 1.1, 0.0, 1.0));
+    let glow = glow_col * exp(-dist * dist / (edge * edge)) * 0.8 * near;
+    return vec4((charred + glow) * c.a, c.a);
+}
+
+// Burn away's field: 0 where it burns first to 1 where it burns last.
+fn burn_field(px: vec2<f32>, size: vec2<f32>, seed: u32) -> f32 {
+    let uv = px / size;
+    let rag = fx.p2.x / 100.0;
+    // (Stretched: the noise's values bunch in the middle.)
+    let n = smoothstep(0.2, 0.8, sky_fbm(seed, px / 110.0, 4u));
+    let src_from = u32(round(fx.p0.y));
+    if (src_from == 0u) {
+        return n;
+    }
+    var g = 0.5;
+    if (src_from == 1u) {
+        g = uv.x;
+    } else if (src_from == 2u) {
+        g = 1.0 - uv.x;
+    } else if (src_from == 3u) {
+        g = uv.y;
+    } else if (src_from == 4u) {
+        g = 1.0 - uv.y;
+    } else {
+        let ctr = select(vec2(0.5), fx.p0.zw / 100.0, src_from == 6u);
+        let far = max(max(length(ctr * size), length((vec2(1.0, 0.0) - ctr) * size)), max(length((vec2(0.0, 1.0) - ctr) * size), length((vec2(1.0) - ctr) * size)));
+        g = length(px - ctr * size) / max(far, 1.0);
+    }
+    return clamp(g * 0.8 + (n - 0.5) * 0.5 * rag + 0.1, 0.0, 1.0);
+}
+
+// Deflicker: p0 = (brightness %, red %, green %, blue %).
+@fragment
+fn fs_deflicker(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let gain = fx.p0.x / 100.0 * vec3(fx.p0.y, fx.p0.z, fx.p0.w) / 100.0;
+    // (Gains apply to the light, as an exposure change would.)
+    return vec4(max(c.rgb * gain, vec3(0.0)), c.a);
+}

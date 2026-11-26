@@ -3823,3 +3823,83 @@ fn hud_locks_on_and_shows_its_readout() {
     let b = draw(&mut c, &later, Some("{time}"), 3.0);
     assert!(a.chunks(4).zip(b.chunks(4)).any(|(p, q)| p != q), "the time moves on");
 }
+
+/// Gradient map, aurora, nebula, clouds, burn away and deflicker draw what they should.
+#[test]
+fn sky_burn_and_colour_effects_draw_what_they_should() {
+    use reelforge_core::effects::{burn, clouds as cl, deflicker as df, gradient_map as gm, nebula as nb};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    // Dark on the left to bright on the right; and mid-grey.
+    let ramp: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| { let v = (x * 255 / (w - 1)) as u8; [v, v, v, 255] })).collect();
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 120, 120, 255]).collect();
+    let mut key = 7700u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)], t: f32| {
+        let mut v = fx(kind, set);
+        v.time = t;
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let at = |img: &[u8], x: u32, y: u32| px(img, w, x, y);
+    let lum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    let lit = |img: &[u8], min: u32| img.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > min).count();
+    let differ = |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p.iter().zip(q.iter()).any(|(x, y)| x.abs_diff(*y) > 2)).count();
+    let n = (w * h) as usize;
+
+    // Gradient map: the shadows take the dark navy, the highlights the cream; mixed out, as it was.
+    let duo = draw(&mut c, &ramp, EffectKind::GradientMap, &[], 0.0);
+    let (d, b) = (at(&duo, 2, 45), at(&duo, 157, 45));
+    assert!(d[2] > d[0] && lum(d) < 200, "shadows navy: {d:?}");
+    assert!(b[0] > 200 && b[0] > b[2], "highlights cream: {b:?}");
+    let tri = draw(&mut c, &ramp, EffectKind::GradientMap, &[(gm::MODE, 1.0)], 0.0);
+    let m = at(&tri, 80, 45);
+    assert!(m[0] > m[1] + 40, "tritone's middle is the rose: {m:?}");
+    let none = draw(&mut c, &ramp, EffectKind::GradientMap, &[(gm::MIX, 0.0)], 0.0);
+    assert!(differ(&none, &ramp) < n / 50, "mixed out");
+
+    // Aurora on black: glowing curtains, mostly green, moving in time; not a fill.
+    use reelforge_core::effects::aurora as au;
+    let sky = draw(&mut c, &grey, EffectKind::Aurora, &[(au::DRAW, 1.0)], 0.0);
+    let glow = lit(&sky, 60);
+    assert!(glow > 200 && glow < n * 9 / 10, "curtains: {glow}");
+    let (gs, rs) = sky.chunks(4).fold((0u64, 0u64), |(g, r), p| (g + p[1] as u64, r + p[0] as u64));
+    assert!(gs > rs, "green: {gs} vs {rs}");
+    assert!(differ(&sky, &draw(&mut c, &grey, EffectKind::Aurora, &[(au::DRAW, 1.0)], 2.0)) > 100, "moves");
+
+    // Nebula on black: lit clouds of colour; another seed, another nebula.
+    let neb = draw(&mut c, &grey, EffectKind::Nebula, &[(nb::DRAW, 1.0)], 0.0);
+    assert!(lit(&neb, 40) > n / 5, "lit: {}", lit(&neb, 40));
+    assert!(differ(&neb, &draw(&mut c, &grey, EffectKind::Nebula, &[(nb::DRAW, 1.0), (nb::SEED, 7.0)], 0.0)) > n / 4, "seeded");
+
+    // Clouds with a sky: blue at the top between them; flying through is another picture;
+    // they drift in time.
+    let drift = draw(&mut c, &grey, EffectKind::Clouds, &[(cl::DRAW, 1.0), (cl::COVERAGE, 20.0)], 0.0);
+    let (bs, rs) = drift.chunks(4).take((w * 10) as usize).fold((0u64, 0u64), |(b, r), p| (b + p[2] as u64, r + p[0] as u64));
+    assert!(bs > rs, "a blue sky up top: {bs} vs {rs}");
+    assert!(differ(&drift, &draw(&mut c, &grey, EffectKind::Clouds, &[(cl::DRAW, 1.0), (cl::COVERAGE, 20.0)], 3.0)) > 100, "drifts");
+    let through = draw(&mut c, &grey, EffectKind::Clouds, &[(cl::DRAW, 1.0), (cl::MODE, 1.0)], 0.5);
+    assert!(differ(&drift, &through) > n / 4, "flying through");
+
+    // Burn away from the left, half way: the left is gone (over black), the right untouched,
+    // a glowing edge between; not started, as it was; all burnt, nothing left.
+    let half = draw(&mut c, &grey, EffectKind::BurnAway, &[(burn::FROM, 1.0), (burn::PROGRESS, 50.0), (burn::EMBERS, 0.0)], 0.0);
+    assert!(lum(at(&half, 4, 45)) < 30, "left burnt: {:?}", at(&half, 4, 45));
+    assert_eq!(at(&half, 156, 45), at(&grey, 156, 45), "right untouched");
+    let edge = (0..w).map(|x| at(&half, x, 45)).max_by_key(|p| p[0] as i32 - p[2] as i32).unwrap();
+    assert!(edge[0] > edge[2] + 60, "a glowing edge: {edge:?}");
+    let start = draw(&mut c, &grey, EffectKind::BurnAway, &[(burn::FROM, 1.0), (burn::PROGRESS, 0.0)], 0.0);
+    assert_eq!(differ(&start, &grey), 0, "not started");
+    let gone = draw(&mut c, &grey, EffectKind::BurnAway, &[(burn::PROGRESS, 100.0), (burn::EMBERS, 0.0)], 0.0);
+    assert!(lit(&gone, 30) < n / 50, "all burnt");
+
+    // Deflicker: half the light is darker; 100 % is as it was.
+    let dim = draw(&mut c, &grey, EffectKind::Deflicker, &[(df::BRIGHTNESS, 50.0)], 0.0);
+    let (g0, g1) = (lum(at(&grey, 80, 45)), lum(at(&dim, 80, 45)));
+    assert!(g1 < g0 * 85 / 100 && g1 > g0 / 2, "darker by half the light: {g0} → {g1}");
+    let red = draw(&mut c, &grey, EffectKind::Deflicker, &[(df::RED, 150.0)], 0.0);
+    assert!(at(&red, 80, 45)[0] > at(&red, 80, 45)[1] + 15, "redder");
+    assert_eq!(differ(&draw(&mut c, &grey, EffectKind::Deflicker, &[], 0.0), &grey), 0, "as it was");
+}

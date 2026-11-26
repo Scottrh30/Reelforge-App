@@ -230,6 +230,8 @@
     { label: "Audio crossfade at playhead", hint: "Ctrl+Shift+D", run: () => actions.act("crossfade") },
     { label: "Duck music under dialogue…", run: () => (app.duckOpen = true) },
     { label: "Match colour…", run: () => (app.matchColorOpen = true) },
+    { label: "Stabilise selected clip automatically", hint: "no track to set up", disabled: app.s?.inspector?.id == null, run: () => app.s?.inspector && run(api.autoStabilise(app.s.inspector.id, 15, "Fixed")) },
+    { label: "Deflicker selected clip", disabled: app.s?.inspector?.id == null, run: () => app.s?.inspector && run(api.deflicker(app.s.inspector.id)) },
     { label: "New multicam source…", run: () => (app.multicamOpen = []) },
     { label: "Multicam: show all angles", hint: "in the Viewer", checked: !!app.live?.multicam?.grid, disabled: !app.live?.multicam, run: () => run(api.setMulticamGrid(!app.live?.multicam?.grid)) },
     { label: "Transitions…", run: () => (app.effectsOpen = true) },
