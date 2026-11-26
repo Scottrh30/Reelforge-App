@@ -3765,6 +3765,7 @@ dependencies = [
  "ab_glyph",
  "epaint_default_fonts",
  "fbxcel",
+ "flate2",
  "gltf",
  "image",
  "log",
@@ -3773,12 +3774,15 @@ dependencies = [
  "openusd",
  "pollster",
  "reelforge-core",
+ "roxmltree",
+ "ruzstd",
  "serde",
  "stl_io",
  "tobj",
  "ttf-parser",
  "wgpu",
  "windows",
+ "zip 2.4.2",
 ]
 
 [[package]]

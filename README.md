@@ -1311,13 +1311,22 @@ What works now:
   a camera move around it, and it keeps its depth of field, opacity, blend mode and effects. At
   Z 0, not turned, its front face is exactly where the flat title's letters would be. Outline,
   shadow and box aren't drawn on 3D text (a Drop shadow effect still works), nor are masks
-- **3D models**: **Timeline → Add 3D model…**, or import or drop a model file like any media,
-  and it goes on the timeline at the playhead as a 3D layer, turned a little so its depth
+- **3D models**: **Timeline → Add 3D model…**, **New… → New 3D Model…** at the top of the
+  timeline (in a composition too), or import or drop a model file like any media, and it goes
+  on the timeline at the playhead as a 3D layer, turned a little so its depth
   shows. Reads **OBJ** (with its MTL colours and diffuse textures, `map_Kd`), **glTF/GLB**
   (node transforms, base colours, vertex colours and base-colour textures), **FBX** (binary
   7.x: meshes, model transforms, material colours; ASCII FBX needs saving as binary), **USD/USDA/USDC/USDZ**
-  (meshes with their transforms, references and display colours), **STL** (ASCII and binary)
-  and **PLY** (ASCII and binary, with vertex colours). Polygons are split into triangles, and
+  (meshes with their transforms, references and display colours), **STL** (ASCII and binary),
+  **PLY** (ASCII and binary, with vertex colours), **3MF** (3D printing's format, as slicers
+  such as Bambu Studio, PrusaSlicer and Cura save it: meshes, components, objects in other
+  parts of the file, build placements, and base-material and colour-group colours, each
+  material its own part) and **Blender** `.blend` files, read without Blender (from 2.5 to
+  5.x, compressed or not): every mesh object where it is in the scene (location, rotation,
+  scale and parents), coloured by its materials (the Principled BSDF's base colour, or the
+  viewport colour), each material its own part. Modifiers aren't applied (the mesh is as
+  modelled, so apply a Subdivision first if you want it smooth), and curves, text and
+  objects turned off for rendering are left out. Polygons are split into triangles, and
   normals the file doesn't give are worked out from the faces (shared where they meet at less
   than 40°, so curves are smooth and edges sharp). It's drawn by the 3D text renderer, so it's
   lit by the scene's lights, casts and takes shadows, cuts through other 3D layers, and moves,

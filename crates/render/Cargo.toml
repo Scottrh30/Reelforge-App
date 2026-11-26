@@ -26,6 +26,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 fbxcel = { version = "0.9.0", features = ["tree"] }
 openusd = "0.8.0"
 stl_io = "0.11.0"
+# 3MF (a zip of XML) and Blender files (gzip before 3.0, zstd after).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+roxmltree = "0.20"
+flate2 = "1"
+ruzstd = "0.9"
 
 # Zero-copy video: opening the hardware decoder's shared textures in Direct3D 12
 # (the same `windows` version wgpu-hal uses).

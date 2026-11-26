@@ -437,3 +437,26 @@ fn environment_light_lights_layers_and_is_reflected() {
     assert!(mirror[1] > 180 && mirror[1] > matte[1] + 80 && mirror[0] < 100, "matte {matte:?}, mirror {mirror:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A Blender file (saved by Blender 5.3) draws in its materials' colours: the red cube,
+/// the blue cylinder and its green caps.
+#[test]
+fn blender_files_draw_in_their_colours() {
+    use reelforge_core::ModelSource;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/scene-5.3.blend");
+    let src = ModelSource { path, z_up: true, own_colours: true, rev: 0, part_colours: Vec::new(), texture_dirs: Vec::new() };
+    let spec = TitleSpec { size: 160.0, color: [230, 230, 230, 255], shadow: false, model: Some(src), ..TitleSpec::default() };
+    assert_eq!(text_mesh(&spec, [W, H]).indices.len(), 42 * 3);
+    let Some((dev, q)) = headless_device() else { return };
+    let mut c = Compositor::new(&dev, &q);
+    let mut t = Transform { three_d: true, ..Default::default() };
+    // (Tipped, so a cap shows.)
+    t.orientation = [-50.0, 20.0];
+    let img = render(&mut c, &spec, t, &scene());
+    if let Ok(dir) = std::env::var("REELFORGE_LOOK") {
+        let _ = image::save_buffer(format!("{dir}/blend.png"), &img, W, H, image::ColorType::Rgba8);
+    }
+    let count = |f: &dyn Fn(i32, i32, i32) -> bool| (0..(W * H) as usize).filter(|i| { let p = &img[i * 4..i * 4 + 4]; f(p[0] as i32, p[1] as i32, p[2] as i32) }).count();
+    let (r, g, b) = (count(&|r, g, b| r > g + 40 && r > b + 40), count(&|r, g, b| g > r + 40 && g > b + 40), count(&|r, g, b| b > r + 40 && b > g + 40));
+    assert!(r > 300 && g > 50 && b > 300, "red {r}, green {g}, blue {b}");
+}

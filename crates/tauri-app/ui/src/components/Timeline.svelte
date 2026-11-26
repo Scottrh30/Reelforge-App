@@ -1255,9 +1255,10 @@
     title="Add a new layer on a new top track, from the playhead"
     value=""
     onchange={(e) => {
-      const v = e.currentTarget.value as "layer" | "light" | "point" | "camera" | "adjustment" | "";
+      const v = e.currentTarget.value as "layer" | "light" | "point" | "camera" | "adjustment" | "model" | "";
       e.currentTarget.value = "";
-      if (v) run(api.addNew(v));
+      if (v === "model") run(api.add3dModel());
+      else if (v) run(api.addNew(v));
     }}
   >
     <option value="" disabled hidden>New…</option>
@@ -1266,6 +1267,7 @@
     <option value="point" title="An invisible point: layers parented to it move, turn and scale with it">New Point</option>
     <option value="camera" title="A 3D camera that 3D layers are seen through">New Camera</option>
     <option value="adjustment" title="Its effects change every layer below it">New Adjustment Layer</option>
+    <option value="model" title="A 3D model from a file: OBJ, glTF/GLB, FBX, USD, STL, PLY, 3MF or Blender (.blend)">New 3D Model…</option>
   </select>
 {/snippet}
 

@@ -4,7 +4,9 @@
 //! (node transforms, base colours, vertex colours and base-colour textures), FBX
 //! (binary, 7.x: geometry, model transforms, material colours), USD
 //! (USDA/USDC/USDZ: meshes with their transforms and display colours), STL
-//! (binary and ASCII) and PLY (ASCII and binary, with vertex colours).
+//! (binary and ASCII), PLY (ASCII and binary, with vertex colours), 3MF (meshes,
+//! components and colours) and Blender's own `.blend` files (mesh objects with
+//! their transforms and material colours).
 //!
 //! Normals the file doesn't give are worked out from the faces: shared where
 //! faces meet at less than 40°, so curved surfaces are smooth and edges sharp.
@@ -14,6 +16,9 @@
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 use std::path::Path;
+
+mod blend;
+mod threemf;
 
 /// A model as triangles.
 #[derive(Clone, Debug, Default)]
@@ -98,6 +103,8 @@ pub fn load_with(path: &Path, texture_dirs: &[std::path::PathBuf]) -> Result<Mod
         "usd" | "usda" | "usdc" | "usdz" => load_usd(path),
         "stl" => load_stl(path),
         "ply" => load_ply(path),
+        "3mf" => threemf::load_3mf(path),
+        "blend" => blend::load_blend(path),
         _ => Err(format!("{ext} files aren't 3D models Reelforge reads")),
     }?;
     if m.indices.is_empty() {

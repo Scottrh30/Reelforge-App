@@ -466,7 +466,7 @@ fn is_zero_u32(v: &u32) -> bool {
 }
 
 /// File types read as 3D models.
-pub const MODEL_EXTENSIONS: [&str; 10] = ["obj", "gltf", "glb", "fbx", "usd", "usda", "usdc", "usdz", "stl", "ply"];
+pub const MODEL_EXTENSIONS: [&str; 12] = ["obj", "gltf", "glb", "fbx", "usd", "usda", "usdc", "usdz", "stl", "ply", "3mf", "blend"];
 
 /// Whether `path` is a 3D model file (by its extension).
 pub fn is_model_file(path: &std::path::Path) -> bool {
