@@ -724,7 +724,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent", "fs_gradient_map", "fs_aurora", "fs_nebula", "fs_clouds", "fs_burn", "fs_deflicker"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent", "fs_gradient_map", "fs_aurora", "fs_nebula", "fs_clouds", "fs_burn", "fs_deflicker", "fs_rotate3d", "fs_bend", "fs_bevel", "fs_extrude", "fs_extrusion3d"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2263,6 +2263,11 @@ impl Compositor {
                     | EffectKind::Clouds
                     | EffectKind::BurnAway
                     | EffectKind::Deflicker
+                    | EffectKind::Rotate3d
+                    | EffectKind::Bend
+                    | EffectKind::Bevel
+                    | EffectKind::Extrude
+                    | EffectKind::Extrusion3d
                     | EffectKind::HeatHaze
                     | EffectKind::Shockwave
                     | EffectKind::Starfield
@@ -2362,6 +2367,11 @@ impl Compositor {
                             EffectKind::Clouds => "fs_clouds",
                             EffectKind::BurnAway => "fs_burn",
                             EffectKind::Deflicker => "fs_deflicker",
+                            EffectKind::Rotate3d => "fs_rotate3d",
+                            EffectKind::Bend => "fs_bend",
+                            EffectKind::Bevel => "fs_bevel",
+                            EffectKind::Extrude => "fs_extrude",
+                            EffectKind::Extrusion3d => "fs_extrusion3d",
                             _ => "fs_leaks",
                         };
                         push(entry, cur, Second::None, o1, u);
@@ -3414,6 +3424,30 @@ fn effect_margin(effects: &[EffectValues], px: [u32; 2], layer: [f32; 2]) -> [u3
                 use reelforge_core::effects::streak;
                 x += 1.5 * e.values[streak::LENGTH].max(0.0) * kx;
                 y += 1.5 * e.values[streak::THICKNESS].max(0.0) * ky;
+            }
+            // Turned, bent or made solid, it can reach past its edges.
+            EffectKind::Rotate3d => {
+                let k = (e.values[reelforge_core::effects::rotate3d::SIZE] / 100.0).clamp(0.0, 4.0);
+                x += layer[0] * (0.5 * k).max(0.25) * kx;
+                y += layer[1] * (0.5 * k).max(0.25) * ky;
+            }
+            EffectKind::Extrusion3d => {
+                use reelforge_core::effects::extrusion as ex;
+                let k = (e.values[ex::SIZE] / 100.0).clamp(0.0, 4.0);
+                let d = e.values[ex::DEPTH].max(0.0) * k;
+                x += (layer[0] * 0.5 * k + d) * kx;
+                y += (layer[1] * 0.5 * k + d) * ky;
+            }
+            EffectKind::Bend => {
+                let k = (e.values[reelforge_core::effects::bend::SIZE] / 100.0).clamp(0.0, 4.0);
+                x += layer[0] * 0.25 * k.max(1.0) * kx;
+                y += layer[1] * 0.25 * k.max(1.0) * ky;
+            }
+            EffectKind::Extrude if e.values[reelforge_core::effects::extrude::TOWARDS] < 0.5 => {
+                use reelforge_core::effects::extrude as xt;
+                let (l, a) = (e.values[xt::LENGTH].max(0.0), e.values[xt::ANGLE].to_radians());
+                x += (a.cos() * l).abs() * kx;
+                y += (a.sin() * l).abs() * ky;
             }
             // The blur reaches 3 sigma, and sigma is half the radius (see `blur`).
             EffectKind::Glow => {

@@ -313,6 +313,8 @@ pub fn views(e: &Editor, c: &Clip) -> Vec<EffectView> {
                     EffectKind::Starfield => Some((reelforge_core::effects::stars::X, "Centre")),
                     EffectKind::Hud => Some((reelforge_core::effects::hud::X, "Centre")),
                     EffectKind::HeatHaze => Some((reelforge_core::effects::haze::X, "Centre")),
+                    EffectKind::Extrude if fx.params.get(reelforge_core::effects::extrude::TOWARDS).is_some_and(|p| p.value >= 0.5) => Some((reelforge_core::effects::extrude::X, "Vanishing point")),
+                    EffectKind::Rotate3d => Some((reelforge_core::effects::rotate3d::X, "Pivot")),
                     EffectKind::BurnAway if fx.params.get(reelforge_core::effects::burn::FROM).is_some_and(|p| p.value >= 5.5) => Some((reelforge_core::effects::burn::X, "Burn point")),
                     k => match k {
                     EffectKind::Shatter => Some("Impact"),

@@ -5079,3 +5079,460 @@ fn fs_deflicker(in: VsOut) -> @location(0) vec4<f32> {
     // (Gains apply to the light, as an exposure change would.)
     return vec4(max(c.rgb * gain, vec3(0.0)), c.a);
 }
+
+// ---- Geometry: the layer as a shape in 3D ----
+// Positions are layer pixels from the layer's middle (x right, y down, z away from
+// the viewer); the camera looks along +z from in front, so the layer's own plane
+// (z = 0) shows pixel for pixel. A field of view of (almost) 0 is flat (orthographic).
+
+// A turn of `deg` degrees round X, then Y, then Z.
+fn geo_turn(deg: vec3<f32>) -> mat3x3<f32> {
+    let a = radians(deg);
+    let cx = cos(a.x);
+    let sx = sin(a.x);
+    let cy = cos(a.y);
+    let sy = sin(a.y);
+    let cz = cos(a.z);
+    let sz = sin(a.z);
+    let rx = mat3x3<f32>(vec3(1.0, 0.0, 0.0), vec3(0.0, cx, sx), vec3(0.0, -sx, cx));
+    let ry = mat3x3<f32>(vec3(cy, 0.0, -sy), vec3(0.0, 1.0, 0.0), vec3(sy, 0.0, cy));
+    let rz = mat3x3<f32>(vec3(cz, sz, 0.0), vec3(-sz, cz, 0.0), vec3(0.0, 0.0, 1.0));
+    return rz * ry * rx;
+}
+
+// The camera's distance for a field of view (degrees) on a layer `h` pixels high
+// (very far for a flat view).
+fn geo_focal(fov: f32, h: f32) -> f32 {
+    if (fov < 0.5) {
+        return 1e7;
+    }
+    return h * 0.5 / tan(radians(min(fov, 170.0)) * 0.5);
+}
+
+// The picture at layer pixel `q` (from the middle); nothing outside the layer.
+fn geo_at(q: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
+    let uv = q / size + 0.5;
+    if (any(uv < vec2(0.0)) || any(uv > vec2(1.0))) {
+        return vec4(0.0);
+    }
+    return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+}
+
+// How much of a pixel `d` pixels inside an edge is covered (a soft edge one pixel wide).
+fn geo_cover(d: f32) -> f32 {
+    return clamp(d + 0.5, 0.0, 1.0);
+}
+
+// Rotate: p0 = (turn x, turn y, turn z, perspective °), p1 = (size %, pivot x %, pivot y %,
+// push back px), p2.x = back (0 the picture, 1 darkened, 2 nothing).
+@fragment
+fn fs_rotate3d(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let f = geo_focal(fx.p0.w, size.y);
+    let k = max(fx.p1.x, 1.0) / 100.0;
+    let pivot = vec3((fx.p1.yz / 100.0 - 0.5) * size, fx.p1.w);
+    let r = geo_turn(fx.p0.xyz);
+    let p = (in.uv - 0.5) * size;
+    // (Flat view: rays straight ahead from each pixel.)
+    var o = vec3(0.0, 0.0, -f);
+    var dir = normalize(vec3(p, f));
+    if (f >= 1e6) {
+        o = vec3(p, -1e4);
+        dir = vec3(0.0, 0.0, 1.0);
+    }
+    let n = r * vec3(0.0, 0.0, -1.0);
+    let den = dot(dir, n);
+    if (abs(den) < 1e-6) {
+        return vec4(0.0);
+    }
+    let t = dot(pivot - o, n) / den;
+    if (t <= 0.0) {
+        return vec4(0.0);
+    }
+    let h = o + dir * t;
+    // Back to the layer: unturned, unscaled, about the pivot.
+    let q = (transpose(r) * (h - pivot)).xy / k + pivot.xy;
+    let edge = min(min(q.x + size.x * 0.5, size.x * 0.5 - q.x), min(q.y + size.y * 0.5, size.y * 0.5 - q.y)) * k * f / max(h.z + f, 1.0);
+    var c = geo_at(clamp(q, -size * 0.5, size * 0.5), size) * geo_cover(edge);
+    if (den > 0.0) {
+        // Its back.
+        let back = u32(round(fx.p2.x));
+        if (back == 2u) {
+            return vec4(0.0);
+        }
+        if (back == 1u) {
+            c = vec4(c.rgb * 0.35, c.a);
+        }
+    }
+    return c;
+}
+
+// Bend: p0 = (bend °, axis: 0 left–right edges, 1 top–bottom, centre %, edges go: 0 away,
+// 1 towards), p1 = (perspective °, shading %, back: 0 picture 1 darkened 2 nothing, size %).
+@fragment
+fn fs_bend(in: VsOut) -> @location(0) vec4<f32> {
+    let size0 = max(fx.extra.zw, vec2(1.0));
+    let across_x = fx.p0.y < 0.5;
+    // Along the bend and across it, whichever way it goes.
+    let size = select(size0.yx, size0, across_x);
+    let p0 = (in.uv - 0.5) * size0;
+    let p = select(p0.yx, p0, across_x);
+    let k = max(fx.p1.w, 1.0) / 100.0;
+    let len = size.x * k;
+    let f = geo_focal(fx.p1.x, size0.y);
+    let flat_view = f >= 1e6;
+    let s = select(1.0, -1.0, fx.p0.w >= 0.5);
+    let theta = radians(fx.p0.x);
+    let c = (fx.p0.z / 100.0 - 0.5) * len;
+    // The sheet at u (from its middle, scaled): where it is (along, z) and its normal.
+    var best_z = 1e9;
+    var best = vec4(0.0);
+    let n_steps = 96;
+    var prev_u = -len * 0.5;
+    var prev_g = 0.0;
+    for (var i = 0; i <= n_steps; i = i + 1) {
+        let u = -len * 0.5 + len * f32(i) / f32(n_steps);
+        let g = bend_screen(u, c, theta, len, s, f, flat_view) - p.x;
+        if (i > 0 && (g == 0.0 || sign(g) != sign(prev_g))) {
+            // Narrow it down.
+            var a = prev_u;
+            var b = u;
+            var ga = prev_g;
+            for (var j = 0; j < 10; j = j + 1) {
+                let m = (a + b) * 0.5;
+                let gm = bend_screen(m, c, theta, len, s, f, flat_view) - p.x;
+                if (sign(gm) == sign(ga)) {
+                    a = m;
+                    ga = gm;
+                } else {
+                    b = m;
+                }
+            }
+            let um = (a + b) * 0.5;
+            let pz = bend_place(um, c, theta, len, s);
+            if (pz.y < best_z) {
+                let persp = select(f / max(f + pz.y, 1.0), 1.0, flat_view);
+                let across = p.y / persp;
+                if (abs(across) <= size.y * k * 0.5 + 1.0) {
+                    let q_al = um / k;
+                    let q_ac = across / k;
+                    let q = select(vec2(q_ac, q_al), vec2(q_al, q_ac), across_x);
+                    var col = geo_at(clamp(q, -size0 * 0.5, size0 * 0.5), size0) * geo_cover((size.y * k * 0.5 - abs(across)) * persp);
+                    // Shading by how the sheet faces the light (from the upper left, in front).
+                    let a_ = bend_angle(um, c, theta, len);
+                    let nrm = vec3(s * sin(a_), 0.0, -cos(a_));
+                    let rd = select(normalize(vec3(p, f)), vec3(0.0, 0.0, 1.0), flat_view);
+                    let front = dot(nrm, rd) < 0.0;
+                    let lit = clamp(dot(select(-nrm, nrm, front), normalize(vec3(-0.35, -0.45, -1.0))), 0.0, 1.0);
+                    let shade = mix(1.0, 0.35 + 0.65 * lit, clamp(fx.p1.y / 100.0, 0.0, 1.0));
+                    col = vec4(col.rgb * shade, col.a);
+                    let back = u32(round(fx.p1.z));
+                    if (!front && back == 2u) {
+                        col = vec4(0.0);
+                    } else if (!front && back == 1u) {
+                        col = vec4(col.rgb * 0.35, col.a);
+                    }
+                    if (col.a > 0.0) {
+                        best_z = pz.y;
+                        best = col;
+                    }
+                }
+            }
+        }
+        prev_u = u;
+        prev_g = g;
+    }
+    return best;
+}
+
+fn bend_angle(u: f32, c: f32, theta: f32, len: f32) -> f32 {
+    return (u - c) * theta / max(len, 1.0);
+}
+
+// The sheet's point at u: (along, z).
+fn bend_place(u: f32, c: f32, theta: f32, len: f32, s: f32) -> vec2<f32> {
+    if (abs(theta) < 1e-4) {
+        return vec2(u, 0.0);
+    }
+    let r = len / theta;
+    let a = (u - c) / r;
+    return vec2(c + r * sin(a), s * r * (1.0 - cos(a)));
+}
+
+// Where the sheet's point at u shows on screen (along).
+fn bend_screen(u: f32, c: f32, theta: f32, len: f32, s: f32, f: f32, flat_view: bool) -> f32 {
+    let pz = bend_place(u, c, theta, len, s);
+    if (flat_view) {
+        return pz.x;
+    }
+    return pz.x * f / max(f + pz.y, 1e-3);
+}
+
+// Bevel: p0 = (width px, edges: 0 the picture's outline 1 the layer's frame, shape: 0 flat
+// 1 round, light angle °), p1 = (light colour, intensity %).
+@fragment
+fn fs_bevel(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let w = max(fx.p0.x, 0.5);
+    let px = (in.uv - 0.5) * size;
+    let round_ = fx.p0.z >= 0.5;
+    var grad = vec2(0.0);
+    if (fx.p0.y >= 0.5) {
+        // The frame: how far in from the nearest edge, exactly.
+        let dl = px.x + size.x * 0.5;
+        let dr = size.x * 0.5 - px.x;
+        let dt = px.y + size.y * 0.5;
+        let db = size.y * 0.5 - px.y;
+        let d = min(min(dl, dr), min(dt, db));
+        var inward = vec2(1.0, 0.0);
+        if (d == dr) {
+            inward = vec2(-1.0, 0.0);
+        } else if (d == dt) {
+            inward = vec2(0.0, 1.0);
+        } else if (d == db) {
+            inward = vec2(0.0, -1.0);
+        }
+        grad = inward * bevel_slope(d / w, round_);
+    } else {
+        // The outline: height from the picture's opacity averaged round each point.
+        let e = max(w / 3.0, 1.0);
+        let hx = bevel_height(px + vec2(e, 0.0), w, size, round_) - bevel_height(px - vec2(e, 0.0), w, size, round_);
+        let hy = bevel_height(px + vec2(0.0, e), w, size, round_) - bevel_height(px - vec2(0.0, e), w, size, round_);
+        grad = vec2(hx, hy) / (2.0 * e);
+    }
+    let n = normalize(vec3(-grad, 1.0));
+    let ang = radians(fx.p0.w);
+    let l = normalize(vec3(cos(ang), -sin(ang), 1.0));
+    let k = (dot(n, l) - l.z) * fx.p1.y / 100.0 * 1.6;
+    let rgb = unpremul(c);
+    let light = rgb_of(fx.p1.x);
+    var out = rgb;
+    if (k > 0.0) {
+        out = rgb + (light - rgb) * clamp(k, 0.0, 1.0);
+    } else {
+        out = rgb * max(1.0 + k, 0.0);
+    }
+    return vec4(out * c.a, c.a);
+}
+
+// The bevel's slope at `h` of the way in (0 the edge, 1 its width in): 45° flat, or a
+// quarter circle (steep at the edge, flat inside).
+fn bevel_slope(h: f32, round_: bool) -> f32 {
+    if (h >= 1.0 || h < 0.0) {
+        return 0.0;
+    }
+    if (!round_) {
+        return 1.0;
+    }
+    let q = 1.0 - h;
+    return min(q / max(sqrt(max(1.0 - q * q, 0.0)), 0.125), 8.0);
+}
+
+// The outline bevel's height (pixels) at `q`: the opacity averaged over a disc as wide
+// as the bevel, from 0.5 at the edge to 1 its width in, through the profile.
+fn bevel_height(q: vec2<f32>, w: f32, size: vec2<f32>, round_: bool) -> f32 {
+    var sum = geo_at(q, size).a;
+    var n = 1.0;
+    for (var ring = 1; ring <= 3; ring = ring + 1) {
+        let r = w * f32(ring) / 3.0;
+        for (var i = 0; i < 8; i = i + 1) {
+            let a = f32(i) * 0.785398 + f32(ring) * 0.39;
+            sum = sum + geo_at(q + vec2(cos(a), sin(a)) * r, size).a;
+            n = n + 1.0;
+        }
+    }
+    let h = clamp((sum / n - 0.5) * 2.0, 0.0, 1.0);
+    if (round_) {
+        let q2 = 1.0 - h;
+        return sqrt(max(1.0 - q2 * q2, 0.0)) * w;
+    }
+    return h * w;
+}
+
+// Extrude: p0 = (length px, towards: 0 a direction 1 a point, direction °, point x %),
+// p1 = (point y %, sides: 0 a darker picture 1 a colour, side colour, shading %),
+// p2.x = fade %.
+@fragment
+fn fs_extrude(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let front = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    if (front.a >= 0.999) {
+        return front;
+    }
+    let len = max(fx.p0.x, 0.0);
+    let p = (in.uv - 0.5) * size;
+    let to_point = fx.p0.y >= 0.5;
+    let vp = (vec2(fx.p0.w, fx.p1.x) / 100.0 - 0.5) * size;
+    let ang = radians(fx.p0.z);
+    let dir = vec2(cos(ang), sin(ang));
+    let fmax = clamp(len / max(length(size) * 0.5, 1.0), 0.0, 0.98);
+    let steps = i32(clamp(ceil(len), 1.0, 256.0));
+    var side = vec4(0.0);
+    for (var i = 1; i <= steps; i = i + 1) {
+        let t = f32(i) / f32(steps);
+        var q = p - dir * len * t;
+        if (to_point) {
+            let fr = fmax * t;
+            q = (p - vp * fr) / max(1.0 - fr, 0.02);
+        }
+        let s = geo_at(q, size);
+        if (s.a > 0.5) {
+            let shade = clamp(fx.p1.w / 100.0, 0.0, 1.0) * (0.4 + 0.6 * t);
+            var rgb = unpremul(s) * (1.0 - shade);
+            if (fx.p1.y >= 0.5) {
+                rgb = rgb_of(fx.p1.z) * (1.0 - shade * 0.6);
+            }
+            let a = 1.0 - clamp(fx.p2.x / 100.0, 0.0, 1.0) * t;
+            side = vec4(rgb * a, a);
+            break;
+        }
+    }
+    return front + side * (1.0 - front.a);
+}
+
+// 3D Extrusion: p0 = (depth px, bevel px, bevel shape: 0 flat 1 round, turn x), p1 = (turn y,
+// turn z, size %, perspective °), p2 = (sides: 0 the picture's edge colours 1 a colour, side
+// colour, light angle °, light height °), p3 = (light %, ambient %, shine %, back: 0 the
+// picture 1 side colour), p4.x = solid above (opacity %).
+@fragment
+fn fs_extrusion3d(in: VsOut) -> @location(0) vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let depth = max(fx.p0.x, 0.0);
+    let bevel = clamp(fx.p0.y, 0.0, depth * 0.5);
+    let round_ = fx.p0.z >= 0.5;
+    let r = geo_turn(vec3(fx.p0.w, fx.p1.x, fx.p1.y));
+    let rt = transpose(r);
+    let k = max(fx.p1.z, 1.0) / 100.0;
+    let f = geo_focal(fx.p1.w, size.y);
+    let flat_view = f >= 1e6;
+    let th = clamp(fx.p4.x / 100.0, 0.01, 0.99);
+    let p = (in.uv - 0.5) * size;
+    // The ray, into the object's own space (unturned about its middle, unscaled).
+    var o = vec3(0.0, 0.0, -f);
+    var dir = normalize(vec3(p, f));
+    if (flat_view) {
+        o = vec3(p, -1e4);
+        dir = vec3(0.0, 0.0, 1.0);
+    }
+    let mid = vec3(0.0, 0.0, depth * 0.5);
+    let oo = rt * (o - mid) / k + mid;
+    let dd = normalize(rt * dir);
+    // Its box.
+    let lo = vec3(-size * 0.5, 0.0);
+    let hi = vec3(size * 0.5, max(depth, 0.01));
+    let inv = 1.0 / select(dd, vec3(1e-6), abs(dd) < vec3(1e-6));
+    let t1 = (lo - oo) * inv;
+    let t2 = (hi - oo) * inv;
+    let tn = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
+    let tf = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
+    if (tf <= max(tn, 0.0)) {
+        return vec4(0.0);
+    }
+    let t0 = max(tn, 0.0);
+    let span = tf - t0;
+    let step = max(span / 192.0, 0.75);
+    let n = i32(min(ceil(span / step), 192.0));
+    var t = t0 + 1e-3;
+    var hit = false;
+    for (var i = 0; i <= n; i = i + 1) {
+        if (ex_solid(oo + dd * t, size, depth, bevel, round_, th)) {
+            hit = true;
+            break;
+        }
+        t = t + step;
+    }
+    if (!hit) {
+        return vec4(0.0);
+    }
+    // Narrow it down.
+    var a = max(t - step, t0);
+    var b = t;
+    for (var j = 0; j < 7; j = j + 1) {
+        let m = (a + b) * 0.5;
+        if (ex_solid(oo + dd * m, size, depth, bevel, round_, th)) {
+            b = m;
+        } else {
+            a = m;
+        }
+    }
+    let q = oo + dd * b;
+    // Which surface: the front or back face, a bevel, or the sides.
+    let ga = vec2(geo_at(q.xy + vec2(1.0, 0.0), size).a - geo_at(q.xy - vec2(1.0, 0.0), size).a, geo_at(q.xy + vec2(0.0, 1.0), size).a - geo_at(q.xy - vec2(0.0, 1.0), size).a);
+    let out2 = select(vec2(0.0), -normalize(ga), length(ga) > 1e-5);
+    let side_n = vec3(out2, 0.0);
+    let face = 0.6;
+    var nrm = side_n;
+    var region = 1; // 0 front, 1 sides, 2 back
+    if (q.z <= face) {
+        nrm = vec3(0.0, 0.0, -1.0);
+        region = 0;
+    } else if (q.z >= depth - face) {
+        nrm = vec3(0.0, 0.0, 1.0);
+        region = 2;
+    } else if (bevel > 0.0 && q.z < bevel) {
+        let w = (bevel - q.z) / bevel;
+        nrm = select(normalize(side_n + vec3(0.0, 0.0, -1.0)), normalize(side_n * sqrt(max(1.0 - w * w, 0.0)) + vec3(0.0, 0.0, -w)), round_);
+        region = 0;
+    } else if (bevel > 0.0 && q.z > depth - bevel) {
+        let w = (q.z - (depth - bevel)) / bevel;
+        nrm = select(normalize(side_n + vec3(0.0, 0.0, 1.0)), normalize(side_n * sqrt(max(1.0 - w * w, 0.0)) + vec3(0.0, 0.0, w)), round_);
+        region = 2;
+    }
+    if (length(nrm) < 0.5) {
+        nrm = select(vec3(0.0, 0.0, -1.0), vec3(0.0, 0.0, 1.0), q.z > depth * 0.5);
+    }
+    // Its colour.
+    let side_col = rgb_of(fx.p2.y);
+    var col = unpremul(geo_at(q.xy - out2 * 1.5, size));
+    if (region == 1 && fx.p2.x >= 0.5) {
+        col = side_col;
+    } else if (region == 2 && fx.p3.w >= 0.5) {
+        col = side_col;
+    }
+    // Lit: ambient, the light, and its highlight.
+    let nw = normalize(r * nrm);
+    let az = radians(fx.p2.z);
+    let el = radians(clamp(fx.p2.w, 0.0, 90.0));
+    let l = normalize(vec3(cos(el) * cos(az), -cos(el) * sin(az), -sin(el)));
+    let v = -dir;
+    let amb = clamp(fx.p3.y / 100.0, 0.0, 1.0);
+    let lit = fx.p3.x / 100.0;
+    // (As bright as the picture where a face looks straight at the viewer, unturned.)
+    let base = amb + (1.0 - amb) * lit * max(-l.z, 0.0);
+    let diffuse = (amb + (1.0 - amb) * lit * max(dot(nw, l), 0.0)) / max(base, 0.2);
+    let spec = fx.p3.z / 100.0 * 0.6 * pow(max(dot(nw, normalize(l + v)), 0.0), 64.0);
+    return vec4(col * diffuse + vec3(spec), 1.0);
+}
+
+// Is object-space point `q` inside the extrusion: inside the picture's shape (opacity
+// above `th`), drawn in near the faces by the bevel?
+fn ex_solid(q: vec3<f32>, size: vec2<f32>, depth: f32, bevel: f32, round_: bool, th: f32) -> bool {
+    if (geo_at(q.xy, size).a < th) {
+        return false;
+    }
+    var e = 0.0;
+    if (bevel > 0.0) {
+        let zf = q.z;
+        let zb = depth - q.z;
+        let z = min(zf, zb);
+        if (z < bevel) {
+            if (round_) {
+                let u = bevel - z;
+                e = bevel - sqrt(max(bevel * bevel - u * u, 0.0));
+            } else {
+                e = bevel - z;
+            }
+        }
+    }
+    if (e < 0.5) {
+        return true;
+    }
+    for (var i = 0; i < 8; i = i + 1) {
+        let a = f32(i) * 0.785398;
+        if (geo_at(q.xy + vec2(cos(a), sin(a)) * e, size).a < th) {
+            return false;
+        }
+    }
+    return true;
+}

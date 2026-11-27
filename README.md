@@ -836,6 +836,29 @@ What works now:
       ahead of it (**Charred edge**), with rising **Embers**. **From**: everywhere at once,
       a side, the middle or **A point** (drag the **Burn point** in the Viewer, or track it).
       **Raggedness**, **Seed**
+  - **3D Extrusion** (Generate): the layer's picture made solid — its shape (wherever it
+    isn't see-through, above **Solid above**) extruded to a **Depth**, with a **Bevel**
+    (flat or round), turned in 3D (**Turn X/Y/Z**, **Size**, **Perspective**), its **Sides**
+    in the picture's edge colours or a **Side colour**, its **Back** the picture or the side
+    colour, and lit (**Light angle**, **Light height**, **Light**, **Ambient**, **Shine**).
+    Logos, titles and cut-outs become solid objects; an unturned front looks just like the
+    picture. Drawn on the graphics card by tracing each pixel's ray through the shape
+  - **Geometry** (a section of its own):
+    - **Bend**: the layer bent like a sheet round a vertical or horizontal axis (**Bends**
+      left and right edges or top and bottom), by up to two turns either way, about a
+      **Centre**, its edges going **Away** or **Towards you**, with **Perspective**,
+      **Shading**, and its **Back** shown as the picture, darkened or not at all. Key Bend
+      to roll it up
+    - **Bevel**: bevelled **Edges** — the picture's outline (logos, cut-outs, text) or the
+      layer's frame — **Width**, **Shape** (flat or round), lit from a **Light angle** in a
+      **Light colour**, at an **Intensity**
+    - **Extrude**: flat-style extrusion, the layer's shape drawn out a **Length** in a
+      **Direction** (the long-shadow look) or towards a vanishing point (drag it in the
+      Viewer), its **Sides** a darker picture or a **Side colour**, with **Shading** and a
+      **Fade**
+    - **Rotate**: the layer turned like a card in 3D (**Turn X/Y/Z**) about a **Pivot**
+      (drag it in the Viewer), with **Perspective**, **Size**, **Push back** and its **Back**
+      shown as the picture, darkened or not at all
   - **Sci-fi pack**:
     - **Starfield** (Generate): stars (**Draw**: **Over the picture**, **On black** or **On its own**, see-through), as a still **Night sky** that twinkles, stars **Drifting past** in any
       **Direction**, or **Warp speed** — stars streaming out of a point (its **Centre**) and

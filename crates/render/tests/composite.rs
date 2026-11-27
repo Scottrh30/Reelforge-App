@@ -3903,3 +3903,69 @@ fn sky_burn_and_colour_effects_draw_what_they_should() {
     assert!(at(&red, 80, 45)[0] > at(&red, 80, 45)[1] + 15, "redder");
     assert_eq!(differ(&draw(&mut c, &grey, EffectKind::Deflicker, &[], 0.0), &grey), 0, "as it was");
 }
+
+/// Geometry and 3D Extrusion: turned, bent, bevelled, extruded and made solid.
+#[test]
+fn geometry_effects_shape_the_layer() {
+    use reelforge_core::effects::{bend, bevel, extrude as xt, extrusion as ex, rotate3d as rt};
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 120, 120, 255]).collect();
+    // A light square in the middle of nothing.
+    let square: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if (60..100).contains(&x) && (25..65).contains(&y) { [200u8, 200, 200, 255] } else { [0, 0, 0, 0] })).collect();
+    let mut key = 9100u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)]| {
+        let v = fx(kind, set);
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let at = |img: &[u8], x: u32, y: u32| px(img, w, x, y);
+    let lum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    let lit = |img: &[u8]| img.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 30).count();
+    let n = (w * h) as usize;
+
+    // Rotate: turned round Y it narrows; turned right round, its back shows (or nothing).
+    let turned = draw(&mut c, &grey, EffectKind::Rotate3d, &[(rt::TURN_Y, 60.0)]);
+    let covered = lit(&turned);
+    assert!(covered > n / 4 && covered < n * 3 / 4, "turned: {covered} of {n}");
+    assert_eq!(lit(&draw(&mut c, &grey, EffectKind::Rotate3d, &[(rt::TURN_Y, 180.0)])), n, "its back, the picture");
+    assert_eq!(lit(&draw(&mut c, &grey, EffectKind::Rotate3d, &[(rt::TURN_Y, 180.0), (rt::BACK, 2.0)])), 0, "its back, nothing");
+    let small = lit(&draw(&mut c, &grey, EffectKind::Rotate3d, &[(rt::TURN_Y, 0.0), (rt::SIZE, 50.0)]));
+    assert!((n / 5..n / 3).contains(&small), "half size: {small}");
+
+    // Bend: its edges curl away, so it covers less; shaded where it turns.
+    let bent = draw(&mut c, &grey, EffectKind::Bend, &[(bend::AMOUNT, 180.0)]);
+    let b = lit(&bent);
+    assert!(b > n / 3 && b < n * 9 / 10, "bent: {b}");
+    assert!(lum(at(&bent, 80, 45)) > 300, "the middle faces the viewer: {:?}", at(&bent, 80, 45));
+
+    // Bevel round the frame: lit from the upper left, shaded lower right, the middle as it was.
+    let bev = draw(&mut c, &grey, EffectKind::Bevel, &[(bevel::EDGES, 1.0), (bevel::WIDTH, 10.0)]);
+    let (tl, br, mid) = (lum(at(&bev, 3, 45)), lum(at(&bev, 156, 45)), lum(at(&bev, 80, 45)));
+    assert!(tl > mid + 30 && br + 30 < mid, "lit {tl}, middle {mid}, shaded {br}");
+    assert_eq!(mid, lum(at(&grey, 80, 45)));
+    // The outline's bevel: on the square's edges, not in its middle or outside it.
+    let sq = draw(&mut c, &square, EffectKind::Bevel, &[(bevel::WIDTH, 8.0)]);
+    assert!(lum(at(&sq, 62, 45)) > lum(at(&square, 62, 45)) && lum(at(&sq, 97, 45)) < lum(at(&square, 97, 45)), "{:?} {:?}", at(&sq, 62, 45), at(&sq, 97, 45));
+    assert_eq!(lum(at(&sq, 80, 45)), lum(at(&square, 80, 45)));
+
+    // Extrude to the right: darker sides past its right edge, nothing on its left.
+    let ext = draw(&mut c, &square, EffectKind::Extrude, &[(xt::LENGTH, 20.0), (xt::ANGLE, 0.0)]);
+    let side = at(&ext, 110, 45);
+    assert!(side[3] == 255 && lum(side) > 60 && lum(side) < lum(at(&square, 80, 45)), "side {side:?}");
+    assert_eq!(lum(at(&ext, 50, 45)), 0);
+    assert_eq!(at(&ext, 80, 45), at(&square, 80, 45), "the front as it was");
+
+    // 3D Extrusion: unturned, its front is the picture; turned, its side shows past the edge.
+    let flat = draw(&mut c, &square, EffectKind::Extrusion3d, &[(ex::TURN_X, 0.0), (ex::TURN_Y, 0.0), (ex::SIZE, 100.0), (ex::BEVEL, 0.0), (ex::SHINE, 0.0)]);
+    let (f, s) = (at(&flat, 80, 45), at(&square, 80, 45));
+    assert!(lum(f).abs_diff(lum(s)) < 12, "front {f:?} vs {s:?}");
+    let solid = draw(&mut c, &square, EffectKind::Extrusion3d, &[(ex::TURN_X, 0.0), (ex::TURN_Y, 50.0), (ex::SIZE, 100.0), (ex::DEPTH, 40.0)]);
+    let widths = |img: &[u8]| (0..w).filter(|&x| at(img, x, 45)[3] > 0 && lum(at(img, x, 45)) > 20).count();
+    assert!(widths(&solid) > 10 && widths(&solid) != widths(&flat), "turned: {} vs {}", widths(&solid), widths(&flat));
+    let nothing: Vec<u8> = vec![0; n * 4];
+    assert_eq!(lit(&draw(&mut c, &nothing, EffectKind::Extrusion3d, &[])), 0, "nothing to extrude");
+}

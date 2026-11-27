@@ -174,6 +174,18 @@ pub enum EffectKind {
     Clouds,
     /// The layer burns away with glowing, charred edges and embers.
     BurnAway,
+    /// The layer's picture made solid: its shape extruded into 3D, bevelled,
+    /// turned and lit.
+    Extrusion3d,
+    /// Bends the layer like a sheet, round a vertical or horizontal axis.
+    Bend,
+    /// Bevelled edges: the picture's outline (or the layer's frame) lit as if raised.
+    Bevel,
+    /// Flat-style extrusion: the layer's shape drawn out in a direction or towards
+    /// a point, its sides shaded.
+    Extrude,
+    /// Turns the layer like a card in 3D, with perspective.
+    Rotate3d,
     /// Evens out flicker: brightness and colour gains, keyed frame by frame by
     /// Deflicker's analysis (Clip menu), or set by hand.
     Deflicker,
@@ -285,6 +297,8 @@ pub enum EffectCategory {
     Simulation,
     /// Patterns made from nothing: fractal noise, lightning.
     Generate,
+    /// The layer as a shape in 3D: bent, bevelled, extruded, turned.
+    Geometry,
     /// Plugins that didn't name a category.
     Plugins,
     /// OpenFX plugins (Sapphire, Neat Video, BorisFX, the OpenFX Misc set…).
@@ -292,7 +306,7 @@ pub enum EffectCategory {
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 10] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
+    pub const ALL: [EffectCategory; 11] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Geometry, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
@@ -303,6 +317,7 @@ impl EffectCategory {
             EffectCategory::Repair => "Repair",
             EffectCategory::Simulation => "Particles & simulation",
             EffectCategory::Generate => "Generate",
+            EffectCategory::Geometry => "Geometry",
             EffectCategory::Plugins => "Other plugins",
             EffectCategory::OpenFx => "OpenFX",
         }
@@ -1355,6 +1370,65 @@ pub mod burn {
     pub const RAGGED: usize = 8;
     pub const EMBERS: usize = 9;
     pub const SEED: usize = 10;
+}
+pub mod extrusion {
+    pub const DEPTH: usize = 0;
+    pub const BEVEL: usize = 1;
+    pub const BEVEL_SHAPE: usize = 2;
+    pub const TURN_X: usize = 3;
+    pub const TURN_Y: usize = 4;
+    pub const TURN_Z: usize = 5;
+    pub const SIZE: usize = 6;
+    pub const FOV: usize = 7;
+    pub const SIDES: usize = 8;
+    pub const SIDE_COLOR: usize = 9;
+    pub const LIGHT_ANGLE: usize = 10;
+    pub const LIGHT_HEIGHT: usize = 11;
+    pub const LIGHT: usize = 12;
+    pub const AMBIENT: usize = 13;
+    pub const SHINE: usize = 14;
+    pub const BACK: usize = 15;
+    pub const THRESHOLD: usize = 16;
+}
+pub mod bend {
+    pub const AMOUNT: usize = 0;
+    pub const AXIS: usize = 1;
+    pub const CENTRE: usize = 2;
+    pub const TOWARDS: usize = 3;
+    pub const FOV: usize = 4;
+    pub const SHADE: usize = 5;
+    pub const BACK: usize = 6;
+    pub const SIZE: usize = 7;
+}
+pub mod bevel {
+    pub const WIDTH: usize = 0;
+    pub const EDGES: usize = 1;
+    pub const SHAPE: usize = 2;
+    pub const LIGHT_ANGLE: usize = 3;
+    pub const LIGHT_COLOR: usize = 4;
+    pub const INTENSITY: usize = 5;
+}
+pub mod extrude {
+    pub const LENGTH: usize = 0;
+    pub const TOWARDS: usize = 1;
+    pub const ANGLE: usize = 2;
+    pub const X: usize = 3;
+    pub const Y: usize = 4;
+    pub const SIDES: usize = 5;
+    pub const SIDE_COLOR: usize = 6;
+    pub const SHADE: usize = 7;
+    pub const FADE: usize = 8;
+}
+pub mod rotate3d {
+    pub const TURN_X: usize = 0;
+    pub const TURN_Y: usize = 1;
+    pub const TURN_Z: usize = 2;
+    pub const FOV: usize = 3;
+    pub const SIZE: usize = 4;
+    pub const X: usize = 5;
+    pub const Y: usize = 6;
+    pub const PUSH: usize = 7;
+    pub const BACK: usize = 8;
 }
 pub mod deflicker {
     pub const BRIGHTNESS: usize = 0;
@@ -2899,6 +2973,65 @@ const BURN: [ParamSpec; 11] = [
     spec("Embers", 50.0, 0.0, 100.0, " %", 0.5),
     spec("Seed", 1.0, 0.0, 9999.0, "", 1.0),
 ];
+const EXTRUSION: [ParamSpec; 17] = [
+    spec("Depth", 60.0, 0.0, 4000.0, " px", 0.5),
+    spec("Bevel", 6.0, 0.0, 400.0, " px", 0.2),
+    choice("Bevel shape", &["Flat", "Round"]),
+    spec("Turn X", -20.0, -3600.0, 3600.0, " °", 0.3),
+    spec("Turn Y", 30.0, -3600.0, 3600.0, " °", 0.3),
+    spec("Turn Z", 0.0, -3600.0, 3600.0, " °", 0.3),
+    spec("Size", 70.0, 1.0, 1000.0, " %", 0.3),
+    spec("Perspective", 35.0, 0.0, 120.0, " °", 0.2),
+    choice("Sides", &["The picture's edge colours", "A colour"]),
+    color("Side colour", 0x8a8f99),
+    spec("Light angle", 135.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Light height", 40.0, 0.0, 90.0, " °", 0.3),
+    spec("Light", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Ambient", 35.0, 0.0, 100.0, " %", 0.3),
+    spec("Shine", 10.0, 0.0, 400.0, " %", 0.5),
+    choice("Back", &["The picture", "Side colour"]),
+    spec("Solid above", 50.0, 1.0, 99.0, " % opacity", 0.3),
+];
+const BEND: [ParamSpec; 8] = [
+    spec("Bend", 90.0, -720.0, 720.0, " °", 0.5),
+    choice("Bends", &["Left and right edges", "Top and bottom edges"]),
+    spec("Centre", 50.0, -100.0, 200.0, " %", 0.2),
+    choice("Edges go", &["Away", "Towards you"]),
+    spec("Perspective", 35.0, 0.0, 120.0, " °", 0.2),
+    spec("Shading", 40.0, 0.0, 100.0, " %", 0.3),
+    choice("Back", &["The picture", "Darkened", "Nothing"]),
+    spec("Size", 100.0, 1.0, 1000.0, " %", 0.3),
+];
+const BEVEL: [ParamSpec; 6] = [
+    spec("Width", 8.0, 0.0, 400.0, " px", 0.2),
+    choice("Edges", &["The picture's outline", "The layer's frame"]),
+    choice("Shape", &["Flat", "Round"]),
+    spec("Light angle", 135.0, -3600.0, 3600.0, " °", 0.5),
+    color("Light colour", 0xffffff),
+    spec("Intensity", 60.0, 0.0, 400.0, " %", 0.5),
+];
+const EXTRUDE: [ParamSpec; 9] = [
+    spec("Length", 30.0, 0.0, 4000.0, " px", 0.5),
+    choice("Towards", &["A direction", "A point"]),
+    spec("Direction", 45.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Point X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Point Y", 50.0, -200.0, 300.0, " %", 0.2),
+    choice("Sides", &["A darker picture", "A colour"]),
+    color("Side colour", 0x30343c),
+    spec("Shading", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Fade", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const ROTATE3D: [ParamSpec; 9] = [
+    spec("Turn X", 0.0, -3600.0, 3600.0, " °", 0.3),
+    spec("Turn Y", 35.0, -3600.0, 3600.0, " °", 0.3),
+    spec("Turn Z", 0.0, -3600.0, 3600.0, " °", 0.3),
+    spec("Perspective", 35.0, 0.0, 120.0, " °", 0.2),
+    spec("Size", 100.0, 1.0, 1000.0, " %", 0.3),
+    spec("Pivot X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Pivot Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Push back", 0.0, -5000.0, 20000.0, " px", 0.5),
+    choice("Back", &["The picture", "Darkened", "Nothing"]),
+];
 const DEFLICKER: [ParamSpec; 6] = [
     spec("Brightness", 100.0, 0.0, 400.0, " %", 0.2),
     spec("Red", 100.0, 0.0, 400.0, " %", 0.2),
@@ -3603,7 +3736,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 112] = [
+    pub const ALL: [EffectKind; 117] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -3716,6 +3849,11 @@ impl EffectKind {
         EffectKind::Clouds,
         EffectKind::BurnAway,
         EffectKind::Deflicker,
+        EffectKind::Extrusion3d,
+        EffectKind::Bend,
+        EffectKind::Bevel,
+        EffectKind::Extrude,
+        EffectKind::Rotate3d,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -3730,6 +3868,7 @@ impl EffectKind {
             EffectKind::AnamorphicFlare => (streak::X, streak::Y, "light"),
             EffectKind::Hud => (hud::X, hud::Y, "centre"),
             EffectKind::BurnAway => (burn::X, burn::Y, "burn point"),
+            EffectKind::Extrude => (extrude::X, extrude::Y, "vanishing point"),
             _ => return None,
         })
     }
@@ -3805,6 +3944,11 @@ impl EffectKind {
             EffectKind::Nebula => "Nebula",
             EffectKind::Clouds => "Clouds",
             EffectKind::BurnAway => "Burn away",
+            EffectKind::Extrusion3d => "3D Extrusion",
+            EffectKind::Bend => "Bend",
+            EffectKind::Bevel => "Bevel",
+            EffectKind::Extrude => "Extrude",
+            EffectKind::Rotate3d => "Rotate",
             EffectKind::Deflicker => "Deflicker",
             EffectKind::Hologram => "Hologram",
             EffectKind::Portal => "Portal",
@@ -3887,6 +4031,8 @@ impl EffectKind {
             EffectKind::Aurora | EffectKind::Nebula | EffectKind::Clouds => EffectCategory::Generate,
             EffectKind::GradientMap => EffectCategory::Color,
             EffectKind::BurnAway => EffectCategory::Stylize,
+            EffectKind::Extrusion3d => EffectCategory::Generate,
+            EffectKind::Bend | EffectKind::Bevel | EffectKind::Extrude | EffectKind::Rotate3d => EffectCategory::Geometry,
             EffectKind::Deflicker => EffectCategory::Repair,
             EffectKind::Hologram => EffectCategory::Stylize,
             EffectKind::Portal => EffectCategory::Generate,
@@ -3967,6 +4113,11 @@ impl EffectKind {
             EffectKind::Aurora => "The northern lights: glowing curtains of colour rippling across the sky, green at the foot fading to purple above, with fine rays, as many curtains as you like. Over the picture, on black, or on its own to put behind something.",
             EffectKind::Nebula => "Space: swirling clouds of coloured gas with a glowing heart, dark lanes of dust and stars, slowly turning if you like. Over the picture, on black, or on its own.",
             EffectKind::Clouds => "Soft clouds: a sky of them drifting by (choose the wind's direction and speed), or flying forwards through them. Over the picture, with a sky of their own, or on their own to put behind something.",
+            EffectKind::Extrusion3d => "Makes the layer's picture solid: its shape (where it isn't see-through) extruded into 3D to a Depth, with bevelled edges, its sides in the picture's edge colours or a colour of their own, turned in 3D with perspective and lit by a light you place. Logos, titles and cut-outs become solid objects; key the turns to spin them.",
+            EffectKind::Bend => "Bends the layer like a sheet of paper round a vertical or horizontal axis, curling its edges away (or towards you) with perspective and shading. Key Bend to roll it up or unroll it.",
+            EffectKind::Bevel => "Bevelled edges: the picture's outline (a logo or a cut-out) or the layer's whole frame lit as if raised, bright on the side towards the light and shaded on the other.",
+            EffectKind::Extrude => "Flat-style extrusion: the layer's shape drawn out in a direction (a long-shadow look) or towards a vanishing point, with its sides in a darker shade of the picture or a colour of their own.",
+            EffectKind::Rotate3d => "Turns the layer like a card in 3D, round X, Y and Z about a point you choose, with perspective; its back can show the picture, darkened, or nothing. Key the turns to flip or spin it.",
             EffectKind::BurnAway => "The layer burns away like paper: a ragged front of glowing embers and charred edges sweeps across it (everywhere at once, from a side, the middle or a point you place) as Burnt goes from 0 to 100 %. Key Burnt to animate it.",
             EffectKind::Deflicker => "Evens out flicker in timelapses and under flickering lights. To analyse the clip, right-click it and choose Deflicker (or Timeline → Deflicker selected clip): it keys Brightness (and Red, Green and Blue) frame by frame to follow its brightness, smoothed over the frames you choose. Or set them by hand.",
             EffectKind::Starfield => "Stars: a night sky that twinkles, stars drifting past in layers (nearer ones faster), or the jump to warp speed, stars streaking out from a point you place. Over the picture, on black, or on their own to put behind something.",
@@ -4120,6 +4271,11 @@ impl EffectKind {
             EffectKind::Nebula => &NEBULA,
             EffectKind::Clouds => &CLOUDS,
             EffectKind::BurnAway => &BURN,
+            EffectKind::Extrusion3d => &EXTRUSION,
+            EffectKind::Bend => &BEND,
+            EffectKind::Bevel => &BEVEL,
+            EffectKind::Extrude => &EXTRUDE,
+            EffectKind::Rotate3d => &ROTATE3D,
             EffectKind::Deflicker => &DEFLICKER,
             EffectKind::Hologram => &HOLOGRAM,
             EffectKind::Portal => &PORTAL,
@@ -4220,6 +4376,8 @@ impl EffectKind {
             EffectKind::AnamorphicFlare => &[(0, "Streaks"), (7, "Light")],
             EffectKind::Clouds => &[(0, "Clouds"), (6, "Colours"), (10, "Draw")],
             EffectKind::BurnAway => &[(0, "Burn"), (4, "Edge"), (9, "Embers")],
+            EffectKind::Extrusion3d => &[(0, "Shape"), (3, "Turn"), (8, "Surface"), (10, "Light")],
+            EffectKind::Rotate3d => &[(0, "Turn"), (3, "View"), (5, "Pivot")],
             EffectKind::Deflicker => &[(0, "Gains"), (4, "Analysis")],
             EffectKind::PatchReplacer => &[(0, "Target"), (2, "Source"), (4, "Shape"), (9, "Fill")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
@@ -4343,6 +4501,11 @@ impl EffectValues {
             EffectKind::Nebula => v[nebula::BRIGHTNESS] == 0.0 && v[nebula::DRAW] == 0.0,
             EffectKind::Clouds => (v[clouds::COVERAGE] == 0.0 || v[clouds::BRIGHTNESS] == 0.0) && v[clouds::DRAW] == 0.0,
             EffectKind::BurnAway => v[burn::PROGRESS] <= 0.0 && v[burn::FROM] >= 1.0,
+            EffectKind::Extrusion3d => false,
+            EffectKind::Bend => v[bend::AMOUNT] == 0.0 && v[bend::SIZE] == 100.0,
+            EffectKind::Bevel => v[bevel::WIDTH] <= 0.0 || v[bevel::INTENSITY] == 0.0,
+            EffectKind::Extrude => v[extrude::LENGTH] <= 0.0,
+            EffectKind::Rotate3d => v[rotate3d::TURN_X] == 0.0 && v[rotate3d::TURN_Y] == 0.0 && v[rotate3d::TURN_Z] == 0.0 && v[rotate3d::SIZE] == 100.0 && v[rotate3d::PUSH] == 0.0,
             EffectKind::Deflicker => v[deflicker::BRIGHTNESS] == 100.0 && v[deflicker::RED] == 100.0 && v[deflicker::GREEN] == 100.0 && v[deflicker::BLUE] == 100.0,
             EffectKind::Hologram => false,
             EffectKind::Portal => v[portal::OPEN] == 0.0,

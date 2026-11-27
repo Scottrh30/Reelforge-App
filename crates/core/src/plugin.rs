@@ -187,6 +187,7 @@ fn category_of(s: &str) -> EffectCategory {
         "distort" | "distortion" | "warp" => EffectCategory::Distort,
         "repair" | "restoration" | "cleanup" => EffectCategory::Repair,
         "generate" | "generator" | "render" | "noise" => EffectCategory::Generate,
+        "geometry" | "3d" | "perspective" => EffectCategory::Geometry,
         _ => EffectCategory::Plugins,
     }
 }

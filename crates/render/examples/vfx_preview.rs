@@ -71,6 +71,26 @@ fn cutout() -> Vec<u8> {
     v
 }
 
+/// A logo: a thick ring and a bar through it, in the picture's colours, on nothing.
+fn logo() -> Vec<u8> {
+    let mut v = picture();
+    for y in 0..H {
+        for x in 0..W {
+            let (dx, dy) = ((x as f32 - W as f32 / 2.0) / H as f32, (y as f32 - H as f32 / 2.0) / H as f32);
+            let r = (dx * dx + dy * dy).sqrt();
+            let ring = (0.18..0.3).contains(&r);
+            let bar = dx.abs() < 0.36 && dy.abs() < 0.05;
+            let i = ((y * W + x) * 4) as usize;
+            if !(ring || bar) {
+                v[i + 3] = 0;
+            } else if bar {
+                v[i..i + 4].copy_from_slice(&[230, 120, 40, 255]);
+            }
+        }
+    }
+    v
+}
+
 /// A shot: its name, the effect, the settings changed, and the time (s).
 type Shot = (&'static str, EffectKind, Vec<(usize, f32)>, f32);
 
@@ -169,6 +189,19 @@ fn shots() -> Vec<Shot> {
         ("new-burn-30", EffectKind::BurnAway, vec![(burn::PROGRESS, 30.0)], 1.0),
         ("new-burn-left", EffectKind::BurnAway, vec![(burn::PROGRESS, 55.0), (burn::FROM, 1.0)], 1.0),
         ("new-burn-mid", EffectKind::BurnAway, vec![(burn::PROGRESS, 45.0), (burn::FROM, 5.0)], 1.0),
+        ("geo-logo-extrusion", EffectKind::Extrusion3d, vec![], 0.0),
+        ("geo-logo-extrusion-round", EffectKind::Extrusion3d, vec![(extrusion::DEPTH, 120.0), (extrusion::BEVEL, 14.0), (extrusion::BEVEL_SHAPE, 1.0), (extrusion::TURN_Y, 55.0), (extrusion::TURN_X, -10.0), (extrusion::SIDES, 1.0)], 0.0),
+        ("geo-extrusion-picture", EffectKind::Extrusion3d, vec![(extrusion::DEPTH, 40.0), (extrusion::SIZE, 60.0)], 0.0),
+        ("geo-rotate", EffectKind::Rotate3d, vec![], 0.0),
+        ("geo-rotate-x", EffectKind::Rotate3d, vec![(rotate3d::TURN_X, 50.0), (rotate3d::TURN_Y, 0.0), (rotate3d::SIZE, 80.0)], 0.0),
+        ("geo-bend", EffectKind::Bend, vec![], 0.0),
+        ("geo-bend-roll", EffectKind::Bend, vec![(bend::AMOUNT, 300.0), (bend::CENTRE, 20.0), (bend::SIZE, 70.0)], 0.0),
+        ("geo-bend-top", EffectKind::Bend, vec![(bend::AMOUNT, -120.0), (bend::AXIS, 1.0)], 0.0),
+        ("geo-logo-bevel", EffectKind::Bevel, vec![(bevel::WIDTH, 12.0)], 0.0),
+        ("geo-logo-bevel-round", EffectKind::Bevel, vec![(bevel::WIDTH, 16.0), (bevel::SHAPE, 1.0), (bevel::INTENSITY, 100.0)], 0.0),
+        ("geo-bevel-frame", EffectKind::Bevel, vec![(bevel::EDGES, 1.0), (bevel::WIDTH, 20.0)], 0.0),
+        ("geo-logo-extrude", EffectKind::Extrude, vec![(extrude::LENGTH, 60.0)], 0.0),
+        ("geo-logo-extrude-point", EffectKind::Extrude, vec![(extrude::LENGTH, 120.0), (extrude::TOWARDS, 1.0), (extrude::Y, 10.0), (extrude::SIDES, 1.0)], 0.0),
         ("new-deflicker", EffectKind::Deflicker, vec![(deflicker::BRIGHTNESS, 150.0), (deflicker::BLUE, 80.0)], 0.0),
         ("hud-brackets", EffectKind::Hud, vec![(hud::ELEMENT, 4.0)], 0.5),
         ("cut-sweep", EffectKind::LightSweep, vec![(sweep::BRIGHTNESS, 250.0), (sweep::SECOND, 50.0)], 0.45),
@@ -246,6 +279,7 @@ fn main() {
     let mut c = Compositor::new(&device, &queue);
     let px = picture();
     let cut = cutout();
+    let lg = logo();
     let land = landscape();
     let rm = room();
     for (n, (name, kind, set, t)) in shots().into_iter().enumerate() {
@@ -270,7 +304,7 @@ fn main() {
         let layer = LayerInput {
             key: n as u64 + 1,
             content_id: n as u64 + 1,
-            pixels: PixelData::Rgba(if name.contains("cut") { &cut } else if name.contains("land") { &land } else if name.contains("room") { &rm } else { &px }),
+            pixels: PixelData::Rgba(if name.contains("logo") { &lg } else if name.contains("cut") { &cut } else if name.contains("land") { &land } else if name.contains("room") { &rm } else { &px }),
             pixel_size: [W, H],
             layer_size: [W as f32, H as f32],
             transform: Transform::default(),
