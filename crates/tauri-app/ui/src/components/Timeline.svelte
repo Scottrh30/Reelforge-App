@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { importModel } from "../lib/modeldialog.svelte";
   import { untrack } from "svelte";
   import { app, run, tps, fps, timecode, shortTime, snapToFrame, say } from "../lib/session.svelte";
   import { MIN_DB, MAX_DB, volKeys, volumeAt, setVolKey, clampedFades, fadeCurve, tidyDb, dbText, dbGain } from "../lib/audio";
@@ -1257,7 +1258,7 @@
     onchange={(e) => {
       const v = e.currentTarget.value as "layer" | "light" | "point" | "camera" | "adjustment" | "model" | "";
       e.currentTarget.value = "";
-      if (v === "model") run(api.add3dModel());
+      if (v === "model") importModel();
       else if (v) run(api.addNew(v));
     }}
   >

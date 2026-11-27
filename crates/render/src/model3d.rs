@@ -67,7 +67,7 @@ pub struct Picture {
 /// A model's textures packed side by side in one RGBA8 (sRGB) picture, each
 /// shrunk to at most `ATLAS_TEXTURE` across, and where each one went (x, y,
 /// width, height as fractions of the atlas).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Atlas {
     pub width: u32,
     pub height: u32,
@@ -139,6 +139,48 @@ fn part_index(parts: &mut Vec<String>, name: &str) -> u16 {
             (parts.len() - 1).min(u16::MAX as usize) as u16
         }
     }
+}
+
+/// The model's textures with more pictures added (each a part's own picture,
+/// from 3D Model Properties): the new atlas, and each added picture's index
+/// in it (`None` where it couldn't be read). Its own textures keep their
+/// indices.
+pub fn atlas_with(m: &Model, files: &[&Path]) -> (Option<Atlas>, Vec<Option<i16>>) {
+    // Its textures back out of the atlas, as they were packed.
+    let mut pics: Vec<Picture> = Vec::new();
+    if let Some(a) = &m.atlas {
+        for r in &a.rects {
+            let (x, y) = ((r[0] * a.width as f32).round() as u32, (r[1] * a.height as f32).round() as u32);
+            let (w, h) = (((r[2] * a.width as f32).round() as u32).max(1), ((r[3] * a.height as f32).round() as u32).max(1));
+            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+            for yy in y..y + h {
+                let row = ((yy.min(a.height.saturating_sub(1)) * a.width + x.min(a.width.saturating_sub(1))) * 4) as usize;
+                let end = row + (w.min(a.width.saturating_sub(x)) * 4) as usize;
+                let mut line = a.rgba.get(row..end).unwrap_or(&[]).to_vec();
+                line.resize((w * 4) as usize, 0);
+                rgba.extend(line);
+            }
+            pics.push(Picture { width: w, height: h, rgba });
+        }
+    }
+    let own = pics.len();
+    let mut index = Vec::with_capacity(files.len());
+    for f in files {
+        match image::open(f) {
+            Ok(img) => {
+                // (Shrunk on reading: the atlas keeps none bigger.)
+                let img = if img.width().max(img.height()) > ATLAS_TEXTURE { img.thumbnail(ATLAS_TEXTURE, ATLAS_TEXTURE) } else { img };
+                let rgba = img.to_rgba8();
+                index.push(i16::try_from(pics.len()).ok());
+                pics.push(Picture { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() });
+            }
+            Err(_) => index.push(None),
+        }
+    }
+    if pics.len() == own {
+        return (m.atlas.as_deref().cloned(), index);
+    }
+    (pack_atlas(&pics), index)
 }
 
 /// Pack `pics` into one atlas: shelves, tallest first, each texture shrunk
@@ -1177,6 +1219,81 @@ pub fn cached(src: &reelforge_core::ModelSource) -> Loaded {
     }
     c.push((key, v.clone()));
     v
+}
+
+/// A model for 3D Model Properties' preview: its triangles (every `k`th, if
+/// there are more than `max_triangles`), each vertex's part, colour, texture
+/// place and coordinates, the parts' names and average colours (sRGB), and its
+/// textures — with the parts' own pictures in `src` — as a PNG.
+pub struct Preview {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub colors: Vec<[f32; 4]>,
+    pub uvs: Vec<[f32; 2]>,
+    /// Where each vertex's texture is in the atlas (width 0: none).
+    pub rects: Vec<[f32; 4]>,
+    pub parts_of: Vec<u16>,
+    pub indices: Vec<u32>,
+    pub parts: Vec<(String, [u8; 3], bool)>,
+    /// All its triangles (before any were left out for the preview).
+    pub triangles: usize,
+    pub z_up: bool,
+    pub atlas_png: Option<Vec<u8>>,
+    pub missing_textures: Vec<String>,
+}
+
+pub fn preview(src: &reelforge_core::ModelSource, max_triangles: usize) -> Result<Preview, String> {
+    let m = cached(src)?;
+    let n = m.positions.len();
+    let maps: Vec<(usize, &Path)> = m.parts.iter().enumerate().filter_map(|(i, name)| Some((i, src.materials.iter().find(|l| &l.part == name)?.diffuse_map.as_deref()?))).collect();
+    let (atlas, map_tex) = if maps.is_empty() {
+        (m.atlas.as_deref().cloned(), Vec::new())
+    } else {
+        let files: Vec<&Path> = maps.iter().map(|(_, f)| *f).collect();
+        let (a, idx) = atlas_with(&m, &files);
+        let mut by_part = vec![None; m.parts.len()];
+        for ((part, _), t) in maps.iter().zip(idx) {
+            if let Some(slot) = by_part.get_mut(*part) {
+                *slot = t;
+            }
+        }
+        (a, by_part)
+    };
+    let rect_list = atlas.as_ref().map(|a| a.rects.clone()).unwrap_or_default();
+    let mut rects = Vec::with_capacity(n);
+    let mut uvs = Vec::with_capacity(n);
+    let mut parts_of = Vec::with_capacity(n);
+    let mut sums = vec![([0.0f64; 3], 0usize, false); m.parts.len()];
+    for i in 0..n {
+        let x = m.extra.get(i).copied().unwrap_or(VExtra::NONE);
+        let tex = map_tex.get(x.part as usize).copied().flatten().unwrap_or(x.tex);
+        rects.push(if tex >= 0 { rect_list.get(tex as usize).copied().unwrap_or([0.0; 4]) } else { [0.0; 4] });
+        uvs.push(x.uv);
+        parts_of.push(x.part);
+        if let (Some(s), Some(c)) = (sums.get_mut(x.part as usize), m.colors.get(i)) {
+            for (sum, v) in s.0.iter_mut().zip(c) {
+                *sum += *v as f64;
+            }
+            s.1 += 1;
+            s.2 |= x.tex >= 0;
+        }
+    }
+    let to_srgb = |v: f64| {
+        let v = v.clamp(0.0, 1.0);
+        let s = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0).round() as u8
+    };
+    let parts = m.parts.iter().zip(&sums).map(|(name, (s, c, t))| (name.clone(), s.map(|v| to_srgb(v / (*c).max(1) as f64)), *t)).collect();
+    let triangles = m.indices.len() / 3;
+    let step = triangles.div_ceil(max_triangles.max(1)).max(1);
+    let indices: Vec<u32> = if step == 1 { m.indices.clone() } else { m.indices.chunks_exact(3).step_by(step).flatten().copied().collect() };
+    let atlas_png = atlas.and_then(|a| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        let img = image::RgbaImage::from_raw(a.width, a.height, a.rgba)?;
+        img.write_to(&mut out, image::ImageFormat::Png).ok()?;
+        Some(out.into_inner())
+    });
+    Ok(Preview { positions: m.positions.clone(), normals: m.normals.clone(), colors: m.colors.clone(), uvs, rects, parts_of, indices, parts, triangles, z_up: m.z_up, atlas_png, missing_textures: m.missing_textures.clone() })
 }
 
 #[cfg(test)]

@@ -127,6 +127,8 @@ struct VsOut {
     @location(3) color: vec4<f32>,
     @location(4) uv: vec2<f32>,
     @location(5) rect: vec4<f32>,
+    @location(6) spec: vec4<f32>,
+    @location(7) glow: vec4<f32>,
 };
 
 // A 3D model's textures, packed in one picture (white for everything else).
@@ -134,7 +136,7 @@ struct VsOut {
 @group(3) @binding(1) var model_sampler: sampler;
 
 @vertex
-fn vs_solid(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) part: f32, @location(3) color: vec4<f32>, @location(4) uv: vec2<f32>, @location(5) rect: vec4<f32>) -> VsOut {
+fn vs_solid(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) part: f32, @location(3) color: vec4<f32>, @location(4) uv: vec2<f32>, @location(5) rect: vec4<f32>, @location(6) spec: vec4<f32>, @location(7) glow: vec4<f32>) -> VsOut {
     var o: VsOut;
     o.pos = u.mvp * vec4(p, 1.0);
     o.world = u.axes[3].xyz + u.axes[0].xyz * p.x + u.axes[1].xyz * p.y + u.axes[2].xyz * p.z;
@@ -143,6 +145,8 @@ fn vs_solid(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) p
     o.color = color;
     o.uv = uv;
     o.rect = rect;
+    o.spec = spec;
+    o.glow = glow;
     return o;
 }
 
@@ -198,6 +202,47 @@ fn scene_light(p: vec3<f32>, n: vec3<f32>, grain: f32) -> vec3<f32> {
     return sum;
 }
 
+// Highlights (Blinn-Phong) from the scene's lights on world point `p` facing `n`,
+// seen along `v`, with `shine` tightness (lights' reach as in `scene_light`,
+// without shadows).
+fn scene_highlights(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, shine: f32) -> vec3<f32> {
+    var sum = vec3(0.0);
+    let count = u32(u.camera.w);
+    for (var i = 0u; i < count; i = i + 1u) {
+        let b = i * 4u;
+        let kind = u.lights[b].w;
+        if (kind > 2.5) {
+            continue;
+        }
+        let dir = u.lights[b + 1u].xyz;
+        var l = -dir;
+        var atten = 1.0;
+        if (kind < 1.5) {
+            let d = u.lights[b].xyz - p;
+            let dist = max(length(d), 1e-3);
+            l = d / dist;
+            let falloff = u.lights[b + 1u].w;
+            let radius = u.lights[b + 2u].w;
+            if (falloff > 0.5 && falloff < 1.5) {
+                let k = clamp(1.0 - dist / radius, 0.0, 1.0);
+                atten = k * k;
+            } else if (falloff > 1.5) {
+                atten = radius * radius / (radius * radius + dist * dist) * 2.0;
+            }
+            if (kind > 0.5) {
+                let cone = u.lights[b + 3u].xy;
+                atten = atten * smoothstep(cone.x, max(cone.y, cone.x + 1e-4), dot(-l, dir));
+            }
+        }
+        if (dot(n, l) <= 0.0) {
+            continue;
+        }
+        let h = normalize(l + v);
+        sum = sum + u.lights[b + 2u].xyz * pow(max(dot(n, h), 0.0), shine) * atten;
+    }
+    return sum;
+}
+
 @fragment
 fn fs_solid(in: VsOut) -> @location(0) vec4<f32> {
     var n = normalize(in.normal);
@@ -230,6 +275,20 @@ fn fs_solid(in: VsOut) -> @location(0) vec4<f32> {
         light = vec3(min(a + (1.0 - a) * max(dot(n, u.studio.xyz), 0.0), 1.0));
     }
     var rgb = c.rgb * light;
+    if (in.part > 2.5) {
+        // A model part's highlights and its own light.
+        if (max(in.spec.r, max(in.spec.g, in.spec.b)) > 0.0) {
+            let v = normalize(u.camera.xyz - in.world);
+            var hl = vec3(0.0);
+            if (u.camera.w > 0.5) {
+                hl = scene_highlights(in.world, n, v, in.spec.w);
+            } else {
+                hl = vec3(pow(max(dot(n, normalize(u.studio.xyz + v)), 0.0), in.spec.w));
+            }
+            rgb = rgb + in.spec.rgb * hl;
+        }
+        rgb = rgb + in.glow.rgb;
+    }
     if (u.env.y > 0.0) {
         // Shiny: the environment reflected, more so at grazing angles.
         let v = normalize(u.camera.xyz - in.world);

@@ -1118,6 +1118,13 @@ export const api = {
   add3dText: () => invoke("add_3d_text"),
   add3dLogo: () => invoke("add_3d_logo"),
   add3dModel: () => invoke("add_3d_model"),
+  pickModelFile: () => invoke<string | null>("pick_model_file"),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  modelPreview: (source: any) => invoke<ArrayBuffer>("model_preview", { source }),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  addModelLayer: (source: any, name: string) => invoke("add_model_layer", { source, name }),
+  pickMapFile: () => invoke<string | null>("pick_map_file"),
+  pickTextureFolder: () => invoke<string | null>("pick_texture_folder"),
   shapeFromMask: (id: number, index: number) => invoke("shape_from_mask", { id, index }),
   addBladeLayer: () => invoke("add_blade_layer"),
   addParticlesLayer: () => invoke("add_particles_layer"),

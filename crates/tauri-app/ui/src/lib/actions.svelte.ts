@@ -1,5 +1,6 @@
 // Things the menus, buttons and shortcuts do, in one place so they behave the same everywhere.
 
+import { importModel } from "./modeldialog.svelte";
 import { api } from "./api";
 import { app, run, say } from "./session.svelte";
 import { prefsDialog } from "./prefs.svelte";
@@ -73,7 +74,7 @@ export const actions = {
   addTitle: () => run(api.addTitle()),
   add3dText: () => run(api.add3dText()),
   add3dLogo: () => run(api.add3dLogo()),
-  add3dModel: () => run(api.add3dModel()),
+  add3dModel: () => importModel(),
   exportOpen() {
     app.exportOpen = true;
   },

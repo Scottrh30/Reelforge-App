@@ -34,6 +34,10 @@ pub struct Vertex {
     /// atlas (x, y, width, height; width 0: no texture).
     pub uv: [f32; 2],
     pub rect: [f32; 4],
+    /// A model part's highlights: linear colour (black: none), and shininess.
+    pub spec: [f32; 4],
+    /// A model part's own light (linear; w unused).
+    pub glow: [f32; 4],
 }
 
 pub const PART_FRONT: f32 = 0.0;
@@ -354,7 +358,31 @@ fn model_mesh(spec: &TitleSpec, src: &reelforge_core::ModelSource, id: u64) -> T
         if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
     };
     let overrides: Vec<Option<[f32; 4]>> = m.parts.iter().map(|name| src.part_colours.iter().find(|(p, _)| p == name).map(|(_, c)| [lin(c[0]), lin(c[1]), lin(c[2]), 1.0])).collect();
-    let rects = m.atlas.as_ref().map(|a| a.rects.as_slice()).unwrap_or(&[]);
+    // Each part's surface (3D Model Properties), and the pictures of their own.
+    let looks: Vec<reelforge_core::PartLook> = m.parts.iter().map(|name| src.look(name)).collect();
+    let maps: Vec<(usize, &std::path::Path)> = looks.iter().enumerate().filter_map(|(i, l)| Some((i, l.diffuse_map.as_deref()?))).collect();
+    let (atlas, map_tex): (Option<Arc<crate::model3d::Atlas>>, Vec<Option<i16>>) = if maps.is_empty() {
+        (m.atlas.clone(), Vec::new())
+    } else {
+        let files: Vec<&std::path::Path> = maps.iter().map(|(_, f)| *f).collect();
+        let (a, idx) = crate::model3d::atlas_with(&m, &files);
+        let mut by_part = vec![None; m.parts.len()];
+        for ((part, _), t) in maps.iter().zip(idx) {
+            if let Some(slot) = by_part.get_mut(*part) {
+                *slot = t;
+            }
+        }
+        (a.map(Arc::new), by_part)
+    };
+    let rects = atlas.as_ref().map(|a| a.rects.as_slice()).unwrap_or(&[]);
+    let surface: Vec<([f32; 4], [f32; 4], f32)> = looks
+        .iter()
+        .map(|l| {
+            let shine = if l.shininess.is_finite() { l.shininess.clamp(1.0, 200.0) } else { 30.0 };
+            let opacity = if l.opacity.is_finite() { (l.opacity / 100.0).clamp(0.0, 1.0) } else { 1.0 };
+            ([lin(l.specular[0]), lin(l.specular[1]), lin(l.specular[2]), shine], [lin(l.emissive[0]), lin(l.emissive[1]), lin(l.emissive[2]), 0.0], opacity)
+        })
+        .collect();
     let vertices: Vec<Vertex> = pts
         .iter()
         .enumerate()
@@ -362,14 +390,36 @@ fn model_mesh(spec: &TitleSpec, src: &reelforge_core::ModelSource, id: u64) -> T
         .zip(&m.colors)
         .map(|(((i, p), n), col)| {
             let x = m.extra.get(i).copied().unwrap_or_default();
-            let over = overrides.get(x.part as usize).copied().flatten();
-            let rect = if over.is_none() && x.tex >= 0 { rects.get(x.tex as usize).copied().unwrap_or([0.0; 4]) } else { [0.0; 4] };
-            Vertex { pos: [(p[0] - c[0]) * k, (p[1] - c[1]) * k, (p[2] - c[2]) * k], normal: axes(*n), part: if own { PART_OWN } else { PART_FRONT }, color: over.unwrap_or(*col), uv: x.uv, rect }
+            let part = x.part as usize;
+            let over = overrides.get(part).copied().flatten();
+            // A picture of its own wins; then a colour of its own (no texture); then the file's texture.
+            let tex = match map_tex.get(part).copied().flatten() {
+                Some(t) => t,
+                None if over.is_some() => -1,
+                None => x.tex,
+            };
+            let rect = if tex >= 0 { rects.get(tex as usize).copied().unwrap_or([0.0; 4]) } else { [0.0; 4] };
+            let (spec, glow, opacity) = if own { surface.get(part).copied().unwrap_or(([0.0; 4], [0.0; 4], 1.0)) } else { ([0.0; 4], [0.0; 4], 1.0) };
+            let mut color = over.unwrap_or(*col);
+            if map_tex.get(part).copied().flatten().is_some() {
+                // (A picture shows as it is, not tinted by the file's colour.)
+                color = [1.0, 1.0, 1.0, color[3]];
+            }
+            color[3] *= opacity;
+            Vertex { pos: [(p[0] - c[0]) * k, (p[1] - c[1]) * k, (p[2] - c[2]) * k], normal: axes(*n), part: if own { PART_OWN } else { PART_FRONT }, color, uv: x.uv, rect, spec, glow }
         })
         .collect();
+    // Hidden parts' triangles left out.
+    let hidden: Vec<bool> = m.parts.iter().map(|p| src.hidden.iter().any(|h| h == p)).collect();
+    let indices: Vec<u32> = if hidden.iter().any(|h| *h) {
+        let shown = |v: u32| !m.extra.get(v as usize).is_some_and(|x| hidden.get(x.part as usize).copied().unwrap_or(false));
+        m.indices.chunks_exact(3).filter(|t| t.iter().all(|&v| shown(v))).flatten().copied().collect()
+    } else {
+        m.indices.clone()
+    };
     let bounds = [(lo[0] - c[0]) * k, (lo[1] - c[1]) * k, (hi[0] - c[0]) * k, (hi[1] - c[1]) * k];
-    let atlas = if own { m.atlas.clone() } else { None };
-    TextMesh { vertices, indices: m.indices.clone(), id, bounds, depth: ext[2] * k, mid_z: 0.0, atlas }
+    let atlas = if own { atlas } else { None };
+    TextMesh { vertices, indices, id, bounds, depth: ext[2] * k, mid_z: 0.0, atlas }
 }
 
 fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
@@ -412,7 +462,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
         if ok.is_ok() {
             for (z, normal, part) in [(0.0, [0.0, 0.0, -1.0], PART_FRONT), (depth, [0.0, 0.0, 1.0], PART_BACK)] {
                 let base = vertices.len() as u32;
-                vertices.extend(buf.vertices.iter().map(|p| Vertex { pos: [p[0] - cx, p[1] - cy, z], normal, part, color: [0.0; 4], uv: [0.0; 2], rect: [0.0; 4] }));
+                vertices.extend(buf.vertices.iter().map(|p| Vertex { pos: [p[0] - cx, p[1] - cy, z], normal, part, color: [0.0; 4], uv: [0.0; 2], rect: [0.0; 4], spec: [0.0; 4], glow: [0.0; 4] }));
                 indices.extend(buf.indices.iter().map(|i| base + i));
             }
         }
@@ -433,7 +483,7 @@ fn build(spec: &TitleSpec, frame: [u32; 2], id: u64) -> TextMesh {
                         let base = vertices.len() as u32;
                         let v = |k: usize, r: &(f32, f32, [f32; 2]), nn: P2| {
                             let p = inset(c, k, r.0);
-                            Vertex { pos: [p[0] - cx, p[1] - cy, r.1], normal: [nn[0] * r.2[0], nn[1] * r.2[0], r.2[1]], part, color: [0.0; 4], uv: [0.0; 2], rect: [0.0; 4] }
+                            Vertex { pos: [p[0] - cx, p[1] - cy, r.1], normal: [nn[0] * r.2[0], nn[1] * r.2[0], r.2[1]], part, color: [0.0; 4], uv: [0.0; 2], rect: [0.0; 4], spec: [0.0; 4], glow: [0.0; 4] }
                         };
                         vertices.extend([v(i, &w[0], na), v(j, &w[0], nb), v(j, &w[1], nb), v(i, &w[1], na)]);
                         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);

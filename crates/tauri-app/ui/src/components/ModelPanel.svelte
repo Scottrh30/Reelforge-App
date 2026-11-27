@@ -5,6 +5,7 @@
   import { run } from "../lib/session.svelte";
   import { api, type Inspector, type TitleSpec } from "../lib/api";
   import NumberField from "./NumberField.svelte";
+  import { editModel } from "../lib/modeldialog.svelte";
 
   let { ins }: { ins: Inspector } = $props();
   type Rgba = [number, number, number, number];
@@ -90,6 +91,7 @@
     </div>
   {/if}
   <div class="row btns">
+    <button class="small" onclick={() => editModel(ins.id, t)} title="Its name, parts, materials and which way is up, with a preview" data-automation-id="model-properties-open">Properties…</button>
     <button class="small" onclick={() => once((s) => (s.model.rev = (s.model.rev ?? 0) + 1))} title="Read the file again (after changing it in another program)">Reload</button>
     <button class="small" onclick={() => run(api.openFolder(m.path.replace(/[\\/][^\\/]*$/, "")))} title="Show the file's folder">Show file</button>
   </div>

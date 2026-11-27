@@ -2023,16 +2023,26 @@ impl Editor {
     /// the playhead, half the frame high, turned a little so its depth shows.
     pub fn add_3d_model(&mut self, path: &Path) {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
-        let mut src = reelforge_core::ModelSource { path: path.clone(), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new(), texture_dirs: Vec::new() };
-        let name = path.file_name().map_or("model".into(), |n| n.to_string_lossy().into_owned());
+        let mut src = reelforge_core::ModelSource::new(path);
+        if let Ok(m) = reelforge_render::model3d::cached(&src) {
+            src.z_up = m.z_up;
+        }
+        self.add_3d_model_with(src, None);
+    }
+
+    /// A 3D model as set up in 3D Model Properties (its parts' surfaces, which
+    /// way is up…), as a 3D layer at the playhead, named `name` (else after its file).
+    pub fn add_3d_model_with(&mut self, mut src: reelforge_core::ModelSource, name: Option<String>) {
+        src.path = std::path::absolute(&src.path).unwrap_or_else(|_| src.path.clone());
+        let file = src.path.file_name().map_or("model".into(), |n| n.to_string_lossy().into_owned());
         match reelforge_render::model3d::cached(&src) {
             Ok(m) => {
-                src.z_up = m.z_up;
                 let tris = m.indices.len() / 3;
-                self.add_title_full(true, None, Some(src));
-                self.status = format!("{name}: a 3D model ({tris} triangles). Move and turn it in Transform; light it with lights; size and colours in its settings");
+                let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+                self.add_title_full(true, None, Some((src, name)));
+                self.status = format!("{file}: a 3D model ({tris} triangles). Move and turn it in Transform; light it with lights; size and colours in its settings");
             }
-            Err(e) => self.status = format!("Couldn't use {name}: {e}"),
+            Err(e) => self.status = format!("Couldn't use {file}: {e}"),
         }
     }
 
@@ -2070,7 +2080,7 @@ impl Editor {
         self.status = format!("{name}: a 3D shape from the mask (set its depth, bevel and colours in Title)");
     }
 
-    fn add_title_full(&mut self, solid: bool, shape: Option<(std::sync::Arc<reelforge_core::Shape>, Option<([f32; 2], f32)>)>, model: Option<reelforge_core::ModelSource>) {
+    fn add_title_full(&mut self, solid: bool, shape: Option<(std::sync::Arc<reelforge_core::Shape>, Option<([f32; 2], f32)>)>, model: Option<(reelforge_core::ModelSource, Option<String>)>) {
         self.commit_live_edit();
         let s = self.seq();
         let rate = s.frame_rate;
@@ -2101,8 +2111,8 @@ impl Editor {
         let id = ClipId(self.project.alloc_id());
         let mut place = None;
         let is_model = model.is_some();
-        if let Some(m) = model {
-            spec.text = m.path.file_stem().map_or("3D model".into(), |n| n.to_string_lossy().into_owned());
+        if let Some((m, name)) = model {
+            spec.text = name.unwrap_or_else(|| m.path.file_stem().map_or("3D model".into(), |n| n.to_string_lossy().into_owned()));
             spec.model = Some(m);
             spec.size = (frame_h * 0.5).round();
             spec.shadow = false;

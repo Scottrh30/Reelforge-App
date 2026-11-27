@@ -458,6 +458,70 @@ pub struct ModelSource {
     /// Relink after the textures moved).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub texture_dirs: Vec<std::path::PathBuf>,
+    /// Parts' surfaces as set in 3D Model Properties (shine, glow, opacity, a
+    /// picture of their own); parts not listed are as in the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<PartLook>,
+    /// Parts (by name) left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<String>,
+}
+
+impl ModelSource {
+    /// `path` as it is: its own colours, nothing changed.
+    pub fn new(path: std::path::PathBuf) -> ModelSource {
+        ModelSource { path, z_up: false, own_colours: true, rev: 0, part_colours: Vec::new(), texture_dirs: Vec::new(), materials: Vec::new(), hidden: Vec::new() }
+    }
+
+    /// How part `name` looks (as in the file, if not set).
+    pub fn look(&self, name: &str) -> PartLook {
+        self.materials.iter().find(|m| m.part == name).cloned().unwrap_or_else(|| PartLook { part: name.to_string(), ..PartLook::default() })
+    }
+}
+
+/// One part of a 3D model's surface, beyond its colour (see
+/// `ModelSource::part_colours`): highlights, its own light, see-through, and
+/// a picture to wrap it in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartLook {
+    pub part: String,
+    /// A picture wrapped on it by the model's texture coordinates, instead of the file's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diffuse_map: Option<std::path::PathBuf>,
+    /// The highlights' colour (sRGB; black: none) and how tight they are (Phong
+    /// shininess, 1–200).
+    pub specular: [u8; 3],
+    pub shininess: f32,
+    /// Light of its own (sRGB), added whatever lights it.
+    pub emissive: [u8; 3],
+    /// 0–100 %.
+    pub opacity: f32,
+}
+
+impl Default for PartLook {
+    fn default() -> Self {
+        PartLook { part: String::new(), diffuse_map: None, specular: [0; 3], shininess: 30.0, emissive: [0; 3], opacity: 100.0 }
+    }
+}
+
+impl PartLook {
+    /// Nothing changed from the file.
+    pub fn is_plain(&self) -> bool {
+        let d = PartLook::default();
+        self.diffuse_map.is_none() && self.specular == d.specular && self.emissive == d.emissive && self.opacity >= 100.0
+    }
+}
+
+impl std::hash::Hash for PartLook {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.part.hash(h);
+        self.diffuse_map.hash(h);
+        self.specular.hash(h);
+        self.shininess.to_bits().hash(h);
+        self.emissive.hash(h);
+        self.opacity.to_bits().hash(h);
+    }
 }
 
 

@@ -31,6 +31,7 @@ mod multicam;
 mod versions;
 mod trans;
 mod scene;
+mod modelprops;
 mod scopes;
 mod viewer;
 mod views;
@@ -1920,6 +1921,11 @@ fn main() {
             add_particles_layer,
             add_simulation,
             scene::add_scene,
+            modelprops::pick_model_file,
+            modelprops::model_preview,
+            modelprops::add_model_layer,
+            modelprops::pick_map_file,
+            modelprops::pick_texture_folder,
             scene::add_new,
             scene::set_plane_color,
             scene::set_plane_props,

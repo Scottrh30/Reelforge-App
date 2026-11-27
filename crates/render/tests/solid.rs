@@ -311,7 +311,7 @@ fn models_draw_in_their_own_colours() {
     )
     .unwrap();
     std::fs::write(d.join("cube.mtl"), "newmtl g\nKd 0.1 0.8 0.1\n").unwrap();
-    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new(), texture_dirs: Vec::new() };
+    let src = ModelSource::new(d.join("cube.obj"));
     let spec = |own: bool| TitleSpec { size: 100.0, color: [230, 40, 30, 255], shadow: false, model: Some(ModelSource { own_colours: own, ..src.clone() }), ..TitleSpec::default() };
     // The mesh: its largest side 100 px, centred every way.
     let m = text_mesh(&spec(true), [W, H]);
@@ -360,7 +360,7 @@ fn models_show_their_textures_and_parts_can_be_recoloured() {
     )
     .unwrap();
     std::fs::write(d.join("cube.mtl"), "newmtl painted\nKd 1 1 1\nmap_Kd tex.png\n").unwrap();
-    let src = ModelSource { path: d.join("cube.obj"), z_up: false, own_colours: true, rev: 0, part_colours: Vec::new(), texture_dirs: Vec::new() };
+    let src = ModelSource::new(d.join("cube.obj"));
     let model = reelforge_render::model3d::cached(&src).unwrap();
     assert_eq!(model.parts, vec!["painted".to_string()]);
     assert!(model.atlas.is_some());
@@ -444,7 +444,7 @@ fn environment_light_lights_layers_and_is_reflected() {
 fn blender_files_draw_in_their_colours() {
     use reelforge_core::ModelSource;
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/scene-5.3.blend");
-    let src = ModelSource { path, z_up: true, own_colours: true, rev: 0, part_colours: Vec::new(), texture_dirs: Vec::new() };
+    let src = ModelSource { z_up: true, ..ModelSource::new(path) };
     let spec = TitleSpec { size: 160.0, color: [230, 230, 230, 255], shadow: false, model: Some(src), ..TitleSpec::default() };
     assert_eq!(text_mesh(&spec, [W, H]).indices.len(), 42 * 3);
     let Some((dev, q)) = headless_device() else { return };
@@ -459,4 +459,48 @@ fn blender_files_draw_in_their_colours() {
     let count = |f: &dyn Fn(i32, i32, i32) -> bool| (0..(W * H) as usize).filter(|i| { let p = &img[i * 4..i * 4 + 4]; f(p[0] as i32, p[1] as i32, p[2] as i32) }).count();
     let (r, g, b) = (count(&|r, g, b| r > g + 40 && r > b + 40), count(&|r, g, b| g > r + 40 && g > b + 40), count(&|r, g, b| b > r + 40 && b > g + 40));
     assert!(r > 300 && g > 50 && b > 300, "red {r}, green {g}, blue {b}");
+}
+
+/// 3D Model Properties' surfaces: highlights brighten, its own light shows unlit,
+/// see-through fades it, a hidden part goes, and a picture of its own wraps it.
+#[test]
+fn model_parts_take_their_surfaces() {
+    use reelforge_core::{ModelSource, PartLook};
+    let d = std::env::temp_dir().join(format!("rf_model_looks_{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("cube.obj"),
+        "mtllib cube.mtl\nusemtl g\nv -1 -1 -1\nv 1 -1 -1\nv 1 1 -1\nv -1 1 -1\nv -1 -1 1\nv 1 -1 1\nv 1 1 1\nv -1 1 1\nf 1 4 3 2\nf 5 6 7 8\nf 1 2 6 5\nf 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("cube.mtl"), "newmtl g\nKd 0.3 0.3 0.3\n").unwrap();
+    image::save_buffer(d.join("blue.png"), &[20u8, 60, 230, 255].repeat(16), 4, 4, image::ColorType::Rgba8).unwrap();
+    let src = ModelSource::new(d.join("cube.obj"));
+    let with = |look: PartLook, hidden: bool| {
+        let model = ModelSource { materials: vec![PartLook { part: "g".into(), ..look }], hidden: if hidden { vec!["g".into()] } else { Vec::new() }, ..src.clone() };
+        TitleSpec { size: 100.0, color: [230, 40, 30, 255], shadow: false, model: Some(model), ..TitleSpec::default() }
+    };
+    let Some((dev, q)) = headless_device() else { return };
+    let mut c = Compositor::new(&dev, &q);
+    let sc = scene();
+    let mut t = Transform { three_d: true, ..Default::default() };
+    t.orientation = [-20.0, 30.0];
+    let mut shot = |s: &TitleSpec| render(&mut c, s, t, &sc);
+    let sum = |img: &[u8], ch: usize| img.chunks(4).map(|p| p[ch] as u64).sum::<u64>();
+    let brightest = |img: &[u8]| img.chunks(4).map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).max().unwrap_or(0);
+    let plain = shot(&with(PartLook::default(), false));
+    let lit = sum(&plain, 1);
+    assert!(lit > 0);
+    let shiny = shot(&with(PartLook { specular: [255; 3], shininess: 4.0, ..PartLook::default() }, false));
+    assert!(brightest(&shiny) > brightest(&plain) + 30, "highlights: {} vs {}", brightest(&shiny), brightest(&plain));
+    let glowing = shot(&with(PartLook { emissive: [200, 0, 0], ..PartLook::default() }, false));
+    let (r0, r1, g1) = (sum(&plain, 0), sum(&glowing, 0), sum(&glowing, 1));
+    assert!(r1 > r0 * 3 / 2 && g1.abs_diff(lit) * 50 < lit, "its own red light: red {r0} → {r1}, green {lit} → {g1}");
+    let faint = shot(&with(PartLook { opacity: 30.0, ..PartLook::default() }, false));
+    assert!(sum(&faint, 1) < lit * 2 / 3, "see-through: {} vs {lit}", sum(&faint, 1));
+    let gone = shot(&with(PartLook::default(), true));
+    assert!(sum(&gone, 1) < lit / 50, "hidden");
+    let blue = shot(&with(PartLook { diffuse_map: Some(d.join("blue.png")), ..PartLook::default() }, false));
+    assert!(sum(&blue, 2) > sum(&blue, 0) * 3, "its own picture");
+    let _ = std::fs::remove_dir_all(&d);
 }

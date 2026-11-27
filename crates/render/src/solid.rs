@@ -224,7 +224,7 @@ impl SolidRenderer {
         let tex_sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("solid texture"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let white_tex = texture_bind_group(device, queue, &tex_layout, &tex_sampler, 1, 1, &[255; 4]);
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid"), bind_group_layouts: &[Some(&layout), Some(&shadow_layout), Some(&env_layout), Some(&tex_layout)], immediate_size: 0 });
-        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x4, 4 => Float32x2, 5 => Float32x4];
+        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x4, 4 => Float32x2, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solid"),
             layout: Some(&pl),
@@ -473,7 +473,7 @@ impl SolidRenderer {
             let flat: Vec<f32> = mesh
                 .vertices
                 .iter()
-                .flat_map(|v| [v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2], v.part, v.color[0], v.color[1], v.color[2], v.color[3], v.uv[0], v.uv[1], v.rect[0], v.rect[1], v.rect[2], v.rect[3]])
+                .flat_map(|v| [v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2], v.part, v.color[0], v.color[1], v.color[2], v.color[3], v.uv[0], v.uv[1], v.rect[0], v.rect[1], v.rect[2], v.rect[3], v.spec[0], v.spec[1], v.spec[2], v.spec[3], v.glow[0], v.glow[1], v.glow[2], v.glow[3]])
                 .collect();
             let idx: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
             // Buffers can't be empty.

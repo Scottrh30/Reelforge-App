@@ -1311,9 +1311,17 @@ What works now:
   a camera move around it, and it keeps its depth of field, opacity, blend mode and effects. At
   Z 0, not turned, its front face is exactly where the flat title's letters would be. Outline,
   shadow and box aren't drawn on 3D text (a Drop shadow effect still works), nor are masks
-- **3D models**: **Timeline → Add 3D model…**, **New… → New 3D Model…** at the top of the
-  timeline (in a composition too), or import or drop a model file like any media, and it goes
-  on the timeline at the playhead as a 3D layer, turned a little so its depth
+- **3D models**: **Timeline → Add 3D model…** or **New… → New 3D Model…** at the top of the
+  timeline (in a composition too) picks the file and opens **3D Model Properties** first (also
+  from **Properties…** in a model layer's Controls later): its **Name** and **Path**; a
+  preview to turn round (drag), move (the move tool, or Shift-drag) and zoom (the wheel),
+  with **Reset**; **Groups** (show or hide each part, with search, Show all / Hide all);
+  **Materials**, each part's **Diffuse Map** (a picture of its own, wrapped by the model's
+  texture coordinates), **Diffuse Color**, **Specular Color** (highlights; black for none),
+  **Emissive Color** (light of its own), **Shininess** and **Opacity**; **Advanced** (which
+  way is up, its own colours or one, texture folders); and **Import Maps** (a folder to find
+  its textures in). Nothing is added until **OK**. Importing or dropping a model file like
+  any media adds it straight away. It goes on the timeline at the playhead as a 3D layer, turned a little so its depth
   shows. Reads **OBJ** (with its MTL colours and diffuse textures, `map_Kd`), **glTF/GLB**
   (node transforms, base colours, vertex colours and base-colour textures), **FBX** (binary
   7.x: meshes, model transforms, material colours; ASCII FBX needs saving as binary), **USD/USDA/USDC/USDZ**
