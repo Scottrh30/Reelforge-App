@@ -63,6 +63,14 @@ pub struct Prefs {
     pub render_cache_disk_mb: usize,
     /// 3D shadows: 0 Low, 1 Standard, 2 High (how sharp shadows from big layers can be).
     pub shadow_quality: u8,
+    /// 3D text and models: anti-aliasing samples per pixel (1: off, 4: smooth edges).
+    pub antialias_samples: u8,
+    /// 3D text and models: the biggest an environment light's picture is
+    /// used for reflections, in pixels across (0: as big as it is).
+    pub reflection_map_size: u32,
+    /// The Viewer's 10-bit and deeper (SDR) video brought down to 8 bits as
+    /// it's decoded, for speed (exports keep the full depth).
+    pub viewer_8bit: bool,
     /// Export settings saved under a name.
     pub export_presets: Vec<crate::presets::UserPreset>,
     /// Play the sound under the playhead while scrubbing.
@@ -158,6 +166,9 @@ impl Default for Prefs {
             color_depth: Default::default(),
             autosave_minutes: 2,
             shadow_quality: 1,
+            antialias_samples: 4,
+            reflection_map_size: 2048,
+            viewer_8bit: false,
             render_cache_mb: 2048,
             render_cache_disk_mb: 8192,
             export_presets: Vec::new(),
@@ -224,6 +235,9 @@ impl Editor {
         self.apply_render_disk();
         self.playback.scrub_audio = self.prefs.scrub_audio;
         reelforge_render::set_shadow_quality(self.prefs.shadow_quality as usize);
+        reelforge_render::set_solid_samples(self.prefs.antialias_samples as u32);
+        reelforge_render::set_reflection_map_size(self.prefs.reflection_map_size);
+        reelforge_media::decoder::set_viewer_8bit(self.prefs.viewer_8bit);
         // (Tests don't depend on the machine's free space; the disk test sets it.)
         if !cfg!(test) {
             self.disk_low_at = (self.prefs.disk_warn_gb.max(0.0) as f64 * (1u64 << 30) as f64) as u64;

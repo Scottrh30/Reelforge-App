@@ -9042,3 +9042,56 @@ fn fs_drizzle(in: VsOut) -> @location(0) vec4<f32> {
     let c = cx_at((q + push * fx.p0.w) / size);
     return vec4(c.rgb + vec3(light * fx.p1.y / 100.0 * 0.3) * c.a, c.a);
 }
+
+// ---- From the HitFilm list: demultiply, remove stock background ----
+
+// The opacity and colour a pixel `c` (display RGB) has once background `bg`
+// is taken out of it: the least opacity that, laid over `bg`, gives `c` back.
+fn sb_unmix(c: vec3<f32>, bg: vec3<f32>) -> vec4<f32> {
+    var a = 0.0;
+    for (var i = 0; i < 3; i = i + 1) {
+        let d = c[i] - bg[i];
+        let room = select(bg[i], 1.0 - bg[i], d > 0.0);
+        a = max(a, abs(d) / max(room, 1e-4));
+    }
+    a = clamp(a, 0.0, 1.0);
+    if (a <= 1e-4) {
+        return vec4(0.0);
+    }
+    return vec4(clamp(bg + (c - bg) / a, vec3(0.0), vec3(1.0)), a);
+}
+
+// Demultiply: p0 = (black point %, amount %).
+@fragment
+fn fs_demultiply(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    // In linear light, so laid over black it looks just as it did.
+    let d = unpremul(c);
+    // Below the black point counts as black (noise in the background).
+    let b = to_linear(vec3(clamp(fx.p0.x / 100.0, 0.0, 0.5))).x;
+    let lifted = max(d - b, vec3(0.0)) / (1.0 - b);
+    let u = sb_unmix(lifted, vec3(0.0));
+    let o = vec4(u.rgb * u.a * c.a, u.a * c.a);
+    return mix(c, o, clamp(fx.p0.y / 100.0, 0.0, 1.0));
+}
+
+// Remove stock background: p0 = (background, colour, tolerance %, amount %).
+@fragment
+fn fs_stock_background(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    // In linear light, so laid over the background it looks just as it did.
+    let d = unpremul(c);
+    var bg = vec3(1.0);
+    switch u32(round(fx.p0.x)) {
+        case 1u: { bg = vec3(0.0); }
+        case 2u: { bg = rgb_of(fx.p0.y); }
+        default: {}
+    }
+    // Within the tolerance of the background counts as background.
+    let tol = clamp(fx.p0.z / 100.0, 0.0, 0.5);
+    let off = d - bg;
+    let near = max(abs(off) - vec3(tol), vec3(0.0)) * sign(off);
+    let u = sb_unmix(clamp(bg + near / (1.0 - tol), vec3(0.0), vec3(1.0)), bg);
+    let o = vec4(u.rgb * u.a * c.a, u.a * c.a);
+    return mix(c, o, clamp(fx.p0.w / 100.0, 0.0, 1.0));
+}

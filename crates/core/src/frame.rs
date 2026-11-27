@@ -238,6 +238,37 @@ impl YuvPlanes {
         self.planes.iter().map(Vec::len).sum()
     }
 
+    /// The same picture at 8 bits a sample (rounded), for speed: half the
+    /// memory and upload of 10-bit and deeper video. 8-bit planes come back
+    /// as they are.
+    pub fn to_8bit(&self) -> YuvPlanes {
+        let bits = self.layout.bits();
+        if bits <= 8 {
+            return self.clone();
+        }
+        let layout = match self.layout {
+            YuvLayout::P010 => YuvLayout::Nv12,
+            YuvLayout::Planar { chroma, alpha, .. } => YuvLayout::Planar { bits: 8, chroma, alpha },
+            YuvLayout::Nv12 => YuvLayout::Nv12,
+        };
+        let (shift, down) = (self.layout.shift(), bits.saturating_sub(8));
+        let max = (1u32 << bits) - 1;
+        let half = (1u32 << down) >> 1;
+        let planes = self
+            .planes
+            .iter()
+            .map(|p| {
+                p.chunks_exact(2)
+                    .map(|w| {
+                        let v = (u16::from_le_bytes([w[0], w[1]]) as u32 >> shift).min(max);
+                        (v.saturating_add(half) >> down).min(255) as u8
+                    })
+                    .collect()
+            })
+            .collect();
+        YuvPlanes { layout, width: self.width, height: self.height, planes, matrix: self.matrix, full_range: self.full_range, transfer: self.transfer }
+    }
+
     pub fn params(&self) -> YuvParams {
         let bits = self.layout.bits();
         let k = (1u32 << (bits - 8)) as f32; // 1 for 8-bit, 4 for 10-bit
@@ -746,6 +777,24 @@ mod tests {
             planes.push(put(((1u32 << layout.bits()) - 1) as u16, (w * h) as usize));
         }
         YuvPlanes { layout, width: w, height: h, planes, matrix, full_range, transfer: Transfer::Sdr }
+    }
+
+    #[test]
+    fn deep_video_comes_down_to_8_bits_looking_the_same() {
+        for layout in [YuvLayout::I420P10, YuvLayout::P010, YuvLayout::Planar { bits: 12, chroma: Chroma::C422, alpha: true }] {
+            let k = 1u16 << (layout.bits() - 8);
+            let deep = flat(layout, 180 * k + k / 2, 90 * k, 200 * k - 1, YuvMatrix::Bt709, false);
+            let small = deep.to_8bit();
+            assert_eq!(small.layout.bits(), 8, "{layout:?}");
+            assert_eq!(small.byte_len() * 2, deep.byte_len(), "{layout:?}");
+            assert_eq!(small.planes[0][0], 181, "{layout:?}: rounded");
+            let (a, b) = (deep.to_rgba(), small.to_rgba());
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert!(x.abs_diff(*y) <= 2, "{layout:?}: {a:?} vs {b:?}");
+            }
+        }
+        let eight = flat(YuvLayout::I420, 50, 60, 70, YuvMatrix::Bt709, true);
+        assert_eq!(eight.to_8bit(), eight);
     }
 
     #[test]

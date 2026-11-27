@@ -19,6 +19,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+/// Preferences → Limit the Viewer's video to 8 bits: 10-bit and deeper
+/// (SDR) video for the Viewer is brought down to 8 bits as it's decoded,
+/// halving the memory and upload each frame takes. Exports always get the
+/// full depth, and HDR keeps it (8-bit PQ or HLG would band).
+static VIEWER_8BIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_viewer_8bit(on: bool) {
+    VIEWER_8BIT.store(on, Ordering::Relaxed);
+}
+
+pub fn viewer_8bit() -> bool {
+    VIEWER_8BIT.load(Ordering::Relaxed)
+}
+
 /// A decoded frame: YUV planes as the decoder made them, or RGBA.
 #[derive(Clone)]
 pub struct VideoFrame {
@@ -808,7 +822,11 @@ impl DecodeState {
                 self.scaler.as_mut().ok_or_else(|| anyhow!("no scaler"))?.0.run(src, &mut small)?;
                 (pack_planes(&small, out_layout), out_layout, dw, dh)
             };
-            let yuv = YuvPlanes { layout, width: w, height: h, planes, matrix, full_range, transfer: self.transfer_of(src) };
+            let mut yuv = YuvPlanes { layout, width: w, height: h, planes, matrix, full_range, transfer: self.transfer_of(src) };
+            // (`gpu_frames`: this decoder feeds the Viewer.)
+            if self.gpu_frames && viewer_8bit() && !yuv.transfer.is_hdr() {
+                yuv = yuv.to_8bit();
+            }
             return Ok(VideoFrame { pts, width: w, height: h, pixels: Pixels::Yuv(Arc::new(yuv)), generation: self.generation });
         }
 

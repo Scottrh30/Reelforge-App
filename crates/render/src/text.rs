@@ -319,6 +319,9 @@ pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layou
     let block_w = lines.iter().map(|(_, lw)| *lw).fold(0.0, f32::max);
     let block_h = (lines.len().saturating_sub(1)) as f32 * line_h + (ascent - descent);
     let (cx, cy) = (w / 2.0, h / 2.0);
+    // A crawl moves the whole block through the frame.
+    let [dx, dy] = crawl_shift(spec, block_w, block_h);
+    let (cx, cy) = (cx + dx, cy + dy);
     let top = cy - block_h / 2.0;
     let text_box = [cx - block_w / 2.0, top, cx + block_w / 2.0, top + block_h];
     let mut glyphs = Vec::new();
@@ -338,6 +341,50 @@ pub(crate) fn layout(spec: &TitleSpec, font: &FontArc, frame: [u32; 2]) -> Layou
         }
     }
     Layout { glyphs, text_box, info, widths, line_h }
+}
+
+/// How far a crawling title's text block (`bw` × `bh`) is moved from the
+/// middle of the canvas, as far along as its `crawl_at` says.
+fn crawl_shift(spec: &TitleSpec, bw: f32, bh: f32) -> [f32; 2] {
+    use reelforge_core::CrawlKind as K;
+    let Some(at) = spec.crawl_at else { return [0.0, 0.0] };
+    let c = &spec.crawl;
+    let (fw, fh) = (at.frame[0], at.frame[1]);
+    let p = if at.progress.is_finite() { at.progress.clamp(0.0, 1.0) } else { 0.0 };
+    let lerp = |a: f32, b: f32| a + (b - a) * p;
+    // The block's leading edge from the middle of the frame, from start to end.
+    let shift = match c.kind {
+        K::None => [0.0, 0.0],
+        // Its top: just below the frame (or at its top), to just above it (or its last line at the bottom).
+        K::RollUp | K::SciFi => [0.0, lerp(if c.start_off { fh / 2.0 } else { -fh / 2.0 }, if c.end_off { -fh / 2.0 - bh } else { fh / 2.0 - bh }) + bh / 2.0],
+        K::RollDown => [0.0, lerp(if c.start_off { -fh / 2.0 - bh } else { fh / 2.0 - bh }, if c.end_off { fh / 2.0 } else { -fh / 2.0 }) + bh / 2.0],
+        // Its left edge.
+        K::CrawlLeft => [lerp(if c.start_off { fw / 2.0 } else { -fw / 2.0 }, if c.end_off { -fw / 2.0 - bw } else { fw / 2.0 - bw }) + bw / 2.0, 0.0],
+        K::CrawlRight => [lerp(if c.start_off { -fw / 2.0 - bw } else { fw / 2.0 - bw }, if c.end_off { fw / 2.0 } else { -fw / 2.0 }) + bw / 2.0, 0.0],
+    };
+    if shift.iter().all(|v| v.is_finite()) { shift } else { [0.0, 0.0] }
+}
+
+/// A sci-fi crawl fades out towards the top of the frame (where, tipped
+/// back, it's farthest away): `title`'s alpha faded over the top `fade` % of
+/// the frame (centred on the canvas, its size in canvas pixels).
+fn fade_far(spec: &TitleSpec, title: RenderedTitle) -> RenderedTitle {
+    let Some(at) = spec.crawl_at.filter(|_| spec.crawl.kind == reelforge_core::CrawlKind::SciFi) else { return title };
+    let (w, h) = (title.width as usize, title.height as usize);
+    let top = h as f32 / 2.0 - at.frame[1] / 2.0;
+    let len = (spec.crawl.fade.clamp(0.0, 100.0) / 100.0 * at.frame[1]).max(1e-3);
+    let mut rgba = title.rgba.to_vec();
+    for (y, row) in rgba.chunks_exact_mut(w.max(1) * 4).enumerate().take(h) {
+        let k = ((y as f32 + 0.5 - top) / len).clamp(0.0, 1.0);
+        let k = k * k * (3.0 - 2.0 * k);
+        if k >= 1.0 {
+            continue;
+        }
+        for px in row.chunks_exact_mut(4) {
+            px[3] = (px[3] as f32 * k).round() as u8;
+        }
+    }
+    RenderedTitle { rgba: rgba.into(), ..title }
 }
 
 pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
@@ -362,6 +409,14 @@ pub fn render_title(spec: &TitleSpec, frame: [u32; 2]) -> RenderedTitle {
 /// letters, words or lines each where and as visible as the animation has
 /// them then (the box behind stays put). Without one, [`render_title`].
 pub fn render_title_at(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32) -> RenderedTitle {
+    // A crawl: where it is at `t` (unless the caller placed it already).
+    if let Some(crawled) = spec.crawled(t, dur, frame) {
+        return fade_far(&crawled, placed_title_at(&crawled, frame, t, dur));
+    }
+    fade_far(spec, placed_title_at(spec, frame, t, dur))
+}
+
+fn placed_title_at(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32) -> RenderedTitle {
     if spec.places_glyphs() {
         let (w, h) = (frame[0].max(1), frame[1].max(1));
         let (font, missing_font) = load_font(&spec.font);
@@ -440,6 +495,10 @@ pub const SHARP_MAX_PIXELS: f32 = 16_777_216.0;
 /// canvas). The picture is kept under [`SHARP_MAX_PIXELS`] (and 8192 a
 /// side), so a very big `k` on a big canvas gives a little less.
 pub fn render_title_sharp(spec: &TitleSpec, frame: [u32; 2], t: f32, dur: f32, k: f32, whole: bool) -> SharpTitle {
+    // A crawl is placed for the whole frame first, so it's where it should
+    // be on the smaller canvas round the middle too.
+    let crawled = spec.crawled(t, dur, frame);
+    let spec = crawled.as_ref().unwrap_or(spec);
     let (w, h) = (frame[0].max(1) as f32, frame[1].max(1) as f32);
     let (cx, cy) = (w / 2.0, h / 2.0);
     let (hw, hh) = if whole {

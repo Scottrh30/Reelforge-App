@@ -100,6 +100,7 @@
       <label class="check" title="Reelforge's own decoders, written in Rust. If one can't read a file, FFmpeg takes over by itself. For H.264, HEVC, VP9 and AV1, hardware decoding (when on and supported by the graphics card) is used first."><input type="checkbox" bind:checked={prefs.native_decoders} /> Use Reelforge's own decoders</label>
       {#if info}<p class="info">{info.native.length ? `For ${info.native.join(", ")}; FFmpeg decodes everything else` : "None yet"}</p>{/if}
       {#if info}<p class="info" title="Camera RAW opens through the makers' own software: Blackmagic RAW through Blackmagic's SDK; R3D and ARRIRAW are converted once, in the background, to ProRes 4444 XQ in Rec.709 (kept with the proxies), which is what's edited and exported.">Camera RAW: {#each info.camera_raw as line, i}{#if i > 0}<br />{/if}{line}{/each}</p>{/if}
+      <label class="check" title="10-bit and deeper video (ProRes, DNxHR, 10-bit H.264/HEVC, image sequences in YUV) is brought down to 8 bits as it's decoded for the Viewer: half the memory and upload per frame, so heavy footage plays more smoothly. Exports always use the full depth, and HDR video keeps it (8-bit PQ or HLG would band)."><input type="checkbox" bind:checked={prefs.viewer_8bit} /> Limit the Viewer's video to 8 bits, for speed</label>
       <label class="check"><input type="checkbox" bind:checked={prefs.scrub_audio} /> Audio scrubbing: hear the sound under the playhead while dragging it or stepping frames</label>
       <label class="field" title="Pictures on video clips in the timeline. A filmstrip shows frames all along each clip (taller video tracks give bigger pictures: drag a track's lower edge)">
         <span>Clip pictures</span>
@@ -148,6 +149,23 @@
           <option value={0}>Low</option>
           <option value={1}>Standard</option>
           <option value={2}>High</option>
+        </select>
+      </label>
+      <label class="field" title="Smooths the edges of 3D text, extrusions and 3D models by drawing each pixel from 4 samples. Off draws them faster, with stepped edges. Exports use it too.">
+        <span>3D anti-aliasing</span>
+        <select bind:value={prefs.antialias_samples}>
+          <option value={4}>On (4 samples a pixel)</option>
+          <option value={1}>Off (faster)</option>
+        </select>
+      </label>
+      <label class="field" title="Reflections on 3D text and models come from the environment light's picture. A big HDR (8K and up) is shrunk to this width first: smaller uses less graphics memory and loads faster; bigger keeps reflections sharp on mirror-like surfaces. Exports use it too.">
+        <span>Reflection map size</span>
+        <select bind:value={prefs.reflection_map_size}>
+          <option value={512}>512 px</option>
+          <option value={1024}>1024 px</option>
+          <option value={2048}>2048 px</option>
+          <option value={4096}>4096 px</option>
+          <option value={0}>Full size</option>
         </select>
       </label>
 

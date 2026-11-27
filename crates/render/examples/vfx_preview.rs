@@ -335,6 +335,8 @@ fn shots() -> Vec<Shot> {
         ("b5-balls", EffectKind::BallAction, vec![(ball_action::SCATTER, 6.0)], 0.0),
         ("b5-bubbles", EffectKind::Bubbles, vec![], 2.0),
         ("b5-drizzle", EffectKind::Drizzle, vec![], 2.0),
+        ("hf-demult", EffectKind::Demultiply, vec![(demultiply::BLACK, 5.0)], 0.0),
+        ("hf-stockbg", EffectKind::RemoveStockBackground, vec![], 0.0),
         ("new-deflicker", EffectKind::Deflicker, vec![(deflicker::BRIGHTNESS, 150.0), (deflicker::BLUE, 80.0)], 0.0),
         ("hud-brackets", EffectKind::Hud, vec![(hud::ELEMENT, 4.0)], 0.5),
         ("cut-sweep", EffectKind::LightSweep, vec![(sweep::BRIGHTNESS, 250.0), (sweep::SECOND, 50.0)], 0.45),

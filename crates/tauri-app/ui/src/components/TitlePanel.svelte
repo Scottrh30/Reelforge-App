@@ -94,6 +94,13 @@
   };
   const anim = $derived(({ ...ANIM_PRESETS.None, ...((t.anim as Partial<Anim>) ?? {}) }) as Anim);
 
+  // Crawl: the whole text moving through the frame over the clip (as in TextCrawl).
+  type CrawlKind = "None" | "RollUp" | "RollDown" | "CrawlLeft" | "CrawlRight" | "SciFi";
+  type Crawl = { kind: CrawlKind; start_off: boolean; end_off: boolean; pre_roll: number; post_roll: number; tilt: number; fade: number };
+  const CRAWL_LABELS: Record<CrawlKind, string> = { None: "None", RollUp: "Roll up (credits)", RollDown: "Roll down", CrawlLeft: "Crawl left (ticker)", CrawlRight: "Crawl right", SciFi: "Sci-fi crawl" };
+  const CRAWL_DEFAULT: Crawl = { kind: "None", start_off: true, end_off: true, pre_roll: 0, post_roll: 0, tilt: 62, fade: 30 };
+  const crawl = $derived(({ ...CRAWL_DEFAULT, ...((t.crawl as Partial<Crawl>) ?? {}) }) as Crawl);
+
   // Case: how the letters show, whatever was typed.
   const cases = [
     ["AsTyped", "Aa", "As typed"],
@@ -378,6 +385,28 @@
       <NumberField label="Delay" value={anim.delay} min={0} max={60} step={0.005} digits={2} suffix=" s" oninput={(v) => set((s) => (s.anim = { ...anim, delay: v }))} oncommit={commit} />
       <span></span>
       <label class="check" title="At the end of the clip, the pieces go again in the same order, finishing as it ends"><input type="checkbox" checked={anim.out} onchange={(e) => once((s) => (s.anim = { ...anim, out: e.currentTarget.checked }))} /> Out at the end too</label>
+    {/if}
+
+    <span class="lbl" class:off={solid} title="Move the whole text through the frame over the clip: credits rolling up, a news ticker, or a sci-fi crawl tipped back into the distance. It goes evenly from start to end, so trim the clip to change the speed (not for 3D text)">Crawl</span>
+    <select value={crawl.kind} disabled={solid} aria-label="Crawl" onchange={(e) => { const k = e.currentTarget.value as CrawlKind; once((s) => (s.crawl = { ...crawl, kind: k })); }}>
+      {#each Object.entries(CRAWL_LABELS) as [k, label]}<option value={k}>{label}</option>{/each}
+    </select>
+    {#if crawl.kind !== "None" && !solid}
+      <span></span>
+      <div class="row wrap">
+        <label class="check" title="Start with the text just off the frame; off, it starts with its first line (or letter) at the frame's edge"><input type="checkbox" checked={crawl.start_off} onchange={(e) => once((s) => (s.crawl = { ...crawl, start_off: e.currentTarget.checked }))} /> Start off screen</label>
+        <label class="check" title="End with the text just gone; off, it ends with its last line (or letter) at the frame's far edge"><input type="checkbox" checked={crawl.end_off} onchange={(e) => once((s) => (s.crawl = { ...crawl, end_off: e.currentTarget.checked }))} /> End off screen</label>
+      </div>
+      <span class="lbl sub" title="Seconds the text holds still at the start of the clip, before it moves">Pre-roll</span>
+      <NumberField label="Pre-roll" value={crawl.pre_roll} min={0} max={600} step={0.01} digits={2} suffix=" s" oninput={(v) => set((s) => (s.crawl = { ...crawl, pre_roll: v }))} oncommit={commit} />
+      <span class="lbl sub" title="Seconds the text holds still at the end of the clip, after it stops">Post-roll</span>
+      <NumberField label="Post-roll" value={crawl.post_roll} min={0} max={600} step={0.01} digits={2} suffix=" s" oninput={(v) => set((s) => (s.crawl = { ...crawl, post_roll: v }))} oncommit={commit} />
+      {#if crawl.kind === "SciFi"}
+        <span class="lbl sub" title="How far the text is tipped back, about the bottom of the frame">Tilt</span>
+        <NumberField label="Tilt" value={crawl.tilt} min={0} max={85} step={0.1} digits={1} suffix="°" oninput={(v) => set((s) => (s.crawl = { ...crawl, tilt: v }))} oncommit={commit} />
+        <span class="lbl sub" title="How much of the frame, from the top, the text fades out over as it goes into the distance">Fade</span>
+        <NumberField label="Fade" value={crawl.fade} min={0} max={100} step={0.2} digits={0} suffix="%" oninput={(v) => set((s) => (s.crawl = { ...crawl, fade: v }))} oncommit={commit} />
+      {/if}
     {/if}
 
     <span class="lbl">Place</span>

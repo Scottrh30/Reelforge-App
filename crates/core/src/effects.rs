@@ -614,6 +614,14 @@ pub enum EffectKind {
     /// Raindrops falling on the layer as on a pond: ripples spreading from random spots,
     /// bending the picture and catching the light, so many a second, lasting a while.
     Drizzle,
+    /// Makes black see-through, keeping the colours: for flares, fire, sparks, smoke and other
+    /// elements shot or rendered on black, so they sit over the picture as light without a
+    /// blend mode.
+    Demultiply,
+    /// Takes the plain background out of stock footage and graphics — white (paper, studio
+    /// white), black, or a colour you pick — leaving smoke, ink, splashes and soft edges with
+    /// their own colour and see-through where they're thin, instead of a hard key.
+    RemoveStockBackground,
     /// Evens out flicker: brightness and colour gains, keyed frame by frame by
     /// Deflicker's analysis (Clip menu), or set by hand.
     Deflicker,
@@ -2898,6 +2906,16 @@ pub mod drizzle {
     pub const SPREAD: usize = 4;
     pub const LIGHT: usize = 5;
     pub const SEED: usize = 6;
+}
+pub mod demultiply {
+    pub const BLACK: usize = 0;
+    pub const AMOUNT: usize = 1;
+}
+pub mod stock_background {
+    pub const BACKGROUND: usize = 0;
+    pub const COLOR: usize = 1;
+    pub const TOLERANCE: usize = 2;
+    pub const AMOUNT: usize = 3;
 }
 pub mod deflicker {
     pub const BRIGHTNESS: usize = 0;
@@ -5524,6 +5542,16 @@ const DRIZZLE: [ParamSpec; 7] = [
     spec("Light", 50.0, 0.0, 400.0, " %", 0.5),
     spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
 ];
+const DEMULTIPLY: [ParamSpec; 2] = [
+    spec("Black point", 0.0, 0.0, 50.0, " %", 0.1),
+    spec("Amount", 100.0, 0.0, 100.0, " %", 0.3),
+];
+const STOCK_BACKGROUND: [ParamSpec; 4] = [
+    choice("Background", &["White", "Black", "A colour"]),
+    color("Colour", 0x00ff00),
+    spec("Tolerance", 4.0, 0.0, 50.0, " %", 0.1),
+    spec("Amount", 100.0, 0.0, 100.0, " %", 0.3),
+];
 const DEFLICKER: [ParamSpec; 6] = [
     spec("Brightness", 100.0, 0.0, 400.0, " %", 0.2),
     spec("Red", 100.0, 0.0, 400.0, " %", 0.2),
@@ -6228,7 +6256,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 245] = [
+    pub const ALL: [EffectKind; 247] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -6474,6 +6502,8 @@ impl EffectKind {
         EffectKind::BallAction,
         EffectKind::Bubbles,
         EffectKind::Drizzle,
+        EffectKind::Demultiply,
+        EffectKind::RemoveStockBackground,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -6586,6 +6616,8 @@ impl EffectKind {
             EffectKind::Bevel => "Bevel",
             EffectKind::Extrude => "Extrude",
             EffectKind::Rotate3d => "Rotate",
+            EffectKind::Demultiply => "Demultiply",
+            EffectKind::RemoveStockBackground => "Remove stock background",
             EffectKind::BlockDissolve => "Block dissolve",
             EffectKind::GradientWipe => "Gradient wipe",
             EffectKind::IrisWipe => "Iris wipe",
@@ -6798,6 +6830,8 @@ impl EffectKind {
             EffectKind::BurnAway => EffectCategory::Stylize,
             EffectKind::Extrusion3d => EffectCategory::Generate,
             EffectKind::Bend | EffectKind::Bevel | EffectKind::Extrude | EffectKind::Rotate3d => EffectCategory::Geometry,
+            EffectKind::Demultiply => EffectCategory::Channel,
+            EffectKind::RemoveStockBackground => EffectCategory::Keying,
             EffectKind::BlockDissolve => EffectCategory::Transition,
             EffectKind::GradientWipe => EffectCategory::Transition,
             EffectKind::IrisWipe => EffectCategory::Transition,
@@ -7011,6 +7045,8 @@ impl EffectKind {
             EffectKind::Bevel => "Bevelled edges: the picture's outline (a logo or a cut-out) or the layer's whole frame lit as if raised, bright on the side towards the light and shaded on the other.",
             EffectKind::Extrude => "Flat-style extrusion: the layer's shape drawn out in a direction (a long-shadow look) or towards a vanishing point, with its sides in a darker shade of the picture or a colour of their own.",
             EffectKind::Rotate3d => "Turns the layer like a card in 3D, round X, Y and Z about a point you choose, with perspective; its back can show the picture, darkened, or nothing. Key the turns to flip or spin it.",
+            EffectKind::Demultiply => "Makes black see-through, keeping the colours: for flares, fire, sparks, smoke and other elements shot or rendered on black, so they sit over the picture as light without a blend mode. Its brightest channel becomes its opacity.",
+            EffectKind::RemoveStockBackground => "Takes the plain background out of stock footage and graphics — white (paper, studio white), black, or a colour you pick — leaving smoke, ink, splashes and soft edges with their own colour and see-through where they're thin, instead of a hard key.",
             EffectKind::BlockDissolve => "The layer disappears in random blocks of a size you set, feathered or hard, as the completion goes from 0 to 100 %.",
             EffectKind::GradientWipe => "Wipes the layer away by a gradient — its own brightness (dark parts first), left to right, top to bottom, from the middle out, or a cloudy noise — with a soft edge, inverted if you like.",
             EffectKind::IrisWipe => "A hole opens in the layer from a centre — a polygon of so many points (a circle with many), turned, feathered — growing until the layer is gone.",
@@ -7297,6 +7333,8 @@ impl EffectKind {
             EffectKind::Bevel => &BEVEL,
             EffectKind::Extrude => &EXTRUDE,
             EffectKind::Rotate3d => &ROTATE3D,
+            EffectKind::Demultiply => &DEMULTIPLY,
+            EffectKind::RemoveStockBackground => &STOCK_BACKGROUND,
             EffectKind::BlockDissolve => &BLOCK_DISSOLVE,
             EffectKind::GradientWipe => &GRADIENT_WIPE,
             EffectKind::IrisWipe => &IRIS_WIPE,
@@ -7667,6 +7705,8 @@ impl EffectValues {
             EffectKind::Bevel => v[bevel::WIDTH] <= 0.0 || v[bevel::INTENSITY] == 0.0,
             EffectKind::Extrude => v[extrude::LENGTH] <= 0.0,
             EffectKind::Rotate3d => v[rotate3d::TURN_X] == 0.0 && v[rotate3d::TURN_Y] == 0.0 && v[rotate3d::TURN_Z] == 0.0 && v[rotate3d::SIZE] == 100.0 && v[rotate3d::PUSH] == 0.0,
+            EffectKind::Demultiply => v[demultiply::AMOUNT] <= 0.0,
+            EffectKind::RemoveStockBackground => v[stock_background::AMOUNT] <= 0.0,
             EffectKind::BlockDissolve => v[block_dissolve::COMPLETION] <= 0.0,
             EffectKind::GradientWipe => v[gradient_wipe::COMPLETION] <= 0.0,
             EffectKind::IrisWipe => v[iris_wipe::COMPLETION] <= 0.0,

@@ -27,6 +27,8 @@ impl SolidInput {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.mesh.id.hash(&mut h);
         (self.face, self.side).hash(&mut h);
+        // The preferences it's drawn with.
+        (crate::solid_samples(), crate::reflection_map_size()).hash(&mut h);
         let s = &self.space;
         for v in s.mvp.iter().flatten().chain(s.axes.iter().flatten()).chain(&s.origin).chain(&s.camera).chain(&s.studio) {
             v.to_bits().hash(&mut h);
@@ -84,6 +86,8 @@ struct MeshBuffers {
 
 pub(crate) struct SolidRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// The same, one sample a pixel (anti-aliasing off).
+    pipeline1: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind: wgpu::BindGroup,
     /// Outlines into the shadow atlas: the pipeline, and a uniform slot per tile.
@@ -106,6 +110,8 @@ pub(crate) struct SolidRenderer {
     env_sampler: wgpu::Sampler,
     env_bind: wgpu::BindGroup,
     env_id: u64,
+    /// …and the size limit it was uploaded at (`crate::reflection_map_size`).
+    env_limit: u32,
     /// A model's textures (group 3): the layout, a sampler, and a white one for everything else.
     tex_layout: wgpu::BindGroupLayout,
     tex_sampler: wgpu::Sampler,
@@ -225,7 +231,8 @@ impl SolidRenderer {
         let white_tex = texture_bind_group(device, queue, &tex_layout, &tex_sampler, 1, 1, &[255; 4]);
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("solid"), bind_group_layouts: &[Some(&layout), Some(&shadow_layout), Some(&env_layout), Some(&tex_layout)], immediate_size: 0 });
         let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x4, 4 => Float32x2, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let make = |samples: u32| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solid"),
             layout: Some(&pl),
             vertex: wgpu::VertexState {
@@ -249,10 +256,13 @@ impl SolidRenderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState { count: SAMPLES, ..Default::default() },
+            multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
             multiview_mask: None,
             cache: None,
-        });
+        })
+        };
+        // Anti-aliased (4 samples a pixel) and not (Preferences).
+        let (pipeline, pipeline1) = (make(SAMPLES), make(1));
         // The depth picture: same mesh and transform, nearest face's depth into R32Float.
         let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solid depth"),
@@ -321,21 +331,22 @@ impl SolidRenderer {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), depth_pipeline, depths: HashMap::new(), format, shadow_layout, shadow_buffer, shadow_sampler, no_shadows, env_layout, env_sampler, env_bind, env_id: 0, tex_layout, tex_sampler, white_tex }
+        Self { pipeline, pipeline1, uniforms, bind, flat_pipeline, flat_uniforms, flat_bind, targets: None, meshes: HashMap::new(), depth_pipeline, depths: HashMap::new(), format, shadow_layout, shadow_buffer, shadow_sampler, no_shadows, env_layout, env_sampler, env_bind, env_id: 0, env_limit: 0, tex_layout, tex_sampler, white_tex }
     }
 
     /// Bind the environment `id` (`crate::environment`; 0 or unknown: black)
     /// for reflections, uploading its picture with mipmaps when it changes.
     fn use_environment(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: u64) {
-        if id == self.env_id {
+        let limit = crate::reflection_map_size();
+        if (id, limit) == (self.env_id, self.env_limit) {
             return;
         }
         let view = match reelforge_core::environment::get(id) {
-            Some(e) if e.width > 0 && e.height > 0 => env_texture(device, queue, &e),
+            Some(e) if e.width > 0 && e.height > 0 => env_texture(device, queue, &e, limit),
             _ => black_picture(device),
         };
         self.env_bind = env_bind_group(device, view, &self.env_layout, &self.env_sampler);
-        self.env_id = id;
+        (self.env_id, self.env_limit) = (id, limit);
     }
 
     /// Get layer `key`'s outline ready for shadow-atlas tile `slot`: false if
@@ -367,22 +378,26 @@ impl SolidRenderer {
     fn colour_pass(&self, enc: &mut wgpu::CommandEncoder, key: u64, s: &SolidInput, target: &wgpu::TextureView, shadows: &wgpu::BindGroup) {
         let face = linear(s.face);
         let (Some(t), Some(m)) = (self.targets.as_ref(), self.meshes.get(&key)) else { return };
+        // Anti-aliased: drawn into the multisampled target and resolved into
+        // `target`; without, straight into `target` (Preferences).
+        let smooth = crate::solid_samples() > 1;
+        let clear = wgpu::Color { r: face[0] as f64, g: face[1] as f64, b: face[2] as f64, a: 0.0 };
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("solid"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &t.color,
+                    view: if smooth { &t.color } else { target },
                     depth_slice: None,
-                    resolve_target: Some(target),
+                    resolve_target: smooth.then_some(target),
                     // Transparent, but in the text's colour, so the soft edges
                     // (averaged with the background) keep the right colour.
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: face[0] as f64, g: face[1] as f64, b: face[2] as f64, a: 0.0 }), store: wgpu::StoreOp::Discard },
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: if smooth { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store } },
                 })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &t.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }), stencil_ops: None }),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: if smooth { &t.depth } else { &t.depth1 }, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }), stencil_ops: None }),
                 ..Default::default()
             });
             if m.count > 0 {
-                pass.set_pipeline(&self.pipeline);
+                pass.set_pipeline(if smooth { &self.pipeline } else { &self.pipeline1 });
                 pass.set_bind_group(0, &self.bind, &[]);
                 pass.set_bind_group(1, shadows, &[]);
                 pass.set_bind_group(2, &self.env_bind, &[]);
@@ -588,10 +603,19 @@ fn env_bind_group(device: &wgpu::Device, view: wgpu::TextureView, layout: &wgpu:
 }
 
 /// The environment's picture as half-float RGBA with mipmaps (each level
-/// the 2 × 2 average of the one before), for sharp to blurred reflections.
-fn env_texture(device: &wgpu::Device, queue: &wgpu::Queue, e: &reelforge_core::environment::Environment) -> wgpu::TextureView {
+/// the 2 × 2 average of the one before), for sharp to blurred reflections;
+/// halved until it's at most `limit` pixels across (0: no limit).
+fn env_texture(device: &wgpu::Device, queue: &wgpu::Queue, e: &reelforge_core::environment::Environment, limit: u32) -> wgpu::TextureView {
     use reelforge_core::frame::f32_to_f16;
-    let (w, h) = (e.width, e.height);
+    let (mut lw, mut lh, mut rgb) = (e.width as usize, e.height as usize, e.rgb.clone());
+    // (Too few samples for its size: nothing to shrink, black instead.)
+    if rgb.len() < lw * lh * 3 {
+        return black_picture(device);
+    }
+    while limit > 0 && lw.max(lh) > limit as usize && lw.max(lh) > 1 {
+        (lw, lh, rgb) = halve(lw, lh, &rgb);
+    }
+    let (w, h) = (lw as u32, lh as u32);
     let levels = 32 - w.max(h).leading_zeros();
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("solid environment"),
@@ -603,7 +627,6 @@ fn env_texture(device: &wgpu::Device, queue: &wgpu::Queue, e: &reelforge_core::e
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let (mut lw, mut lh, mut rgb) = (w as usize, h as usize, e.rgb.clone());
     for level in 0..levels {
         let bytes: Vec<u8> = rgb.chunks_exact(3).flat_map(|p| [f32_to_f16(p[0]), f32_to_f16(p[1]), f32_to_f16(p[2]), f32_to_f16(1.0)]).flat_map(|v| v.to_le_bytes()).collect();
         queue.write_texture(
@@ -612,19 +635,26 @@ fn env_texture(device: &wgpu::Device, queue: &wgpu::Queue, e: &reelforge_core::e
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(lw as u32 * 8), rows_per_image: Some(lh as u32) },
             wgpu::Extent3d { width: lw as u32, height: lh as u32, depth_or_array_layers: 1 },
         );
-        let (nw, nh) = ((lw / 2).max(1), (lh / 2).max(1));
-        let mut next = vec![0.0f32; nw * nh * 3];
-        for y in 0..nh {
-            for x in 0..nw {
-                for c in 0..3 {
-                    let at = |xx: usize, yy: usize| rgb[(yy.min(lh - 1) * lw + xx.min(lw - 1)) * 3 + c];
-                    next[(y * nw + x) * 3 + c] = (at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1)) * 0.25;
+        (lw, lh, rgb) = halve(lw, lh, &rgb);
+    }
+    tex.create_view(&Default::default())
+}
+
+/// An RGB picture `w` × `h` at half the size (each pixel the 2 × 2 average).
+fn halve(w: usize, h: usize, rgb: &[f32]) -> (usize, usize, Vec<f32>) {
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    let mut next = vec![0.0f32; nw * nh * 3];
+    let at = |x: usize, y: usize, c: usize| rgb.get((y.min(h.saturating_sub(1)) * w + x.min(w.saturating_sub(1))) * 3 + c).copied().unwrap_or(0.0);
+    for y in 0..nh {
+        for x in 0..nw {
+            for c in 0..3 {
+                if let Some(v) = next.get_mut((y * nw + x) * 3 + c) {
+                    *v = (at(2 * x, 2 * y, c) + at(2 * x + 1, 2 * y, c) + at(2 * x, 2 * y + 1, c) + at(2 * x + 1, 2 * y + 1, c)) * 0.25;
                 }
             }
         }
-        (lw, lh, rgb) = (nw, nh, next);
     }
-    tex.create_view(&Default::default())
+    (nw, nh, next)
 }
 
 /// An RGBA8 (sRGB) picture as a group-3 texture.

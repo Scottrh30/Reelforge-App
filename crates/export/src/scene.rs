@@ -805,6 +805,15 @@ impl Scene {
 
     #[allow(clippy::too_many_arguments)]
     fn gather(&mut self, project: &Project, l: &Layer, t: Time, frame_size: [u32; 2], fps: f64, scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize) -> Result<Option<Gathered>> {
+        // A sci-fi crawl is tipped back into the distance (before the layer's own effects).
+        let tipped;
+        let l = match sci_fi_tilt(l) {
+            Some(x) => {
+                tipped = x;
+                &tipped
+            }
+            None => l,
+        };
         let full = [frame_size[0] as f32, frame_size[1] as f32];
         if let Some(spec) = l.clip.title.as_ref().filter(|s| s.is_3d() && l.clip.nested.is_none() && !l.clip.adjustment) {
             if l.transform.pin.is_none() && l.clip.mesh_at(t).is_none() {
@@ -964,6 +973,25 @@ impl Scene {
 /// 3D text: the letters as a solid, seen through the camera and lit, drawn
 /// into a frame-sized picture that's then layered like any other (opacity,
 /// blend mode and effects apply; depth of field blurs it by its distance).
+/// A title with a sci-fi crawl, with a Rotate effect first that tips it back
+/// about the bottom of the frame (`None` for anything else).
+fn sci_fi_tilt<'a>(l: &Layer<'a>) -> Option<Layer<'a>> {
+    use reelforge_core::effects::rotate3d as r;
+    let spec = l.clip.title.as_ref()?;
+    if spec.crawl.kind != reelforge_core::CrawlKind::SciFi || spec.is_3d() || l.clip.nested.is_some() || l.clip.adjustment {
+        return None;
+    }
+    let mut e = reelforge_core::effects::Effect::new(reelforge_core::EffectKind::Rotate3d);
+    for (i, v) in [(r::TURN_X, -spec.crawl.tilt.clamp(0.0, 89.0)), (r::TURN_Y, 0.0), (r::FOV, 50.0), (r::SIZE, 100.0), (r::X, 50.0), (r::Y, 100.0), (r::PUSH, 0.0), (r::BACK, 2.0)] {
+        if let Some(p) = e.params.get_mut(i) {
+            p.value = v;
+        }
+    }
+    let mut out = l.clone();
+    out.effects.insert(0, e.eval(Time::ZERO));
+    Some(out)
+}
+
 fn solid_layer(l: &Layer, spec: &reelforge_core::TitleSpec, frame_size: [u32; 2], scene3d: &reelforge_core::space3d::Scene3d) -> Gathered {
     let full = [frame_size[0] as f32, frame_size[1] as f32];
     // Always in 3D: at Z 0 with no turn it sits where the flat title would.

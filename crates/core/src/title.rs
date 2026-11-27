@@ -376,6 +376,99 @@ pub struct TitleSpec {
     /// The text set along a mask's outline (2D text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<TextPath>,
+    /// The whole text moving through the frame over the clip: rolling
+    /// credits, a news crawl, or a sci-fi crawl into the distance (2D text).
+    #[serde(default, skip_serializing_if = "TextCrawl::is_none")]
+    pub crawl: TextCrawl,
+    /// Where a crawl is at as it's being drawn (set by [`TitleSpec::crawled`],
+    /// never saved).
+    #[serde(skip)]
+    pub crawl_at: Option<CrawlAt>,
+}
+
+/// How a title's text moves through the frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CrawlKind {
+    /// It stays put.
+    #[default]
+    None,
+    /// Up the frame, like end credits.
+    RollUp,
+    /// Down the frame.
+    RollDown,
+    /// Right to left, like a news ticker.
+    CrawlLeft,
+    /// Left to right.
+    CrawlRight,
+    /// Up and away into the distance, tilted back and fading out, like the
+    /// opening of a space opera.
+    SciFi,
+}
+
+impl CrawlKind {
+    pub const ALL: [CrawlKind; 6] = [CrawlKind::None, CrawlKind::RollUp, CrawlKind::RollDown, CrawlKind::CrawlLeft, CrawlKind::CrawlRight, CrawlKind::SciFi];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CrawlKind::None => "None",
+            CrawlKind::RollUp => "Roll up (credits)",
+            CrawlKind::RollDown => "Roll down",
+            CrawlKind::CrawlLeft => "Crawl left (ticker)",
+            CrawlKind::CrawlRight => "Crawl right",
+            CrawlKind::SciFi => "Sci-fi crawl",
+        }
+    }
+}
+
+/// A title's crawl: the text travels from where it starts to where it ends
+/// evenly over the clip's length (trim the clip to change the speed).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextCrawl {
+    pub kind: CrawlKind,
+    /// Start with the text just off the frame (else with its first line, or
+    /// first letter, at the frame's edge).
+    pub start_off: bool,
+    /// End with the text just gone (else with its last line, or letter, at the frame's far edge).
+    pub end_off: bool,
+    /// Seconds held still at the start and at the end.
+    pub pre_roll: f32,
+    pub post_roll: f32,
+    /// Sci-fi crawl: how far it's tipped back, in degrees.
+    pub tilt: f32,
+    /// Sci-fi crawl: how much of the frame (from the top), in %, it fades out over.
+    pub fade: f32,
+}
+
+impl Default for TextCrawl {
+    fn default() -> Self {
+        TextCrawl { kind: CrawlKind::None, start_off: true, end_off: true, pre_roll: 0.0, post_roll: 0.0, tilt: 62.0, fade: 30.0 }
+    }
+}
+
+impl TextCrawl {
+    pub fn is_none(&self) -> bool {
+        self.kind == CrawlKind::None
+    }
+
+    /// How far along it is (0–1) `t` seconds into a clip `dur` long.
+    pub fn progress(&self, t: f32, dur: f32) -> f32 {
+        let (pre, post) = (self.pre_roll.max(0.0), self.post_roll.max(0.0));
+        let run = dur - pre - post;
+        if !run.is_finite() || run <= 1e-6 {
+            return if t >= pre { 1.0 } else { 0.0 };
+        }
+        let p = (t - pre) / run;
+        if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 }
+    }
+}
+
+/// A crawl as it's drawn: how far along (0–1), and the frame's size in the
+/// units of the canvas being drawn on (centred on it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrawlAt {
+    pub progress: f32,
+    pub frame: [f32; 2],
 }
 
 /// A filled outline used in place of a title's text: one or more paths, each
@@ -697,6 +790,8 @@ impl Default for TitleSpec {
             anim: TextAnim::default(),
             animators: Vec::new(),
             path: None,
+            crawl: TextCrawl::default(),
+            crawl_at: None,
         }
     }
 }
@@ -761,6 +856,9 @@ impl TitleSpec {
         for a in &mut s.animators {
             a.position = a.position.map(|v| v * k);
             a.tracking *= k;
+        }
+        if let Some(c) = &mut s.crawl_at {
+            c.frame = c.frame.map(|v| v * k);
         }
         if let Some(p) = &mut s.path {
             p.margin *= k;
@@ -950,6 +1048,17 @@ impl TitleSpec {
         )
     }
 
+    /// With a crawl (2D text), the title as drawn `t` seconds into a clip
+    /// `dur` long on a `frame`-sized canvas: where its crawl is then.
+    pub fn crawled(&self, t: f32, dur: f32, frame: [u32; 2]) -> Option<TitleSpec> {
+        if self.crawl.is_none() || self.is_3d() || self.crawl_at.is_some() {
+            return None;
+        }
+        let mut s = self.clone();
+        s.crawl_at = Some(CrawlAt { progress: self.crawl.progress(t, dur), frame: [frame[0] as f32, frame[1] as f32] });
+        Some(s)
+    }
+
     /// [`Self::content_hash`] including the animation's state at `t` seconds
     /// into a clip `dur` long (quantised: frames that look the same share it).
     pub fn content_hash_at(&self, frame: [u32; 2], t: f32, dur: f32) -> u64 {
@@ -957,11 +1066,14 @@ impl TitleSpec {
         let base = self.content_hash(frame);
         let states = self.glyph_states(t, dur);
         let mods = self.animators.iter().any(|a| a.enabled && a.selector.is_animated()).then(|| self.glyph_mods(t)).flatten();
-        if states.is_none() && mods.is_none() {
+        let crawl = (!self.crawl.is_none() && !self.is_3d()).then(|| self.crawl.progress(t, dur));
+        if states.is_none() && mods.is_none() && crawl.is_none() {
             return base;
         }
         let mut h = std::collections::hash_map::DefaultHasher::new();
         base.hash(&mut h);
+        // (Steps far finer than a pixel of any crawl's travel.)
+        crawl.map(|p| (p * 1_000_000.0).round() as i64).hash(&mut h);
         for g in states.into_iter().flatten() {
             ((g.alpha * 255.0).round() as i32, (g.dy * self.size * 8.0).round() as i32).hash(&mut h);
         }
@@ -1003,6 +1115,13 @@ impl TitleSpec {
         if !self.animators.is_empty() {
             serde_json::to_string(&self.animators).unwrap_or_default().hash(&mut h);
         }
+        if !self.crawl.is_none() {
+            let c = &self.crawl;
+            (c.kind, c.start_off, c.end_off).hash(&mut h);
+            for v in [c.pre_roll, c.post_roll, c.tilt, c.fade] {
+                v.to_bits().hash(&mut h);
+            }
+        }
         if let Some(p) = &self.path {
             (p.mask, p.reverse, p.perpendicular, p.open, p.margin.to_bits()).hash(&mut h);
             for q in p.line.iter().flat_map(|l| l.iter()) {
@@ -1023,6 +1142,26 @@ impl TitleSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crawls_go_evenly_between_their_rolls_and_are_saved() {
+        let c = TextCrawl { kind: CrawlKind::RollUp, pre_roll: 1.0, post_roll: 1.0, ..TextCrawl::default() };
+        assert_eq!(c.progress(0.5, 10.0), 0.0, "held in the pre-roll");
+        assert_eq!(c.progress(5.0, 10.0), 0.5);
+        assert_eq!(c.progress(9.5, 10.0), 1.0, "held in the post-roll");
+        assert_eq!(c.progress(f32::NAN, 10.0), 0.0);
+        assert_eq!(TextCrawl { pre_roll: 9.5, ..c }.progress(9.6, 10.0), 1.0, "rolls longer than the clip");
+        let spec = TitleSpec { crawl: c, ..TitleSpec::default() };
+        let back: TitleSpec = serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
+        assert_eq!(back.crawl, c);
+        assert!(!serde_json::to_string(&TitleSpec::default()).unwrap().contains("crawl"), "no crawl, nothing saved");
+        // Placed for drawing: where it is, and different pictures at different times.
+        let at = spec.crawled(5.0, 10.0, [1920, 1080]).unwrap();
+        assert_eq!(at.crawl_at, Some(CrawlAt { progress: 0.5, frame: [1920.0, 1080.0] }));
+        assert!(at.crawled(5.0, 10.0, [1920, 1080]).is_none(), "placed already");
+        assert_ne!(spec.content_hash_at([1920, 1080], 4.0, 10.0), spec.content_hash_at([1920, 1080], 5.0, 10.0));
+        assert!(TitleSpec { extrude: 10.0, ..spec.clone() }.crawled(5.0, 10.0, [1920, 1080]).is_none(), "not 3D text");
+    }
 
     #[test]
     fn defaults_scale_with_the_frame_and_round_trip() {

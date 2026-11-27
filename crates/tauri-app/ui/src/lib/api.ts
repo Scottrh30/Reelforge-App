@@ -496,6 +496,12 @@ export interface Prefs {
   render_cache_disk_mb: number;
   /// 3D shadows: 0 Low, 1 Standard, 2 High.
   shadow_quality: number;
+  /// 3D text and models: anti-aliasing samples (1 off, 4 on).
+  antialias_samples: number;
+  /// Reflections: the environment picture at most this wide (0: full size).
+  reflection_map_size: number;
+  /// The Viewer's deep video brought down to 8 bits for speed.
+  viewer_8bit: boolean;
   /// Warn below this many GB free (0: never).
   disk_warn_gb: number;
   /// Where proxies and rendered previews go (null: the cache folder).

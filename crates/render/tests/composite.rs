@@ -4248,3 +4248,51 @@ fn transition_utility_and_simulation_effects_work() {
         assert!(lit > 800, "{kind:?}: {lit} lit");
     }
 }
+
+/// From the HitFilm list: Demultiply and Remove stock background unmix a
+/// plain background, so laid back over it the picture looks as it did.
+#[test]
+fn demultiply_and_stock_background_unmix_the_background() {
+    use reelforge_core::effects::*;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (64u32, 16u32);
+    let mut key = 17_000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)], under: Option<[u8; 4]>| {
+        let v = fx(kind, set);
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        let back = solid(w, h, under.unwrap_or([0, 0, 0, 255]));
+        let mut b = layer(2, &back, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        b.content_id = key ^ 0xbac;
+        c.render([w, h], &[b, with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    // Orange glow on black, left to right from black to full.
+    let glow: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| { let k = x as f32 / (w - 1) as f32; [(255.0 * k) as u8, (140.0 * k) as u8, (20.0 * k) as u8, 255] })).collect();
+    // Over black, Demultiply looks the same; over white, the dark parts are see-through.
+    let over_black = draw(&mut c, &glow, EffectKind::Demultiply, &[], None);
+    let over_white = draw(&mut c, &glow, EffectKind::Demultiply, &[], Some([255, 255, 255, 255]));
+    for x in [8u32, 32, 56] {
+        let (a, b) = (px(&over_black, w, x, 8), px(&glow, w, x, 8));
+        assert!((0..3).all(|i| a[i].abs_diff(b[i]) <= 3), "x {x}: {a:?} vs {b:?}");
+    }
+    assert!(px(&over_white, w, 2, 8)[2] > 240, "black became clear: {:?}", px(&over_white, w, 2, 8));
+    assert!(px(&over_white, w, 63, 8)[2] < 40, "the full colour stays solid: {:?}", px(&over_white, w, 62, 8));
+    // Ink on white: Remove stock background (white) looks the same back over
+    // white, and over black the paper is gone but the ink stays.
+    let ink: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| { let k = x as f32 / (w - 1) as f32; [(255.0 - 230.0 * k) as u8, (255.0 - 200.0 * k) as u8, (255.0 - 90.0 * k) as u8, 255] })).collect();
+    let on_white = draw(&mut c, &ink, EffectKind::RemoveStockBackground, &[(stock_background::TOLERANCE, 0.0)], Some([255, 255, 255, 255]));
+    let on_black = draw(&mut c, &ink, EffectKind::RemoveStockBackground, &[(stock_background::TOLERANCE, 0.0)], None);
+    for x in [8u32, 32, 56] {
+        let (a, b) = (px(&on_white, w, x, 8), px(&ink, w, x, 8));
+        assert!((0..3).all(|i| a[i].abs_diff(b[i]) <= 3), "x {x}: {a:?} vs {b:?}");
+    }
+    assert!(px(&on_black, w, 1, 8)[0] < 10, "the paper is gone: {:?}", px(&on_black, w, 1, 8));
+    let dark = px(&on_black, w, 63, 8);
+    assert!(dark[2] > 120 && dark[0] < 60, "the ink stays: {dark:?}");
+    // A coloured background (green) likewise.
+    let green: Vec<u8> = (0..w * h).flat_map(|_| [0u8, 200, 0, 255]).collect();
+    let gone = draw(&mut c, &green, EffectKind::RemoveStockBackground, &[(stock_background::BACKGROUND, 2.0), (stock_background::COLOR, 0x00c800 as f32)], None);
+    assert!(px(&gone, w, 30, 8)[1] < 10, "{:?}", px(&gone, w, 30, 8));
+}

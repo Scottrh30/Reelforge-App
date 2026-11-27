@@ -852,7 +852,10 @@ What works now:
     monochrome), **Invert** (RGB, a channel, alpha, luminance, hue, lightness or saturation),
     **Shift channels** and **Set channels** (each channel from another, full, half or off;
     inverted), **Set matte** (alpha from a channel), **Solid composite** (over a colour with a
-    blend mode) and **Minimax** (minimum, maximum or both in turn, over a radius)
+    blend mode), **Minimax** (minimum, maximum or both in turn, over a radius) and
+    **Demultiply** (black made see-through, colours kept: for flares, fire, sparks and smoke
+    on black, so they sit over the picture as light without a blend mode; worked out in linear
+    light, so laid back over black it looks just as it did; a **Black point** for noisy blacks)
   - **Colour** (more): **Auto levels**, **Auto contrast** and **Auto colour** (the
     picture's own black and white points found, with **Black** and **White clip**; auto colour
     also neutralises the midtones), **Equalize** (histogram equalisation, by channel or
@@ -899,8 +902,11 @@ What works now:
     feathered), **Colour range** (a box of colours in Lab, YUV or RGB), **Colour difference
     key** (blue or green screen by how far a pixel's colour stands out, with black and white
     points, gamma and a matte view), **Linear colour key** (match by RGB, hue or chroma; key out
-    or keep), **Extract** (black and white points on a channel, softened), **Spill suppressor**
-    and **Simple choker**
+    or keep), **Extract** (black and white points on a channel, softened), **Spill suppressor**,
+    **Simple choker** and **Remove stock background** (the plain background of stock footage
+    and graphics taken out — white, black or a colour — leaving smoke, ink and soft edges
+    their own colour and see-through where they're thin, rather than a hard key; laid back
+    over the same background it looks just as it did)
   - **Stylize** (more): **Brush strokes**, **Cartoon** (flattened fills with ink edges),
     **Emboss** and **Colour emboss**, **Find edges**, **Mosaic**, **Posterize**, **Roughen
     edges** (roughen, cut, spiky or rusty), **Scatter**, **Texturize** (canvas, brick, burlap,
@@ -1370,6 +1376,16 @@ What works now:
   ends). Pieces in the same state are drawn together, outline and shadow included, so a fading
   letter keeps its edges; the box behind stays put. It's part of the title's style, so a title
   preset carries it to other titles
+- **Crawls** (Text tab → **Crawl**; 2D text): the whole text moves through the frame over the
+  clip, evenly from start to end (trim the clip to change the speed): **Roll up** (end
+  credits) and **Roll down**, **Crawl left** (a news ticker) and **Crawl right**, or a
+  **Sci-fi crawl** (rolling up while tipped back about the bottom of the frame into the
+  distance, fading out towards the top, like a space opera's opening; its **Tilt** and **Fade**
+  are settings). **Start off screen** / **End off screen** (else it starts with the first line,
+  or letter, at the frame's edge, or ends with the last at the far edge), and a **Pre-roll** and
+  **Post-roll** to hold it still at either end. Text far longer than the frame is laid out
+  whole, and only what's in view is drawn, as sharp as ever; text animations and animators
+  still work on a crawling title
 - **The Text tab** (a dock tab beside Controls; **Window → Text** shows or hides it): **+ Add
   text** puts 2D text at the playhead (as `Ctrl+T`), and picking any text clip on the timeline
   shows all its settings: text, font, colour, size, alignment (**Left / Centre / Right**),
@@ -1732,6 +1748,11 @@ What works now:
   line up. Exports and rendered previews are always of the edit, never the grid
 - **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, render cache size,
   proxies, autosave interval, and the proxy/autosave folders
+- **Limit the Viewer's video to 8 bits** (Settings, off by default): 10-bit and deeper SDR
+  video (ProRes, DNxHR, 10-bit H.264 and HEVC…) is brought down to 8 bits as it's decoded for
+  the Viewer, rounded, halving the memory and upload each frame takes so heavy footage plays
+  more smoothly. Exports always decode at the full depth, and HDR (PQ, HLG) keeps it, since 8-bit
+  HDR bands
 - **Render with: GPU or CPU** (Settings): what draws the pictures, in the Viewer and in exports.
   The **GPU** (the graphics card, the fastest one there is) is the default. The **CPU** runs the
   very same shaders in software (WARP, which comes with Windows; lavapipe or llvmpipe on Linux;
@@ -2273,7 +2294,11 @@ What works now:
     cast shadows at a time, their outlines drawn into an atlas of 5 × 5 tiles each frame. **3D
     shadow quality** in Settings sets the tiles' size: Low 256 px, Standard 512 (the default) or
     High 1024, sharper for big layers and long shadows (the atlas takes 1.6, 6.5 or 26 MB of
-    graphics memory); exports use it too. **Shadow softness** (0–100%)
+    graphics memory); exports use it too. **3D anti-aliasing** (Settings: on, 4 samples a pixel, or
+    off for speed) smooths the edges of 3D text, extrusions and models, and **Reflection map
+    size** (512, 1024, 2048 — the default — or 4096 px across, or full size) shrinks a big
+    environment light's picture before it's used for their reflections: less graphics memory
+    and quicker to load, or sharper mirror-like reflections; exports use both. **Shadow softness** (0–100%)
     gives the light a size: a shadow's edge fades over a width that grows with how far it falls
     from what casts it (sharp where it touches, blurrier further away), sampled with a turned
     disk of 24 taps so it reads as fine grain rather than steps. Extruded **3D text** casts
