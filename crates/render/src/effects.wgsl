@@ -7202,3 +7202,523 @@ fn fs_sphere(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4(0.0);
 }
+
+// ---- Batch: generate, noise & grain ----
+
+// What a generator draws (`g`, premultiplied) put on the layer by a mode: 0 normal (over),
+// 1 add, 2 multiply, 3 screen, 4 overlay, 5 soft light, 6 hard light, 7 difference,
+// 8 stencil alpha (the layer only where g is), 9 silhouette alpha (only where it isn't);
+// g's opacity scaled by `k` first.
+fn gn_put(c: vec4<f32>, g: vec4<f32>, mode: u32, k: f32) -> vec4<f32> {
+    let gg = g * k;
+    if (mode == 8u) {
+        return c * gg.a;
+    }
+    if (mode == 9u) {
+        return c * (1.0 - gg.a);
+    }
+    if (mode == 0u) {
+        return gg + c * (1.0 - gg.a);
+    }
+    let base = to_display(unpremul(c));
+    let top = to_display(unpremul(gg));
+    var m = 0u;
+    switch mode {
+        case 1u: { m = 11u; }
+        case 2u: { m = 1u; }
+        case 3u: { m = 2u; }
+        case 4u: { m = 3u; }
+        case 5u: { m = 4u; }
+        case 6u: { m = 5u; }
+        default: { m = 10u; }
+    }
+    let mixed = mix(base, cx_blend(base, top, m), gg.a);
+    return vec4(to_linear(mixed) * c.a, c.a);
+}
+
+// A random 0–1 from a cell and a seed.
+fn gn_rand2(p: vec2<f32>, seed: f32) -> vec2<f32> {
+    let q = vec2(dot(p, vec2(127.1, 311.7)) + seed * 17.13, dot(p, vec2(269.5, 183.3)) + seed * 7.71);
+    return fract(sin(q) * 43758.5453);
+}
+
+// 4-colour gradient: points and colours at 0–11 (x, y, colour each), p3 = (blend, jitter %, opacity %, mode).
+@fragment
+fn fs_four_color(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    var pts = array<vec2<f32>, 4>(fx.p0.xy, vec2(fx.p0.w, fx.p1.x), vec2(fx.p1.z, fx.p1.w), vec2(fx.p2.y, fx.p2.z));
+    var cols = array<f32, 4>(fx.p0.z, fx.p1.y, fx.p2.x, fx.p2.w);
+    let pw = max(fx.p3.x, 1.0) / 50.0;
+    var sum = vec3(0.0);
+    var w = 0.0;
+    for (var i = 0; i < 4; i = i + 1) {
+        let d = length(q - pts[i] / 100.0 * size) / length(size);
+        let k = 1.0 / pow(max(d, 1e-4), pw);
+        sum = sum + rgb_of(cols[i]) * k;
+        w = w + k;
+    }
+    var rgb = sum / w;
+    rgb = rgb + (gn_rand2(q, 3.0).x - 0.5) * fx.p3.y / 100.0 * 0.03;
+    return gn_put(c, vec4(max(rgb, vec3(0.0)), 1.0), u32(round(fx.p3.w)), clamp(fx.p3.z / 100.0, 0.0, 1.0));
+}
+
+// Beam: p0 = (start x, y, end x, y %), p1 = (length %, time %, start thickness px, end thickness px),
+// p2 = (softness %, inside colour, outside colour, beam only).
+@fragment
+fn fs_beam(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let a = fx.p0.xy / 100.0 * size;
+    let b = fx.p0.zw / 100.0 * size;
+    let ab = b - a;
+    let len2 = max(dot(ab, ab), 1.0);
+    let t = clamp(dot(q - a, ab) / len2, 0.0, 1.0);
+    let head = clamp(fx.p1.y / 100.0, 0.0, 1.0);
+    let tail = head - clamp(fx.p1.x / 100.0, 0.0, 1.0);
+    let base = select(c, vec4(0.0), fx.p2.w >= 0.5);
+    if (t > head || t < tail) {
+        return base;
+    }
+    let d = length(q - (a + ab * t));
+    let thick = max(mix(fx.p1.z, fx.p1.w, t), 0.01) * 0.5;
+    let soft = clamp(fx.p2.x / 100.0, 0.0, 1.0);
+    let core = 1.0 - smoothstep(thick * 0.35, thick * (0.35 + 0.4 * soft) + 0.5, d);
+    let glow = exp(-d * d / (thick * thick * (1.0 + 6.0 * soft))) ;
+    let rgb = rgb_of(fx.p2.y) * core + rgb_of(fx.p2.z) * glow * (1.0 - core);
+    let a2 = clamp(max(core, glow), 0.0, 1.0);
+    return vec4(base.rgb + rgb, max(base.a, a2));
+}
+
+// The nearest and second-nearest cell points to p (in cells), and the nearest's random value.
+fn cp_cells(p: vec2<f32>, seed: f32, disperse: f32, phase: f32) -> vec3<f32> {
+    let i = floor(p);
+    var d1 = 9.0;
+    var d2 = 9.0;
+    var r1 = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let cell = i + vec2(f32(x), f32(y));
+            let rnd = gn_rand2(cell, seed);
+            let wob = vec2(sin(phase + rnd.x * 6.283), cos(phase + rnd.y * 6.283)) * 0.15;
+            let pt = cell + 0.5 + (rnd - 0.5) * disperse + wob * disperse;
+            let d = length(p - pt);
+            if (d < d1) {
+                d2 = d1;
+                d1 = d;
+                r1 = rnd.x;
+            } else if (d < d2) {
+                d2 = d;
+            }
+        }
+    }
+    return vec3(d1, d2, r1);
+}
+
+// Cell pattern: p0 = (style, invert, contrast, disperse %), p1 = (size px, offset x, y, evolution °),
+// p2 = (speed °/s, seed, opacity %, mode).
+@fragment
+fn fs_cell_pattern(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let q = dx_q(in.uv) + fx.p1.yz;
+    let p = q / max(fx.p1.x, 2.0);
+    let phase = radians(fx.p1.w + fx.p2.x * fx.extra.y);
+    let cl = cp_cells(p, fx.p2.y, clamp(fx.p0.w / 100.0, 0.0, 1.5), phase);
+    var v = 0.0;
+    switch u32(round(fx.p0.x)) {
+        case 0u: { v = 1.0 - cl.x; }
+        case 1u: { v = cl.y - cl.x; }
+        case 2u: { v = smoothstep(0.0, 0.08, cl.y - cl.x); }
+        case 3u: { v = cl.z; }
+        case 4u: { v = cl.z * smoothstep(0.0, 0.05, cl.y - cl.x); }
+        case 5u: { v = sqrt(max(1.0 - cl.x * cl.x * 1.5, 0.0)); }
+        case 6u: { v = mix(cl.y - cl.x, cl.z, 0.5); }
+        default: { v = 1.0 - abs(cl.y - cl.x - 0.25) * 4.0; }
+    }
+    v = clamp((v - 0.5) * fx.p0.z / 100.0 + 0.5, 0.0, 1.0);
+    if (fx.p0.y >= 0.5) {
+        v = 1.0 - v;
+    }
+    return gn_put(c, vec4(to_linear(vec3(v)), 1.0), u32(round(fx.p2.w)), clamp(fx.p2.z / 100.0, 0.0, 1.0));
+}
+
+// Checkerboard: p0 = (anchor x, y %, width, height px), p1 = (feather px, colour, opacity %, mode).
+@fragment
+fn fs_checkerboard(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let q = dx_q(in.uv) - fx.p0.xy / 100.0 * dx_size();
+    let s = max(vec2(fx.p0.z, fx.p0.w), vec2(1.0));
+    let f = q / s;
+    let cell = floor(f);
+    let on = ((cell.x + cell.y) % 2.0 + 2.0) % 2.0;
+    let e = min(abs(fract(f.x) - 0.5) * s.x, abs(fract(f.y) - 0.5) * s.y);
+    let edge = select(1.0, smoothstep(0.0, fx.p1.x, s.x * 0.5 - e), fx.p1.x > 0.0);
+    let k = mix(0.5, on, edge);
+    return gn_put(c, vec4(rgb_of(fx.p1.y), 1.0) * k, u32(round(fx.p1.w)), clamp(fx.p1.z / 100.0, 0.0, 1.0));
+}
+
+// Circle: p0 = (centre x, y %, radius px, edge), p1 = (thickness / edge radius px, feather out, feather in, invert),
+// p2 = (colour, opacity %, mode).
+@fragment
+fn fs_circle(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let d = length(dx_q(in.uv) - fx.p0.xy / 100.0 * dx_size());
+    let r = max(fx.p0.z, 0.0);
+    let fo = max(fx.p1.y, 0.0);
+    let fi = max(fx.p1.z, 0.0);
+    var k = 1.0 - smoothstep(r - fo * 0.5 - 0.5, r + fo * 0.5 + 0.5, d);
+    let edge = u32(round(fx.p0.w));
+    if (edge > 0u) {
+        let inner = select(r - max(fx.p1.x, 0.0), max(fx.p1.x, 0.0), edge == 2u);
+        k = k * smoothstep(inner - fi * 0.5 - 0.5, inner + fi * 0.5 + 0.5, d);
+    }
+    if (fx.p1.w >= 0.5) {
+        k = 1.0 - k;
+    }
+    return gn_put(c, vec4(rgb_of(fx.p2.x), 1.0) * k, u32(round(fx.p2.z)), clamp(fx.p2.y / 100.0, 0.0, 1.0));
+}
+
+// Ellipse: p0 = (centre x, y %, width, height % of the layer height), p1 = (thickness px, softness %, inside, outside colour), p2.x = only.
+@fragment
+fn fs_ellipse(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let rel = dx_q(in.uv) - fx.p0.xy / 100.0 * dx_size();
+    // (Its width and height are percentages of the layer's height.)
+    let rad = max(vec2(fx.p0.z, fx.p0.w) / 100.0 * dx_size().y * 0.5, vec2(1.0));
+    // Distance from the ellipse, roughly in pixels (its value over its gradient).
+    let k = length(rel / rad);
+    let grad = length(rel / (rad * rad)) / max(k, 1e-4);
+    let d = abs(k - 1.0) / max(grad, 1e-4);
+    let th = max(fx.p1.x, 0.0) * 0.5;
+    let soft = clamp(fx.p1.y / 100.0, 0.0, 1.0);
+    let core = 1.0 - smoothstep(th * (1.0 - soft), th + 0.5, d);
+    let glow = (1.0 - smoothstep(th, th * (1.0 + 4.0 * soft) + 1.0, d)) * soft;
+    let rgb = rgb_of(fx.p1.z) * core + rgb_of(fx.p1.w) * glow * (1.0 - core);
+    let a = clamp(max(core, glow), 0.0, 1.0);
+    let base = select(c, vec4(0.0), fx.p2.x >= 0.5);
+    return vec4(rgb + base.rgb * (1.0 - a), a + base.a * (1.0 - a));
+}
+
+// Fill: p0 = (colour, invert, feather px, opacity %).
+@fragment
+fn fs_fill_colour(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    var a = c.a;
+    let f = max(fx.p0.z, 0.0);
+    if (f > 0.0) {
+        var s = 0.0;
+        for (var i = 0; i < 8; i = i + 1) {
+            let ang = f32(i) * 0.785398;
+            s = s + cx_at(in.uv + vec2(cos(ang), sin(ang)) * f * 0.5 * cx_px()).a;
+        }
+        a = min(a, s / 8.0 * 1.5);
+    }
+    if (fx.p0.y >= 0.5) {
+        a = (1.0 - a) * inside(in.uv);
+    }
+    let k = clamp(fx.p0.w / 100.0, 0.0, 1.0);
+    let filled = vec4(rgb_of(fx.p0.x) * a, a);
+    if (fx.p0.y >= 0.5) {
+        return filled * k + c * (1.0 - filled.a * k);
+    }
+    return mix(c, filled, k);
+}
+
+// Grid: p0 = (anchor x, y %, width, height px), p1 = (border px, feather px, invert, colour), p2 = (opacity %, mode).
+@fragment
+fn fs_grid(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let q = dx_q(in.uv) - fx.p0.xy / 100.0 * dx_size();
+    let s = max(vec2(fx.p0.z, fx.p0.w), vec2(1.0));
+    let m = abs(q - s * round(q / s));
+    let d = min(m.x, m.y);
+    let half = max(fx.p1.x, 0.0) * 0.5;
+    var k = 1.0 - smoothstep(half - fx.p1.y * 0.5 - 0.5, half + fx.p1.y * 0.5 + 0.5, d);
+    if (fx.p1.z >= 0.5) {
+        k = 1.0 - k;
+    }
+    return gn_put(c, vec4(rgb_of(fx.p1.w), 1.0) * k, u32(round(fx.p2.y)), clamp(fx.p2.x / 100.0, 0.0, 1.0));
+}
+
+// Radio waves: p0 = (x, y %, sides, star %), p1 = (per second, px/s, lifespan s, spin °/s),
+// p2 = (width px, softness px, colour, fade), p3.x = only.
+@fragment
+fn fs_radio_waves(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let rel = dx_q(in.uv) - fx.p0.xy / 100.0 * dx_size();
+    let t = max(fx.extra.y, 0.0);
+    let sides = clamp(round(fx.p0.z), 3.0, 64.0);
+    let ang = atan2(rel.y, rel.x) - radians(fx.p1.w * t);
+    // A polygon's (and star's) radius at this angle, for a circumradius of 1.
+    let seg = 6.2831853 / sides;
+    let a = ((ang % seg) + seg) % seg - seg * 0.5;
+    var shape = cos(seg * 0.5) / cos(a);
+    if (sides >= 63.5) {
+        shape = 1.0;
+    }
+    shape = shape * (1.0 - fx.p0.w / 100.0 * 0.5 * (1.0 - abs(a) / (seg * 0.5)));
+    let r = length(rel) / max(shape, 0.05);
+    let period = 1.0 / max(fx.p1.x, 0.01);
+    let life = max(fx.p1.z, 0.01);
+    var k = 0.0;
+    // The waves still alive: born every period, up to `life` ago.
+    let newest = floor(t / period);
+    let count = min(ceil(life / period) + 1.0, 64.0);
+    for (var i = 0.0; i < count; i = i + 1.0) {
+        let born = (newest - i) * period;
+        let age = t - born;
+        if (born < 0.0 || age > life) {
+            continue;
+        }
+        let ring = age * fx.p1.y;
+        let d = abs(r - ring);
+        let w = max(fx.p2.x, 0.01) * 0.5;
+        var v = 1.0 - smoothstep(w - 0.5, w + max(fx.p2.y, 0.0) + 0.5, d);
+        if (fx.p2.w >= 0.5) {
+            v = v * (1.0 - age / life);
+        }
+        k = max(k, v);
+    }
+    let base = select(c, vec4(0.0), fx.p3.x >= 0.5);
+    return vec4(rgb_of(fx.p2.z) * k + base.rgb * (1.0 - k), k + base.a * (1.0 - k));
+}
+
+// Threads: p0 = (width px, height %, overlaps, centre %), p1 = (coverage %, shadowing %, texture %, angle °).
+@fragment
+fn fs_threads(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let a = radians(fx.p1.w);
+    let q0 = dx_q(in.uv);
+    let q = vec2(q0.x * cos(a) + q0.y * sin(a), -q0.x * sin(a) + q0.y * cos(a)) / max(fx.p0.x, 1.0);
+    let cell = floor(q);
+    let f = fract(q);
+    let over = max(round(fx.p0.z), 1.0);
+    // Warp (down) and weft (across) take turns on top, `over` threads at a time.
+    let warp_top = ((floor((cell.x + cell.y) / over)) % 2.0) == 0.0;
+    let cov = clamp(fx.p1.x / 100.0, 0.0, 1.0);
+    let wx = 1.0 - smoothstep(cov * 0.45, cov * 0.5 + 0.02, abs(f.x - fx.p0.w / 100.0));
+    let wy = 1.0 - smoothstep(cov * 0.45, cov * 0.5 + 0.02, abs(f.y - 0.5));
+    // Each thread's roundness (its relief), and fibres along it.
+    let rx = sqrt(max(1.0 - pow((f.x - 0.5) * 2.0, 2.0), 0.0));
+    let ry = sqrt(max(1.0 - pow((f.y - 0.5) * 2.0, 2.0), 0.0));
+    let fib_x = 1.0 - fx.p1.z / 100.0 * 0.4 * fract(sin(dot(vec2(cell.x, floor(q.y * 8.0)), vec2(12.9898, 78.233))) * 43758.5453);
+    let fib_y = 1.0 - fx.p1.z / 100.0 * 0.4 * fract(sin(dot(vec2(floor(q.x * 8.0), cell.y), vec2(39.3468, 11.135))) * 43758.5453);
+    let h = fx.p0.y / 100.0;
+    var shade = 0.0;
+    var cover = 0.0;
+    if (warp_top) {
+        shade = select(mix(1.0, ry, h) * fib_y * (1.0 - fx.p1.y / 100.0 * 0.5), mix(1.0, rx, h) * fib_x, wx > 0.5);
+        cover = max(wx, wy);
+    } else {
+        shade = select(mix(1.0, rx, h) * fib_x * (1.0 - fx.p1.y / 100.0 * 0.5), mix(1.0, ry, h) * fib_y, wy > 0.5);
+        cover = max(wx, wy);
+    }
+    let k = cover;
+    return vec4(c.rgb * shade * k, c.a * k);
+}
+
+// Light burst: p0 = (centre x, y %, length %, intensity %), p1 = (threshold %, burst, rays only).
+@fragment
+fn fs_light_burst(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let centre = fx.p0.xy / 100.0;
+    let len = fx.p0.z / 100.0;
+    let thr = clamp(fx.p1.x / 100.0, 0.0, 0.99);
+    let style = u32(round(fx.p1.y));
+    let n = 48;
+    var sum = vec3(0.0);
+    var w = 0.0;
+    for (var i = 0; i < n; i = i + 1) {
+        let t = f32(i) / f32(n - 1);
+        let uv = centre + (in.uv - centre) / (1.0 + len * t);
+        let s = cx_at(uv);
+        let bright = max(to_display(unpremul(s)) - thr, vec3(0.0)) / (1.0 - thr) * s.a;
+        var k = 1.0;
+        if (style == 1u) { k = 1.0 - t; } else if (style == 2u) { k = t; }
+        sum = sum + to_linear(bright) * k;
+        w = w + 1.0;
+    }
+    let rays = sum / w * fx.p0.w / 100.0 * 2.0;
+    let base = select(c, vec4(0.0), fx.p1.z >= 0.5);
+    return vec4(base.rgb + rays, max(base.a, min(max(rays.r, max(rays.g, rays.b)), 1.0)));
+}
+
+fn cn_field(p: vec2<f32>, seed: u32, oct: i32, t: f32) -> f32 {
+    var sum = 0.0;
+    var amp = 0.5;
+    var f = 1.0;
+    for (var i = 0; i < 8; i = i + 1) {
+        if (i >= oct) {
+            break;
+        }
+        sum = sum + amp * vnoise(seed + u32(i) * 13u, p * f + vec2(t * 0.3, -t * 0.2) * f);
+        amp = amp * 0.5;
+        f = f * 2.03;
+    }
+    return sum;
+}
+
+// Curl noise: p0 = (size px, detail, swirl %, contrast %), p1 = (speed %, dark, light, seed), p2 = (opacity %, mode).
+@fragment
+fn fs_curl_noise(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let seed = u32(max(fx.p1.w, 0.0));
+    let oct = i32(clamp(round(fx.p0.y), 1.0, 8.0));
+    let t = fx.extra.y * fx.p1.x / 100.0;
+    var p = dx_q(in.uv) / max(fx.p0.x, 2.0);
+    // Advected along the curl of a slower field a few times.
+    let e = 0.01;
+    for (var i = 0; i < 4; i = i + 1) {
+        let fy = cn_field(p + vec2(0.0, e), seed + 99u, 3, t * 0.5) - cn_field(p - vec2(0.0, e), seed + 99u, 3, t * 0.5);
+        let fxd = cn_field(p + vec2(e, 0.0), seed + 99u, 3, t * 0.5) - cn_field(p - vec2(e, 0.0), seed + 99u, 3, t * 0.5);
+        p = p + vec2(fy, -fxd) / (2.0 * e) * 0.08 * fx.p0.z / 100.0;
+    }
+    var v = cn_field(p, seed, oct, t);
+    v = clamp((v - 0.5) * fx.p0.w / 100.0 * 2.0 + 0.5, 0.0, 1.0);
+    let rgb = mix(rgb_of(fx.p1.y), rgb_of(fx.p1.z), v);
+    return gn_put(c, vec4(rgb, 1.0), u32(round(fx.p2.y)), clamp(fx.p2.x / 100.0, 0.0, 1.0));
+}
+
+// Noise: p0 = (amount %, colour, clip, still), p1.x = seed.
+@fragment
+fn fs_noise(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let q = floor(dx_q(in.uv));
+    let frame = select(floor(fx.extra.y * 30.0), 0.0, fx.p0.w >= 0.5) + fx.p1.x * 7.0;
+    let r = vec3(gn_rand2(q, frame).x, gn_rand2(q, frame + 1.3).x, gn_rand2(q, frame + 2.7).x);
+    let n = select(vec3(r.x), r, fx.p0.y >= 0.5) - 0.5;
+    var d = cx_disp(c) + n * fx.p0.x / 100.0;
+    if (fx.p0.z >= 0.5) {
+        d = clamp(d, vec3(0.0), vec3(1.0));
+    }
+    return vec4(to_linear(d) * c.a, c.a);
+}
+
+// Noise HLS: p0 = (type, hue %, lightness %, saturation %), p1 = (grain px, phase °, animate).
+@fragment
+fn fs_noise_hls(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let kind = u32(round(fx.p0.x));
+    let g = select(1.0, max(fx.p1.x, 0.5), kind == 2u);
+    let q = floor(dx_q(in.uv) / g);
+    let frame = select(0.0, floor(fx.extra.y * 30.0), fx.p1.z >= 0.5) + fx.p1.y / 37.0;
+    var r = vec3(gn_rand2(q, frame).x, gn_rand2(q, frame + 1.7).x, gn_rand2(q, frame + 3.1).x) - 0.5;
+    if (kind == 1u) {
+        r = r * abs(r) * 2.0;
+    }
+    var h = cx_rgb2hsl(cx_disp(c));
+    h.x = fract(h.x + r.x * fx.p0.y / 100.0);
+    h.z = clamp(h.z + r.y * fx.p0.z / 100.0, 0.0, 1.0);
+    h.y = clamp(h.y + r.z * fx.p0.w / 100.0, 0.0, 1.0);
+    return cx_out(cx_hsl2rgb(h), c.a);
+}
+
+// The median (by brightness) of up to 49 samples on a grid of radius r px about uv.
+fn md_median(uv: vec2<f32>, r: f32) -> vec4<f32> {
+    let n = i32(min(ceil(r), 3.0));
+    let gap = r / max(f32(n), 1.0);
+    let px = cx_px();
+    var s: array<vec4<f32>, 49>;
+    var l: array<f32, 49>;
+    var count = 0;
+    for (var y = -n; y <= n; y = y + 1) {
+        for (var x = -n; x <= n; x = x + 1) {
+            let c = cx_at(uv + vec2(f32(x), f32(y)) * gap * px);
+            s[count] = c;
+            l[count] = dot(c.rgb, LUMA) + c.a * 1e-3;
+            count = count + 1;
+        }
+    }
+    // The one with as many below it as above.
+    let half = count / 2;
+    for (var i = 0; i < 49; i = i + 1) {
+        if (i >= count) {
+            break;
+        }
+        var below = 0;
+        var same = 0;
+        for (var j = 0; j < 49; j = j + 1) {
+            if (j >= count) {
+                break;
+            }
+            below = below + select(0, 1, l[j] < l[i]);
+            same = same + select(0, 1, l[j] == l[i]);
+        }
+        if (below <= half && below + same > half) {
+            return s[i];
+        }
+    }
+    return s[half];
+}
+
+// Median: p0.x = radius px.
+@fragment
+fn fs_median(in: VsOut) -> @location(0) vec4<f32> {
+    if (fx.p0.x <= 0.0) {
+        return cx_at(in.uv);
+    }
+    return md_median(in.uv, fx.p0.x);
+}
+
+// Dust & scratches: p0 = (radius px, threshold 0–255).
+@fragment
+fn fs_dust_scratches(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    if (fx.p0.x <= 0.0) {
+        return c;
+    }
+    let m = md_median(in.uv, fx.p0.x);
+    let diff = length(cx_disp(c) - cx_disp(m)) * 255.0 / 1.732;
+    return select(c, m, diff > fx.p0.y);
+}
+
+// Remove grain (one pass): p0 = (strength %, size px, passes, colour noise %), p1 = (sharpen %, view).
+// A bilateral average: neighbours weighted by nearness and by likeness, brightness and
+// colour noise judged separately.
+@fragment
+fn fs_remove_grain(in: VsOut) -> @location(0) vec4<f32> {
+    let c0 = cx_at(in.uv);
+    let d0 = cx_disp(c0);
+    let y0 = dot(d0, LUMA);
+    let r = max(fx.p0.y, 1.0);
+    let n = i32(min(ceil(r), 6.0));
+    let gap = r / max(f32(n), 1.0);
+    let px = cx_px();
+    let strength = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let sy = 0.02 + 0.15 * strength;
+    let sc = 0.02 + 0.3 * strength * fx.p0.w / 100.0;
+    var sum_y = 0.0;
+    var wy = 0.0;
+    var sum_c = vec3(0.0);
+    var wc = 0.0;
+    var blur = 0.0;
+    var wb = 0.0;
+    for (var y = -n; y <= n; y = y + 1) {
+        for (var x = -n; x <= n; x = x + 1) {
+            let o = vec2(f32(x), f32(y)) * gap;
+            let ds = exp(-dot(o, o) / (2.0 * r * r));
+            let s = cx_at(in.uv + o * px);
+            let d = cx_disp(s);
+            let yy = dot(d, LUMA);
+            let k1 = ds * exp(-pow((yy - y0) / sy, 2.0));
+            sum_y = sum_y + yy * k1;
+            wy = wy + k1;
+            let k2 = ds * exp(-pow((yy - y0) / (sy * 3.0), 2.0));
+            sum_c = sum_c + (d - yy) * k2;
+            wc = wc + k2;
+            blur = blur + yy * ds;
+            wb = wb + ds;
+        }
+    }
+    let ny = mix(y0, sum_y / max(wy, 1e-5), strength);
+    let nc = mix(d0 - y0, sum_c / max(wc, 1e-5), clamp(fx.p0.w / 100.0, 0.0, 1.0) * strength);
+    // Sharpened back: the smoothed brightness pushed away from a wider blur.
+    let sharp = ny + (ny - blur / max(wb, 1e-5)) * fx.p1.x / 100.0;
+    let res = clamp(sharp + nc, vec3(0.0), vec3(1.0));
+    if (fx.p1.y >= 0.5) {
+        return vec4(to_linear(clamp((d0 - res) * 4.0 + 0.5, vec3(0.0), vec3(1.0))), 1.0) * inside(in.uv);
+    }
+    return vec4(to_linear(res) * c0.a, c0.a);
+}

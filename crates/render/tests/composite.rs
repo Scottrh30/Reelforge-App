@@ -4098,3 +4098,49 @@ fn distort_and_perspective_effects_work() {
     let til = draw(&mut c, &ramp, EffectKind::Tiler, &[(tiler::SCALE, 50.0)]);
     assert!(lum(at(&til, 123, 45)) + 150 < lum(at(&til, 117, 45)), "{:?} {:?}", at(&til, 117, 45), at(&til, 123, 45));
 }
+
+#[test]
+fn generate_and_noise_effects_work() {
+    use reelforge_core::effects::*;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 120, 120, 255]).collect();
+    // A grey with a single white speck in the middle.
+    let speck: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if x == 80 && y == 45 { [255u8, 255, 255, 255] } else { [120, 120, 120, 255] })).collect();
+    let mut key = 14_000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)]| {
+        let v = fx(kind, set);
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let at = |img: &[u8], x: u32, y: u32| px(img, w, x, y);
+    // Each changes the plain grey somewhere with its defaults (Median and Remove grain have nothing to smooth).
+    for kind in [
+        EffectKind::FourColorGradient, EffectKind::Beam, EffectKind::CellPattern, EffectKind::Checkerboard, EffectKind::Circle, EffectKind::Ellipse, EffectKind::Fill,
+        EffectKind::Grid, EffectKind::RadioWaves, EffectKind::Threads, EffectKind::CurlNoise, EffectKind::Noise, EffectKind::NoiseHls,
+    ] {
+        let img = draw(&mut c, &grey, kind, &[]);
+        let changed = img.chunks(4).filter(|p| p[0].abs_diff(120) > 12 || p[1].abs_diff(120) > 12 || p[2].abs_diff(120) > 12).count();
+        assert!(changed > 30, "{kind:?}: {changed} changed");
+    }
+    // Fill: all red; Checkerboard: neighbouring squares differ.
+    let f = at(&draw(&mut c, &grey, EffectKind::Fill, &[]), 80, 45);
+    assert!(f[0] > 200 && f[1] < 40, "{f:?}");
+    // Median and Dust & scratches take the speck out.
+    for (kind, set) in [(EffectKind::Median, vec![(median::RADIUS, 2.0)]), (EffectKind::DustScratches, vec![(dust_scratches::RADIUS, 2.0)])] {
+        let p = at(&draw(&mut c, &speck, kind, &set), 80, 45);
+        assert!(p[0] < 200, "{kind:?}: {p:?}");
+    }
+    // Noise: neighbouring pixels no longer all the same.
+    let n = draw(&mut c, &grey, EffectKind::Noise, &[(noise::AMOUNT, 50.0)]);
+    let distinct: std::collections::HashSet<u8> = (0..40).map(|x| at(&n, x, 10)[1]).collect();
+    assert!(distinct.len() > 8, "{distinct:?}");
+    // Remove grain: fine grain (±12 around grey) is evened out.
+    let grain: Vec<u8> = (0..w * h).flat_map(|i| { let v = (120 + (i.wrapping_mul(2_654_435_761) >> 27) as i32 - 16).clamp(0, 255) as u8; [v, v, v, 255] }).collect();
+    let spread = |img: &[u8]| { let row: Vec<i32> = (20..140).map(|x| at(img, x, 45)[1] as i32).collect(); let m = row.iter().sum::<i32>() / row.len() as i32; row.iter().map(|v| (v - m).abs()).sum::<i32>() };
+    let clean = draw(&mut c, &grain, EffectKind::RemoveGrain, &[(remove_grain::STRENGTH, 100.0)]);
+    assert!(spread(&clean) * 2 < spread(&grain), "{} vs {}", spread(&clean), spread(&grain));
+}

@@ -390,6 +390,68 @@ pub enum EffectKind {
     /// Wraps the layer round a sphere in 3D — a planet, a ball, a globe — turned any way and
     /// lit, seen from outside, inside or both.
     Sphere,
+    /// A smooth gradient between four colours, each at a point you place, blended softly and
+    /// optionally jittered (to hide banding), drawn over the layer with a blend mode.
+    FourColorGradient,
+    /// A laser or light-sabre beam from one point to another: a bright core inside a coloured
+    /// glow, thicker at one end if you like, travelling along its path over time (length and
+    /// time), drawn over the layer or on its own.
+    Beam,
+    /// Cells of a random pattern (Worley noise) in eight styles — bubbles, crystals, plates,
+    /// static plates, crystallised, pillows, mixed crystals and tubes — at a size, contrast and
+    /// dispersal, evolving over time; used as textures, mattes and maps.
+    CellPattern,
+    /// A checkerboard of squares (or rectangles) at a size, from an anchor, in a colour over
+    /// the layer (the other squares the layer itself), with soft edges and a blend mode.
+    Checkerboard,
+    /// A filled circle or ring (with an edge thickness, or set by an inner radius) in a colour,
+    /// feathered inside and out, inverted if you like, over the layer with a blend mode — or
+    /// used as a stencil.
+    Circle,
+    /// An ellipse outline — a width, a height and a line thickness, softened — in an inside
+    /// colour fading to an outside colour, drawn over the layer or on its own.
+    Ellipse,
+    /// Fills the layer's visible parts with a colour (its shape kept, its picture replaced), or
+    /// its see-through parts if inverted, at an opacity: recolour logos, text and cut-outs.
+    Fill,
+    /// A grid of lines at a size (or set by a corner), with a border thickness, feathered,
+    /// inverted if you like, in a colour over the layer with a blend mode: graph paper, tiles,
+    /// overlays.
+    Grid,
+    /// Rings spreading out from a point, as radio waves or ripples: round or polygons (with a
+    /// star depth), so many a second, expanding at a speed, fading as they age, in a colour
+    /// with soft edges.
+    RadioWaves,
+    /// A woven texture of threads over the layer: their width, height (the weave's relief),
+    /// overlap, centre and coverage, tinted by the picture underneath — cloth, canvas and
+    /// burlap.
+    Threads,
+    /// Bright streaks bursting out from a centre: the layer's light zoomed outwards (or in) and
+    /// added on top, from the bright parts or all of it — titles bursting through, sun bursts
+    /// and warp-speed flashes.
+    LightBurst,
+    /// Swirling, flowing noise like smoke, marble or ink in water (noise pushed round by its
+    /// own curl), at a size and detail, drifting and evolving over time, in two colours over
+    /// the layer or on its own.
+    CurlNoise,
+    /// Adds random speckle noise to the picture, in colour or grey, changing every frame (or
+    /// held still), clipped to the range or free to go past it.
+    Noise,
+    /// Adds noise to the hue, lightness and saturation separately — even, squared (finer) or as
+    /// grain of a size — changing over time at a phase: colour speckle, film-like grain, or
+    /// shimmering hues.
+    NoiseHls,
+    /// Each pixel becomes the middle value of its neighbours within a radius: speckle and fine
+    /// noise gone while edges stay crisp; at larger radii, a painterly look.
+    Median,
+    /// Takes out specks of dust and fine scratches: pixels that stand out from their
+    /// neighbours' middle value by more than a threshold are replaced by it, leaving the rest
+    /// untouched.
+    DustScratches,
+    /// Takes grain and noise out while keeping detail: each pixel averaged with similar ones
+    /// nearby (edges and texture left alone), by a strength and over a size, then lightly
+    /// sharpened back if you like.
+    RemoveGrain,
     /// Evens out flicker: brightness and colour gains, keyed frame by frame by
     /// Deflicker's analysis (Clip menu), or set by hand.
     Deflicker,
@@ -493,6 +555,8 @@ pub enum EffectCategory {
     BlurSharpen,
     /// Channels moved, mixed, inverted and combined.
     Channel,
+    /// Noise added or taken away: grain, speckle, median, dust and scratches.
+    NoiseGrain,
     Keying,
     Stylize,
     /// Camera shake, chromatic aberration, glitch, and plugins that say so.
@@ -514,12 +578,13 @@ pub enum EffectCategory {
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 13] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Channel, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Geometry, EffectCategory::Perspective, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
+    pub const ALL: [EffectCategory; 14] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Channel, EffectCategory::NoiseGrain, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Geometry, EffectCategory::Perspective, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
             EffectCategory::BlurSharpen => "Blur & sharpen",
             EffectCategory::Channel => "Channel",
+            EffectCategory::NoiseGrain => "Noise & grain",
             EffectCategory::Keying => "Keying",
             EffectCategory::Stylize => "Light & stylize",
             EffectCategory::Distort => "Distort",
@@ -2132,6 +2197,181 @@ pub mod sphere {
     pub const LIGHT_ANGLE: usize = 6;
     pub const AMBIENT: usize = 7;
     pub const SHINE: usize = 8;
+}
+pub mod four_color {
+    pub const X1: usize = 0;
+    pub const Y1: usize = 1;
+    pub const C1: usize = 2;
+    pub const X2: usize = 3;
+    pub const Y2: usize = 4;
+    pub const C2: usize = 5;
+    pub const X3: usize = 6;
+    pub const Y3: usize = 7;
+    pub const C3: usize = 8;
+    pub const X4: usize = 9;
+    pub const Y4: usize = 10;
+    pub const C4: usize = 11;
+    pub const BLEND: usize = 12;
+    pub const JITTER: usize = 13;
+    pub const OPACITY: usize = 14;
+    pub const MODE: usize = 15;
+}
+pub mod beam {
+    pub const AX: usize = 0;
+    pub const AY: usize = 1;
+    pub const BX: usize = 2;
+    pub const BY: usize = 3;
+    pub const LENGTH: usize = 4;
+    pub const TIME: usize = 5;
+    pub const START_THICK: usize = 6;
+    pub const END_THICK: usize = 7;
+    pub const SOFTNESS: usize = 8;
+    pub const CORE: usize = 9;
+    pub const GLOW: usize = 10;
+    pub const ONLY: usize = 11;
+}
+pub mod cell_pattern {
+    pub const STYLE: usize = 0;
+    pub const INVERT: usize = 1;
+    pub const CONTRAST: usize = 2;
+    pub const DISPERSE: usize = 3;
+    pub const SIZE: usize = 4;
+    pub const X: usize = 5;
+    pub const Y: usize = 6;
+    pub const EVOLUTION: usize = 7;
+    pub const SPEED: usize = 8;
+    pub const SEED: usize = 9;
+    pub const OPACITY: usize = 10;
+    pub const MODE: usize = 11;
+}
+pub mod checkerboard {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const WIDTH: usize = 2;
+    pub const HEIGHT: usize = 3;
+    pub const FEATHER: usize = 4;
+    pub const COLOR: usize = 5;
+    pub const OPACITY: usize = 6;
+    pub const MODE: usize = 7;
+}
+pub mod circle {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const RADIUS: usize = 2;
+    pub const EDGE: usize = 3;
+    pub const THICKNESS: usize = 4;
+    pub const FEATHER_OUT: usize = 5;
+    pub const FEATHER_IN: usize = 6;
+    pub const INVERT: usize = 7;
+    pub const COLOR: usize = 8;
+    pub const OPACITY: usize = 9;
+    pub const MODE: usize = 10;
+}
+pub mod ellipse {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const WIDTH: usize = 2;
+    pub const HEIGHT: usize = 3;
+    pub const THICKNESS: usize = 4;
+    pub const SOFTNESS: usize = 5;
+    pub const INSIDE: usize = 6;
+    pub const OUTSIDE: usize = 7;
+    pub const ONLY: usize = 8;
+}
+pub mod fill {
+    pub const COLOR: usize = 0;
+    pub const INVERT: usize = 1;
+    pub const FEATHER: usize = 2;
+    pub const OPACITY: usize = 3;
+}
+pub mod grid {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const WIDTH: usize = 2;
+    pub const HEIGHT: usize = 3;
+    pub const BORDER: usize = 4;
+    pub const FEATHER: usize = 5;
+    pub const INVERT: usize = 6;
+    pub const COLOR: usize = 7;
+    pub const OPACITY: usize = 8;
+    pub const MODE: usize = 9;
+}
+pub mod radio_waves {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const SIDES: usize = 2;
+    pub const STAR: usize = 3;
+    pub const FREQUENCY: usize = 4;
+    pub const VELOCITY: usize = 5;
+    pub const LIFESPAN: usize = 6;
+    pub const ROTATION: usize = 7;
+    pub const WIDTH: usize = 8;
+    pub const SOFT: usize = 9;
+    pub const COLOR: usize = 10;
+    pub const FADE_OUT: usize = 11;
+    pub const ONLY: usize = 12;
+}
+pub mod threads {
+    pub const WIDTH: usize = 0;
+    pub const HEIGHT: usize = 1;
+    pub const OVERLAPS: usize = 2;
+    pub const CENTRE: usize = 3;
+    pub const COVERAGE: usize = 4;
+    pub const SHADOWING: usize = 5;
+    pub const TEXTURE: usize = 6;
+    pub const ANGLE: usize = 7;
+}
+pub mod light_burst {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const LENGTH: usize = 2;
+    pub const INTENSITY: usize = 3;
+    pub const THRESHOLD: usize = 4;
+    pub const BURST: usize = 5;
+    pub const ONLY: usize = 6;
+}
+pub mod curl_noise {
+    pub const SIZE: usize = 0;
+    pub const DETAIL: usize = 1;
+    pub const SWIRL: usize = 2;
+    pub const CONTRAST: usize = 3;
+    pub const SPEED: usize = 4;
+    pub const COLOR1: usize = 5;
+    pub const COLOR2: usize = 6;
+    pub const SEED: usize = 7;
+    pub const OPACITY: usize = 8;
+    pub const MODE: usize = 9;
+}
+pub mod noise {
+    pub const AMOUNT: usize = 0;
+    pub const COLOUR: usize = 1;
+    pub const CLIP: usize = 2;
+    pub const STILL: usize = 3;
+    pub const SEED: usize = 4;
+}
+pub mod noise_hls {
+    pub const TYPE: usize = 0;
+    pub const HUE: usize = 1;
+    pub const LIGHTNESS: usize = 2;
+    pub const SATURATION: usize = 3;
+    pub const GRAIN: usize = 4;
+    pub const PHASE: usize = 5;
+    pub const ANIMATE: usize = 6;
+}
+pub mod median {
+    pub const RADIUS: usize = 0;
+}
+pub mod dust_scratches {
+    pub const RADIUS: usize = 0;
+    pub const THRESHOLD: usize = 1;
+}
+pub mod remove_grain {
+    pub const STRENGTH: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const PASSES: usize = 2;
+    pub const CHROMA: usize = 3;
+    pub const SHARPEN: usize = 4;
+    pub const VIEW: usize = 5;
 }
 pub mod deflicker {
     pub const BRIGHTNESS: usize = 0;
@@ -4228,6 +4468,181 @@ const SPHERE: [ParamSpec; 9] = [
     spec("Ambient", 30.0, 0.0, 100.0, " %", 0.3),
     spec("Shine", 30.0, 0.0, 200.0, " %", 0.3),
 ];
+const FOUR_COLOR: [ParamSpec; 16] = [
+    spec("Point 1 X", 10.0, -200.0, 300.0, " %", 0.2),
+    spec("Point 1 Y", 10.0, -200.0, 300.0, " %", 0.2),
+    color("Colour 1", 0xfff000),
+    spec("Point 2 X", 90.0, -200.0, 300.0, " %", 0.2),
+    spec("Point 2 Y", 10.0, -200.0, 300.0, " %", 0.2),
+    color("Colour 2", 0x00ff00),
+    spec("Point 3 X", 10.0, -200.0, 300.0, " %", 0.2),
+    spec("Point 3 Y", 90.0, -200.0, 300.0, " %", 0.2),
+    color("Colour 3", 0xff00ff),
+    spec("Point 4 X", 90.0, -200.0, 300.0, " %", 0.2),
+    spec("Point 4 Y", 90.0, -200.0, 300.0, " %", 0.2),
+    color("Colour 4", 0x0000ff),
+    spec("Blend", 100.0, 1.0, 400.0, "", 0.5),
+    spec("Jitter", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.3),
+    choice("Blending mode", &["Normal", "Add", "Multiply", "Screen", "Overlay", "Soft light", "Hard light", "Difference", "Stencil alpha", "Silhouette alpha"]),
+];
+const BEAM: [ParamSpec; 12] = [
+    spec("Start X", 15.0, -200.0, 300.0, " %", 0.2),
+    spec("Start Y", 70.0, -200.0, 300.0, " %", 0.2),
+    spec("End X", 85.0, -200.0, 300.0, " %", 0.2),
+    spec("End Y", 30.0, -200.0, 300.0, " %", 0.2),
+    spec("Length", 100.0, 0.0, 100.0, " %", 0.3),
+    spec("Time", 100.0, 0.0, 100.0, " %", 0.3),
+    spec("Start thickness", 8.0, 0.0, 400.0, " px", 0.1),
+    spec("End thickness", 8.0, 0.0, 400.0, " px", 0.1),
+    spec("Softness", 50.0, 0.0, 100.0, " %", 0.3),
+    color("Inside colour", 0xffffff),
+    color("Outside colour", 0x40a0ff),
+    ParamSpec { name: "Beam only", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const CELL_PATTERN: [ParamSpec; 12] = [
+    choice("Cell pattern", &["Bubbles", "Crystals", "Plates", "Static plates", "Crystallise", "Pillow", "Mixed crystals", "Tubular"]),
+    ParamSpec { name: "Invert", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Contrast", 100.0, 0.0, 1000.0, "", 0.5),
+    spec("Disperse", 100.0, 0.0, 150.0, " %", 0.3),
+    spec("Size", 60.0, 2.0, 2000.0, " px", 0.3),
+    spec("Offset X", 0.0, -100000.0, 100000.0, " px", 0.5),
+    spec("Offset Y", 0.0, -100000.0, 100000.0, " px", 0.5),
+    spec("Evolution", 0.0, -100000.0, 100000.0, " °", 1.0),
+    spec("Evolution speed", 0.0, -3600.0, 3600.0, " °/s", 1.0),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.3),
+    choice("Blending mode", &["Normal", "Add", "Multiply", "Screen", "Overlay", "Soft light", "Hard light", "Difference", "Stencil alpha", "Silhouette alpha"]),
+];
+const CHECKERBOARD: [ParamSpec; 8] = [
+    spec("Anchor X", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Anchor Y", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Width", 64.0, 1.0, 4000.0, " px", 0.3),
+    spec("Height", 64.0, 1.0, 4000.0, " px", 0.3),
+    spec("Feather", 0.0, 0.0, 100.0, " px", 0.1),
+    color("Colour", 0xffffff),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.3),
+    choice("Blending mode", &["Normal", "Add", "Multiply", "Screen", "Overlay", "Soft light", "Hard light", "Difference", "Stencil alpha", "Silhouette alpha"]),
+];
+const CIRCLE: [ParamSpec; 11] = [
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Radius", 100.0, 0.0, 8000.0, " px", 0.5),
+    choice("Edge", &["None", "Thickness", "Edge radius"]),
+    spec("Thickness", 10.0, 0.0, 4000.0, " px", 0.2),
+    spec("Feather outer edge", 0.0, 0.0, 1000.0, " px", 0.2),
+    spec("Feather inner edge", 0.0, 0.0, 1000.0, " px", 0.2),
+    ParamSpec { name: "Invert circle", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    color("Colour", 0xffffff),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.3),
+    choice("Blending mode", &["Normal", "Add", "Multiply", "Screen", "Overlay", "Soft light", "Hard light", "Difference", "Stencil alpha", "Silhouette alpha"]),
+];
+const ELLIPSE: [ParamSpec; 9] = [
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Width", 90.0, 0.0, 1000.0, " % of the height", 0.3),
+    spec("Height", 60.0, 0.0, 1000.0, " % of the height", 0.3),
+    spec("Thickness", 8.0, 0.0, 400.0, " px", 0.1),
+    spec("Softness", 50.0, 0.0, 100.0, " %", 0.3),
+    color("Inside colour", 0xffffff),
+    color("Outside colour", 0x00a0ff),
+    ParamSpec { name: "Ellipse only", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const FILL: [ParamSpec; 4] = [
+    color("Colour", 0xff0000),
+    ParamSpec { name: "Invert", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Feather", 0.0, 0.0, 100.0, " px", 0.1),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.3),
+];
+const GRID: [ParamSpec; 10] = [
+    spec("Anchor X", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Anchor Y", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Width", 64.0, 1.0, 4000.0, " px", 0.3),
+    spec("Height", 64.0, 1.0, 4000.0, " px", 0.3),
+    spec("Border", 2.0, 0.0, 400.0, " px", 0.1),
+    spec("Feather", 0.0, 0.0, 100.0, " px", 0.1),
+    ParamSpec { name: "Invert grid", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    color("Colour", 0xffffff),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.3),
+    choice("Blending mode", &["Normal", "Add", "Multiply", "Screen", "Overlay", "Soft light", "Hard light", "Difference", "Stencil alpha", "Silhouette alpha"]),
+];
+const RADIO_WAVES: [ParamSpec; 13] = [
+    spec("Producer X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Producer Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Sides", 64.0, 3.0, 64.0, "", 0.1),
+    spec("Star depth", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Frequency", 1.0, 0.1, 30.0, " /s", 0.02),
+    spec("Velocity", 200.0, 1.0, 10000.0, " px/s", 1.0),
+    spec("Lifespan", 2.0, 0.1, 60.0, " s", 0.02),
+    spec("Spin", 0.0, -3600.0, 3600.0, " °/s", 0.5),
+    spec("Stroke width", 6.0, 0.0, 400.0, " px", 0.1),
+    spec("Softness", 2.0, 0.0, 100.0, " px", 0.1),
+    color("Colour", 0x40ffa0),
+    ParamSpec { name: "Fade as they age", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Waves only", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const THREADS: [ParamSpec; 8] = [
+    spec("Width", 12.0, 1.0, 400.0, " px", 0.1),
+    spec("Height", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Overlaps", 2.0, 1.0, 8.0, "", 0.05),
+    spec("Centre", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Coverage", 90.0, 0.0, 100.0, " %", 0.3),
+    spec("Shadowing", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Texture", 30.0, 0.0, 100.0, " %", 0.3),
+    spec("Angle", 0.0, -3600.0, 3600.0, " °", 0.5),
+];
+const LIGHT_BURST: [ParamSpec; 7] = [
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Ray length", 50.0, -100.0, 400.0, " %", 0.3),
+    spec("Intensity", 100.0, 0.0, 1000.0, " %", 0.5),
+    spec("Threshold", 50.0, 0.0, 100.0, " %", 0.3),
+    choice("Burst", &["Straight", "Fade", "Centre"]),
+    ParamSpec { name: "Rays only", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const CURL_NOISE: [ParamSpec; 10] = [
+    spec("Size", 200.0, 2.0, 4000.0, " px", 0.5),
+    spec("Detail", 4.0, 1.0, 8.0, "", 0.05),
+    spec("Swirl", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Contrast", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Evolution speed", 20.0, -1000.0, 1000.0, " %", 0.3),
+    color("Dark colour", 0x101830),
+    color("Light colour", 0xa0d0ff),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.3),
+    choice("Blending mode", &["Normal", "Add", "Multiply", "Screen", "Overlay", "Soft light", "Hard light", "Difference", "Stencil alpha", "Silhouette alpha"]),
+];
+const NOISE: [ParamSpec; 5] = [
+    spec("Amount of noise", 20.0, 0.0, 100.0, " %", 0.3),
+    ParamSpec { name: "Colour noise", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Clip result values", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Hold still", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
+];
+const NOISE_HLS: [ParamSpec; 7] = [
+    choice("Noise", &["Uniform", "Squared", "Grain"]),
+    spec("Hue", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Lightness", 20.0, 0.0, 100.0, " %", 0.3),
+    spec("Saturation", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Grain size", 1.0, 0.5, 50.0, " px", 0.05),
+    spec("Noise phase", 0.0, -100000.0, 100000.0, " °", 1.0),
+    ParamSpec { name: "Change every frame", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const MEDIAN: [ParamSpec; 1] = [
+    spec("Radius", 2.0, 0.0, 50.0, " px", 0.1),
+];
+const DUST_SCRATCHES: [ParamSpec; 2] = [
+    spec("Radius", 2.0, 0.0, 50.0, " px", 0.1),
+    spec("Threshold", 10.0, 0.0, 255.0, "", 0.5),
+];
+const REMOVE_GRAIN: [ParamSpec; 6] = [
+    spec("Noise reduction", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Size", 3.0, 1.0, 12.0, " px", 0.05),
+    spec("Passes", 1.0, 1.0, 4.0, "", 0.05),
+    spec("Colour noise", 75.0, 0.0, 100.0, " %", 0.3),
+    spec("Sharpen", 0.0, 0.0, 100.0, " %", 0.3),
+    choice("View", &["Final", "The noise taken out"]),
+];
 const DEFLICKER: [ParamSpec; 6] = [
     spec("Brightness", 100.0, 0.0, 400.0, " %", 0.2),
     spec("Red", 100.0, 0.0, 400.0, " %", 0.2),
@@ -4932,7 +5347,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 178] = [
+    pub const ALL: [EffectKind; 195] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -5111,6 +5526,23 @@ impl EffectKind {
         EffectKind::RadialShadow,
         EffectKind::Cylinder,
         EffectKind::Sphere,
+        EffectKind::FourColorGradient,
+        EffectKind::Beam,
+        EffectKind::CellPattern,
+        EffectKind::Checkerboard,
+        EffectKind::Circle,
+        EffectKind::Ellipse,
+        EffectKind::Fill,
+        EffectKind::Grid,
+        EffectKind::RadioWaves,
+        EffectKind::Threads,
+        EffectKind::LightBurst,
+        EffectKind::CurlNoise,
+        EffectKind::Noise,
+        EffectKind::NoiseHls,
+        EffectKind::Median,
+        EffectKind::DustScratches,
+        EffectKind::RemoveGrain,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -5126,6 +5558,11 @@ impl EffectKind {
             EffectKind::Hud => (hud::X, hud::Y, "centre"),
             EffectKind::BurnAway => (burn::X, burn::Y, "burn point"),
             EffectKind::Extrude => (extrude::X, extrude::Y, "vanishing point"),
+            EffectKind::Beam => (beam::BX, beam::BY, "beam's end"),
+            EffectKind::Circle => (circle::X, circle::Y, "circle's middle"),
+            EffectKind::Ellipse => (ellipse::X, ellipse::Y, "ellipse's middle"),
+            EffectKind::RadioWaves => (radio_waves::X, radio_waves::Y, "producer"),
+            EffectKind::LightBurst => (light_burst::X, light_burst::Y, "burst's middle"),
             EffectKind::Magnify => (magnify::X, magnify::Y, "magnifier"),
             EffectKind::Spherize => (spherize::X, spherize::Y, "sphere's middle"),
             EffectKind::LensCc => (lens_cc::X, lens_cc::Y, "lens"),
@@ -5212,6 +5649,23 @@ impl EffectKind {
             EffectKind::Bevel => "Bevel",
             EffectKind::Extrude => "Extrude",
             EffectKind::Rotate3d => "Rotate",
+            EffectKind::FourColorGradient => "4-colour gradient",
+            EffectKind::Beam => "Beam",
+            EffectKind::CellPattern => "Cell pattern",
+            EffectKind::Checkerboard => "Checkerboard",
+            EffectKind::Circle => "Circle",
+            EffectKind::Ellipse => "Ellipse",
+            EffectKind::Fill => "Fill",
+            EffectKind::Grid => "Grid",
+            EffectKind::RadioWaves => "Radio waves",
+            EffectKind::Threads => "Threads",
+            EffectKind::LightBurst => "Light burst",
+            EffectKind::CurlNoise => "Curl noise",
+            EffectKind::Noise => "Noise",
+            EffectKind::NoiseHls => "Noise HLS",
+            EffectKind::Median => "Median",
+            EffectKind::DustScratches => "Dust & scratches",
+            EffectKind::RemoveGrain => "Remove grain",
             EffectKind::CornerPin => "Corner pin",
             EffectKind::PowerPin => "Power pin",
             EffectKind::DisplacementMap => "Displacement map",
@@ -5357,6 +5811,23 @@ impl EffectKind {
             EffectKind::BurnAway => EffectCategory::Stylize,
             EffectKind::Extrusion3d => EffectCategory::Generate,
             EffectKind::Bend | EffectKind::Bevel | EffectKind::Extrude | EffectKind::Rotate3d => EffectCategory::Geometry,
+            EffectKind::FourColorGradient => EffectCategory::Generate,
+            EffectKind::Beam => EffectCategory::Generate,
+            EffectKind::CellPattern => EffectCategory::Generate,
+            EffectKind::Checkerboard => EffectCategory::Generate,
+            EffectKind::Circle => EffectCategory::Generate,
+            EffectKind::Ellipse => EffectCategory::Generate,
+            EffectKind::Fill => EffectCategory::Generate,
+            EffectKind::Grid => EffectCategory::Generate,
+            EffectKind::RadioWaves => EffectCategory::Generate,
+            EffectKind::Threads => EffectCategory::Generate,
+            EffectKind::LightBurst => EffectCategory::Generate,
+            EffectKind::CurlNoise => EffectCategory::Generate,
+            EffectKind::Noise => EffectCategory::NoiseGrain,
+            EffectKind::NoiseHls => EffectCategory::NoiseGrain,
+            EffectKind::Median => EffectCategory::NoiseGrain,
+            EffectKind::DustScratches => EffectCategory::NoiseGrain,
+            EffectKind::RemoveGrain => EffectCategory::NoiseGrain,
             EffectKind::CornerPin => EffectCategory::Distort,
             EffectKind::PowerPin => EffectCategory::Distort,
             EffectKind::DisplacementMap => EffectCategory::Distort,
@@ -5503,6 +5974,23 @@ impl EffectKind {
             EffectKind::Bevel => "Bevelled edges: the picture's outline (a logo or a cut-out) or the layer's whole frame lit as if raised, bright on the side towards the light and shaded on the other.",
             EffectKind::Extrude => "Flat-style extrusion: the layer's shape drawn out in a direction (a long-shadow look) or towards a vanishing point, with its sides in a darker shade of the picture or a colour of their own.",
             EffectKind::Rotate3d => "Turns the layer like a card in 3D, round X, Y and Z about a point you choose, with perspective; its back can show the picture, darkened, or nothing. Key the turns to flip or spin it.",
+            EffectKind::FourColorGradient => "A smooth gradient between four colours, each at a point you place, blended softly and optionally jittered (to hide banding), drawn over the layer with a blend mode.",
+            EffectKind::Beam => "A laser or light-sabre beam from one point to another: a bright core inside a coloured glow, thicker at one end if you like, travelling along its path over time (length and time), drawn over the layer or on its own.",
+            EffectKind::CellPattern => "Cells of a random pattern (Worley noise) in eight styles — bubbles, crystals, plates, static plates, crystallised, pillows, mixed crystals and tubes — at a size, contrast and dispersal, evolving over time; used as textures, mattes and maps.",
+            EffectKind::Checkerboard => "A checkerboard of squares (or rectangles) at a size, from an anchor, in a colour over the layer (the other squares the layer itself), with soft edges and a blend mode.",
+            EffectKind::Circle => "A filled circle or ring (with an edge thickness, or set by an inner radius) in a colour, feathered inside and out, inverted if you like, over the layer with a blend mode — or used as a stencil.",
+            EffectKind::Ellipse => "An ellipse outline — a width, a height and a line thickness, softened — in an inside colour fading to an outside colour, drawn over the layer or on its own.",
+            EffectKind::Fill => "Fills the layer's visible parts with a colour (its shape kept, its picture replaced), or its see-through parts if inverted, at an opacity: recolour logos, text and cut-outs.",
+            EffectKind::Grid => "A grid of lines at a size (or set by a corner), with a border thickness, feathered, inverted if you like, in a colour over the layer with a blend mode: graph paper, tiles, overlays.",
+            EffectKind::RadioWaves => "Rings spreading out from a point, as radio waves or ripples: round or polygons (with a star depth), so many a second, expanding at a speed, fading as they age, in a colour with soft edges.",
+            EffectKind::Threads => "A woven texture of threads over the layer: their width, height (the weave's relief), overlap, centre and coverage, tinted by the picture underneath — cloth, canvas and burlap.",
+            EffectKind::LightBurst => "Bright streaks bursting out from a centre: the layer's light zoomed outwards (or in) and added on top, from the bright parts or all of it — titles bursting through, sun bursts and warp-speed flashes.",
+            EffectKind::CurlNoise => "Swirling, flowing noise like smoke, marble or ink in water (noise pushed round by its own curl), at a size and detail, drifting and evolving over time, in two colours over the layer or on its own.",
+            EffectKind::Noise => "Adds random speckle noise to the picture, in colour or grey, changing every frame (or held still), clipped to the range or free to go past it.",
+            EffectKind::NoiseHls => "Adds noise to the hue, lightness and saturation separately — even, squared (finer) or as grain of a size — changing over time at a phase: colour speckle, film-like grain, or shimmering hues.",
+            EffectKind::Median => "Each pixel becomes the middle value of its neighbours within a radius: speckle and fine noise gone while edges stay crisp; at larger radii, a painterly look.",
+            EffectKind::DustScratches => "Takes out specks of dust and fine scratches: pixels that stand out from their neighbours' middle value by more than a threshold are replaced by it, leaving the rest untouched.",
+            EffectKind::RemoveGrain => "Takes grain and noise out while keeping detail: each pixel averaged with similar ones nearby (edges and texture left alone), by a strength and over a size, then lightly sharpened back if you like.",
             EffectKind::CornerPin => "Pins the layer's four corners anywhere, stretching it in perspective between them: onto a screen, a sign or a page.",
             EffectKind::PowerPin => "A corner pin with a choice of how the picture fills the shape: in true perspective (as a flat surface seen at an angle) or stretched evenly (bilinear), or anywhere between.",
             EffectKind::DisplacementMap => "Pushes each pixel sideways and up or down by a map — the layer's own channels (its brightness, red, green…) or a cloudy noise — up to a maximum each way: heat shimmer, glass, water, and warped textures.",
@@ -5722,6 +6210,23 @@ impl EffectKind {
             EffectKind::Bevel => &BEVEL,
             EffectKind::Extrude => &EXTRUDE,
             EffectKind::Rotate3d => &ROTATE3D,
+            EffectKind::FourColorGradient => &FOUR_COLOR,
+            EffectKind::Beam => &BEAM,
+            EffectKind::CellPattern => &CELL_PATTERN,
+            EffectKind::Checkerboard => &CHECKERBOARD,
+            EffectKind::Circle => &CIRCLE,
+            EffectKind::Ellipse => &ELLIPSE,
+            EffectKind::Fill => &FILL,
+            EffectKind::Grid => &GRID,
+            EffectKind::RadioWaves => &RADIO_WAVES,
+            EffectKind::Threads => &THREADS,
+            EffectKind::LightBurst => &LIGHT_BURST,
+            EffectKind::CurlNoise => &CURL_NOISE,
+            EffectKind::Noise => &NOISE,
+            EffectKind::NoiseHls => &NOISE_HLS,
+            EffectKind::Median => &MEDIAN,
+            EffectKind::DustScratches => &DUST_SCRATCHES,
+            EffectKind::RemoveGrain => &REMOVE_GRAIN,
             EffectKind::CornerPin => &CORNER_PIN,
             EffectKind::PowerPin => &POWER_PIN,
             EffectKind::DisplacementMap => &DISPLACEMENT_MAP,
@@ -5885,6 +6390,8 @@ impl EffectKind {
             EffectKind::BurnAway => &[(0, "Burn"), (4, "Edge"), (9, "Embers")],
             EffectKind::Extrusion3d => &[(0, "Shape"), (3, "Turn"), (8, "Surface"), (10, "Light")],
             EffectKind::Rotate3d => &[(0, "Turn"), (3, "View"), (5, "Pivot")],
+            EffectKind::FourColorGradient => &[(0, "Point 1"), (3, "Point 2"), (6, "Point 3"), (9, "Point 4"), (12, "Mix")],
+            EffectKind::Beam => &[(0, "Path"), (4, "Travel"), (6, "Look")],
             EffectKind::CornerPin => &[(0, "Top"), (4, "Bottom")],
             EffectKind::PowerPin => &[(0, "Top"), (4, "Bottom"), (8, "Fill")],
             EffectKind::MeshWarp => &[(0, "Top row"), (6, "Middle row"), (12, "Bottom row")],
@@ -6022,6 +6529,23 @@ impl EffectValues {
             EffectKind::Bevel => v[bevel::WIDTH] <= 0.0 || v[bevel::INTENSITY] == 0.0,
             EffectKind::Extrude => v[extrude::LENGTH] <= 0.0,
             EffectKind::Rotate3d => v[rotate3d::TURN_X] == 0.0 && v[rotate3d::TURN_Y] == 0.0 && v[rotate3d::TURN_Z] == 0.0 && v[rotate3d::SIZE] == 100.0 && v[rotate3d::PUSH] == 0.0,
+            EffectKind::FourColorGradient => v[four_color::OPACITY] <= 0.0,
+            EffectKind::Beam => v[beam::LENGTH] <= 0.0 && v[beam::ONLY] < 0.5,
+            EffectKind::CellPattern => v[cell_pattern::OPACITY] <= 0.0,
+            EffectKind::Checkerboard => v[checkerboard::OPACITY] <= 0.0,
+            EffectKind::Circle => v[circle::OPACITY] <= 0.0,
+            EffectKind::Ellipse => false,
+            EffectKind::Fill => v[fill::OPACITY] <= 0.0,
+            EffectKind::Grid => v[grid::OPACITY] <= 0.0,
+            EffectKind::RadioWaves => false,
+            EffectKind::Threads => v[threads::COVERAGE] <= 0.0,
+            EffectKind::LightBurst => v[light_burst::INTENSITY] <= 0.0 && v[light_burst::ONLY] < 0.5,
+            EffectKind::CurlNoise => v[curl_noise::OPACITY] <= 0.0,
+            EffectKind::Noise => v[noise::AMOUNT] <= 0.0,
+            EffectKind::NoiseHls => v[noise_hls::HUE] <= 0.0 && v[noise_hls::LIGHTNESS] <= 0.0 && v[noise_hls::SATURATION] <= 0.0,
+            EffectKind::Median => v[median::RADIUS] <= 0.0,
+            EffectKind::DustScratches => v[dust_scratches::RADIUS] <= 0.0,
+            EffectKind::RemoveGrain => v[remove_grain::STRENGTH] <= 0.0 && v[remove_grain::SHARPEN] <= 0.0 && v[remove_grain::VIEW] < 0.5,
             EffectKind::CornerPin => v[0] == 0.0 && v[1] == 0.0 && v[2] == 100.0 && v[3] == 0.0 && v[4] == 0.0 && v[5] == 100.0 && v[6] == 100.0 && v[7] == 100.0,
             EffectKind::PowerPin => v[0] == 0.0 && v[1] == 0.0 && v[2] == 100.0 && v[3] == 0.0 && v[4] == 0.0 && v[5] == 100.0 && v[6] == 100.0 && v[7] == 100.0,
             EffectKind::DisplacementMap => v[displacement_map::H_MAX] == 0.0 && v[displacement_map::V_MAX] == 0.0,
@@ -6188,6 +6712,11 @@ impl EffectValues {
             || (self.kind == EffectKind::Portal && (v[portal::OPEN] > 0.0))
             || (self.kind == EffectKind::Hud && (true))
             || (self.kind == EffectKind::LightSweep && (v[sweep::POSITION] < 0.0))
+            || (self.kind == EffectKind::CellPattern && (v[cell_pattern::SPEED] != 0.0))
+            || (self.kind == EffectKind::RadioWaves && (true))
+            || (self.kind == EffectKind::CurlNoise && (v[curl_noise::SPEED] != 0.0))
+            || (self.kind == EffectKind::Noise && (v[noise::AMOUNT] > 0.0 && v[noise::STILL] < 0.5))
+            || (self.kind == EffectKind::NoiseHls && (v[noise_hls::ANIMATE] >= 0.5))
             || (self.kind == EffectKind::DisplacementMap && (v[displacement_map::SPEED] > 0.0 && v[displacement_map::SOURCE] >= 0.5))
             || (self.kind == EffectKind::RipplePulse && (true))
             || (self.kind == EffectKind::ElectricArcs && (true))

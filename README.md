@@ -881,6 +881,20 @@ What works now:
   - **Perspective** (a section of its own): **3D glasses** (red–cyan, red–green,
     red–blue or side by side, with depth taken from brightness), **Radial shadow** (a shadow cast from a point light), **Cylinder**
     and **Sphere** (the layer wrapped round one, turned and lit)
+  - **Generate** (more): **4-colour gradient** (four colours at four points, blended, jittered
+    against banding), **Beam** (a laser or light-sabre from one point to another, a core inside
+    a glow, travelling along its path), **Cell pattern** (Worley noise: bubbles, crystals,
+    plates, pillows, tubes and more, evolving), **Checkerboard**, **Circle** (filled or a ring,
+    feathered, inverted), **Ellipse** (an outline fading from an inside to an outside colour),
+    **Fill** (the layer's shape filled with a colour), **Grid**, **Radio waves** (rings or
+    polygons spreading from a point, so many a second), **Threads** (a woven cloth texture),
+    **Light burst** (bright streaks zooming out from a centre) and **Curl noise** (swirling
+    smoke, marble or ink)
+  - **Noise & grain** (a section of its own): **Noise** (speckle, colour or grey, held or
+    moving), **Noise HLS** (hue, lightness and saturation noise, even, squared or grain),
+    **Median** (speckle out, edges kept), **Dust & scratches** (only pixels that stand out by
+    more than a threshold replaced) and **Remove grain** (similar pixels averaged, detail kept,
+    in passes, sharpened back if you like; a view of the noise taken out)
   - **3D Extrusion** (Generate): the layer's picture made solid — its shape (wherever it
     isn't see-through, above **Solid above**) extruded to a **Depth**, with a **Bevel**
     (flat or round), turned in 3D (**Turn X/Y/Z**, **Size**, **Perspective**), its **Sides**
