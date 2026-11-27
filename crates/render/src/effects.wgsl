@@ -5536,3 +5536,897 @@ fn ex_solid(q: vec3<f32>, size: vec2<f32>, depth: f32, bevel: f32, round_: bool,
     }
     return true;
 }
+
+// ---- Batch: blur & sharpen, channel, colour correction ----
+
+// The layer at uv (layer uv), nothing outside the layer.
+fn cx_at(uv: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0) * inside(uv);
+}
+
+// The layer at uv, its edge pixels repeated outside it (`repeat`), or nothing.
+fn cx_edge(uv: vec2<f32>, repeat: bool) -> vec4<f32> {
+    if (repeat) {
+        return textureSampleLevel(src, src_sampler, to_tex(clamp(uv, vec2(0.0), vec2(1.0))), 0.0);
+    }
+    return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+}
+
+// One frame pixel (at 100%) in layer uv.
+fn cx_px() -> vec2<f32> {
+    return 1.0 / max(fx.extra.zw, vec2(1.0));
+}
+
+// Display (gamma) values of a premultiplied linear colour, and back.
+fn cx_disp(c: vec4<f32>) -> vec3<f32> {
+    return to_display(unpremul(c));
+}
+fn cx_out(rgb: vec3<f32>, a: f32) -> vec4<f32> {
+    return vec4(to_linear(clamp(rgb, vec3(0.0), vec3(1.0))) * a, a);
+}
+
+fn cx_rgb2hsl(c: vec3<f32>) -> vec3<f32> {
+    let mx = max(c.r, max(c.g, c.b));
+    let mn = min(c.r, min(c.g, c.b));
+    let l = (mx + mn) * 0.5;
+    let d = mx - mn;
+    if (d < 1e-6) {
+        return vec3(0.0, 0.0, l);
+    }
+    let s = d / max(1.0 - abs(2.0 * l - 1.0), 1e-6);
+    var h = 0.0;
+    if (mx == c.r) {
+        h = (c.g - c.b) / d;
+        if (h < 0.0) {
+            h = h + 6.0;
+        }
+    } else if (mx == c.g) {
+        h = (c.b - c.r) / d + 2.0;
+    } else {
+        h = (c.r - c.g) / d + 4.0;
+    }
+    return vec3(h / 6.0, clamp(s, 0.0, 1.0), l);
+}
+
+fn cx_hsl2rgb(h: vec3<f32>) -> vec3<f32> {
+    let c = (1.0 - abs(2.0 * h.z - 1.0)) * h.y;
+    let base = clamp(abs((fract(h.x) * 6.0 + vec3(0.0, 4.0, 2.0)) % 6.0 - 3.0) - 1.0, vec3(0.0), vec3(1.0));
+    return h.z + c * (base - 0.5);
+}
+
+// A channel of a display colour (with its alpha) by number: 0 red, 1 green, 2 blue,
+// 3 alpha, 4 luminance, 5 hue, 6 lightness, 7 saturation, 8 full, 9 half, 10 off.
+fn cx_chan(c: vec3<f32>, a: f32, which: u32) -> f32 {
+    switch which {
+        case 0u: { return c.r; }
+        case 1u: { return c.g; }
+        case 2u: { return c.b; }
+        case 3u: { return a; }
+        case 4u: { return dot(c, LUMA); }
+        case 5u: { return cx_rgb2hsl(c).x; }
+        case 6u: { return cx_rgb2hsl(c).z; }
+        case 7u: { return cx_rgb2hsl(c).y; }
+        case 8u: { return 1.0; }
+        case 9u: { return 0.5; }
+        default: { return 0.0; }
+    }
+}
+
+// Blend modes on display colours 0–1: 0 normal, 1 multiply, 2 screen, 3 overlay,
+// 4 soft light, 5 hard light, 6 colour dodge, 7 colour burn, 8 darken, 9 lighten,
+// 10 difference, 11 add, 12 subtract.
+fn cx_blend(a: vec3<f32>, b: vec3<f32>, mode: u32) -> vec3<f32> {
+    switch mode {
+        case 1u: { return a * b; }
+        case 2u: { return 1.0 - (1.0 - a) * (1.0 - b); }
+        case 3u: { return select(1.0 - 2.0 * (1.0 - a) * (1.0 - b), 2.0 * a * b, a < vec3(0.5)); }
+        case 4u: { return select(a + (2.0 * b - 1.0) * (sqrt(a) - a), a - (1.0 - 2.0 * b) * a * (1.0 - a), b < vec3(0.5)); }
+        case 5u: { return select(1.0 - 2.0 * (1.0 - a) * (1.0 - b), 2.0 * a * b, b < vec3(0.5)); }
+        case 6u: { return min(a / max(1.0 - b, vec3(1e-3)), vec3(1.0)); }
+        case 7u: { return 1.0 - min((1.0 - a) / max(b, vec3(1e-3)), vec3(1.0)); }
+        case 8u: { return min(a, b); }
+        case 9u: { return max(a, b); }
+        case 10u: { return abs(a - b); }
+        case 11u: { return min(a + b, vec3(1.0)); }
+        case 12u: { return max(a - b, vec3(0.0)); }
+        default: { return b; }
+    }
+}
+
+// Box blur, one direction: p0 = (radius in texels, repeat edges); texel_dir.zw = direction.
+@fragment
+fn fs_box_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let r = max(fx.p0.x, 0.0);
+    let n = min(ceil(r), 100.0);
+    let step = r / max(n, 1.0);
+    let dir = fx.texel_dir.xy * fx.texel_dir.zw;
+    let rep = fx.p0.y >= 0.5;
+    var sum = cx_edge(in.uv, rep);
+    for (var i = 1.0; i <= n; i = i + 1.0) {
+        sum = sum + cx_edge(in.uv + dir * i * step, rep) + cx_edge(in.uv - dir * i * step, rep);
+    }
+    return sum / (2.0 * n + 1.0);
+}
+
+// Channel blur, one direction: p0 = sigma (texels) for red, green, blue, alpha; p1.x = repeat edges.
+@fragment
+fn fs_channel_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let sig = max(fx.p0, vec4(0.01));
+    let big = max(max(sig.x, sig.y), max(sig.z, sig.w));
+    let reach = 3.0 * big;
+    let n = min(ceil(reach), 64.0);
+    let step = reach / max(n, 1.0);
+    let dir = fx.texel_dir.xy * fx.texel_dir.zw;
+    let rep = fx.p1.x >= 0.5;
+    var sum = cx_edge(in.uv, rep);
+    var total = vec4(1.0);
+    for (var i = 1.0; i <= n; i = i + 1.0) {
+        let x = i * step;
+        let w = exp(-0.5 * x * x / (sig * sig));
+        sum = sum + w * (cx_edge(in.uv + dir * x, rep) + cx_edge(in.uv - dir * x, rep));
+        total = total + 2.0 * w;
+    }
+    var c = sum / total;
+    // (Colour can't outweigh opacity once the channels go their own ways.)
+    c = vec4(min(c.rgb, vec3(max(c.a, 1e-4)) * 4.0), c.a);
+    return c;
+}
+
+// Smart blur: p0 = (radius px, threshold %, mode).
+@fragment
+fn fs_smart_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let c0 = cx_at(in.uv);
+    let d0 = cx_disp(c0);
+    let r = max(fx.p0.x, 0.0);
+    let n = i32(min(ceil(r), 6.0));
+    let gap = r / max(f32(n), 1.0);
+    let thr = max(fx.p0.y / 100.0 * 0.5, 1e-3);
+    let px = cx_px();
+    var sum = vec4(0.0);
+    var w = 0.0;
+    var out_n = 0.0;
+    var all_n = 0.0;
+    for (var y = -n; y <= n; y = y + 1) {
+        for (var x = -n; x <= n; x = x + 1) {
+            let o = vec2(f32(x), f32(y)) * gap;
+            if (dot(o, o) > r * r + 0.01) {
+                continue;
+            }
+            let s = cx_at(in.uv + o * px);
+            let k = 1.0 - smoothstep(thr * 0.7, thr, length(cx_disp(s) - d0));
+            sum = sum + s * k;
+            w = w + k;
+            out_n = out_n + 1.0 - k;
+            all_n = all_n + 1.0;
+        }
+    }
+    let blurred = select(c0, sum / max(w, 1e-4), w > 0.0);
+    let edge = clamp(out_n / max(all_n, 1.0) * 3.0, 0.0, 1.0);
+    switch u32(round(fx.p0.z)) {
+        case 1u: { return vec4(vec3(step(0.5, edge)), 1.0); }
+        case 2u: { return vec4(mix(blurred.rgb, vec3(blurred.a), step(0.5, edge)), blurred.a); }
+        default: { return blurred; }
+    }
+}
+
+// Camera lens blur: p0 = (radius px, iris: 0 round, n−1 sides…, rotation °, highlight gain %),
+// p1 = (highlight threshold %, repeat edges).
+@fragment
+fn fs_lens_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let r = max(fx.p0.x, 0.0);
+    let shape = u32(round(fx.p0.y));
+    let sides = f32(shape + 2u);
+    let rot = radians(fx.p0.z);
+    let gain = max(fx.p0.w, 0.0) / 100.0 * 4.0;
+    let thr = clamp(fx.p1.x / 100.0, 0.0, 0.99);
+    let rep = fx.p1.y >= 0.5;
+    let px = cx_px();
+    let count = 160;
+    var sum = vec4(0.0);
+    var w = 0.0;
+    for (var i = 0; i < count; i = i + 1) {
+        let fi = f32(i) + 0.5;
+        let th = fi * 2.39996;
+        var rad = sqrt(fi / f32(count));
+        if (shape > 0u) {
+            let seg = 6.28318 / sides;
+            let a = ((th - rot) % seg + seg) % seg - seg * 0.5;
+            rad = rad * cos(seg * 0.5) / cos(a);
+        }
+        let o = vec2(cos(th), sin(th)) * rad * r;
+        let s = cx_edge(in.uv + o * px, rep);
+        let l = dot(to_display(unpremul(s)), LUMA);
+        let k = 1.0 + gain * smoothstep(thr, min(thr + 0.15, 1.0), l) * s.a;
+        sum = sum + s * k;
+        w = w + k;
+    }
+    return sum / max(w, 1e-4);
+}
+
+fn vb_map(uv: vec2<f32>, which: u32) -> f32 {
+    let c = cx_at(uv);
+    let d = cx_disp(c);
+    switch which {
+        case 1u: { return d.r * c.a; }
+        case 2u: { return d.g * c.a; }
+        case 3u: { return d.b * c.a; }
+        case 4u: { return c.a; }
+        default: { return dot(d, LUMA) * c.a; }
+    }
+}
+
+fn vb_dir(uv: vec2<f32>, s: f32, which: u32, kind: u32, ang: f32) -> vec2<f32> {
+    let px = cx_px();
+    if (kind == 2u) {
+        return vec2(cos(ang), sin(ang));
+    }
+    let g = vec2(vb_map(uv + vec2(s, 0.0) * px, which) - vb_map(uv - vec2(s, 0.0) * px, which), vb_map(uv + vec2(0.0, s) * px, which) - vb_map(uv - vec2(0.0, s) * px, which));
+    if (length(g) < 1e-5) {
+        return vec2(0.0);
+    }
+    var d = normalize(g);
+    if (kind == 0u) {
+        d = vec2(-d.y, d.x);
+    }
+    let c = cos(ang);
+    let sn = sin(ang);
+    return vec2(d.x * c - d.y * sn, d.x * sn + d.y * c);
+}
+
+// Vector blur: p0 = (amount px, direction: 0 along 1 across 2 one angle, angle °, smoothness px),
+// p1.x = shapes from.
+@fragment
+fn fs_vector_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let amount = max(fx.p0.x, 0.0);
+    let kind = u32(round(fx.p0.y));
+    let ang = radians(fx.p0.z);
+    let s = max(fx.p0.w, 0.5);
+    let which = u32(round(fx.p1.x));
+    let px = cx_px();
+    let steps = 12;
+    let h = amount / f32(steps);
+    var sum = cx_at(in.uv);
+    var n = 1.0;
+    for (var side = 0; side < 2; side = side + 1) {
+        let sg = select(1.0, -1.0, side == 1);
+        var p = in.uv;
+        var last = vb_dir(p, s, which, kind, ang) * sg;
+        for (var i = 0; i < steps; i = i + 1) {
+            var d = vb_dir(p, s, which, kind, ang) * sg;
+            if (dot(d, last) < 0.0) {
+                d = -d;
+            }
+            if (length(d) < 0.5) {
+                break;
+            }
+            p = p + d * h * px;
+            last = d;
+            sum = sum + cx_at(p);
+            n = n + 1.0;
+        }
+    }
+    return sum / n;
+}
+
+fn ar_op(a: f32, b: f32, op: u32, clip: bool) -> f32 {
+    let ai = u32(clamp(round(a), 0.0, 255.0));
+    let bi = u32(clamp(round(b), 0.0, 255.0));
+    var r = a;
+    switch op {
+        case 0u: { r = f32(ai & bi); }
+        case 1u: { r = f32(ai | bi); }
+        case 2u: { r = f32(ai ^ bi); }
+        case 3u: { r = a + b; }
+        case 4u: { r = a - b; }
+        case 5u: { r = abs(a - b); }
+        case 6u: { r = min(a, b); }
+        case 7u: { r = max(a, b); }
+        case 8u: { r = select(a, 0.0, a > b); }
+        case 9u: { r = select(a, 0.0, a < b); }
+        case 10u: { r = select(0.0, 255.0, a > b); }
+        case 11u: { r = a * b / 255.0; }
+        default: { r = 255.0 - (255.0 - a) * (255.0 - b) / 255.0; }
+    }
+    if (clip) {
+        return clamp(r, 0.0, 255.0);
+    }
+    return ((r % 256.0) + 256.0) % 256.0;
+}
+
+// Arithmetic: p0 = (operator, red, green, blue), p1.x = clip.
+@fragment
+fn fs_arithmetic(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c) * 255.0;
+    let op = u32(round(fx.p0.x));
+    let clip = fx.p1.x >= 0.5;
+    let o = vec3(ar_op(d.r, fx.p0.y, op, clip), ar_op(d.g, fx.p0.z, op, clip), ar_op(d.b, fx.p0.w, op, clip));
+    return cx_out(o / 255.0, c.a);
+}
+
+// Blend: p0 = (colour, mode, blend with original %).
+@fragment
+fn fs_blend_colour(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let col = to_display(rgb_of(fx.p0.x));
+    var o = d;
+    switch u32(round(fx.p0.y)) {
+        case 1u: {
+            let h = cx_rgb2hsl(col);
+            o = cx_hsl2rgb(vec3(h.x, h.y, cx_rgb2hsl(d).z));
+        }
+        case 2u: { o = dot(d, LUMA) * col / max(dot(col, LUMA), 1e-3); }
+        case 3u: { o = min(d, col); }
+        case 4u: { o = max(d, col); }
+        default: { o = col; }
+    }
+    let k = 1.0 - clamp(fx.p0.z / 100.0, 0.0, 1.0);
+    return cx_out(mix(d, o, k), c.a);
+}
+
+// Calculations: p0 = (input, invert input, second, invert second), p1 = (second opacity %, mode, preserve).
+@fragment
+fn fs_calculations(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    var a = d;
+    var alpha = c.a;
+    switch u32(round(fx.p0.x)) {
+        case 1u: { a = vec3(dot(d, LUMA)); }
+        case 2u: { a = vec3(d.r); }
+        case 3u: { a = vec3(d.g); }
+        case 4u: { a = vec3(d.b); }
+        case 5u: { a = vec3(c.a); alpha = 1.0; }
+        default: {}
+    }
+    if (fx.p0.y >= 0.5) {
+        a = 1.0 - a;
+    }
+    var b = 0.0;
+    switch u32(round(fx.p0.z)) {
+        case 1u: { b = d.r; }
+        case 2u: { b = d.g; }
+        case 3u: { b = d.b; }
+        case 4u: { b = c.a; }
+        default: { b = dot(d, LUMA); }
+    }
+    if (fx.p0.w >= 0.5) {
+        b = 1.0 - b;
+    }
+    let o = mix(a, cx_blend(a, vec3(b), u32(round(fx.p1.y))), clamp(fx.p1.x / 100.0, 0.0, 1.0));
+    if (fx.p1.z < 0.5) {
+        alpha = 1.0;
+    }
+    return cx_out(o, alpha);
+}
+
+// Channel mixer: p0 = red from (r, g, b, const) %, p1 = green, p2 = blue, p3.x = monochrome.
+@fragment
+fn fs_channel_mixer(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = vec4(cx_disp(c), 1.0);
+    var o = vec3(dot(d, fx.p0), dot(d, fx.p1), dot(d, fx.p2)) / 100.0;
+    if (fx.p3.x >= 0.5) {
+        o = vec3(o.r);
+    }
+    return cx_out(o, c.a);
+}
+
+// Invert: p0 = (channel, blend with original %).
+@fragment
+fn fs_invert(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    var o = d;
+    var a = c.a;
+    switch u32(round(fx.p0.x)) {
+        case 1u: { o.r = 1.0 - d.r; }
+        case 2u: { o.g = 1.0 - d.g; }
+        case 3u: { o.b = 1.0 - d.b; }
+        case 4u: { a = 1.0 - c.a; }
+        case 5u: { let y = dot(d, LUMA); o = d + (1.0 - 2.0 * y); }
+        case 6u: { let h = cx_rgb2hsl(d); o = cx_hsl2rgb(vec3(fract(h.x + 0.5), h.y, h.z)); }
+        case 7u: { let h = cx_rgb2hsl(d); o = cx_hsl2rgb(vec3(h.x, h.y, 1.0 - h.z)); }
+        case 8u: { let h = cx_rgb2hsl(d); o = cx_hsl2rgb(vec3(h.x, 1.0 - h.y, h.z)); }
+        default: { o = 1.0 - d; }
+    }
+    let k = 1.0 - clamp(fx.p0.y / 100.0, 0.0, 1.0);
+    let rgb = mix(d, clamp(o, vec3(0.0), vec3(1.0)), k);
+    let alpha = mix(c.a, a, k);
+    // (Alpha inverted: what was clear becomes the colour under it, here its own.)
+    return vec4(to_linear(rgb) * alpha, alpha);
+}
+
+// Shift channels: p0 = (red from, green from, blue from, alpha from) as numbers for cx_chan.
+@fragment
+fn fs_shift_channels(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    var o = vec4(cx_chan(d, c.a, u32(round(fx.p0.x))), cx_chan(d, c.a, u32(round(fx.p0.y))), cx_chan(d, c.a, u32(round(fx.p0.z))), cx_chan(d, c.a, u32(round(fx.p0.w))));
+    return cx_out(o.rgb, clamp(o.a, 0.0, 1.0));
+}
+
+// Set channels: p0 = (red from, green from, blue from, alpha from) as numbers for cx_chan; p1 = invert each.
+@fragment
+fn fs_set_channels(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    var o = vec4(cx_chan(d, c.a, u32(round(fx.p0.x))), cx_chan(d, c.a, u32(round(fx.p0.y))), cx_chan(d, c.a, u32(round(fx.p0.z))), cx_chan(d, c.a, u32(round(fx.p0.w))));
+    o = select(o, 1.0 - o, fx.p1 >= vec4(0.5));
+    return cx_out(o.rgb, clamp(o.a, 0.0, 1.0));
+}
+
+// Set matte: p0 = (from, invert, keep its own transparency).
+@fragment
+fn fs_set_matte(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    var m = cx_chan(d, c.a, u32(round(fx.p0.x)));
+    if (fx.p0.y >= 0.5) {
+        m = 1.0 - m;
+    }
+    if (fx.p0.z >= 0.5) {
+        m = m * c.a;
+    }
+    return cx_out(d, clamp(m, 0.0, 1.0));
+}
+
+// Solid composite: p0 = (source opacity %, colour, opacity %, mode).
+@fragment
+fn fs_solid_composite(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv)) * inside(in.uv);
+    let sa = c.a * clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let ba = clamp(fx.p0.z / 100.0, 0.0, 1.0) * inside(in.uv);
+    let back = to_display(rgb_of(fx.p0.y));
+    let top = cx_disp(c);
+    // The layer blended onto the colour where both are, over it where only it is.
+    let blended = mix(top, cx_blend(back, top, u32(round(fx.p0.w))), ba);
+    let a = sa + ba * (1.0 - sa);
+    let rgb = (to_linear(blended) * sa + to_linear(back) * ba * (1.0 - sa)) / max(a, 1e-5);
+    return vec4(rgb * a, a);
+}
+
+// Minimax, one direction: p0 = (0 minimum 1 maximum, radius texels, channel).
+@fragment
+fn fs_minimax(in: VsOut) -> @location(0) vec4<f32> {
+    let mx = fx.p0.x >= 0.5;
+    let r = max(fx.p0.y, 0.0);
+    let n = min(ceil(r), 100.0);
+    let step = r / max(n, 1.0);
+    let dir = fx.texel_dir.xy * fx.texel_dir.zw;
+    let ch = u32(round(fx.p0.z));
+    let c0 = textureSample(src, src_sampler, to_tex(in.uv));
+    var best = c0;
+    for (var i = -n; i <= n; i = i + 1.0) {
+        let s = textureSampleLevel(src, src_sampler, to_tex(in.uv + dir * i * step), 0.0);
+        if (mx) {
+            best = max(best, s);
+        } else {
+            best = min(best, s);
+        }
+    }
+    switch ch {
+        // Colour only: the colour's extreme, at its own opacity.
+        case 0u: { return vec4(unpremul(best) * c0.a, c0.a); }
+        case 2u: { return vec4(unpremul(c0) * best.a, best.a); }
+        case 3u: { return vec4(vec3(best.r, c0.g, c0.b), c0.a); }
+        case 4u: { return vec4(vec3(c0.r, best.g, c0.b), c0.a); }
+        case 5u: { return vec4(vec3(c0.r, c0.g, best.b), c0.a); }
+        default: { return best; }
+    }
+}
+
+// Statistics of the layer (display values of its visible pixels, a 64 × 64 grid) written
+// into the target's first pixels: (0,0) black points, (1,0) white points, (2,0) means —
+// red, green, blue, luminance; with p0 = (black clip %, white clip %). For equalising,
+// p0.z = 1: pixel (x, y) for x < 64 is the share at or below level x/63 of channel y
+// (0 luminance, 1 red, 2 green, 3 blue).
+@fragment
+fn fs_stats(in: VsOut) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(in.pos.xy);
+    let equalise = fx.p0.z >= 0.5;
+    if (p.y >= select(1, 4, equalise) || p.x >= select(3, 64, equalise)) {
+        return vec4(0.0);
+    }
+    let n = 64;
+    if (equalise) {
+        var below = 0.0;
+        var total = 0.0;
+        let level = f32(p.x) / 63.0;
+        for (var j = 0; j < n; j = j + 1) {
+            for (var i = 0; i < n; i = i + 1) {
+                let uv = (vec2(f32(i), f32(j)) + 0.5) / f32(n);
+                let c = cx_at(uv);
+                if (c.a < 0.05) {
+                    continue;
+                }
+                let d = cx_disp(c);
+                var v = dot(d, LUMA);
+                if (p.y == 1) { v = d.r; } else if (p.y == 2) { v = d.g; } else if (p.y == 3) { v = d.b; }
+                below = below + select(0.0, 1.0, v <= level + 0.5 / 63.0);
+                total = total + 1.0;
+            }
+        }
+        return vec4(select(level, below / total, total > 0.0));
+    }
+    var hist: array<vec4<f32>, 64>;
+    for (var k = 0; k < 64; k = k + 1) {
+        hist[k] = vec4(0.0);
+    }
+    var sum = vec4(0.0);
+    var count = 0.0;
+    for (var j = 0; j < n; j = j + 1) {
+        for (var i = 0; i < n; i = i + 1) {
+            let uv = (vec2(f32(i), f32(j)) + 0.5) / f32(n);
+            let c = cx_at(uv);
+            if (c.a < 0.05) {
+                continue;
+            }
+            let d = cx_disp(c);
+            let v = vec4(d, dot(d, LUMA));
+            let b = vec4<i32>(clamp(round(v * 63.0), vec4(0.0), vec4(63.0)));
+            hist[b.x].x = hist[b.x].x + 1.0;
+            hist[b.y].y = hist[b.y].y + 1.0;
+            hist[b.z].z = hist[b.z].z + 1.0;
+            hist[b.w].w = hist[b.w].w + 1.0;
+            sum = sum + v;
+            count = count + 1.0;
+        }
+    }
+    if (count < 1.0) {
+        return select(vec4(0.0), select(vec4(1.0), vec4(0.5), p.x == 2), p.x != 0);
+    }
+    if (p.x == 2) {
+        return sum / count;
+    }
+    // A clip share from the dark end (black points) or the bright end (white points).
+    let clip = clamp(select(fx.p0.x, fx.p0.y, p.x == 1) / 100.0, 0.0, 0.5) * count;
+    var acc = vec4(0.0);
+    var found = vec4(-1.0);
+    for (var k = 0; k < 64; k = k + 1) {
+        let idx = select(k, 63 - k, p.x == 1);
+        acc = acc + hist[idx];
+        let lv = f32(idx) / 63.0;
+        found = select(found, vec4(lv), (found < vec4(0.0)) & (acc > vec4(clip)));
+    }
+    return max(found, vec4(0.0));
+}
+
+fn cc_match(d: vec3<f32>, key: vec3<f32>, how: u32) -> f32 {
+    switch how {
+        case 1u: {
+            let a = cx_rgb2hsl(d).x;
+            let b = cx_rgb2hsl(key).x;
+            let dh = abs(a - b);
+            return min(dh, 1.0 - dh) * 2.0;
+        }
+        case 2u: {
+            let ca = vec2(d.b - dot(d, LUMA), d.r - dot(d, LUMA));
+            let cb = vec2(key.b - dot(key, LUMA), key.r - dot(key, LUMA));
+            return length(ca - cb) * 1.2;
+        }
+        default: { return length(d - key) / 1.732; }
+    }
+}
+
+// Change colour: p0 = (view, hue °, lightness, saturation), p1 = (colour, tolerance %,
+// softness %, match), p2.x = invert.
+@fragment
+fn fs_change_color(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let key = to_display(rgb_of(fx.p1.x));
+    let dist = cc_match(d, key, u32(round(fx.p1.w)));
+    let tol = fx.p1.y / 100.0;
+    let soft = fx.p1.z / 100.0;
+    var m = 1.0 - smoothstep(tol, tol + soft + 1e-4, dist);
+    if (fx.p2.x >= 0.5) {
+        m = 1.0 - m;
+    }
+    if (fx.p0.x >= 0.5) {
+        return vec4(vec3(m) * c.a, c.a);
+    }
+    var h = cx_rgb2hsl(d);
+    h.x = fract(h.x + fx.p0.y / 360.0);
+    h.z = clamp(h.z + fx.p0.z / 100.0 * select(h.z, 1.0 - h.z, fx.p0.z > 0.0), 0.0, 1.0);
+    h.y = clamp(h.y * (1.0 + fx.p0.w / 100.0), 0.0, 1.0);
+    return cx_out(mix(d, cx_hsl2rgb(h), m), c.a);
+}
+
+// Change to colour: p0 = (from, to, change, hue tolerance %), p1 = (lightness tolerance %,
+// saturation tolerance %, softness %, view mask).
+@fragment
+fn fs_change_to_color(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let a = cx_rgb2hsl(to_display(rgb_of(fx.p0.x)));
+    let b = cx_rgb2hsl(to_display(rgb_of(fx.p0.y)));
+    let h = cx_rgb2hsl(d);
+    let dh0 = abs(h.x - a.x);
+    let dh = min(dh0, 1.0 - dh0) * 2.0;
+    let tol = vec3(fx.p0.w, fx.p1.x, fx.p1.y) / 100.0;
+    let soft = fx.p1.z / 100.0 + 1e-4;
+    let diff = vec3(dh, abs(h.z - a.z), abs(h.y - a.y));
+    let k = (1.0 - smoothstep(tol, tol * (1.0 + soft) + soft * 0.1, diff));
+    let m = k.x * k.y * k.z;
+    if (fx.p1.w >= 0.5) {
+        return vec4(vec3(m) * c.a, c.a);
+    }
+    var o = h;
+    let dhue = b.x - a.x;
+    o.x = fract(h.x + dhue);
+    let ch = u32(round(fx.p0.z));
+    if (ch == 1u || ch == 2u) {
+        o.z = clamp(h.z + (b.z - a.z), 0.0, 1.0);
+    }
+    if (ch == 2u || ch == 3u) {
+        o.y = clamp(h.y + (b.y - a.y), 0.0, 1.0);
+    }
+    return cx_out(mix(d, cx_hsl2rgb(o), m), c.a);
+}
+
+// Colour balance: p0.xyz shadows, p0.w/p1.xy midtones, p1.zw/p2.x highlights (−100…100), p2.y preserve.
+@fragment
+fn fs_color_balance(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let y = dot(d, LUMA);
+    let ws = 1.0 - smoothstep(0.0, 0.5, y);
+    let wh = smoothstep(0.5, 1.0, y);
+    let wm = 1.0 - ws - wh;
+    let s = vec3(fx.p0.x, fx.p0.y, fx.p0.z);
+    let m = vec3(fx.p0.w, fx.p1.x, fx.p1.y);
+    let h = vec3(fx.p1.z, fx.p1.w, fx.p2.x);
+    var o = d + (s * ws + m * wm + h * wh) / 100.0 * 0.5;
+    if (fx.p2.y >= 0.5) {
+        o = o + (y - dot(o, LUMA));
+    }
+    return cx_out(o, c.a);
+}
+
+// Exposure: p0 = (stops, offset, gamma).
+@fragment
+fn fs_exposure(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let lin = unpremul(c) * exp2(fx.p0.x) + fx.p0.y;
+    let g = pow(max(lin, vec3(0.0)), vec3(1.0 / max(fx.p0.z, 0.01)));
+    return vec4(g * c.a, c.a);
+}
+
+// Leave colour: p0 = (amount %, colour, tolerance %, softness %), p1.x = match by hue.
+@fragment
+fn fs_leave_color(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let dist = cc_match(d, to_display(rgb_of(fx.p0.y)), select(0u, 1u, fx.p1.x >= 0.5));
+    let tol = fx.p0.z / 100.0;
+    let keep = 1.0 - smoothstep(tol, tol + fx.p0.w / 100.0 + 1e-4, dist);
+    let grey = vec3(dot(d, LUMA));
+    return cx_out(mix(d, grey, clamp(fx.p0.x / 100.0, 0.0, 1.0) * (1.0 - keep)), c.a);
+}
+
+fn pf_colour(i: u32) -> vec3<f32> {
+    var t = array<vec3<f32>, 20>(
+        vec3(236.0, 138.0, 0.0), vec3(250.0, 150.0, 0.0), vec3(235.0, 177.0, 19.0),
+        vec3(0.0, 109.0, 255.0), vec3(0.0, 93.0, 255.0), vec3(0.0, 181.0, 255.0),
+        vec3(234.0, 26.0, 26.0), vec3(243.0, 132.0, 23.0), vec3(249.0, 227.0, 28.0),
+        vec3(25.0, 201.0, 25.0), vec3(29.0, 203.0, 234.0), vec3(29.0, 53.0, 234.0),
+        vec3(155.0, 29.0, 234.0), vec3(227.0, 24.0, 227.0), vec3(172.0, 122.0, 51.0),
+        vec3(255.0, 0.0, 0.0), vec3(0.0, 34.0, 205.0), vec3(0.0, 140.0, 0.0),
+        vec3(255.0, 213.0, 0.0), vec3(0.0, 194.0, 177.0));
+    return t[min(i, 19u)] / 255.0;
+}
+
+// Photo filter: p0 = (filter, custom colour, density %, preserve luminosity).
+@fragment
+fn fs_photo_filter(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let f = u32(round(fx.p0.x));
+    let col = select(pf_colour(f), to_display(rgb_of(fx.p0.y)), f >= 20u);
+    let k = clamp(fx.p0.z / 100.0, 0.0, 1.0);
+    var o = mix(d, d * col * 1.6, k);
+    if (fx.p0.w >= 0.5) {
+        o = o * dot(d, LUMA) / max(dot(o, LUMA), 1e-3);
+    }
+    return cx_out(o, c.a);
+}
+
+// How much of a colour range a display colour is in (Photoshop's way: by its largest,
+// middle and smallest channels).
+fn sc_weight(d: vec3<f32>, range: u32) -> f32 {
+    let mx = max(d.r, max(d.g, d.b));
+    let mn = min(d.r, min(d.g, d.b));
+    let md = d.r + d.g + d.b - mx - mn;
+    switch range {
+        case 0u: { return select(0.0, mx - md, mx == d.r); }
+        case 1u: { return select(0.0, md - mn, mn == d.b); }
+        case 2u: { return select(0.0, mx - md, mx == d.g); }
+        case 3u: { return select(0.0, md - mn, mn == d.r); }
+        case 4u: { return select(0.0, mx - md, mx == d.b); }
+        case 5u: { return select(0.0, md - mn, mn == d.g); }
+        case 6u: { return max(mn * 2.0 - 1.0, 0.0); }
+        case 7u: { return 1.0 - (abs(mx - 0.5) + abs(mn - 0.5)); }
+        default: { return max(1.0 - mx * 2.0, 0.0); }
+    }
+}
+
+fn sc_apply(d: vec3<f32>, cmyk: vec4<f32>, w: f32, absolute: bool) -> vec3<f32> {
+    // Each of red, green and blue is the complement of cyan, magenta and yellow; black darkens all.
+    let ink = 1.0 - d;
+    let k = cmyk / 100.0;
+    var change = vec3(k.x, k.y, k.z) + k.w;
+    if (!absolute) {
+        change = change * ink;
+    }
+    return d - change * w;
+}
+
+// Selective colour: p0.x = method (1 absolute); ranges at 1–5, 6–10, 11–15: (which, c, m, y, k).
+@fragment
+fn fs_selective_color(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let absolute = fx.p0.x >= 0.5;
+    var o = d;
+    o = sc_apply(o, vec4(fx.p0.z, fx.p0.w, fx.p1.x, fx.p1.y), sc_weight(d, u32(round(fx.p0.y))), absolute);
+    o = sc_apply(o, vec4(fx.p1.w, fx.p2.x, fx.p2.y, fx.p2.z), sc_weight(d, u32(round(fx.p1.z))), absolute);
+    o = sc_apply(o, vec4(fx.p3.x, fx.p3.y, fx.p3.z, fx.p3.w), sc_weight(d, u32(round(fx.p2.w))), absolute);
+    return cx_out(o, c.a);
+}
+
+// Tint: p0 = (black to, white to, amount %).
+@fragment
+fn fs_tint(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let o = mix(to_display(rgb_of(fx.p0.x)), to_display(rgb_of(fx.p0.y)), dot(d, LUMA));
+    return cx_out(mix(d, o, clamp(fx.p0.z / 100.0, 0.0, 1.0)), c.a);
+}
+
+// Black & white: p0 = (reds, yellows, greens, cyans) %, p1 = (blues, magentas, tint, tint colour).
+@fragment
+fn fs_black_white(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    // Photoshop's way: the grey is the smallest channel, plus the colour's two ranges.
+    let mn = min(d.r, min(d.g, d.b));
+    let mx = max(d.r, max(d.g, d.b));
+    let md = d.r + d.g + d.b - mx - mn;
+    var w = array<f32, 6>(fx.p0.x, fx.p0.y, fx.p0.z, fx.p0.w, fx.p1.x, fx.p1.y);
+    // The primary (largest) and secondary (two largest) colour of this pixel.
+    var prim = 0u;
+    if (mx == d.g) { prim = 2u; } else if (mx == d.b) { prim = 4u; }
+    var sec = 1u;
+    if (mn == d.r) { sec = 3u; } else if (mn == d.g) { sec = 5u; }
+    let y = mn + (mx - md) * w[prim] / 100.0 + (md - mn) * w[sec] / 100.0;
+    var o = vec3(clamp(y, 0.0, 1.0));
+    if (fx.p1.z >= 0.5) {
+        let t = to_display(rgb_of(fx.p1.w));
+        o = cx_blend(o, t / max(dot(t, LUMA), 1e-3) * 0.5, 1u) * 2.0;
+        o = clamp(o, vec3(0.0), vec3(1.0));
+    }
+    return cx_out(o, c.a);
+}
+
+// Colour neutraliser: p0 = (shadows cast, midtones cast, highlights cast, blend %).
+@fragment
+fn fs_color_neutralizer(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let s = to_display(rgb_of(fx.p0.x));
+    let m = to_display(rgb_of(fx.p0.y));
+    let h = to_display(rgb_of(fx.p0.z));
+    // Each cast made grey: an offset in the shadows, a gain in the highlights, a gamma between.
+    let sd = s - dot(s, LUMA);
+    let hg = vec3(max(dot(h, LUMA), 0.05)) / max(h, vec3(0.05));
+    let mg = log(vec3(clamp(dot(m, LUMA), 0.05, 0.95))) / log(clamp(m, vec3(0.05), vec3(0.95)));
+    let y = dot(d, LUMA);
+    var o = d - sd * (1.0 - smoothstep(0.0, 0.5, y));
+    o = mix(o, o * hg, smoothstep(0.5, 1.0, y));
+    o = pow(clamp(o, vec3(0.0), vec3(1.0)), mix(vec3(1.0), mg, 1.0 - abs(y - 0.5) * 2.0));
+    return cx_out(mix(o, d, clamp(fx.p0.w / 100.0, 0.0, 1.0)), c.a);
+}
+
+// Colour offset: p0 = (red, green, blue phase °, overflow).
+@fragment
+fn fs_color_offset(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let v = d + vec3(fx.p0.x, fx.p0.y, fx.p0.z) / 360.0;
+    var o = fract(v);
+    switch u32(round(fx.p0.w)) {
+        case 1u: { o = 1.0 - abs(1.0 - 2.0 * fract(v * 0.5)); }
+        case 2u: { o = select(fract(v), 1.0 - fract(v), (floor(v) % 2.0) != vec3(0.0)); }
+        default: {}
+    }
+    return cx_out(o, c.a);
+}
+
+// Toner: p0 = (tones, highlights, brights, midtones), p1 = (darktones, shadows, blend %).
+@fragment
+fn fs_toner(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    var y = dot(d, LUMA);
+    let hi = to_display(rgb_of(fx.p0.y));
+    let br = to_display(rgb_of(fx.p0.z));
+    let mi = to_display(rgb_of(fx.p0.w));
+    let dk = to_display(rgb_of(fx.p1.x));
+    let sh = to_display(rgb_of(fx.p1.y));
+    var o = vec3(0.0);
+    switch u32(round(fx.p0.x)) {
+        case 0u: { o = mix(sh, hi, y); }
+        case 1u: { o = select(mix(mi, hi, y * 2.0 - 1.0), mix(sh, mi, y * 2.0), y < 0.5); }
+        case 3u: {
+            y = 1.0 - abs(1.0 - 2.0 * y);
+            o = select(mix(mi, hi, y * 2.0 - 1.0), mix(sh, mi, y * 2.0), y < 0.5);
+        }
+        default: {
+            let t = y * 4.0;
+            if (t < 1.0) { o = mix(sh, dk, t); } else if (t < 2.0) { o = mix(dk, mi, t - 1.0); } else if (t < 3.0) { o = mix(mi, br, t - 2.0); } else { o = mix(br, hi, t - 3.0); }
+        }
+    }
+    return cx_out(mix(o, d, clamp(fx.p1.z / 100.0, 0.0, 1.0)), c.a);
+}
+
+// Threshold RGB: p0.xyz thresholds (0–255), p0.w/p1.xy invert, p1.z blend %.
+@fragment
+fn fs_threshold_rgb(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    var o = step(vec3(fx.p0.x, fx.p0.y, fx.p0.z) / 255.0, d);
+    o = select(o, 1.0 - o, vec3(fx.p0.w, fx.p1.x, fx.p1.y) >= vec3(0.5));
+    return cx_out(mix(o, d, clamp(fx.p1.z / 100.0, 0.0, 1.0)), c.a);
+}
+
+// Convolution kernel: p0, p1, p2.x = the nine weights (rows), p2.y = divide by, p2.z = offset
+// (0–255), p2.w = alpha too, p3.x = blend %.
+@fragment
+fn fs_kernel(in: VsOut) -> @location(0) vec4<f32> {
+    let px = cx_px();
+    var k = array<f32, 9>(fx.p0.x, fx.p0.y, fx.p0.z, fx.p0.w, fx.p1.x, fx.p1.y, fx.p1.z, fx.p1.w, fx.p2.x);
+    var sum = vec4(0.0);
+    let c0 = cx_at(in.uv);
+    for (var j = 0; j < 3; j = j + 1) {
+        for (var i = 0; i < 3; i = i + 1) {
+            let s = cx_at(in.uv + vec2(f32(i - 1), f32(j - 1)) * px);
+            sum = sum + vec4(cx_disp(s), s.a) * k[j * 3 + i];
+        }
+    }
+    let div = select(fx.p2.y, 1.0, abs(fx.p2.y) < 1e-4);
+    var o = sum / div + fx.p2.z / 255.0;
+    let a = select(c0.a, clamp(o.a, 0.0, 1.0), fx.p2.w >= 0.5);
+    let rgb = mix(clamp(o.rgb, vec3(0.0), vec3(1.0)), cx_disp(c0), clamp(fx.p3.x / 100.0, 0.0, 1.0));
+    return cx_out(rgb, a);
+}
+
+// Video limiter: p0 = (reduce: 0 brightness 1 saturation 2 both, max luma %, min luma %, max chroma %).
+@fragment
+fn fs_video_limiter(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = cx_disp(c);
+    let y = dot(d, LUMA);
+    var chroma = d - y;
+    let mode = u32(round(fx.p0.x));
+    let ymax = fx.p0.y / 100.0;
+    let ymin = fx.p0.z / 100.0;
+    var ny = clamp(y, ymin, ymax);
+    // Saturation: the colour's distance from grey, held within a limit.
+    let lim = fx.p0.w / 100.0 * 0.5;
+    let len = length(chroma);
+    if (mode >= 1u && len > lim) {
+        chroma = chroma * lim / len;
+    }
+    if (mode == 1u) {
+        ny = y;
+    }
+    var o = ny + chroma;
+    // Still past the limits (bright saturated colours): pull the colour in towards grey.
+    let over = max(max(o.r, max(o.g, o.b)) - max(ymax, 1e-3), 0.0);
+    if (mode != 1u && over > 0.0) {
+        o = mix(o, vec3(ny), clamp(over / max(max(o.r, max(o.g, o.b)) - ny, 1e-3), 0.0, 1.0));
+    }
+    return cx_out(clamp(o, vec3(0.0), vec3(1.0)), c.a);
+}

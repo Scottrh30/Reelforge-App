@@ -702,7 +702,7 @@ impl Compositor {
             bind_group_layouts: &[Some(&fx_uniform_layout), Some(&texture_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let mut fx2_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_liquify", "fs_depth_map", "fs_relight", "fs_portrait", "fs_volumetric", "fs_sparkle", "fs_hud_text", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add", "fs_hue_curves", "fs_audio_vis"]
+        let mut fx2_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_mask", "fs_curves", "fs_lut", "fs_glow_add", "fs_under", "fs_diff_key", "fs_neon_mix", "fs_decon_mix", "fs_fluid", "fs_lightning", "fs_fill", "fs_refine_trimap", "fs_refine_in", "fs_refine_out", "fs_refine_line", "fs_refine_apply", "fs_paint", "fs_liquify", "fs_depth_map", "fs_relight", "fs_portrait", "fs_volumetric", "fs_sparkle", "fs_hud_text", "fs_beauty", "fs_sky_cut", "fs_sky_fill", "fs_streak_add", "fs_hue_curves", "fs_audio_vis", "fs_compound_mix", "fs_cross_mix", "fs_auto_apply"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -724,7 +724,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent", "fs_gradient_map", "fs_aurora", "fs_nebula", "fs_clouds", "fs_burn", "fs_deflicker", "fs_rotate3d", "fs_bend", "fs_bevel", "fs_extrude", "fs_extrusion3d"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent", "fs_gradient_map", "fs_aurora", "fs_nebula", "fs_clouds", "fs_burn", "fs_deflicker", "fs_rotate3d", "fs_bend", "fs_bevel", "fs_extrude", "fs_extrusion3d", "fs_smart_blur", "fs_lens_blur", "fs_vector_blur", "fs_arithmetic", "fs_blend_colour", "fs_calculations", "fs_channel_mixer", "fs_invert", "fs_shift_channels", "fs_set_channels", "fs_set_matte", "fs_solid_composite", "fs_change_color", "fs_change_to_color", "fs_color_balance", "fs_exposure", "fs_leave_color", "fs_photo_filter", "fs_selective_color", "fs_tint", "fs_black_white", "fs_color_neutralizer", "fs_color_offset", "fs_toner", "fs_threshold_rgb", "fs_kernel", "fs_video_limiter", "fs_box_blur", "fs_channel_blur", "fs_minimax", "fs_stats"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1747,6 +1747,129 @@ impl Compositor {
                         push(entry, cur, Second::Table(i), o1, uniform(&v, [0.0; 2]));
                         cur = o1;
                     }
+                    EffectKind::BoxBlur => {
+                        use reelforge_core::effects::box_blur as bb;
+                        let r = e.values[bb::RADIUS].max(0.0);
+                        let dims = e.values[bb::DIMENSIONS].round() as i32;
+                        let mut s = cur;
+                        for _ in 0..(e.values[bb::ITERATIONS].round().clamp(1.0, 5.0) as usize) {
+                            for (dir, k, on) in [([1.0, 0.0], kx, dims != 2), ([0.0, 1.0], ky, dims != 1)] {
+                                if !on {
+                                    continue;
+                                }
+                                let mut v = e.values;
+                                v[0] = r * k;
+                                v[1] = e.values[bb::REPEAT];
+                                let d = if s == o1 { o2 } else { o1 };
+                                push("fs_box_blur", s, Second::None, d, uniform(&v, dir));
+                                s = d;
+                            }
+                        }
+                        cur = s;
+                    }
+                    EffectKind::ChannelBlur => {
+                        use reelforge_core::effects::channel_blur as cb;
+                        let dims = e.values[cb::DIMENSIONS].round() as i32;
+                        let mut s = cur;
+                        for (dir, k, on) in [([1.0, 0.0], kx, dims != 2), ([0.0, 1.0], ky, dims != 1)] {
+                            if !on {
+                                continue;
+                            }
+                            let mut v = e.values;
+                            for c in 0..4 {
+                                v[c] = e.values[c].max(0.0) * 0.5 * k;
+                            }
+                            v[4] = e.values[cb::REPEAT];
+                            let d = if s == o1 { o2 } else { o1 };
+                            push("fs_channel_blur", s, Second::None, d, uniform(&v, dir));
+                            s = d;
+                        }
+                        cur = s;
+                    }
+                    EffectKind::CompoundBlur => {
+                        blur(&mut push, e.values[reelforge_core::effects::compound_blur::MAX].max(0.0), cur, o1, o2);
+                        let v = e.values;
+                        let mut u = uniform(&v, [0.0, 0.0]);
+                        u[13] = e.time;
+                        u[14] = l.layer_size[0];
+                        u[15] = l.layer_size[1];
+                        u[28..32].copy_from_slice(&v[16..20]);
+                        push("fs_compound_mix", cur, Second::Scratch(o2), o1, u);
+                        cur = o1;
+                    }
+                    EffectKind::CrossBlur => {
+                        use reelforge_core::effects::cross_blur as xb;
+                        let mut v = e.values;
+                        v[0] = e.values[xb::ACROSS].max(0.0) * 0.5 * kx;
+                        push("fs_blur", cur, Second::None, o1, uniform(&v, [1.0, 0.0]));
+                        v[0] = e.values[xb::DOWN].max(0.0) * 0.5 * ky;
+                        push("fs_blur", cur, Second::None, o2, uniform(&v, [0.0, 1.0]));
+                        push("fs_cross_mix", o1, Second::Scratch(o2), cur, uniform(&e.values, [0.0, 0.0]));
+                    }
+                    EffectKind::Minimax => {
+                        use reelforge_core::effects::minimax as mm;
+                        let op = e.values[mm::OPERATION].round() as i32;
+                        let dims = e.values[mm::DIRECTION].round() as i32;
+                        let ops: &[f32] = match op {
+                            1 => &[1.0],
+                            2 => &[0.0, 1.0],
+                            3 => &[1.0, 0.0],
+                            _ => &[0.0],
+                        };
+                        let mut s = cur;
+                        for &which in ops {
+                            for (dir, k, on) in [([1.0, 0.0], kx, dims != 2), ([0.0, 1.0], ky, dims != 1)] {
+                                if !on {
+                                    continue;
+                                }
+                                let mut v = e.values;
+                                v[0] = which;
+                                v[1] = e.values[mm::RADIUS].max(0.0) * k;
+                                v[2] = e.values[mm::CHANNEL];
+                                let d = if s == o1 { o2 } else { o1 };
+                                push("fs_minimax", s, Second::None, d, uniform(&v, dir));
+                                s = d;
+                            }
+                        }
+                        cur = s;
+                    }
+                    EffectKind::AutoLevels => {
+                        let mut v = e.values;
+                        v[2] = 0.0;
+                        v[6] = e.values[2];
+                        v[7] = 0.0;
+                        push("fs_stats", cur, Second::None, o1, uniform(&v, [0.0, 0.0]));
+                        push("fs_auto_apply", cur, Second::Scratch(o1), o2, uniform(&v, [0.0, 0.0]));
+                        cur = o2;
+                    }
+                    EffectKind::AutoContrast => {
+                        let mut v = e.values;
+                        v[2] = 0.0;
+                        v[6] = e.values[2];
+                        v[7] = 1.0;
+                        push("fs_stats", cur, Second::None, o1, uniform(&v, [0.0, 0.0]));
+                        push("fs_auto_apply", cur, Second::Scratch(o1), o2, uniform(&v, [0.0, 0.0]));
+                        cur = o2;
+                    }
+                    EffectKind::AutoColor => {
+                        let mut v = e.values;
+                        v[2] = 0.0;
+                        v[6] = e.values[2];
+                        v[7] = 2.0;
+                        push("fs_stats", cur, Second::None, o1, uniform(&v, [0.0, 0.0]));
+                        push("fs_auto_apply", cur, Second::Scratch(o1), o2, uniform(&v, [0.0, 0.0]));
+                        cur = o2;
+                    }
+                    EffectKind::Equalize => {
+                        let mut v = e.values;
+                        v[2] = 1.0;
+                        push("fs_stats", cur, Second::None, o1, uniform(&v, [0.0, 0.0]));
+                        v[0] = e.values[0];
+                        v[6] = 100.0 - e.values[1];
+                        v[7] = 3.0;
+                        push("fs_auto_apply", cur, Second::Scratch(o1), o2, uniform(&v, [0.0, 0.0]));
+                        cur = o2;
+                    }
                     EffectKind::ColorCorrect => {
                         push("fs_color", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
                         cur = o1;
@@ -2268,6 +2391,33 @@ impl Compositor {
                     | EffectKind::Bevel
                     | EffectKind::Extrude
                     | EffectKind::Extrusion3d
+                    | EffectKind::SmartBlur
+                    | EffectKind::CameraLensBlur
+                    | EffectKind::VectorBlur
+                    | EffectKind::Arithmetic
+                    | EffectKind::BlendColour
+                    | EffectKind::Calculations
+                    | EffectKind::ChannelMixer
+                    | EffectKind::Invert
+                    | EffectKind::ShiftChannels
+                    | EffectKind::SetChannels
+                    | EffectKind::SetMatte
+                    | EffectKind::SolidComposite
+                    | EffectKind::ChangeColor
+                    | EffectKind::ChangeToColor
+                    | EffectKind::ColorBalance
+                    | EffectKind::Exposure
+                    | EffectKind::LeaveColor
+                    | EffectKind::PhotoFilter
+                    | EffectKind::SelectiveColor
+                    | EffectKind::Tint
+                    | EffectKind::BlackWhite
+                    | EffectKind::ColorNeutralizer
+                    | EffectKind::ColorOffset
+                    | EffectKind::Toner
+                    | EffectKind::ThresholdRgb
+                    | EffectKind::Kernel
+                    | EffectKind::VideoLimiter
                     | EffectKind::HeatHaze
                     | EffectKind::Shockwave
                     | EffectKind::Starfield
@@ -2372,6 +2522,33 @@ impl Compositor {
                             EffectKind::Bevel => "fs_bevel",
                             EffectKind::Extrude => "fs_extrude",
                             EffectKind::Extrusion3d => "fs_extrusion3d",
+                            EffectKind::SmartBlur => "fs_smart_blur",
+                            EffectKind::CameraLensBlur => "fs_lens_blur",
+                            EffectKind::VectorBlur => "fs_vector_blur",
+                            EffectKind::Arithmetic => "fs_arithmetic",
+                            EffectKind::BlendColour => "fs_blend_colour",
+                            EffectKind::Calculations => "fs_calculations",
+                            EffectKind::ChannelMixer => "fs_channel_mixer",
+                            EffectKind::Invert => "fs_invert",
+                            EffectKind::ShiftChannels => "fs_shift_channels",
+                            EffectKind::SetChannels => "fs_set_channels",
+                            EffectKind::SetMatte => "fs_set_matte",
+                            EffectKind::SolidComposite => "fs_solid_composite",
+                            EffectKind::ChangeColor => "fs_change_color",
+                            EffectKind::ChangeToColor => "fs_change_to_color",
+                            EffectKind::ColorBalance => "fs_color_balance",
+                            EffectKind::Exposure => "fs_exposure",
+                            EffectKind::LeaveColor => "fs_leave_color",
+                            EffectKind::PhotoFilter => "fs_photo_filter",
+                            EffectKind::SelectiveColor => "fs_selective_color",
+                            EffectKind::Tint => "fs_tint",
+                            EffectKind::BlackWhite => "fs_black_white",
+                            EffectKind::ColorNeutralizer => "fs_color_neutralizer",
+                            EffectKind::ColorOffset => "fs_color_offset",
+                            EffectKind::Toner => "fs_toner",
+                            EffectKind::ThresholdRgb => "fs_threshold_rgb",
+                            EffectKind::Kernel => "fs_kernel",
+                            EffectKind::VideoLimiter => "fs_video_limiter",
                             _ => "fs_leaks",
                         };
                         push(entry, cur, Second::None, o1, u);

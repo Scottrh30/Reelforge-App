@@ -3969,3 +3969,71 @@ fn geometry_effects_shape_the_layer() {
     let nothing: Vec<u8> = vec![0; n * 4];
     assert_eq!(lit(&draw(&mut c, &nothing, EffectKind::Extrusion3d, &[])), 0, "nothing to extrude");
 }
+
+/// EffectCraft's blur, channel and colour effects (batch 1): each draws, and does what it says.
+#[test]
+fn blur_channel_and_colour_effects_work() {
+    use reelforge_core::effects::*;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    // A low-contrast ramp (grey 60 to 180), left to right.
+    let ramp: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| { let v = (60 + x * 120 / (w - 1)) as u8; [v, v, v, 255] })).collect();
+    // A white square in the middle of black.
+    let square: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if (60..100).contains(&x) && (25..65).contains(&y) { [255u8, 255, 255, 255] } else { [0, 0, 0, 255] })).collect();
+    let colour: Vec<u8> = (0..w * h).flat_map(|_| [200u8, 80, 40, 255]).collect();
+    let mut key = 12_000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)]| {
+        let v = fx(kind, set);
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let at = |img: &[u8], x: u32, y: u32| px(img, w, x, y);
+    // Every one draws something sensible with its defaults (and the picture isn't lost).
+    for kind in [
+        EffectKind::BoxBlur, EffectKind::ChannelBlur, EffectKind::CompoundBlur, EffectKind::SmartBlur, EffectKind::CameraLensBlur, EffectKind::CrossBlur, EffectKind::VectorBlur,
+        EffectKind::Arithmetic, EffectKind::BlendColour, EffectKind::Calculations, EffectKind::ChannelMixer, EffectKind::Invert, EffectKind::ShiftChannels, EffectKind::SetChannels,
+        EffectKind::SetMatte, EffectKind::SolidComposite, EffectKind::Minimax, EffectKind::AutoLevels, EffectKind::AutoContrast, EffectKind::AutoColor, EffectKind::Equalize,
+        EffectKind::ChangeColor, EffectKind::ChangeToColor, EffectKind::ColorBalance, EffectKind::Exposure, EffectKind::LeaveColor, EffectKind::PhotoFilter, EffectKind::SelectiveColor,
+        EffectKind::Tint, EffectKind::BlackWhite, EffectKind::ColorNeutralizer, EffectKind::ColorOffset, EffectKind::Toner, EffectKind::ThresholdRgb, EffectKind::Kernel, EffectKind::VideoLimiter,
+    ] {
+        let img = draw(&mut c, &ramp, kind, &[]);
+        let lit = img.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 30).count();
+        assert!(lit > 1000 || kind == EffectKind::SetMatte || kind == EffectKind::ThresholdRgb, "{kind:?}: {lit} lit");
+    }
+    let lum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    // Invert: a negative.
+    let inv = draw(&mut c, &ramp, EffectKind::Invert, &[]);
+    assert!(lum(at(&inv, 5, 45)) > lum(at(&ramp, 5, 45)) + 200, "{:?}", at(&inv, 5, 45));
+    // Exposure +1 stop: brighter; Box blur: a sharp edge goes soft; Minimax maximum: the square grows.
+    assert!(lum(at(&draw(&mut c, &ramp, EffectKind::Exposure, &[(exposure::EXPOSURE, 1.0)]), 80, 45)) > lum(at(&ramp, 80, 45)) + 60);
+    let soft = draw(&mut c, &square, EffectKind::BoxBlur, &[(box_blur::RADIUS, 6.0)]);
+    let e = lum(at(&soft, 59, 45));
+    assert!(e > 40 && e < 700, "a soft edge: {e}");
+    let grown = draw(&mut c, &square, EffectKind::Minimax, &[(minimax::OPERATION, 1.0), (minimax::RADIUS, 4.0)]);
+    assert!(lum(at(&grown, 57, 45)) > 600 && lum(at(&grown, 50, 45)) < 30);
+    // Auto levels and Equalize: the low-contrast ramp stretched to (nearly) black and white.
+    for kind in [EffectKind::AutoLevels, EffectKind::AutoContrast, EffectKind::Equalize] {
+        let s = draw(&mut c, &ramp, kind, &[]);
+        assert!(lum(at(&s, 1, 45)) < lum(at(&ramp, 1, 45)) - 60 && lum(at(&s, 158, 45)) > lum(at(&ramp, 158, 45)) + 60, "{kind:?}: {:?} … {:?}", at(&s, 1, 45), at(&s, 158, 45));
+    }
+    // Channel mixer: red and blue swapped; Shift channels the same way.
+    let sw = draw(&mut c, &colour, EffectKind::ChannelMixer, &[(channel_mixer::RR, 0.0), (channel_mixer::RB, 100.0), (channel_mixer::BB, 0.0), (channel_mixer::BR, 100.0)]);
+    assert!(at(&sw, 80, 45)[2] > at(&sw, 80, 45)[0] + 80, "{:?}", at(&sw, 80, 45));
+    let sh = draw(&mut c, &colour, EffectKind::ShiftChannels, &[(shift_channels::RED, 2.0), (shift_channels::BLUE, 0.0)]);
+    assert!(at(&sh, 80, 45)[2] > at(&sh, 80, 45)[0] + 80);
+    // Tint: black to blue, white to white — a dark pixel goes blue.
+    let t = draw(&mut c, &ramp, EffectKind::Tint, &[(tint::BLACK, 0x0000ff as f32)]);
+    assert!(at(&t, 2, 45)[2] > at(&t, 2, 45)[0] + 60, "{:?}", at(&t, 2, 45));
+    // Black & white: no colour left; Leave colour: kept where it matches.
+    let bw = draw(&mut c, &colour, EffectKind::BlackWhite, &[]);
+    let p = at(&bw, 80, 45);
+    assert!(p[0].abs_diff(p[2]) < 4, "{p:?}");
+    let kept = draw(&mut c, &colour, EffectKind::LeaveColor, &[(leave_color::COLOR, 0xc85028 as f32)]);
+    assert!(at(&kept, 80, 45)[0] > at(&kept, 80, 45)[2] + 80);
+    // Change to colour: orange to green.
+    let g = draw(&mut c, &colour, EffectKind::ChangeToColor, &[(change_to_color::FROM, 0xc85028 as f32), (change_to_color::TO, 0x28c850 as f32)]);
+    assert!(at(&g, 80, 45)[1] > at(&g, 80, 45)[0], "{:?}", at(&g, 80, 45));
+}

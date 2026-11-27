@@ -186,6 +186,129 @@ pub enum EffectKind {
     Extrude,
     /// Turns the layer like a card in 3D, with perspective.
     Rotate3d,
+    /// A fast blur that averages each pixel with its neighbours in a box, as many times as you
+    /// like: once is blocky, three times is nearly Gaussian.
+    BoxBlur,
+    /// Blurs the red, green, blue and alpha channels each by their own amount: soft colour
+    /// fringes, a blurred matte under a sharp picture, or a dreamy red bloom.
+    ChannelBlur,
+    /// Blurs some places more than others, by a map: the layer's own brightness or opacity, or
+    /// a gradient sharp in the middle, at the top, at the bottom or in a band (a quick depth of
+    /// field).
+    CompoundBlur,
+    /// Blurs within areas of like colour but keeps the edges between them sharp: smooths skin,
+    /// noise and texture without softening outlines.
+    SmartBlur,
+    /// A real lens's out-of-focus blur: the iris's shape (round or with blades) shows in bright
+    /// spots, which bloom into bokeh, rather than a smooth Gaussian smear.
+    CameraLensBlur,
+    /// Blurs across and down separately and combines the two, as an average or added as light:
+    /// a soft cross-shaped glow on highlights and text.
+    CrossBlur,
+    /// Smears the picture along its own contours (or across them), following the shapes of its
+    /// light and dark: brushed, painterly and flowing looks.
+    VectorBlur,
+    /// Simple sums on each channel's 0–255 value with a number of its own: and, or, exclusive
+    /// or, add, subtract, difference, minimum, maximum, block above or below, slice, multiply
+    /// and screen.
+    Arithmetic,
+    /// Blends the layer with a colour: cross-faded, the colour only (keeping the layer's light
+    /// and dark), a tint, or only where it darkens or lightens.
+    BlendColour,
+    /// Combines two of the layer's own channels with a blend mode — say its red multiplied by
+    /// its luminance — into a new picture: for mattes, high-contrast looks and channel tricks.
+    Calculations,
+    /// Makes each output channel from a mix of the red, green and blue, plus a constant: swap
+    /// channels, a custom black and white (monochrome), or an infrared look.
+    ChannelMixer,
+    /// Inverts the colours (a negative), or just one channel: red, green, blue, alpha,
+    /// luminance, hue, lightness or saturation; blended with the original as much as you like.
+    Invert,
+    /// Takes each channel from another: red from blue, alpha from luminance, and so on (or
+    /// full, half or off) — swapped colours, or a matte from the picture's own brightness.
+    ShiftChannels,
+    /// Sets each channel from one of the layer's own (or full, half or off), each inverted if
+    /// you like, then put back together: build a matte, isolate a channel, or reverse one.
+    SetChannels,
+    /// Replaces the layer's alpha with one of its own channels — its luminance, red,
+    /// saturation… — inverted if you like: a quick luma matte, or cut a layer out by its
+    /// brightness.
+    SetMatte,
+    /// Puts the layer over a solid colour, each with an opacity of its own, with a blend mode:
+    /// fills its see-through parts, or tints it by blending.
+    SolidComposite,
+    /// Each pixel takes the darkest (minimum) or brightest (maximum) value within a radius —
+    /// spreading or shrinking light areas and mattes — or one then the other to close holes or
+    /// remove specks.
+    Minimax,
+    /// Sets each channel's darkest and brightest points automatically (ignoring a few stray
+    /// pixels at each end, the clip): full contrast and, as each channel is stretched on its
+    /// own, a colour cast often taken out.
+    AutoLevels,
+    /// Stretches the picture's contrast automatically, all channels alike, so its darkest part
+    /// is black and its brightest white — the colours stay as they are.
+    AutoContrast,
+    /// Takes out a colour cast automatically: each channel stretched to full range and the
+    /// midtones made neutral grey.
+    AutoColor,
+    /// Spreads the picture's brightness levels evenly from black to white (histogram
+    /// equalisation), each channel on its own or by brightness alone: hidden detail in flat,
+    /// murky pictures.
+    Equalize,
+    /// Changes one colour: pick it, and shift its hue, lightness and saturation — the matching
+    /// area found by a tolerance and softness, in RGB, by hue or by chroma; or show the mask it
+    /// makes.
+    ChangeColor,
+    /// Changes one colour to another: everything near the From colour (by hue, lightness and
+    /// saturation tolerances, softened) takes the To colour's hue — and its lightness and
+    /// saturation too, if you choose.
+    ChangeToColor,
+    /// Shifts the balance of red, green and blue in the shadows, midtones and highlights
+    /// separately, keeping the brightness if you like: warm the highlights, cool the shadows.
+    ColorBalance,
+    /// Adjusts the picture as a camera's exposure would, in stops of light (each doubling or
+    /// halving it), with an offset for the blacks and a gamma correction for the midtones.
+    Exposure,
+    /// Takes the colour out of everything except one colour you pick (the red dress in a
+    /// black-and-white world), with a tolerance and soft edges, matched by RGB or by hue.
+    LeaveColor,
+    /// A coloured filter over the lens: warming, cooling, the colours of the rainbow, sepia,
+    /// deep tones or underwater — or a colour of your own — at a density, keeping the
+    /// brightness if you like.
+    PhotoFilter,
+    /// Adjusts the amounts of cyan, magenta, yellow and black in particular colour ranges — the
+    /// reds, yellows, greens, cyans, blues, magentas, whites, neutrals or blacks — as printers
+    /// do: three ranges at once, relative or absolute.
+    SelectiveColor,
+    /// Maps the picture's blacks and whites to two colours of your choice (everything between,
+    /// between them), blended in by an amount: a quick monochrome in any two colours.
+    Tint,
+    /// Turns the picture black and white with control over how light each colour becomes —
+    /// reds, yellows, greens, cyans, blues and magentas — and an optional tint, as a
+    /// photographer's coloured filters would.
+    BlackWhite,
+    /// Takes colour casts out of the shadows, midtones and highlights separately: pick the
+    /// colour each should be neutral grey in (the cast), and it's balanced away.
+    ColorNeutralizer,
+    /// Cycles the red, green and blue values round by a phase each, wrapping over, solarising
+    /// or folding back where they pass the end: psychedelic colour shifts that loop as you
+    /// animate them.
+    ColorOffset,
+    /// Tones the picture in two, three or five colours by its brightness — highlights, brights,
+    /// midtones, darktones and shadows — or solarised: duotones, sepia and split tones in a
+    /// step.
+    Toner,
+    /// Turns each of red, green and blue fully on or off at a threshold of its own, giving at
+    /// most eight flat colours: graphic, pop-art and stencil looks.
+    ThresholdRgb,
+    /// Each pixel becomes a weighted sum of itself and its eight neighbours — nine numbers of
+    /// your choosing, divided and offset — the building block of sharpening, embossing, edge
+    /// finding and blurs.
+    Kernel,
+    /// Keeps the picture within broadcast-safe limits: brightness held between a floor and a
+    /// ceiling and saturation held below a maximum, by pulling down brightness, saturation or
+    /// both.
+    VideoLimiter,
     /// Evens out flicker: brightness and colour gains, keyed frame by frame by
     /// Deflicker's analysis (Clip menu), or set by hand.
     Deflicker,
@@ -287,6 +410,8 @@ pub enum EffectKind {
 pub enum EffectCategory {
     Color,
     BlurSharpen,
+    /// Channels moved, mixed, inverted and combined.
+    Channel,
     Keying,
     Stylize,
     /// Camera shake, chromatic aberration, glitch, and plugins that say so.
@@ -306,11 +431,12 @@ pub enum EffectCategory {
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 11] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Geometry, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
+    pub const ALL: [EffectCategory; 12] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Channel, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Geometry, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
             EffectCategory::BlurSharpen => "Blur & sharpen",
+            EffectCategory::Channel => "Channel",
             EffectCategory::Keying => "Keying",
             EffectCategory::Stylize => "Light & stylize",
             EffectCategory::Distort => "Distort",
@@ -1429,6 +1555,278 @@ pub mod rotate3d {
     pub const Y: usize = 6;
     pub const PUSH: usize = 7;
     pub const BACK: usize = 8;
+}
+pub mod box_blur {
+    pub const RADIUS: usize = 0;
+    pub const ITERATIONS: usize = 1;
+    pub const DIMENSIONS: usize = 2;
+    pub const REPEAT: usize = 3;
+}
+pub mod channel_blur {
+    pub const RED: usize = 0;
+    pub const GREEN: usize = 1;
+    pub const BLUE: usize = 2;
+    pub const ALPHA: usize = 3;
+    pub const DIMENSIONS: usize = 4;
+    pub const REPEAT: usize = 5;
+}
+pub mod compound_blur {
+    pub const MAX: usize = 0;
+    pub const MAP: usize = 1;
+    pub const INVERT: usize = 2;
+    pub const BAND: usize = 3;
+}
+pub mod smart_blur {
+    pub const RADIUS: usize = 0;
+    pub const THRESHOLD: usize = 1;
+    pub const MODE: usize = 2;
+}
+pub mod lens_blur {
+    pub const RADIUS: usize = 0;
+    pub const IRIS: usize = 1;
+    pub const ROTATION: usize = 2;
+    pub const GAIN: usize = 3;
+    pub const THRESHOLD: usize = 4;
+    pub const REPEAT: usize = 5;
+}
+pub mod cross_blur {
+    pub const ACROSS: usize = 0;
+    pub const DOWN: usize = 1;
+    pub const MODE: usize = 2;
+}
+pub mod vector_blur {
+    pub const AMOUNT: usize = 0;
+    pub const TYPE: usize = 1;
+    pub const ANGLE: usize = 2;
+    pub const SMOOTHNESS: usize = 3;
+    pub const MAP: usize = 4;
+}
+pub mod arithmetic {
+    pub const OPERATOR: usize = 0;
+    pub const RED: usize = 1;
+    pub const GREEN: usize = 2;
+    pub const BLUE: usize = 3;
+    pub const CLIP: usize = 4;
+}
+pub mod blend_colour {
+    pub const COLOR: usize = 0;
+    pub const MODE: usize = 1;
+    pub const AMOUNT: usize = 2;
+}
+pub mod calculations {
+    pub const INPUT: usize = 0;
+    pub const INVERT_INPUT: usize = 1;
+    pub const SECOND: usize = 2;
+    pub const INVERT_SECOND: usize = 3;
+    pub const OPACITY: usize = 4;
+    pub const MODE: usize = 5;
+    pub const PRESERVE: usize = 6;
+}
+pub mod channel_mixer {
+    pub const RR: usize = 0;
+    pub const RG: usize = 1;
+    pub const RB: usize = 2;
+    pub const RC: usize = 3;
+    pub const GR: usize = 4;
+    pub const GG: usize = 5;
+    pub const GB: usize = 6;
+    pub const GC: usize = 7;
+    pub const BR: usize = 8;
+    pub const BG: usize = 9;
+    pub const BB: usize = 10;
+    pub const BC: usize = 11;
+    pub const MONO: usize = 12;
+}
+pub mod invert {
+    pub const CHANNEL: usize = 0;
+    pub const BLEND: usize = 1;
+}
+pub mod shift_channels {
+    pub const RED: usize = 0;
+    pub const GREEN: usize = 1;
+    pub const BLUE: usize = 2;
+    pub const ALPHA: usize = 3;
+}
+pub mod set_channels {
+    pub const RED: usize = 0;
+    pub const GREEN: usize = 1;
+    pub const BLUE: usize = 2;
+    pub const ALPHA: usize = 3;
+    pub const INV_R: usize = 4;
+    pub const INV_G: usize = 5;
+    pub const INV_B: usize = 6;
+    pub const INV_A: usize = 7;
+}
+pub mod set_matte {
+    pub const FROM: usize = 0;
+    pub const INVERT: usize = 1;
+    pub const KEEP: usize = 2;
+}
+pub mod solid_composite {
+    pub const SOURCE: usize = 0;
+    pub const COLOR: usize = 1;
+    pub const OPACITY: usize = 2;
+    pub const MODE: usize = 3;
+}
+pub mod minimax {
+    pub const OPERATION: usize = 0;
+    pub const RADIUS: usize = 1;
+    pub const CHANNEL: usize = 2;
+    pub const DIRECTION: usize = 3;
+}
+pub mod auto_levels {
+    pub const BLACK_CLIP: usize = 0;
+    pub const WHITE_CLIP: usize = 1;
+    pub const BLEND: usize = 2;
+}
+pub mod auto_contrast {
+    pub const BLACK_CLIP: usize = 0;
+    pub const WHITE_CLIP: usize = 1;
+    pub const BLEND: usize = 2;
+}
+pub mod auto_color {
+    pub const BLACK_CLIP: usize = 0;
+    pub const WHITE_CLIP: usize = 1;
+    pub const BLEND: usize = 2;
+}
+pub mod equalize {
+    pub const STYLE: usize = 0;
+    pub const AMOUNT: usize = 1;
+}
+pub mod change_color {
+    pub const VIEW: usize = 0;
+    pub const HUE: usize = 1;
+    pub const LIGHTNESS: usize = 2;
+    pub const SATURATION: usize = 3;
+    pub const COLOR: usize = 4;
+    pub const TOLERANCE: usize = 5;
+    pub const SOFTNESS: usize = 6;
+    pub const MATCH: usize = 7;
+    pub const INVERT: usize = 8;
+}
+pub mod change_to_color {
+    pub const FROM: usize = 0;
+    pub const TO: usize = 1;
+    pub const CHANGE: usize = 2;
+    pub const HUE_TOL: usize = 3;
+    pub const LIGHT_TOL: usize = 4;
+    pub const SAT_TOL: usize = 5;
+    pub const SOFTNESS: usize = 6;
+    pub const VIEW: usize = 7;
+}
+pub mod color_balance {
+    pub const SR: usize = 0;
+    pub const SG: usize = 1;
+    pub const SB: usize = 2;
+    pub const MR: usize = 3;
+    pub const MG: usize = 4;
+    pub const MB: usize = 5;
+    pub const HR: usize = 6;
+    pub const HG: usize = 7;
+    pub const HB: usize = 8;
+    pub const PRESERVE: usize = 9;
+}
+pub mod exposure {
+    pub const EXPOSURE: usize = 0;
+    pub const OFFSET: usize = 1;
+    pub const GAMMA: usize = 2;
+}
+pub mod leave_color {
+    pub const AMOUNT: usize = 0;
+    pub const COLOR: usize = 1;
+    pub const TOLERANCE: usize = 2;
+    pub const SOFTNESS: usize = 3;
+    pub const MATCH: usize = 4;
+}
+pub mod photo_filter {
+    pub const FILTER: usize = 0;
+    pub const COLOR: usize = 1;
+    pub const DENSITY: usize = 2;
+    pub const PRESERVE: usize = 3;
+}
+pub mod selective_color {
+    pub const METHOD: usize = 0;
+    pub const R1: usize = 1;
+    pub const C1: usize = 2;
+    pub const M1: usize = 3;
+    pub const Y1: usize = 4;
+    pub const K1: usize = 5;
+    pub const R2: usize = 6;
+    pub const C2: usize = 7;
+    pub const M2: usize = 8;
+    pub const Y2: usize = 9;
+    pub const K2: usize = 10;
+    pub const R3: usize = 11;
+    pub const C3: usize = 12;
+    pub const M3: usize = 13;
+    pub const Y3: usize = 14;
+    pub const K3: usize = 15;
+}
+pub mod tint {
+    pub const BLACK: usize = 0;
+    pub const WHITE: usize = 1;
+    pub const AMOUNT: usize = 2;
+}
+pub mod black_white {
+    pub const REDS: usize = 0;
+    pub const YELLOWS: usize = 1;
+    pub const GREENS: usize = 2;
+    pub const CYANS: usize = 3;
+    pub const BLUES: usize = 4;
+    pub const MAGENTAS: usize = 5;
+    pub const TINT: usize = 6;
+    pub const TINT_COLOR: usize = 7;
+}
+pub mod color_neutralizer {
+    pub const SHADOWS: usize = 0;
+    pub const MIDTONES: usize = 1;
+    pub const HIGHLIGHTS: usize = 2;
+    pub const BLEND: usize = 3;
+}
+pub mod color_offset {
+    pub const RED: usize = 0;
+    pub const GREEN: usize = 1;
+    pub const BLUE: usize = 2;
+    pub const OVERFLOW: usize = 3;
+}
+pub mod toner {
+    pub const TONES: usize = 0;
+    pub const HIGHLIGHTS: usize = 1;
+    pub const BRIGHTS: usize = 2;
+    pub const MIDTONES: usize = 3;
+    pub const DARKTONES: usize = 4;
+    pub const SHADOWS: usize = 5;
+    pub const BLEND: usize = 6;
+}
+pub mod threshold_rgb {
+    pub const RED: usize = 0;
+    pub const GREEN: usize = 1;
+    pub const BLUE: usize = 2;
+    pub const INVERT_R: usize = 3;
+    pub const INVERT_G: usize = 4;
+    pub const INVERT_B: usize = 5;
+    pub const BLEND: usize = 6;
+}
+pub mod kernel {
+    pub const K11: usize = 0;
+    pub const K12: usize = 1;
+    pub const K13: usize = 2;
+    pub const K21: usize = 3;
+    pub const K22: usize = 4;
+    pub const K23: usize = 5;
+    pub const K31: usize = 6;
+    pub const K32: usize = 7;
+    pub const K33: usize = 8;
+    pub const DIVIDE: usize = 9;
+    pub const OFFSET: usize = 10;
+    pub const ALPHA: usize = 11;
+    pub const BLEND: usize = 12;
+}
+pub mod video_limiter {
+    pub const REDUCE: usize = 0;
+    pub const MAX_LUMA: usize = 1;
+    pub const MIN_LUMA: usize = 2;
+    pub const MAX_CHROMA: usize = 3;
 }
 pub mod deflicker {
     pub const BRIGHTNESS: usize = 0;
@@ -3032,6 +3430,278 @@ const ROTATE3D: [ParamSpec; 9] = [
     spec("Push back", 0.0, -5000.0, 20000.0, " px", 0.5),
     choice("Back", &["The picture", "Darkened", "Nothing"]),
 ];
+const BOX_BLUR: [ParamSpec; 4] = [
+    spec("Radius", 10.0, 0.0, 1000.0, " px", 0.2),
+    spec("Iterations", 3.0, 1.0, 5.0, "", 0.05),
+    choice("Blur", &["Across and down", "Across", "Down"]),
+    ParamSpec { name: "Repeat edge pixels", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const CHANNEL_BLUR: [ParamSpec; 6] = [
+    spec("Red", 0.0, 0.0, 500.0, " px", 0.2),
+    spec("Green", 0.0, 0.0, 500.0, " px", 0.2),
+    spec("Blue", 10.0, 0.0, 500.0, " px", 0.2),
+    spec("Alpha", 0.0, 0.0, 500.0, " px", 0.2),
+    choice("Blur", &["Across and down", "Across", "Down"]),
+    ParamSpec { name: "Repeat edge pixels", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const COMPOUND_BLUR: [ParamSpec; 4] = [
+    spec("Maximum blur", 20.0, 0.0, 500.0, " px", 0.2),
+    choice("Blur by", &["Its brightness", "Its opacity", "Sharp in the middle", "Sharp at the top", "Sharp at the bottom", "Sharp in a band across"]),
+    ParamSpec { name: "Invert the map", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Band", 50.0, 0.0, 100.0, " %", 0.3),
+];
+const SMART_BLUR: [ParamSpec; 3] = [
+    spec("Radius", 4.0, 0.0, 40.0, " px", 0.1),
+    spec("Threshold", 25.0, 0.0, 100.0, " %", 0.3),
+    choice("Mode", &["Normal", "Edges only", "Edges over it"]),
+];
+const LENS_BLUR: [ParamSpec; 6] = [
+    spec("Blur radius", 12.0, 0.0, 300.0, " px", 0.2),
+    choice("Iris shape", &["Round", "Triangle", "Square", "Pentagon", "Hexagon", "Heptagon", "Octagon"]),
+    spec("Iris rotation", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Highlight gain", 100.0, 0.0, 1000.0, " %", 0.5),
+    spec("Highlight threshold", 75.0, 0.0, 100.0, " %", 0.3),
+    ParamSpec { name: "Repeat edge pixels", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const CROSS_BLUR: [ParamSpec; 3] = [
+    spec("Radius across", 10.0, 0.0, 500.0, " px", 0.2),
+    spec("Radius down", 10.0, 0.0, 500.0, " px", 0.2),
+    choice("Combine", &["Average", "Add", "Screen", "Lighten"]),
+];
+const VECTOR_BLUR: [ParamSpec; 5] = [
+    spec("Amount", 10.0, 0.0, 300.0, " px", 0.2),
+    choice("Direction", &["Along the contours", "Across the contours", "One angle"]),
+    spec("Angle", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Ridge smoothness", 4.0, 0.5, 50.0, " px", 0.1),
+    choice("Shapes from", &["Lightness", "Red", "Green", "Blue", "Alpha"]),
+];
+const ARITHMETIC: [ParamSpec; 5] = [
+    choice("Operator", &["And", "Or", "Xor", "Add", "Subtract", "Difference", "Minimum", "Maximum", "Block above", "Block below", "Slice", "Multiply", "Screen"]),
+    spec("Red value", 255.0, 0.0, 255.0, "", 0.5),
+    spec("Green value", 255.0, 0.0, 255.0, "", 0.5),
+    spec("Blue value", 255.0, 0.0, 255.0, "", 0.5),
+    ParamSpec { name: "Clip result values", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const BLEND_COLOUR: [ParamSpec; 3] = [
+    color("Colour", 0x2060c0),
+    choice("Mode", &["Cross-fade", "Colour only", "Tint only", "Darken only", "Lighten only"]),
+    spec("Blend with original", 50.0, 0.0, 100.0, " %", 0.3),
+];
+const CALCULATIONS: [ParamSpec; 7] = [
+    choice("Input channel", &["RGBA", "Grey", "Red", "Green", "Blue", "Alpha"]),
+    ParamSpec { name: "Invert input", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    choice("Second channel", &["Luminance", "Red", "Green", "Blue", "Alpha"]),
+    ParamSpec { name: "Invert second", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Second opacity", 100.0, 0.0, 100.0, " %", 0.3),
+    choice("Blend mode", &["Normal", "Multiply", "Screen", "Overlay", "Soft light", "Hard light", "Colour dodge", "Colour burn", "Darken", "Lighten", "Difference", "Add", "Subtract"]),
+    ParamSpec { name: "Preserve transparency", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const CHANNEL_MIXER: [ParamSpec; 13] = [
+    spec("Red–Red", 100.0, -200.0, 200.0, " %", 0.5),
+    spec("Red–Green", 0.0, -200.0, 200.0, " %", 0.5),
+    spec("Red–Blue", 0.0, -200.0, 200.0, " %", 0.5),
+    spec("Red–Constant", 0.0, -200.0, 200.0, " %", 0.5),
+    spec("Green–Red", 0.0, -200.0, 200.0, " %", 0.5),
+    spec("Green–Green", 100.0, -200.0, 200.0, " %", 0.5),
+    spec("Green–Blue", 0.0, -200.0, 200.0, " %", 0.5),
+    spec("Green–Constant", 0.0, -200.0, 200.0, " %", 0.5),
+    spec("Blue–Red", 0.0, -200.0, 200.0, " %", 0.5),
+    spec("Blue–Green", 0.0, -200.0, 200.0, " %", 0.5),
+    spec("Blue–Blue", 100.0, -200.0, 200.0, " %", 0.5),
+    spec("Blue–Constant", 0.0, -200.0, 200.0, " %", 0.5),
+    ParamSpec { name: "Monochrome", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const INVERT: [ParamSpec; 2] = [
+    choice("Channel", &["RGB", "Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation"]),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const SHIFT_CHANNELS: [ParamSpec; 4] = [
+    ParamSpec { name: "Take red from", default: 0.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+    ParamSpec { name: "Take green from", default: 1.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+    ParamSpec { name: "Take blue from", default: 2.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+    ParamSpec { name: "Take alpha from", default: 3.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+];
+const SET_CHANNELS: [ParamSpec; 8] = [
+    ParamSpec { name: "Red from", default: 0.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+    ParamSpec { name: "Green from", default: 1.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+    ParamSpec { name: "Blue from", default: 2.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+    ParamSpec { name: "Alpha from", default: 3.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+    ParamSpec { name: "Invert red", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Invert green", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Invert blue", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Invert alpha", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const SET_MATTE: [ParamSpec; 3] = [
+    ParamSpec { name: "Take matte from", default: 4.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+    ParamSpec { name: "Invert matte", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Keep its own transparency", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const SOLID_COMPOSITE: [ParamSpec; 4] = [
+    spec("Source opacity", 100.0, 0.0, 100.0, " %", 0.3),
+    color("Colour", 0xffffff),
+    spec("Opacity", 100.0, 0.0, 100.0, " %", 0.3),
+    choice("Blend mode", &["Normal", "Multiply", "Screen", "Overlay", "Soft light", "Hard light", "Colour dodge", "Colour burn", "Darken", "Lighten", "Difference", "Add", "Subtract"]),
+];
+const MINIMAX: [ParamSpec; 4] = [
+    choice("Operation", &["Minimum", "Maximum", "Minimum, then maximum", "Maximum, then minimum"]),
+    spec("Radius", 3.0, 0.0, 200.0, " px", 0.1),
+    choice("Channel", &["Colour", "Alpha and colour", "Alpha", "Red", "Green", "Blue"]),
+    choice("Direction", &["Across and down", "Across", "Down"]),
+];
+const AUTO_LEVELS: [ParamSpec; 3] = [
+    spec("Black clip", 0.1, 0.0, 10.0, " %", 0.02),
+    spec("White clip", 0.1, 0.0, 10.0, " %", 0.02),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const AUTO_CONTRAST: [ParamSpec; 3] = [
+    spec("Black clip", 0.1, 0.0, 10.0, " %", 0.02),
+    spec("White clip", 0.1, 0.0, 10.0, " %", 0.02),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const AUTO_COLOR: [ParamSpec; 3] = [
+    spec("Black clip", 0.1, 0.0, 10.0, " %", 0.02),
+    spec("White clip", 0.1, 0.0, 10.0, " %", 0.02),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const EQUALIZE: [ParamSpec; 2] = [
+    choice("Equalise", &["Each channel (RGB)", "Brightness"]),
+    spec("Amount", 100.0, 0.0, 100.0, " %", 0.3),
+];
+const CHANGE_COLOR: [ParamSpec; 9] = [
+    choice("View", &["Corrected layer", "Colour correction mask"]),
+    spec("Hue transform", 0.0, -180.0, 180.0, " °", 0.5),
+    spec("Lightness transform", 0.0, -100.0, 100.0, "", 0.3),
+    spec("Saturation transform", 0.0, -100.0, 100.0, "", 0.3),
+    color("Colour to change", 0xd02020),
+    spec("Matching tolerance", 15.0, 0.0, 100.0, " %", 0.3),
+    spec("Matching softness", 0.0, 0.0, 100.0, " %", 0.3),
+    choice("Match colours", &["Using RGB", "Using hue", "Using chroma"]),
+    ParamSpec { name: "Invert colour correction mask", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const CHANGE_TO_COLOR: [ParamSpec; 8] = [
+    color("From", 0xd02020),
+    color("To", 0x2060e0),
+    choice("Change", &["Hue", "Hue and lightness", "Hue, lightness and saturation", "Hue and saturation"]),
+    spec("Hue tolerance", 10.0, 0.0, 100.0, " %", 0.3),
+    spec("Lightness tolerance", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Saturation tolerance", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Softness", 50.0, 0.0, 100.0, " %", 0.3),
+    ParamSpec { name: "View the correction mask", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const COLOR_BALANCE: [ParamSpec; 10] = [
+    spec("Shadow red", 0.0, -100.0, 100.0, "", 0.3),
+    spec("Shadow green", 0.0, -100.0, 100.0, "", 0.3),
+    spec("Shadow blue", 0.0, -100.0, 100.0, "", 0.3),
+    spec("Midtone red", 0.0, -100.0, 100.0, "", 0.3),
+    spec("Midtone green", 0.0, -100.0, 100.0, "", 0.3),
+    spec("Midtone blue", 0.0, -100.0, 100.0, "", 0.3),
+    spec("Highlight red", 0.0, -100.0, 100.0, "", 0.3),
+    spec("Highlight green", 0.0, -100.0, 100.0, "", 0.3),
+    spec("Highlight blue", 0.0, -100.0, 100.0, "", 0.3),
+    ParamSpec { name: "Preserve luminosity", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const EXPOSURE: [ParamSpec; 3] = [
+    spec("Exposure", 0.0, -20.0, 20.0, " stops", 0.02),
+    spec("Offset", 0.0, -1.0, 1.0, "", 0.002),
+    spec("Gamma correction", 1.0, 0.1, 10.0, "", 0.01),
+];
+const LEAVE_COLOR: [ParamSpec; 5] = [
+    spec("Amount to decolour", 100.0, 0.0, 100.0, " %", 0.3),
+    color("Colour to leave", 0xd02020),
+    spec("Tolerance", 20.0, 0.0, 100.0, " %", 0.3),
+    spec("Edge softness", 10.0, 0.0, 100.0, " %", 0.3),
+    choice("Match colours", &["Using RGB", "Using hue"]),
+];
+const PHOTO_FILTER: [ParamSpec; 4] = [
+    choice("Filter", &["Warming (85)", "Warming (LBA)", "Warming (81)", "Cooling (80)", "Cooling (LBB)", "Cooling (82)", "Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Violet", "Magenta", "Sepia", "Deep red", "Deep blue", "Deep emerald", "Deep yellow", "Underwater", "Custom"]),
+    color("Colour", 0xec8a00),
+    spec("Density", 25.0, 0.0, 100.0, " %", 0.3),
+    ParamSpec { name: "Preserve luminosity", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const SELECTIVE_COLOR: [ParamSpec; 16] = [
+    choice("Method", &["Relative", "Absolute"]),
+    choice("Colours 1", &["Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas", "Whites", "Neutrals", "Blacks"]),
+    spec("Cyan 1", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Magenta 1", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Yellow 1", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Black 1", 0.0, -100.0, 100.0, " %", 0.3),
+    ParamSpec { name: "Colours 2", default: 6.0, min: 0.0, max: 8.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas", "Whites", "Neutrals", "Blacks"]) },
+    spec("Cyan 2", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Magenta 2", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Yellow 2", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Black 2", 0.0, -100.0, 100.0, " %", 0.3),
+    ParamSpec { name: "Colours 3", default: 8.0, min: 0.0, max: 8.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas", "Whites", "Neutrals", "Blacks"]) },
+    spec("Cyan 3", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Magenta 3", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Yellow 3", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Black 3", 0.0, -100.0, 100.0, " %", 0.3),
+];
+const TINT: [ParamSpec; 3] = [
+    color("Map black to", 0x000000),
+    color("Map white to", 0xffffff),
+    spec("Amount to tint", 100.0, 0.0, 100.0, " %", 0.3),
+];
+const BLACK_WHITE: [ParamSpec; 8] = [
+    spec("Reds", 40.0, -200.0, 300.0, " %", 0.5),
+    spec("Yellows", 60.0, -200.0, 300.0, " %", 0.5),
+    spec("Greens", 40.0, -200.0, 300.0, " %", 0.5),
+    spec("Cyans", 60.0, -200.0, 300.0, " %", 0.5),
+    spec("Blues", 20.0, -200.0, 300.0, " %", 0.5),
+    spec("Magentas", 80.0, -200.0, 300.0, " %", 0.5),
+    ParamSpec { name: "Tint", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    color("Tint colour", 0xe1d3b3),
+];
+const COLOR_NEUTRALIZER: [ParamSpec; 4] = [
+    color("Shadows cast", 0x000000),
+    color("Midtones cast", 0x808080),
+    color("Highlights cast", 0xffffff),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const COLOR_OFFSET: [ParamSpec; 4] = [
+    spec("Red phase", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Green phase", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Blue phase", 0.0, -3600.0, 3600.0, " °", 0.5),
+    choice("Overflow", &["Wrap", "Solarise", "Polarise"]),
+];
+const TONER: [ParamSpec; 7] = [
+    choice("Tones", &["Duotone", "Tritone", "Pentone", "Solarise"]),
+    color("Highlights", 0xffffff),
+    color("Brights", 0xe5cc99),
+    color("Midtones", 0x9a7a4c),
+    color("Darktones", 0x4c3420),
+    color("Shadows", 0x000000),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const THRESHOLD_RGB: [ParamSpec; 7] = [
+    spec("Red threshold", 128.0, 0.0, 255.0, "", 0.5),
+    spec("Green threshold", 128.0, 0.0, 255.0, "", 0.5),
+    spec("Blue threshold", 128.0, 0.0, 255.0, "", 0.5),
+    ParamSpec { name: "Invert red", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Invert green", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Invert blue", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const KERNEL: [ParamSpec; 13] = [
+    spec("Top left", 0.0, -999.0, 999.0, "", 0.1),
+    spec("Top", 0.0, -999.0, 999.0, "", 0.1),
+    spec("Top right", 0.0, -999.0, 999.0, "", 0.1),
+    spec("Left", 0.0, -999.0, 999.0, "", 0.1),
+    spec("Middle", 1.0, -999.0, 999.0, "", 0.1),
+    spec("Right", 0.0, -999.0, 999.0, "", 0.1),
+    spec("Bottom left", 0.0, -999.0, 999.0, "", 0.1),
+    spec("Bottom", 0.0, -999.0, 999.0, "", 0.1),
+    spec("Bottom right", 0.0, -999.0, 999.0, "", 0.1),
+    spec("Divide by", 1.0, -999.0, 999.0, "", 0.1),
+    spec("Offset", 0.0, -255.0, 255.0, "", 0.5),
+    ParamSpec { name: "Alpha too", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const VIDEO_LIMITER: [ParamSpec; 4] = [
+    choice("Reduce", &["Brightness", "Saturation", "Both"]),
+    spec("Highest brightness", 100.0, 50.0, 110.0, " %", 0.2),
+    spec("Lowest brightness", 0.0, -10.0, 50.0, " %", 0.2),
+    spec("Highest saturation", 100.0, 0.0, 150.0, " %", 0.3),
+];
 const DEFLICKER: [ParamSpec; 6] = [
     spec("Brightness", 100.0, 0.0, 400.0, " %", 0.2),
     spec("Red", 100.0, 0.0, 400.0, " %", 0.2),
@@ -3736,7 +4406,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 117] = [
+    pub const ALL: [EffectKind; 153] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -3854,6 +4524,42 @@ impl EffectKind {
         EffectKind::Bevel,
         EffectKind::Extrude,
         EffectKind::Rotate3d,
+        EffectKind::BoxBlur,
+        EffectKind::ChannelBlur,
+        EffectKind::CompoundBlur,
+        EffectKind::SmartBlur,
+        EffectKind::CameraLensBlur,
+        EffectKind::CrossBlur,
+        EffectKind::VectorBlur,
+        EffectKind::Arithmetic,
+        EffectKind::BlendColour,
+        EffectKind::Calculations,
+        EffectKind::ChannelMixer,
+        EffectKind::Invert,
+        EffectKind::ShiftChannels,
+        EffectKind::SetChannels,
+        EffectKind::SetMatte,
+        EffectKind::SolidComposite,
+        EffectKind::Minimax,
+        EffectKind::AutoLevels,
+        EffectKind::AutoContrast,
+        EffectKind::AutoColor,
+        EffectKind::Equalize,
+        EffectKind::ChangeColor,
+        EffectKind::ChangeToColor,
+        EffectKind::ColorBalance,
+        EffectKind::Exposure,
+        EffectKind::LeaveColor,
+        EffectKind::PhotoFilter,
+        EffectKind::SelectiveColor,
+        EffectKind::Tint,
+        EffectKind::BlackWhite,
+        EffectKind::ColorNeutralizer,
+        EffectKind::ColorOffset,
+        EffectKind::Toner,
+        EffectKind::ThresholdRgb,
+        EffectKind::Kernel,
+        EffectKind::VideoLimiter,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -3949,6 +4655,42 @@ impl EffectKind {
             EffectKind::Bevel => "Bevel",
             EffectKind::Extrude => "Extrude",
             EffectKind::Rotate3d => "Rotate",
+            EffectKind::BoxBlur => "Box blur",
+            EffectKind::ChannelBlur => "Channel blur",
+            EffectKind::CompoundBlur => "Compound blur",
+            EffectKind::SmartBlur => "Smart blur",
+            EffectKind::CameraLensBlur => "Camera lens blur",
+            EffectKind::CrossBlur => "Cross blur",
+            EffectKind::VectorBlur => "Vector blur",
+            EffectKind::Arithmetic => "Arithmetic",
+            EffectKind::BlendColour => "Blend",
+            EffectKind::Calculations => "Calculations",
+            EffectKind::ChannelMixer => "Channel mixer",
+            EffectKind::Invert => "Invert",
+            EffectKind::ShiftChannels => "Shift channels",
+            EffectKind::SetChannels => "Set channels",
+            EffectKind::SetMatte => "Set matte",
+            EffectKind::SolidComposite => "Solid composite",
+            EffectKind::Minimax => "Minimax",
+            EffectKind::AutoLevels => "Auto levels",
+            EffectKind::AutoContrast => "Auto contrast",
+            EffectKind::AutoColor => "Auto colour",
+            EffectKind::Equalize => "Equalize",
+            EffectKind::ChangeColor => "Change colour",
+            EffectKind::ChangeToColor => "Change to colour",
+            EffectKind::ColorBalance => "Colour balance",
+            EffectKind::Exposure => "Exposure",
+            EffectKind::LeaveColor => "Leave colour",
+            EffectKind::PhotoFilter => "Photo filter",
+            EffectKind::SelectiveColor => "Selective colour",
+            EffectKind::Tint => "Tint",
+            EffectKind::BlackWhite => "Black & white",
+            EffectKind::ColorNeutralizer => "Colour neutraliser",
+            EffectKind::ColorOffset => "Colour offset",
+            EffectKind::Toner => "Toner",
+            EffectKind::ThresholdRgb => "Threshold RGB",
+            EffectKind::Kernel => "Convolution kernel",
+            EffectKind::VideoLimiter => "Video limiter",
             EffectKind::Deflicker => "Deflicker",
             EffectKind::Hologram => "Hologram",
             EffectKind::Portal => "Portal",
@@ -4033,6 +4775,42 @@ impl EffectKind {
             EffectKind::BurnAway => EffectCategory::Stylize,
             EffectKind::Extrusion3d => EffectCategory::Generate,
             EffectKind::Bend | EffectKind::Bevel | EffectKind::Extrude | EffectKind::Rotate3d => EffectCategory::Geometry,
+            EffectKind::BoxBlur => EffectCategory::BlurSharpen,
+            EffectKind::ChannelBlur => EffectCategory::BlurSharpen,
+            EffectKind::CompoundBlur => EffectCategory::BlurSharpen,
+            EffectKind::SmartBlur => EffectCategory::BlurSharpen,
+            EffectKind::CameraLensBlur => EffectCategory::BlurSharpen,
+            EffectKind::CrossBlur => EffectCategory::BlurSharpen,
+            EffectKind::VectorBlur => EffectCategory::BlurSharpen,
+            EffectKind::Arithmetic => EffectCategory::Channel,
+            EffectKind::BlendColour => EffectCategory::Channel,
+            EffectKind::Calculations => EffectCategory::Channel,
+            EffectKind::ChannelMixer => EffectCategory::Channel,
+            EffectKind::Invert => EffectCategory::Channel,
+            EffectKind::ShiftChannels => EffectCategory::Channel,
+            EffectKind::SetChannels => EffectCategory::Channel,
+            EffectKind::SetMatte => EffectCategory::Channel,
+            EffectKind::SolidComposite => EffectCategory::Channel,
+            EffectKind::Minimax => EffectCategory::Channel,
+            EffectKind::AutoLevels => EffectCategory::Color,
+            EffectKind::AutoContrast => EffectCategory::Color,
+            EffectKind::AutoColor => EffectCategory::Color,
+            EffectKind::Equalize => EffectCategory::Color,
+            EffectKind::ChangeColor => EffectCategory::Color,
+            EffectKind::ChangeToColor => EffectCategory::Color,
+            EffectKind::ColorBalance => EffectCategory::Color,
+            EffectKind::Exposure => EffectCategory::Color,
+            EffectKind::LeaveColor => EffectCategory::Color,
+            EffectKind::PhotoFilter => EffectCategory::Color,
+            EffectKind::SelectiveColor => EffectCategory::Color,
+            EffectKind::Tint => EffectCategory::Color,
+            EffectKind::BlackWhite => EffectCategory::Color,
+            EffectKind::ColorNeutralizer => EffectCategory::Color,
+            EffectKind::ColorOffset => EffectCategory::Color,
+            EffectKind::Toner => EffectCategory::Color,
+            EffectKind::ThresholdRgb => EffectCategory::Color,
+            EffectKind::Kernel => EffectCategory::Color,
+            EffectKind::VideoLimiter => EffectCategory::Color,
             EffectKind::Deflicker => EffectCategory::Repair,
             EffectKind::Hologram => EffectCategory::Stylize,
             EffectKind::Portal => EffectCategory::Generate,
@@ -4118,6 +4896,42 @@ impl EffectKind {
             EffectKind::Bevel => "Bevelled edges: the picture's outline (a logo or a cut-out) or the layer's whole frame lit as if raised, bright on the side towards the light and shaded on the other.",
             EffectKind::Extrude => "Flat-style extrusion: the layer's shape drawn out in a direction (a long-shadow look) or towards a vanishing point, with its sides in a darker shade of the picture or a colour of their own.",
             EffectKind::Rotate3d => "Turns the layer like a card in 3D, round X, Y and Z about a point you choose, with perspective; its back can show the picture, darkened, or nothing. Key the turns to flip or spin it.",
+            EffectKind::BoxBlur => "A fast blur that averages each pixel with its neighbours in a box, as many times as you like: once is blocky, three times is nearly Gaussian. Just across, just down, or both; the edges' own pixels repeated so they don't fade.",
+            EffectKind::ChannelBlur => "Blurs the red, green, blue and alpha channels each by their own amount: soft colour fringes, a blurred matte under a sharp picture, or a dreamy red bloom.",
+            EffectKind::CompoundBlur => "Blurs some places more than others, by a map: the layer's own brightness or opacity, or a gradient sharp in the middle, at the top, at the bottom or in a band (a quick depth of field).",
+            EffectKind::SmartBlur => "Blurs within areas of like colour but keeps the edges between them sharp: smooths skin, noise and texture without softening outlines. Or shows just the edges it finds, in white on black or over the picture.",
+            EffectKind::CameraLensBlur => "A real lens's out-of-focus blur: the iris's shape (round or with blades) shows in bright spots, which bloom into bokeh, rather than a smooth Gaussian smear.",
+            EffectKind::CrossBlur => "Blurs across and down separately and combines the two, as an average or added as light: a soft cross-shaped glow on highlights and text.",
+            EffectKind::VectorBlur => "Smears the picture along its own contours (or across them), following the shapes of its light and dark: brushed, painterly and flowing looks.",
+            EffectKind::Arithmetic => "Simple sums on each channel's 0–255 value with a number of its own: and, or, exclusive or, add, subtract, difference, minimum, maximum, block above or below, slice, multiply and screen. Clip the result or let it wrap round.",
+            EffectKind::BlendColour => "Blends the layer with a colour: cross-faded, the colour only (keeping the layer's light and dark), a tint, or only where it darkens or lightens.",
+            EffectKind::Calculations => "Combines two of the layer's own channels with a blend mode — say its red multiplied by its luminance — into a new picture: for mattes, high-contrast looks and channel tricks.",
+            EffectKind::ChannelMixer => "Makes each output channel from a mix of the red, green and blue, plus a constant: swap channels, a custom black and white (monochrome), or an infrared look.",
+            EffectKind::Invert => "Inverts the colours (a negative), or just one channel: red, green, blue, alpha, luminance, hue, lightness or saturation; blended with the original as much as you like.",
+            EffectKind::ShiftChannels => "Takes each channel from another: red from blue, alpha from luminance, and so on (or full, half or off) — swapped colours, or a matte from the picture's own brightness.",
+            EffectKind::SetChannels => "Sets each channel from one of the layer's own (or full, half or off), each inverted if you like, then put back together: build a matte, isolate a channel, or reverse one.",
+            EffectKind::SetMatte => "Replaces the layer's alpha with one of its own channels — its luminance, red, saturation… — inverted if you like: a quick luma matte, or cut a layer out by its brightness.",
+            EffectKind::SolidComposite => "Puts the layer over a solid colour, each with an opacity of its own, with a blend mode: fills its see-through parts, or tints it by blending.",
+            EffectKind::Minimax => "Each pixel takes the darkest (minimum) or brightest (maximum) value within a radius — spreading or shrinking light areas and mattes — or one then the other to close holes or remove specks.",
+            EffectKind::AutoLevels => "Sets each channel's darkest and brightest points automatically (ignoring a few stray pixels at each end, the clip): full contrast and, as each channel is stretched on its own, a colour cast often taken out.",
+            EffectKind::AutoContrast => "Stretches the picture's contrast automatically, all channels alike, so its darkest part is black and its brightest white — the colours stay as they are.",
+            EffectKind::AutoColor => "Takes out a colour cast automatically: each channel stretched to full range and the midtones made neutral grey.",
+            EffectKind::Equalize => "Spreads the picture's brightness levels evenly from black to white (histogram equalisation), each channel on its own or by brightness alone: hidden detail in flat, murky pictures.",
+            EffectKind::ChangeColor => "Changes one colour: pick it, and shift its hue, lightness and saturation — the matching area found by a tolerance and softness, in RGB, by hue or by chroma; or show the mask it makes.",
+            EffectKind::ChangeToColor => "Changes one colour to another: everything near the From colour (by hue, lightness and saturation tolerances, softened) takes the To colour's hue — and its lightness and saturation too, if you choose.",
+            EffectKind::ColorBalance => "Shifts the balance of red, green and blue in the shadows, midtones and highlights separately, keeping the brightness if you like: warm the highlights, cool the shadows.",
+            EffectKind::Exposure => "Adjusts the picture as a camera's exposure would, in stops of light (each doubling or halving it), with an offset for the blacks and a gamma correction for the midtones.",
+            EffectKind::LeaveColor => "Takes the colour out of everything except one colour you pick (the red dress in a black-and-white world), with a tolerance and soft edges, matched by RGB or by hue.",
+            EffectKind::PhotoFilter => "A coloured filter over the lens: warming, cooling, the colours of the rainbow, sepia, deep tones or underwater — or a colour of your own — at a density, keeping the brightness if you like.",
+            EffectKind::SelectiveColor => "Adjusts the amounts of cyan, magenta, yellow and black in particular colour ranges — the reds, yellows, greens, cyans, blues, magentas, whites, neutrals or blacks — as printers do: three ranges at once, relative or absolute.",
+            EffectKind::Tint => "Maps the picture's blacks and whites to two colours of your choice (everything between, between them), blended in by an amount: a quick monochrome in any two colours.",
+            EffectKind::BlackWhite => "Turns the picture black and white with control over how light each colour becomes — reds, yellows, greens, cyans, blues and magentas — and an optional tint, as a photographer's coloured filters would.",
+            EffectKind::ColorNeutralizer => "Takes colour casts out of the shadows, midtones and highlights separately: pick the colour each should be neutral grey in (the cast), and it's balanced away.",
+            EffectKind::ColorOffset => "Cycles the red, green and blue values round by a phase each, wrapping over, solarising or folding back where they pass the end: psychedelic colour shifts that loop as you animate them.",
+            EffectKind::Toner => "Tones the picture in two, three or five colours by its brightness — highlights, brights, midtones, darktones and shadows — or solarised: duotones, sepia and split tones in a step.",
+            EffectKind::ThresholdRgb => "Turns each of red, green and blue fully on or off at a threshold of its own, giving at most eight flat colours: graphic, pop-art and stencil looks.",
+            EffectKind::Kernel => "Each pixel becomes a weighted sum of itself and its eight neighbours — nine numbers of your choosing, divided and offset — the building block of sharpening, embossing, edge finding and blurs.",
+            EffectKind::VideoLimiter => "Keeps the picture within broadcast-safe limits: brightness held between a floor and a ceiling and saturation held below a maximum, by pulling down brightness, saturation or both.",
             EffectKind::BurnAway => "The layer burns away like paper: a ragged front of glowing embers and charred edges sweeps across it (everywhere at once, from a side, the middle or a point you place) as Burnt goes from 0 to 100 %. Key Burnt to animate it.",
             EffectKind::Deflicker => "Evens out flicker in timelapses and under flickering lights. To analyse the clip, right-click it and choose Deflicker (or Timeline → Deflicker selected clip): it keys Brightness (and Red, Green and Blue) frame by frame to follow its brightness, smoothed over the frames you choose. Or set them by hand.",
             EffectKind::Starfield => "Stars: a night sky that twinkles, stars drifting past in layers (nearer ones faster), or the jump to warp speed, stars streaking out from a point you place. Over the picture, on black, or on their own to put behind something.",
@@ -4276,6 +5090,42 @@ impl EffectKind {
             EffectKind::Bevel => &BEVEL,
             EffectKind::Extrude => &EXTRUDE,
             EffectKind::Rotate3d => &ROTATE3D,
+            EffectKind::BoxBlur => &BOX_BLUR,
+            EffectKind::ChannelBlur => &CHANNEL_BLUR,
+            EffectKind::CompoundBlur => &COMPOUND_BLUR,
+            EffectKind::SmartBlur => &SMART_BLUR,
+            EffectKind::CameraLensBlur => &LENS_BLUR,
+            EffectKind::CrossBlur => &CROSS_BLUR,
+            EffectKind::VectorBlur => &VECTOR_BLUR,
+            EffectKind::Arithmetic => &ARITHMETIC,
+            EffectKind::BlendColour => &BLEND_COLOUR,
+            EffectKind::Calculations => &CALCULATIONS,
+            EffectKind::ChannelMixer => &CHANNEL_MIXER,
+            EffectKind::Invert => &INVERT,
+            EffectKind::ShiftChannels => &SHIFT_CHANNELS,
+            EffectKind::SetChannels => &SET_CHANNELS,
+            EffectKind::SetMatte => &SET_MATTE,
+            EffectKind::SolidComposite => &SOLID_COMPOSITE,
+            EffectKind::Minimax => &MINIMAX,
+            EffectKind::AutoLevels => &AUTO_LEVELS,
+            EffectKind::AutoContrast => &AUTO_CONTRAST,
+            EffectKind::AutoColor => &AUTO_COLOR,
+            EffectKind::Equalize => &EQUALIZE,
+            EffectKind::ChangeColor => &CHANGE_COLOR,
+            EffectKind::ChangeToColor => &CHANGE_TO_COLOR,
+            EffectKind::ColorBalance => &COLOR_BALANCE,
+            EffectKind::Exposure => &EXPOSURE,
+            EffectKind::LeaveColor => &LEAVE_COLOR,
+            EffectKind::PhotoFilter => &PHOTO_FILTER,
+            EffectKind::SelectiveColor => &SELECTIVE_COLOR,
+            EffectKind::Tint => &TINT,
+            EffectKind::BlackWhite => &BLACK_WHITE,
+            EffectKind::ColorNeutralizer => &COLOR_NEUTRALIZER,
+            EffectKind::ColorOffset => &COLOR_OFFSET,
+            EffectKind::Toner => &TONER,
+            EffectKind::ThresholdRgb => &THRESHOLD_RGB,
+            EffectKind::Kernel => &KERNEL,
+            EffectKind::VideoLimiter => &VIDEO_LIMITER,
             EffectKind::Deflicker => &DEFLICKER,
             EffectKind::Hologram => &HOLOGRAM,
             EffectKind::Portal => &PORTAL,
@@ -4378,6 +5228,10 @@ impl EffectKind {
             EffectKind::BurnAway => &[(0, "Burn"), (4, "Edge"), (9, "Embers")],
             EffectKind::Extrusion3d => &[(0, "Shape"), (3, "Turn"), (8, "Surface"), (10, "Light")],
             EffectKind::Rotate3d => &[(0, "Turn"), (3, "View"), (5, "Pivot")],
+            EffectKind::ChannelMixer => &[(0, "Red"), (4, "Green"), (8, "Blue"), (12, "Output")],
+            EffectKind::ColorBalance => &[(0, "Shadows"), (3, "Midtones"), (6, "Highlights")],
+            EffectKind::SelectiveColor => &[(0, "Method"), (1, "Range 1"), (6, "Range 2"), (11, "Range 3")],
+            EffectKind::Kernel => &[(0, "Kernel"), (9, "Scale")],
             EffectKind::Deflicker => &[(0, "Gains"), (4, "Analysis")],
             EffectKind::PatchReplacer => &[(0, "Target"), (2, "Source"), (4, "Shape"), (9, "Fill")],
             EffectKind::Light => &[(0, "Light"), (3, "Position"), (6, "Point of interest (spot and directional)"), (9, "Spot cone"), (11, "Falloff"), (13, "Shadows"), (16, "Environment")],
@@ -4506,6 +5360,42 @@ impl EffectValues {
             EffectKind::Bevel => v[bevel::WIDTH] <= 0.0 || v[bevel::INTENSITY] == 0.0,
             EffectKind::Extrude => v[extrude::LENGTH] <= 0.0,
             EffectKind::Rotate3d => v[rotate3d::TURN_X] == 0.0 && v[rotate3d::TURN_Y] == 0.0 && v[rotate3d::TURN_Z] == 0.0 && v[rotate3d::SIZE] == 100.0 && v[rotate3d::PUSH] == 0.0,
+            EffectKind::BoxBlur => v[box_blur::RADIUS] <= 0.0,
+            EffectKind::ChannelBlur => v[channel_blur::RED] <= 0.0 && v[channel_blur::GREEN] <= 0.0 && v[channel_blur::BLUE] <= 0.0 && v[channel_blur::ALPHA] <= 0.0,
+            EffectKind::CompoundBlur => v[compound_blur::MAX] <= 0.0,
+            EffectKind::SmartBlur => v[smart_blur::RADIUS] <= 0.0 && v[smart_blur::MODE] < 0.5,
+            EffectKind::CameraLensBlur => v[lens_blur::RADIUS] <= 0.0,
+            EffectKind::CrossBlur => v[cross_blur::ACROSS] <= 0.0 && v[cross_blur::DOWN] <= 0.0,
+            EffectKind::VectorBlur => v[vector_blur::AMOUNT] <= 0.0,
+            EffectKind::Arithmetic => false,
+            EffectKind::BlendColour => v[blend_colour::AMOUNT] >= 100.0,
+            EffectKind::Calculations => false,
+            EffectKind::ChannelMixer => v[channel_mixer::RR] == 100.0 && v[channel_mixer::GG] == 100.0 && v[channel_mixer::BB] == 100.0 && [1, 2, 3, 4, 6, 7, 8, 9, 11].iter().all(|&i| v[i] == 0.0) && v[channel_mixer::MONO] < 0.5,
+            EffectKind::Invert => v[invert::BLEND] >= 100.0,
+            EffectKind::ShiftChannels => v[shift_channels::RED] == 0.0 && v[shift_channels::GREEN] == 1.0 && v[shift_channels::BLUE] == 2.0 && v[shift_channels::ALPHA] == 3.0,
+            EffectKind::SetChannels => v[set_channels::RED] == 0.0 && v[set_channels::GREEN] == 1.0 && v[set_channels::BLUE] == 2.0 && v[set_channels::ALPHA] == 3.0 && v[4..8].iter().all(|x| *x < 0.5),
+            EffectKind::SetMatte => v[set_matte::FROM] == 3.0 && v[set_matte::INVERT] < 0.5,
+            EffectKind::SolidComposite => v[solid_composite::OPACITY] <= 0.0 && v[solid_composite::SOURCE] >= 100.0,
+            EffectKind::Minimax => v[minimax::RADIUS] <= 0.0,
+            EffectKind::AutoLevels => v[auto_levels::BLEND] >= 100.0,
+            EffectKind::AutoContrast => v[auto_contrast::BLEND] >= 100.0,
+            EffectKind::AutoColor => v[auto_color::BLEND] >= 100.0,
+            EffectKind::Equalize => v[equalize::AMOUNT] <= 0.0,
+            EffectKind::ChangeColor => v[change_color::VIEW] < 0.5 && v[change_color::HUE] == 0.0 && v[change_color::LIGHTNESS] == 0.0 && v[change_color::SATURATION] == 0.0,
+            EffectKind::ChangeToColor => v[change_to_color::FROM] == v[change_to_color::TO] && v[change_to_color::VIEW] < 0.5,
+            EffectKind::ColorBalance => v[0..9].iter().all(|x| *x == 0.0),
+            EffectKind::Exposure => v[exposure::EXPOSURE] == 0.0 && v[exposure::OFFSET] == 0.0 && v[exposure::GAMMA] == 1.0,
+            EffectKind::LeaveColor => v[leave_color::AMOUNT] <= 0.0,
+            EffectKind::PhotoFilter => v[photo_filter::DENSITY] <= 0.0,
+            EffectKind::SelectiveColor => [2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 14, 15].iter().all(|&i| v[i] == 0.0),
+            EffectKind::Tint => v[tint::AMOUNT] <= 0.0,
+            EffectKind::BlackWhite => false,
+            EffectKind::ColorNeutralizer => v[color_neutralizer::BLEND] >= 100.0,
+            EffectKind::ColorOffset => v[color_offset::RED] == 0.0 && v[color_offset::GREEN] == 0.0 && v[color_offset::BLUE] == 0.0,
+            EffectKind::Toner => v[toner::BLEND] >= 100.0,
+            EffectKind::ThresholdRgb => v[threshold_rgb::BLEND] >= 100.0,
+            EffectKind::Kernel => v[kernel::BLEND] >= 100.0 || (v[kernel::K22] == v[kernel::DIVIDE] && v[kernel::OFFSET] == 0.0 && [0, 1, 2, 3, 5, 6, 7, 8].iter().all(|&i| v[i] == 0.0)),
+            EffectKind::VideoLimiter => false,
             EffectKind::Deflicker => v[deflicker::BRIGHTNESS] == 100.0 && v[deflicker::RED] == 100.0 && v[deflicker::GREEN] == 100.0 && v[deflicker::BLUE] == 100.0,
             EffectKind::Hologram => false,
             EffectKind::Portal => v[portal::OPEN] == 0.0,
@@ -4945,7 +5835,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace | EffectKind::Deflicker => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace | EffectKind::Deflicker | EffectKind::ChannelMixer | EffectKind::ShiftChannels | EffectKind::SetChannels | EffectKind::ColorBalance | EffectKind::ChangeColor | EffectKind::ColorOffset | EffectKind::Kernel | EffectKind::Exposure | EffectKind::SelectiveColor => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
                 // Its trail is worked out with the clip (see sparkle's tests).

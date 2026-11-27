@@ -1291,3 +1291,89 @@ fn fs_hud_text(in: VsOut) -> @location(0) vec4<f32> {
     let gcol = select(col, ht_rgb(fx.p3.w), fx.p4.x > 0.5 && lk.z < 0.5);
     return vec4(base.rgb * (1.0 - a) + col * a + gcol * glow, max(base.a, clamp(a + glow, 0.0, 1.0)));
 }
+
+// Compound blur: the layer (src) and its blurred self (second) mixed by a map.
+// p0 = (max blur, map: 0 brightness 1 opacity 2 middle 3 top 4 bottom 5 band, invert, band %).
+@fragment
+fn fs_compound_mix(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let b = second_at(in.uv);
+    var m = 0.0;
+    switch u32(round(fx.p0.y)) {
+        case 0u: { m = to_display(unpremul(c)).g * 0.6 + to_display(unpremul(c)).r * 0.3 + to_display(unpremul(c)).b * 0.1; }
+        case 1u: { m = c.a; }
+        case 2u: { m = clamp(length(in.uv - 0.5) * 2.0, 0.0, 1.0); }
+        case 3u: { m = clamp(in.uv.y, 0.0, 1.0); }
+        case 4u: { m = clamp(1.0 - in.uv.y, 0.0, 1.0); }
+        default: { m = clamp(abs(in.uv.y - fx.p0.w / 100.0) * 2.5, 0.0, 1.0); }
+    }
+    if (fx.p0.z >= 0.5) {
+        m = 1.0 - m;
+    }
+    return mix(c, b, m);
+}
+
+// Cross blur: the layer blurred across (src) and down (second), combined: p0.z = 0 average,
+// 1 add, 2 screen, 3 lighten.
+@fragment
+fn fs_cross_mix(in: VsOut) -> @location(0) vec4<f32> {
+    let a = textureSample(src, src_sampler, to_tex(in.uv));
+    let b = second_at(in.uv);
+    switch u32(round(fx.p0.z)) {
+        case 1u: { return vec4(a.rgb + b.rgb, min(a.a + b.a, 1.0)); }
+        case 2u: { return vec4(a.rgb + b.rgb - a.rgb * b.rgb, a.a + b.a - a.a * b.a); }
+        case 3u: { return max(a, b); }
+        default: { return (a + b) * 0.5; }
+    }
+}
+
+// Auto colour, contrast and levels, and Equalize: the layer (src) set by its statistics
+// (second, see fs_stats). p1.w = 0 auto levels (each channel), 1 auto contrast (all alike),
+// 2 auto colour (each, and midtones neutral), 3 equalise (p0.x: 0 each channel, 1 brightness);
+// p1.z = blend with original %.
+@fragment
+fn fs_auto_apply(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, src_sampler, to_tex(in.uv));
+    let d = to_display(unpremul(c));
+    let mode = u32(round(fx.p1.w));
+    var o = d;
+    if (mode == 3u) {
+        let lv = clamp(d, vec3(0.0), vec3(1.0)) * 63.0;
+        let i0 = vec3<i32>(floor(lv));
+        let i1 = min(i0 + 1, vec3<i32>(63));
+        let f = lv - floor(lv);
+        if (fx.p0.x >= 0.5) {
+            let y = clamp(dot(d, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0) * 63.0;
+            let a = textureLoad(second, vec2<i32>(i32(floor(y)), 0), 0).x;
+            let b = textureLoad(second, vec2<i32>(min(i32(floor(y)) + 1, 63), 0), 0).x;
+            let ny = mix(a, b, fract(y));
+            o = d * ny / max(y / 63.0, 1e-3);
+        } else {
+            for (var k = 0; k < 3; k = k + 1) {
+                let a = textureLoad(second, vec2<i32>(i0[k], k + 1), 0).x;
+                let b = textureLoad(second, vec2<i32>(i1[k], k + 1), 0).x;
+                o[k] = mix(a, b, f[k]);
+            }
+        }
+    } else {
+        let lo = textureLoad(second, vec2<i32>(0, 0), 0);
+        let hi = textureLoad(second, vec2<i32>(1, 0), 0);
+        let mean = textureLoad(second, vec2<i32>(2, 0), 0);
+        var black = lo.rgb;
+        var white = hi.rgb;
+        if (mode == 1u) {
+            black = vec3(min(lo.r, min(lo.g, lo.b)));
+            white = vec3(max(hi.r, max(hi.g, hi.b)));
+        }
+        o = (d - black) / max(white - black, vec3(0.02));
+        if (mode == 2u) {
+            // Midtones to grey: each channel's stretched average to their shared one.
+            let m = clamp((mean.rgb - black) / max(white - black, vec3(0.02)), vec3(0.02), vec3(0.98));
+            let goal = (m.r + m.g + m.b) / 3.0;
+            o = pow(clamp(o, vec3(0.0), vec3(1.0)), log(vec3(goal)) / log(m));
+        }
+    }
+    let k = 1.0 - clamp(fx.p1.z / 100.0, 0.0, 1.0);
+    let rgb = mix(d, clamp(o, vec3(0.0), vec3(1.0)), k);
+    return vec4(to_linear(rgb) * c.a, c.a);
+}

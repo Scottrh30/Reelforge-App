@@ -836,7 +836,38 @@ What works now:
       ahead of it (**Charred edge**), with rising **Embers**. **From**: everywhere at once,
       a side, the middle or **A point** (drag the **Burn point** in the Viewer, or track it).
       **Raggedness**, **Seed**
-  - **3D Extrusion** (Generate): the layer's picture made solid — its shape (wherever it
+  - **Blur & sharpen** (more): **Box blur** (fast; **Iterations** 1–5, across, down or
+    both, **Repeat edge pixels**), **Channel blur** (red, green, blue and alpha each by its own
+    amount), **Compound blur** (more blur where a map says: the layer's brightness or opacity,
+    or sharp in the middle, top, bottom or a band), **Smart blur** (blurs within like colours,
+    keeps edges; or shows the edges), **Camera lens blur** (bokeh: a round or bladed **Iris**,
+    **Highlight gain** and **threshold**), **Cross blur** (across and down separately,
+    averaged or added as light) and **Vector blur** (smeared along or across the picture's own
+    contours)
+  - **Channel** (a section of its own): **Arithmetic** (and, or, xor, add, subtract,
+    difference, min, max, block above or below, slice, multiply, screen — on each channel's
+    0–255 value, clipped or wrapping), **Blend** (with a colour: cross-fade, colour only, tint
+    only, darken or lighten only), **Calculations** (two of the layer's channels combined by a
+    blend mode), **Channel mixer** (each channel from red, green, blue and a constant;
+    monochrome), **Invert** (RGB, a channel, alpha, luminance, hue, lightness or saturation),
+    **Shift channels** and **Set channels** (each channel from another, full, half or off;
+    inverted), **Set matte** (alpha from a channel), **Solid composite** (over a colour with a
+    blend mode) and **Minimax** (minimum, maximum or both in turn, over a radius)
+  - **Colour** (more): **Auto levels**, **Auto contrast** and **Auto colour** (the
+    picture's own black and white points found, with **Black** and **White clip**; auto colour
+    also neutralises the midtones), **Equalize** (histogram equalisation, by channel or
+    brightness), **Change colour** (one colour's hue, lightness and saturation shifted, by RGB,
+    hue or chroma, with a mask view), **Change to colour** (one colour to another), **Colour
+    balance** (shadows, midtones and highlights), **Exposure** (stops, offset, gamma),
+    **Leave colour** (all grey but one colour), **Photo filter** (warming, cooling, the rainbow,
+    sepia, deep tones, underwater or your own, at a **Density**), **Selective colour** (cyan,
+    magenta, yellow and black in three colour ranges), **Tint** (black and white mapped to two
+    colours), **Black & white** (how light each of six colours becomes, tinted if you like),
+    **Colour neutraliser** (casts taken out of the shadows, midtones and highlights), **Colour
+    offset** (channels cycled round by a phase: wrap, solarise or polarise), **Toner** (duo-,
+    tri- and pentones, solarised), **Threshold RGB**, **Convolution kernel** (nine weights,
+    divide and offset) and **Video limiter** (broadcast-safe brightness and saturation)
+ the layer's picture made solid — its shape (wherever it
     isn't see-through, above **Solid above**) extruded to a **Depth**, with a **Bevel**
     (flat or round), turned in 3D (**Turn X/Y/Z**, **Size**, **Perspective**), its **Sides**
     in the picture's edge colours or a **Side colour**, its **Back** the picture or the side
