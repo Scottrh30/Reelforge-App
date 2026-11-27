@@ -2112,6 +2112,14 @@ What works now:
     frame rate (or from the playhead), with the file's lens if it has one; a Reelforge solve
     goes onto the selected footage clip, to pick points and create layers as if it had been
     analysed here
+  - **Import from Trackwright…** (Track panel, under Method): a planar track exported from
+    Trackwright as **Reelforge track (.rftrack.json)** becomes the clip's planar tracker,
+    keyed on every tracked frame, so **Apply tracking data** can corner-pin another layer to
+    the surface or stabilise the clip; a roto shape exported as **Reelforge animated mask
+    (.rfmask.json)** is added to the clip's masks, keyed every frame with its feather. Both
+    are scaled to the clip if it is a different size (a proxy), and timed at the clip's frame
+    rate from Trackwright's first frame. A Trackwright camera solve comes in through
+    **Import a camera…** as a `.chan` file. Undoable
 - **3D layers, camera and lights**:
   - **3D layer** (Transform section of the Controls panel): the layer becomes a flat plane in
     3D space with a **Position Z** (positive is further away) and **Rotation X / Y** (Rotation

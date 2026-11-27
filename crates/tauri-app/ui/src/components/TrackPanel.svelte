@@ -206,6 +206,11 @@
       {:else}
         <p class="note">{hints[t.mode]}</p>
       {/if}
+      {#if !show3d}
+        <div class="row">
+          <button class="wide" disabled={progress !== null} onclick={() => run(api.trackwrightImport(ins.id))} title="A planar track (.rftrack.json) becomes this clip's tracker, ready to apply; a roto mask (.rfmask.json) is added to its masks">Import from Trackwright…</button>
+        </div>
+      {/if}
     </div>
 
     {#if show3d}

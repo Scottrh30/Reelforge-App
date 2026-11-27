@@ -1540,6 +1540,21 @@ fn camtrack_import() -> Res<()> {
     ed(|e| e.import_camera_file(&path))
 }
 
+/// Import a Trackwright track (`.rftrack.json`: becomes clip `id`'s planar
+/// tracker) or mask (`.rfmask.json`: added to its masks).
+#[tauri::command]
+fn trackwright_import(id: u64) -> Res<()> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Import from Trackwright")
+        .add_filter("Trackwright track or mask", &["json"])
+        .add_filter("All files", &["*"])
+        .pick_file()
+    else {
+        return Ok(());
+    };
+    ed(|e| e.import_trackwright_file(clip(id), &path))
+}
+
 /// Move the playhead to frame `frame` of the camera solve.
 #[tauri::command]
 fn camtrack_seek(id: u64, frame: usize) -> Res<()> {
@@ -2026,6 +2041,7 @@ fn main() {
             camtrack_seek,
             camtrack_export,
             camtrack_import,
+            trackwright_import,
             camtrack_stabilise,
             auto_stabilise,
             deflicker,

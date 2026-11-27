@@ -65,6 +65,7 @@ pub mod planar;
 pub mod shatter;
 pub mod space3d;
 pub mod track;
+pub mod trackwright;
 pub mod transform;
 pub mod transition;
 pub mod undo;

@@ -357,6 +357,7 @@ enum TrackMsg {
 mod autofix;
 
 mod camtrack;
+mod trackwright;
 mod fill;
 pub mod roto;
 mod paint;

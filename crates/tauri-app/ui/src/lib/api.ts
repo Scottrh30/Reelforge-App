@@ -1245,6 +1245,7 @@ export const api = {
   camtrackResolve: (id: number, points: number[], maxError: number | null) => invoke("camtrack_resolve", { id, points, maxError }),
   camtrackExport: (id: number, format: CamFormat, picked: number[]) => invoke("camtrack_export", { id, format, picked }),
   camtrackImport: () => invoke("camtrack_import"),
+  trackwrightImport: (id: number) => invoke("trackwright_import", { id }),
   camtrackStabilise: (id: number, smoothing: number, zoom: StabZoom) => invoke("camtrack_stabilise", { id, smoothing, zoom }),
   autoStabilise: (id: number, smoothing: number, zoom: StabZoom) => invoke("auto_stabilise", { id, smoothing, zoom }),
   deflicker: (id: number) => invoke("deflicker", { id }),
