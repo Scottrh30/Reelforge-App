@@ -895,6 +895,19 @@ What works now:
     **Median** (speckle out, edges kept), **Dust & scratches** (only pixels that stand out by
     more than a threshold replaced) and **Remove grain** (similar pixels averaged, detail kept,
     in passes, sharpened back if you like; a view of the noise taken out)
+  - **Keying** (more): **Colour key** (one colour within a tolerance, edge thinned and
+    feathered), **Colour range** (a box of colours in Lab, YUV or RGB), **Colour difference
+    key** (blue or green screen by how far a pixel's colour stands out, with black and white
+    points, gamma and a matte view), **Linear colour key** (match by RGB, hue or chroma; key out
+    or keep), **Extract** (black and white points on a channel, softened), **Spill suppressor**
+    and **Simple choker**
+  - **Stylize** (more): **Brush strokes**, **Cartoon** (flattened fills with ink edges),
+    **Emboss** and **Colour emboss**, **Find edges**, **Mosaic**, **Posterize**, **Roughen
+    edges** (roughen, cut, spiky or rusty), **Scatter**, **Texturize** (canvas, brick, burlap,
+    sandstone or noise relief), **Threshold**, **Block load** (loading in progressively finer blocks),
+    **Burn film**, **Hex tile**, **Kaleida**, **Mr. Smoothie** (repainted from colours along a
+    line), **Plastic** and **Glass** (lit, glossy relief from the picture's brightness) and
+    **RepeTile** (the layer repeated out past its edges, plain, mirrored or bricked)
   - **3D Extrusion** (Generate): the layer's picture made solid — its shape (wherever it
     isn't see-through, above **Solid above**) extruded to a **Depth**, with a **Bevel**
     (flat or round), turned in 3D (**Turn X/Y/Z**, **Size**, **Perspective**), its **Sides**

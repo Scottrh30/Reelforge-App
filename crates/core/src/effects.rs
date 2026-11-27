@@ -452,6 +452,91 @@ pub enum EffectKind {
     /// nearby (edges and texture left alone), by a strength and over a size, then lightly
     /// sharpened back if you like.
     RemoveGrain,
+    /// Keys out one colour (and those within a tolerance of it) — the simplest key, for flat,
+    /// evenly lit backgrounds — with the edge thinned or spread and feathered.
+    ColorKey,
+    /// Keys out a range of colours set by a minimum and maximum in Lab, YUV or RGB — a screen
+    /// with uneven lighting or a range of shades — with fuzziness at its edges.
+    ColorRange,
+    /// A blue- or green-screen key from how much the screen colour stands above the other two
+    /// channels — fine with hair, smoke and glass — with black and white points and gamma for
+    /// the matte, or the matte shown.
+    ColorDifferenceKey,
+    /// Keys out (or keeps) a colour with a linear falloff — a tolerance where it's fully gone
+    /// and a softness beyond — matched by RGB, hue or chroma; or shows the matte.
+    LinearColorKey,
+    /// Keys out by brightness (or one channel): what's darker than a black point or brighter
+    /// than a white point goes, with soft falloffs at each — for a black or white background,
+    /// smoke, fire and flares.
+    Extract,
+    /// Takes the green or blue screen's colour spill off a keyed subject (the coloured fringe
+    /// and cast on edges and skin), by an amount, leaving everything else alone.
+    SpillSuppressor,
+    /// Shrinks a matte's edge inwards (positive) or spreads it outwards (negative) by so many
+    /// pixels — to trim a keyed fringe or fill tiny holes — or shows the matte.
+    SimpleChoker,
+    /// Repaints the layer in brush strokes — their angle, size, length, density and randomness
+    /// — like an impressionist painting, blended with the original if you like.
+    BrushStrokes,
+    /// Makes the layer look drawn: its colours smoothed and shaded in flat steps, with ink
+    /// lines on its edges — fills, edges or both — their detail, steps, thickness and softness
+    /// yours to set.
+    Cartoon,
+    /// Makes the layer look stamped into grey metal: its edges raised and lit from a direction,
+    /// at a relief and contrast.
+    Emboss,
+    /// Embosses the layer's edges, raised and lit from a direction, keeping its colours.
+    ColorEmboss,
+    /// Draws the picture's edges as dark lines on white (as a pencil sketch), or bright on
+    /// black inverted, blended with the original if you like.
+    FindEdges,
+    /// Pixelates the layer into blocks of flat colour, so many across and down — each the
+    /// average of its block, or its centre's colour for sharp colours: censoring and retro
+    /// looks.
+    Mosaic,
+    /// Reduces each channel to a few levels of brightness, for flat bands of colour: poster and
+    /// screen-print looks.
+    Posterize,
+    /// Roughens the edges of the layer's shape (text, logos, cut-outs) as if torn, eroded or
+    /// rusty: a border width, sharpness, fractal influence, scale and complexity, evolving over
+    /// time.
+    RoughenEdges,
+    /// Scatters the layer's pixels about randomly within an amount — across, down or both — for
+    /// a frosted-glass or sandy look, changing every frame if you like.
+    Scatter,
+    /// Presses a texture into the layer, lit from a direction — canvas, brick, burlap,
+    /// sandstone or noise — at a scale and relief: paintings on canvas, posters on brick.
+    Texturize,
+    /// Turns the picture pure black and white at a brightness level: high-contrast graphic
+    /// looks and mattes.
+    Threshold,
+    /// The picture loads in like an old web image: big blocks first, getting finer until it's
+    /// sharp, as the completion goes from 0 to 100 % — with scan lines and starting from
+    /// nothing if you like.
+    BlockLoad,
+    /// The film melts and burns through in the projector's heat: holes spreading from random
+    /// spots with scorched brown edges and a white-hot rim, as Burn goes up.
+    BurnFilm,
+    /// Breaks the layer into hexagonal tiles: each a flat colour (a hex mosaic), or each a
+    /// little copy of the picture, at a size and turned.
+    HexTile,
+    /// A kaleidoscope: one wedge of the layer mirrored round a centre into a symmetrical
+    /// pattern, at a size and turned — flower, star and tile patterns.
+    Kaleida,
+    /// Repaints the layer in the colours found along a line across it, picked by its own
+    /// brightness and smoothed into flowing bands: psychedelic, liquid colour from the
+    /// picture's own palette.
+    MrSmoothie,
+    /// Turns the layer into shiny moulded plastic (or metal): raised by its own brightness,
+    /// softened, and lit from a direction with a glossy highlight.
+    Plastic,
+    /// Makes the layer look seen through moulded glass: a surface raised by its own brightness
+    /// bends the picture behind it and catches the light.
+    GlassCc,
+    /// Repeats the layer outwards beyond its edges — so far left, right, up and down — as
+    /// tiles, mirrored tiles or offset bricks: fills a frame with a small graphic, or extends a
+    /// pattern.
+    RepeTile,
     /// Evens out flicker: brightness and colour gains, keyed frame by frame by
     /// Deflicker's analysis (Clip menu), or set by hand.
     Deflicker,
@@ -2372,6 +2457,184 @@ pub mod remove_grain {
     pub const CHROMA: usize = 3;
     pub const SHARPEN: usize = 4;
     pub const VIEW: usize = 5;
+}
+pub mod color_key {
+    pub const COLOR: usize = 0;
+    pub const TOLERANCE: usize = 1;
+    pub const THIN: usize = 2;
+    pub const FEATHER: usize = 3;
+}
+pub mod color_range {
+    pub const SPACE: usize = 0;
+    pub const FUZZINESS: usize = 1;
+    pub const MIN1: usize = 2;
+    pub const MAX1: usize = 3;
+    pub const MIN2: usize = 4;
+    pub const MAX2: usize = 5;
+    pub const MIN3: usize = 6;
+    pub const MAX3: usize = 7;
+}
+pub mod color_difference_key {
+    pub const SCREEN: usize = 0;
+    pub const BLACK: usize = 1;
+    pub const WHITE: usize = 2;
+    pub const GAMMA: usize = 3;
+    pub const SPILL: usize = 4;
+    pub const VIEW: usize = 5;
+}
+pub mod linear_color_key {
+    pub const COLOR: usize = 0;
+    pub const MATCH: usize = 1;
+    pub const TOLERANCE: usize = 2;
+    pub const SOFTNESS: usize = 3;
+    pub const OPERATION: usize = 4;
+    pub const VIEW: usize = 5;
+}
+pub mod extract {
+    pub const CHANNEL: usize = 0;
+    pub const BLACK: usize = 1;
+    pub const WHITE: usize = 2;
+    pub const BLACK_SOFT: usize = 3;
+    pub const WHITE_SOFT: usize = 4;
+    pub const INVERT: usize = 5;
+}
+pub mod spill_suppressor {
+    pub const COLOR: usize = 0;
+    pub const AMOUNT: usize = 1;
+    pub const METHOD: usize = 2;
+}
+pub mod simple_choker {
+    pub const CHOKE: usize = 0;
+    pub const VIEW: usize = 1;
+}
+pub mod brush_strokes {
+    pub const ANGLE: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const LENGTH: usize = 2;
+    pub const DENSITY: usize = 3;
+    pub const RANDOM: usize = 4;
+    pub const BLEND: usize = 5;
+}
+pub mod cartoon {
+    pub const RENDER: usize = 0;
+    pub const DETAIL: usize = 1;
+    pub const STEPS: usize = 2;
+    pub const SMOOTHNESS: usize = 3;
+    pub const THRESHOLD: usize = 4;
+    pub const WIDTH: usize = 5;
+    pub const SOFTNESS: usize = 6;
+    pub const OPACITY: usize = 7;
+}
+pub mod emboss {
+    pub const DIRECTION: usize = 0;
+    pub const RELIEF: usize = 1;
+    pub const CONTRAST: usize = 2;
+    pub const BLEND: usize = 3;
+}
+pub mod color_emboss {
+    pub const DIRECTION: usize = 0;
+    pub const RELIEF: usize = 1;
+    pub const CONTRAST: usize = 2;
+    pub const BLEND: usize = 3;
+}
+pub mod find_edges {
+    pub const INVERT: usize = 0;
+    pub const BLEND: usize = 1;
+}
+pub mod mosaic {
+    pub const ACROSS: usize = 0;
+    pub const DOWN: usize = 1;
+    pub const SHARP: usize = 2;
+}
+pub mod posterize {
+    pub const LEVELS: usize = 0;
+}
+pub mod roughen_edges {
+    pub const TYPE: usize = 0;
+    pub const COLOR: usize = 1;
+    pub const BORDER: usize = 2;
+    pub const SHARPNESS: usize = 3;
+    pub const INFLUENCE: usize = 4;
+    pub const SCALE: usize = 5;
+    pub const COMPLEXITY: usize = 6;
+    pub const EVOLUTION: usize = 7;
+    pub const SEED: usize = 8;
+}
+pub mod scatter {
+    pub const AMOUNT: usize = 0;
+    pub const GRAIN: usize = 1;
+    pub const RANDOM: usize = 2;
+}
+pub mod texturize {
+    pub const TEXTURE: usize = 0;
+    pub const SCALE: usize = 1;
+    pub const RELIEF: usize = 2;
+    pub const LIGHT: usize = 3;
+    pub const CONTRAST: usize = 4;
+}
+pub mod threshold {
+    pub const LEVEL: usize = 0;
+    pub const SOFTNESS: usize = 1;
+}
+pub mod block_load {
+    pub const COMPLETION: usize = 0;
+    pub const SCANLINES: usize = 1;
+    pub const CLEARED: usize = 2;
+    pub const SMOOTH: usize = 3;
+}
+pub mod burn_film {
+    pub const BURN: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const SEED: usize = 3;
+}
+pub mod hex_tile {
+    pub const RADIUS: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const ROTATE: usize = 3;
+    pub const RENDER: usize = 4;
+    pub const GAP: usize = 5;
+}
+pub mod kaleida {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const SEGMENTS: usize = 2;
+    pub const SIZE: usize = 3;
+    pub const ROTATION: usize = 4;
+    pub const MIRROR: usize = 5;
+}
+pub mod mr_smoothie {
+    pub const AX: usize = 0;
+    pub const AY: usize = 1;
+    pub const BX: usize = 2;
+    pub const BY: usize = 3;
+    pub const SMOOTHNESS: usize = 4;
+    pub const PHASE: usize = 5;
+    pub const LOOPS: usize = 6;
+    pub const BLEND: usize = 7;
+}
+pub mod plastic {
+    pub const HEIGHT: usize = 0;
+    pub const SOFTNESS: usize = 1;
+    pub const LIGHT: usize = 2;
+    pub const INTENSITY: usize = 3;
+    pub const ROUGHNESS: usize = 4;
+    pub const METAL: usize = 5;
+}
+pub mod glass_cc {
+    pub const HEIGHT: usize = 0;
+    pub const SOFTNESS: usize = 1;
+    pub const DISPLACEMENT: usize = 2;
+    pub const LIGHT: usize = 3;
+    pub const INTENSITY: usize = 4;
+}
+pub mod repe_tile {
+    pub const LEFT: usize = 0;
+    pub const RIGHT: usize = 1;
+    pub const UP: usize = 2;
+    pub const DOWN: usize = 3;
+    pub const TILING: usize = 4;
 }
 pub mod deflicker {
     pub const BRIGHTNESS: usize = 0;
@@ -4643,6 +4906,184 @@ const REMOVE_GRAIN: [ParamSpec; 6] = [
     spec("Sharpen", 0.0, 0.0, 100.0, " %", 0.3),
     choice("View", &["Final", "The noise taken out"]),
 ];
+const COLOR_KEY: [ParamSpec; 4] = [
+    color("Key colour", 0x00c000),
+    spec("Colour tolerance", 30.0, 0.0, 255.0, "", 0.5),
+    spec("Edge thin", 0.0, -5.0, 5.0, " px", 0.05),
+    spec("Edge feather", 0.0, 0.0, 500.0, " px", 0.1),
+];
+const COLOR_RANGE: [ParamSpec; 8] = [
+    choice("Colour space", &["Lab", "YUV", "RGB"]),
+    spec("Fuzziness", 10.0, 0.0, 100.0, "", 0.3),
+    spec("Min L, Y, R", 0.0, 0.0, 255.0, "", 0.5),
+    spec("Max L, Y, R", 255.0, 0.0, 255.0, "", 0.5),
+    spec("Min a, U, G", 0.0, 0.0, 255.0, "", 0.5),
+    spec("Max a, U, G", 100.0, 0.0, 255.0, "", 0.5),
+    spec("Min b, V, B", 0.0, 0.0, 255.0, "", 0.5),
+    spec("Max b, V, B", 255.0, 0.0, 255.0, "", 0.5),
+];
+const COLOR_DIFFERENCE_KEY: [ParamSpec; 6] = [
+    choice("Screen", &["Green", "Blue", "Red"]),
+    spec("Matte black", 0.0, 0.0, 255.0, "", 0.5),
+    spec("Matte white", 160.0, 1.0, 255.0, "", 0.5),
+    spec("Matte gamma", 1.0, 0.1, 10.0, "", 0.01),
+    ParamSpec { name: "Suppress the spill", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    choice("View", &["Final", "Matte"]),
+];
+const LINEAR_COLOR_KEY: [ParamSpec; 6] = [
+    color("Key colour", 0x00c000),
+    choice("Match colours", &["Using RGB", "Using hue", "Using chroma"]),
+    spec("Matching tolerance", 10.0, 0.0, 100.0, " %", 0.3),
+    spec("Matching softness", 10.0, 0.0, 100.0, " %", 0.3),
+    choice("Key operation", &["Key colours", "Keep colours"]),
+    choice("View", &["Final", "Matte"]),
+];
+const EXTRACT: [ParamSpec; 6] = [
+    choice("Channel", &["Luminance", "Red", "Green", "Blue", "Alpha"]),
+    spec("Black point", 0.0, 0.0, 255.0, "", 0.5),
+    spec("White point", 255.0, 0.0, 255.0, "", 0.5),
+    spec("Black softness", 0.0, 0.0, 255.0, "", 0.5),
+    spec("White softness", 0.0, 0.0, 255.0, "", 0.5),
+    ParamSpec { name: "Invert", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const SPILL_SUPPRESSOR: [ParamSpec; 3] = [
+    color("Colour to suppress", 0x00c000),
+    spec("Suppression", 100.0, 0.0, 200.0, " %", 0.3),
+    choice("Method", &["Average of the other two", "The brighter of the other two"]),
+];
+const SIMPLE_CHOKER: [ParamSpec; 2] = [
+    spec("Choke matte", 1.0, -100.0, 100.0, " px", 0.05),
+    choice("View", &["Final", "Matte"]),
+];
+const BRUSH_STROKES: [ParamSpec; 6] = [
+    spec("Stroke angle", 135.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Brush size", 3.0, 0.0, 50.0, " px", 0.05),
+    spec("Stroke length", 12.0, 0.0, 200.0, " px", 0.1),
+    spec("Stroke density", 1.0, 0.0, 2.0, "", 0.01),
+    spec("Stroke randomness", 1.0, 0.0, 2.0, "", 0.01),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const CARTOON: [ParamSpec; 8] = [
+    choice("Render", &["Fill and edges", "Fill", "Edges"]),
+    spec("Detail radius", 4.0, 0.0, 20.0, " px", 0.05),
+    spec("Shading steps", 6.0, 1.0, 64.0, "", 0.05),
+    spec("Shading smoothness", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Edge threshold", 1.5, 0.0, 5.0, "", 0.01),
+    spec("Edge width", 1.5, 0.0, 10.0, " px", 0.02),
+    spec("Edge softness", 60.0, 0.0, 100.0, " %", 0.3),
+    spec("Edge opacity", 100.0, 0.0, 100.0, " %", 0.3),
+];
+const EMBOSS: [ParamSpec; 4] = [
+    spec("Direction", 45.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Relief", 2.0, 0.1, 10.0, " px", 0.02),
+    spec("Contrast", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const COLOR_EMBOSS: [ParamSpec; 4] = [
+    spec("Direction", 45.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Relief", 2.0, 0.1, 10.0, " px", 0.02),
+    spec("Contrast", 100.0, 0.0, 500.0, " %", 0.5),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const FIND_EDGES: [ParamSpec; 2] = [
+    ParamSpec { name: "Invert", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const MOSAIC: [ParamSpec; 3] = [
+    spec("Horizontal blocks", 20.0, 1.0, 4000.0, "", 0.2),
+    spec("Vertical blocks", 12.0, 1.0, 4000.0, "", 0.2),
+    ParamSpec { name: "Sharp colours", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const POSTERIZE: [ParamSpec; 1] = [
+    spec("Level", 6.0, 2.0, 255.0, "", 0.1),
+];
+const ROUGHEN_EDGES: [ParamSpec; 9] = [
+    choice("Edge type", &["Roughen", "Roughen colour", "Cut", "Spiky", "Rusty", "Rusty colour"]),
+    color("Edge colour", 0x7a3a10),
+    spec("Border", 8.0, 0.0, 500.0, " px", 0.1),
+    spec("Edge sharpness", 1.0, 0.0, 10.0, "", 0.02),
+    spec("Fractal influence", 100.0, 0.0, 100.0, " %", 0.3),
+    spec("Scale", 100.0, 10.0, 1000.0, " %", 0.3),
+    spec("Complexity", 2.0, 1.0, 8.0, "", 0.05),
+    spec("Evolution", 0.0, -100000.0, 100000.0, " °", 1.0),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
+];
+const SCATTER: [ParamSpec; 3] = [
+    spec("Scatter amount", 6.0, 0.0, 200.0, " px", 0.1),
+    choice("Grain", &["Both", "Horizontal", "Vertical"]),
+    ParamSpec { name: "Randomise every frame", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const TEXTURIZE: [ParamSpec; 5] = [
+    choice("Texture", &["Canvas", "Brick", "Burlap", "Sandstone", "Noise"]),
+    spec("Scaling", 100.0, 10.0, 1000.0, " %", 0.3),
+    spec("Relief", 4.0, 0.0, 50.0, "", 0.05),
+    spec("Light direction", 135.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Texture contrast", 100.0, 0.0, 400.0, " %", 0.5),
+];
+const THRESHOLD: [ParamSpec; 2] = [
+    spec("Level", 128.0, 0.0, 255.0, "", 0.5),
+    spec("Softness", 0.0, 0.0, 128.0, "", 0.3),
+];
+const BLOCK_LOAD: [ParamSpec; 4] = [
+    spec("Completion", 50.0, 0.0, 100.0, " %", 0.3),
+    ParamSpec { name: "Scan lines", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Start cleared", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    ParamSpec { name: "Smooth blocks", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const BURN_FILM: [ParamSpec; 4] = [
+    spec("Burn", 40.0, 0.0, 100.0, " %", 0.3),
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Random seed", 0.0, 0.0, 9999.0, "", 1.0),
+];
+const HEX_TILE: [ParamSpec; 6] = [
+    spec("Radius", 30.0, 2.0, 2000.0, " px", 0.2),
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Rotate", 0.0, -3600.0, 3600.0, " °", 0.5),
+    choice("Render", &["Mosaic", "Copies", "Mirrored copies"]),
+    spec("Gap", 0.0, 0.0, 50.0, " px", 0.1),
+];
+const KALEIDA: [ParamSpec; 6] = [
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Segments", 6.0, 2.0, 64.0, "", 0.05),
+    spec("Size", 100.0, 1.0, 1000.0, " %", 0.3),
+    spec("Rotation", 0.0, -3600.0, 3600.0, " °", 0.5),
+    choice("Mirroring", &["Mirrored", "Straight"]),
+];
+const MR_SMOOTHIE: [ParamSpec; 8] = [
+    spec("From X", 20.0, -200.0, 300.0, " %", 0.2),
+    spec("From Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("To X", 80.0, -200.0, 300.0, " %", 0.2),
+    spec("To Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Smoothness", 6.0, 0.0, 50.0, " px", 0.1),
+    spec("Phase", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Loops", 1.0, 0.1, 20.0, "", 0.02),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const PLASTIC: [ParamSpec; 6] = [
+    spec("Height", 20.0, -100.0, 100.0, " px", 0.1),
+    spec("Cut softness", 4.0, 0.0, 50.0, " px", 0.1),
+    spec("Light direction", 135.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Light intensity", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Roughness", 10.0, 1.0, 100.0, " %", 0.3),
+    spec("Metal", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const GLASS_CC: [ParamSpec; 5] = [
+    spec("Height", 30.0, -100.0, 100.0, " px", 0.1),
+    spec("Softness", 8.0, 0.0, 50.0, " px", 0.1),
+    spec("Displacement", 30.0, -400.0, 400.0, " px", 0.2),
+    spec("Light direction", 135.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Light intensity", 60.0, 0.0, 400.0, " %", 0.5),
+];
+const REPE_TILE: [ParamSpec; 5] = [
+    spec("Expand left", 100.0, 0.0, 4000.0, " px", 0.5),
+    spec("Expand right", 100.0, 0.0, 4000.0, " px", 0.5),
+    spec("Expand up", 100.0, 0.0, 4000.0, " px", 0.5),
+    spec("Expand down", 100.0, 0.0, 4000.0, " px", 0.5),
+    choice("Tiling", &["Repeat", "Unfold (mirrored)", "Brick across", "Brick down"]),
+];
 const DEFLICKER: [ParamSpec; 6] = [
     spec("Brightness", 100.0, 0.0, 400.0, " %", 0.2),
     spec("Red", 100.0, 0.0, 400.0, " %", 0.2),
@@ -5347,7 +5788,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 195] = [
+    pub const ALL: [EffectKind; 221] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -5543,6 +5984,32 @@ impl EffectKind {
         EffectKind::Median,
         EffectKind::DustScratches,
         EffectKind::RemoveGrain,
+        EffectKind::ColorKey,
+        EffectKind::ColorRange,
+        EffectKind::ColorDifferenceKey,
+        EffectKind::LinearColorKey,
+        EffectKind::Extract,
+        EffectKind::SpillSuppressor,
+        EffectKind::SimpleChoker,
+        EffectKind::BrushStrokes,
+        EffectKind::Cartoon,
+        EffectKind::Emboss,
+        EffectKind::ColorEmboss,
+        EffectKind::FindEdges,
+        EffectKind::Mosaic,
+        EffectKind::Posterize,
+        EffectKind::RoughenEdges,
+        EffectKind::Scatter,
+        EffectKind::Texturize,
+        EffectKind::Threshold,
+        EffectKind::BlockLoad,
+        EffectKind::BurnFilm,
+        EffectKind::HexTile,
+        EffectKind::Kaleida,
+        EffectKind::MrSmoothie,
+        EffectKind::Plastic,
+        EffectKind::GlassCc,
+        EffectKind::RepeTile,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -5558,6 +6025,8 @@ impl EffectKind {
             EffectKind::Hud => (hud::X, hud::Y, "centre"),
             EffectKind::BurnAway => (burn::X, burn::Y, "burn point"),
             EffectKind::Extrude => (extrude::X, extrude::Y, "vanishing point"),
+            EffectKind::BurnFilm => (burn_film::X, burn_film::Y, "first burn"),
+            EffectKind::Kaleida => (kaleida::X, kaleida::Y, "kaleidoscope's middle"),
             EffectKind::Beam => (beam::BX, beam::BY, "beam's end"),
             EffectKind::Circle => (circle::X, circle::Y, "circle's middle"),
             EffectKind::Ellipse => (ellipse::X, ellipse::Y, "ellipse's middle"),
@@ -5649,6 +6118,32 @@ impl EffectKind {
             EffectKind::Bevel => "Bevel",
             EffectKind::Extrude => "Extrude",
             EffectKind::Rotate3d => "Rotate",
+            EffectKind::ColorKey => "Colour key",
+            EffectKind::ColorRange => "Colour range",
+            EffectKind::ColorDifferenceKey => "Colour difference key",
+            EffectKind::LinearColorKey => "Linear colour key",
+            EffectKind::Extract => "Extract",
+            EffectKind::SpillSuppressor => "Spill suppressor",
+            EffectKind::SimpleChoker => "Simple choker",
+            EffectKind::BrushStrokes => "Brush strokes",
+            EffectKind::Cartoon => "Cartoon",
+            EffectKind::Emboss => "Emboss",
+            EffectKind::ColorEmboss => "Colour emboss",
+            EffectKind::FindEdges => "Find edges",
+            EffectKind::Mosaic => "Mosaic",
+            EffectKind::Posterize => "Posterize",
+            EffectKind::RoughenEdges => "Roughen edges",
+            EffectKind::Scatter => "Scatter",
+            EffectKind::Texturize => "Texturize",
+            EffectKind::Threshold => "Threshold",
+            EffectKind::BlockLoad => "Block load",
+            EffectKind::BurnFilm => "Burn film",
+            EffectKind::HexTile => "Hex tile",
+            EffectKind::Kaleida => "Kaleida",
+            EffectKind::MrSmoothie => "Mr. Smoothie",
+            EffectKind::Plastic => "Plastic",
+            EffectKind::GlassCc => "Glass",
+            EffectKind::RepeTile => "RepeTile",
             EffectKind::FourColorGradient => "4-colour gradient",
             EffectKind::Beam => "Beam",
             EffectKind::CellPattern => "Cell pattern",
@@ -5811,6 +6306,32 @@ impl EffectKind {
             EffectKind::BurnAway => EffectCategory::Stylize,
             EffectKind::Extrusion3d => EffectCategory::Generate,
             EffectKind::Bend | EffectKind::Bevel | EffectKind::Extrude | EffectKind::Rotate3d => EffectCategory::Geometry,
+            EffectKind::ColorKey => EffectCategory::Keying,
+            EffectKind::ColorRange => EffectCategory::Keying,
+            EffectKind::ColorDifferenceKey => EffectCategory::Keying,
+            EffectKind::LinearColorKey => EffectCategory::Keying,
+            EffectKind::Extract => EffectCategory::Keying,
+            EffectKind::SpillSuppressor => EffectCategory::Keying,
+            EffectKind::SimpleChoker => EffectCategory::Keying,
+            EffectKind::BrushStrokes => EffectCategory::Stylize,
+            EffectKind::Cartoon => EffectCategory::Stylize,
+            EffectKind::Emboss => EffectCategory::Stylize,
+            EffectKind::ColorEmboss => EffectCategory::Stylize,
+            EffectKind::FindEdges => EffectCategory::Stylize,
+            EffectKind::Mosaic => EffectCategory::Stylize,
+            EffectKind::Posterize => EffectCategory::Stylize,
+            EffectKind::RoughenEdges => EffectCategory::Stylize,
+            EffectKind::Scatter => EffectCategory::Stylize,
+            EffectKind::Texturize => EffectCategory::Stylize,
+            EffectKind::Threshold => EffectCategory::Stylize,
+            EffectKind::BlockLoad => EffectCategory::Stylize,
+            EffectKind::BurnFilm => EffectCategory::Stylize,
+            EffectKind::HexTile => EffectCategory::Stylize,
+            EffectKind::Kaleida => EffectCategory::Stylize,
+            EffectKind::MrSmoothie => EffectCategory::Stylize,
+            EffectKind::Plastic => EffectCategory::Stylize,
+            EffectKind::GlassCc => EffectCategory::Stylize,
+            EffectKind::RepeTile => EffectCategory::Stylize,
             EffectKind::FourColorGradient => EffectCategory::Generate,
             EffectKind::Beam => EffectCategory::Generate,
             EffectKind::CellPattern => EffectCategory::Generate,
@@ -5974,6 +6495,32 @@ impl EffectKind {
             EffectKind::Bevel => "Bevelled edges: the picture's outline (a logo or a cut-out) or the layer's whole frame lit as if raised, bright on the side towards the light and shaded on the other.",
             EffectKind::Extrude => "Flat-style extrusion: the layer's shape drawn out in a direction (a long-shadow look) or towards a vanishing point, with its sides in a darker shade of the picture or a colour of their own.",
             EffectKind::Rotate3d => "Turns the layer like a card in 3D, round X, Y and Z about a point you choose, with perspective; its back can show the picture, darkened, or nothing. Key the turns to flip or spin it.",
+            EffectKind::ColorKey => "Keys out one colour (and those within a tolerance of it) — the simplest key, for flat, evenly lit backgrounds — with the edge thinned or spread and feathered.",
+            EffectKind::ColorRange => "Keys out a range of colours set by a minimum and maximum in Lab, YUV or RGB — a screen with uneven lighting or a range of shades — with fuzziness at its edges.",
+            EffectKind::ColorDifferenceKey => "A blue- or green-screen key from how much the screen colour stands above the other two channels — fine with hair, smoke and glass — with black and white points and gamma for the matte, or the matte shown.",
+            EffectKind::LinearColorKey => "Keys out (or keeps) a colour with a linear falloff — a tolerance where it's fully gone and a softness beyond — matched by RGB, hue or chroma; or shows the matte.",
+            EffectKind::Extract => "Keys out by brightness (or one channel): what's darker than a black point or brighter than a white point goes, with soft falloffs at each — for a black or white background, smoke, fire and flares.",
+            EffectKind::SpillSuppressor => "Takes the green or blue screen's colour spill off a keyed subject (the coloured fringe and cast on edges and skin), by an amount, leaving everything else alone.",
+            EffectKind::SimpleChoker => "Shrinks a matte's edge inwards (positive) or spreads it outwards (negative) by so many pixels — to trim a keyed fringe or fill tiny holes — or shows the matte.",
+            EffectKind::BrushStrokes => "Repaints the layer in brush strokes — their angle, size, length, density and randomness — like an impressionist painting, blended with the original if you like.",
+            EffectKind::Cartoon => "Makes the layer look drawn: its colours smoothed and shaded in flat steps, with ink lines on its edges — fills, edges or both — their detail, steps, thickness and softness yours to set.",
+            EffectKind::Emboss => "Makes the layer look stamped into grey metal: its edges raised and lit from a direction, at a relief and contrast.",
+            EffectKind::ColorEmboss => "Embosses the layer's edges, raised and lit from a direction, keeping its colours.",
+            EffectKind::FindEdges => "Draws the picture's edges as dark lines on white (as a pencil sketch), or bright on black inverted, blended with the original if you like.",
+            EffectKind::Mosaic => "Pixelates the layer into blocks of flat colour, so many across and down — each the average of its block, or its centre's colour for sharp colours: censoring and retro looks.",
+            EffectKind::Posterize => "Reduces each channel to a few levels of brightness, for flat bands of colour: poster and screen-print looks.",
+            EffectKind::RoughenEdges => "Roughens the edges of the layer's shape (text, logos, cut-outs) as if torn, eroded or rusty: a border width, sharpness, fractal influence, scale and complexity, evolving over time.",
+            EffectKind::Scatter => "Scatters the layer's pixels about randomly within an amount — across, down or both — for a frosted-glass or sandy look, changing every frame if you like.",
+            EffectKind::Texturize => "Presses a texture into the layer, lit from a direction — canvas, brick, burlap, sandstone or noise — at a scale and relief: paintings on canvas, posters on brick.",
+            EffectKind::Threshold => "Turns the picture pure black and white at a brightness level: high-contrast graphic looks and mattes.",
+            EffectKind::BlockLoad => "The picture loads in like an old web image: big blocks first, getting finer until it's sharp, as the completion goes from 0 to 100 % — with scan lines and starting from nothing if you like.",
+            EffectKind::BurnFilm => "The film melts and burns through in the projector's heat: holes spreading from random spots with scorched brown edges and a white-hot rim, as Burn goes up.",
+            EffectKind::HexTile => "Breaks the layer into hexagonal tiles: each a flat colour (a hex mosaic), or each a little copy of the picture, at a size and turned.",
+            EffectKind::Kaleida => "A kaleidoscope: one wedge of the layer mirrored round a centre into a symmetrical pattern, at a size and turned — flower, star and tile patterns.",
+            EffectKind::MrSmoothie => "Repaints the layer in the colours found along a line across it, picked by its own brightness and smoothed into flowing bands: psychedelic, liquid colour from the picture's own palette.",
+            EffectKind::Plastic => "Turns the layer into shiny moulded plastic (or metal): raised by its own brightness, softened, and lit from a direction with a glossy highlight.",
+            EffectKind::GlassCc => "Makes the layer look seen through moulded glass: a surface raised by its own brightness bends the picture behind it and catches the light.",
+            EffectKind::RepeTile => "Repeats the layer outwards beyond its edges — so far left, right, up and down — as tiles, mirrored tiles or offset bricks: fills a frame with a small graphic, or extends a pattern.",
             EffectKind::FourColorGradient => "A smooth gradient between four colours, each at a point you place, blended softly and optionally jittered (to hide banding), drawn over the layer with a blend mode.",
             EffectKind::Beam => "A laser or light-sabre beam from one point to another: a bright core inside a coloured glow, thicker at one end if you like, travelling along its path over time (length and time), drawn over the layer or on its own.",
             EffectKind::CellPattern => "Cells of a random pattern (Worley noise) in eight styles — bubbles, crystals, plates, static plates, crystallised, pillows, mixed crystals and tubes — at a size, contrast and dispersal, evolving over time; used as textures, mattes and maps.",
@@ -6210,6 +6757,32 @@ impl EffectKind {
             EffectKind::Bevel => &BEVEL,
             EffectKind::Extrude => &EXTRUDE,
             EffectKind::Rotate3d => &ROTATE3D,
+            EffectKind::ColorKey => &COLOR_KEY,
+            EffectKind::ColorRange => &COLOR_RANGE,
+            EffectKind::ColorDifferenceKey => &COLOR_DIFFERENCE_KEY,
+            EffectKind::LinearColorKey => &LINEAR_COLOR_KEY,
+            EffectKind::Extract => &EXTRACT,
+            EffectKind::SpillSuppressor => &SPILL_SUPPRESSOR,
+            EffectKind::SimpleChoker => &SIMPLE_CHOKER,
+            EffectKind::BrushStrokes => &BRUSH_STROKES,
+            EffectKind::Cartoon => &CARTOON,
+            EffectKind::Emboss => &EMBOSS,
+            EffectKind::ColorEmboss => &COLOR_EMBOSS,
+            EffectKind::FindEdges => &FIND_EDGES,
+            EffectKind::Mosaic => &MOSAIC,
+            EffectKind::Posterize => &POSTERIZE,
+            EffectKind::RoughenEdges => &ROUGHEN_EDGES,
+            EffectKind::Scatter => &SCATTER,
+            EffectKind::Texturize => &TEXTURIZE,
+            EffectKind::Threshold => &THRESHOLD,
+            EffectKind::BlockLoad => &BLOCK_LOAD,
+            EffectKind::BurnFilm => &BURN_FILM,
+            EffectKind::HexTile => &HEX_TILE,
+            EffectKind::Kaleida => &KALEIDA,
+            EffectKind::MrSmoothie => &MR_SMOOTHIE,
+            EffectKind::Plastic => &PLASTIC,
+            EffectKind::GlassCc => &GLASS_CC,
+            EffectKind::RepeTile => &REPE_TILE,
             EffectKind::FourColorGradient => &FOUR_COLOR,
             EffectKind::Beam => &BEAM,
             EffectKind::CellPattern => &CELL_PATTERN,
@@ -6390,6 +6963,7 @@ impl EffectKind {
             EffectKind::BurnAway => &[(0, "Burn"), (4, "Edge"), (9, "Embers")],
             EffectKind::Extrusion3d => &[(0, "Shape"), (3, "Turn"), (8, "Surface"), (10, "Light")],
             EffectKind::Rotate3d => &[(0, "Turn"), (3, "View"), (5, "Pivot")],
+            EffectKind::ColorRange => &[(0, "Range"), (2, "Minimum and maximum")],
             EffectKind::FourColorGradient => &[(0, "Point 1"), (3, "Point 2"), (6, "Point 3"), (9, "Point 4"), (12, "Mix")],
             EffectKind::Beam => &[(0, "Path"), (4, "Travel"), (6, "Look")],
             EffectKind::CornerPin => &[(0, "Top"), (4, "Bottom")],
@@ -6529,6 +7103,32 @@ impl EffectValues {
             EffectKind::Bevel => v[bevel::WIDTH] <= 0.0 || v[bevel::INTENSITY] == 0.0,
             EffectKind::Extrude => v[extrude::LENGTH] <= 0.0,
             EffectKind::Rotate3d => v[rotate3d::TURN_X] == 0.0 && v[rotate3d::TURN_Y] == 0.0 && v[rotate3d::TURN_Z] == 0.0 && v[rotate3d::SIZE] == 100.0 && v[rotate3d::PUSH] == 0.0,
+            EffectKind::ColorKey => v[color_key::TOLERANCE] <= 0.0,
+            EffectKind::ColorRange => false,
+            EffectKind::ColorDifferenceKey => false,
+            EffectKind::LinearColorKey => false,
+            EffectKind::Extract => v[extract::BLACK] <= 0.0 && v[extract::WHITE] >= 255.0 && v[extract::INVERT] < 0.5,
+            EffectKind::SpillSuppressor => v[spill_suppressor::AMOUNT] <= 0.0,
+            EffectKind::SimpleChoker => v[simple_choker::CHOKE] == 0.0 && v[simple_choker::VIEW] < 0.5,
+            EffectKind::BrushStrokes => v[brush_strokes::BLEND] >= 100.0,
+            EffectKind::Cartoon => false,
+            EffectKind::Emboss => v[emboss::BLEND] >= 100.0,
+            EffectKind::ColorEmboss => v[color_emboss::BLEND] >= 100.0,
+            EffectKind::FindEdges => v[find_edges::BLEND] >= 100.0,
+            EffectKind::Mosaic => false,
+            EffectKind::Posterize => v[posterize::LEVELS] >= 255.0,
+            EffectKind::RoughenEdges => v[roughen_edges::BORDER] <= 0.0,
+            EffectKind::Scatter => v[scatter::AMOUNT] <= 0.0,
+            EffectKind::Texturize => v[texturize::RELIEF] <= 0.0 && v[texturize::CONTRAST] <= 0.0,
+            EffectKind::Threshold => false,
+            EffectKind::BlockLoad => v[block_load::COMPLETION] >= 100.0,
+            EffectKind::BurnFilm => v[burn_film::BURN] <= 0.0,
+            EffectKind::HexTile => false,
+            EffectKind::Kaleida => false,
+            EffectKind::MrSmoothie => v[mr_smoothie::BLEND] >= 100.0,
+            EffectKind::Plastic => v[plastic::HEIGHT] == 0.0 && v[plastic::INTENSITY] <= 0.0,
+            EffectKind::GlassCc => v[glass_cc::DISPLACEMENT] == 0.0 && v[glass_cc::INTENSITY] <= 0.0,
+            EffectKind::RepeTile => v[repe_tile::LEFT] <= 0.0 && v[repe_tile::RIGHT] <= 0.0 && v[repe_tile::UP] <= 0.0 && v[repe_tile::DOWN] <= 0.0,
             EffectKind::FourColorGradient => v[four_color::OPACITY] <= 0.0,
             EffectKind::Beam => v[beam::LENGTH] <= 0.0 && v[beam::ONLY] < 0.5,
             EffectKind::CellPattern => v[cell_pattern::OPACITY] <= 0.0,
@@ -6712,6 +7312,7 @@ impl EffectValues {
             || (self.kind == EffectKind::Portal && (v[portal::OPEN] > 0.0))
             || (self.kind == EffectKind::Hud && (true))
             || (self.kind == EffectKind::LightSweep && (v[sweep::POSITION] < 0.0))
+            || (self.kind == EffectKind::Scatter && (v[scatter::RANDOM] >= 0.5))
             || (self.kind == EffectKind::CellPattern && (v[cell_pattern::SPEED] != 0.0))
             || (self.kind == EffectKind::RadioWaves && (true))
             || (self.kind == EffectKind::CurlNoise && (v[curl_noise::SPEED] != 0.0))
@@ -7053,7 +7654,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace | EffectKind::Deflicker | EffectKind::ChannelMixer | EffectKind::ShiftChannels | EffectKind::SetChannels | EffectKind::ColorBalance | EffectKind::ChangeColor | EffectKind::ColorOffset | EffectKind::Kernel | EffectKind::Exposure | EffectKind::SelectiveColor | EffectKind::CornerPin | EffectKind::PowerPin | EffectKind::MeshWarp | EffectKind::Offset | EffectKind::OpticsCompensation | EffectKind::Griddler | EffectKind::MotionTile => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace | EffectKind::Deflicker | EffectKind::ChannelMixer | EffectKind::ShiftChannels | EffectKind::SetChannels | EffectKind::ColorBalance | EffectKind::ChangeColor | EffectKind::ColorOffset | EffectKind::Kernel | EffectKind::Exposure | EffectKind::SelectiveColor | EffectKind::CornerPin | EffectKind::PowerPin | EffectKind::MeshWarp | EffectKind::Offset | EffectKind::OpticsCompensation | EffectKind::Griddler | EffectKind::MotionTile | EffectKind::Extract => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
                 // Its trail is worked out with the clip (see sparkle's tests).

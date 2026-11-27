@@ -724,7 +724,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent", "fs_gradient_map", "fs_aurora", "fs_nebula", "fs_clouds", "fs_burn", "fs_deflicker", "fs_rotate3d", "fs_bend", "fs_bevel", "fs_extrude", "fs_extrusion3d", "fs_four_color", "fs_beam", "fs_cell_pattern", "fs_checkerboard", "fs_circle", "fs_ellipse", "fs_fill_colour", "fs_grid", "fs_radio_waves", "fs_threads", "fs_light_burst", "fs_curl_noise", "fs_noise", "fs_noise_hls", "fs_median", "fs_dust_scratches", "fs_remove_grain", "fs_corner_pin", "fs_power_pin", "fs_displacement_map", "fs_magnify", "fs_mesh_warp", "fs_offset", "fs_optics", "fs_spherize", "fs_smear", "fs_warp", "fs_bender", "fs_blobbylize", "fs_flo_motion", "fs_lens_cc", "fs_page_turn", "fs_slant", "fs_split", "fs_tiler", "fs_griddler", "fs_ripple_pulse", "fs_motion_tile", "fs_glasses3d", "fs_radial_shadow", "fs_cylinder", "fs_sphere", "fs_smart_blur", "fs_lens_blur", "fs_vector_blur", "fs_arithmetic", "fs_blend_colour", "fs_calculations", "fs_channel_mixer", "fs_invert", "fs_shift_channels", "fs_set_channels", "fs_set_matte", "fs_solid_composite", "fs_change_color", "fs_change_to_color", "fs_color_balance", "fs_exposure", "fs_leave_color", "fs_photo_filter", "fs_selective_color", "fs_tint", "fs_black_white", "fs_color_neutralizer", "fs_color_offset", "fs_toner", "fs_threshold_rgb", "fs_kernel", "fs_video_limiter", "fs_box_blur", "fs_channel_blur", "fs_minimax", "fs_stats"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent", "fs_gradient_map", "fs_aurora", "fs_nebula", "fs_clouds", "fs_burn", "fs_deflicker", "fs_rotate3d", "fs_bend", "fs_bevel", "fs_extrude", "fs_extrusion3d", "fs_color_key", "fs_color_range", "fs_color_difference_key", "fs_linear_color_key", "fs_extract", "fs_spill_suppressor", "fs_brush_strokes", "fs_cartoon", "fs_emboss", "fs_color_emboss", "fs_find_edges", "fs_mosaic_blocks", "fs_posterize", "fs_roughen_edges", "fs_scatter", "fs_texturize", "fs_threshold", "fs_block_load", "fs_burn_film", "fs_hex_tile", "fs_kaleida", "fs_mr_smoothie", "fs_plastic", "fs_glass_cc", "fs_repe_tile", "fs_matte_view", "fs_four_color", "fs_beam", "fs_cell_pattern", "fs_checkerboard", "fs_circle", "fs_ellipse", "fs_fill_colour", "fs_grid", "fs_radio_waves", "fs_threads", "fs_light_burst", "fs_curl_noise", "fs_noise", "fs_noise_hls", "fs_median", "fs_dust_scratches", "fs_remove_grain", "fs_corner_pin", "fs_power_pin", "fs_displacement_map", "fs_magnify", "fs_mesh_warp", "fs_offset", "fs_optics", "fs_spherize", "fs_smear", "fs_warp", "fs_bender", "fs_blobbylize", "fs_flo_motion", "fs_lens_cc", "fs_page_turn", "fs_slant", "fs_split", "fs_tiler", "fs_griddler", "fs_ripple_pulse", "fs_motion_tile", "fs_glasses3d", "fs_radial_shadow", "fs_cylinder", "fs_sphere", "fs_smart_blur", "fs_lens_blur", "fs_vector_blur", "fs_arithmetic", "fs_blend_colour", "fs_calculations", "fs_channel_mixer", "fs_invert", "fs_shift_channels", "fs_set_channels", "fs_set_matte", "fs_solid_composite", "fs_change_color", "fs_change_to_color", "fs_color_balance", "fs_exposure", "fs_leave_color", "fs_photo_filter", "fs_selective_color", "fs_tint", "fs_black_white", "fs_color_neutralizer", "fs_color_offset", "fs_toner", "fs_threshold_rgb", "fs_kernel", "fs_video_limiter", "fs_box_blur", "fs_channel_blur", "fs_minimax", "fs_stats"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1891,6 +1891,28 @@ impl Compositor {
                         }
                         cur = s;
                     }
+                    EffectKind::SimpleChoker => {
+                        use reelforge_core::effects::simple_choker as sc;
+                        let choke = e.values[sc::CHOKE];
+                        let mut s = cur;
+                        if choke != 0.0 {
+                            for (dir, k) in [([1.0, 0.0], kx), ([0.0, 1.0], ky)] {
+                                let mut v = e.values;
+                                v[0] = if choke > 0.0 { 0.0 } else { 1.0 };
+                                v[1] = choke.abs() * k;
+                                v[2] = 2.0;
+                                let d = if s == o1 { o2 } else { o1 };
+                                push("fs_minimax", s, Second::None, d, uniform(&v, dir));
+                                s = d;
+                            }
+                        }
+                        if e.values[sc::VIEW] >= 0.5 {
+                            let d = if s == o1 { o2 } else { o1 };
+                            push("fs_matte_view", s, Second::None, d, uniform(&e.values, [0.0, 0.0]));
+                            s = d;
+                        }
+                        cur = s;
+                    }
                     EffectKind::ColorCorrect => {
                         push("fs_color", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
                         cur = o1;
@@ -2412,6 +2434,31 @@ impl Compositor {
                     | EffectKind::Bevel
                     | EffectKind::Extrude
                     | EffectKind::Extrusion3d
+                    | EffectKind::ColorKey
+                    | EffectKind::ColorRange
+                    | EffectKind::ColorDifferenceKey
+                    | EffectKind::LinearColorKey
+                    | EffectKind::Extract
+                    | EffectKind::SpillSuppressor
+                    | EffectKind::BrushStrokes
+                    | EffectKind::Cartoon
+                    | EffectKind::Emboss
+                    | EffectKind::ColorEmboss
+                    | EffectKind::FindEdges
+                    | EffectKind::Mosaic
+                    | EffectKind::Posterize
+                    | EffectKind::RoughenEdges
+                    | EffectKind::Scatter
+                    | EffectKind::Texturize
+                    | EffectKind::Threshold
+                    | EffectKind::BlockLoad
+                    | EffectKind::BurnFilm
+                    | EffectKind::HexTile
+                    | EffectKind::Kaleida
+                    | EffectKind::MrSmoothie
+                    | EffectKind::Plastic
+                    | EffectKind::GlassCc
+                    | EffectKind::RepeTile
                     | EffectKind::FourColorGradient
                     | EffectKind::Beam
                     | EffectKind::CellPattern
@@ -2584,6 +2631,31 @@ impl Compositor {
                             EffectKind::Bevel => "fs_bevel",
                             EffectKind::Extrude => "fs_extrude",
                             EffectKind::Extrusion3d => "fs_extrusion3d",
+                            EffectKind::ColorKey => "fs_color_key",
+                            EffectKind::ColorRange => "fs_color_range",
+                            EffectKind::ColorDifferenceKey => "fs_color_difference_key",
+                            EffectKind::LinearColorKey => "fs_linear_color_key",
+                            EffectKind::Extract => "fs_extract",
+                            EffectKind::SpillSuppressor => "fs_spill_suppressor",
+                            EffectKind::BrushStrokes => "fs_brush_strokes",
+                            EffectKind::Cartoon => "fs_cartoon",
+                            EffectKind::Emboss => "fs_emboss",
+                            EffectKind::ColorEmboss => "fs_color_emboss",
+                            EffectKind::FindEdges => "fs_find_edges",
+                            EffectKind::Mosaic => "fs_mosaic_blocks",
+                            EffectKind::Posterize => "fs_posterize",
+                            EffectKind::RoughenEdges => "fs_roughen_edges",
+                            EffectKind::Scatter => "fs_scatter",
+                            EffectKind::Texturize => "fs_texturize",
+                            EffectKind::Threshold => "fs_threshold",
+                            EffectKind::BlockLoad => "fs_block_load",
+                            EffectKind::BurnFilm => "fs_burn_film",
+                            EffectKind::HexTile => "fs_hex_tile",
+                            EffectKind::Kaleida => "fs_kaleida",
+                            EffectKind::MrSmoothie => "fs_mr_smoothie",
+                            EffectKind::Plastic => "fs_plastic",
+                            EffectKind::GlassCc => "fs_glass_cc",
+                            EffectKind::RepeTile => "fs_repe_tile",
                             EffectKind::FourColorGradient => "fs_four_color",
                             EffectKind::Beam => "fs_beam",
                             EffectKind::CellPattern => "fs_cell_pattern",
@@ -3741,6 +3813,12 @@ fn effect_margin(effects: &[EffectValues], px: [u32; 2], layer: [f32; 2]) -> [u3
                 let d = (e.values[reelforge_core::effects::radial_shadow::DISTANCE] / 100.0).clamp(0.0, 4.0);
                 x += layer[0] * 0.5 * d * kx + e.values[reelforge_core::effects::radial_shadow::SOFTNESS].max(0.0) * kx;
                 y += layer[1] * 0.5 * d * ky + e.values[reelforge_core::effects::radial_shadow::SOFTNESS].max(0.0) * ky;
+            }
+            EffectKind::RepeTile => {
+                use reelforge_core::effects::repe_tile as rt;
+                let v = |i: usize| e.values[i].max(0.0);
+                x += v(rt::LEFT).max(v(rt::RIGHT)) * kx;
+                y += v(rt::UP).max(v(rt::DOWN)) * ky;
             }
             // Turned, bent or made solid, it can reach past its edges.
             EffectKind::Rotate3d => {

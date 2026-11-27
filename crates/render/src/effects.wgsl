@@ -7722,3 +7722,642 @@ fn fs_remove_grain(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4(to_linear(res) * c0.a, c0.a);
 }
+
+// ---- Batch: keying and stylize ----
+
+// The layer's alpha (and colour) with a matte `m` (0–1) multiplied in.
+fn ky_out(c: vec4<f32>, m: f32) -> vec4<f32> {
+    return c * clamp(m, 0.0, 1.0);
+}
+
+// The matte thinned (positive px) or spread (negative) and feathered, from 8 samples round.
+fn ky_edge(uv: vec2<f32>, m0: f32, thin: f32, feather: f32, key: vec3<f32>, tol: f32) -> f32 {
+    var m = m0;
+    let r = abs(thin) + feather * 0.5;
+    if (r < 0.5) {
+        return m0;
+    }
+    var lo = m0;
+    var hi = m0;
+    var sum = m0;
+    for (var i = 0; i < 8; i = i + 1) {
+        let a = f32(i) * 0.785398;
+        let s = cx_at(uv + vec2(cos(a), sin(a)) * r * cx_px());
+        let mm = smoothstep(tol * 0.8, tol, length(cx_disp(s) - key) / 1.732) * select(1.0, 0.0, s.a < 0.01);
+        lo = min(lo, mm);
+        hi = max(hi, mm);
+        sum = sum + mm;
+    }
+    if (thin > 0.0) {
+        m = mix(m0, lo, clamp(thin / max(r, 1e-3), 0.0, 1.0));
+    } else if (thin < 0.0) {
+        m = mix(m0, hi, clamp(-thin / max(r, 1e-3), 0.0, 1.0));
+    }
+    if (feather > 0.0) {
+        m = mix(m, sum / 9.0, 0.6);
+    }
+    return m;
+}
+
+fn st_lum(uv: vec2<f32>) -> f32 {
+    let c = cx_at(uv);
+    return dot(cx_disp(c), LUMA) * c.a;
+}
+
+// Colour key: p0 = (colour, tolerance 0–255, edge thin px, feather px).
+@fragment
+fn fs_color_key(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let key = to_display(rgb_of(fx.p0.x));
+    let tol = max(fx.p0.y / 255.0, 1e-3);
+    let m0 = smoothstep(tol * 0.8, tol, length(cx_disp(c) - key) / 1.732);
+    return ky_out(c, ky_edge(in.uv, m0, fx.p0.z, fx.p0.w, key, tol));
+}
+
+// A display colour as 0–255 Lab (a, b offset by 128), YUV (U, V offset by 128) or RGB.
+fn kr_space(d: vec3<f32>, space: u32) -> vec3<f32> {
+    if (space == 2u) {
+        return d * 255.0;
+    }
+    if (space == 1u) {
+        let y = dot(d, vec3(0.299, 0.587, 0.114));
+        return vec3(y, (d.b - y) * 0.565 + 0.5, (d.r - y) * 0.713 + 0.5) * 255.0;
+    }
+    let l = to_linear(d);
+    let xyz = vec3(dot(l, vec3(0.4124, 0.3576, 0.1805)) / 0.9505, dot(l, vec3(0.2126, 0.7152, 0.0722)), dot(l, vec3(0.0193, 0.1192, 0.9505)) / 1.089);
+    let f = select(xyz * 7.787 + 16.0 / 116.0, pow(max(xyz, vec3(0.0)), vec3(1.0 / 3.0)), xyz > vec3(0.008856));
+    return vec3((116.0 * f.y - 16.0) * 2.55, 500.0 * (f.x - f.y) + 128.0, 200.0 * (f.y - f.z) + 128.0);
+}
+
+// Colour range: p0 = (space, fuzziness, min1, max1), p1 = (min2, max2, min3, max3).
+@fragment
+fn fs_color_range(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let v = kr_space(cx_disp(c), u32(round(fx.p0.x)));
+    let lo = vec3(fx.p0.z, fx.p1.x, fx.p1.z);
+    let hi = vec3(fx.p0.w, fx.p1.y, fx.p1.w);
+    let fz = max(fx.p0.y, 1e-3);
+    let out_by = max(max(lo - v, v - hi), vec3(0.0));
+    let k = smoothstep(0.0, fz, max(out_by.x, max(out_by.y, out_by.z)));
+    return ky_out(c, k);
+}
+
+// Colour difference key: p0 = (screen: 0 green 1 blue 2 red, black, white, gamma), p1 = (spill, view).
+@fragment
+fn fs_color_difference_key(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    var d = cx_disp(c);
+    let s = u32(round(fx.p0.x));
+    var key = d.g;
+    var rest = max(d.r, d.b);
+    if (s == 1u) { key = d.b; rest = max(d.r, d.g); } else if (s == 2u) { key = d.r; rest = max(d.g, d.b); }
+    let diff = max(key - rest, 0.0) * 255.0;
+    var m = 1.0 - clamp((diff - fx.p0.y) / max(fx.p0.z - fx.p0.y, 1.0), 0.0, 1.0);
+    m = pow(m, 1.0 / max(fx.p0.w, 0.1));
+    if (fx.p1.y >= 0.5) {
+        return vec4(vec3(m * c.a), 1.0) * inside(in.uv);
+    }
+    if (fx.p1.x >= 0.5) {
+        if (s == 1u) { d.b = min(d.b, rest); } else if (s == 2u) { d.r = min(d.r, rest); } else { d.g = min(d.g, rest); }
+    }
+    let a = c.a * m;
+    return vec4(to_linear(d) * a, a);
+}
+
+// Linear colour key: p0 = (colour, match, tolerance %, softness %), p1 = (keep, view).
+@fragment
+fn fs_linear_color_key(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let dist = cc_match(cx_disp(c), to_display(rgb_of(fx.p0.x)), u32(round(fx.p0.y)));
+    let tol = fx.p0.z / 100.0;
+    var m = clamp((dist - tol) / max(fx.p0.w / 100.0, 1e-3), 0.0, 1.0);
+    if (fx.p1.x >= 0.5) {
+        m = 1.0 - m;
+    }
+    if (fx.p1.y >= 0.5) {
+        return vec4(vec3(m * c.a), 1.0) * inside(in.uv);
+    }
+    return ky_out(c, m);
+}
+
+// Extract: p0 = (channel, black, white, black softness), p1 = (white softness, invert).
+@fragment
+fn fs_extract(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let d = cx_disp(c);
+    var v = dot(d, LUMA);
+    switch u32(round(fx.p0.x)) {
+        case 1u: { v = d.r; }
+        case 2u: { v = d.g; }
+        case 3u: { v = d.b; }
+        case 4u: { v = c.a; }
+        default: {}
+    }
+    v = v * 255.0;
+    let lo = smoothstep(fx.p0.y - fx.p0.w - 0.5, fx.p0.y + 0.5, v);
+    let hi = 1.0 - smoothstep(fx.p0.z - 0.5, fx.p0.z + fx.p1.x + 0.5, v);
+    var m = lo * hi;
+    if (fx.p1.y >= 0.5) {
+        m = 1.0 - m;
+    }
+    return ky_out(c, m);
+}
+
+// Spill suppressor: p0 = (colour, amount %, method).
+@fragment
+fn fs_spill_suppressor(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    var d = cx_disp(c);
+    let key = to_display(rgb_of(fx.p0.x));
+    // The key's strongest channel is the one that spills.
+    var ch = 1;
+    if (key.b >= key.g && key.b >= key.r) { ch = 2; } else if (key.r >= key.g) { ch = 0; }
+    var others = array<vec2<i32>, 3>(vec2(1, 2), vec2(0, 2), vec2(0, 1));
+    let o = others[ch];
+    let lim = select((d[o.x] + d[o.y]) * 0.5, max(d[o.x], d[o.y]), fx.p0.z >= 0.5);
+    let over = max(d[ch] - lim, 0.0) * clamp(fx.p0.y / 100.0, 0.0, 2.0);
+    d[ch] = d[ch] - over;
+    return vec4(to_linear(clamp(d, vec3(0.0), vec3(1.0))) * c.a, c.a);
+}
+
+// The layer's matte in black and white.
+@fragment
+fn fs_matte_view(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    return vec4(vec3(c.a), 1.0) * inside(in.uv);
+}
+
+
+// Brush strokes: p0 = (angle °, brush size px, length px, density), p1 = (randomness, blend %).
+@fragment
+fn fs_brush_strokes(in: VsOut) -> @location(0) vec4<f32> {
+    let px = cx_px();
+    let q = dx_q(in.uv);
+    let size = max(fx.p0.y, 0.5);
+    let len = max(fx.p0.z, 0.5);
+    let base = radians(fx.p0.x);
+    // A few overlapping layers of strokes; the top one that covers this pixel paints it.
+    var col = vec4(0.0);
+    var found = false;
+    let cell = max(size * 2.0 / max(fx.p0.w, 0.05), 1.0);
+    for (var layer = 0; layer < 3; layer = layer + 1) {
+        let g = (q + vec2(f32(layer) * cell * 0.37)) / cell;
+        let ci = floor(g);
+        for (var y = -1; y <= 1; y = y + 1) {
+            for (var x = -1; x <= 1; x = x + 1) {
+                let cid = ci + vec2(f32(x), f32(y));
+                let r = gn_rand2(cid, f32(layer) * 3.1);
+                let centre = (cid + r) * cell - vec2(f32(layer) * cell * 0.37);
+                let a = base + (r.x - 0.5) * fx.p1.x * 0.8;
+                let dir = vec2(cos(a), -sin(a));
+                let rel = q - centre;
+                let along = dot(rel, dir);
+                let across = dot(rel, vec2(-dir.y, dir.x));
+                let l = len * (0.6 + 0.8 * r.y * fx.p1.x * 0.5);
+                if (abs(along) < l * 0.5 && abs(across) < size) {
+                    col = cx_at(centre * px);
+                    found = true;
+                }
+            }
+        }
+    }
+    let c0 = cx_at(in.uv);
+    if (!found) {
+        col = c0;
+    }
+    return mix(col, c0, clamp(fx.p1.y / 100.0, 0.0, 1.0));
+}
+
+// Cartoon: p0 = (render, detail px, steps, smoothness %), p1 = (edge threshold, width px, softness %, opacity %).
+@fragment
+fn fs_cartoon(in: VsOut) -> @location(0) vec4<f32> {
+    let c0 = cx_at(in.uv);
+    let px = cx_px();
+    // Smoothed (an edge-keeping average) then shaded in steps.
+    let r = max(fx.p0.y, 0.5);
+    var sum = vec4(0.0);
+    var w = 0.0;
+    let d0 = cx_disp(c0);
+    for (var i = 0; i < 13; i = i + 1) {
+        let a = f32(i) * 2.39996;
+        let o = vec2(cos(a), sin(a)) * r * sqrt(f32(i) / 12.0);
+        let s = cx_at(in.uv + o * px);
+        let k = exp(-pow(length(cx_disp(s) - d0) * 6.0, 2.0));
+        sum = sum + s * k;
+        w = w + k;
+    }
+    let sm = sum / max(w, 1e-4);
+    var d = cx_disp(sm);
+    let steps = max(round(fx.p0.z), 1.0);
+    let y = dot(d, LUMA);
+    let soft = clamp(fx.p0.w / 100.0, 0.0, 1.0) * 0.5;
+    let f = fract(y * steps);
+    let stepped = (floor(y * steps) + smoothstep(0.5 - soft, 0.5 + soft, f)) / steps;
+    d = d * stepped / max(y, 1e-3);
+    // Edges: the brightness's slope.
+    let e = max(fx.p1.y, 0.5);
+    let gx = st_lum(in.uv + vec2(e, 0.0) * px) - st_lum(in.uv - vec2(e, 0.0) * px);
+    let gy = st_lum(in.uv + vec2(0.0, e) * px) - st_lum(in.uv - vec2(0.0, e) * px);
+    let g = length(vec2(gx, gy)) * 10.0;
+    let thr = fx.p1.x;
+    let edge = smoothstep(thr * (1.0 - fx.p1.z / 100.0), thr + 0.05, g) * fx.p1.w / 100.0;
+    let render = u32(round(fx.p0.x));
+    var fill = clamp(d, vec3(0.0), vec3(1.0));
+    if (render == 2u) {
+        fill = vec3(1.0);
+    }
+    if (render == 1u) {
+        return vec4(to_linear(fill) * c0.a, c0.a);
+    }
+    return vec4(to_linear(fill * (1.0 - edge)) * c0.a, c0.a);
+}
+
+// Emboss: p0 = (direction °, relief px, contrast %, blend %).
+@fragment
+fn fs_emboss(in: VsOut) -> @location(0) vec4<f32> {
+    let c0 = cx_at(in.uv);
+    let a = radians(fx.p0.x);
+    let o = vec2(cos(a), -sin(a)) * max(fx.p0.y, 0.1) * cx_px();
+    let s1 = cx_at(in.uv + o);
+    let s2 = cx_at(in.uv - o);
+    let diff = (cx_disp(s1) - cx_disp(s2)) * fx.p0.z / 100.0;
+    let e = vec3(0.5 + dot(diff, LUMA));
+    return vec4(to_linear(mix(clamp(e, vec3(0.0), vec3(1.0)), cx_disp(c0), clamp(fx.p0.w / 100.0, 0.0, 1.0))) * c0.a, c0.a);
+}
+
+// Colour emboss: p0 = (direction °, relief px, contrast %, blend %).
+@fragment
+fn fs_color_emboss(in: VsOut) -> @location(0) vec4<f32> {
+    let c0 = cx_at(in.uv);
+    let a = radians(fx.p0.x);
+    let o = vec2(cos(a), -sin(a)) * max(fx.p0.y, 0.1) * cx_px();
+    let s1 = cx_at(in.uv + o);
+    let s2 = cx_at(in.uv - o);
+    let diff = (cx_disp(s1) - cx_disp(s2)) * fx.p0.z / 100.0;
+    let e = cx_disp(c0) + dot(diff, LUMA);
+    return vec4(to_linear(mix(clamp(e, vec3(0.0), vec3(1.0)), cx_disp(c0), clamp(fx.p0.w / 100.0, 0.0, 1.0))) * c0.a, c0.a);
+}
+
+// Find edges: p0 = (invert, blend %).
+@fragment
+fn fs_find_edges(in: VsOut) -> @location(0) vec4<f32> {
+    let px = cx_px();
+    let c0 = cx_at(in.uv);
+    var gx = vec3(0.0);
+    var gy = vec3(0.0);
+    for (var j = -1; j <= 1; j = j + 1) {
+        for (var i = -1; i <= 1; i = i + 1) {
+            let w = select(1.0, 2.0, i == 0 || j == 0);
+            let d = cx_disp(cx_at(in.uv + vec2(f32(i), f32(j)) * px));
+            gx = gx + d * f32(i) * select(w, 0.0, i == 0);
+            gy = gy + d * f32(j) * select(w, 0.0, j == 0);
+        }
+    }
+    var e = clamp(sqrt(gx * gx + gy * gy), vec3(0.0), vec3(1.0));
+    if (fx.p0.x < 0.5) {
+        e = 1.0 - e;
+    }
+    return vec4(to_linear(mix(e, cx_disp(c0), clamp(fx.p0.y / 100.0, 0.0, 1.0))) * c0.a, c0.a);
+}
+
+// Mosaic: p0 = (blocks across, down, sharp colours).
+@fragment
+fn fs_mosaic_blocks(in: VsOut) -> @location(0) vec4<f32> {
+    let n = max(vec2(fx.p0.x, fx.p0.y), vec2(1.0));
+    let cell = floor(in.uv * n);
+    if (fx.p0.z >= 0.5) {
+        return cx_at((cell + 0.5) / n) * inside(in.uv);
+    }
+    var sum = vec4(0.0);
+    for (var j = 0; j < 4; j = j + 1) {
+        for (var i = 0; i < 4; i = i + 1) {
+            sum = sum + cx_at((cell + (vec2(f32(i), f32(j)) + 0.5) / 4.0) / n);
+        }
+    }
+    return sum / 16.0 * inside(in.uv);
+}
+
+// Posterize: p0.x = levels.
+@fragment
+fn fs_posterize(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let n = max(round(fx.p0.x), 2.0) - 1.0;
+    return cx_out(round(cx_disp(c) * n) / n, c.a);
+}
+
+// Roughen edges: p0 = (type, colour, border px, sharpness), p1 = (influence %, scale %, complexity, evolution °), p2.x = seed.
+@fragment
+fn fs_roughen_edges(in: VsOut) -> @location(0) vec4<f32> {
+    let px = cx_px();
+    let c = cx_at(in.uv);
+    let border = max(fx.p0.z, 0.0);
+    let kind = u32(round(fx.p0.x));
+    let q = dx_q(in.uv) / max(fx.p1.y, 10.0) * 0.6;
+    let seed = u32(max(fx.p2.x, 0.0));
+    let oct = i32(clamp(round(fx.p1.z), 1.0, 8.0));
+    var n = 0.0;
+    var amp = 0.5;
+    var f = 0.08;
+    for (var i = 0; i < 8; i = i + 1) {
+        if (i >= oct) {
+            break;
+        }
+        n = n + amp * vnoise(seed + u32(i) * 7u, q * f * 10.0 + vec2(fx.p1.w / 360.0, 0.0));
+        amp = amp * 0.5;
+        f = f * 2.1;
+    }
+    if (kind == 3u) {
+        n = pow(n, 3.0) * 2.0;
+    }
+    // How far in from the edge this pixel is (opacity averaged over the border).
+    var s = 0.0;
+    for (var i = 0; i < 8; i = i + 1) {
+        let a = f32(i) * 0.785398;
+        s = s + cx_at(in.uv + vec2(cos(a), sin(a)) * border * px).a;
+    }
+    let depth = (c.a + s) / 9.0;
+    let k = clamp((depth - (1.0 - n * fx.p1.x / 100.0) * 0.5) * (1.0 + fx.p0.w * 4.0) + 0.5, 0.0, 1.0);
+    var o = c * k;
+    if (kind == 1u || kind == 5u) {
+        let edge = clamp((1.0 - depth) * 2.0, 0.0, 1.0) * k;
+        o = vec4(mix(o.rgb, rgb_of(fx.p0.y) * o.a, edge), o.a);
+    }
+    if (kind == 4u || kind == 5u) {
+        o = o * smoothstep(0.35, 0.5, n + depth * 0.5);
+    }
+    return o;
+}
+
+// Scatter: p0 = (amount px, grain, every frame).
+@fragment
+fn fs_scatter(in: VsOut) -> @location(0) vec4<f32> {
+    let q = floor(dx_q(in.uv));
+    let frame = select(0.0, floor(fx.extra.y * 30.0), fx.p0.z >= 0.5);
+    var o = (gn_rand2(q, frame + 0.7) - 0.5) * 2.0 * fx.p0.x;
+    switch u32(round(fx.p0.y)) {
+        case 1u: { o.y = 0.0; }
+        case 2u: { o.x = 0.0; }
+        default: {}
+    }
+    return cx_at(in.uv + o * cx_px());
+}
+
+fn tx_height(q: vec2<f32>, kind: u32) -> f32 {
+    switch kind {
+        case 0u: {
+            let w = abs(sin(q.x * 1.6)) * 0.5 + abs(sin(q.y * 1.6)) * 0.5;
+            return w * 0.7 + vnoise(5u, q * 3.0) * 0.3;
+        }
+        case 1u: {
+            let row = floor(q.y / 4.0);
+            let x = q.x / 8.0 + select(0.0, 0.5, (row % 2.0) == 1.0);
+            let mortar = min(abs(fract(x) - 0.0) * 8.0, min(abs(fract(q.y / 4.0)) * 4.0, (1.0 - fract(q.y / 4.0)) * 4.0));
+            return smoothstep(0.0, 0.3, min(mortar, (1.0 - fract(x)) * 8.0)) * (0.8 + 0.2 * vnoise(3u, q * 2.0));
+        }
+        case 2u: {
+            let a = abs(sin(q.x * 3.0 + vnoise(9u, q * 0.5) * 2.0));
+            let b = abs(sin(q.y * 3.0 + vnoise(4u, q * 0.5) * 2.0));
+            return max(a, b) * 0.8 + vnoise(2u, q * 6.0) * 0.2;
+        }
+        case 3u: { return fbm2(7u, q * 0.6) * 0.7 + vnoise(8u, q * 8.0) * 0.3; }
+        default: { return vnoise(11u, q * 4.0); }
+    }
+}
+
+// Texturize: p0 = (texture, scale %, relief, light °), p1.x = contrast %.
+@fragment
+fn fs_texturize(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let kind = u32(round(fx.p0.x));
+    let q = dx_q(in.uv) / (max(fx.p0.y, 10.0) / 100.0 * 4.0);
+    let e = 0.25;
+    let h = tx_height(q, kind);
+    let gx = tx_height(q + vec2(e, 0.0), kind) - tx_height(q - vec2(e, 0.0), kind);
+    let gy = tx_height(q + vec2(0.0, e), kind) - tx_height(q - vec2(0.0, e), kind);
+    let n = normalize(vec3(-vec2(gx, gy) / (2.0 * e) * fx.p0.z * 0.2, 1.0));
+    let a = radians(fx.p0.w);
+    let l = normalize(vec3(cos(a), -sin(a), 1.0));
+    let shade = 1.0 + (dot(n, l) - l.z) * 1.5 + (h - 0.5) * 0.3 * fx.p1.x / 100.0;
+    return cx_out(cx_disp(c) * shade, c.a);
+}
+
+// Threshold: p0 = (level, softness), 0–255.
+@fragment
+fn fs_threshold(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let y = dot(cx_disp(c), LUMA) * 255.0;
+    let s = max(fx.p0.y, 0.5);
+    return cx_out(vec3(smoothstep(fx.p0.x - s, fx.p0.x + s, y)), c.a);
+}
+
+// Block load: p0 = (completion %, scan lines, start cleared, smooth).
+@fragment
+fn fs_block_load(in: VsOut) -> @location(0) vec4<f32> {
+    let t = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    // Seven passes, each halving the block size from 64 px down to 1.
+    let pass_f = t * 7.0;
+    let pass_i = floor(pass_f);
+    var block = pow(2.0, 6.0 - pass_i);
+    if (t >= 1.0) {
+        return cx_at(in.uv);
+    }
+    if (fx.p0.y >= 0.5) {
+        // Within a pass, rows are filled top to bottom; below the scan line, the last pass shows.
+        let line_y = fract(pass_f) * size.y;
+        if (q.y > line_y) {
+            if (pass_i < 1.0) {
+                return select(cx_at((floor(q / 64.0) + 0.5) * 64.0 / size), vec4(0.0), fx.p0.z >= 0.5);
+            }
+            block = block * 2.0;
+        }
+    }
+    let cell = (floor(q / block) + 0.5) * block;
+    if (fx.p0.w >= 0.5) {
+        // Smooth: between the four nearest blocks' colours.
+        let f = q / block - 0.5;
+        let i = floor(f);
+        let w = f - i;
+        let a = cx_at((i + vec2(0.5, 0.5)) * block / size);
+        let b = cx_at((i + vec2(1.5, 0.5)) * block / size);
+        let cc = cx_at((i + vec2(0.5, 1.5)) * block / size);
+        let d = cx_at((i + vec2(1.5, 1.5)) * block / size);
+        return mix(mix(a, b, w.x), mix(cc, d, w.x), w.y) * inside(in.uv);
+    }
+    return cx_at(cell / size) * inside(in.uv);
+}
+
+// Burn film: p0 = (burn %, centre x, y %, seed).
+@fragment
+fn fs_burn_film(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let t = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let seed = u32(max(fx.p0.w, 0.0));
+    let s = min(size.x, size.y);
+    // The hole: a few spots (the first at the centre) whose noisy edges grow outwards.
+    var field = 9.0;
+    for (var i = 0; i < 4; i = i + 1) {
+        let r = gn_rand2(vec2(f32(i), 1.7), f32(seed));
+        let p = select(r * size, fx.p0.yz / 100.0 * size, i == 0);
+        let start = select(f32(i) * 0.2 + r.x * 0.1, 0.0, i == 0);
+        let grow = max(t - start, 0.0) * 1.3 * s;
+        field = min(field, (length(q - p) - grow) / s);
+    }
+    field = field + (fbm2(seed, q / s * 6.0) - 0.5) * 0.15;
+    let edge = 0.03;
+    if (field < 0.0) {
+        return vec4(0.0);
+    }
+    let rim = exp(-field / 0.004);
+    let scorch = 1.0 - smoothstep(0.0, edge, field);
+    var rgb = unpremul(c);
+    rgb = mix(rgb, vec3(0.25, 0.12, 0.03) * dot(rgb, LUMA) * 2.0, scorch * 0.85);
+    rgb = rgb + vec3(1.0, 0.85, 0.5) * rim * 1.5;
+    return vec4(rgb * c.a, c.a);
+}
+
+// Hex tile: p0 = (radius px, centre x, y %, rotate °), p1 = (render, gap px).
+@fragment
+fn fs_hex_tile(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let c = fx.p0.yz / 100.0 * size;
+    let a = radians(fx.p0.w);
+    let rel0 = dx_q(in.uv) - c;
+    let rel = vec2(rel0.x * cos(a) + rel0.y * sin(a), -rel0.x * sin(a) + rel0.y * cos(a));
+    let r = max(fx.p0.x, 2.0);
+    // Axial hex coordinates (pointy-top), rounded to the nearest hexagon.
+    let qf = (sqrt(3.0) / 3.0 * rel.x - rel.y / 3.0) / r;
+    let rf = (2.0 / 3.0 * rel.y) / r;
+    var cube = vec3(qf, rf, -qf - rf);
+    var rc = round(cube);
+    let d = abs(rc - cube);
+    if (d.x > d.y && d.x > d.z) { rc.x = -rc.y - rc.z; } else if (d.y > d.z) { rc.y = -rc.x - rc.z; }
+    let centre_r = vec2(r * sqrt(3.0) * (rc.x + rc.y * 0.5), r * 1.5 * rc.y);
+    let local = rel - centre_r;
+    // The hexagon's edge distance, for the gap.
+    let h = abs(local);
+    let edge = r * 0.8660254 - max(h.x, dot(h, vec2(0.5, 0.8660254)));
+    if (edge < fx.p1.y * 0.5) {
+        return vec4(0.0);
+    }
+    let back = vec2(centre_r.x * cos(a) - centre_r.y * sin(a), centre_r.x * sin(a) + centre_r.y * cos(a)) + c;
+    switch u32(round(fx.p1.x)) {
+        case 1u: { return dx_at(size * 0.5 + local / r * min(size.x, size.y) * 0.5); }
+        case 2u: {
+            let flip = select(1.0, -1.0, (abs(rc.x + rc.y) % 2.0) == 1.0);
+            return dx_at(size * 0.5 + vec2(local.x * flip, local.y) / r * min(size.x, size.y) * 0.5);
+        }
+        default: { return dx_at(back); }
+    }
+}
+
+// Kaleida: p0 = (centre x, y %, segments, size %), p1 = (rotation °, straight).
+@fragment
+fn fs_kaleida(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let c = fx.p0.xy / 100.0 * size;
+    let rel = (dx_q(in.uv) - c) * 100.0 / max(fx.p0.w, 1.0);
+    let n = max(round(fx.p0.z), 2.0);
+    let seg = 6.2831853 / n;
+    var a = atan2(rel.y, rel.x) - radians(fx.p1.x);
+    a = ((a % seg) + seg) % seg;
+    if (fx.p1.y < 0.5 && a > seg * 0.5) {
+        a = seg - a;
+    }
+    let r = length(rel);
+    let src = c + vec2(cos(a), sin(a)) * r;
+    return dx_wrap(src) * inside(in.uv);
+}
+
+// Mr. Smoothie: p0 = (from x, y, to x, y %), p1 = (smoothness px, phase °, loops, blend %).
+@fragment
+fn fs_mr_smoothie(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let c0 = cx_at(in.uv);
+    let s = max(fx.p1.x, 0.5);
+    var l = st_lum(in.uv);
+    for (var i = 0; i < 8; i = i + 1) {
+        let a = f32(i) * 0.785398;
+        l = l + st_lum(in.uv + vec2(cos(a), sin(a)) * s * cx_px());
+    }
+    l = l / 9.0;
+    let t = fract(l * fx.p1.z + fx.p1.y / 360.0);
+    let tt = 1.0 - abs(1.0 - 2.0 * t);
+    let a = fx.p0.xy / 100.0;
+    let b = fx.p0.zw / 100.0;
+    let col = cx_at(mix(a, b, tt));
+    let o = vec4(unpremul(col) * c0.a, c0.a);
+    return mix(o, c0, clamp(fx.p1.w / 100.0, 0.0, 1.0));
+}
+
+fn pl_h(uv: vec2<f32>, s: f32) -> f32 {
+    var l = st_lum(uv);
+    for (var i = 0; i < 6; i = i + 1) {
+        let a = f32(i) * 1.0472;
+        l = l + st_lum(uv + vec2(cos(a), sin(a)) * s * cx_px());
+    }
+    return l / 7.0;
+}
+
+// Plastic: p0 = (height px, softness px, light °, intensity %), p1 = (roughness %, metal %).
+@fragment
+fn fs_plastic(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let s = max(fx.p0.y, 0.5);
+    let e = max(s * 0.5, 1.0);
+    let px = cx_px();
+    let gx = pl_h(in.uv + vec2(e, 0.0) * px, s) - pl_h(in.uv - vec2(e, 0.0) * px, s);
+    let gy = pl_h(in.uv + vec2(0.0, e) * px, s) - pl_h(in.uv - vec2(0.0, e) * px, s);
+    let n = normalize(vec3(-vec2(gx, gy) / (2.0 * e) * fx.p0.x, 1.0));
+    let a = radians(fx.p0.z);
+    let l = normalize(vec3(cos(a), -sin(a), 1.0));
+    let k = fx.p0.w / 100.0;
+    let diffuse = 0.5 + 0.5 * dot(n, l) / l.z * 0.7;
+    let shine = pow(max(dot(n, normalize(l + vec3(0.0, 0.0, 1.0))), 0.0), 200.0 / max(fx.p1.x, 1.0)) * k;
+    let rgb = unpremul(c);
+    let hl = mix(vec3(1.0), rgb, clamp(fx.p1.y / 100.0, 0.0, 1.0));
+    return vec4((rgb * mix(1.0, diffuse, k) + hl * shine) * c.a, c.a);
+}
+
+// Glass: p0 = (height px, softness px, displacement px, light °), p1.x = intensity %.
+@fragment
+fn fs_glass_cc(in: VsOut) -> @location(0) vec4<f32> {
+    let s = max(fx.p0.y, 0.5);
+    let e = max(s * 0.5, 1.0);
+    let px = cx_px();
+    let gx = pl_h(in.uv + vec2(e, 0.0) * px, s) - pl_h(in.uv - vec2(e, 0.0) * px, s);
+    let gy = pl_h(in.uv + vec2(0.0, e) * px, s) - pl_h(in.uv - vec2(0.0, e) * px, s);
+    let g = vec2(gx, gy) / (2.0 * e);
+    let n = normalize(vec3(-g * fx.p0.x, 1.0));
+    let c = cx_at(in.uv + n.xy * fx.p0.z * px);
+    let a = radians(fx.p0.w);
+    let l = normalize(vec3(cos(a), -sin(a), 1.0));
+    let k = fx.p1.x / 100.0;
+    let lit = (dot(n, l) - l.z) * k;
+    let shine = pow(max(dot(n, normalize(l + vec3(0.0, 0.0, 1.0))), 0.0), 60.0) * k;
+    return vec4((unpremul(c) * (1.0 + lit) + vec3(shine)) * c.a, c.a);
+}
+
+// RepeTile: p0 = (left, right, up, down px), p1.x = tiling.
+@fragment
+fn fs_repe_tile(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    if (q.x < -fx.p0.x || q.x > size.x + fx.p0.y || q.y < -fx.p0.z || q.y > size.y + fx.p0.w) {
+        return vec4(0.0);
+    }
+    var t = q / size;
+    switch u32(round(fx.p1.x)) {
+        case 1u: {
+            let odd = (abs(floor(t)) % 2.0) != vec2(0.0);
+            t = select(fract(t), 1.0 - fract(t), odd);
+        }
+        case 2u: { t = vec2(fract(t.x + select(0.0, 0.5, (abs(floor(t.y)) % 2.0) == 1.0)), fract(t.y)); }
+        case 3u: { t = vec2(fract(t.x), fract(t.y + select(0.0, 0.5, (abs(floor(t.x)) % 2.0) == 1.0))); }
+        default: { t = fract(t); }
+    }
+    return textureSampleLevel(src, src_sampler, to_tex(t), 0.0);
+}

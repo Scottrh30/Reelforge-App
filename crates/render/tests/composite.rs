@@ -4144,3 +4144,51 @@ fn generate_and_noise_effects_work() {
     let clean = draw(&mut c, &grain, EffectKind::RemoveGrain, &[(remove_grain::STRENGTH, 100.0)]);
     assert!(spread(&clean) * 2 < spread(&grain), "{} vs {}", spread(&clean), spread(&grain));
 }
+
+#[test]
+fn keying_and_stylize_effects_work() {
+    use reelforge_core::effects::*;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let ramp: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| { let v = (20 + x * 215 / (w - 1)) as u8; [v, v, v, 255] })).collect();
+    // Green screen with a skin-coloured square in the middle.
+    let screen: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| if (60..100).contains(&x) && (25..65).contains(&y) { [220u8, 170, 140, 255] } else { [0, 192, 0, 255] })).collect();
+    let greenish: Vec<u8> = (0..w * h).flat_map(|_| [140u8, 200, 120, 255]).collect();
+    let mut key = 15_000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)]| {
+        let v = fx(kind, set);
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let at = |img: &[u8], x: u32, y: u32| px(img, w, x, y);
+    let lum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    // The stylize effects all draw something.
+    for kind in [
+        EffectKind::BrushStrokes, EffectKind::Cartoon, EffectKind::Emboss, EffectKind::ColorEmboss, EffectKind::FindEdges, EffectKind::Mosaic, EffectKind::Posterize,
+        EffectKind::RoughenEdges, EffectKind::Scatter, EffectKind::Texturize, EffectKind::Threshold, EffectKind::BlockLoad, EffectKind::BurnFilm, EffectKind::HexTile,
+        EffectKind::Kaleida, EffectKind::MrSmoothie, EffectKind::Plastic, EffectKind::GlassCc, EffectKind::RepeTile,
+    ] {
+        let img = draw(&mut c, &ramp, kind, &[]);
+        let lit = img.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 60).count();
+        assert!(lit > 800, "{kind:?}: {lit} lit");
+    }
+    // Colour key and Linear colour key: the green goes, the square stays.
+    for kind in [EffectKind::ColorKey, EffectKind::LinearColorKey, EffectKind::ColorDifferenceKey] {
+        let k = draw(&mut c, &screen, kind, &[]);
+        assert!(lum(at(&k, 10, 10)) < 40, "{kind:?}: {:?}", at(&k, 10, 10));
+        assert!(lum(at(&k, 80, 45)) > 300, "{kind:?}: {:?}", at(&k, 80, 45));
+    }
+    // Spill suppressor: the green cast taken out.
+    let s = at(&draw(&mut c, &greenish, EffectKind::SpillSuppressor, &[]), 80, 45);
+    assert!(s[1] <= s[0] + 4, "{s:?}");
+    // Threshold: dark half black, bright half white.
+    let t = draw(&mut c, &ramp, EffectKind::Threshold, &[]);
+    assert!(lum(at(&t, 10, 45)) < 10 && lum(at(&t, 150, 45)) > 750);
+    // Mosaic: 20 blocks across, each 8 pixels of one colour.
+    let m = draw(&mut c, &ramp, EffectKind::Mosaic, &[]);
+    assert_eq!(at(&m, 81, 45), at(&m, 86, 45));
+    assert_ne!(at(&m, 86, 45), at(&m, 89, 45));
+}
