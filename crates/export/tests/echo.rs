@@ -1,7 +1,7 @@
 //! Echo: copies of a layer from moments before, each fainter, drawn with it;
 //! Hold frame and Time displacement, which also show other moments.
 
-use reelforge_core::effects::{echo, hold, time_displace as td};
+use reelforge_core::effects::{echo, hold, posterize_time, time_difference, time_displace as td};
 use reelforge_core::{Clip, ClipId, Effect, EffectKind, FrameRate, Layer, MediaAsset, MediaId, MediaInfo, Project, Rational, Sequence, Time, VideoStreamInfo};
 use reelforge_export::{FrameProvider, Picture, Scene};
 use reelforge_media::VideoFrame;
@@ -166,4 +166,28 @@ fn time_displacement_shows_each_band_from_its_own_moment() {
     let p = with(EffectKind::TimeDisplacement, &[(td::DELAY, 0.0)]);
     let Some(img) = frame(&p, 1.0) else { return };
     assert_eq!((bar_at(&img, 35), bar_at(&img, 55)), (Some(110), Some(110)));
+}
+
+#[test]
+fn posterize_time_steps_the_picture() {
+    // At 5 frames a second the bar moves in 20 px steps: 0.3 and 0.38 s both
+    // show it at 0.2 s (30 px), 0.41 s at 0.4 s (50 px).
+    let p = with(EffectKind::PosterizeTime, &[(posterize_time::RATE, 5.0)]);
+    let at = |t: f64| frame(&p, t).map(|img| bar_at(&img, 45));
+    let Some(first) = at(0.3) else { return };
+    assert_eq!(first, Some(30));
+    assert_eq!(at(0.38), Some(Some(30)), "held until the next step");
+    assert_eq!(at(0.41), Some(Some(50)), "the next step");
+}
+
+#[test]
+fn time_difference_shows_only_what_moved() {
+    // One frame on (0.04 s, 4 px further): the bar at 110–117 and the copy at
+    // 114–121 differ, so where they overlap is black and the ends stay lit.
+    let p = with(EffectKind::TimeDifference, &[(time_difference::OFFSET, 1.0)]);
+    let Some(img) = frame(&p, 1.0) else { return };
+    let lit = |x: u32| img[((45 * W + x) * 4) as usize] > 200;
+    assert!(lit(111) && lit(120), "the ends that moved");
+    assert!(!lit(115), "the overlap cancels out");
+    assert!(!lit(60), "the clear frame stays black");
 }

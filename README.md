@@ -726,11 +726,11 @@ What works now:
   - **Strobe** (Light & stylize): the picture flashing so many times a second (**Flashes a
     second**, **Flash length**), from **Start at**: **To a colour**, **Blank** (see-through),
     **Invert** or **Brighten** (a strobe light), **Random** skipping some beats, **Strength**
-  - **Time displacement** (Light & stylize): slit-scan — the picture cut into **Bands** (rows
+  - **Time displacement** (Time): slit-scan — the picture cut into **Bands** (rows
     or columns), each from a moment further back, up to **Most delay** seconds (negative:
     ahead) on the far side, so moving things stretch, bend and smear. Each band reads the
     footage on its own, so many bands of long-GOP 4K are slow; proxies help
-  - **Hold frame** (Light & stylize): the picture frozen on the frame at **Hold from** until
+  - **Hold frame** (Time): the picture frozen on the frame at **Hold from** until
     **Hold until** (seconds into the clip; −1: to its end), while the clip goes on and its other
     effects keep moving — nothing is cut or moved on the timeline
   - **Block displacement** (Distort): blocks of the picture shoved out of place, as a broken
@@ -908,6 +908,29 @@ What works now:
     **Burn film**, **Hex tile**, **Kaleida**, **Mr. Smoothie** (repainted from colours along a
     line), **Plastic** and **Glass** (lit, glossy relief from the picture's brightness) and
     **RepeTile** (the layer repeated out past its edges, plain, mirrored or bricked)
+  - **Transition** (a section of its own; each with a **Transition completion** from 0 to
+    100 % to keyframe): **Block dissolve**, **Gradient wipe** (by the layer's own brightness,
+    left to right, top to bottom, from the middle or by noise, softened, inverted), **Iris wipe**
+    (a polygon or circle opening from a point), **Linear wipe**, **Radial wipe** (clockwise,
+    anticlockwise or both), **Venetian blinds**, **Glass wipe** (melting away darkest first,
+    refracting along its edge), **Grid wipe** (tiles closing like doors, rounding or shrinking),
+    **Jaws** (torn apart along a line with spiky, robot, block or wave teeth), **Light wipe** (a
+    glowing hole: round, square or doors), **Line sweep**, **Radial scale wipe**, **Scale wipe**
+    (stretched away from a line), **Twister** (turned over like a ribbon) and **WarpoMatic**
+    (warped and dissolved by its own brightness)
+  - **Time** (a section of its own, also holding **Echo**, **Time displacement** and **Hold
+    frame**): **Posterize time** (the picture stepping at a frame rate of its own while its
+    transform and effects move smoothly) and **Time difference** (the layer against itself a
+    few frames on or back, so what's still goes black and only movement shows)
+  - **Utility** (a section of its own): **Numbers** (a value of your own to keyframe, a random
+    number, the time in seconds or timecode, with decimals, on a box), **Timecode** (timecode,
+    frame number or seconds burnt in, from a starting offset, on a box), **Cineon converter**
+    (10-bit log film scans to video, video to log, or log to log, with black and white points,
+    gamma and a highlight roll-off) and **HDR highlight compression** (over-bright highlights
+    rolled back into range smoothly instead of clipping)
+  - **Simulation** (more): **Ball action** (the layer rebuilt from shiny balls, scattered and
+    twisted), **Bubbles** (soap bubbles rising and wobbling, each a lens with a rainbow sheen)
+    and **Drizzle** (raindrop ripples spreading over the picture)
   - **3D Extrusion** (Generate): the layer's picture made solid — its shape (wherever it
     isn't see-through, above **Solid above**) extruded to a **Depth**, with a **Bevel**
     (flat or round), turned in 3D (**Turn X/Y/Z**, **Size**, **Perspective**), its **Sides**
@@ -1011,7 +1034,7 @@ What works now:
       (from where the light sits, seen from the middle), its **Colour** and **Intensity**;
       **Darken the rest** dims the original light so the new one tells, **Surface detail**
       how strongly bumps and slopes catch it
-  - **Echo** (Light & stylize): the layer drawn again from moments before — trails behind
+  - **Echo** (Time): the layer drawn again from moments before — trails behind
     something moving, ghosting, a stutter. **Echo time** apart (negative: from moments after,
     so the copies lead), **Number of echoes** (up to 16), **First echo** (how strong the
     nearest copy is) and **Each fades by**; **Draw echoes** **Behind the layer**, **In front of

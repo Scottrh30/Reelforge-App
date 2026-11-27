@@ -261,10 +261,36 @@ fn hold_frame(project: &Project, seq: usize, l: &mut Layer, t: Time, fps: f64) {
     }
 }
 
+/// A layer's Posterize time: its picture steps at a frame rate of its own,
+/// each frame held until the next step (its transform and effects carry on).
+/// The effect itself then goes.
+fn posterize_time(project: &Project, seq: usize, l: &mut Layer, t: Time, fps: f64) {
+    use reelforge_core::effects::posterize_time as pt;
+    let Some(i) = l.effects.iter().position(|v| v.kind == reelforge_core::EffectKind::PosterizeTime) else { return };
+    let v = l.effects.remove(i).values;
+    let rate = v.get(pt::RATE).copied().unwrap_or(0.0) as f64;
+    if !rate.is_finite() || rate <= 0.0 {
+        return;
+    }
+    let c = l.clip;
+    let into = (t - c.timeline_start).as_secs_f64();
+    if !into.is_finite() || into < 0.0 {
+        return;
+    }
+    let step = (into * rate + 1e-6).floor() / rate;
+    let frame = project.sequences.get(seq).map_or(Time::from_secs_f64(1.0 / fps.max(1.0)), |s| s.frame_rate.frame_duration());
+    let at = c.timeline_start + Time::from_secs_f64(step.max(0.0));
+    if at < c.timeline_end() {
+        l.source_time = project.clip_layer(seq, l.track, c, at, frame).source_time;
+    }
+}
+
 /// Time displacement bands' clip ids (with the band's number above bit 48).
 const SLIT_KEY: u64 = 1 << 60;
 /// Echo copies' clip ids (with the copy's number above bit 48).
 const ECHO_KEY: u64 = 1 << 61;
+/// Time difference copies' clip ids.
+const TIME_DIFF_KEY: u64 = 1 << 59;
 
 impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
@@ -500,9 +526,16 @@ impl Scene {
                 VideoItem::Single(mut l) => {
                     motion_blur(project, seq, &mut l, t, frame_size, fps);
                     hold_frame(project, seq, &mut l, t, fps);
+                    posterize_time(project, seq, &mut l, t, fps);
                     let echo = l.effects.iter().find(|v| v.kind == reelforge_core::EffectKind::Echo).cloned();
                     let slit = l.effects.iter().find(|v| v.kind == reelforge_core::EffectKind::TimeDisplacement).cloned();
+                    let tdiff = l.effects.iter().find(|v| v.kind == reelforge_core::EffectKind::TimeDifference).cloned();
                     match (slit, echo) {
+                        _ if tdiff.is_some() => {
+                            if let Some(td) = &tdiff {
+                                self.gather_time_difference(project, seq, &l, td, t, frame_size, fps, &scene3d, provider, depth, &mut items)?;
+                            }
+                        }
                         (Some(slit), _) => self.gather_slit_scan(project, seq, &l, &slit, t, frame_size, fps, &scene3d, provider, depth, &mut items)?,
                         (None, Some(echo)) => self.gather_echoes(project, seq, &l, &echo, t, frame_size, fps, &scene3d, provider, depth, &mut items)?,
                         (None, None) => items.extend(self.gather_retimed(project, &l, t, frame_size, fps, &scene3d, provider, depth)?),
@@ -671,6 +704,37 @@ impl Scene {
             items.extend(me);
             items.extend(copies);
         }
+        Ok(())
+    }
+
+    /// A layer's Time difference: the layer, then a copy of it from a moment
+    /// later (or earlier) drawn over it in Difference mode, so what stays still
+    /// goes black and what moves shows. The copy reads through a decoder of its own.
+    #[allow(clippy::too_many_arguments)]
+    fn gather_time_difference(&mut self, project: &Project, seq: usize, l: &Layer, td: &EffectValues, t: Time, frame_size: [u32; 2], fps: f64, scene3d: &reelforge_core::space3d::Scene3d, provider: &mut dyn FrameProvider, depth: usize, items: &mut Vec<Item>) -> Result<()> {
+        use reelforge_core::effects::time_difference as e;
+        let not_me = |x: &EffectValues| x.kind != reelforge_core::EffectKind::TimeDifference;
+        let mut me = l.clone();
+        me.effects.retain(not_me);
+        items.extend(self.gather_retimed(project, &me, t, frame_size, fps, scene3d, provider, depth)?);
+        let offset = td.values.get(e::OFFSET).copied().filter(|x| x.is_finite()).unwrap_or(0.0) as f64;
+        let frame = project.sequences.get(seq).map_or(Time::from_secs_f64(1.0 / fps.max(1.0)), |s| s.frame_rate.frame_duration());
+        let at = t.as_secs_f64() + offset * frame.as_secs_f64();
+        if offset == 0.0 || !at.is_finite() {
+            return Ok(());
+        }
+        let c = l.clip;
+        let at = Time::from_secs_f64(at.max(0.0));
+        let at = if at < c.timeline_start { c.timeline_start } else { at };
+        let last = c.timeline_end() - frame;
+        let at = if at > last && last >= c.timeline_start { last } else { at };
+        let ck = reelforge_core::Clip { id: ClipId(c.id.0 ^ TIME_DIFF_KEY), ..c.clone() };
+        let mut el = project.clip_layer(seq, l.track, &ck, at, frame);
+        el.effects.retain(not_me);
+        // The copy's picture only: where the layer is now.
+        el.transform = me.transform;
+        el.blend = BlendMode::Difference;
+        items.extend(self.gather_retimed(project, &el, at, frame_size, fps, scene3d, provider, depth)?);
         Ok(())
     }
 

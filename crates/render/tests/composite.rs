@@ -4192,3 +4192,59 @@ fn keying_and_stylize_effects_work() {
     assert_eq!(at(&m, 81, 45), at(&m, 86, 45));
     assert_ne!(at(&m, 86, 45), at(&m, 89, 45));
 }
+
+#[test]
+fn transition_utility_and_simulation_effects_work() {
+    use reelforge_core::effects::*;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    let ramp: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| { let v = (20 + x * 215 / (w - 1)) as u8; [v, v, v, 255] })).collect();
+    let grey: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 120, 120, 255]).collect();
+    let white: Vec<u8> = (0..w * h).flat_map(|_| [255u8, 255, 255, 255]).collect();
+    let mut key = 16_000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)]| {
+        let v = fx(kind, set);
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let at = |img: &[u8], x: u32, y: u32| px(img, w, x, y);
+    let dark = |img: &[u8]| img.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 <= 15).count();
+    let total = (w * h) as usize;
+    // Halfway through, every transition has taken away part of the layer, but not all of it.
+    for (kind, done) in [
+        (EffectKind::BlockDissolve, block_dissolve::COMPLETION), (EffectKind::GradientWipe, gradient_wipe::COMPLETION), (EffectKind::IrisWipe, iris_wipe::COMPLETION),
+        (EffectKind::LinearWipe, linear_wipe::COMPLETION), (EffectKind::RadialWipe, radial_wipe::COMPLETION), (EffectKind::VenetianBlinds, venetian_blinds::COMPLETION),
+        (EffectKind::GlassWipe, glass_wipe::COMPLETION), (EffectKind::GridWipe, grid_wipe::COMPLETION), (EffectKind::Jaws, jaws::COMPLETION),
+        (EffectKind::LightWipe, light_wipe::COMPLETION), (EffectKind::LineSweep, line_sweep::COMPLETION), (EffectKind::RadialScaleWipe, radial_scale_wipe::COMPLETION),
+        (EffectKind::Twister, twister::COMPLETION), (EffectKind::WarpoMatic, warpomatic::COMPLETION),
+    ] {
+        // (Twister turns the layer over to its back: with no back, it's gone at the end.)
+        let back = if kind == EffectKind::Twister { (twister::BACK, 2.0) } else { (done, 50.0) };
+        let gone = dark(&draw(&mut c, &ramp, kind, &[back, (done, 50.0)]));
+        assert!(gone > total / 10 && gone < total * 19 / 20, "{kind:?}: {gone} of {total} gone");
+        // Finished: nothing left.
+        let all = dark(&draw(&mut c, &ramp, kind, &[back, (done, 100.0)]));
+        assert!(all > total * 95 / 100, "{kind:?} at 100 %: {all} of {total} gone");
+    }
+    // Linear wipe at 90°: from the left.
+    let lw = draw(&mut c, &ramp, EffectKind::LinearWipe, &[(linear_wipe::COMPLETION, 50.0)]);
+    assert!(dark(&lw) > 0 && at(&lw, 20, 45)[0] < 5 && at(&lw, 140, 45)[0] > 100);
+    // Numbers and Timecode draw something on the grey.
+    for kind in [EffectKind::Numbers, EffectKind::Timecode] {
+        let img = draw(&mut c, &grey, kind, &[]);
+        let changed = img.chunks(4).filter(|p| p[0].abs_diff(120) > 40).count();
+        assert!(changed > 30, "{kind:?}: {changed}");
+    }
+    // HDR compression brings white down; Cineon log to linear darkens mid grey.
+    assert!(at(&draw(&mut c, &white, EffectKind::HdrCompress, &[]), 80, 45)[0] < 250);
+    assert!(at(&draw(&mut c, &grey, EffectKind::CineonConverter, &[]), 80, 45)[0] < 110);
+    // The simulations draw something.
+    for kind in [EffectKind::BallAction, EffectKind::Bubbles, EffectKind::Drizzle] {
+        let img = draw(&mut c, &ramp, kind, &[]);
+        let lit = img.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 60).count();
+        assert!(lit > 800, "{kind:?}: {lit} lit");
+    }
+}

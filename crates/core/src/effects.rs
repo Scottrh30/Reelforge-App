@@ -537,6 +537,83 @@ pub enum EffectKind {
     /// tiles, mirrored tiles or offset bricks: fills a frame with a small graphic, or extends a
     /// pattern.
     RepeTile,
+    /// The layer disappears in random blocks of a size you set, feathered or hard, as the
+    /// completion goes from 0 to 100 %.
+    BlockDissolve,
+    /// Wipes the layer away by a gradient — its own brightness (dark parts first), left to
+    /// right, top to bottom, from the middle out, or a cloudy noise — with a soft edge,
+    /// inverted if you like.
+    GradientWipe,
+    /// A hole opens in the layer from a centre — a polygon of so many points (a circle with
+    /// many), turned, feathered — growing until the layer is gone.
+    IrisWipe,
+    /// Wipes the layer away in a straight line at any angle, feathered.
+    LinearWipe,
+    /// Wipes the layer away round a centre like a clock's hand — clockwise, anticlockwise or
+    /// both ways — from a start angle, feathered.
+    RadialWipe,
+    /// The layer closes away in stripes like Venetian blinds, at an angle and width, feathered.
+    VenetianBlinds,
+    /// The layer melts away like glass, darkest parts first: the picture bends and refracts
+    /// along the moving edge as it goes.
+    GlassWipe,
+    /// The layer is cut into a grid of tiles, and each closes away — like doors, rounding in,
+    /// or shrinking rectangles — together, turned at an angle, with a border between.
+    GridWipe,
+    /// The layer splits along a line into two halves with toothed edges — spikes, robot jaws,
+    /// blocks or waves — that pull apart as the completion goes up.
+    Jaws,
+    /// A hole of light opens in the layer — a glowing circle, square or pair of doors growing
+    /// from a centre — its edge bright in a colour (or the picture's own), until the layer is
+    /// gone.
+    LightWipe,
+    /// The layer is cut into slanted lines that sweep away one after another across it, in a
+    /// direction, at a thickness.
+    LineSweep,
+    /// A round hole opens from a centre, the picture round its edge swelling outwards as if
+    /// pushed by a lens, until the layer is gone.
+    RadialScaleWipe,
+    /// Stretches the layer away from a line through a centre — everything past it smeared out
+    /// in a direction until it's gone.
+    ScaleWipe,
+    /// The layer twists over like a ribbon round an axis, from one end to the other, showing
+    /// its back (the picture, darkened, or nothing) as it turns.
+    Twister,
+    /// The layer warps away by its own brightness: as the completion rises, the picture twists,
+    /// stretches or splits along its light and dark and dissolves, smoothly.
+    WarpoMatic,
+    /// Steps the layer's motion at a lower frame rate of its own — each frame held until the
+    /// next step — for stop-motion, choppy or strobing looks.
+    PosterizeTime,
+    /// Shows how the layer differs from itself a moment later (or earlier): still parts go
+    /// black and only what moves stays, bright — for motion mattes and ghostly, edgy looks.
+    TimeDifference,
+    /// Draws a number on the layer — a value of your own (keyframe it to count up), a random
+    /// number changing each frame, or the time — with decimal places, at a place, size and
+    /// colour, on a box if you like.
+    Numbers,
+    /// Burns the layer's timecode (hours, minutes, seconds and frames), its frame count, or its
+    /// time in seconds into the picture, at a frame rate, from a starting offset, on a box —
+    /// for review copies and dailies.
+    Timecode,
+    /// Converts between log-encoded film scans (Cineon and DPX) and ordinary video: a 10-bit
+    /// black point, white point and gamma, with the highlights rolled off softly — log to
+    /// linear, linear to log, or log to log.
+    CineonConverter,
+    /// Brings over-bright (HDR) highlights back into range smoothly, by an amount, instead of
+    /// clipping them to flat white — keeps detail in skies, lights and fire from HDR and RAW
+    /// footage.
+    HdrCompress,
+    /// Rebuilds the layer from a grid of shiny balls, each the colour of the picture where it
+    /// sits, scattered and twisted about as you key them — for dissolving into beads or
+    /// assembling from them.
+    BallAction,
+    /// Soap bubbles rising over the layer, wobbling as they go, each a lens that shows the
+    /// picture behind it with a rainbow sheen and a highlight: how many, how big, how fast.
+    Bubbles,
+    /// Raindrops falling on the layer as on a pond: ripples spreading from random spots,
+    /// bending the picture and catching the light, so many a second, lasting a while.
+    Drizzle,
     /// Evens out flicker: brightness and colour gains, keyed frame by frame by
     /// Deflicker's analysis (Clip menu), or set by hand.
     Deflicker,
@@ -656,6 +733,12 @@ pub enum EffectCategory {
     Geometry,
     /// Turned, wrapped and shadowed in 3D: cylinders, spheres, anaglyphs, cast shadows.
     Perspective,
+    /// The layer wiped, dissolved or torn away as its completion goes from 0 to 100 %.
+    Transition,
+    /// Frames held, stepped, echoed or compared over time.
+    Time,
+    /// Numbers, timecode and conversions between colour encodings.
+    Utility,
     /// Plugins that didn't name a category.
     Plugins,
     /// OpenFX plugins (Sapphire, Neat Video, BorisFX, the OpenFX Misc set…).
@@ -663,7 +746,7 @@ pub enum EffectCategory {
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 14] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Channel, EffectCategory::NoiseGrain, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Geometry, EffectCategory::Perspective, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
+    pub const ALL: [EffectCategory; 17] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Channel, EffectCategory::NoiseGrain, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Geometry, EffectCategory::Perspective, EffectCategory::Transition, EffectCategory::Time, EffectCategory::Utility, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
@@ -678,6 +761,9 @@ impl EffectCategory {
             EffectCategory::Generate => "Generate",
             EffectCategory::Geometry => "Geometry",
             EffectCategory::Perspective => "Perspective",
+            EffectCategory::Transition => "Transition",
+            EffectCategory::Time => "Time",
+            EffectCategory::Utility => "Utility",
             EffectCategory::Plugins => "Other plugins",
             EffectCategory::OpenFx => "OpenFX",
         }
@@ -2635,6 +2721,183 @@ pub mod repe_tile {
     pub const UP: usize = 2;
     pub const DOWN: usize = 3;
     pub const TILING: usize = 4;
+}
+pub mod block_dissolve {
+    pub const COMPLETION: usize = 0;
+    pub const WIDTH: usize = 1;
+    pub const HEIGHT: usize = 2;
+    pub const FEATHER: usize = 3;
+    pub const SEED: usize = 4;
+}
+pub mod gradient_wipe {
+    pub const COMPLETION: usize = 0;
+    pub const SOFTNESS: usize = 1;
+    pub const GRADIENT: usize = 2;
+    pub const INVERT: usize = 3;
+    pub const SCALE: usize = 4;
+}
+pub mod iris_wipe {
+    pub const COMPLETION: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const POINTS: usize = 3;
+    pub const ROTATION: usize = 4;
+    pub const FEATHER: usize = 5;
+}
+pub mod linear_wipe {
+    pub const COMPLETION: usize = 0;
+    pub const ANGLE: usize = 1;
+    pub const FEATHER: usize = 2;
+}
+pub mod radial_wipe {
+    pub const COMPLETION: usize = 0;
+    pub const START: usize = 1;
+    pub const X: usize = 2;
+    pub const Y: usize = 3;
+    pub const WIPE: usize = 4;
+    pub const FEATHER: usize = 5;
+}
+pub mod venetian_blinds {
+    pub const COMPLETION: usize = 0;
+    pub const DIRECTION: usize = 1;
+    pub const WIDTH: usize = 2;
+    pub const FEATHER: usize = 3;
+}
+pub mod glass_wipe {
+    pub const COMPLETION: usize = 0;
+    pub const SOFTNESS: usize = 1;
+    pub const DISPLACEMENT: usize = 2;
+}
+pub mod grid_wipe {
+    pub const COMPLETION: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const ROTATION: usize = 3;
+    pub const BORDER: usize = 4;
+    pub const TILES: usize = 5;
+    pub const SHAPE: usize = 6;
+    pub const REVERSE: usize = 7;
+}
+pub mod jaws {
+    pub const COMPLETION: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const DIRECTION: usize = 3;
+    pub const HEIGHT: usize = 4;
+    pub const WIDTH: usize = 5;
+    pub const SHAPE: usize = 6;
+}
+pub mod light_wipe {
+    pub const COMPLETION: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const INTENSITY: usize = 3;
+    pub const SHAPE: usize = 4;
+    pub const DIRECTION: usize = 5;
+    pub const COLOR_FROM_SOURCE: usize = 6;
+    pub const COLOR: usize = 7;
+    pub const REVERSE: usize = 8;
+}
+pub mod line_sweep {
+    pub const COMPLETION: usize = 0;
+    pub const DIRECTION: usize = 1;
+    pub const THICKNESS: usize = 2;
+    pub const SLANT: usize = 3;
+    pub const FLIP: usize = 4;
+}
+pub mod radial_scale_wipe {
+    pub const COMPLETION: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const REVERSE: usize = 3;
+}
+pub mod scale_wipe {
+    pub const STRETCH: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const DIRECTION: usize = 3;
+}
+pub mod twister {
+    pub const COMPLETION: usize = 0;
+    pub const BACK: usize = 1;
+    pub const SHADING: usize = 2;
+    pub const X: usize = 3;
+    pub const Y: usize = 4;
+    pub const AXIS: usize = 5;
+}
+pub mod warpomatic {
+    pub const COMPLETION: usize = 0;
+    pub const SMOOTHNESS: usize = 1;
+    pub const AMOUNT: usize = 2;
+    pub const DIRECTION: usize = 3;
+    pub const SPAN: usize = 4;
+}
+pub mod posterize_time {
+    pub const RATE: usize = 0;
+}
+pub mod time_difference {
+    pub const OFFSET: usize = 0;
+}
+pub mod numbers {
+    pub const TYPE: usize = 0;
+    pub const VALUE: usize = 1;
+    pub const DECIMALS: usize = 2;
+    pub const X: usize = 3;
+    pub const Y: usize = 4;
+    pub const SIZE: usize = 5;
+    pub const COLOR: usize = 6;
+    pub const BOX: usize = 7;
+    pub const BOX_COLOR: usize = 8;
+    pub const FPS: usize = 9;
+    pub const SEED: usize = 10;
+}
+pub mod timecode {
+    pub const FORMAT: usize = 0;
+    pub const FPS: usize = 1;
+    pub const START: usize = 2;
+    pub const X: usize = 3;
+    pub const Y: usize = 4;
+    pub const SIZE: usize = 5;
+    pub const COLOR: usize = 6;
+    pub const BOX: usize = 7;
+    pub const BOX_COLOR: usize = 8;
+}
+pub mod cineon {
+    pub const CONVERSION: usize = 0;
+    pub const BLACK: usize = 1;
+    pub const WHITE: usize = 2;
+    pub const GAMMA: usize = 3;
+    pub const ROLLOFF: usize = 4;
+}
+pub mod hdr_compress {
+    pub const AMOUNT: usize = 0;
+    pub const KNEE: usize = 1;
+}
+pub mod ball_action {
+    pub const SCATTER: usize = 0;
+    pub const SPACING: usize = 1;
+    pub const SIZE: usize = 2;
+    pub const TWIST: usize = 3;
+    pub const LIGHT: usize = 4;
+    pub const SEED: usize = 5;
+}
+pub mod bubbles {
+    pub const AMOUNT: usize = 0;
+    pub const SPEED: usize = 1;
+    pub const WOBBLE: usize = 2;
+    pub const SIZE: usize = 3;
+    pub const SIZE_VARIANCE: usize = 4;
+    pub const SHEEN: usize = 5;
+    pub const SEED: usize = 6;
+}
+pub mod drizzle {
+    pub const RATE: usize = 0;
+    pub const LONGEVITY: usize = 1;
+    pub const RIPPLING: usize = 2;
+    pub const DISPLACEMENT: usize = 3;
+    pub const SPREAD: usize = 4;
+    pub const LIGHT: usize = 5;
+    pub const SEED: usize = 6;
 }
 pub mod deflicker {
     pub const BRIGHTNESS: usize = 0;
@@ -5084,6 +5347,183 @@ const REPE_TILE: [ParamSpec; 5] = [
     spec("Expand down", 100.0, 0.0, 4000.0, " px", 0.5),
     choice("Tiling", &["Repeat", "Unfold (mirrored)", "Brick across", "Brick down"]),
 ];
+const BLOCK_DISSOLVE: [ParamSpec; 5] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Block width", 16.0, 1.0, 4000.0, " px", 0.2),
+    spec("Block height", 16.0, 1.0, 4000.0, " px", 0.2),
+    spec("Feather", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
+];
+const GRADIENT_WIPE: [ParamSpec; 5] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Transition softness", 10.0, 0.0, 100.0, " %", 0.3),
+    choice("Gradient", &["Its own brightness", "Left to right", "Top to bottom", "Middle outwards", "Noise"]),
+    ParamSpec { name: "Invert gradient", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Noise size", 100.0, 1.0, 4000.0, " px", 0.5),
+];
+const IRIS_WIPE: [ParamSpec; 6] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Iris centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Iris centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Iris points", 6.0, 3.0, 64.0, "", 0.05),
+    spec("Rotation", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Feather", 0.0, 0.0, 1000.0, " px", 0.2),
+];
+const LINEAR_WIPE: [ParamSpec; 3] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Wipe angle", 90.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Feather", 0.0, 0.0, 1000.0, " px", 0.2),
+];
+const RADIAL_WIPE: [ParamSpec; 6] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Start angle", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Wipe centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Wipe centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    choice("Wipe", &["Clockwise", "Anticlockwise", "Both"]),
+    spec("Feather", 0.0, 0.0, 180.0, " °", 0.3),
+];
+const VENETIAN_BLINDS: [ParamSpec; 4] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Direction", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Width", 40.0, 1.0, 4000.0, " px", 0.3),
+    spec("Feather", 0.0, 0.0, 1000.0, " px", 0.2),
+];
+const GLASS_WIPE: [ParamSpec; 3] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Softness", 20.0, 0.0, 100.0, " %", 0.3),
+    spec("Displacement", 40.0, -400.0, 400.0, " px", 0.3),
+];
+const GRID_WIPE: [ParamSpec; 8] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Rotation", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Border", 0.0, 0.0, 400.0, " px", 0.1),
+    spec("Tiles", 8.0, 1.0, 200.0, "", 0.05),
+    choice("Shape", &["Doors", "Radial", "Rectangular"]),
+    ParamSpec { name: "Reverse transition", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const JAWS: [ParamSpec; 7] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Direction", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Height", 30.0, 0.0, 1000.0, " px", 0.2),
+    spec("Width", 50.0, 1.0, 1000.0, " px", 0.2),
+    choice("Shape", &["Spikes", "Robo jaw", "Block", "Waves"]),
+];
+const LIGHT_WIPE: [ParamSpec; 9] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Intensity", 100.0, 0.0, 1000.0, " %", 0.5),
+    choice("Shape", &["Round", "Square", "Doors"]),
+    spec("Direction", 0.0, -3600.0, 3600.0, " °", 0.5),
+    ParamSpec { name: "Colour from the picture", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    color("Colour", 0xffe0a0),
+    ParamSpec { name: "Reverse transition", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const LINE_SWEEP: [ParamSpec; 5] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Direction", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Thickness", 20.0, 1.0, 2000.0, " px", 0.2),
+    spec("Slant", 25.0, 0.0, 100.0, " %", 0.3),
+    ParamSpec { name: "Flip direction", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const RADIAL_SCALE_WIPE: [ParamSpec; 4] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    ParamSpec { name: "Reverse", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const SCALE_WIPE: [ParamSpec; 4] = [
+    spec("Stretch", 0.0, 0.0, 1000.0, " %", 0.5),
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Direction", 0.0, -3600.0, 3600.0, " °", 0.5),
+];
+const TWISTER: [ParamSpec; 6] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    choice("Backside", &["The picture", "Darkened", "Nothing"]),
+    ParamSpec { name: "Shading", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Axis", 0.0, -3600.0, 3600.0, " °", 0.5),
+];
+const WARPOMATIC: [ParamSpec; 5] = [
+    spec("Transition completion", 0.0, 0.0, 100.0, " %", 0.3),
+    spec("Smoothness", 5.0, 0.0, 50.0, " px", 0.1),
+    spec("Warp amount", 40.0, -400.0, 400.0, " px", 0.3),
+    choice("Warp direction", &["Twisting", "Joint", "Opposing", "Crosswise"]),
+    spec("Blend span", 20.0, 0.0, 100.0, " %", 0.3),
+];
+const POSTERIZE_TIME: [ParamSpec; 1] = [
+    spec("Frame rate", 12.0, 0.1, 99.0, " fps", 0.05),
+];
+const TIME_DIFFERENCE: [ParamSpec; 1] = [
+    spec("Time offset", 1.0, -300.0, 300.0, " frames", 0.05),
+];
+const NUMBERS: [ParamSpec; 11] = [
+    choice("Type", &["Number", "Random number", "Time (seconds)", "Timecode"]),
+    spec("Value", 0.0, -1.0e9, 1.0e9, "", 1.0),
+    spec("Decimal places", 0.0, 0.0, 6.0, "", 0.05),
+    spec("Position X", 10.0, -200.0, 300.0, " %", 0.2),
+    spec("Position Y", 10.0, -200.0, 300.0, " %", 0.2),
+    spec("Size", 48.0, 4.0, 2000.0, " px", 0.5),
+    color("Colour", 0xffffff),
+    spec("Box opacity", 0.0, 0.0, 100.0, " %", 0.3),
+    color("Box colour", 0x000000),
+    spec("Frames a second (timecode)", 25.0, 1.0, 120.0, "", 0.1),
+    spec("Random seed", 0.0, 0.0, 9999.0, "", 1.0),
+];
+const TIMECODE: [ParamSpec; 9] = [
+    choice("Display format", &["Timecode", "Frame number", "Seconds"]),
+    spec("Frame rate", 25.0, 1.0, 120.0, " fps", 0.1),
+    spec("Starting at", 0.0, -100000.0, 10000000.0, " frames", 1.0),
+    spec("Position X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Position Y", 88.0, -200.0, 300.0, " %", 0.2),
+    spec("Text size", 36.0, 4.0, 2000.0, " px", 0.5),
+    color("Text colour", 0xffffff),
+    spec("Box opacity", 70.0, 0.0, 100.0, " %", 0.3),
+    color("Box colour", 0x000000),
+];
+const CINEON: [ParamSpec; 5] = [
+    choice("Conversion", &["Log to linear", "Linear to log", "Log to log"]),
+    spec("10-bit black point", 95.0, 0.0, 1023.0, "", 1.0),
+    spec("10-bit white point", 685.0, 0.0, 1023.0, "", 1.0),
+    spec("Gamma", 1.7, 0.1, 5.0, "", 0.01),
+    spec("Highlight rolloff", 20.0, 0.0, 100.0, "", 0.3),
+];
+const HDR_COMPRESS: [ParamSpec; 2] = [
+    spec("Amount", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Starts at", 70.0, 10.0, 100.0, " %", 0.3),
+];
+const BALL_ACTION: [ParamSpec; 6] = [
+    spec("Scatter", 0.0, 0.0, 1000.0, " px", 0.5),
+    spec("Grid spacing", 12.0, 2.0, 400.0, " px", 0.1),
+    spec("Ball size", 90.0, 1.0, 200.0, " %", 0.3),
+    spec("Twist angle", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Light direction", 135.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
+];
+const BUBBLES: [ParamSpec; 7] = [
+    spec("Amount", 40.0, 0.0, 400.0, "", 0.5),
+    spec("Speed", 80.0, -2000.0, 2000.0, " px/s", 0.5),
+    spec("Wobble", 20.0, 0.0, 200.0, " px", 0.2),
+    spec("Bubble size", 30.0, 2.0, 1000.0, " px", 0.2),
+    spec("Size variance", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Sheen", 60.0, 0.0, 200.0, " %", 0.3),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
+];
+const DRIZZLE: [ParamSpec; 7] = [
+    spec("Drip rate", 10.0, 0.0, 200.0, " /s", 0.2),
+    spec("Longevity", 1.5, 0.1, 10.0, " s", 0.02),
+    spec("Rippling", 3.0, 1.0, 20.0, "", 0.05),
+    spec("Displacement", 8.0, 0.0, 200.0, " px", 0.1),
+    spec("Ripple spread", 100.0, 1.0, 2000.0, " px/s", 0.5),
+    spec("Light", 50.0, 0.0, 400.0, " %", 0.5),
+    spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
+];
 const DEFLICKER: [ParamSpec; 6] = [
     spec("Brightness", 100.0, 0.0, 400.0, " %", 0.2),
     spec("Red", 100.0, 0.0, 400.0, " %", 0.2),
@@ -5788,7 +6228,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 221] = [
+    pub const ALL: [EffectKind; 245] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -6010,6 +6450,30 @@ impl EffectKind {
         EffectKind::Plastic,
         EffectKind::GlassCc,
         EffectKind::RepeTile,
+        EffectKind::BlockDissolve,
+        EffectKind::GradientWipe,
+        EffectKind::IrisWipe,
+        EffectKind::LinearWipe,
+        EffectKind::RadialWipe,
+        EffectKind::VenetianBlinds,
+        EffectKind::GlassWipe,
+        EffectKind::GridWipe,
+        EffectKind::Jaws,
+        EffectKind::LightWipe,
+        EffectKind::LineSweep,
+        EffectKind::RadialScaleWipe,
+        EffectKind::ScaleWipe,
+        EffectKind::Twister,
+        EffectKind::WarpoMatic,
+        EffectKind::PosterizeTime,
+        EffectKind::TimeDifference,
+        EffectKind::Numbers,
+        EffectKind::Timecode,
+        EffectKind::CineonConverter,
+        EffectKind::HdrCompress,
+        EffectKind::BallAction,
+        EffectKind::Bubbles,
+        EffectKind::Drizzle,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -6025,6 +6489,10 @@ impl EffectKind {
             EffectKind::Hud => (hud::X, hud::Y, "centre"),
             EffectKind::BurnAway => (burn::X, burn::Y, "burn point"),
             EffectKind::Extrude => (extrude::X, extrude::Y, "vanishing point"),
+            EffectKind::IrisWipe => (iris_wipe::X, iris_wipe::Y, "iris"),
+            EffectKind::RadialWipe => (radial_wipe::X, radial_wipe::Y, "wipe's centre"),
+            EffectKind::LightWipe => (light_wipe::X, light_wipe::Y, "light's centre"),
+            EffectKind::RadialScaleWipe => (radial_scale_wipe::X, radial_scale_wipe::Y, "wipe's centre"),
             EffectKind::BurnFilm => (burn_film::X, burn_film::Y, "first burn"),
             EffectKind::Kaleida => (kaleida::X, kaleida::Y, "kaleidoscope's middle"),
             EffectKind::Beam => (beam::BX, beam::BY, "beam's end"),
@@ -6118,6 +6586,30 @@ impl EffectKind {
             EffectKind::Bevel => "Bevel",
             EffectKind::Extrude => "Extrude",
             EffectKind::Rotate3d => "Rotate",
+            EffectKind::BlockDissolve => "Block dissolve",
+            EffectKind::GradientWipe => "Gradient wipe",
+            EffectKind::IrisWipe => "Iris wipe",
+            EffectKind::LinearWipe => "Linear wipe",
+            EffectKind::RadialWipe => "Radial wipe",
+            EffectKind::VenetianBlinds => "Venetian blinds",
+            EffectKind::GlassWipe => "Glass wipe",
+            EffectKind::GridWipe => "Grid wipe",
+            EffectKind::Jaws => "Jaws",
+            EffectKind::LightWipe => "Light wipe",
+            EffectKind::LineSweep => "Line sweep",
+            EffectKind::RadialScaleWipe => "Radial scale wipe",
+            EffectKind::ScaleWipe => "Scale wipe",
+            EffectKind::Twister => "Twister",
+            EffectKind::WarpoMatic => "WarpoMatic",
+            EffectKind::PosterizeTime => "Posterize time",
+            EffectKind::TimeDifference => "Time difference",
+            EffectKind::Numbers => "Numbers",
+            EffectKind::Timecode => "Timecode",
+            EffectKind::CineonConverter => "Cineon converter",
+            EffectKind::HdrCompress => "HDR highlight compression",
+            EffectKind::BallAction => "Ball action",
+            EffectKind::Bubbles => "Bubbles",
+            EffectKind::Drizzle => "Drizzle",
             EffectKind::ColorKey => "Colour key",
             EffectKind::ColorRange => "Colour range",
             EffectKind::ColorDifferenceKey => "Colour difference key",
@@ -6306,6 +6798,30 @@ impl EffectKind {
             EffectKind::BurnAway => EffectCategory::Stylize,
             EffectKind::Extrusion3d => EffectCategory::Generate,
             EffectKind::Bend | EffectKind::Bevel | EffectKind::Extrude | EffectKind::Rotate3d => EffectCategory::Geometry,
+            EffectKind::BlockDissolve => EffectCategory::Transition,
+            EffectKind::GradientWipe => EffectCategory::Transition,
+            EffectKind::IrisWipe => EffectCategory::Transition,
+            EffectKind::LinearWipe => EffectCategory::Transition,
+            EffectKind::RadialWipe => EffectCategory::Transition,
+            EffectKind::VenetianBlinds => EffectCategory::Transition,
+            EffectKind::GlassWipe => EffectCategory::Transition,
+            EffectKind::GridWipe => EffectCategory::Transition,
+            EffectKind::Jaws => EffectCategory::Transition,
+            EffectKind::LightWipe => EffectCategory::Transition,
+            EffectKind::LineSweep => EffectCategory::Transition,
+            EffectKind::RadialScaleWipe => EffectCategory::Transition,
+            EffectKind::ScaleWipe => EffectCategory::Transition,
+            EffectKind::Twister => EffectCategory::Transition,
+            EffectKind::WarpoMatic => EffectCategory::Transition,
+            EffectKind::PosterizeTime => EffectCategory::Time,
+            EffectKind::TimeDifference => EffectCategory::Time,
+            EffectKind::Numbers => EffectCategory::Utility,
+            EffectKind::Timecode => EffectCategory::Utility,
+            EffectKind::CineonConverter => EffectCategory::Utility,
+            EffectKind::HdrCompress => EffectCategory::Utility,
+            EffectKind::BallAction => EffectCategory::Simulation,
+            EffectKind::Bubbles => EffectCategory::Simulation,
+            EffectKind::Drizzle => EffectCategory::Simulation,
             EffectKind::ColorKey => EffectCategory::Keying,
             EffectKind::ColorRange => EffectCategory::Keying,
             EffectKind::ColorDifferenceKey => EffectCategory::Keying,
@@ -6416,14 +6932,14 @@ impl EffectKind {
             EffectKind::Hud => EffectCategory::Generate,
             EffectKind::LightSweep => EffectCategory::Stylize,
             EffectKind::ElectricArcs => EffectCategory::Generate,
-            EffectKind::Echo => EffectCategory::Stylize,
+            EffectKind::Echo => EffectCategory::Time,
             EffectKind::Liquify => EffectCategory::Distort,
             EffectKind::DepthMap | EffectKind::Relight => EffectCategory::Stylize,
             EffectKind::PortraitBlur => EffectCategory::BlurSharpen,
             EffectKind::VolumetricLight => EffectCategory::Stylize,
             EffectKind::SparkleTrail => EffectCategory::Generate,
             EffectKind::LightWrap => EffectCategory::Keying,
-            EffectKind::TimeDisplacement | EffectKind::HoldFrame => EffectCategory::Stylize,
+            EffectKind::TimeDisplacement | EffectKind::HoldFrame => EffectCategory::Time,
             EffectKind::DirectionalBlur => EffectCategory::BlurSharpen,
             EffectKind::RadialBlur => EffectCategory::BlurSharpen,
             EffectKind::MotionBlur => EffectCategory::BlurSharpen,
@@ -6495,6 +7011,30 @@ impl EffectKind {
             EffectKind::Bevel => "Bevelled edges: the picture's outline (a logo or a cut-out) or the layer's whole frame lit as if raised, bright on the side towards the light and shaded on the other.",
             EffectKind::Extrude => "Flat-style extrusion: the layer's shape drawn out in a direction (a long-shadow look) or towards a vanishing point, with its sides in a darker shade of the picture or a colour of their own.",
             EffectKind::Rotate3d => "Turns the layer like a card in 3D, round X, Y and Z about a point you choose, with perspective; its back can show the picture, darkened, or nothing. Key the turns to flip or spin it.",
+            EffectKind::BlockDissolve => "The layer disappears in random blocks of a size you set, feathered or hard, as the completion goes from 0 to 100 %.",
+            EffectKind::GradientWipe => "Wipes the layer away by a gradient — its own brightness (dark parts first), left to right, top to bottom, from the middle out, or a cloudy noise — with a soft edge, inverted if you like.",
+            EffectKind::IrisWipe => "A hole opens in the layer from a centre — a polygon of so many points (a circle with many), turned, feathered — growing until the layer is gone.",
+            EffectKind::LinearWipe => "Wipes the layer away in a straight line at any angle, feathered.",
+            EffectKind::RadialWipe => "Wipes the layer away round a centre like a clock's hand — clockwise, anticlockwise or both ways — from a start angle, feathered.",
+            EffectKind::VenetianBlinds => "The layer closes away in stripes like Venetian blinds, at an angle and width, feathered.",
+            EffectKind::GlassWipe => "The layer melts away like glass, darkest parts first: the picture bends and refracts along the moving edge as it goes.",
+            EffectKind::GridWipe => "The layer is cut into a grid of tiles, and each closes away — like doors, rounding in, or shrinking rectangles — together, turned at an angle, with a border between.",
+            EffectKind::Jaws => "The layer splits along a line into two halves with toothed edges — spikes, robot jaws, blocks or waves — that pull apart as the completion goes up.",
+            EffectKind::LightWipe => "A hole of light opens in the layer — a glowing circle, square or pair of doors growing from a centre — its edge bright in a colour (or the picture's own), until the layer is gone.",
+            EffectKind::LineSweep => "The layer is cut into slanted lines that sweep away one after another across it, in a direction, at a thickness.",
+            EffectKind::RadialScaleWipe => "A round hole opens from a centre, the picture round its edge swelling outwards as if pushed by a lens, until the layer is gone.",
+            EffectKind::ScaleWipe => "Stretches the layer away from a line through a centre — everything past it smeared out in a direction until it's gone.",
+            EffectKind::Twister => "The layer twists over like a ribbon round an axis, from one end to the other, showing its back (the picture, darkened, or nothing) as it turns.",
+            EffectKind::WarpoMatic => "The layer warps away by its own brightness: as the completion rises, the picture twists, stretches or splits along its light and dark and dissolves, smoothly.",
+            EffectKind::PosterizeTime => "Steps the layer's motion at a lower frame rate of its own — each frame held until the next step — for stop-motion, choppy or strobing looks.",
+            EffectKind::TimeDifference => "Shows how the layer differs from itself a moment later (or earlier): still parts go black and only what moves stays, bright — for motion mattes and ghostly, edgy looks.",
+            EffectKind::Numbers => "Draws a number on the layer — a value of your own (keyframe it to count up), a random number changing each frame, or the time — with decimal places, at a place, size and colour, on a box if you like.",
+            EffectKind::Timecode => "Burns the layer's timecode (hours, minutes, seconds and frames), its frame count, or its time in seconds into the picture, at a frame rate, from a starting offset, on a box — for review copies and dailies.",
+            EffectKind::CineonConverter => "Converts between log-encoded film scans (Cineon and DPX) and ordinary video: a 10-bit black point, white point and gamma, with the highlights rolled off softly — log to linear, linear to log, or log to log.",
+            EffectKind::HdrCompress => "Brings over-bright (HDR) highlights back into range smoothly, by an amount, instead of clipping them to flat white — keeps detail in skies, lights and fire from HDR and RAW footage.",
+            EffectKind::BallAction => "Rebuilds the layer from a grid of shiny balls, each the colour of the picture where it sits, scattered and twisted about as you key them — for dissolving into beads or assembling from them.",
+            EffectKind::Bubbles => "Soap bubbles rising over the layer, wobbling as they go, each a lens that shows the picture behind it with a rainbow sheen and a highlight: how many, how big, how fast.",
+            EffectKind::Drizzle => "Raindrops falling on the layer as on a pond: ripples spreading from random spots, bending the picture and catching the light, so many a second, lasting a while.",
             EffectKind::ColorKey => "Keys out one colour (and those within a tolerance of it) — the simplest key, for flat, evenly lit backgrounds — with the edge thinned or spread and feathered.",
             EffectKind::ColorRange => "Keys out a range of colours set by a minimum and maximum in Lab, YUV or RGB — a screen with uneven lighting or a range of shades — with fuzziness at its edges.",
             EffectKind::ColorDifferenceKey => "A blue- or green-screen key from how much the screen colour stands above the other two channels — fine with hair, smoke and glass — with black and white points and gamma for the matte, or the matte shown.",
@@ -6757,6 +7297,30 @@ impl EffectKind {
             EffectKind::Bevel => &BEVEL,
             EffectKind::Extrude => &EXTRUDE,
             EffectKind::Rotate3d => &ROTATE3D,
+            EffectKind::BlockDissolve => &BLOCK_DISSOLVE,
+            EffectKind::GradientWipe => &GRADIENT_WIPE,
+            EffectKind::IrisWipe => &IRIS_WIPE,
+            EffectKind::LinearWipe => &LINEAR_WIPE,
+            EffectKind::RadialWipe => &RADIAL_WIPE,
+            EffectKind::VenetianBlinds => &VENETIAN_BLINDS,
+            EffectKind::GlassWipe => &GLASS_WIPE,
+            EffectKind::GridWipe => &GRID_WIPE,
+            EffectKind::Jaws => &JAWS,
+            EffectKind::LightWipe => &LIGHT_WIPE,
+            EffectKind::LineSweep => &LINE_SWEEP,
+            EffectKind::RadialScaleWipe => &RADIAL_SCALE_WIPE,
+            EffectKind::ScaleWipe => &SCALE_WIPE,
+            EffectKind::Twister => &TWISTER,
+            EffectKind::WarpoMatic => &WARPOMATIC,
+            EffectKind::PosterizeTime => &POSTERIZE_TIME,
+            EffectKind::TimeDifference => &TIME_DIFFERENCE,
+            EffectKind::Numbers => &NUMBERS,
+            EffectKind::Timecode => &TIMECODE,
+            EffectKind::CineonConverter => &CINEON,
+            EffectKind::HdrCompress => &HDR_COMPRESS,
+            EffectKind::BallAction => &BALL_ACTION,
+            EffectKind::Bubbles => &BUBBLES,
+            EffectKind::Drizzle => &DRIZZLE,
             EffectKind::ColorKey => &COLOR_KEY,
             EffectKind::ColorRange => &COLOR_RANGE,
             EffectKind::ColorDifferenceKey => &COLOR_DIFFERENCE_KEY,
@@ -7103,6 +7667,30 @@ impl EffectValues {
             EffectKind::Bevel => v[bevel::WIDTH] <= 0.0 || v[bevel::INTENSITY] == 0.0,
             EffectKind::Extrude => v[extrude::LENGTH] <= 0.0,
             EffectKind::Rotate3d => v[rotate3d::TURN_X] == 0.0 && v[rotate3d::TURN_Y] == 0.0 && v[rotate3d::TURN_Z] == 0.0 && v[rotate3d::SIZE] == 100.0 && v[rotate3d::PUSH] == 0.0,
+            EffectKind::BlockDissolve => v[block_dissolve::COMPLETION] <= 0.0,
+            EffectKind::GradientWipe => v[gradient_wipe::COMPLETION] <= 0.0,
+            EffectKind::IrisWipe => v[iris_wipe::COMPLETION] <= 0.0,
+            EffectKind::LinearWipe => v[linear_wipe::COMPLETION] <= 0.0,
+            EffectKind::RadialWipe => v[radial_wipe::COMPLETION] <= 0.0,
+            EffectKind::VenetianBlinds => v[venetian_blinds::COMPLETION] <= 0.0,
+            EffectKind::GlassWipe => v[glass_wipe::COMPLETION] <= 0.0,
+            EffectKind::GridWipe => v[grid_wipe::COMPLETION] <= 0.0,
+            EffectKind::Jaws => v[jaws::COMPLETION] <= 0.0,
+            EffectKind::LightWipe => v[light_wipe::COMPLETION] <= 0.0,
+            EffectKind::LineSweep => v[line_sweep::COMPLETION] <= 0.0,
+            EffectKind::RadialScaleWipe => v[radial_scale_wipe::COMPLETION] <= 0.0,
+            EffectKind::ScaleWipe => v[scale_wipe::STRETCH] <= 0.0,
+            EffectKind::Twister => v[twister::COMPLETION] <= 0.0,
+            EffectKind::WarpoMatic => v[warpomatic::COMPLETION] <= 0.0,
+            EffectKind::PosterizeTime => false,
+            EffectKind::TimeDifference => v[time_difference::OFFSET] == 0.0,
+            EffectKind::Numbers => false,
+            EffectKind::Timecode => false,
+            EffectKind::CineonConverter => false,
+            EffectKind::HdrCompress => v[hdr_compress::AMOUNT] <= 0.0,
+            EffectKind::BallAction => false,
+            EffectKind::Bubbles => v[bubbles::AMOUNT] <= 0.0,
+            EffectKind::Drizzle => v[drizzle::RATE] <= 0.0,
             EffectKind::ColorKey => v[color_key::TOLERANCE] <= 0.0,
             EffectKind::ColorRange => false,
             EffectKind::ColorDifferenceKey => false,
@@ -7312,6 +7900,10 @@ impl EffectValues {
             || (self.kind == EffectKind::Portal && (v[portal::OPEN] > 0.0))
             || (self.kind == EffectKind::Hud && (true))
             || (self.kind == EffectKind::LightSweep && (v[sweep::POSITION] < 0.0))
+            || (self.kind == EffectKind::Numbers && (v[numbers::TYPE] >= 0.5))
+            || (self.kind == EffectKind::Timecode && (true))
+            || (self.kind == EffectKind::Bubbles && (v[bubbles::SPEED] != 0.0 || v[bubbles::WOBBLE] > 0.0))
+            || (self.kind == EffectKind::Drizzle && (true))
             || (self.kind == EffectKind::Scatter && (v[scatter::RANDOM] >= 0.5))
             || (self.kind == EffectKind::CellPattern && (v[cell_pattern::SPEED] != 0.0))
             || (self.kind == EffectKind::RadioWaves && (true))
@@ -7654,7 +8246,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace | EffectKind::Deflicker | EffectKind::ChannelMixer | EffectKind::ShiftChannels | EffectKind::SetChannels | EffectKind::ColorBalance | EffectKind::ChangeColor | EffectKind::ColorOffset | EffectKind::Kernel | EffectKind::Exposure | EffectKind::SelectiveColor | EffectKind::CornerPin | EffectKind::PowerPin | EffectKind::MeshWarp | EffectKind::Offset | EffectKind::OpticsCompensation | EffectKind::Griddler | EffectKind::MotionTile | EffectKind::Extract => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace | EffectKind::Deflicker | EffectKind::ChannelMixer | EffectKind::ShiftChannels | EffectKind::SetChannels | EffectKind::ColorBalance | EffectKind::ChangeColor | EffectKind::ColorOffset | EffectKind::Kernel | EffectKind::Exposure | EffectKind::SelectiveColor | EffectKind::CornerPin | EffectKind::PowerPin | EffectKind::MeshWarp | EffectKind::Offset | EffectKind::OpticsCompensation | EffectKind::Griddler | EffectKind::MotionTile | EffectKind::Extract | EffectKind::BlockDissolve | EffectKind::GradientWipe | EffectKind::IrisWipe | EffectKind::LinearWipe | EffectKind::RadialWipe | EffectKind::VenetianBlinds | EffectKind::GlassWipe | EffectKind::GridWipe | EffectKind::Jaws | EffectKind::LightWipe | EffectKind::LineSweep | EffectKind::RadialScaleWipe | EffectKind::ScaleWipe | EffectKind::Twister | EffectKind::WarpoMatic => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
                 // Its trail is worked out with the clip (see sparkle's tests).

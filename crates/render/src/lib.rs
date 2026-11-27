@@ -724,7 +724,7 @@ impl Compositor {
                 (entry, p)
             })
             .collect();
-        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent", "fs_gradient_map", "fs_aurora", "fs_nebula", "fs_clouds", "fs_burn", "fs_deflicker", "fs_rotate3d", "fs_bend", "fs_bevel", "fs_extrude", "fs_extrusion3d", "fs_color_key", "fs_color_range", "fs_color_difference_key", "fs_linear_color_key", "fs_extract", "fs_spill_suppressor", "fs_brush_strokes", "fs_cartoon", "fs_emboss", "fs_color_emboss", "fs_find_edges", "fs_mosaic_blocks", "fs_posterize", "fs_roughen_edges", "fs_scatter", "fs_texturize", "fs_threshold", "fs_block_load", "fs_burn_film", "fs_hex_tile", "fs_kaleida", "fs_mr_smoothie", "fs_plastic", "fs_glass_cc", "fs_repe_tile", "fs_matte_view", "fs_four_color", "fs_beam", "fs_cell_pattern", "fs_checkerboard", "fs_circle", "fs_ellipse", "fs_fill_colour", "fs_grid", "fs_radio_waves", "fs_threads", "fs_light_burst", "fs_curl_noise", "fs_noise", "fs_noise_hls", "fs_median", "fs_dust_scratches", "fs_remove_grain", "fs_corner_pin", "fs_power_pin", "fs_displacement_map", "fs_magnify", "fs_mesh_warp", "fs_offset", "fs_optics", "fs_spherize", "fs_smear", "fs_warp", "fs_bender", "fs_blobbylize", "fs_flo_motion", "fs_lens_cc", "fs_page_turn", "fs_slant", "fs_split", "fs_tiler", "fs_griddler", "fs_ripple_pulse", "fs_motion_tile", "fs_glasses3d", "fs_radial_shadow", "fs_cylinder", "fs_sphere", "fs_smart_blur", "fs_lens_blur", "fs_vector_blur", "fs_arithmetic", "fs_blend_colour", "fs_calculations", "fs_channel_mixer", "fs_invert", "fs_shift_channels", "fs_set_channels", "fs_set_matte", "fs_solid_composite", "fs_change_color", "fs_change_to_color", "fs_color_balance", "fs_exposure", "fs_leave_color", "fs_photo_filter", "fs_selective_color", "fs_tint", "fs_black_white", "fs_color_neutralizer", "fs_color_offset", "fs_toner", "fs_threshold_rgb", "fs_kernel", "fs_video_limiter", "fs_box_blur", "fs_channel_blur", "fs_minimax", "fs_stats"]
+        let mut fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline> = ["fs_import", "fs_import_float", "fs_from_gamma", "fs_color", "fs_blur", "fs_key", "fs_luma_key", "fs_key_choke", "fs_key_soft", "fs_key_out", "fs_key_clean", "fs_straight", "fs_matte_out", "fs_matte_steep", "fs_decon_blur", "fs_wire", "fs_vignette", "fs_levels", "fs_wheels", "fs_qualify", "fs_sharpen", "fs_bright", "fs_shadow", "fs_blade", "fs_copy", "fs_flare", "fs_shake", "fs_aberration", "fs_grain", "fs_glitch", "fs_leaks", "fs_neon_edge", "fs_halftone", "fs_crt", "fs_clear", "fs_muzzle", "fs_bullet", "fs_disintegrate", "fs_fractal", "fs_patch", "fs_rays", "fs_dirt", "fs_bulge", "fs_twirl", "fs_ripple", "fs_wave", "fs_polar", "fs_mirror", "fs_lens", "fs_film_look", "fs_film_damage", "fs_analogue", "fs_abstraction", "fs_prism", "fs_tilt_shift", "fs_scanlines", "fs_streak_src", "fs_strobe", "fs_ramp", "fs_smoke_distort", "fs_fluid_distort", "fs_energy_distort", "fs_derez", "fs_block_displace", "fs_blood", "fs_blaster", "fs_teleport", "fs_force_field", "fs_custom_flare", "fs_halation", "fs_gleam", "fs_spotlight", "fs_xray", "fs_infrared", "fs_thermal", "fs_night_vision", "fs_motion_blur", "fs_radial_blur", "fs_dir_blur", "fs_arcs", "fs_sweep", "fs_hud", "fs_portal", "fs_hologram", "fs_starfield", "fs_shockwave", "fs_heat_haze", "fs_turbulent", "fs_gradient_map", "fs_aurora", "fs_nebula", "fs_clouds", "fs_burn", "fs_deflicker", "fs_rotate3d", "fs_bend", "fs_bevel", "fs_extrude", "fs_extrusion3d", "fs_block_dissolve", "fs_gradient_wipe", "fs_iris_wipe", "fs_linear_wipe", "fs_radial_wipe", "fs_venetian_blinds", "fs_glass_wipe", "fs_grid_wipe", "fs_jaws", "fs_light_wipe", "fs_line_sweep", "fs_radial_scale_wipe", "fs_scale_wipe", "fs_twister", "fs_warpomatic", "fs_numbers", "fs_timecode", "fs_cineon", "fs_hdr_compress", "fs_ball_action", "fs_bubbles", "fs_drizzle", "fs_color_key", "fs_color_range", "fs_color_difference_key", "fs_linear_color_key", "fs_extract", "fs_spill_suppressor", "fs_brush_strokes", "fs_cartoon", "fs_emboss", "fs_color_emboss", "fs_find_edges", "fs_mosaic_blocks", "fs_posterize", "fs_roughen_edges", "fs_scatter", "fs_texturize", "fs_threshold", "fs_block_load", "fs_burn_film", "fs_hex_tile", "fs_kaleida", "fs_mr_smoothie", "fs_plastic", "fs_glass_cc", "fs_repe_tile", "fs_matte_view", "fs_four_color", "fs_beam", "fs_cell_pattern", "fs_checkerboard", "fs_circle", "fs_ellipse", "fs_fill_colour", "fs_grid", "fs_radio_waves", "fs_threads", "fs_light_burst", "fs_curl_noise", "fs_noise", "fs_noise_hls", "fs_median", "fs_dust_scratches", "fs_remove_grain", "fs_corner_pin", "fs_power_pin", "fs_displacement_map", "fs_magnify", "fs_mesh_warp", "fs_offset", "fs_optics", "fs_spherize", "fs_smear", "fs_warp", "fs_bender", "fs_blobbylize", "fs_flo_motion", "fs_lens_cc", "fs_page_turn", "fs_slant", "fs_split", "fs_tiler", "fs_griddler", "fs_ripple_pulse", "fs_motion_tile", "fs_glasses3d", "fs_radial_shadow", "fs_cylinder", "fs_sphere", "fs_smart_blur", "fs_lens_blur", "fs_vector_blur", "fs_arithmetic", "fs_blend_colour", "fs_calculations", "fs_channel_mixer", "fs_invert", "fs_shift_channels", "fs_set_channels", "fs_set_matte", "fs_solid_composite", "fs_change_color", "fs_change_to_color", "fs_color_balance", "fs_exposure", "fs_leave_color", "fs_photo_filter", "fs_selective_color", "fs_tint", "fs_black_white", "fs_color_neutralizer", "fs_color_offset", "fs_toner", "fs_threshold_rgb", "fs_kernel", "fs_video_limiter", "fs_box_blur", "fs_channel_blur", "fs_minimax", "fs_stats"]
             .into_iter()
             .map(|entry| {
                 let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1913,6 +1913,7 @@ impl Compositor {
                         }
                         cur = s;
                     }
+                    EffectKind::PosterizeTime | EffectKind::TimeDifference => {}
                     EffectKind::ColorCorrect => {
                         push("fs_color", cur, Second::None, o1, uniform(&e.values, [0.0; 2]));
                         cur = o1;
@@ -2434,6 +2435,28 @@ impl Compositor {
                     | EffectKind::Bevel
                     | EffectKind::Extrude
                     | EffectKind::Extrusion3d
+                    | EffectKind::BlockDissolve
+                    | EffectKind::GradientWipe
+                    | EffectKind::IrisWipe
+                    | EffectKind::LinearWipe
+                    | EffectKind::RadialWipe
+                    | EffectKind::VenetianBlinds
+                    | EffectKind::GlassWipe
+                    | EffectKind::GridWipe
+                    | EffectKind::Jaws
+                    | EffectKind::LightWipe
+                    | EffectKind::LineSweep
+                    | EffectKind::RadialScaleWipe
+                    | EffectKind::ScaleWipe
+                    | EffectKind::Twister
+                    | EffectKind::WarpoMatic
+                    | EffectKind::Numbers
+                    | EffectKind::Timecode
+                    | EffectKind::CineonConverter
+                    | EffectKind::HdrCompress
+                    | EffectKind::BallAction
+                    | EffectKind::Bubbles
+                    | EffectKind::Drizzle
                     | EffectKind::ColorKey
                     | EffectKind::ColorRange
                     | EffectKind::ColorDifferenceKey
@@ -2631,6 +2654,28 @@ impl Compositor {
                             EffectKind::Bevel => "fs_bevel",
                             EffectKind::Extrude => "fs_extrude",
                             EffectKind::Extrusion3d => "fs_extrusion3d",
+                            EffectKind::BlockDissolve => "fs_block_dissolve",
+                            EffectKind::GradientWipe => "fs_gradient_wipe",
+                            EffectKind::IrisWipe => "fs_iris_wipe",
+                            EffectKind::LinearWipe => "fs_linear_wipe",
+                            EffectKind::RadialWipe => "fs_radial_wipe",
+                            EffectKind::VenetianBlinds => "fs_venetian_blinds",
+                            EffectKind::GlassWipe => "fs_glass_wipe",
+                            EffectKind::GridWipe => "fs_grid_wipe",
+                            EffectKind::Jaws => "fs_jaws",
+                            EffectKind::LightWipe => "fs_light_wipe",
+                            EffectKind::LineSweep => "fs_line_sweep",
+                            EffectKind::RadialScaleWipe => "fs_radial_scale_wipe",
+                            EffectKind::ScaleWipe => "fs_scale_wipe",
+                            EffectKind::Twister => "fs_twister",
+                            EffectKind::WarpoMatic => "fs_warpomatic",
+                            EffectKind::Numbers => "fs_numbers",
+                            EffectKind::Timecode => "fs_timecode",
+                            EffectKind::CineonConverter => "fs_cineon",
+                            EffectKind::HdrCompress => "fs_hdr_compress",
+                            EffectKind::BallAction => "fs_ball_action",
+                            EffectKind::Bubbles => "fs_bubbles",
+                            EffectKind::Drizzle => "fs_drizzle",
                             EffectKind::ColorKey => "fs_color_key",
                             EffectKind::ColorRange => "fs_color_range",
                             EffectKind::ColorDifferenceKey => "fs_color_difference_key",

@@ -8361,3 +8361,684 @@ fn fs_repe_tile(in: VsOut) -> @location(0) vec4<f32> {
     }
     return textureSampleLevel(src, src_sampler, to_tex(t), 0.0);
 }
+
+// ---- Batch: transitions, time, utility, simulation ----
+
+// The layer kept by a transition's map value `g` (0 goes first, 1 last) at completion t,
+// with a soft band `soft` wide (in map units).
+fn tr_keep(g: f32, t: f32, soft: f32) -> f32 {
+    if (t <= 0.0) {
+        return 1.0;
+    }
+    if (t >= 1.0) {
+        return 0.0;
+    }
+    let s = max(soft, 1e-4);
+    // (The band slides from below 0 to above 1 over the transition.)
+    let edge = t * (1.0 + s) - s * 0.5;
+    return smoothstep(edge - s * 0.5, edge + s * 0.5, g);
+}
+
+// Block dissolve: p0 = (completion %, width px, height px, feather %), p1.x = seed.
+@fragment
+fn fs_block_dissolve(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let cell = floor(dx_q(in.uv) / max(vec2(fx.p0.y, fx.p0.z), vec2(1.0)));
+    let g = gn_rand2(cell, fx.p1.x).x;
+    return c * tr_keep(g, fx.p0.x / 100.0, fx.p0.w / 100.0 * 0.3);
+}
+
+// Gradient wipe: p0 = (completion %, softness %, gradient, invert), p1.x = noise size px.
+@fragment
+fn fs_gradient_wipe(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    var g = 0.0;
+    switch u32(round(fx.p0.z)) {
+        case 1u: { g = in.uv.x; }
+        case 2u: { g = in.uv.y; }
+        case 3u: { g = clamp(length(in.uv - 0.5) * 1.414, 0.0, 1.0); }
+        case 4u: { g = fbm2(3u, dx_q(in.uv) / max(fx.p1.x, 1.0)); }
+        default: { g = dot(cx_disp(c), LUMA); }
+    }
+    if (fx.p0.w >= 0.5) {
+        g = 1.0 - g;
+    }
+    return c * tr_keep(g, fx.p0.x / 100.0, fx.p0.y / 100.0);
+}
+
+// Iris wipe: p0 = (completion %, centre x, y %, points), p1 = (rotation °, feather px).
+@fragment
+fn fs_iris_wipe(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let size = dx_size();
+    let rel = dx_q(in.uv) - fx.p0.yz / 100.0 * size;
+    let n = clamp(round(fx.p0.w), 3.0, 64.0);
+    let seg = 6.2831853 / n;
+    let a = atan2(rel.y, rel.x) - radians(fx.p1.x);
+    let m = ((a % seg) + seg) % seg - seg * 0.5;
+    // Distance as the polygon measures it (its apothem direction).
+    let d = length(rel) * cos(m) / cos(seg * 0.5);
+    // Just big enough to clear the layer from wherever the centre is (its farthest corner).
+    let c0 = fx.p0.yz / 100.0 * size;
+    let corner = max(abs(c0), abs(size - c0));
+    let far = length(corner) / cos(seg * 0.5) + fx.p1.y;
+    let r = fx.p0.x / 100.0 * far;
+    let f = max(fx.p1.y, 0.5);
+    return c * smoothstep(r - f * 0.5, r + f * 0.5, d);
+}
+
+// Linear wipe: p0 = (completion %, angle °, feather px). At 90° it wipes from left to right.
+@fragment
+fn fs_linear_wipe(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let size = dx_size();
+    let a = radians(fx.p0.y - 90.0);
+    let dir = vec2(cos(a), sin(a));
+    let q = dx_q(in.uv) - size * 0.5;
+    let half = abs(dir.x) * size.x * 0.5 + abs(dir.y) * size.y * 0.5;
+    let f = max(fx.p0.z, 0.5);
+    let pos = dot(q, dir);
+    let edge = -half - f + (2.0 * half + 2.0 * f) * fx.p0.x / 100.0;
+    return c * smoothstep(edge - f * 0.5, edge + f * 0.5, pos);
+}
+
+// Radial wipe: p0 = (completion %, start °, centre x, y %), p1 = (wipe, feather °).
+@fragment
+fn fs_radial_wipe(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let rel = dx_q(in.uv) - fx.p0.zw / 100.0 * dx_size();
+    // Clockwise from the start angle (0 straight up), 0–1.
+    var a = (atan2(rel.x, -rel.y) - radians(fx.p0.y)) / 6.2831853;
+    a = fract(a);
+    var g = a;
+    switch u32(round(fx.p1.x)) {
+        case 1u: { g = 1.0 - a; }
+        case 2u: { g = 1.0 - abs(1.0 - 2.0 * a); }
+        default: {}
+    }
+    return c * tr_keep(g, fx.p0.x / 100.0, fx.p1.y / 360.0);
+}
+
+// Venetian blinds: p0 = (completion %, direction °, width px, feather px).
+@fragment
+fn fs_venetian_blinds(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let a = radians(fx.p0.y);
+    let q = dx_q(in.uv);
+    let pos = dot(q, vec2(-sin(a), cos(a)));
+    let w = max(fx.p0.z, 1.0);
+    let f = fract(pos / w);
+    let feather = max(fx.p0.w, 0.5) / w;
+    let t = fx.p0.x / 100.0;
+    return c * select(1.0 - smoothstep(1.0 - t - feather * 0.5, 1.0 - t + feather * 0.5, f), 0.0, t >= 1.0);
+}
+
+// Glass wipe: p0 = (completion %, softness %, displacement px).
+@fragment
+fn fs_glass_wipe(in: VsOut) -> @location(0) vec4<f32> {
+    let px = cx_px();
+    let g = st_lum(in.uv);
+    let t = fx.p0.x / 100.0;
+    let soft = max(fx.p0.y / 100.0, 0.02);
+    let keep = tr_keep(g, t, soft);
+    // Near the edge, the picture bends along the brightness's slope.
+    let band = keep * (1.0 - keep) * 4.0;
+    let grad = vec2(st_lum(in.uv + vec2(2.0, 0.0) * px) - st_lum(in.uv - vec2(2.0, 0.0) * px), st_lum(in.uv + vec2(0.0, 2.0) * px) - st_lum(in.uv - vec2(0.0, 2.0) * px));
+    let c = cx_at(in.uv + grad * fx.p0.z * band * px * 4.0);
+    return c * keep;
+}
+
+// Grid wipe: p0 = (completion %, centre x, y %, rotation °), p1 = (border px, tiles across, shape, reverse).
+@fragment
+fn fs_grid_wipe(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let size = dx_size();
+    let a = radians(fx.p0.w);
+    let rel0 = dx_q(in.uv) - fx.p0.yz / 100.0 * size;
+    let rel = vec2(rel0.x * cos(a) + rel0.y * sin(a), -rel0.x * sin(a) + rel0.y * cos(a));
+    let tile_w = size.x / max(round(fx.p1.y), 1.0);
+    let f = fract(rel / tile_w + 0.5) - 0.5;
+    var t = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let border = fx.p1.x / tile_w;
+    var d = 0.0;
+    switch u32(round(fx.p1.z)) {
+        case 0u: { d = abs(f.x) * 2.0; }
+        case 1u: { d = length(f) * 1.414; }
+        default: { d = max(abs(f.x), abs(f.y)) * 2.0; }
+    }
+    var keep = select(0.0, 1.0, d > t);
+    if (fx.p1.w >= 0.5) {
+        keep = select(0.0, 1.0, d < 1.0 - t);
+    }
+    if (t > 0.0 && max(abs(f.x), abs(f.y)) * 2.0 > 1.0 - border) {
+        keep = 0.0;
+    }
+    return c * keep;
+}
+
+// Jaws: p0 = (completion %, centre x, y %, direction °), p1 = (height px, width px, shape).
+@fragment
+fn fs_jaws(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let a = radians(fx.p0.w);
+    let along = vec2(cos(a), sin(a));
+    let across = vec2(-along.y, along.x);
+    let q = dx_q(in.uv);
+    let c0 = fx.p0.yz / 100.0 * size;
+    let t = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    // Far enough apart by the end that both halves have left the layer.
+    let reach = abs(across.x) * size.x * 0.5 + abs(across.y) * size.y * 0.5 + abs(dot(c0 - size * 0.5, across));
+    let open = t * (reach + fx.p1.x);
+    let h = max(fx.p1.x, 0.0);
+    let w = max(fx.p1.y, 1.0);
+    // Each half is moved away by `open`; the pixel is in whichever half covers it.
+    for (var side = 0; side < 2; side = side + 1) {
+        let sg = select(1.0, -1.0, side == 1);
+        let src = q - across * sg * open;
+        let u = dot(src - c0, along);
+        let v = dot(src - c0, across) * sg;
+        let f = fract(u / w + select(0.0, 0.5, side == 1));
+        var tooth = 0.0;
+        switch u32(round(fx.p1.z)) {
+            case 1u: { tooth = select(0.0, h, f < 0.5) * (0.5 + 0.5 * step(0.25, abs(f - 0.25))); }
+            case 2u: { tooth = select(0.0, h, f < 0.5); }
+            case 3u: { tooth = (0.5 + 0.5 * sin(f * 6.2831853)) * h; }
+            default: { tooth = (1.0 - abs(2.0 * f - 1.0)) * h; }
+        }
+        // This half: the side beyond the line, its teeth reaching back over it.
+        if (v + tooth * 0.5 - h * 0.25 > 0.0) {
+            return dx_at(src);
+        }
+    }
+    return vec4(0.0);
+}
+
+// Light wipe: p0 = (completion %, centre x, y %, intensity %), p1 = (shape, direction °, colour from source, colour), p2.x = reverse.
+@fragment
+fn fs_light_wipe(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let size = dx_size();
+    var rel = dx_q(in.uv) - fx.p0.yz / 100.0 * size;
+    let a = radians(fx.p1.y);
+    rel = vec2(rel.x * cos(a) + rel.y * sin(a), -rel.x * sin(a) + rel.y * cos(a));
+    var d = length(rel);
+    switch u32(round(fx.p1.x)) {
+        case 1u: { d = max(abs(rel.x), abs(rel.y)) * 1.2; }
+        case 2u: { d = abs(rel.x) * 2.0; }
+        default: {}
+    }
+    var t = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    // Just far enough to clear the layer from the centre (its farthest corner, in the shape's measure).
+    let c0 = fx.p0.yz / 100.0 * size;
+    let corner = length(max(abs(c0), abs(size - c0)));
+    let glow_w = max(length(size) * 0.03, 3.0);
+    let far = corner * select(1.2, 2.0, u32(round(fx.p1.x)) == 2u) + glow_w * 2.0;
+    let r = t * far;
+    var keep = smoothstep(r - 1.0, r + 1.0, d);
+    var glow = exp(-pow((d - r) / glow_w, 2.0)) * select(0.0, 1.0, t > 0.0 && t < 1.0);
+    if (fx.p2.x >= 0.5) {
+        keep = 1.0 - smoothstep(far - r - 1.0, far - r + 1.0, d);
+        glow = exp(-pow((d - (far - r)) / glow_w, 2.0)) * select(0.0, 1.0, t > 0.0 && t < 1.0);
+    }
+    let col = select(rgb_of(fx.p1.w), unpremul(c), fx.p1.z >= 0.5);
+    let light = col * glow * fx.p0.w / 100.0 * 1.5;
+    let o = c * keep;
+    return vec4(o.rgb + light * max(c.a, 0.0), max(o.a, min(glow, 1.0) * c.a));
+}
+
+// Line sweep: p0 = (completion %, direction °, thickness px, slant %), p1.x = flip.
+@fragment
+fn fs_line_sweep(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let size = dx_size();
+    let a = radians(fx.p0.y);
+    let dir = vec2(cos(a), sin(a));
+    let q = dx_q(in.uv) - size * 0.5;
+    let half = abs(dir.x) * size.x * 0.5 + abs(dir.y) * size.y * 0.5;
+    var pos = (dot(q, dir) + half) / (2.0 * half);
+    if (fx.p1.x >= 0.5) {
+        pos = 1.0 - pos;
+    }
+    let stripe = fract(dot(q, vec2(-dir.y, dir.x)) / max(fx.p0.z, 1.0));
+    // Each stripe's own share of the sweep: the slant puts some ahead of others.
+    let g = pos * (1.0 - fx.p0.w / 100.0) + stripe * fx.p0.w / 100.0;
+    return c * tr_keep(g, fx.p0.x / 100.0, 0.001);
+}
+
+// Radial scale wipe: p0 = (completion %, centre x, y %, reverse).
+@fragment
+fn fs_radial_scale_wipe(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let centre = fx.p0.yz / 100.0 * size;
+    let rel = dx_q(in.uv) - centre;
+    let d = length(rel);
+    let t = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    // Just far enough to clear the layer (its farthest corner from the centre).
+    let far = length(max(abs(centre), abs(size - centre))) + 1.0;
+    let r = t * far;
+    let band = far * 0.25;
+    var keep = smoothstep(r - 1.0, r + 1.0, d);
+    if (fx.p0.w >= 0.5) {
+        keep = 1.0 - smoothstep(far - r - 1.0, far - r + 1.0, d);
+    }
+    // Just outside the hole, the picture is pulled out from nearer the middle.
+    let k = clamp((d - r) / band, 0.0, 1.0);
+    let src_d = mix(r * 0.3 + d * 0.7, d, k);
+    let src = centre + select(vec2(0.0), rel / d, d > 1e-4) * select(src_d, d, fx.p0.w >= 0.5);
+    return dx_at(src) * keep;
+}
+
+// Scale wipe: p0 = (stretch %, centre x, y %, direction °).
+@fragment
+fn fs_scale_wipe(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let centre = fx.p0.yz / 100.0 * size;
+    let a = radians(fx.p0.w);
+    let dir = vec2(cos(a), sin(a));
+    let q = dx_q(in.uv);
+    let along = dot(q - centre, dir);
+    if (along <= 0.0) {
+        return dx_at(q);
+    }
+    let k = 1.0 + fx.p0.x / 100.0 * 10.0;
+    return dx_at(q - dir * along * (1.0 - 1.0 / k));
+}
+
+// Twister: p0 = (completion %, back, shading, centre x), p1 = (centre y %, axis °).
+// The axis runs through the centre; each slice across it turns about it, the first slices
+// first, half a turn each by the end.
+@fragment
+fn fs_twister(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let centre = vec2(fx.p0.w, fx.p1.x) / 100.0 * size;
+    let a = radians(fx.p1.y);
+    let along = vec2(cos(a), sin(a));
+    let across = vec2(-along.y, along.x);
+    let rel = dx_q(in.uv) - centre;
+    let u = dot(rel, along);
+    let v = dot(rel, across);
+    let half = abs(along.x) * size.x * 0.5 + abs(along.y) * size.y * 0.5;
+    let pos = (u + half) / (2.0 * half);
+    let t = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let th = clamp((t * 2.0 - pos) * 1.0, 0.0, 1.0) * 3.14159265;
+    let k = cos(th);
+    if (abs(k) < 1e-3) {
+        return vec4(0.0);
+    }
+    let src_v = v / k;
+    var col = dx_at(centre + along * u + across * src_v);
+    let back = k < 0.0;
+    let mode = u32(round(fx.p0.y));
+    if (back && mode == 2u) {
+        return vec4(0.0);
+    }
+    if (back && mode == 1u) {
+        col = vec4(col.rgb * 0.35, col.a);
+    }
+    if (fx.p0.z >= 0.5) {
+        col = vec4(col.rgb * (0.4 + 0.6 * abs(k)), col.a);
+    }
+    return col;
+}
+
+fn wo_lum(uv: vec2<f32>, s: f32) -> f32 {
+    var l = st_lum(uv);
+    for (var i = 0; i < 6; i = i + 1) {
+        let a = f32(i) * 1.0472;
+        l = l + st_lum(uv + vec2(cos(a), sin(a)) * s * cx_px());
+    }
+    return l / 7.0;
+}
+
+// WarpoMatic: p0 = (completion %, smoothness px, amount px, direction), p1.x = blend span %.
+@fragment
+fn fs_warpomatic(in: VsOut) -> @location(0) vec4<f32> {
+    let px = cx_px();
+    let s = max(fx.p0.y, 0.5);
+    let t = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let g = vec2(wo_lum(in.uv + vec2(s, 0.0) * px, s) - wo_lum(in.uv - vec2(s, 0.0) * px, s), wo_lum(in.uv + vec2(0.0, s) * px, s) - wo_lum(in.uv - vec2(0.0, s) * px, s));
+    var dir = g;
+    switch u32(round(fx.p0.w)) {
+        case 0u: { dir = vec2(-g.y, g.x); }
+        case 2u: { dir = -g; }
+        case 3u: { dir = vec2(g.y, -g.x) + g; }
+        default: {}
+    }
+    let warp = dir * fx.p0.z * sin(t * 3.14159265) * 8.0;
+    let c = cx_at(in.uv + warp * px);
+    let l = wo_lum(in.uv, s);
+    return c * tr_keep(l, t, max(fx.p1.x / 100.0, 0.01));
+}
+
+// The number being drawn: written once per pixel into these (characters right to left).
+var<private> nm_digits: array<i32, 24>;
+var<private> nm_count: i32;
+
+fn ut_char(k: i32) -> i32 {
+    if (k < 0 || k >= nm_count) {
+        return 14;
+    }
+    return nm_digits[nm_count - 1 - k];
+}
+
+fn nm_push(ch: i32) {
+    if (nm_count < 24) {
+        nm_digits[nm_count] = ch;
+        nm_count = nm_count + 1;
+    }
+}
+
+fn nm_two(v: i32) {
+    nm_push(v % 10);
+    nm_push((v / 10) % 10);
+}
+
+// A 3 × 5 pixel font for numbers: 0–9, ':', '.', '-', '/', ' ' (bits row by row, top-left first).
+fn ut_glyph(ch: i32, cell: vec2<i32>) -> bool {
+    var g = array<u32, 15>(31599u, 11415u, 29671u, 29647u, 23497u, 31183u, 31215u, 29257u, 31727u, 31695u, 1040u, 2u, 448u, 4772u, 0u);
+    if (ch < 0 || ch > 14 || cell.x < 0 || cell.x > 2 || cell.y < 0 || cell.y > 4) {
+        return false;
+    }
+    let bit = 14 - (cell.y * 3 + cell.x);
+    return ((g[ch] >> u32(bit)) & 1u) == 1u;
+}
+
+// Draws `count` characters (from ut_char) at `pos` (top left), `size` px high, with a box behind.
+fn ut_draw(c: vec4<f32>, q: vec2<f32>, pos: vec2<f32>, size: f32, count: i32, col: vec3<f32>, box_col: vec3<f32>, box_a: f32) -> vec4<f32> {
+    let unit = max(size, 2.0) / 5.0;
+    let local = (q - pos) / unit;
+    let width = f32(count) * 4.0 - 1.0;
+    var o = c;
+    // The box (a unit of padding round the text).
+    if (box_a > 0.0 && local.x > -1.0 && local.x < width + 1.0 && local.y > -1.0 && local.y < 6.0) {
+        o = vec4(box_col * box_a, box_a) + o * (1.0 - box_a);
+    }
+    if (local.x < 0.0 || local.y < 0.0 || local.x >= width || local.y >= 5.0) {
+        return o;
+    }
+    let k = i32(floor(local.x / 4.0));
+    let cx = i32(floor(local.x)) - k * 4;
+    let ch = ut_char(k);
+    if (ut_glyph(ch, vec2<i32>(cx, i32(floor(local.y))))) {
+        return vec4(col, 1.0);
+    }
+    return o;
+}
+
+// Numbers: p0 = (type, value, decimals, x %), p1 = (y %, size px, colour, box %), p2 = (box colour, fps, seed).
+@fragment
+fn fs_numbers(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let kind = u32(round(fx.p0.x));
+    let t = fx.extra.y;
+    nm_count = 0;
+    if (kind == 3u) {
+        let fps = max(round(fx.p2.y), 1.0);
+        let frames = i32(floor(max(t, 0.0) * fps + 1e-3));
+        let f = frames % i32(fps);
+        let s = (frames / i32(fps)) % 60;
+        let m = (frames / i32(fps * 60.0)) % 60;
+        let h = (frames / i32(fps * 3600.0)) % 100;
+        nm_two(f);
+        nm_push(10);
+        nm_two(s);
+        nm_push(10);
+        nm_two(m);
+        nm_push(10);
+        nm_two(h);
+    } else {
+        var v = fx.p0.y;
+        if (kind == 1u) {
+            v = gn_rand2(vec2(floor(t * 30.0), 1.0), fx.p2.z).x * max(abs(fx.p0.y), 1.0);
+        } else if (kind == 2u) {
+            v = t;
+        }
+        let dec = i32(clamp(round(fx.p0.z), 0.0, 6.0));
+        let neg = v < 0.0;
+        let scaled = round(abs(v) * pow(10.0, f32(dec)));
+        var n = min(scaled, 1.0e15);
+        var i = 0;
+        loop {
+            if (i == dec && dec > 0) {
+                nm_push(11);
+            }
+            let d = i32(n - floor(n / 10.0) * 10.0);
+            nm_push(d);
+            n = floor(n / 10.0);
+            i = i + 1;
+            if ((n < 1.0 && i > dec) || nm_count >= 22) {
+                break;
+            }
+        }
+        if (neg) {
+            nm_push(12);
+        }
+    }
+    let size = dx_size();
+    let pos = vec2(fx.p0.w, fx.p1.x) / 100.0 * size;
+    return ut_draw(c, dx_q(in.uv), pos, fx.p1.y, nm_count, rgb_of(fx.p1.z), rgb_of(fx.p2.x), fx.p1.w / 100.0);
+}
+
+// Timecode: p0 = (format, fps, start frames, x %), p1 = (y %, size px, colour, box %), p2.x = box colour.
+@fragment
+fn fs_timecode(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let fps = max(round(fx.p0.y), 1.0);
+    let frames = max(i32(floor(fx.extra.y * fps + 1e-3)) + i32(round(fx.p0.z)), 0);
+    nm_count = 0;
+    switch u32(round(fx.p0.x)) {
+        case 1u: {
+            var n = frames;
+            loop {
+                nm_push(n % 10);
+                n = n / 10;
+                if (n == 0 || nm_count >= 12) {
+                    break;
+                }
+            }
+        }
+        case 2u: {
+            let tenths = (frames * 100) / i32(fps);
+            nm_push(tenths % 10);
+            nm_push((tenths / 10) % 10);
+            nm_push(11);
+            var n = tenths / 100;
+            loop {
+                nm_push(n % 10);
+                n = n / 10;
+                if (n == 0 || nm_count >= 12) {
+                    break;
+                }
+            }
+        }
+        default: {
+            let f = frames % i32(fps);
+            let s = (frames / i32(fps)) % 60;
+            let m = (frames / i32(fps * 60.0)) % 60;
+            let h = (frames / i32(fps * 3600.0)) % 100;
+            nm_two(f);
+            nm_push(10);
+            nm_two(s);
+            nm_push(10);
+            nm_two(m);
+            nm_push(10);
+            nm_two(h);
+        }
+    }
+    let size = dx_size();
+    let unit = max(fx.p1.y, 2.0) / 5.0;
+    let width = (f32(nm_count) * 4.0 - 1.0) * unit;
+    // Centred on its position.
+    let pos = vec2(fx.p0.w, fx.p1.x) / 100.0 * size - vec2(width * 0.5, fx.p1.y * 0.5);
+    return ut_draw(c, dx_q(in.uv), pos, fx.p1.y, nm_count, rgb_of(fx.p1.z), rgb_of(fx.p2.x), fx.p1.w / 100.0);
+}
+
+// Cineon converter: p0 = (conversion, black, white (10-bit), gamma), p1.x = highlight rolloff.
+@fragment
+fn fs_cineon(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let d = cx_disp(c);
+    let black = fx.p0.y / 1023.0;
+    let white = max(fx.p0.z / 1023.0, black + 0.01);
+    let g = max(fx.p0.w, 0.1);
+    // Kodak's: 0.002 density per code value, over a film gamma of 0.6.
+    let k = 0.002 * 1023.0 / 0.6;
+    let off = pow(10.0, (black - white) * k);
+    var o = d;
+    let conv = u32(round(fx.p0.x));
+    if (conv == 0u || conv == 2u) {
+        o = (pow(vec3(10.0), (d - white) * k) - off) / (1.0 - off);
+        o = pow(max(o, vec3(0.0)), vec3(1.0 / g));
+        let roll = fx.p1.x / 100.0;
+        o = select(o, 1.0 - roll * exp(-(o - (1.0 - roll)) / max(roll, 1e-3)), o > vec3(1.0 - roll) & vec3(roll > 0.0));
+    }
+    if (conv == 1u || conv == 2u) {
+        let lin = pow(max(o, vec3(0.0)), vec3(g));
+        o = white + log(max(lin * (1.0 - off) + off, vec3(1e-6))) / log(10.0) / k;
+    }
+    return cx_out(o, c.a);
+}
+
+// HDR highlight compression: p0 = (amount %, knee %).
+@fragment
+fn fs_hdr_compress(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    let rgb = unpremul(c);
+    let knee = clamp(fx.p0.y / 100.0, 0.1, 1.0);
+    let m = max(rgb.r, max(rgb.g, rgb.b));
+    if (m <= knee) {
+        return c;
+    }
+    // Above the knee: what's left of the range shared out smoothly (a soft shoulder).
+    let room = 1.0 - knee;
+    let over = m - knee;
+    let squeezed = knee + room * over / (over + room);
+    let k = clamp(fx.p0.x / 100.0, 0.0, 1.0);
+    let target_m = mix(m, squeezed, k);
+    return vec4(rgb * (target_m / m) * c.a, c.a);
+}
+
+// Ball action: p0 = (scatter px, spacing px, size %, twist °), p1 = (light °, seed).
+@fragment
+fn fs_ball_action(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let sp = max(fx.p0.y, 2.0);
+    let rad = sp * 0.5 * fx.p0.z / 100.0;
+    let reach = i32(clamp(ceil((fx.p0.x + rad) / sp), 1.0, 4.0));
+    let base = floor(q / sp);
+    var best = vec4(0.0);
+    var best_z = 1e9;
+    for (var y = -reach; y <= reach; y = y + 1) {
+        for (var x = -reach; x <= reach; x = x + 1) {
+            let cell = base + vec2(f32(x), f32(y));
+            let home = (cell + 0.5) * sp;
+            let col = dx_at(home);
+            if (col.a < 0.05) {
+                continue;
+            }
+            let r = gn_rand2(cell, fx.p1.y) - 0.5;
+            // Twisted about the middle by its distance out, and scattered.
+            let rel = home - size * 0.5;
+            let tw = radians(fx.p0.w) * length(rel) / length(size);
+            let turned = vec2(rel.x * cos(tw) - rel.y * sin(tw), rel.x * sin(tw) + rel.y * cos(tw));
+            let centre = size * 0.5 + turned + r * 2.0 * fx.p0.x;
+            let d = q - centre;
+            let dd = dot(d, d);
+            if (dd < rad * rad && r.x < best_z) {
+                let n = vec3(d / rad, sqrt(max(1.0 - dd / (rad * rad), 0.0)));
+                let a = radians(fx.p1.x);
+                let l = normalize(vec3(cos(a), -sin(a), 1.0));
+                let lit = 0.35 + 0.65 * max(dot(n, l), 0.0);
+                let spec = pow(max(dot(n, normalize(l + vec3(0.0, 0.0, 1.0))), 0.0), 40.0);
+                let edge = clamp((rad - sqrt(dd)) * 1.5, 0.0, 1.0);
+                best = vec4((unpremul(col) * lit + vec3(spec * 0.6)) * edge, edge);
+                best_z = r.x;
+            }
+        }
+    }
+    return best;
+}
+
+// Bubbles: p0 = (amount, speed px/s, wobble px, size px), p1 = (size variance %, sheen %, seed).
+@fragment
+fn fs_bubbles(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let c = cx_at(in.uv);
+    let t = fx.extra.y;
+    let big = max(fx.p0.w, 2.0);
+    // Bubbles live in columns a bubble or two wide; each column holds a few, rising and wrapping round.
+    let col_w = big * 2.5;
+    let n = clamp(fx.p0.x / max(size.x / col_w, 1.0), 0.0, 12.0);
+    let col = floor(q.x / col_w);
+    var acc = c;
+    for (var dc = -1; dc <= 1; dc = dc + 1) {
+        let cc = col + f32(dc);
+        for (var i = 0; i < 12; i = i + 1) {
+            if (f32(i) >= n) {
+                break;
+            }
+            let r = gn_rand2(vec2(cc, f32(i)), fx.p1.z);
+            let r2 = gn_rand2(vec2(f32(i), cc), fx.p1.z + 5.0);
+            let rad = big * 0.5 * (1.0 - fx.p1.x / 100.0 * r2.x * 0.8);
+            let span = size.y + rad * 4.0;
+            let y = size.y + rad * 2.0 - fract(r.y + t * fx.p0.y / span) * span;
+            let x = (cc + 0.5) * col_w + (r.x - 0.5) * col_w * 0.6 + sin(t * 2.0 + r2.y * 6.28) * fx.p0.z;
+            let d = q - vec2(x, y);
+            let dist = length(d);
+            if (dist < rad) {
+                let k = dist / rad;
+                // A lens: the picture behind, magnified, with a rainbow film and a rim.
+                let behind = cx_at((vec2(x, y) + d * (0.6 + 0.4 * k)) / size);
+                let film = hue_rgb(fract(k * 1.5 + r.x + t * 0.1) * 360.0) * fx.p1.y / 100.0 * 0.25 * k * k;
+                let rim = smoothstep(0.8, 1.0, k) * 0.5;
+                let hl = pow(max(1.0 - length(d / rad - vec2(-0.35, -0.35)) * 3.0, 0.0), 2.0);
+                let rgb = unpremul(behind) * 0.95 + film + vec3(rim + hl);
+                let a = max(behind.a, 0.15 + rim + hl);
+                let aa = clamp((rad - dist) * 1.5, 0.0, 1.0);
+                acc = mix(acc, vec4(rgb * a, a), aa);
+            }
+        }
+    }
+    return acc;
+}
+
+// Drizzle: p0 = (drops/s, longevity s, rippling, displacement px), p1 = (spread px/s, light %, seed).
+@fragment
+fn fs_drizzle(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let t = fx.extra.y;
+    let life = max(fx.p0.y, 0.1);
+    let rate = max(fx.p0.x, 0.0);
+    // The drops alive now: born over the last `life` seconds (at most 64).
+    let born_last = floor(t * rate);
+    let count = min(ceil(life * rate) + 1.0, 64.0);
+    var push = vec2(0.0);
+    var light = 0.0;
+    for (var i = 0.0; i < count; i = i + 1.0) {
+        let k = born_last - i;
+        if (k < 0.0) {
+            break;
+        }
+        let born = k / max(rate, 1e-3);
+        let age = t - born;
+        if (age < 0.0 || age > life) {
+            continue;
+        }
+        let r = gn_rand2(vec2(k, 3.0), fx.p1.z) * size;
+        let rel = q - r;
+        let d = length(rel);
+        let ring = age * fx.p1.x;
+        let x = (d - ring) / max(fx.p1.x * 0.08, 2.0);
+        let fade = (1.0 - age / life);
+        let wave = sin(x * fx.p0.z) * exp(-x * x * 0.5) * fade;
+        if (d > 1e-3) {
+            push = push + rel / d * wave;
+        }
+        light = light + max(wave, 0.0) * fade;
+    }
+    let c = cx_at((q + push * fx.p0.w) / size);
+    return vec4(c.rgb + vec3(light * fx.p1.y / 100.0 * 0.3) * c.a, c.a);
+}
