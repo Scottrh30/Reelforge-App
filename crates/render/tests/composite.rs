@@ -4037,3 +4037,64 @@ fn blur_channel_and_colour_effects_work() {
     let g = draw(&mut c, &colour, EffectKind::ChangeToColor, &[(change_to_color::FROM, 0xc85028 as f32), (change_to_color::TO, 0x28c850 as f32)]);
     assert!(at(&g, 80, 45)[1] > at(&g, 80, 45)[0], "{:?}", at(&g, 80, 45));
 }
+
+#[test]
+fn distort_and_perspective_effects_work() {
+    use reelforge_core::effects::*;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (160u32, 90u32);
+    // A ramp (grey 20 to 235), left to right.
+    let ramp: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| { let v = (20 + x * 215 / (w - 1)) as u8; [v, v, v, 255] })).collect();
+    let mut key = 13_000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)]| {
+        let v = fx(kind, set);
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    let at = |img: &[u8], x: u32, y: u32| px(img, w, x, y);
+    let lum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    // Every one draws something with its defaults (or a nudge), and doesn't lose the picture.
+    for (kind, set) in [
+        (EffectKind::CornerPin, vec![(corner_pin::TLX, 10.0)]),
+        (EffectKind::PowerPin, vec![]),
+        (EffectKind::DisplacementMap, vec![]),
+        (EffectKind::Magnify, vec![]),
+        (EffectKind::MeshWarp, vec![]),
+        (EffectKind::Offset, vec![(offset::X, 0.0)]),
+        (EffectKind::OpticsCompensation, vec![(optics::FOV, 60.0)]),
+        (EffectKind::Spherize, vec![]),
+        (EffectKind::Smear, vec![]),
+        (EffectKind::Warp, vec![]),
+        (EffectKind::Bender, vec![]),
+        (EffectKind::Blobbylize, vec![]),
+        (EffectKind::FloMotion, vec![]),
+        (EffectKind::LensCc, vec![]),
+        (EffectKind::PageTurn, vec![]),
+        (EffectKind::Slant, vec![]),
+        (EffectKind::Split, vec![]),
+        (EffectKind::Tiler, vec![]),
+        (EffectKind::Griddler, vec![(griddler::H_SCALE, 80.0)]),
+        (EffectKind::RipplePulse, vec![]),
+        (EffectKind::MotionTile, vec![]),
+        (EffectKind::Glasses3d, vec![]),
+        (EffectKind::RadialShadow, vec![]),
+        (EffectKind::Cylinder, vec![]),
+        (EffectKind::Sphere, vec![]),
+    ] {
+        let img = draw(&mut c, &ramp, kind, &set);
+        let lit = img.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 60).count();
+        assert!(lit > 800, "{kind:?}: {lit} lit");
+    }
+    // Offset: the centre moved to the left edge, so the bright right half now starts there.
+    let off = draw(&mut c, &ramp, EffectKind::Offset, &[(offset::X, 0.0)]);
+    assert!(lum(at(&off, 2, 45)) > lum(at(&ramp, 2, 45)) + 200, "{:?}", at(&off, 2, 45));
+    // Corner pin: the top-left corner pulled in leaves the very corner empty.
+    let pin = draw(&mut c, &ramp, EffectKind::CornerPin, &[(corner_pin::TLX, 40.0), (corner_pin::TLY, 40.0)]);
+    assert!(lum(at(&pin, 3, 3)) < 10, "{:?}", at(&pin, 3, 3));
+    // Tiler at 50 %: tiles half as wide round the middle, so past one's right edge (x 120) the ramp starts dark again.
+    let til = draw(&mut c, &ramp, EffectKind::Tiler, &[(tiler::SCALE, 50.0)]);
+    assert!(lum(at(&til, 123, 45)) + 150 < lum(at(&til, 117, 45)), "{:?} {:?}", at(&til, 117, 45), at(&til, 123, 45));
+}

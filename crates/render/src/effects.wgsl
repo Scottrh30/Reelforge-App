@@ -6430,3 +6430,775 @@ fn fs_video_limiter(in: VsOut) -> @location(0) vec4<f32> {
     }
     return cx_out(clamp(o, vec3(0.0), vec3(1.0)), c.a);
 }
+
+// ---- Batch: distort and perspective ----
+
+// The layer at layer pixel q (from its top-left corner), nothing outside it.
+fn dx_at(q: vec2<f32>) -> vec4<f32> {
+    let uv = q / max(fx.extra.zw, vec2(1.0));
+    return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0) * inside(uv);
+}
+
+// The layer at layer pixel q, wrapped round (tiled).
+fn dx_wrap(q: vec2<f32>) -> vec4<f32> {
+    let size = max(fx.extra.zw, vec2(1.0));
+    let uv = fract(q / size);
+    return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+}
+
+// This pixel in layer pixels, and the layer's size.
+fn dx_q(uv: vec2<f32>) -> vec2<f32> {
+    return uv * max(fx.extra.zw, vec2(1.0));
+}
+fn dx_size() -> vec2<f32> {
+    return max(fx.extra.zw, vec2(1.0));
+}
+
+// The projective map from the unit square to the quad a, b, c, d (corners: top left,
+// top right, bottom right, bottom left), as a 3×3 matrix (columns).
+fn dx_square_to_quad(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, d: vec2<f32>) -> mat3x3<f32> {
+    let s = a - b + c - d;
+    let d1 = b - c;
+    let d2 = d - c;
+    let den = d1.x * d2.y - d2.x * d1.y;
+    var g = 0.0;
+    var h = 0.0;
+    if (abs(den) > 1e-9) {
+        g = (s.x * d2.y - d2.x * s.y) / den;
+        h = (d1.x * s.y - s.x * d1.y) / den;
+    }
+    return mat3x3<f32>(vec3(b.x - a.x + g * b.x, b.y - a.y + g * b.y, g), vec3(d.x - a.x + h * d.x, d.y - a.y + h * d.y, h), vec3(a.x, a.y, 1.0));
+}
+
+fn dx_inverse3(m: mat3x3<f32>) -> mat3x3<f32> {
+    let a = m[0];
+    let b = m[1];
+    let c = m[2];
+    let r0 = cross(b, c);
+    let r1 = cross(c, a);
+    let r2 = cross(a, b);
+    let det = dot(a, r0);
+    if (abs(det) < 1e-12) {
+        return mat3x3<f32>(vec3(0.0), vec3(0.0), vec3(0.0));
+    }
+    return transpose(mat3x3<f32>(r0, r1, r2)) * (1.0 / det);
+}
+
+// Corner pin: p0 = (top left x, y, top right x, y), p1 = (bottom left x, y, bottom right x, y), %.
+@fragment
+fn fs_corner_pin(in: VsOut) -> @location(0) vec4<f32> {
+    let m = dx_square_to_quad(fx.p0.xy / 100.0, fx.p0.zw / 100.0, fx.p1.zw / 100.0, fx.p1.xy / 100.0);
+    let h = dx_inverse3(m) * vec3(in.uv, 1.0);
+    if (abs(h.z) < 1e-9) {
+        return vec4(0.0);
+    }
+    let uv = h.xy / h.z;
+    return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0) * inside(uv);
+}
+
+// Power pin: corners as Corner pin, p2.x = perspective % (0 bilinear, 100 projective).
+@fragment
+fn fs_power_pin(in: VsOut) -> @location(0) vec4<f32> {
+    let a = fx.p0.xy / 100.0;
+    let b = fx.p0.zw / 100.0;
+    let d = fx.p1.xy / 100.0;
+    let c = fx.p1.zw / 100.0;
+    let m = dx_square_to_quad(a, b, c, d);
+    let h = dx_inverse3(m) * vec3(in.uv, 1.0);
+    let proj = select(vec2(-9.0), h.xy / h.z, abs(h.z) > 1e-9);
+    // Bilinear: Newton's method on P(s, t) = mix(mix(a, b, s), mix(d, c, s), t).
+    var st = proj;
+    if (any(st < vec2(-1.0)) || any(st > vec2(2.0))) {
+        st = vec2(0.5);
+    }
+    for (var i = 0; i < 8; i = i + 1) {
+        let p = mix(mix(a, b, st.x), mix(d, c, st.x), st.y);
+        let ds = mix(b - a, c - d, st.y);
+        let dt = mix(d, c, st.x) - mix(a, b, st.x);
+        let det = ds.x * dt.y - ds.y * dt.x;
+        if (abs(det) < 1e-9) {
+            break;
+        }
+        let r = in.uv - p;
+        st = st + vec2(r.x * dt.y - r.y * dt.x, ds.x * r.y - ds.y * r.x) / det;
+    }
+    let uv = mix(st, proj, clamp(fx.p2.x / 100.0, 0.0, 1.0));
+    return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0) * inside(uv);
+}
+
+// Displacement map: p0 = (source: 0 itself 1 noise, noise size px, horizontal from, max px),
+// p1 = (vertical from, max px, wrap, seed), p2.x = noise speed.
+@fragment
+fn fs_displacement_map(in: VsOut) -> @location(0) vec4<f32> {
+    let q = dx_q(in.uv);
+    var map = vec4(0.5);
+    var md = vec3(0.5);
+    if (fx.p0.x >= 0.5) {
+        let p = q / max(fx.p0.y, 1.0) + vec2(fx.extra.y * fx.p2.x * 0.1, 0.0);
+        let seed = u32(max(fx.p1.w, 0.0));
+        md = vec3(fbm2(seed, p), fbm2(seed + 17u, p + vec2(5.2, 1.3)), fbm2(seed + 31u, p));
+        map = vec4(md, 1.0);
+    } else {
+        map = dx_at(q);
+        md = to_display(unpremul(map));
+    }
+    let hx = cx_chan(md, map.a, u32(round(fx.p0.z)));
+    let vy = cx_chan(md, map.a, u32(round(fx.p1.x)));
+    let o = q + vec2((hx - 0.5) * 2.0 * fx.p0.w, (vy - 0.5) * 2.0 * fx.p1.y);
+    if (fx.p1.z >= 0.5) {
+        return dx_wrap(o) * inside(in.uv);
+    }
+    return dx_at(o);
+}
+
+// Magnify: p0 = (centre x %, y %, magnification %, shape), p1 = (size px, feather px, border px,
+// border colour), p2.x = the rest hidden.
+@fragment
+fn fs_magnify(in: VsOut) -> @location(0) vec4<f32> {
+    let q = dx_q(in.uv);
+    let c = fx.p0.xy / 100.0 * dx_size();
+    let rel = q - c;
+    let half = max(fx.p1.x, 1.0) * 0.5;
+    var d = 0.0;
+    if (fx.p0.w >= 0.5) {
+        d = max(abs(rel.x), abs(rel.y));
+    } else {
+        d = length(rel);
+    }
+    let feather = max(fx.p1.y, 0.0);
+    let k = 1.0 - smoothstep(half - feather, half + 1e-3, d);
+    let big = dx_at(c + rel * 100.0 / max(fx.p0.z, 1.0));
+    let rest = select(dx_at(q), vec4(0.0), fx.p2.x >= 0.5);
+    var o = mix(rest, big, k);
+    let bw = max(fx.p1.z, 0.0);
+    if (bw > 0.0) {
+        let b = smoothstep(half - 0.5, half + 0.5, d) * (1.0 - smoothstep(half + bw - 0.5, half + bw + 0.5, d));
+        o = mix(o, vec4(rgb_of(fx.p1.w), 1.0), b);
+    }
+    return o;
+}
+
+fn mw_get(i: i32) -> vec2<f32> {
+    var a = array<vec2<f32>, 9>(fx.p0.xy, fx.p0.zw, fx.p1.xy, fx.p1.zw, fx.p2.xy, fx.p2.zw, fx.p3.xy, fx.p3.zw, fx.p4.xy);
+    return a[clamp(i, 0, 8)] / 100.0;
+}
+
+// How far the grid has moved the point at layer uv (smoothly, between its nine points).
+fn mw_move(uv: vec2<f32>) -> vec2<f32> {
+    let g = clamp(uv, vec2(0.0), vec2(1.0)) * 2.0;
+    let cell = min(vec2<i32>(floor(g)), vec2<i32>(1));
+    let f = g - vec2<f32>(cell);
+    let s = f * f * (3.0 - 2.0 * f);
+    let i = cell.y * 3 + cell.x;
+    let a = mw_get(i);
+    let b = mw_get(i + 1);
+    let c = mw_get(i + 3);
+    let d = mw_get(i + 4);
+    return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
+}
+
+// Mesh warp: the nine points' moves (x, y %), row by row, in p0–p4.x.
+@fragment
+fn fs_mesh_warp(in: VsOut) -> @location(0) vec4<f32> {
+    // Where in the layer this pixel came from: solved backwards (a few steps).
+    var s = in.uv;
+    for (var i = 0; i < 6; i = i + 1) {
+        s = in.uv - mw_move(s);
+    }
+    return textureSampleLevel(src, src_sampler, to_tex(s), 0.0) * inside(s);
+}
+
+// Offset: p0 = (centre x %, y %, blend with original %).
+@fragment
+fn fs_offset(in: VsOut) -> @location(0) vec4<f32> {
+    let q = dx_q(in.uv);
+    let shift = (fx.p0.xy / 100.0 - 0.5) * dx_size();
+    let o = dx_wrap(q - shift) * inside(in.uv);
+    return mix(o, dx_at(q), clamp(fx.p0.z / 100.0, 0.0, 1.0));
+}
+
+// Optics compensation: p0 = (field of view °, reverse, across: 0 width 1 height 2 diagonal, centre x %), p1.x = centre y %.
+@fragment
+fn fs_optics(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let c = vec2(fx.p0.w, fx.p1.x) / 100.0 * size;
+    let q = dx_q(in.uv) - c;
+    var span = size.x * 0.5;
+    switch u32(round(fx.p0.z)) {
+        case 1u: { span = size.y * 0.5; }
+        case 2u: { span = length(size) * 0.5; }
+        default: {}
+    }
+    let half = radians(clamp(fx.p0.x, 0.0, 179.0)) * 0.5;
+    let r = length(q) / span;
+    if (r < 1e-6 || half < 1e-4) {
+        return dx_at(dx_q(in.uv));
+    }
+    var k = 1.0;
+    if (fx.p0.y >= 0.5) {
+        // Taking it out: the straight picture's radius from the distorted one's.
+        k = tan(r * half) / (r * tan(half));
+    } else {
+        k = atan(r * tan(half)) / (r * half);
+    }
+    return dx_at(c + q * k);
+}
+
+// Spherize: p0 = (radius px, centre x %, centre y %, amount %).
+@fragment
+fn fs_spherize(in: VsOut) -> @location(0) vec4<f32> {
+    let q = dx_q(in.uv);
+    let c = fx.p0.yz / 100.0 * dx_size();
+    let rel = q - c;
+    let big = max(fx.p0.x, 1.0);
+    let n = length(rel) / big;
+    if (n >= 1.0 || n < 1e-6) {
+        return dx_at(q);
+    }
+    let k = clamp(fx.p0.w / 100.0, -1.0, 1.0);
+    // Outwards: the arc length round the sphere; inwards, the reverse.
+    let sph = asin(n) / 1.5707963 / n;
+    let inv = sin(n * 1.5707963) / n;
+    let f = select(mix(1.0, inv, -k), mix(1.0, sph, k), k >= 0.0);
+    return dx_at(c + rel * f);
+}
+
+// Smear: p0 = (from x, y, to x, y %), p1 = (reach %, radius px).
+@fragment
+fn fs_smear(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let a = fx.p0.xy / 100.0 * size;
+    let b = fx.p0.zw / 100.0 * size;
+    let r = max(fx.p1.y, 1.0);
+    let shift_by = (b - a) * fx.p1.x / 100.0;
+    // Pixels near the line from `from` to `to` come from further back along it.
+    var s = q;
+    for (var i = 0; i < 4; i = i + 1) {
+        let w = exp(-dot(s + shift_by - b, s + shift_by - b) / (r * r));
+        s = q - shift_by * w;
+    }
+    return dx_at(s);
+}
+
+// Where the warp sends point p (-1…1 across the layer, `u` along the axis, `v` across it).
+fn wp_shape(style: u32, k: f32, p: vec2<f32>) -> vec2<f32> {
+    let u = p.x;
+    let v = p.y;
+    let pi = 3.14159265;
+    switch style {
+        // Arc: bent round a circle's arc, top and bottom alike.
+        case 0u: { return vec2(u * (1.0 - 0.25 * k * v), v - k * (1.0 - u * u) * 0.5); }
+        case 1u: { return vec2(u * (1.0 - 0.25 * k * max(v, 0.0)), v - k * (1.0 - u * u) * 0.5 * (v + 1.0) * 0.5); }
+        case 2u: { return vec2(u * (1.0 - 0.25 * k * min(v, 0.0)), v - k * (1.0 - u * u) * 0.5 * (1.0 - v) * 0.5); }
+        case 3u: { return vec2(u, v - k * (1.0 - u * u) * 0.5); }
+        // Bulge: the top up and the bottom down in the middle.
+        case 4u: { return vec2(u, v * (1.0 + 0.5 * k * (1.0 - u * u))); }
+        case 5u: { return vec2(u, v + k * 0.5 * (1.0 - u * u) * (v + 1.0) * 0.5); }
+        case 6u: { return vec2(u, v - k * 0.5 * (1.0 - u * u) * (1.0 + v) * 0.5); }
+        // Flag and wave: a sine along it (the wave's height varies across).
+        case 7u: { return vec2(u, v + 0.3 * k * sin(u * pi)); }
+        case 8u: { return vec2(u, v + 0.3 * k * sin(u * pi) * (0.5 + 0.5 * v)); }
+        case 9u: { return vec2(u, v * (1.0 + 0.6 * k * sin(pow((u + 1.0) * 0.5, 0.7) * pi))); }
+        case 10u: { return vec2(u, v - 0.4 * k * u); }
+        // Fisheye and inflate: out from the middle.
+        case 11u: {
+            let r2 = u * u + v * v;
+            return p * (1.0 + 0.5 * k * max(1.0 - r2, 0.0));
+        }
+        case 12u: { return vec2(u * (1.0 + 0.5 * k * (1.0 - v * v)), v * (1.0 + 0.5 * k * (1.0 - u * u))); }
+        case 13u: { return vec2(u * (1.0 - 0.5 * k * (1.0 - v * v)), v * (1.0 + 0.5 * k * (1.0 - u * u))); }
+        default: {
+            let r = length(p);
+            let a = k * pi * max(1.0 - r, 0.0);
+            return vec2(u * cos(a) - v * sin(a), u * sin(a) + v * cos(a));
+        }
+    }
+}
+
+fn wp_forward(p: vec2<f32>) -> vec2<f32> {
+    let vertical = fx.p0.y >= 0.5;
+    var a = p;
+    if (vertical) {
+        a = p.yx;
+    }
+    var w = wp_shape(u32(round(fx.p0.x)), fx.p0.z / 100.0, a);
+    if (vertical) {
+        w = w.yx;
+    }
+    // Perspective: one side bigger than the other.
+    w.y = w.y * (1.0 + 0.5 * fx.p0.w / 100.0 * w.x);
+    w.x = w.x * (1.0 + 0.5 * fx.p1.x / 100.0 * w.y);
+    return w;
+}
+
+// Warp: p0 = (style, axis, bend %, horizontal distortion %), p1.x = vertical distortion %.
+@fragment
+fn fs_warp(in: VsOut) -> @location(0) vec4<f32> {
+    let t = in.uv * 2.0 - 1.0;
+    // The point it came from: Newton's method on the forward warp.
+    var s = t;
+    for (var i = 0; i < 12; i = i + 1) {
+        let f = wp_forward(s) - t;
+        if (abs(f.x) + abs(f.y) < 1e-5) {
+            break;
+        }
+        let e = 1e-3;
+        let ja = (wp_forward(s + vec2(e, 0.0)) - t - f) / e;
+        let jb = (wp_forward(s + vec2(0.0, e)) - t - f) / e;
+        let det = ja.x * jb.y - jb.x * ja.y;
+        if (abs(det) < 1e-8) {
+            return vec4(0.0);
+        }
+        s = s - vec2(jb.y * f.x - jb.x * f.y, -ja.y * f.x + ja.x * f.y) / det;
+    }
+    if (length(wp_forward(s) - t) > 0.01) {
+        return vec4(0.0);
+    }
+    let uv = s * 0.5 + 0.5;
+    return textureSampleLevel(src, src_sampler, to_tex(uv), 0.0) * inside(uv);
+}
+
+// How far sideways the rod bends at t (0 base, 1 top).
+fn bd_bend(t: f32, style: u32) -> f32 {
+    let s = clamp(t, 0.0, 1.0);
+    switch style {
+        case 1u: { return sin(s * 3.14159265) * 0.5; }
+        case 2u: { return max(s - 0.5, 0.0) * 2.0; }
+        case 3u: { return s * s * (3.0 - 2.0 * s) * (1.0 - s) * 4.0 * 0.6 + s * 0.2; }
+        default: { return s * s; }
+    }
+}
+
+// Bender: p0 = (amount %, style, top x, top y %), p1 = (base x, base y %).
+@fragment
+fn fs_bender(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let top = fx.p0.zw / 100.0 * size;
+    let base = fx.p1.xy / 100.0 * size;
+    let axis = top - base;
+    let len = max(length(axis), 1.0);
+    let a = axis / len;
+    let n = vec2(-a.y, a.x);
+    let style = u32(round(fx.p0.y));
+    let amount = fx.p0.x / 100.0 * len;
+    // The point it came from: its height along the rod is kept; it's moved sideways.
+    var s = q;
+    for (var i = 0; i < 5; i = i + 1) {
+        let t = dot(s - base, a) / len;
+        s = q - n * amount * bd_bend(t, style) * select(1.0, 0.0, t < 0.0);
+    }
+    return dx_at(s);
+}
+
+fn bl_height(q: vec2<f32>, soft: f32, from_alpha: bool) -> f32 {
+    // A Gaussian over a 7 × 7 grid spanning the softness, so the height is smooth.
+    var sum = 0.0;
+    var n = 0.0;
+    for (var y = -3; y <= 3; y = y + 1) {
+        for (var x = -3; x <= 3; x = x + 1) {
+            let o = vec2(f32(x), f32(y)) / 3.0;
+            let w = exp(-dot(o, o) * 2.0);
+            let c = dx_at(q + o * soft);
+            sum = sum + w * select(dot(to_display(unpremul(c)), LUMA) * c.a, c.a, from_alpha);
+            n = n + w;
+        }
+    }
+    return sum / n;
+}
+
+// Blobbylize: p0 = (from, softness px, cut away %, light %), p1 = (light angle °, refraction px, light colour).
+@fragment
+fn fs_blobbylize(in: VsOut) -> @location(0) vec4<f32> {
+    let q = dx_q(in.uv);
+    let soft = max(fx.p0.y, 0.5);
+    let fa = fx.p0.x >= 0.5;
+    let cut = fx.p0.z / 100.0;
+    let h0 = bl_height(q, soft, fa);
+    let edge = smoothstep(cut, cut + 0.12, h0);
+    if (edge <= 0.0) {
+        return vec4(0.0);
+    }
+    let e = max(soft * 0.5, 1.0);
+    let g = vec2(bl_height(q + vec2(e, 0.0), soft, fa) - bl_height(q - vec2(e, 0.0), soft, fa), bl_height(q + vec2(0.0, e), soft, fa) - bl_height(q - vec2(0.0, e), soft, fa)) / (2.0 * e);
+    let n = normalize(vec3(-g * soft * 2.5, 1.0));
+    let ang = radians(fx.p1.x);
+    let l = normalize(vec3(cos(ang), -sin(ang), 1.2));
+    // (Bent towards the blob's middle, so its own colour shows through.)
+    let c = dx_at(q - n.xy * fx.p1.y);
+    let diffuse = 0.55 + 0.45 * dot(n, l);
+    let spec = pow(max(dot(reflect(-l, n), vec3(0.0, 0.0, 1.0)), 0.0), 30.0) * fx.p0.w / 100.0;
+    let rgb = unpremul(c) * diffuse + rgb_of(fx.p1.z) * spec;
+    let a = max(c.a, 0.6) * edge;
+    return vec4(rgb * a, a);
+}
+
+// Flo motion: p0 = (knot 1 x, y %, amount 1 %, knot 2 x), p1 = (knot 2 y, amount 2 %, falloff %, tile).
+@fragment
+fn fs_flo_motion(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let k1 = fx.p0.xy / 100.0 * size;
+    let k2 = vec2(fx.p0.w, fx.p1.x) / 100.0 * size;
+    let reach = max(fx.p1.z, 1.0) / 100.0 * length(size) * 0.5;
+    let f1 = exp(-dot(q - k1, q - k1) / (reach * reach)) * fx.p0.z / 100.0;
+    let f2 = exp(-dot(q - k2, q - k2) / (reach * reach)) * fx.p1.y / 100.0;
+    // Pulled in: the pixel here came from further out from the knot.
+    let s = q + (q - k1) * f1 + (q - k2) * f2;
+    if (fx.p1.w >= 0.5) {
+        return dx_wrap(s) * inside(in.uv);
+    }
+    return dx_at(s);
+}
+
+// Lens: p0 = (centre x, y %, size %, convergence).
+@fragment
+fn fs_lens_cc(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let c = fx.p0.xy / 100.0 * size;
+    let r = max(fx.p0.z, 1.0) / 100.0 * min(size.x, size.y) * 0.5;
+    let rel = (q - c) / r;
+    let n = length(rel);
+    if (n > 1.0) {
+        return vec4(0.0);
+    }
+    let k = fx.p0.w / 100.0;
+    let f = select(pow(n, 1.0 - 0.7 * k) / max(n, 1e-5), pow(n, 1.0 + 1.5 * -k) / max(n, 1e-5), k < 0.0);
+    let edge = clamp((1.0 - n) * r, 0.0, 1.0);
+    return dx_at(c + rel * r * select(f, 1.0, n < 1e-5)) * edge;
+}
+
+// Page turn: p0 = (fold x, y %, direction °, radius px), p1 = (light °, show, back opacity %, paper).
+// The page curls up round a cylinder lying on the fold line, from where it meets the page
+// towards the turned corner (the direction), and lies back flat over the page beyond.
+@fragment
+fn fs_page_turn(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let f = fx.p0.xy / 100.0 * size;
+    let ang = radians(fx.p0.z);
+    // n points from the fold towards the part that's turning (screen y is down).
+    let n = vec2(cos(ang), -sin(ang));
+    let r = max(fx.p0.w, 1.0);
+    let pi = 3.14159265;
+    let d = dot(q - f, n);
+    let show = u32(round(fx.p1.y));
+    let paper = rgb_of(fx.p1.w);
+    let back_k = clamp(fx.p1.z / 100.0, 0.0, 1.0);
+    let la = radians(fx.p1.x);
+    let ld = vec2(cos(la), -sin(la));
+    // The surfaces at this point, the top one first: (where on the flat page, back side?, shade).
+    var cand: array<vec3<f32>, 3>;
+    var count = 0;
+    if (d <= 0.0) {
+        cand[0] = vec3(pi * r - d, 1.0, 0.95);
+        cand[1] = vec3(d, 0.0, 1.0);
+        count = 2;
+    } else if (d <= r) {
+        let a = asin(clamp(d / r, -1.0, 1.0));
+        cand[0] = vec3(pi * r - r * a, 1.0, 0.65 + 0.35 * cos(a));
+        cand[1] = vec3(r * a, 0.0, 1.0 - 0.45 * (a / (0.5 * pi)) * (0.6 + 0.4 * dot(ld, n)));
+        count = 2;
+    }
+    for (var i = 0; i < count; i = i + 1) {
+        let c = cand[i];
+        let back = c.y > 0.5;
+        if ((back && show == 2u) || (!back && show == 1u)) {
+            continue;
+        }
+        let s = q + (c.x - d) * n;
+        let px = dx_at(s);
+        if (px.a <= 1e-4) {
+            continue;
+        }
+        var col = unpremul(px);
+        if (back) {
+            col = mix(paper, col, back_k);
+        }
+        // Under the curl, a soft shadow on the page.
+        var shade = c.z;
+        if (!back && d <= 0.0) {
+            shade = 1.0 - 0.35 * exp(-(-d) / (r * 0.6)) * select(1.0, 0.0, show == 2u);
+        }
+        return vec4(col * shade * px.a, px.a);
+    }
+    return vec4(0.0);
+}
+
+// Slant: p0 = (slant °, floor %, height %).
+@fragment
+fn fs_slant(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let floor_y = fx.p0.y / 100.0 * size.y;
+    let h = max(fx.p0.z, 1.0) / 100.0;
+    let up = (floor_y - q.y) / h;
+    let t = tan(radians(clamp(fx.p0.x, -89.0, 89.0)));
+    return dx_at(vec2(q.x - up * t, floor_y - up));
+}
+
+// Split: p0 = (a x, a y, b x, b y %), p1.x = split px.
+@fragment
+fn fs_split(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let a = fx.p0.xy / 100.0 * size;
+    let b = fx.p0.zw / 100.0 * size;
+    let ab = b - a;
+    let len = max(length(ab), 1.0);
+    let t = dot(q - a, ab) / (len * len);
+    let n = vec2(-ab.y, ab.x) / len;
+    let side = dot(q - a, n);
+    let open = max(fx.p1.x, 0.0) * 0.5 * sin(clamp(t, 0.0, 1.0) * 3.14159265);
+    if (abs(side) < open) {
+        return vec4(0.0);
+    }
+    return dx_at(q - n * sign(side) * open);
+}
+
+// Tiler: p0 = (scale %, centre x, y %, blend with original %).
+@fragment
+fn fs_tiler(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let c = fx.p0.yz / 100.0 * size;
+    let k = max(fx.p0.x, 1.0) / 100.0;
+    let s = (q - c) / k + size * 0.5;
+    let o = dx_wrap(s) * inside(in.uv);
+    return mix(o, dx_at(q), clamp(fx.p0.w / 100.0, 0.0, 1.0));
+}
+
+// Griddler: p0 = (h scale %, v scale %, tile size % of the width, rotation °), p1.x = cut tiles.
+@fragment
+fn fs_griddler(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let t = max(fx.p0.z, 0.5) / 100.0 * size.x;
+    let cell = floor(q / t);
+    let mid = (cell + 0.5) * t;
+    let rel = q - mid;
+    let a = radians(-fx.p0.w);
+    let r = vec2(rel.x * cos(a) - rel.y * sin(a), rel.x * sin(a) + rel.y * cos(a));
+    let k = max(vec2(fx.p0.x, fx.p0.y) / 100.0, vec2(1e-3));
+    let local = r / k;
+    if (fx.p1.x >= 0.5 && (abs(local.x) > t * 0.5 || abs(local.y) > t * 0.5)) {
+        return vec4(0.0);
+    }
+    return dx_at(mid + local);
+}
+
+// Ripple pulse: p0 = (centre x, y %, height px, width px), p1 = (speed px/s, start s, fade %).
+@fragment
+fn fs_ripple_pulse(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let c = fx.p0.xy / 100.0 * size;
+    let t = fx.extra.y - fx.p1.y;
+    if (t < 0.0) {
+        return dx_at(q);
+    }
+    let ring = t * fx.p1.x;
+    let rel = q - c;
+    let r = length(rel);
+    let w = max(fx.p0.w, 1.0);
+    let x = (r - ring) / w;
+    let fade = exp(-ring / max(length(size), 1.0) * fx.p1.z / 25.0);
+    // One wave (a sine under a bell), pushing pixels in and out along the radius.
+    let push = fx.p0.z * sin(x * 3.14159265) * exp(-x * x * 2.0) * fade;
+    let dir = select(vec2(0.0), rel / r, r > 1e-4);
+    return dx_at(q - dir * push);
+}
+
+// Motion tile: p0 = (centre x, y %, tile w, h %), p1 = (output w, h %, mirror, phase °), p2.x = horizontal phase.
+@fragment
+fn fs_motion_tile(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let half_out = vec2(fx.p1.x, fx.p1.y) / 200.0 - 0.5;
+    if (any(in.uv < -half_out) || any(in.uv > 1.0 + half_out)) {
+        return vec4(0.0);
+    }
+    let tile_sz = max(vec2(fx.p0.z, fx.p0.w) / 100.0, vec2(0.01)) * size;
+    let c = fx.p0.xy / 100.0 * size;
+    var t = (dx_q(in.uv) - c) / tile_sz + 0.5;
+    let ph = fx.p1.w / 360.0;
+    if (fx.p2.x >= 0.5) {
+        t.y = t.y + select(0.0, ph, (floor(t.x) % 2.0) != 0.0);
+    } else {
+        t.x = t.x + select(0.0, ph, (floor(t.y) % 2.0) != 0.0);
+    }
+    var f = fract(t);
+    if (fx.p1.z >= 0.5) {
+        let odd = (abs(floor(t)) % 2.0) != vec2(0.0);
+        f = select(f, 1.0 - f, odd);
+    }
+    return textureSampleLevel(src, src_sampler, to_tex(f), 0.0);
+}
+
+// 3D glasses: p0 = (view, convergence px, depth px, balance %).
+@fragment
+fn fs_glasses3d(in: VsOut) -> @location(0) vec4<f32> {
+    let q = dx_q(in.uv);
+    let view = u32(round(fx.p0.x));
+    let here = dx_at(q);
+    let depth = dot(to_display(unpremul(here)), LUMA) * fx.p0.z;
+    let shift = vec2((fx.p0.y + depth) * 0.5, 0.0);
+    if (view == 4u) {
+        let size = dx_size();
+        let left = q.x < size.x * 0.5;
+        let s = vec2((q.x % (size.x * 0.5)) * 2.0, q.y);
+        return dx_at(s + select(-shift, shift, left) * 2.0);
+    }
+    let l = dx_at(q + shift);
+    let r = dx_at(q - shift);
+    let ld = to_display(unpremul(l));
+    let rd = to_display(unpremul(r));
+    var o = vec3(0.0);
+    switch view {
+        case 1u: { o = vec3(dot(ld, LUMA), dot(rd, LUMA), 0.0); }
+        case 2u: { o = vec3(dot(ld, LUMA), 0.0, dot(rd, LUMA)); }
+        case 3u: {
+            let b = fx.p0.w / 100.0;
+            o = vec3(mix(ld.r, dot(ld, LUMA), 1.0 - b), rd.g, rd.b);
+        }
+        default: { o = vec3(dot(ld, LUMA), rd.g, rd.b); }
+    }
+    let a = max(l.a, r.a);
+    return vec4(to_linear(o) * a, a);
+}
+
+// Radial shadow: p0 = (colour, opacity %, light x, y %), p1 = (projection distance %, softness px, shadow only).
+@fragment
+fn fs_radial_shadow(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let q = dx_q(in.uv);
+    let light = fx.p0.zw / 100.0 * size;
+    let s = 1.0 + max(fx.p1.x, 0.0) / 100.0;
+    let soft = max(fx.p1.y, 0.0);
+    var a = 0.0;
+    for (var i = 0; i < 9; i = i + 1) {
+        let ang = f32(i) * 0.6981317;
+        let o = select(vec2(0.0), vec2(cos(ang), sin(ang)) * soft * (0.5 + 0.5 * f32(i % 2)), i > 0);
+        a = a + dx_at(light + (q + o - light) / s).a;
+    }
+    a = a / 9.0 * clamp(fx.p0.y / 100.0, 0.0, 1.0);
+    let shadow = vec4(rgb_of(fx.p0.x) * a, a);
+    if (fx.p1.z >= 0.5) {
+        return shadow;
+    }
+    let c = dx_at(q);
+    return c + shadow * (1.0 - c.a);
+}
+
+// A ray from the camera (looking along +z, the layer's plane at z = 0 shown pixel for
+// pixel), for layer pixel q from the layer's middle.
+fn r3_ray(q: vec2<f32>, h: f32) -> array<vec3<f32>, 2> {
+    let f = geo_focal(35.0, h);
+    return array<vec3<f32>, 2>(vec3(0.0, 0.0, -f), normalize(vec3(q, f)));
+}
+
+fn r3_shade(n: vec3<f32>, v: vec3<f32>, light_deg: f32, light_k: f32, amb: f32, shine: f32) -> vec2<f32> {
+    let az = radians(light_deg);
+    let l = normalize(vec3(cos(az), -sin(az), -1.0));
+    let diffuse = amb + (1.0 - amb) * light_k * max(dot(n, l), 0.0) / max(-l.z, 0.2) * 0.8;
+    let spec = shine * pow(max(dot(n, normalize(l + v)), 0.0), 30.0);
+    return vec2(diffuse, spec);
+}
+
+// Cylinder: p0 = (radius % of the width, turn x, y, z °), p1 = (show, light %, light angle °,
+// ambient %), p2.x = shine %. The layer's width goes once round; its height is the cylinder's.
+@fragment
+fn fs_cylinder(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let p = (in.uv - 0.5) * size;
+    let ray = r3_ray(p, size.y);
+    let r = geo_turn(vec3(fx.p0.y, fx.p0.z, fx.p0.w));
+    let rt = transpose(r);
+    let o = rt * ray[0];
+    let d = rt * ray[1];
+    let rad = max(fx.p0.x, 1.0) / 100.0 * size.x;
+    // Axis along y: x² + z² = rad².
+    let a = d.x * d.x + d.z * d.z;
+    let b = 2.0 * (o.x * d.x + o.z * d.z);
+    let c = o.x * o.x + o.z * o.z - rad * rad;
+    let disc = b * b - 4.0 * a * c;
+    if (disc < 0.0 || a < 1e-9) {
+        return vec4(0.0);
+    }
+    let sq = sqrt(disc);
+    let show = u32(round(fx.p1.x));
+    for (var k = 0; k < 2; k = k + 1) {
+        let t = select((-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a), k == 1);
+        if (t <= 0.0) {
+            continue;
+        }
+        let h = o + d * t;
+        if (abs(h.y) > size.y * 0.5) {
+            continue;
+        }
+        let outside = k == 0;
+        if ((outside && show == 2u) || (!outside && show == 1u)) {
+            continue;
+        }
+        let ang = atan2(h.x, -h.z);
+        let u = ang / 6.2831853 + 0.5;
+        let uv = vec2(fract(u), h.y / size.y + 0.5);
+        let px = textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+        if (px.a <= 1e-4) {
+            continue;
+        }
+        var n = normalize(vec3(h.x, 0.0, h.z));
+        if (!outside) {
+            n = -n;
+        }
+        let sh = r3_shade(r * n, -ray[1], fx.p1.z, fx.p1.y / 100.0, fx.p1.w / 100.0, fx.p2.x / 100.0);
+        return vec4(unpremul(px) * sh.x * px.a + vec3(sh.y) * px.a, px.a);
+    }
+    return vec4(0.0);
+}
+
+// Sphere: p0 = (radius % of the height, turn x, y, z °), p1 = (show, light %, light angle °,
+// ambient %), p2.x = shine %. Longitude across the layer, latitude down it.
+@fragment
+fn fs_sphere(in: VsOut) -> @location(0) vec4<f32> {
+    let size = dx_size();
+    let p = (in.uv - 0.5) * size;
+    let ray = r3_ray(p, size.y);
+    let r = geo_turn(vec3(fx.p0.y, fx.p0.z, fx.p0.w));
+    let rt = transpose(r);
+    let o = rt * ray[0];
+    let d = rt * ray[1];
+    let rad = max(fx.p0.x, 1.0) / 100.0 * size.y;
+    let b = dot(o, d);
+    let c = dot(o, o) - rad * rad;
+    let disc = b * b - c;
+    if (disc < 0.0) {
+        return vec4(0.0);
+    }
+    let sq = sqrt(disc);
+    let show = u32(round(fx.p1.x));
+    for (var k = 0; k < 2; k = k + 1) {
+        let t = select(-b - sq, -b + sq, k == 1);
+        if (t <= 0.0) {
+            continue;
+        }
+        let outside = k == 0;
+        if ((outside && show == 2u) || (!outside && show == 1u)) {
+            continue;
+        }
+        let h = (o + d * t) / rad;
+        let uv = vec2(atan2(h.x, -h.z) / 6.2831853 + 0.5, asin(clamp(h.y, -1.0, 1.0)) / 3.14159265 + 0.5);
+        let px = textureSampleLevel(src, src_sampler, to_tex(uv), 0.0);
+        if (px.a <= 1e-4) {
+            continue;
+        }
+        let n = select(-h, h, outside);
+        let sh = r3_shade(r * n, -ray[1], fx.p1.z, fx.p1.y / 100.0, fx.p1.w / 100.0, fx.p2.x / 100.0);
+        // A soft edge round the sphere's outline.
+        let edge = clamp(sqrt(max(disc, 0.0)) * 0.5, 0.0, 1.0);
+        let a = px.a * edge;
+        return vec4((unpremul(px) * sh.x + vec3(sh.y)) * a, a);
+    }
+    return vec4(0.0);
+}

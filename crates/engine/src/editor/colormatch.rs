@@ -373,7 +373,8 @@ mod tests {
         e.project.sequences[0].tracks[0].clips = vec![Clip::new(ClipId(10), MediaId(1), s(0.0), s(0.0), s(1.0), None), Clip::new(ClipId(11), MediaId(2), s(1.0), s(0.0), s(1.0), None)];
         let run = |e: &mut Editor| {
             let t0 = std::time::Instant::now();
-            while e.color_match.is_some() && t0.elapsed().as_secs() < 120 {
+            // (Generous: on a machine without a graphics card, building every effect's shader takes a while.)
+            while e.color_match.is_some() && t0.elapsed().as_secs() < 600 {
                 e.poll_color_match();
                 std::thread::sleep(Duration::from_millis(20));
             }

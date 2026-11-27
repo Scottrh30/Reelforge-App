@@ -309,6 +309,87 @@ pub enum EffectKind {
     /// ceiling and saturation held below a maximum, by pulling down brightness, saturation or
     /// both.
     VideoLimiter,
+    /// Pins the layer's four corners anywhere, stretching it in perspective between them: onto
+    /// a screen, a sign or a page.
+    CornerPin,
+    /// A corner pin with a choice of how the picture fills the shape: in true perspective (as a
+    /// flat surface seen at an angle) or stretched evenly (bilinear), or anywhere between.
+    PowerPin,
+    /// Pushes each pixel sideways and up or down by a map — the layer's own channels (its
+    /// brightness, red, green…) or a cloudy noise — up to a maximum each way: heat shimmer,
+    /// glass, water, and warped textures.
+    DisplacementMap,
+    /// A magnifying glass over part of the layer: round or square, at a size and magnification,
+    /// with a soft or hard edge, a border, and the rest of the layer shown or hidden.
+    Magnify,
+    /// Bends the layer by moving the nine points of a three-by-three grid over it (its corners,
+    /// edge middles and middle) — smoothly warped in between: reshape faces, bottles, logos.
+    MeshWarp,
+    /// Slides the picture across and down, wrapping round so what leaves one edge comes in at
+    /// the other: seamless scrolling backgrounds and checking a tile's seams.
+    Offset,
+    /// Adds a wide-angle lens's barrel distortion for a field of view (or takes it out,
+    /// reversed, to straighten footage shot on one) about a centre of your choice.
+    OpticsCompensation,
+    /// Wraps a round area of the layer onto a sphere bulging towards you (or pushed away,
+    /// negative): fisheye faces and bubbles.
+    Spherize,
+    /// Drags the picture from one point towards another, as a finger smudging wet paint, within
+    /// a radius and as far as you like.
+    Smear,
+    /// Bends the whole layer into one of fifteen shapes — arc, arch, bulge, shell, flag, wave,
+    /// fish, rise, fisheye, inflate, squeeze, twist and more — by an amount, with extra
+    /// horizontal and vertical perspective: warped text and logos.
+    Warp,
+    /// Bends the layer like a flexible rod between a base point and a top point: a gentle bend,
+    /// a sharp kink, a wiggle (Marilyn) or a sway (Boxer) — sways a tree, a figure or a logo.
+    Bender,
+    /// Turns the layer into shiny, jelly-like blobs: its brightness (or opacity) melted into
+    /// soft lumps, cut away below a level, lit from one side and bending the picture behind
+    /// like glass.
+    Blobbylize,
+    /// Two knots that draw the picture in towards them (or push it out, negative) with a
+    /// falloff: pinches, whirlpools of stretch, and liquid pulls — key the amounts to animate.
+    FloMotion,
+    /// Looks at the layer through a round lens: a fisheye (convergence up) or a pinched lens
+    /// (down), at a size and centre, with nothing outside the lens.
+    LensCc,
+    /// Curls the layer over like a turning page: the fold where you put it, curling in any
+    /// direction round a radius, its back the paper's colour (or the picture showing through),
+    /// shaded by a light — key the fold to turn the page.
+    PageTurn,
+    /// Slants the layer sideways from a floor line, as italic type or a shadow cast on the
+    /// ground, stretched to keep its height if you like.
+    Slant,
+    /// Splits the layer open along a line between two points, as if torn or unzipped: the sides
+    /// pushed apart in a lens shape by the split amount.
+    Split,
+    /// Repeats the layer, smaller, in tiles across itself — scaled about a centre — and blended
+    /// with the original if you like.
+    Tiler,
+    /// Cuts the layer into a grid of tiles and scales and turns each one about its own middle:
+    /// broken mosaics, shuffling tiles and transitions.
+    Griddler,
+    /// A single ring of ripple spreading out from a point, as from a drop in still water: its
+    /// height, width and speed, fading as it goes.
+    RipplePulse,
+    /// Tiles the layer across a wider area (the output can be bigger than the layer), each tile
+    /// a set size, mirrored at the edges so the seams don't show, with rows or columns offset
+    /// by a phase — for moving tiled backgrounds.
+    MotionTile,
+    /// Turns the layer into a red–cyan (or red–green, red–blue, balanced) anaglyph for 3D
+    /// glasses: its two eyes' views pushed apart by its brightness (bright things nearer) or by
+    /// a flat convergence.
+    Glasses3d,
+    /// A shadow cast by a point light near the layer onto a surface behind it: it spreads out
+    /// away from the light, softened, in a colour and opacity — or just the shadow on its own.
+    RadialShadow,
+    /// Wraps the layer round a cylinder in 3D, turned any way and lit: labels on cans, spinning
+    /// columns, rolled banners — seen from outside, inside or both.
+    Cylinder,
+    /// Wraps the layer round a sphere in 3D — a planet, a ball, a globe — turned any way and
+    /// lit, seen from outside, inside or both.
+    Sphere,
     /// Evens out flicker: brightness and colour gains, keyed frame by frame by
     /// Deflicker's analysis (Clip menu), or set by hand.
     Deflicker,
@@ -424,6 +505,8 @@ pub enum EffectCategory {
     Generate,
     /// The layer as a shape in 3D: bent, bevelled, extruded, turned.
     Geometry,
+    /// Turned, wrapped and shadowed in 3D: cylinders, spheres, anaglyphs, cast shadows.
+    Perspective,
     /// Plugins that didn't name a category.
     Plugins,
     /// OpenFX plugins (Sapphire, Neat Video, BorisFX, the OpenFX Misc set…).
@@ -431,7 +514,7 @@ pub enum EffectCategory {
 }
 
 impl EffectCategory {
-    pub const ALL: [EffectCategory; 12] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Channel, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Geometry, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
+    pub const ALL: [EffectCategory; 13] = [EffectCategory::Color, EffectCategory::BlurSharpen, EffectCategory::Channel, EffectCategory::Keying, EffectCategory::Stylize, EffectCategory::Simulation, EffectCategory::Generate, EffectCategory::Geometry, EffectCategory::Perspective, EffectCategory::Distort, EffectCategory::Repair, EffectCategory::Plugins, EffectCategory::OpenFx];
     pub fn label(self) -> &'static str {
         match self {
             EffectCategory::Color => "Colour",
@@ -444,6 +527,7 @@ impl EffectCategory {
             EffectCategory::Simulation => "Particles & simulation",
             EffectCategory::Generate => "Generate",
             EffectCategory::Geometry => "Geometry",
+            EffectCategory::Perspective => "Perspective",
             EffectCategory::Plugins => "Other plugins",
             EffectCategory::OpenFx => "OpenFX",
         }
@@ -1827,6 +1911,227 @@ pub mod video_limiter {
     pub const MAX_LUMA: usize = 1;
     pub const MIN_LUMA: usize = 2;
     pub const MAX_CHROMA: usize = 3;
+}
+pub mod corner_pin {
+    pub const TLX: usize = 0;
+    pub const TLY: usize = 1;
+    pub const TRX: usize = 2;
+    pub const TRY: usize = 3;
+    pub const BLX: usize = 4;
+    pub const BLY: usize = 5;
+    pub const BRX: usize = 6;
+    pub const BRY: usize = 7;
+}
+pub mod power_pin {
+    pub const TLX: usize = 0;
+    pub const TLY: usize = 1;
+    pub const TRX: usize = 2;
+    pub const TRY: usize = 3;
+    pub const BLX: usize = 4;
+    pub const BLY: usize = 5;
+    pub const BRX: usize = 6;
+    pub const BRY: usize = 7;
+    pub const PERSPECTIVE: usize = 8;
+}
+pub mod displacement_map {
+    pub const SOURCE: usize = 0;
+    pub const SCALE: usize = 1;
+    pub const H_FROM: usize = 2;
+    pub const H_MAX: usize = 3;
+    pub const V_FROM: usize = 4;
+    pub const V_MAX: usize = 5;
+    pub const WRAP: usize = 6;
+    pub const SEED: usize = 7;
+    pub const SPEED: usize = 8;
+}
+pub mod magnify {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const AMOUNT: usize = 2;
+    pub const SHAPE: usize = 3;
+    pub const SIZE: usize = 4;
+    pub const FEATHER: usize = 5;
+    pub const BORDER: usize = 6;
+    pub const BORDER_COLOR: usize = 7;
+    pub const OUTSIDE: usize = 8;
+}
+pub mod mesh_warp {
+    pub const TLX: usize = 0;
+    pub const TLY: usize = 1;
+    pub const TX: usize = 2;
+    pub const TY: usize = 3;
+    pub const TRX: usize = 4;
+    pub const TRY: usize = 5;
+    pub const LX: usize = 6;
+    pub const LY: usize = 7;
+    pub const MX: usize = 8;
+    pub const MY: usize = 9;
+    pub const RX: usize = 10;
+    pub const RY: usize = 11;
+    pub const BLX: usize = 12;
+    pub const BLY: usize = 13;
+    pub const BX: usize = 14;
+    pub const BY: usize = 15;
+    pub const BRX: usize = 16;
+    pub const BRY: usize = 17;
+}
+pub mod offset {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const BLEND: usize = 2;
+}
+pub mod optics {
+    pub const FOV: usize = 0;
+    pub const REVERSE: usize = 1;
+    pub const AXIS: usize = 2;
+    pub const X: usize = 3;
+    pub const Y: usize = 4;
+}
+pub mod spherize {
+    pub const RADIUS: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const AMOUNT: usize = 3;
+}
+pub mod smear {
+    pub const FROM_X: usize = 0;
+    pub const FROM_Y: usize = 1;
+    pub const TO_X: usize = 2;
+    pub const TO_Y: usize = 3;
+    pub const REACH: usize = 4;
+    pub const RADIUS: usize = 5;
+}
+pub mod warp {
+    pub const STYLE: usize = 0;
+    pub const AXIS: usize = 1;
+    pub const BEND: usize = 2;
+    pub const H_DIST: usize = 3;
+    pub const V_DIST: usize = 4;
+}
+pub mod bender {
+    pub const AMOUNT: usize = 0;
+    pub const STYLE: usize = 1;
+    pub const TOP_X: usize = 2;
+    pub const TOP_Y: usize = 3;
+    pub const BASE_X: usize = 4;
+    pub const BASE_Y: usize = 5;
+}
+pub mod blobbylize {
+    pub const FROM: usize = 0;
+    pub const SOFTNESS: usize = 1;
+    pub const CUT: usize = 2;
+    pub const LIGHT: usize = 3;
+    pub const LIGHT_ANGLE: usize = 4;
+    pub const REFRACT: usize = 5;
+    pub const COLOR: usize = 6;
+}
+pub mod flo_motion {
+    pub const X1: usize = 0;
+    pub const Y1: usize = 1;
+    pub const AMOUNT1: usize = 2;
+    pub const X2: usize = 3;
+    pub const Y2: usize = 4;
+    pub const AMOUNT2: usize = 5;
+    pub const FALLOFF: usize = 6;
+    pub const TILE: usize = 7;
+}
+pub mod lens_cc {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const SIZE: usize = 2;
+    pub const CONVERGENCE: usize = 3;
+}
+pub mod page_turn {
+    pub const FOLD_X: usize = 0;
+    pub const FOLD_Y: usize = 1;
+    pub const DIRECTION: usize = 2;
+    pub const RADIUS: usize = 3;
+    pub const LIGHT: usize = 4;
+    pub const RENDER: usize = 5;
+    pub const BACK_OPACITY: usize = 6;
+    pub const PAPER: usize = 7;
+}
+pub mod slant {
+    pub const AMOUNT: usize = 0;
+    pub const FLOOR: usize = 1;
+    pub const HEIGHT: usize = 2;
+}
+pub mod split {
+    pub const AX: usize = 0;
+    pub const AY: usize = 1;
+    pub const BX: usize = 2;
+    pub const BY: usize = 3;
+    pub const AMOUNT: usize = 4;
+}
+pub mod tiler {
+    pub const SCALE: usize = 0;
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const BLEND: usize = 3;
+}
+pub mod griddler {
+    pub const H_SCALE: usize = 0;
+    pub const V_SCALE: usize = 1;
+    pub const TILE: usize = 2;
+    pub const ROTATION: usize = 3;
+    pub const CUT: usize = 4;
+}
+pub mod ripple_pulse {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const HEIGHT: usize = 2;
+    pub const WIDTH: usize = 3;
+    pub const SPEED: usize = 4;
+    pub const START: usize = 5;
+    pub const FADE: usize = 6;
+}
+pub mod motion_tile {
+    pub const X: usize = 0;
+    pub const Y: usize = 1;
+    pub const TILE_W: usize = 2;
+    pub const TILE_H: usize = 3;
+    pub const OUT_W: usize = 4;
+    pub const OUT_H: usize = 5;
+    pub const MIRROR: usize = 6;
+    pub const PHASE: usize = 7;
+    pub const H_PHASE: usize = 8;
+}
+pub mod glasses3d {
+    pub const VIEW: usize = 0;
+    pub const CONVERGENCE: usize = 1;
+    pub const DEPTH: usize = 2;
+    pub const BALANCE: usize = 3;
+}
+pub mod radial_shadow {
+    pub const COLOR: usize = 0;
+    pub const OPACITY: usize = 1;
+    pub const X: usize = 2;
+    pub const Y: usize = 3;
+    pub const DISTANCE: usize = 4;
+    pub const SOFTNESS: usize = 5;
+    pub const ONLY: usize = 6;
+}
+pub mod cylinder {
+    pub const RADIUS: usize = 0;
+    pub const TURN_X: usize = 1;
+    pub const TURN_Y: usize = 2;
+    pub const TURN_Z: usize = 3;
+    pub const RENDER: usize = 4;
+    pub const LIGHT: usize = 5;
+    pub const LIGHT_ANGLE: usize = 6;
+    pub const AMBIENT: usize = 7;
+    pub const SHINE: usize = 8;
+}
+pub mod sphere {
+    pub const RADIUS: usize = 0;
+    pub const TURN_X: usize = 1;
+    pub const TURN_Y: usize = 2;
+    pub const TURN_Z: usize = 3;
+    pub const RENDER: usize = 4;
+    pub const LIGHT: usize = 5;
+    pub const LIGHT_ANGLE: usize = 6;
+    pub const AMBIENT: usize = 7;
+    pub const SHINE: usize = 8;
 }
 pub mod deflicker {
     pub const BRIGHTNESS: usize = 0;
@@ -3702,6 +4007,227 @@ const VIDEO_LIMITER: [ParamSpec; 4] = [
     spec("Lowest brightness", 0.0, -10.0, 50.0, " %", 0.2),
     spec("Highest saturation", 100.0, 0.0, 150.0, " %", 0.3),
 ];
+const CORNER_PIN: [ParamSpec; 8] = [
+    spec("Top left X", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Top left Y", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Top right X", 100.0, -200.0, 300.0, " %", 0.2),
+    spec("Top right Y", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Bottom left X", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Bottom left Y", 100.0, -200.0, 300.0, " %", 0.2),
+    spec("Bottom right X", 100.0, -200.0, 300.0, " %", 0.2),
+    spec("Bottom right Y", 100.0, -200.0, 300.0, " %", 0.2),
+];
+const POWER_PIN: [ParamSpec; 9] = [
+    spec("Top left X", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Top left Y", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Top right X", 100.0, -200.0, 300.0, " %", 0.2),
+    spec("Top right Y", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Bottom left X", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Bottom left Y", 100.0, -200.0, 300.0, " %", 0.2),
+    spec("Bottom right X", 100.0, -200.0, 300.0, " %", 0.2),
+    spec("Bottom right Y", 100.0, -200.0, 300.0, " %", 0.2),
+    spec("Perspective", 100.0, 0.0, 100.0, " %", 0.3),
+];
+const DISPLACEMENT_MAP: [ParamSpec; 9] = [
+    choice("Map", &["The layer itself", "Noise"]),
+    spec("Noise size", 80.0, 1.0, 2000.0, " px", 0.5),
+    choice("Horizontal from", &["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]),
+    spec("Maximum horizontal", 5.0, -4000.0, 4000.0, " px", 0.2),
+    ParamSpec { name: "Vertical from", default: 1.0, min: 0.0, max: 10.0, suffix: "", speed: 1.0, ui: ParamUi::Choice(&["Red", "Green", "Blue", "Alpha", "Luminance", "Hue", "Lightness", "Saturation", "Full", "Half", "Off"]) },
+    spec("Maximum vertical", 5.0, -4000.0, 4000.0, " px", 0.2),
+    ParamSpec { name: "Wrap pixels around", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Seed", 0.0, 0.0, 9999.0, "", 1.0),
+    spec("Noise speed", 0.0, 0.0, 100.0, "", 0.1),
+];
+const MAGNIFY: [ParamSpec; 9] = [
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Magnification", 200.0, 10.0, 2000.0, " %", 1.0),
+    choice("Shape", &["Circle", "Square"]),
+    spec("Size", 100.0, 1.0, 4000.0, " px", 0.5),
+    spec("Feather", 0.0, 0.0, 500.0, " px", 0.2),
+    spec("Border", 0.0, 0.0, 100.0, " px", 0.1),
+    color("Border colour", 0xffffff),
+    choice("The rest", &["Shown", "Hidden"]),
+];
+const MESH_WARP: [ParamSpec; 18] = [
+    spec("Top left x", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Top left y", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Top x", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Top y", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Top right x", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Top right y", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Left x", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Left y", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Middle x", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Middle y", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Right x", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Right y", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Bottom left x", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Bottom left y", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Bottom x", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Bottom y", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Bottom right x", 0.0, -100.0, 100.0, " %", 0.1),
+    spec("Bottom right y", 0.0, -100.0, 100.0, " %", 0.1),
+];
+const OFFSET: [ParamSpec; 3] = [
+    spec("Shift centre to X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Shift centre to Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const OPTICS: [ParamSpec; 5] = [
+    spec("Field of view", 0.0, 0.0, 179.0, " °", 0.2),
+    ParamSpec { name: "Reverse lens distortion", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    choice("Field of view across", &["Width", "Height", "Diagonal"]),
+    spec("View centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("View centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+];
+const SPHERIZE: [ParamSpec; 4] = [
+    spec("Radius", 150.0, 0.0, 4000.0, " px", 0.5),
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Amount", 100.0, -100.0, 100.0, " %", 0.3),
+];
+const SMEAR: [ParamSpec; 6] = [
+    spec("From X", 40.0, -200.0, 300.0, " %", 0.2),
+    spec("From Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("To X", 60.0, -200.0, 300.0, " %", 0.2),
+    spec("To Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Reach", 100.0, -200.0, 200.0, " %", 0.3),
+    spec("Radius", 100.0, 1.0, 4000.0, " px", 0.5),
+];
+const WARP: [ParamSpec; 5] = [
+    choice("Style", &["Arc", "Arc lower", "Arc upper", "Arch", "Bulge", "Shell lower", "Shell upper", "Flag", "Wave", "Fish", "Rise", "Fisheye", "Inflate", "Squeeze", "Twist"]),
+    choice("Axis", &["Horizontal", "Vertical"]),
+    spec("Bend", 50.0, -100.0, 100.0, " %", 0.3),
+    spec("Horizontal distortion", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Vertical distortion", 0.0, -100.0, 100.0, " %", 0.3),
+];
+const BENDER: [ParamSpec; 6] = [
+    spec("Amount", 30.0, -200.0, 200.0, " %", 0.3),
+    choice("Style", &["Bend", "Marilyn", "Sharp", "Boxer"]),
+    spec("Top X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Top Y", 0.0, -200.0, 300.0, " %", 0.2),
+    spec("Base X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Base Y", 100.0, -200.0, 300.0, " %", 0.2),
+];
+const BLOBBYLIZE: [ParamSpec; 7] = [
+    choice("Blobs from", &["Brightness", "Opacity"]),
+    spec("Softness", 10.0, 0.0, 100.0, " px", 0.2),
+    spec("Cut away", 30.0, 0.0, 100.0, " %", 0.3),
+    spec("Light", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Light direction", 135.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Refraction", 20.0, 0.0, 400.0, " px", 0.2),
+    color("Light colour", 0xffffff),
+];
+const FLO_MOTION: [ParamSpec; 8] = [
+    spec("Knot 1 X", 35.0, -200.0, 300.0, " %", 0.2),
+    spec("Knot 1 Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Amount 1", 50.0, -200.0, 200.0, " %", 0.3),
+    spec("Knot 2 X", 65.0, -200.0, 300.0, " %", 0.2),
+    spec("Knot 2 Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Amount 2", -50.0, -200.0, 200.0, " %", 0.3),
+    spec("Falloff", 50.0, 1.0, 400.0, " %", 0.3),
+    ParamSpec { name: "Tile edges", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const LENS_CC: [ParamSpec; 4] = [
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Size", 100.0, 1.0, 500.0, " %", 0.3),
+    spec("Convergence", 50.0, -100.0, 100.0, "", 0.3),
+];
+const PAGE_TURN: [ParamSpec; 8] = [
+    spec("Fold X", 70.0, -200.0, 300.0, " %", 0.2),
+    spec("Fold Y", 30.0, -200.0, 300.0, " %", 0.2),
+    spec("Fold direction", 45.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Fold radius", 40.0, 1.0, 1000.0, " px", 0.3),
+    spec("Light direction", 135.0, -3600.0, 3600.0, " °", 0.5),
+    choice("Show", &["Front and back", "Back page", "Front page"]),
+    spec("Back opacity", 25.0, 0.0, 100.0, " %", 0.3),
+    color("Paper colour", 0xf0ede4),
+];
+const SLANT: [ParamSpec; 3] = [
+    spec("Slant", 20.0, -89.0, 89.0, " °", 0.3),
+    spec("Floor", 100.0, -200.0, 300.0, " %", 0.2),
+    spec("Height", 100.0, 1.0, 1000.0, " %", 0.3),
+];
+const SPLIT: [ParamSpec; 5] = [
+    spec("Point A X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Point A Y", 15.0, -200.0, 300.0, " %", 0.2),
+    spec("Point B X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Point B Y", 85.0, -200.0, 300.0, " %", 0.2),
+    spec("Split", 30.0, 0.0, 400.0, " px", 0.3),
+];
+const TILER: [ParamSpec; 4] = [
+    spec("Scale", 33.0, 1.0, 100.0, " %", 0.3),
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Blend with original", 0.0, 0.0, 100.0, " %", 0.3),
+];
+const GRIDDLER: [ParamSpec; 5] = [
+    spec("Horizontal scale", 100.0, 0.0, 400.0, " %", 0.3),
+    spec("Vertical scale", 100.0, 0.0, 400.0, " %", 0.3),
+    spec("Tile size", 10.0, 0.5, 100.0, " %", 0.1),
+    spec("Rotation", 0.0, -3600.0, 3600.0, " °", 0.5),
+    ParamSpec { name: "Cut tiles", default: 1.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const RIPPLE_PULSE: [ParamSpec; 7] = [
+    spec("Centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Pulse height", 15.0, -200.0, 200.0, " px", 0.2),
+    spec("Pulse width", 40.0, 1.0, 1000.0, " px", 0.3),
+    spec("Speed", 300.0, 0.0, 10000.0, " px/s", 1.0),
+    spec("Start", 0.0, -60.0, 3600.0, " s", 0.05),
+    spec("Fade", 50.0, 0.0, 100.0, " %", 0.3),
+];
+const MOTION_TILE: [ParamSpec; 9] = [
+    spec("Tile centre X", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Tile centre Y", 50.0, -200.0, 300.0, " %", 0.2),
+    spec("Tile width", 100.0, 1.0, 1000.0, " %", 0.3),
+    spec("Tile height", 100.0, 1.0, 1000.0, " %", 0.3),
+    spec("Output width", 100.0, 100.0, 400.0, " %", 0.3),
+    spec("Output height", 100.0, 100.0, 400.0, " %", 0.3),
+    ParamSpec { name: "Mirror edges", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+    spec("Phase", 0.0, -3600.0, 3600.0, " °", 0.5),
+    ParamSpec { name: "Horizontal phase shift", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const GLASSES3D: [ParamSpec; 4] = [
+    choice("View", &["Red–cyan", "Red–green", "Red–blue", "Balanced red–cyan", "Side by side"]),
+    spec("Scene convergence", 4.0, -200.0, 200.0, " px", 0.1),
+    spec("Depth from brightness", 8.0, -200.0, 200.0, " px", 0.1),
+    spec("Balance", 10.0, 0.0, 100.0, " %", 0.3),
+];
+const RADIAL_SHADOW: [ParamSpec; 7] = [
+    color("Shadow colour", 0x000000),
+    spec("Opacity", 50.0, 0.0, 100.0, " %", 0.3),
+    spec("Light X", 30.0, -200.0, 300.0, " %", 0.2),
+    spec("Light Y", 20.0, -200.0, 300.0, " %", 0.2),
+    spec("Projection distance", 10.0, 0.0, 400.0, " %", 0.3),
+    spec("Softness", 6.0, 0.0, 200.0, " px", 0.2),
+    ParamSpec { name: "Shadow only", default: 0.0, min: 0.0, max: 1.0, suffix: "", speed: 1.0, ui: ParamUi::Toggle },
+];
+const CYLINDER: [ParamSpec; 9] = [
+    spec("Radius", 30.0, 1.0, 400.0, " %", 0.3),
+    spec("Turn X", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Turn Y", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Turn Z", 0.0, -3600.0, 3600.0, " °", 0.5),
+    choice("Show", &["Full", "Outside", "Inside"]),
+    spec("Light", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Light direction", 135.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Ambient", 40.0, 0.0, 100.0, " %", 0.3),
+    spec("Shine", 20.0, 0.0, 200.0, " %", 0.3),
+];
+const SPHERE: [ParamSpec; 9] = [
+    spec("Radius", 40.0, 1.0, 400.0, " %", 0.3),
+    spec("Turn X", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Turn Y", 0.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Turn Z", 0.0, -3600.0, 3600.0, " °", 0.5),
+    choice("Show", &["Full", "Outside", "Inside"]),
+    spec("Light", 100.0, 0.0, 400.0, " %", 0.5),
+    spec("Light direction", 135.0, -3600.0, 3600.0, " °", 0.5),
+    spec("Ambient", 30.0, 0.0, 100.0, " %", 0.3),
+    spec("Shine", 30.0, 0.0, 200.0, " %", 0.3),
+];
 const DEFLICKER: [ParamSpec; 6] = [
     spec("Brightness", 100.0, 0.0, 400.0, " %", 0.2),
     spec("Red", 100.0, 0.0, 400.0, " %", 0.2),
@@ -4406,7 +4932,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 153] = [
+    pub const ALL: [EffectKind; 178] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -4560,6 +5086,31 @@ impl EffectKind {
         EffectKind::ThresholdRgb,
         EffectKind::Kernel,
         EffectKind::VideoLimiter,
+        EffectKind::CornerPin,
+        EffectKind::PowerPin,
+        EffectKind::DisplacementMap,
+        EffectKind::Magnify,
+        EffectKind::MeshWarp,
+        EffectKind::Offset,
+        EffectKind::OpticsCompensation,
+        EffectKind::Spherize,
+        EffectKind::Smear,
+        EffectKind::Warp,
+        EffectKind::Bender,
+        EffectKind::Blobbylize,
+        EffectKind::FloMotion,
+        EffectKind::LensCc,
+        EffectKind::PageTurn,
+        EffectKind::Slant,
+        EffectKind::Split,
+        EffectKind::Tiler,
+        EffectKind::Griddler,
+        EffectKind::RipplePulse,
+        EffectKind::MotionTile,
+        EffectKind::Glasses3d,
+        EffectKind::RadialShadow,
+        EffectKind::Cylinder,
+        EffectKind::Sphere,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -4575,6 +5126,12 @@ impl EffectKind {
             EffectKind::Hud => (hud::X, hud::Y, "centre"),
             EffectKind::BurnAway => (burn::X, burn::Y, "burn point"),
             EffectKind::Extrude => (extrude::X, extrude::Y, "vanishing point"),
+            EffectKind::Magnify => (magnify::X, magnify::Y, "magnifier"),
+            EffectKind::Spherize => (spherize::X, spherize::Y, "sphere's middle"),
+            EffectKind::LensCc => (lens_cc::X, lens_cc::Y, "lens"),
+            EffectKind::PageTurn => (page_turn::FOLD_X, page_turn::FOLD_Y, "fold"),
+            EffectKind::RipplePulse => (ripple_pulse::X, ripple_pulse::Y, "pulse's middle"),
+            EffectKind::RadialShadow => (radial_shadow::X, radial_shadow::Y, "light"),
             _ => return None,
         })
     }
@@ -4655,6 +5212,31 @@ impl EffectKind {
             EffectKind::Bevel => "Bevel",
             EffectKind::Extrude => "Extrude",
             EffectKind::Rotate3d => "Rotate",
+            EffectKind::CornerPin => "Corner pin",
+            EffectKind::PowerPin => "Power pin",
+            EffectKind::DisplacementMap => "Displacement map",
+            EffectKind::Magnify => "Magnify",
+            EffectKind::MeshWarp => "Mesh warp",
+            EffectKind::Offset => "Offset",
+            EffectKind::OpticsCompensation => "Optics compensation",
+            EffectKind::Spherize => "Spherize",
+            EffectKind::Smear => "Smear",
+            EffectKind::Warp => "Warp",
+            EffectKind::Bender => "Bender",
+            EffectKind::Blobbylize => "Blobbylize",
+            EffectKind::FloMotion => "Flo motion",
+            EffectKind::LensCc => "Lens",
+            EffectKind::PageTurn => "Page turn",
+            EffectKind::Slant => "Slant",
+            EffectKind::Split => "Split",
+            EffectKind::Tiler => "Tiler",
+            EffectKind::Griddler => "Griddler",
+            EffectKind::RipplePulse => "Ripple pulse",
+            EffectKind::MotionTile => "Motion tile",
+            EffectKind::Glasses3d => "3D glasses",
+            EffectKind::RadialShadow => "Radial shadow",
+            EffectKind::Cylinder => "Cylinder",
+            EffectKind::Sphere => "Sphere",
             EffectKind::BoxBlur => "Box blur",
             EffectKind::ChannelBlur => "Channel blur",
             EffectKind::CompoundBlur => "Compound blur",
@@ -4775,6 +5357,31 @@ impl EffectKind {
             EffectKind::BurnAway => EffectCategory::Stylize,
             EffectKind::Extrusion3d => EffectCategory::Generate,
             EffectKind::Bend | EffectKind::Bevel | EffectKind::Extrude | EffectKind::Rotate3d => EffectCategory::Geometry,
+            EffectKind::CornerPin => EffectCategory::Distort,
+            EffectKind::PowerPin => EffectCategory::Distort,
+            EffectKind::DisplacementMap => EffectCategory::Distort,
+            EffectKind::Magnify => EffectCategory::Distort,
+            EffectKind::MeshWarp => EffectCategory::Distort,
+            EffectKind::Offset => EffectCategory::Distort,
+            EffectKind::OpticsCompensation => EffectCategory::Distort,
+            EffectKind::Spherize => EffectCategory::Distort,
+            EffectKind::Smear => EffectCategory::Distort,
+            EffectKind::Warp => EffectCategory::Distort,
+            EffectKind::Bender => EffectCategory::Distort,
+            EffectKind::Blobbylize => EffectCategory::Distort,
+            EffectKind::FloMotion => EffectCategory::Distort,
+            EffectKind::LensCc => EffectCategory::Distort,
+            EffectKind::PageTurn => EffectCategory::Distort,
+            EffectKind::Slant => EffectCategory::Distort,
+            EffectKind::Split => EffectCategory::Distort,
+            EffectKind::Tiler => EffectCategory::Distort,
+            EffectKind::Griddler => EffectCategory::Distort,
+            EffectKind::RipplePulse => EffectCategory::Distort,
+            EffectKind::MotionTile => EffectCategory::Distort,
+            EffectKind::Glasses3d => EffectCategory::Perspective,
+            EffectKind::RadialShadow => EffectCategory::Perspective,
+            EffectKind::Cylinder => EffectCategory::Perspective,
+            EffectKind::Sphere => EffectCategory::Perspective,
             EffectKind::BoxBlur => EffectCategory::BlurSharpen,
             EffectKind::ChannelBlur => EffectCategory::BlurSharpen,
             EffectKind::CompoundBlur => EffectCategory::BlurSharpen,
@@ -4896,6 +5503,31 @@ impl EffectKind {
             EffectKind::Bevel => "Bevelled edges: the picture's outline (a logo or a cut-out) or the layer's whole frame lit as if raised, bright on the side towards the light and shaded on the other.",
             EffectKind::Extrude => "Flat-style extrusion: the layer's shape drawn out in a direction (a long-shadow look) or towards a vanishing point, with its sides in a darker shade of the picture or a colour of their own.",
             EffectKind::Rotate3d => "Turns the layer like a card in 3D, round X, Y and Z about a point you choose, with perspective; its back can show the picture, darkened, or nothing. Key the turns to flip or spin it.",
+            EffectKind::CornerPin => "Pins the layer's four corners anywhere, stretching it in perspective between them: onto a screen, a sign or a page.",
+            EffectKind::PowerPin => "A corner pin with a choice of how the picture fills the shape: in true perspective (as a flat surface seen at an angle) or stretched evenly (bilinear), or anywhere between.",
+            EffectKind::DisplacementMap => "Pushes each pixel sideways and up or down by a map — the layer's own channels (its brightness, red, green…) or a cloudy noise — up to a maximum each way: heat shimmer, glass, water, and warped textures.",
+            EffectKind::Magnify => "A magnifying glass over part of the layer: round or square, at a size and magnification, with a soft or hard edge, a border, and the rest of the layer shown or hidden.",
+            EffectKind::MeshWarp => "Bends the layer by moving the nine points of a three-by-three grid over it (its corners, edge middles and middle) — smoothly warped in between: reshape faces, bottles, logos.",
+            EffectKind::Offset => "Slides the picture across and down, wrapping round so what leaves one edge comes in at the other: seamless scrolling backgrounds and checking a tile's seams.",
+            EffectKind::OpticsCompensation => "Adds a wide-angle lens's barrel distortion for a field of view (or takes it out, reversed, to straighten footage shot on one) about a centre of your choice.",
+            EffectKind::Spherize => "Wraps a round area of the layer onto a sphere bulging towards you (or pushed away, negative): fisheye faces and bubbles.",
+            EffectKind::Smear => "Drags the picture from one point towards another, as a finger smudging wet paint, within a radius and as far as you like.",
+            EffectKind::Warp => "Bends the whole layer into one of fifteen shapes — arc, arch, bulge, shell, flag, wave, fish, rise, fisheye, inflate, squeeze, twist and more — by an amount, with extra horizontal and vertical perspective: warped text and logos.",
+            EffectKind::Bender => "Bends the layer like a flexible rod between a base point and a top point: a gentle bend, a sharp kink, a wiggle (Marilyn) or a sway (Boxer) — sways a tree, a figure or a logo.",
+            EffectKind::Blobbylize => "Turns the layer into shiny, jelly-like blobs: its brightness (or opacity) melted into soft lumps, cut away below a level, lit from one side and bending the picture behind like glass.",
+            EffectKind::FloMotion => "Two knots that draw the picture in towards them (or push it out, negative) with a falloff: pinches, whirlpools of stretch, and liquid pulls — key the amounts to animate.",
+            EffectKind::LensCc => "Looks at the layer through a round lens: a fisheye (convergence up) or a pinched lens (down), at a size and centre, with nothing outside the lens.",
+            EffectKind::PageTurn => "Curls the layer over like a turning page: the fold where you put it, curling in any direction round a radius, its back the paper's colour (or the picture showing through), shaded by a light — key the fold to turn the page.",
+            EffectKind::Slant => "Slants the layer sideways from a floor line, as italic type or a shadow cast on the ground, stretched to keep its height if you like.",
+            EffectKind::Split => "Splits the layer open along a line between two points, as if torn or unzipped: the sides pushed apart in a lens shape by the split amount.",
+            EffectKind::Tiler => "Repeats the layer, smaller, in tiles across itself — scaled about a centre — and blended with the original if you like.",
+            EffectKind::Griddler => "Cuts the layer into a grid of tiles and scales and turns each one about its own middle: broken mosaics, shuffling tiles and transitions.",
+            EffectKind::RipplePulse => "A single ring of ripple spreading out from a point, as from a drop in still water: its height, width and speed, fading as it goes.",
+            EffectKind::MotionTile => "Tiles the layer across a wider area (the output can be bigger than the layer), each tile a set size, mirrored at the edges so the seams don't show, with rows or columns offset by a phase — for moving tiled backgrounds.",
+            EffectKind::Glasses3d => "Turns the layer into a red–cyan (or red–green, red–blue, balanced) anaglyph for 3D glasses: its two eyes' views pushed apart by its brightness (bright things nearer) or by a flat convergence.",
+            EffectKind::RadialShadow => "A shadow cast by a point light near the layer onto a surface behind it: it spreads out away from the light, softened, in a colour and opacity — or just the shadow on its own.",
+            EffectKind::Cylinder => "Wraps the layer round a cylinder in 3D, turned any way and lit: labels on cans, spinning columns, rolled banners — seen from outside, inside or both.",
+            EffectKind::Sphere => "Wraps the layer round a sphere in 3D — a planet, a ball, a globe — turned any way and lit, seen from outside, inside or both.",
             EffectKind::BoxBlur => "A fast blur that averages each pixel with its neighbours in a box, as many times as you like: once is blocky, three times is nearly Gaussian. Just across, just down, or both; the edges' own pixels repeated so they don't fade.",
             EffectKind::ChannelBlur => "Blurs the red, green, blue and alpha channels each by their own amount: soft colour fringes, a blurred matte under a sharp picture, or a dreamy red bloom.",
             EffectKind::CompoundBlur => "Blurs some places more than others, by a map: the layer's own brightness or opacity, or a gradient sharp in the middle, at the top, at the bottom or in a band (a quick depth of field).",
@@ -5090,6 +5722,31 @@ impl EffectKind {
             EffectKind::Bevel => &BEVEL,
             EffectKind::Extrude => &EXTRUDE,
             EffectKind::Rotate3d => &ROTATE3D,
+            EffectKind::CornerPin => &CORNER_PIN,
+            EffectKind::PowerPin => &POWER_PIN,
+            EffectKind::DisplacementMap => &DISPLACEMENT_MAP,
+            EffectKind::Magnify => &MAGNIFY,
+            EffectKind::MeshWarp => &MESH_WARP,
+            EffectKind::Offset => &OFFSET,
+            EffectKind::OpticsCompensation => &OPTICS,
+            EffectKind::Spherize => &SPHERIZE,
+            EffectKind::Smear => &SMEAR,
+            EffectKind::Warp => &WARP,
+            EffectKind::Bender => &BENDER,
+            EffectKind::Blobbylize => &BLOBBYLIZE,
+            EffectKind::FloMotion => &FLO_MOTION,
+            EffectKind::LensCc => &LENS_CC,
+            EffectKind::PageTurn => &PAGE_TURN,
+            EffectKind::Slant => &SLANT,
+            EffectKind::Split => &SPLIT,
+            EffectKind::Tiler => &TILER,
+            EffectKind::Griddler => &GRIDDLER,
+            EffectKind::RipplePulse => &RIPPLE_PULSE,
+            EffectKind::MotionTile => &MOTION_TILE,
+            EffectKind::Glasses3d => &GLASSES3D,
+            EffectKind::RadialShadow => &RADIAL_SHADOW,
+            EffectKind::Cylinder => &CYLINDER,
+            EffectKind::Sphere => &SPHERE,
             EffectKind::BoxBlur => &BOX_BLUR,
             EffectKind::ChannelBlur => &CHANNEL_BLUR,
             EffectKind::CompoundBlur => &COMPOUND_BLUR,
@@ -5228,6 +5885,11 @@ impl EffectKind {
             EffectKind::BurnAway => &[(0, "Burn"), (4, "Edge"), (9, "Embers")],
             EffectKind::Extrusion3d => &[(0, "Shape"), (3, "Turn"), (8, "Surface"), (10, "Light")],
             EffectKind::Rotate3d => &[(0, "Turn"), (3, "View"), (5, "Pivot")],
+            EffectKind::CornerPin => &[(0, "Top"), (4, "Bottom")],
+            EffectKind::PowerPin => &[(0, "Top"), (4, "Bottom"), (8, "Fill")],
+            EffectKind::MeshWarp => &[(0, "Top row"), (6, "Middle row"), (12, "Bottom row")],
+            EffectKind::Cylinder => &[(0, "Shape"), (4, "Show"), (5, "Light")],
+            EffectKind::Sphere => &[(0, "Shape"), (4, "Show"), (5, "Light")],
             EffectKind::ChannelMixer => &[(0, "Red"), (4, "Green"), (8, "Blue"), (12, "Output")],
             EffectKind::ColorBalance => &[(0, "Shadows"), (3, "Midtones"), (6, "Highlights")],
             EffectKind::SelectiveColor => &[(0, "Method"), (1, "Range 1"), (6, "Range 2"), (11, "Range 3")],
@@ -5360,6 +6022,31 @@ impl EffectValues {
             EffectKind::Bevel => v[bevel::WIDTH] <= 0.0 || v[bevel::INTENSITY] == 0.0,
             EffectKind::Extrude => v[extrude::LENGTH] <= 0.0,
             EffectKind::Rotate3d => v[rotate3d::TURN_X] == 0.0 && v[rotate3d::TURN_Y] == 0.0 && v[rotate3d::TURN_Z] == 0.0 && v[rotate3d::SIZE] == 100.0 && v[rotate3d::PUSH] == 0.0,
+            EffectKind::CornerPin => v[0] == 0.0 && v[1] == 0.0 && v[2] == 100.0 && v[3] == 0.0 && v[4] == 0.0 && v[5] == 100.0 && v[6] == 100.0 && v[7] == 100.0,
+            EffectKind::PowerPin => v[0] == 0.0 && v[1] == 0.0 && v[2] == 100.0 && v[3] == 0.0 && v[4] == 0.0 && v[5] == 100.0 && v[6] == 100.0 && v[7] == 100.0,
+            EffectKind::DisplacementMap => v[displacement_map::H_MAX] == 0.0 && v[displacement_map::V_MAX] == 0.0,
+            EffectKind::Magnify => v[magnify::AMOUNT] == 100.0 && v[magnify::BORDER] <= 0.0 && v[magnify::OUTSIDE] < 0.5,
+            EffectKind::MeshWarp => v[0..18].iter().all(|x| *x == 0.0),
+            EffectKind::Offset => (v[offset::X] == 50.0 && v[offset::Y] == 50.0) || v[offset::BLEND] >= 100.0,
+            EffectKind::OpticsCompensation => v[optics::FOV] <= 0.0,
+            EffectKind::Spherize => v[spherize::RADIUS] <= 0.0 || v[spherize::AMOUNT] == 0.0,
+            EffectKind::Smear => v[smear::REACH] == 0.0 || (v[smear::FROM_X] == v[smear::TO_X] && v[smear::FROM_Y] == v[smear::TO_Y]),
+            EffectKind::Warp => v[warp::BEND] == 0.0 && v[warp::H_DIST] == 0.0 && v[warp::V_DIST] == 0.0,
+            EffectKind::Bender => v[bender::AMOUNT] == 0.0,
+            EffectKind::Blobbylize => false,
+            EffectKind::FloMotion => v[flo_motion::AMOUNT1] == 0.0 && v[flo_motion::AMOUNT2] == 0.0,
+            EffectKind::LensCc => false,
+            EffectKind::PageTurn => false,
+            EffectKind::Slant => v[slant::AMOUNT] == 0.0 && v[slant::HEIGHT] == 100.0,
+            EffectKind::Split => v[split::AMOUNT] <= 0.0,
+            EffectKind::Tiler => v[tiler::SCALE] >= 100.0 || v[tiler::BLEND] >= 100.0,
+            EffectKind::Griddler => v[griddler::H_SCALE] == 100.0 && v[griddler::V_SCALE] == 100.0 && v[griddler::ROTATION] == 0.0,
+            EffectKind::RipplePulse => v[ripple_pulse::HEIGHT] == 0.0,
+            EffectKind::MotionTile => v[motion_tile::TILE_W] == 100.0 && v[motion_tile::TILE_H] == 100.0 && v[motion_tile::OUT_W] == 100.0 && v[motion_tile::OUT_H] == 100.0 && v[motion_tile::X] == 50.0 && v[motion_tile::Y] == 50.0,
+            EffectKind::Glasses3d => false,
+            EffectKind::RadialShadow => v[radial_shadow::OPACITY] <= 0.0,
+            EffectKind::Cylinder => false,
+            EffectKind::Sphere => false,
             EffectKind::BoxBlur => v[box_blur::RADIUS] <= 0.0,
             EffectKind::ChannelBlur => v[channel_blur::RED] <= 0.0 && v[channel_blur::GREEN] <= 0.0 && v[channel_blur::BLUE] <= 0.0 && v[channel_blur::ALPHA] <= 0.0,
             EffectKind::CompoundBlur => v[compound_blur::MAX] <= 0.0,
@@ -5501,6 +6188,8 @@ impl EffectValues {
             || (self.kind == EffectKind::Portal && (v[portal::OPEN] > 0.0))
             || (self.kind == EffectKind::Hud && (true))
             || (self.kind == EffectKind::LightSweep && (v[sweep::POSITION] < 0.0))
+            || (self.kind == EffectKind::DisplacementMap && (v[displacement_map::SPEED] > 0.0 && v[displacement_map::SOURCE] >= 0.5))
+            || (self.kind == EffectKind::RipplePulse && (true))
             || (self.kind == EffectKind::ElectricArcs && (true))
             || (self.kind == EffectKind::NightVision && (v[night_vision::NOISE] > 0.0 || v[night_vision::FLICKER] > 0.0))
             || (self.kind == EffectKind::ThermalCamera && (v[thermal::NOISE] > 0.0))
@@ -5835,7 +6524,7 @@ mod tests {
             match kind {
                 // These start neutral, for you to adjust.
                 // …or need a file first (a LUT, a clean plate).
-                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace | EffectKind::Deflicker | EffectKind::ChannelMixer | EffectKind::ShiftChannels | EffectKind::SetChannels | EffectKind::ColorBalance | EffectKind::ChangeColor | EffectKind::ColorOffset | EffectKind::Kernel | EffectKind::Exposure | EffectKind::SelectiveColor => assert!(v.is_identity(), "{kind:?}"),
+                EffectKind::ColorCorrect | EffectKind::Levels | EffectKind::Curves | EffectKind::ColorWheels | EffectKind::HslQualifier | EffectKind::HueCurves | EffectKind::Lut | EffectKind::DifferenceKey | EffectKind::ObjectRemoval | EffectKind::Paint | EffectKind::Liquify | EffectKind::DepthMap | EffectKind::Relight | EffectKind::PortraitBlur | EffectKind::FaceBeauty | EffectKind::SkyReplace | EffectKind::Deflicker | EffectKind::ChannelMixer | EffectKind::ShiftChannels | EffectKind::SetChannels | EffectKind::ColorBalance | EffectKind::ChangeColor | EffectKind::ColorOffset | EffectKind::Kernel | EffectKind::Exposure | EffectKind::SelectiveColor | EffectKind::CornerPin | EffectKind::PowerPin | EffectKind::MeshWarp | EffectKind::Offset | EffectKind::OpticsCompensation | EffectKind::Griddler | EffectKind::MotionTile => assert!(v.is_identity(), "{kind:?}"),
                 // Needs a mask to run along (see neonpath's tests).
                 EffectKind::NeonPath => assert!(v.is_identity()),
                 // Its trail is worked out with the clip (see sparkle's tests).

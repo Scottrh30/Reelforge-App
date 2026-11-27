@@ -867,7 +867,21 @@ What works now:
     offset** (channels cycled round by a phase: wrap, solarise or polarise), **Toner** (duo-,
     tri- and pentones, solarised), **Threshold RGB**, **Convolution kernel** (nine weights,
     divide and offset) and **Video limiter** (broadcast-safe brightness and saturation)
- the layer's picture made solid — its shape (wherever it
+  - **Distort** (more): **Corner pin** and **Power pin** (the four corners dragged anywhere;
+    power pin with a **Perspective** amount, from flat stretching to true perspective), **Displacement map** (pixels pushed by a map:
+    one of the layer's own channels, or moving noise), **Magnify** (a round or square loupe with a border),
+    **Mesh warp** (a grid of points pulled about), **Offset** (scrolled round, wrapping),
+    **Optics compensation** (a lens's barrel distortion added or taken out), **Spherize**,
+    **Smear** (one spot dragged to another), **Warp** (arc, arch, bulge, flag, wave, fish, rise,
+    squeeze, twist and more), **Bender**, **Blobbylize** (melted into glossy, lit blobs),
+    **Flo motion** (pulled round two knots), **Lens** (a fisheye ball), **Page turn** (curled
+    away like a page, its back the picture or paper), **Slant**, **Split** (torn open along a
+    line), **Tiler**, **Griddler** (cut into turned tiles), **Ripple pulse** (a ring of ripple
+    spreading from a point) and **Motion tile** (repeated round itself, mirrored if you like)
+  - **Perspective** (a section of its own): **3D glasses** (red–cyan, red–green,
+    red–blue or side by side, with depth taken from brightness), **Radial shadow** (a shadow cast from a point light), **Cylinder**
+    and **Sphere** (the layer wrapped round one, turned and lit)
+  - **3D Extrusion** (Generate): the layer's picture made solid — its shape (wherever it
     isn't see-through, above **Solid above**) extruded to a **Depth**, with a **Bevel**
     (flat or round), turned in 3D (**Turn X/Y/Z**, **Size**, **Perspective**), its **Sides**
     in the picture's edge colours or a **Side colour**, its **Back** the picture or the side
