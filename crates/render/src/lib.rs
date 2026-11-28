@@ -3721,6 +3721,9 @@ pub enum RenderDevice {
     #[default]
     Gpu,
     Cpu,
+    /// The graphics built into the processor (Intel, AMD or Apple's), on a
+    /// computer that also has a graphics card: cooler and quieter, slower.
+    Integrated,
 }
 
 impl RenderDevice {
@@ -3728,6 +3731,7 @@ impl RenderDevice {
         match self {
             RenderDevice::Gpu => "GPU",
             RenderDevice::Cpu => "CPU",
+            RenderDevice::Integrated => "Integrated GPU",
         }
     }
 }
@@ -3775,6 +3779,15 @@ fn adapter_for(kind: RenderDevice) -> Option<wgpu::Adapter> {
                 p => all.into_iter().filter(|a| a.get_info().device_type != wgpu::DeviceType::Cpu).min_by_key(rank).or(p),
             }
         }
+        RenderDevice::Integrated => {
+            let all = pollster::block_on(inst.enumerate_adapters(wgpu::Backends::all()));
+            // The system's low-power choice when it's the built-in one, else any built-in one.
+            let low = pollster::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::LowPower, ..Default::default() })).ok();
+            match low {
+                Some(a) if a.get_info().device_type == wgpu::DeviceType::IntegratedGpu => Some(a),
+                _ => all.into_iter().find(|a| a.get_info().device_type == wgpu::DeviceType::IntegratedGpu),
+            }
+        }
         RenderDevice::Cpu => {
             let all = pollster::block_on(inst.enumerate_adapters(wgpu::Backends::all()));
             all.into_iter().find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu).or_else(|| pollster::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter: true, ..Default::default() })).ok().filter(|a| a.get_info().device_type == wgpu::DeviceType::Cpu))
@@ -3785,10 +3798,15 @@ fn adapter_for(kind: RenderDevice) -> Option<wgpu::Adapter> {
 /// The renderers this computer has (a graphics card, a software one), for
 /// choosing between them.
 pub fn renderers() -> Vec<RendererInfo> {
-    [RenderDevice::Gpu, RenderDevice::Cpu]
+    let best = adapter_for(RenderDevice::Gpu).map(|a| a.get_info());
+    [RenderDevice::Gpu, RenderDevice::Integrated, RenderDevice::Cpu]
         .into_iter()
         .filter_map(|kind| {
             let a = adapter_for(kind)?;
+            // The built-in graphics only as a second choice (when the GPU is something else).
+            if kind == RenderDevice::Integrated && best.as_ref().is_some_and(|b| b.name == a.get_info().name && b.backend == a.get_info().backend) {
+                return None;
+            }
             // "GPU" that's really software (no graphics card) isn't a second choice.
             (kind == RenderDevice::Cpu || a.get_info().device_type != wgpu::DeviceType::Cpu).then(|| RendererInfo { kind, name: short(&a) })
         })

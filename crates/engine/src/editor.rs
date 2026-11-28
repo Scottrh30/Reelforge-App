@@ -34,6 +34,32 @@ pub const LOCKED: &str = "That clip is on a locked track (or linked to one). Unl
 /// File types offered when importing.
 pub const MEDIA_EXTENSIONS: [&str; 27] = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "mxf", "mts", "braw", "r3d", "ari", "arx", "png", "jpg", "jpeg", "gif", "exr", "dpx", "tif", "tiff", "tga", "bmp", "wav", "mp3", "aac", "flac", "ogg"];
 
+/// What the Viewer draws (Settings → Quality profiles): each off is left out
+/// to draw faster. Exports always draw everything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct QualityProfile {
+    pub shadows: bool,
+    pub reflections: bool,
+    pub lights: bool,
+    /// Layers' effects (2D effects).
+    pub effects: bool,
+    pub motion_blur: bool,
+    pub depth_of_field: bool,
+}
+
+impl Default for QualityProfile {
+    fn default() -> Self {
+        QualityProfile { shadows: true, reflections: true, lights: true, effects: true, motion_blur: true, depth_of_field: true }
+    }
+}
+
+impl QualityProfile {
+    pub fn is_full(&self) -> bool {
+        *self == QualityProfile::default()
+    }
+}
+
 /// Choices that change how the editor behaves (kept with the app's settings).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -105,6 +131,50 @@ pub struct Prefs {
     /// While the app is in the background, the media files it has open are
     /// closed, so other programs can change, move or delete them.
     pub close_media_in_background: bool,
+    /// Where nothing covers the frame, the Viewer shows: 0 black, 1 a
+    /// checkerboard, 2 `viewer_background`.
+    pub viewer_backdrop: u8,
+    pub viewer_background: [u8; 3],
+    /// The Viewer shows the pointer's place on the frame, in pixels.
+    pub show_mouse_coords: bool,
+    /// The Viewer shows effects' on-screen controls (points, handles, boxes).
+    pub show_effect_controls: bool,
+    /// The Front, Top, Left and Custom 3D views show a floor grid.
+    pub show_floor: bool,
+    /// The Viewer shows the path a selected layer's keyframed position takes.
+    pub show_motion_paths: bool,
+    /// The Viewer's controls (outlines, handles) stay up while playing.
+    pub controls_while_playing: bool,
+    /// The Controls panel opens every section of a clip's settings (else only the first).
+    pub expand_controls: bool,
+    /// What the Viewer draws while playing, and while paused.
+    pub playback_profile: QualityProfile,
+    pub paused_profile: QualityProfile,
+    /// Questions turned off in Settings → Prompts, by key (false: don't ask, go ahead).
+    pub prompts: std::collections::BTreeMap<String, bool>,
+    /// Rendered previews, proxies and object-removal fills not used for this
+    /// many days are deleted (0: kept).
+    pub cache_keep_days: u32,
+    /// Rendered previews go here ("": in the cache folder).
+    pub prerender_folder: String,
+    /// Autosaves go here ("": the app's own folder).
+    pub autosave_folder: String,
+    /// The folder exports go to unless chosen otherwise ("": beside the project).
+    pub export_folder: String,
+    /// A sound when the export queue finishes.
+    pub export_sound: bool,
+    /// Export times as 0 "1:23", 1 "83 s", 2 "1 min 23 s".
+    pub export_time_format: u8,
+    /// Names made from files ("clip.mp4") lose their extension in export names.
+    pub strip_extensions: bool,
+    /// Colours are picked with the system's own colour picker instead of Reelforge's.
+    pub native_color_picker: bool,
+    /// The mouse wheel over a dropdown steps through its choices.
+    pub wheel_dropdowns: bool,
+    /// Full-screen preview closes when another app is made active.
+    pub exit_fullscreen_inactive: bool,
+    /// Buttons beside the menus for quick access (see the UI's QUICK_ACTIONS).
+    pub quick_actions: Vec<String>,
     /// Playback quality: the Viewer draws at 1/this of full resolution (1, 2,
     /// 4 or 8; 0: automatic, lower while playing falls behind).
     pub playback_quality: u32,
@@ -210,6 +280,28 @@ impl Default for Prefs {
             default_template: String::new(),
             layout_in_project: false,
             close_media_in_background: false,
+            viewer_backdrop: 0,
+            viewer_background: [0, 0, 0],
+            show_mouse_coords: false,
+            show_effect_controls: true,
+            show_floor: true,
+            show_motion_paths: true,
+            controls_while_playing: true,
+            expand_controls: true,
+            playback_profile: QualityProfile::default(),
+            paused_profile: QualityProfile::default(),
+            prompts: std::collections::BTreeMap::new(),
+            cache_keep_days: 0,
+            prerender_folder: String::new(),
+            autosave_folder: String::new(),
+            export_folder: String::new(),
+            export_sound: false,
+            export_time_format: 0,
+            strip_extensions: true,
+            native_color_picker: false,
+            wheel_dropdowns: false,
+            exit_fullscreen_inactive: true,
+            quick_actions: Vec::new(),
             playback_quality: 1,
             full_when_paused: false,
             background_render: true,
@@ -273,6 +365,14 @@ impl Editor {
         reelforge_render::set_solid_samples(self.prefs.antialias_samples as u32);
         reelforge_render::set_reflection_map_size(self.prefs.reflection_map_size);
         reelforge_media::decoder::set_viewer_8bit(self.prefs.viewer_8bit);
+        if !cfg!(test) {
+            crate::safety::set_autosave_dir((!self.prefs.autosave_folder.trim().is_empty()).then(|| PathBuf::from(self.prefs.autosave_folder.trim())));
+            if let Some(sn) = &mut self.session {
+                sn.follow_autosave_dir();
+            }
+        }
+        // (Unused cache files: checked now and hourly.)
+        self.cache_cleaned = None;
         // (Tests don't depend on the machine's free space; the disk test sets it.)
         if !cfg!(test) {
             self.disk_low_at = (self.prefs.disk_warn_gb.max(0.0) as f64 * (1u64 << 30) as f64) as u64;
@@ -291,6 +391,10 @@ impl Editor {
         reelforge_render::flowgpu::use_hardware_flow(self.prefs.flow_hardware);
         self.preview.set_quality(self.prefs.playback_quality);
         self.preview.full_when_paused = self.prefs.full_when_paused;
+        let skip = |q: &QualityProfile| reelforge_export::scene::Skip { shadows: !q.shadows, reflections: !q.reflections, lights: !q.lights, effects: !q.effects, motion_blur: !q.motion_blur, depth_of_field: !q.depth_of_field };
+        self.preview.skip_playing = skip(&self.prefs.playback_profile);
+        self.preview.skip_paused = skip(&self.prefs.paused_profile);
+        self.preview.set_transparent(self.prefs.viewer_backdrop != 0);
         reelforge_render::set_default_depth(self.prefs.color_depth);
         self.preview.set_depth(self.prefs.color_depth);
     }
@@ -324,7 +428,8 @@ impl Editor {
             reelforge_render::set_simulation_store(None);
             return;
         }
-        let dir = self.render_disk_dir.clone().unwrap_or_else(|| reelforge_media::proxy::media_cache_dir().join("render"));
+        let own = (!self.prefs.prerender_folder.trim().is_empty()).then(|| PathBuf::from(self.prefs.prerender_folder.trim()));
+        let dir = self.render_disk_dir.clone().or(own).unwrap_or_else(|| reelforge_media::proxy::media_cache_dir().join("render"));
         match &self.render_cache.disk {
             Some(d) if d.dir() == dir => d.set_budget(mb << 20),
             _ => self.render_cache.disk = Some(crate::render_cache::DiskStore::open(&dir, mb << 20)),
@@ -557,6 +662,8 @@ pub struct Editor {
     /// The app's media files are closed while it's in the background
     /// (Settings); nothing reopens them until it's back.
     pub media_released: bool,
+    /// When unused cache files were last cleared out (Settings → delete after N days).
+    cache_cleaned: Option<std::time::Instant>,
     /// Project revision at the last save (or open): anything newer is unsaved.
     pub saved_rev: u64,
     /// Audio peak envelopes for drawing (`WAVEFORM_RATE` per second), computed in the background.
@@ -655,6 +762,7 @@ impl Editor {
             target: None,
             mixed_rev: 0,
             media_released: false,
+            cache_cleaned: None,
             saved_rev: 1,
             waveforms: HashMap::new(),
             waveform_tx,
@@ -720,6 +828,41 @@ impl Editor {
             s.autosaved_rev = fresh.rev;
         }
         *self = fresh;
+    }
+
+    /// Delete rendered previews, proxies and fills nothing has used for
+    /// Settings' number of days (this project's proxies and fills are kept):
+    /// (files, bytes) deleted.
+    pub fn clean_cache(&mut self) -> (usize, u64) {
+        let days = self.prefs.cache_keep_days;
+        if days == 0 {
+            return (0, 0);
+        }
+        let Some(before) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(days as u64 * 86_400)) else { return (0, 0) };
+        let cache = reelforge_media::proxy::media_cache_dir();
+        let mut done = (0, 0);
+        let mut add = |(n, b): (usize, u64)| {
+            done.0 += n;
+            done.1 += b;
+        };
+        if let Some(d) = &self.render_cache.disk {
+            add(d.forget_older(before));
+        }
+        add(crate::disk::delete_stale_proxies_in(&cache.join("proxies"), &self.project, before));
+        add(crate::disk::delete_stale_fills_in(&cache.join("fills"), &self.project, self.project_path.as_deref(), before));
+        if done.0 > 0 {
+            log::info!("deleted {} cache files ({} bytes) unused for {days} days", done.0, done.1);
+        }
+        done
+    }
+
+    /// Delete the proxies of this project's media: how many went.
+    pub fn delete_project_proxies(&mut self) -> usize {
+        self.preview.reset();
+        let paths: Vec<PathBuf> = self.project.media.iter().map(|m| m.path.clone()).collect();
+        let n = self.proxies.delete_these(paths.iter().map(PathBuf::as_path));
+        self.status = format!("Deleted {n} prox{} of this project's footage", if n == 1 { "y" } else { "ies" });
+        n
     }
 
     /// The app went to the background (`active` false) or came back. With
@@ -4265,6 +4408,7 @@ impl Editor {
             self.status = match kind {
                 RenderDevice::Cpu => "This computer has no software renderer to draw on the CPU with: still drawing on the GPU".into(),
                 RenderDevice::Gpu => "No graphics card could be opened: still drawing on the CPU".into(),
+                RenderDevice::Integrated => "This computer has no built-in graphics besides its graphics card: still drawing as before".into(),
             };
             return;
         };
@@ -4273,6 +4417,7 @@ impl Editor {
         self.status = match kind {
             RenderDevice::Cpu => format!("Drawing on the CPU ({}): slower, the same picture", reelforge_render::adapter_info().unwrap_or_default()),
             RenderDevice::Gpu => format!("Drawing on the GPU ({})", reelforge_render::adapter_info().unwrap_or_default()),
+            RenderDevice::Integrated => format!("Drawing on the integrated GPU ({}): cooler and quieter, slower", reelforge_render::adapter_info().unwrap_or_default()),
         };
     }
 
@@ -4436,6 +4581,10 @@ impl Editor {
         // Rendered previews are of the edit, never the angle grid.
         reelforge_core::multicam::set_grid(false);
         self.background_render();
+        if self.prefs.cache_keep_days > 0 && self.cache_cleaned.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(3600)) && !cfg!(test) {
+            self.cache_cleaned = Some(std::time::Instant::now());
+            self.clean_cache();
+        }
         self.step_render_job(&sources);
         self.apply_view();
         reelforge_core::multicam::set_grid(self.multicam_grid);
@@ -4573,6 +4722,54 @@ mod tests {
         assert!(e.media_released);
         e.set_app_active(true);
         assert!(!e.media_released);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Settings: quality profiles for the Viewer, its see-through backdrop,
+    /// a folder of its own for rendered previews, cache cleanup and deleting
+    /// this project's proxies.
+    #[test]
+    fn preferences_list_settings_take_effect() {
+        let dir = std::env::temp_dir().join(format!("rf_prefs_list_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut e = editor();
+        // Quality profiles: what's left out while playing and when paused.
+        assert!(!e.preview.skip_playing.effects && !e.preview.skip_paused.shadows);
+        e.prefs.playback_profile = QualityProfile { effects: false, motion_blur: false, ..QualityProfile::default() };
+        e.prefs.paused_profile = QualityProfile { shadows: false, ..QualityProfile::default() };
+        e.apply_prefs();
+        let (p, q) = (e.preview.skip_playing, e.preview.skip_paused);
+        assert!(p.effects && p.motion_blur && !p.shadows && !p.lights, "{p:?}");
+        assert!(q.shadows && !q.effects, "{q:?}");
+        // The Viewer's backdrop: a checkerboard or a colour needs the picture's alpha.
+        assert!(!e.preview.transparent());
+        e.prefs.viewer_backdrop = 1;
+        e.apply_prefs();
+        assert!(e.preview.transparent());
+        e.prefs.viewer_backdrop = 0;
+        e.apply_prefs();
+        assert!(!e.preview.transparent());
+        // Rendered previews in a folder of their own.
+        e.render_disk_dir = None;
+        e.prefs.render_cache_disk_mb = 64;
+        e.prefs.prerender_folder = dir.join("previews").to_string_lossy().into_owned();
+        e.apply_prefs();
+        assert_eq!(e.render_cache.disk.as_ref().map(|d| d.dir().to_path_buf()), Some(dir.join("previews")));
+        // Cache cleanup: nothing when off; frames older than the days go.
+        e.prefs.cache_keep_days = 0;
+        assert_eq!(e.clean_cache(), (0, 0));
+        if let Some(d) = &e.render_cache.disk {
+            d.store(9, [8, 8], vec![1u8; 256].into());
+            d.flush();
+        }
+        e.prefs.cache_keep_days = 30;
+        assert_eq!(e.clean_cache().0, 0, "a frame made just now stays");
+        assert!(e.render_cache.disk.as_ref().is_some_and(|d| d.has(9)));
+        // This project's proxies (it has none).
+        assert_eq!(e.delete_project_proxies(), 0);
+        assert!(e.status.contains("Deleted 0 proxies"), "{}", e.status);
+        e.prefs.render_cache_disk_mb = 0;
+        e.apply_prefs();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

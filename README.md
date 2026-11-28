@@ -1774,6 +1774,47 @@ What works now:
     files are closed and background rendering waits, so other programs can change, move,
     rename or delete the files; they reopen when you come back. Exports, proxies and
     conversions already running carry on
+- **Display settings** (Settings → Display): the Viewer's **background** behind see-through
+  parts of the picture (black, a **checkerboard** or a **colour** of your choice; frames already
+  in the render cache were kept opaque and show black until drawn again); the **mouse's
+  position** in frame pixels under the Viewer; **effect controls in the Viewer** (the on-screen
+  handles of effects: blades, emitters, flares, plug-ins, trackers); the **floor grid** in the
+  3D views (top, front, side, custom); **motion paths** (the selected layer's path, dashed, with
+  its keyframes as squares); **controls while playing** (handles hidden during playback when
+  off); and **expand every section in the Controls panel** (off: effects and sound effects
+  start folded)
+- **Quality profiles** (Settings → Playback): for playing and for paused, which costly parts
+  the Viewer draws — shadows, reflections, lights, layers' effects, motion blur, depth of
+  field. Leaving some out while playing keeps heavy 3D scenes smooth; exports always draw all
+- **Prompts** (Settings → Prompts): every “are you sure?” question (deleting a track, a preset,
+  a template, a version or a workspace; clearing recent projects; restoring a version;
+  replacing a workspace) can be switched off here, or with **Don't ask again** in the question
+  itself; a switched-off one goes ahead as if answered yes
+- **Cache cleanup** (Settings → Disk): **delete cache files unused for N days** (rendered
+  previews, proxies and Object removal fills of other projects; checked at start and hourly),
+  **delete this project's proxies**, and a folder of its own for **rendered previews**
+  (pre-renders). Rendered frames are kept by recipe, not by project, so they're cleared all at
+  once (Clear)
+- **Proxies**: a **quality or performance** mode for new proxies, and an **integrated GPU**
+  renderer choice (the power-saving graphics of a laptop with two), listed when it differs
+  from the main one
+- **Autosave folder** (Settings): where autosaves and recovery files go, instead of beside the
+  media cache; changing it moves the session's files there
+- **Export settings** (Settings → Export): a **default folder** for exports (instead of beside
+  the project), a **sound when the export queue finishes**, how the queue shows **times**
+  taken and left (1:23, 83 s or 1 min 23 s), and **leave file extensions out** of export names
+  (a timeline called “beach.mp4” exports as “beach.mp4”, not “beach_mp4.mp4”)
+- **Interface settings** (Settings → Interface): the **system's colour picker** instead of
+  Reelforge's own, the **mouse wheel steps through a drop-down list** under it, **leave the
+  full-screen preview** when Reelforge isn't in front, and **Quick actions**: buttons beside the
+  menus for New, Open, Save, Import, Export, Undo, Redo, Add title, New composition, Snapshot,
+  Render preview, Full screen and Settings, chosen with checkboxes
+- **Full-screen preview**: the ⛶ button on the Viewer or **`** shows the Viewer's picture
+  on the whole screen (Esc leaves)
+- **Keyboard shortcuts** (Settings → Interface → Keyboard shortcuts…): every command with a
+  key, searchable by name or key; click **+** and press keys to add one (a key another command
+  uses is pointed out, and can be taken from it), **×** to remove one, **Reset** for one or all.
+  Menus show the keys you set; they're kept on this computer
 - **Limit the Viewer's video to 8 bits** (Settings, off by default): 10-bit and deeper SDR
   video (ProRes, DNxHR, 10-bit H.264 and HEVC…) is brought down to 8 bits as it's decoded for
   the Viewer, rounded, halving the memory and upload each frame takes so heavy footage plays

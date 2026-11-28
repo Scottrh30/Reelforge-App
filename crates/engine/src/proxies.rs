@@ -194,6 +194,14 @@ impl Proxies {
     }
 
     /// Delete every proxy file (in use ones may stay until they're closed).
+    /// Delete the proxies of `sources` (a project's media): how many went.
+    pub fn delete_these<'a>(&mut self, sources: impl IntoIterator<Item = &'a Path>) -> usize {
+        sources.into_iter().filter(|src| {
+            let had = matches!(self.states.get(*src), Some(ProxyState::Ready(_))) || proxy::existing_proxy(src).is_some();
+            had && self.delete(src).is_ok()
+        }).count()
+    }
+
     pub fn delete_all(&mut self) {
         let dir = proxy::media_cache_dir().join("proxies");
         if let Ok(rd) = std::fs::read_dir(&dir) {

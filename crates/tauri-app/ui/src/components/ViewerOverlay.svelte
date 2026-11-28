@@ -14,6 +14,10 @@
   const MASK = "#ff6ec8";
   const POINT_COLOURS = ["#50dcff", "#ffd246", "#ff6ec8", "#78f078"];
 
+  // Hidden while playing (Settings → show controls during playback), and
+  // effects' handles hidden altogether (Settings → show effect controls).
+  const hidePlaying = $derived(!(app.s?.prefs.controls_while_playing ?? true) && !!app.live?.playing);
+  const fxOn = $derived((app.s?.prefs.show_effect_controls ?? true) && !hidePlaying);
   const ins = $derived(app.s?.inspector ?? null);
   const map = $derived(ins?.layer_map ?? null);
   const inv = $derived(ins?.layer_inv ?? null);
@@ -757,7 +761,7 @@
   onblur={() => (shiftHeld = false)}
 />
 
-{#if cam && ins}
+{#if cam && ins && !hidePlaying}
   <!-- The 3D camera tracker's solved points: click to pick; Shift+click or Shift+drag for more. -->
   <svg class="overlay" aria-hidden="true">
     {#if shiftHeld || camBox}
@@ -779,7 +783,7 @@
   </svg>
 {/if}
 
-{#if ins?.parent_link}
+{#if ins?.parent_link && !hidePlaying}
   <!-- The selected layer's link to the point it follows. -->
   {@const [a, b] = ins.parent_link.map((p) => [fit.x + p[0] * fit.kx, fit.y + p[1] * fit.k])}
   <svg class="overlay" aria-hidden="true">
@@ -789,7 +793,7 @@
   </svg>
 {/if}
 
-{#if ins && ins.scene_points.length}
+{#if ins && ins.scene_points.length && !hidePlaying}
   <svg class="overlay" aria-hidden="true">
     {#if ins.scene_points.length === 2}
       {@const [a, b] = ins.scene_points.map((p) => [fit.x + p.at[0] * fit.kx, fit.y + p.at[1] * fit.k])}
@@ -817,7 +821,7 @@
   </svg>
 {/if}
 
-{#if ins && map && inv}
+{#if ins && map && inv && !hidePlaying}
   <svg class="overlay" class:drawing={!!drawing} aria-hidden="true">
     <!-- Masks: outlines, with handles on their points. -->
     {#each ins.masks as m, i}
@@ -879,7 +883,7 @@
     {/each}
 
     <!-- Energy blades: a line from hilt to tip, with handles at both ends. -->
-    {#if !drawing}
+    {#if !drawing && fxOn}
       {#each blades as b}
         {@const [hx, hy] = toBox(b.hilt)}
         {@const [tx, ty] = toBox(b.tip)}
@@ -892,7 +896,7 @@
     {/if}
 
     <!-- Particle emitters: the emitter's shape, a handle to move it and an arrow to aim it. -->
-    {#if !drawing}
+    {#if !drawing && fxOn}
       {#each emitters as m}
         {@const [cx, cy] = toBox(m.at)}
         {@const rad = (m.dir * Math.PI) / 180}
@@ -915,7 +919,7 @@
     {/if}
 
     <!-- Lens flares: drag the light. -->
-    {#if !drawing}
+    {#if !drawing && fxOn}
       {#each flares as m}
         {@const [cx, cy] = toBox(m.at)}
         <circle {cx} {cy} r="9" class="bladeend" stroke="#ffd27a" onpointerdown={(e) => dragEmitter(e, m, "move")} role="presentation"><title>Lens flare: drag the light</title></circle>
@@ -924,7 +928,7 @@
     {/if}
 
     <!-- OpenFX plugins' positions: drag them. -->
-    {#if !drawing}
+    {#if !drawing && fxOn}
       {#each wires as [w0, w1]}
         {@const [ax, ay] = toBox(w0)}
         {@const [bx, by] = toBox(w1)}
@@ -941,7 +945,7 @@
     {/if}
 
     <!-- The motion tracker: search area, feature box and path for each point. -->
-    {#if ins.tracker}
+    {#if ins.tracker && fxOn}
       {@const t = ins.tracker}
       {#if t.mode === "Mesh"}
         <!-- A mesh tracker: the grid, big handles at its corners, small ones inside. -->

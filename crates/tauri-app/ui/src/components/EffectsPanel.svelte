@@ -20,6 +20,8 @@
   let drafts = $state<Record<string, number>>({});
   // Effects folded shut (by position), per clip.
   let folded = $state<Record<string, boolean>>({});
+  // Not folded or opened by hand: as Settings → expand every section says.
+  const shut = (k: string) => folded[k] ?? !(app.s?.prefs.expand_controls ?? true);
   // Colour wheels whose numbers (for typing and keyframing) are shown.
   let numbers = $state<Record<string, boolean>>({});
   let shownId: number | null = null;
@@ -191,8 +193,8 @@
     <div class="card" class:off={!fx.enabled}>
       <div class="row">
         <input type="checkbox" checked={fx.enabled} aria-label="{fx.label} on" title="Turn the effect on or off" onchange={() => op(i, "toggle")} />
-        <button class="fold" aria-expanded={!folded[key]} onclick={() => (folded[key] = !folded[key])} title={folded[key] ? "Show the settings" : "Hide the settings"}>
-          <span class="chev" class:shut={folded[key]} aria-hidden="true">▾</span>
+        <button class="fold" aria-expanded={!shut(key)} onclick={() => (folded[key] = !shut(key))} title={shut(key) ? "Show the settings" : "Hide the settings"}>
+          <span class="chev" class:shut={shut(key)} aria-hidden="true">▾</span>
           <span class="name">{fx.label}</span>
           {#if fx.kind === "Plugin"}<span class="tag">plugin</span>{/if}
           {#if fx.kind === "OpenFx"}<span class="tag" title="An OpenFX plugin: runs on the picture before the other effects">OpenFX</span>{/if}
@@ -211,13 +213,13 @@
       {#if fx.error}
         <p class="warn" title={fx.error}>Not rendering: {fx.error}</p>
       {/if}
-      {#if fx.kind === "OpenFx" && (fx.temporal || fx.gpu.length || fx.points.length || fx.rendered_with) && !folded[key]}
+      {#if fx.kind === "OpenFx" && (fx.temporal || fx.gpu.length || fx.points.length || fx.rendered_with) && !shut(key)}
         <p class="note">{[fx.rendered_with ? `Rendering with ${fx.rendered_with}` : fx.gpu.length ? `Can use the graphics card (${fx.gpu.join(", ")})` : "", fx.temporal && "reads the clip's neighbouring frames", fx.points.length && `drag ${fx.points.length === 1 ? "its point" : "its points"} in the Viewer`].filter(Boolean).join(" · ")}</p>
       {/if}
       {#if fx.missing}
         <p class="warn">This plugin isn't installed (id “{fx.plugin}”), so the effect is skipped. Its settings are kept: install the plugin and it comes back.</p>
       {/if}
-      {#if !folded[key]}
+      {#if !shut(key)}
         {#if fx.kind === "ColorWheels"}
           <ColorWheels values={fx.params.map((p, pi) => value(i, pi, p))} onset={(vs) => setMany(i, vs)} oncommit={commit} />
           <button class="ghost small numbers" aria-expanded={!!numbers[key]} onclick={() => (numbers[key] = !numbers[key])} title="Every setting as a number, to type or keyframe">

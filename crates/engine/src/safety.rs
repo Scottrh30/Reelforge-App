@@ -18,8 +18,15 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+/// Settings → autosave folder: where autosaves go instead of the app's own.
+static AUTOSAVE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+pub fn set_autosave_dir(dir: Option<PathBuf>) {
+    *AUTOSAVE_DIR.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = dir.filter(|d| !d.as_os_str().is_empty());
+}
+
 pub fn autosave_dir() -> PathBuf {
-    reelforge_media::proxy::cache_dir().join("autosave")
+    AUTOSAVE_DIR.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_else(|| reelforge_media::proxy::cache_dir().join("autosave"))
 }
 
 fn sessions_dir() -> PathBuf {
@@ -127,6 +134,23 @@ impl Session {
         if let Ok(json) = serde_json::to_vec_pretty(&self.info) {
             let _ = write_atomic(&sessions_dir().join(format!("{}.json", self.id)), &json);
         }
+    }
+
+    /// Autosave into `autosave_dir()` from now on (after Settings changes it):
+    /// the last autosave moves there.
+    pub fn follow_autosave_dir(&mut self) {
+        let dir = autosave_dir();
+        if self.info.autosave.parent() == Some(dir.as_path()) {
+            return;
+        }
+        let _ = std::fs::create_dir_all(&dir);
+        let Some(name) = self.info.autosave.file_name().map(|n| n.to_owned()) else { return };
+        let to = dir.join(name);
+        if self.info.autosave.exists() && std::fs::rename(&self.info.autosave, &to).is_err() && std::fs::copy(&self.info.autosave, &to).is_ok() {
+            let _ = std::fs::remove_file(&self.info.autosave);
+        }
+        self.info.autosave = to;
+        self.write_info();
     }
 
     /// Remember which project file this session is editing.

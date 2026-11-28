@@ -21,6 +21,7 @@
   import PlaneDialog from "./components/PlaneDialog.svelte";
   import ModelPropsDialog from "./components/ModelPropsDialog.svelte";
   import Dialogs from "./components/Dialogs.svelte";
+  import ShortcutsDialog from "./components/ShortcutsDialog.svelte";
   import DuckDialog from "./components/DuckDialog.svelte";
   import SequenceSettingsDialog from "./components/SequenceSettingsDialog.svelte";
   import MatchColorDialog from "./components/MatchColorDialog.svelte";
@@ -37,6 +38,7 @@
   import PasteAttributes from "./components/PasteAttributes.svelte";
   import Preferences from "./components/Preferences.svelte";
   import { look, apply } from "./lib/prefs.svelte";
+  import { useNative } from "./lib/colorpick.svelte";
 
   // Colours and fonts from Edit > Preferences, put on the page whenever they change.
   $effect(() => {
@@ -92,6 +94,8 @@
     win
       .onFocusChanged(({ payload: focused }) => {
         api.appActive(focused).catch(() => {});
+        // Settings → leave the full-screen preview when Reelforge isn't in front.
+        if (!focused && (app.s?.prefs.exit_fullscreen_inactive ?? true) && document.fullscreenElement) document.exitFullscreen().catch(() => {});
       })
       .then((u) => un.push(u));
     win
@@ -105,6 +109,38 @@
   });
 
   void question;
+
+  // Settings → Interface: the system's colour picker.
+  $effect(() => {
+    useNative.on = !!app.s?.prefs.native_color_picker;
+  });
+
+  // Settings → Interface: the mouse wheel over a closed drop-down list steps
+  // through its choices.
+  function wheel(e: WheelEvent) {
+    if (!app.s?.prefs.wheel_dropdowns) return;
+    const sel = e.target instanceof HTMLSelectElement ? e.target : null;
+    if (!sel || sel.disabled || sel.multiple || !e.deltaY) return;
+    e.preventDefault();
+    const n = sel.options.length;
+    let i = sel.selectedIndex;
+    const step = e.deltaY > 0 ? 1 : -1;
+    // Skip disabled choices.
+    for (let k = 0; k < n; k++) {
+      i += step;
+      if (i < 0 || i >= n) return;
+      if (!sel.options[i]?.disabled) break;
+    }
+    if (i === sel.selectedIndex) return;
+    sel.selectedIndex = i;
+    sel.dispatchEvent(new Event("input", { bubbles: true }));
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  // Not passive (the window's are by default), so the page doesn't scroll too.
+  $effect(() => {
+    window.addEventListener("wheel", wheel, { passive: false, capture: true });
+    return () => window.removeEventListener("wheel", wheel, { capture: true });
+  });
 
   // A project opened with its own layout saved (Settings → save the screen
   // layout with the project) is shown in it.
@@ -197,6 +233,7 @@
 <ModelPropsDialog />
 <ColorPicker />
 <Dialogs />
+<ShortcutsDialog />
 <ExportDialog />
 <DuckDialog />
 <SequenceSettingsDialog />

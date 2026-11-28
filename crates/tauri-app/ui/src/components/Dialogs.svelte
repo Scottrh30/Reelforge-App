@@ -3,7 +3,9 @@
   import { untrack } from "svelte";
   import { app, run } from "../lib/session.svelte";
   import { api, COLOR_DEPTHS, type Prefs, type SettingsInfo, type UserTemplate } from "../lib/api";
-  import { ask } from "../lib/actions.svelte";
+  import { ask, PROMPTS } from "../lib/actions.svelte";
+  import { shortcutsDialog } from "../lib/shortcuts.svelte";
+  import { QUICK_ACTIONS } from "../lib/quick.svelte";
 
   let prefs = $state<Prefs | null>(null);
   let info = $state<SettingsInfo | null>(null);
@@ -23,7 +25,23 @@
       api.renderers().then((r) => (rend = r)).catch(() => (rend = null));
     }
   });
-  const rname = (k: "gpu" | "cpu") => rend?.available.find((r) => r.kind === k)?.name;
+  const PROFILE_ROWS: [keyof Prefs["playback_profile"], string][] = [
+    ["effects", "2D effects"],
+    ["lights", "Lights"],
+    ["shadows", "Shadows"],
+    ["reflections", "Reflections"],
+    ["motion_blur", "Motion blur"],
+    ["depth_of_field", "Depth of field"],
+  ];
+  const hex = (c: number[]) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+  const rgbOf = (h: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) || 0) as [number, number, number];
+  const proxyMode = $derived(!prefs ? "custom" : prefs.proxy_format === "ProResProxy" && prefs.proxy_size === "FullHd" ? "quality" : prefs.proxy_format === "H264" && (prefs.proxy_size ?? "Standard") === "Standard" ? "performance" : "custom");
+  function setProxyMode(m: string) {
+    if (!prefs) return;
+    if (m === "quality") Object.assign(prefs, { proxy_format: "ProResProxy", proxy_size: "FullHd" });
+    if (m === "performance") Object.assign(prefs, { proxy_format: "H264", proxy_size: "Standard", proxy_gpu: true });
+  }
+  const rname = (k: "gpu" | "cpu" | "integrated") => rend?.available.find((r) => r.kind === k)?.name;
 
   // Proxy formats, as the Media panel names them.
   const formatLabels: Record<string, string> = { ProResProxy: "ProRes 422 Proxy", DnxhrLb: "DNxHR LB", H264: "H.264 (all keyframes)" };
@@ -77,6 +95,7 @@
         <span>Render with</span>
         <select bind:value={prefs.renderer}>
           <option value="gpu" disabled={!!rend && !rname("gpu")}>GPU{rname("gpu") ? ` · ${rname("gpu")}` : rend ? " · none found" : ""}</option>
+          {#if rname("integrated") || prefs.renderer === "integrated"}<option value="integrated" disabled={!!rend && !rname("integrated")}>Integrated GPU (Intel, AMD or Apple built-in){rname("integrated") ? ` · ${rname("integrated")}` : " · none on this computer"}</option>{/if}
           <option value="cpu" disabled={!!rend && !rname("cpu")}>CPU (slower){rname("cpu") ? ` · ${rname("cpu")}` : rend ? " · none on this computer" : ""}</option>
         </select>
       </label>
@@ -112,6 +131,47 @@
       </label>
       <label class="check" title="Each project keeps the interface's layout (which panels are shown, where they're docked or float, and the docks', timeline's and meters' sizes) when it's saved, and opening a project that has one shows it that way"><input type="checkbox" bind:checked={prefs.layout_in_project} /> Save the screen layout with the project</label>
       <label class="check" title="While Reelforge isn't the active app (and isn't playing), it closes the media files it has open, so other programs can change, move, rename or delete them; they open again when you come back. Exports, proxies and conversions already running carry on"><input type="checkbox" bind:checked={prefs.close_media_in_background} /> Close media files while Reelforge is in the background</label>
+
+      <h3>Display</h3>
+      <label class="field" title="What the Viewer shows where no layer covers the frame: black (as exported), a grey checkerboard (to see what's transparent: keys, masks, titles in a composition), or a colour of your own. Exports are unchanged">
+        <span>Viewer background</span>
+        <div class="row">
+          <select bind:value={prefs.viewer_backdrop}>
+            <option value={0}>Black</option>
+            <option value={1}>Checkerboard</option>
+            <option value={2}>A colour</option>
+          </select>
+          {#if prefs.viewer_backdrop === 2}<input type="color" aria-label="Viewer background colour" value={hex(prefs.viewer_background)} oninput={(e) => prefs && (prefs.viewer_background = rgbOf(e.currentTarget.value))} />{/if}
+        </div>
+      </label>
+      <label class="check" title="A readout in the Viewer of where the pointer is on the frame, in frame pixels from its top left"><input type="checkbox" bind:checked={prefs.show_mouse_coords} /> Show the pointer's position on the frame</label>
+      <label class="check" title="Effects' handles in the Viewer: points to drag (a flare's centre, a blade's hilt and tip, a tracker's box), boxes and lines. Off, the picture is clear of them (the layer's own outline still shows)"><input type="checkbox" bind:checked={prefs.show_effect_controls} /> Show effect controls in the Viewer</label>
+      <label class="check" title="A grid on the ground in the Front, Top, Left and Custom 3D views (not through the scene's own camera), to judge where layers are in depth"><input type="checkbox" bind:checked={prefs.show_floor} /> Show the floor plane in 3D views</label>
+      <label class="check" title="The path a selected layer's position keyframes take, drawn in the Viewer with a dot at each keyframe"><input type="checkbox" bind:checked={prefs.show_motion_paths} /> Show motion paths</label>
+      <label class="check" title="Layer outlines, handles and effect controls stay in the Viewer while it plays; off, they hide until it stops"><input type="checkbox" bind:checked={prefs.controls_while_playing} /> Show controls during playback</label>
+      <label class="check" title="Picking a clip opens every section of its settings in the Controls panel; off, the sections start closed (click a heading to open one)"><input type="checkbox" bind:checked={prefs.expand_controls} /> Expand every section in the Controls panel</label>
+
+      <h3>Interface</h3>
+      <label class="check" title="Colour swatches open the system's own colour picker instead of Reelforge's (which has hue and brightness, alpha, hex, the eyedropper and recent colours)"><input type="checkbox" bind:checked={prefs.native_color_picker} /> Use the system's colour picker</label>
+      <label class="check" title="Turning the mouse wheel over a dropdown steps through its choices, without opening it"><input type="checkbox" bind:checked={prefs.wheel_dropdowns} /> The mouse wheel changes dropdowns</label>
+      <label class="check" title="The full-screen preview (` or the Viewer's full-screen button) closes when you switch to another app"><input type="checkbox" bind:checked={prefs.exit_fullscreen_inactive} /> Leave full screen when Reelforge isn't the active app</label>
+      <div class="field" title="Buttons beside the menus for one-click access to what you use most">
+        <span>Quick actions</span>
+        <div class="quick">
+          {#each QUICK_ACTIONS as q (q.id)}
+            <label class="check"><input type="checkbox" checked={prefs.quick_actions.includes(q.id)} onchange={(e) => prefs && (prefs.quick_actions = e.currentTarget.checked ? [...prefs.quick_actions, q.id] : prefs.quick_actions.filter((x) => x !== q.id))} /> {q.label}</label>
+          {/each}
+        </div>
+      </div>
+      <div class="row">
+        <button onclick={() => (shortcutsDialog.open = true)} title="See and change the keys for every command">Keyboard shortcuts…</button>
+      </div>
+
+      <h3>Prompts</h3>
+      <p class="info">Questions Reelforge asks before going ahead. Unticked, it goes ahead without asking.</p>
+      {#each PROMPTS as [key, label] (key)}
+        <label class="check"><input type="checkbox" checked={prefs.prompts[key] !== false} onchange={(e) => prefs && (prefs.prompts = { ...prefs.prompts, [key]: e.currentTarget.checked })} /> {label}</label>
+      {/each}
 
       <h3>Renders</h3>
       <label class="field" title="How precisely frames are composited, in the Viewer, Render preview and exports, and how layers mix. 8-bit Integer is fastest and lightest on memory, but smooth gradients can band and nothing brighter than white survives. Float keeps highlights above white. Linear Color mixes layers, dissolves, glows and blurs as light does (the most natural, and the standard); without it they mix as display values, the way older editors and most 8-bit work look. 32-bit Float is the most precise, for VFX and grading, and needs a graphics card that can blend 32-bit float (if yours can't, 16-bit is used).">
@@ -149,6 +209,21 @@
           <option value="off">None</option>
         </select>
       </label>
+      <div class="field" title="What the Viewer leaves out to keep up: while playing, and while paused. Exports always draw everything">
+        <span>Quality profiles</span>
+        <table class="profiles">
+          <thead><tr><th></th><th>Playing</th><th>Paused</th></tr></thead>
+          <tbody>
+            {#each PROFILE_ROWS as [k, label] (k)}
+              <tr>
+                <td>{label}</td>
+                <td><input type="checkbox" aria-label="{label} while playing" bind:checked={prefs.playback_profile[k]} /></td>
+                <td><input type="checkbox" aria-label="{label} while paused" bind:checked={prefs.paused_profile[k]} /></td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
       <label class="field" title="What the timeline's waveforms show: Peaks (the loudest sample in each moment: every transient), RMS (the average loudness, closer to what you hear), or both (the RMS brighter, inside the peaks)">
         <span>Waveforms show</span>
         <select bind:value={prefs.waveform_style}>
@@ -229,6 +304,14 @@
       <h3>Proxies</h3>
       <label class="check" title="Small all-keyframe copies of heavy footage. Export always uses the original files."><input type="checkbox" bind:checked={prefs.use_proxies} /> Play proxies in the viewer when they're ready</label>
       <label class="check" title="Above 1080p, and 720p or more in HEVC, AV1, VP9, ProRes, DNxHD or CineForm. You can make one for any clip from the Media panel."><input type="checkbox" bind:checked={prefs.auto_proxies} /> Make proxies for heavy footage by themselves</label>
+      <label class="field" title="A quick choice of format and size together: For quality makes ProRes 422 Proxy at 1080p (sharp, 10-bit colour, bigger files); For performance makes H.264 at 540p on the graphics card (small, light to play). Change either below for anything else">
+        <span>Proxy mode</span>
+        <select value={proxyMode} onchange={(e) => setProxyMode(e.currentTarget.value)}>
+          <option value="quality">For quality (ProRes 422 Proxy, 1080p)</option>
+          <option value="performance">For performance (H.264, 540p)</option>
+          <option value="custom" disabled>Custom</option>
+        </select>
+      </label>
       <label class="field" title="All three have every frame a keyframe, for instant jumps. H.264 is the smallest and decodes on the graphics card. ProRes 422 Proxy (10-bit) and DNxHR LB are 4:2:2 colour, about three times the size, lighter for the processor, and open in other editing programs as standard offline media.">
         <span>Make proxies as</span>
         <select bind:value={prefs.proxy_format}>
@@ -257,6 +340,7 @@
       <div class="row">
         <button onclick={async () => run(api.openFolder(await api.proxyFolder()))}>Open the proxy folder</button>
         <button disabled={info?.proxies === 0} onclick={async () => (await run(api.proxiesDeleteAll()), (info = await api.settingsInfo()))} title="Free the disk space; heavy footage won't get new ones by itself until you ask (Media panel, right-click)">Delete all proxies</button>
+        <button disabled={info?.proxies === 0} onclick={async () => (await run(api.proxiesDeleteProject()), (info = await api.settingsInfo()))} title="Delete the proxies of this project's footage (made again when needed, or when you ask)">Delete this project's proxies</button>
       </div>
 
       <h3>Safety</h3>
@@ -267,7 +351,32 @@
       {#if info}<p class="info path" title={info.autosave_dir}>Autosaves are kept in {info.autosave_dir}</p>{/if}
       <div class="row">
         <button onclick={() => info && run(api.openFolder(info.autosave_dir))}>Open the autosave folder</button>
+        <button onclick={async () => { const d = await api.pickFolder(); if (d && prefs) prefs.autosave_folder = d; }} title="Keep autosaves in a folder of your own (another drive, a synced folder); takes effect from the next autosave">Choose…</button>
+        <button disabled={!prefs.autosave_folder} onclick={() => prefs && (prefs.autosave_folder = "")} title="Back to the app's own autosave folder">Default</button>
       </div>
+      {#if prefs.autosave_folder}<p class="info path">From now on: {prefs.autosave_folder}</p>{/if}
+
+      <h3>Export</h3>
+      <div class="field" title="Where exports go unless you pick another place in the Export dialog (else beside the project)">
+        <span>Export to</span>
+        <div class="cachedir">
+          <span class="path">{prefs.export_folder || "Beside the project"}</span>
+          <div class="row">
+            <button class="tiny" onclick={async () => { const d = await api.pickFolder(); if (d && prefs) prefs.export_folder = d; }}>Choose…</button>
+            <button class="tiny" disabled={!prefs.export_folder} onclick={() => prefs && (prefs.export_folder = "")}>Default</button>
+          </div>
+        </div>
+      </div>
+      <label class="check" title="A short chime when every export in the queue is done (or has failed)"><input type="checkbox" bind:checked={prefs.export_sound} /> Play a sound when the export queue finishes</label>
+      <label class="field" title="How the export queue shows times taken and left">
+        <span>Times as</span>
+        <select bind:value={prefs.export_time_format}>
+          <option value={0}>1:23</option>
+          <option value={1}>83 s</option>
+          <option value={2}>1 min 23 s</option>
+        </select>
+      </label>
+      <label class="check" title="An export named after a clip or file (“beach.mp4”) is called “beach”, not “beach.mp4”, before its own extension goes on"><input type="checkbox" bind:checked={prefs.strip_extensions} /> Leave file extensions out of export names</label>
       <h3>Disk</h3>
       {#if info}
         <p class="info">{size(info.free_bytes)} free on the drive where Reelforge keeps its files</p>
@@ -293,6 +402,20 @@
           </div>
         </div>
       </div>
+      <label class="field" title="Rendered previews, proxies and object-removal fills nothing has used for this many days are deleted (checked when Reelforge starts and every hour); ones this project uses are kept. 0 keeps them until you delete them">
+        <span>Delete unused cache files after</span>
+        <div class="row"><input type="number" min="0" max="3650" step="1" bind:value={prefs.cache_keep_days} style="width:80px" /> days {prefs.cache_keep_days === 0 ? "(never)" : ""}</div>
+      </label>
+      <div class="field" title="Rendered previews (pre-renders) can go in a folder of their own, apart from the proxies: a fast SSD, say. Takes effect at once; what's in the old folder stays there">
+        <span>Rendered previews folder</span>
+        <div class="cachedir">
+          <span class="path">{prefs.prerender_folder || "In the cache folder"}</span>
+          <div class="row">
+            <button class="tiny" onclick={async () => { const d = await api.pickFolder(); if (d && prefs) prefs.prerender_folder = d; }}>Choose…</button>
+            <button class="tiny" disabled={!prefs.prerender_folder} onclick={() => prefs && (prefs.prerender_folder = "")}>Default</button>
+          </div>
+        </div>
+      </div>
       <label class="field" title="When the drive Reelforge saves to (rendered previews, proxies, autosaves, the project) has less free than this, a warning offers to clear space, and previews and proxies stop filling it. 0 never warns.">
         <span>Warn below</span>
         <div class="row"><input type="number" min="0" max="1000" step="0.5" bind:value={prefs.disk_warn_gb} style="width:80px" /> GB free {prefs.disk_warn_gb === 0 ? "(never)" : ""}</div>
@@ -314,6 +437,9 @@
       {#if ask.field !== null}
         <!-- svelte-ignore a11y_autofocus -->
         <input class="field-in" type="text" bind:value={ask.field} autofocus spellcheck="false" aria-label={ask.title} onkeydown={(e) => e.key === "Enter" && ask.field?.trim() && ask.resolve(ask.buttons[0])} />
+      {/if}
+      {#if ask.prompt}
+        <label class="check never" title="Answer “{ask.buttons[0]}” from now on without asking (Settings → Prompts turns it back on)"><input type="checkbox" bind:checked={ask.never} /> Don't ask again</label>
       {/if}
       <div class="buttons">
         {#each [...ask.buttons].reverse() as b, i}
@@ -361,6 +487,29 @@
 {/if}
 
 <style>
+  .profiles {
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .profiles th {
+    font-weight: normal;
+    color: var(--muted);
+    padding: 0 10px;
+  }
+  .profiles td {
+    padding: 1px 10px 1px 0;
+  }
+  .profiles td:not(:first-child) {
+    text-align: center;
+  }
+  .quick {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 12px;
+  }
+  .never {
+    margin-top: 4px;
+  }
   .notes {
     margin: 0;
     padding-left: 18px;

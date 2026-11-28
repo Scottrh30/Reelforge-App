@@ -9,12 +9,48 @@
   const over = $derived(q?.jobs.filter((j) => j.state === "done" || j.state === "failed" || j.state === "cancelled").length ?? 0);
   let small = $state(false);
 
+  // Times as Settings → Export says: 1:23, 83 s or 1 min 23 s.
   const fmt = (s: number | null) => {
-    if (s == null) return "estimating…";
-    if (s >= 3600) return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
-    if (s >= 90) return `${Math.round(s / 60)} min`;
-    return `${Math.round(s)} s`;
+    if (s == null || !isFinite(s)) return "estimating…";
+    const t = Math.max(0, Math.round(s));
+    const style = app.s?.prefs.export_time_format ?? 0;
+    if (style === 1) return `${t} s`;
+    const h = Math.floor(t / 3600);
+    const m = Math.floor((t % 3600) / 60);
+    const sec = t % 60;
+    if (style === 2) return [h ? `${h} h` : "", m ? `${m} min` : "", sec || t === 0 ? `${sec} s` : ""].filter(Boolean).join(" ");
+    const two = (n: number) => String(n).padStart(2, "0");
+    return h ? `${h}:${two(m)}:${two(sec)}` : `${m}:${two(sec)}`;
   };
+
+  // Settings → Export: a chime when the queue has run through.
+  let busy = false;
+  $effect(() => {
+    const now = !!q?.jobs.some((j) => j.state === "running" || (q.run && j.state === "waiting"));
+    if (busy && !now && app.s?.prefs.export_sound) chime();
+    busy = now;
+  });
+  function chime() {
+    try {
+      const ctx = new AudioContext();
+      const at = ctx.currentTime;
+      // Two soft bell notes, a fifth apart.
+      [659.25, 987.77].forEach((f, i) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = "sine";
+        o.frequency.value = f;
+        const t0 = at + i * 0.18;
+        g.gain.setValueAtTime(0, t0);
+        g.gain.linearRampToValueAtTime(0.25, t0 + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + 1.2);
+        o.connect(g).connect(ctx.destination);
+        o.start(t0);
+        o.stop(t0 + 1.25);
+      });
+      setTimeout(() => ctx.close().catch(() => {}), 2000);
+    } catch {}
+  }
   const pct = (j: JobView) => (j.total ? Math.round((j.done / j.total) * 100) : 0);
   const job = (id: number, op: "cancel" | "remove" | "retry" | "up") => run(api.exportJob(id, op));
 </script>
@@ -52,10 +88,10 @@
             {#if j.state === "running"}
               <div class="bar"><div class="fill" style="width:{pct(j)}%"></div></div>
               <span class="detail tc">
-                {j.cancelling ? "Cancelling…" : [`${pct(j)}%`, `frame ${j.done} of ${j.total}`, j.fps ? `${j.fps.toFixed(1)} fps` : "", `${fmt(j.remaining)} left`].filter(Boolean).join(" · ")}
+                {j.cancelling ? "Cancelling…" : [`${pct(j)}%`, `frame ${j.done} of ${j.total}`, j.fps ? `${j.fps.toFixed(1)} fps` : "", j.elapsed != null ? `${fmt(j.elapsed)} so far` : "", `${fmt(j.remaining)} left`].filter(Boolean).join(" · ")}
               </span>
             {:else if j.state === "done"}
-              <span class="detail good">Done · {j.message}</span>
+              <span class="detail good">Done · {j.message}{j.elapsed != null ? ` · took ${fmt(j.elapsed)}` : ""}</span>
             {:else if j.state === "failed"}
               <span class="detail bad">Failed: {j.message}</span>
             {:else}

@@ -229,7 +229,10 @@ fn frame(max_w: u32, max_h: u32, have: i64, jpeg: bool) -> Res<Response> {
         }
         let Some((rgba, [w, h])) = scopes::picture(e) else { return Response::new(vec![0u8]) };
         let k = (w / max_w.max(1)).min(h / max_h.max(1)).max(1);
-        let (rgba, w, h) = if k > 1 { shrink(&rgba, w, h, k) } else { ((*rgba).clone(), w, h) };
+        let (mut rgba, w, h) = if k > 1 { shrink(&rgba, w, h, k) } else { ((*rgba).clone(), w, h) };
+        if e.preview.transparent() {
+            backdrop(&mut rgba, w, e.prefs.viewer_backdrop, e.prefs.viewer_background);
+        }
         let mut out = Vec::with_capacity(9 + rgba.len());
         if jpeg {
             out.push(2);
@@ -247,6 +250,28 @@ fn frame(max_w: u32, max_h: u32, have: i64, jpeg: bool) -> Res<Response> {
         }
         Response::new(out)
     })
+}
+
+/// Lay the Viewer's picture (straight alpha) over its backdrop: `mode` 1 a
+/// checkerboard of 8-pixel squares, 2 the colour `bg`; opaque after.
+pub(crate) fn backdrop(rgba: &mut [u8], w: u32, mode: u8, bg: [u8; 3]) {
+    let w = w.max(1) as usize;
+    for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
+        let a = px[3] as u32;
+        if a == 255 {
+            continue;
+        }
+        let (x, y) = (i % w, i / w);
+        let under = if mode == 1 {
+            if ((x / 8) + (y / 8)) % 2 == 0 { [102u8; 3] } else { [153u8; 3] }
+        } else {
+            bg
+        };
+        for c in 0..3 {
+            px[c] = ((px[c] as u32 * a + under[c] as u32 * (255 - a) + 127) / 255) as u8;
+        }
+        px[3] = 255;
+    }
 }
 
 /// Box-filter an RGBA picture down by `k` in each direction.
@@ -1988,6 +2013,8 @@ fn main() {
             modelprops::add_model_layer,
             modelprops::pick_map_file,
             app_active,
+            ops::proxies_delete_project,
+            ops::pick_folder,
             set_project_layout,
             project_layout,
             set_sequence_length,
@@ -2267,6 +2294,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn see_through_parts_show_a_checkerboard_or_a_colour() {
+        // 16×1: opaque red, then clear, then half-clear white.
+        let mut px = vec![0u8; 16 * 4];
+        px[..4].copy_from_slice(&[255, 0, 0, 255]);
+        px[12 * 4..13 * 4].copy_from_slice(&[255, 255, 255, 128]);
+        let mut checker = px.clone();
+        backdrop(&mut checker, 16, 1, [0; 3]);
+        assert_eq!(&checker[..4], &[255, 0, 0, 255], "opaque stays");
+        assert_eq!(&checker[4..8], &[102, 102, 102, 255], "a dark square");
+        assert_eq!(&checker[8 * 4..9 * 4], &[153, 153, 153, 255], "then a light one 8 px on");
+        assert!(checker[12 * 4] > 200 && checker[12 * 4 + 3] == 255, "half over it: {:?}", &checker[48..52]);
+        let mut coloured = px;
+        backdrop(&mut coloured, 16, 2, [0, 80, 200]);
+        assert_eq!(&coloured[4..8], &[0, 80, 200, 255]);
+        assert!(coloured.chunks_exact(4).all(|p| p[3] == 255));
+    }
 
     #[test]
     fn shrinking_averages_blocks() {

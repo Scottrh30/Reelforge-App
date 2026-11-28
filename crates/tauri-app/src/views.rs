@@ -39,6 +39,85 @@ pub struct State {
     pub prefs: reelforge_engine::editor::Prefs,
     /// The Viewer's view: "Active" (through the sequence's camera), "Front", "Top", "Left" or "Custom".
     pub view: reelforge_engine::editor::ViewMode,
+    /// Lines the Viewer draws over the picture: the floor grid and a motion path.
+    pub guides: Guides,
+}
+
+/// Lines over the Viewer's picture, in frame pixels.
+#[derive(Serialize, Default)]
+pub struct Guides {
+    /// The floor grid in the Front, Top, Left and Custom 3D views (Settings → show the floor plane).
+    pub floor: Vec<Vec<[f32; 2]>>,
+    /// The selected layer's path over its clip, and its position keyframes
+    /// on it (Settings → show motion paths).
+    pub path: Vec<[f32; 2]>,
+    pub keys: Vec<[f32; 2]>,
+}
+
+/// The floor grid and the selected layer's motion path, as Settings asks.
+pub fn guides(e: &Editor) -> Guides {
+    let mut g = Guides::default();
+    let s = e.seq();
+    let frame = [s.width as f32, s.height as f32];
+    let t = e.playback.playhead;
+    if e.prefs.show_floor && e.view.is_some() {
+        // A grid on the plane through the bottom of the frame, 2 frames wide
+        // and deep each way, a line every tenth of a frame's width.
+        let cam = e.project.scene3d_at(e.active, t).camera;
+        let (y, w) = (frame[1] * 0.5, frame[0].max(frame[1]));
+        for i in -10..=10 {
+            let k = i as f32 * w * 0.2;
+            for (a, b) in [([k, y, -2.0 * w], [k, y, 2.0 * w]), ([-2.0 * w, y, k], [2.0 * w, y, k])] {
+                // In steps, broken where it goes behind the view.
+                let mut line = Vec::new();
+                for j in 0..=24 {
+                    let f = j as f32 / 24.0;
+                    match cam.project([0, 1, 2].map(|c| a[c] + (b[c] - a[c]) * f)) {
+                        Some(p) if p.iter().all(|v| v.is_finite() && v.abs() < 1e6) => line.push(p),
+                        _ => {
+                            if line.len() > 1 {
+                                g.floor.push(std::mem::take(&mut line));
+                            }
+                            line.clear();
+                        }
+                    }
+                }
+                if line.len() > 1 {
+                    g.floor.push(line);
+                }
+            }
+        }
+    }
+    if e.prefs.show_motion_paths {
+        if let Some((_, c)) = e.selection.and_then(|id| s.find_clip(id)) {
+            let keys = &c.anim.position.0;
+            if keys.len() >= 2 && c.scene.is_none() {
+                let cam = e.project.scene3d_at(e.active, t).camera;
+                let at = |time: Time| {
+                    let w = e.project.world_transform(e.active, c, time);
+                    if w.three_d { cam.project([w.position[0], w.position[1], w.depth]) } else { Some([frame[0] * 0.5 + w.position[0], frame[1] * 0.5 + w.position[1]]) }
+                };
+                // At most 400 steps along the clip, and each keyframe.
+                let (a, b) = (c.timeline_start, c.timeline_end());
+                let n = ((b - a).as_secs_f64() * s.frame_rate.fps()).clamp(2.0, 400.0) as usize;
+                for i in 0..=n {
+                    let time = a + Time::from_secs_f64((b - a).as_secs_f64() * i as f64 / n as f64);
+                    if let Some(p) = at(time.min(b - s.frame_rate.frame_duration()).max(a)) {
+                        g.path.push(p);
+                    }
+                }
+                for k in keys {
+                    let time = c.timeline_start + (k.at - c.source_in);
+                    if time >= a && time < b {
+                        if let Some(p) = at(time) {
+                            g.keys.push(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    g
 }
 
 #[derive(Serialize)]
@@ -946,6 +1025,7 @@ pub fn state(e: &Editor) -> State {
         import_report: e.import_report.clone(),
         prefs: e.prefs.clone(),
         view: e.view_mode(),
+        guides: guides(e),
     }
 }
 

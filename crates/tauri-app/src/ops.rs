@@ -111,6 +111,18 @@ pub fn proxies_delete_all() -> Res<()> {
     })
 }
 
+/// Delete the proxies of this project's footage.
+#[tauri::command]
+pub fn proxies_delete_project() -> Res<usize> {
+    ed(|e| e.delete_project_proxies())
+}
+
+/// Pick a folder (for Settings' folders).
+#[tauri::command]
+pub fn pick_folder() -> Option<String> {
+    rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Make new proxies as `format` at `size` (saved in the settings), and remake
 /// the project's existing ones so. Returns how many are being remade.
 #[tauri::command]

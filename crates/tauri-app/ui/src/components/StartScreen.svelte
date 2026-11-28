@@ -97,13 +97,13 @@
   }
   async function forget(e: Event, path: string | null) {
     e.stopPropagation();
-    if (path === null && (await question("Clear the recent list?", "Your projects stay where they are; only the list is cleared.", ["Clear", "Cancel"])) !== "Clear") return;
+    if (path === null && (await question("Clear the recent list?", "Your projects stay where they are; only the list is cleared.", ["Clear", "Cancel"], "clear_recent")) !== "Clear") return;
     await run(api.startForget(path));
     load();
   }
   async function removeTemplate(e: Event, path: string, name: string) {
     e.stopPropagation();
-    if ((await question(`Delete the template “${name}”?`, "Projects already started from it aren't changed.", ["Delete", "Cancel"])) !== "Delete") return;
+    if ((await question(`Delete the template “${name}”?`, "Projects already started from it aren't changed.", ["Delete", "Cancel"], "delete_template")) !== "Delete") return;
     await run(api.templateRemove(path));
     load();
   }

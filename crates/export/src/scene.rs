@@ -154,6 +154,45 @@ pub struct Scene {
     sim_rev: u64,
     /// A simulation was just filled in: the frame is drawn again.
     redraw: bool,
+    /// What's left out to draw faster (the Viewer's quality profiles; exports leave out nothing).
+    pub skip: Skip,
+}
+
+/// What a [`Scene`] leaves out (all `false`: everything drawn).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Skip {
+    pub shadows: bool,
+    pub reflections: bool,
+    pub lights: bool,
+    /// Layers' effects.
+    pub effects: bool,
+    pub motion_blur: bool,
+    pub depth_of_field: bool,
+}
+
+impl Scene {
+    /// The camera and lights at `t`, less what's skipped.
+    fn scene3d(&self, project: &Project, seq: usize, t: Time) -> reelforge_core::space3d::Scene3d {
+        let mut s = project.scene3d_at(seq, t);
+        let k = self.skip;
+        if k.lights {
+            s.lights.clear();
+        }
+        for l in &mut s.lights {
+            if k.shadows {
+                l.shadow = 0.0;
+            }
+            if k.reflections {
+                if let Some(e) = &mut l.env {
+                    e.reflect = 0.0;
+                }
+            }
+        }
+        if k.depth_of_field {
+            s.camera.dof = None;
+        }
+        s
+    }
 }
 
 /// A simulation left approximate by a long jump, being filled in: a copy of
@@ -296,7 +335,7 @@ impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         // (The audio visualiser hears sound through the media reader.)
         reelforge_core::audiovis::set_audio_source(reelforge_media::audio_window);
-        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0, zoom: 1.0, out_fps: None, between: None, max_catch_up: None, idle: false, refining: None, sim_rev: 0, redraw: false }
+        Self { device: device.clone(), queue: queue.clone(), nested: HashMap::new(), masks: HashMap::new(), tick: 0, generation: 0, ofx: Default::default(), flow: None, flow_frames: HashMap::new(), par: 1.0, zoom: 1.0, out_fps: None, between: None, max_catch_up: None, idle: false, refining: None, sim_rev: 0, redraw: false, skip: Skip::default() }
     }
 
     /// Forget composition renders (e.g. a different project was opened).
@@ -393,7 +432,7 @@ impl Scene {
             if n == 0 {
                 continue;
             }
-            let scene3d = project.scene3d_at(seq, t);
+            let scene3d = self.scene3d(project, seq, t);
             let was = provider.wait_for_frames(true);
             for k in 1..=n {
                 let ct = Time::from_secs_f64(a + (b - a) * k as f64 / (n + 1) as f64);
@@ -451,7 +490,7 @@ impl Scene {
         }
         let Some(mut r) = self.refining.take() else { return Ok(()) };
         let frame_size = [s.width.max(2), s.height.max(2)];
-        let scene3d = project.scene3d_at(seq, t);
+        let scene3d = self.scene3d(project, seq, t);
         let was = provider.wait_for_frames(true);
         for _ in 0..REFINE_FRAMES {
             let Some(&at) = r.times.get(r.next) else { break };
@@ -513,7 +552,7 @@ impl Scene {
         let fps = self.out_fps.unwrap_or(s.frame_rate.fps());
         self.par = s.par();
         // The camera and lights, for 3D layers.
-        let scene3d = project.scene3d_at(seq, t);
+        let scene3d = self.scene3d(project, seq, t);
         let mut items = Vec::new();
         // Each item's track, and its clip's track matte.
         let mut tags: Vec<(usize, Option<reelforge_core::TrackMatte>)> = Vec::new();
@@ -813,6 +852,20 @@ impl Scene {
                 &tipped
             }
             None => l,
+        };
+        // Effects (or motion blur) left out to draw faster.
+        let trimmed;
+        let l = if (self.skip.effects && !l.effects.is_empty()) || (self.skip.motion_blur && l.effects.iter().any(|v| v.kind == reelforge_core::EffectKind::MotionBlur)) {
+            let mut x = l.clone();
+            if self.skip.effects {
+                x.effects.clear();
+            } else {
+                x.effects.retain(|v| v.kind != reelforge_core::EffectKind::MotionBlur);
+            }
+            trimmed = x;
+            &trimmed
+        } else {
+            l
         };
         let full = [frame_size[0] as f32, frame_size[1] as f32];
         if let Some(spec) = l.clip.title.as_ref().filter(|s| s.is_3d() && l.clip.nested.is_none() && !l.clip.adjustment) {
@@ -1590,6 +1643,35 @@ mod layer_tests {
         let soft = row.iter().filter(|&&b| b > 30 && b < 225).count();
         assert!(row[64] > 240 && row[10] < 15, "{row:?}");
         assert!(soft <= 2, "the square's edges are crisp, not 4 px ramps: {soft} soft pixels in {row:?}");
+    }
+
+    #[test]
+    fn a_quality_profile_leaves_layers_effects_out() {
+        let Some((device, queue)) = reelforge_render::headless_device() else {
+            eprintln!("no GPU adapter; skipping");
+            return;
+        };
+        let secs = Time::from_secs_f64;
+        let mut p = Project::new();
+        let mut seq = Sequence::new("T", 32, 16, FrameRate::new(25, 1));
+        let mut red = Clip::new_plane(ClipId(1), Time::ZERO, secs(5.0), [255, 0, 0, 255]);
+        let mut fx = Effect::new(EffectKind::ColorCorrect);
+        fx.params[2].value = 0.0; // no saturation
+        red.effects.push(fx);
+        seq.tracks[0].clips = vec![red];
+        p.sequences = vec![seq];
+        let mut scene = Scene::new(&device, &queue);
+        let mut comp = Compositor::new(&device, &queue);
+        let mut draw = |scene: &mut Scene| {
+            scene.render(&p, 0, secs(1.0), &mut comp, &mut Nothing, None).unwrap();
+            let img = comp.read_output().unwrap();
+            [img[(8 * 32 + 16) * 4], img[(8 * 32 + 16) * 4 + 1]]
+        };
+        let [r, g] = draw(&mut scene);
+        assert!(r.abs_diff(g) < 30, "grey with its effect: {r} {g}");
+        scene.skip = Skip { effects: true, ..Skip::default() };
+        let [r, g] = draw(&mut scene);
+        assert!(r > 240 && g < 15, "red without it: {r} {g}");
     }
 
     #[test]

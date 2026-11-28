@@ -484,6 +484,16 @@ export interface TrackerView {
   smoothed: Pt[][];
 }
 
+/// What the Viewer draws while playing, or paused (each off: left out to draw faster).
+export interface QualityProfile {
+  shadows: boolean;
+  reflections: boolean;
+  lights: boolean;
+  effects: boolean;
+  motion_blur: boolean;
+  depth_of_field: boolean;
+}
+
 export interface Prefs {
   use_proxies: boolean;
   auto_proxies: boolean;
@@ -521,6 +531,28 @@ export interface Prefs {
   layout_in_project: boolean;
   /// Close media files while the app is in the background.
   close_media_in_background: boolean;
+  viewer_backdrop: number;
+  viewer_background: [number, number, number];
+  show_mouse_coords: boolean;
+  show_effect_controls: boolean;
+  show_floor: boolean;
+  show_motion_paths: boolean;
+  controls_while_playing: boolean;
+  expand_controls: boolean;
+  playback_profile: QualityProfile;
+  paused_profile: QualityProfile;
+  prompts: Record<string, boolean>;
+  cache_keep_days: number;
+  prerender_folder: string;
+  autosave_folder: string;
+  export_folder: string;
+  export_sound: boolean;
+  export_time_format: number;
+  strip_extensions: boolean;
+  native_color_picker: boolean;
+  wheel_dropdowns: boolean;
+  exit_fullscreen_inactive: boolean;
+  quick_actions: string[];
   /// Warn below this many GB free (0: never).
   disk_warn_gb: number;
   /// Where proxies and rendered previews go (null: the cache folder).
@@ -541,7 +573,7 @@ export interface Prefs {
   full_when_paused: boolean;
   viewer_snapping: boolean;
   /// What draws the pictures (the Viewer and exports).
-  renderer: "gpu" | "cpu";
+  renderer: "gpu" | "cpu" | "integrated";
   hw_decode: boolean;
   cache_mb: number;
   native_decoders: boolean;
@@ -966,6 +998,7 @@ export interface JobView {
   total: number;
   fps: number | null;
   remaining: number | null;
+  elapsed: number | null;
   cancelling: boolean;
   message: string | null;
   file: string;
@@ -978,6 +1011,8 @@ export interface QueueView {
 }
 
 export interface State {
+  /// Lines over the Viewer's picture (frame pixels): the 3D views' floor grid, the selected layer's motion path and its keyframes.
+  guides: { floor: Pt[][]; path: Pt[]; keys: Pt[] };
   rev: number;
   title: string;
   path: string | null;
@@ -1119,7 +1154,7 @@ export const api = {
   newProject: () => invoke("new_project"),
   openDialog: () => invoke("open_dialog"),
   openAdobeDialog: () => invoke("open_adobe_dialog"),
-  renderers: () => invoke<{ available: { kind: "gpu" | "cpu"; name: string }[]; active: "gpu" | "cpu"; device: string | null }>("renderers"),
+  renderers: () => invoke<{ available: { kind: "gpu" | "cpu" | "integrated"; name: string }[]; active: "gpu" | "cpu" | "integrated"; device: string | null }>("renderers"),
   dismissImportReport: () => invoke("dismiss_import_report"),
   colorMatch: (targets: number[], from: "clip" | "media" | "file", id: number, path: string | null, tone: boolean, color: boolean) => invoke("color_match", { targets, from, id, path, tone, color }),
   colorMatchCancel: () => invoke("color_match_cancel"),
@@ -1390,6 +1425,8 @@ export const api = {
   nvidiaAvailable: () => invoke<{ fx: boolean; rtx: boolean; flow: boolean; flow_status: string }>("nvidia_available"),
   proxyDelete: (media: number) => invoke("proxy_delete", { media }),
   proxiesDeleteAll: () => invoke("proxies_delete_all"),
+  proxiesDeleteProject: () => invoke<number>("proxies_delete_project"),
+  pickFolder: () => invoke<string | null>("pick_folder"),
   proxiesRemake: (format: ProxyFormat, size: ProxySize) => invoke<number>("proxies_remake", { format, size }),
   proxiesUse: (on: boolean) => invoke("proxies_use", { on }),
   proxyFolder: () => invoke<string>("proxy_folder"),

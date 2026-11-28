@@ -147,7 +147,7 @@
     if (f?.trim()) moveTo(p, f.trim());
   }
   async function remove(p: FxPreset) {
-    if ((await question("Delete preset", `Delete the preset “${p.name}”? Clips it was applied to keep what it gave them.`, ["Delete", "Cancel"])) !== "Delete") return;
+    if ((await question("Delete preset", `Delete the preset “${p.name}”? Clips it was applied to keep what it gave them.`, ["Delete", "Cancel"], "delete_preset")) !== "Delete") return;
     await run(api.fxPresetDelete(p.name));
     reload();
   }

@@ -128,12 +128,12 @@ fn default_path(e: &Editor, ext: &str) -> PathBuf {
     default_path_named(e, &e.seq().name, ext)
 }
 
-/// `<folder>/<name>.<ext>`, as [`default_path`], for a name of its own.
+/// `<folder>/<name>.<ext>`, as [`default_path`], for a name of its own: in
+/// Settings → Export's default folder when one is set (and still there).
 fn default_path_named(e: &Editor, name: &str, ext: &str) -> PathBuf {
-    let dir = e
-        .project_path
-        .as_ref()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
+    let chosen = Some(PathBuf::from(e.prefs.export_folder.trim())).filter(|d| !d.as_os_str().is_empty() && d.is_dir());
+    let dir = chosen
+        .or_else(|| e.project_path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)))
         .or_else(|| {
             let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
             let videos = PathBuf::from(home).join("Videos");
@@ -141,8 +141,7 @@ fn default_path_named(e: &Editor, name: &str, ext: &str) -> PathBuf {
         })
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_default();
-    let name: String = name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).collect();
-    let name = if name.trim().is_empty() { "export".to_string() } else { name.trim().to_string() };
+    let name = export_stem(name, e.prefs.strip_extensions);
     let queued: Vec<PathBuf> = queue(|q| q.jobs.iter().filter(|j| !j.state.is_over()).map(|j| j.settings.path.clone()).collect());
     let taken = |p: &Path| p.exists() || queued.iter().any(|q| q == p);
     let mut path = dir.join(format!("{name}.{ext}"));
@@ -152,6 +151,27 @@ fn default_path_named(e: &Editor, name: &str, ext: &str) -> PathBuf {
         n += 1;
     }
     path
+}
+
+/// Media and project extensions a sequence or clip named after its file ends in.
+const KNOWN_EXTENSIONS: &[&str] = &[
+    "mp4", "mov", "m4v", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "ts", "wmv", "flv", "mpg", "mpeg", "3gp", "gif", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp", "exr", "dpx", "tga", "psd", "heic", "wav", "mp3", "aac", "m4a", "flac", "ogg", "opus", "aif", "aiff", "rfproj",
+];
+
+/// A name made safe for a file: other characters become `_`, and (Settings →
+/// Export → leave file extensions out) a known extension it ends in goes.
+fn export_stem(name: &str, strip: bool) -> String {
+    let mut name = name.trim();
+    if strip {
+        while let Some((stem, ext)) = name.rsplit_once('.') {
+            if stem.trim().is_empty() || !KNOWN_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()) {
+                break;
+            }
+            name = stem.trim_end();
+        }
+    }
+    let name: String = name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).collect();
+    if name.trim().is_empty() { "export".to_string() } else { name.trim().to_string() }
 }
 
 /// Ask where to export to; returns the chosen path.
@@ -582,6 +602,8 @@ pub struct JobView {
     pub total: u64,
     pub fps: Option<f64>,
     pub remaining: Option<f64>,
+    /// Seconds taken so far (running) or in all (done).
+    pub elapsed: Option<f64>,
     pub cancelling: bool,
     /// What happened (done or failed).
     pub message: Option<String>,
@@ -604,6 +626,7 @@ pub fn view() -> QueueView {
                     total: 0,
                     fps: None,
                     remaining: None,
+                    elapsed: None,
                     cancelling: false,
                     message: None,
                     file: j.settings.path.display().to_string(),
@@ -614,13 +637,15 @@ pub fn view() -> QueueView {
                         let r = run.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         v.state = "running";
                         (v.done, v.total, v.remaining) = (r.done, r.total, r.remaining);
+                        v.elapsed = Some(r.elapsed);
                         v.fps = (r.elapsed > 0.2 && r.done > 0).then(|| r.done as f64 / r.elapsed);
                         v.cancelling = cancel.load(Ordering::Relaxed);
                     }
                     JobState::Finished(r) => {
                         v.state = "done";
                         (v.done, v.total) = (r.frames, r.frames);
-                        v.message = Some(format!("{} frames · {} · {:.1} s", r.frames, if r.hardware { format!("{} on the GPU", r.video_codec) } else { r.video_codec.clone() }, r.elapsed.as_secs_f64()));
+                        v.elapsed = Some(r.elapsed.as_secs_f64());
+                        v.message = Some(format!("{} frames · {}", r.frames, if r.hardware { format!("{} on the GPU", r.video_codec) } else { r.video_codec.clone() }));
                         v.file = match j.settings.video {
                             Some(c) if c.is_sequence() => reelforge_media::sequence_file(&r.path, 1),
                             _ => r.path.clone(),
@@ -652,6 +677,18 @@ pub fn view() -> QueueView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_names_leave_file_extensions_out() {
+        assert_eq!(export_stem("beach.mp4", true), "beach");
+        assert_eq!(export_stem("Beach Day.MOV", true), "Beach Day");
+        assert_eq!(export_stem("clip.mov.mp4", true), "clip");
+        assert_eq!(export_stem("beach.mp4", false), "beach_mp4");
+        // Only extensions: a name with a dot in it stays whole.
+        assert_eq!(export_stem("v1.2 final", true), "v1_2 final");
+        assert_eq!(export_stem(".mp4", true), "_mp4");
+        assert_eq!(export_stem("  ", true), "export");
+    }
 
     #[test]
     fn details_name_the_format() {

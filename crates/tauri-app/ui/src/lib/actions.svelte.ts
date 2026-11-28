@@ -6,12 +6,34 @@ import { app, run, say } from "./session.svelte";
 import { prefsDialog } from "./prefs.svelte";
 import { view } from "./timeline.svelte";
 import { allWorkspaces, snapshot, switchTo, workspaces } from "./workspace.svelte";
+import { comboOf, commandFor } from "./shortcuts.svelte";
 
 /// A question in a dialog: the answer is the label of the button pressed (or null).
 /// With `field` set, the dialog also has a text box (its value is in `field`).
-export const ask = $state({ open: false, title: "", text: "", buttons: [] as string[], field: null as string | null, resolve: (_: string | null) => {} });
+export const ask = $state({ open: false, title: "", text: "", buttons: [] as string[], field: null as string | null, prompt: null as string | null, never: false, resolve: (_: string | null) => {} });
 
-export function question(title: string, text: string, buttons: string[]): Promise<string | null> {
+/// The questions that can be turned off (Settings → Prompts), by key: what
+/// each asks. Turned off, the first button is the answer without asking.
+export const PROMPTS: [string, string][] = [
+  ["delete_track", "Deleting a track with clips on it"],
+  ["delete_preset", "Deleting an effect preset"],
+  ["delete_template", "Deleting a project template"],
+  ["clear_recent", "Clearing the recent projects list"],
+  ["restore_version", "Restoring a saved version"],
+  ["delete_version", "Deleting a saved version"],
+  ["replace_workspace", "Replacing a workspace of the same name"],
+  ["delete_workspace", "Deleting a workspace"],
+];
+
+/// Whether question `key` is still asked (Settings → Prompts).
+export function asks(key: string): boolean {
+  return app.s?.prefs.prompts?.[key] !== false;
+}
+
+/// Ask `title`; with a `prompt` key, the question can be turned off ("Don't
+/// ask again" here, or Settings → Prompts), and then its first button is the answer.
+export function question(title: string, text: string, buttons: string[], prompt: string | null = null): Promise<string | null> {
+  if (prompt && !asks(prompt)) return Promise.resolve(buttons[0] ?? null);
   return new Promise((resolve) => {
     Object.assign(ask, {
       open: true,
@@ -19,8 +41,12 @@ export function question(title: string, text: string, buttons: string[]): Promis
       text,
       buttons,
       field: null,
+      prompt,
+      never: false,
       resolve: (v: string | null) => {
         ask.open = false;
+        // "Don't ask again" counts once an answer is given (not on Cancel).
+        if (prompt && ask.never && v === buttons[0] && app.s) run(api.setPrefs({ ...app.s.prefs, prompts: { ...app.s.prefs.prompts, [prompt]: false } }));
         resolve(v);
       },
     });
@@ -36,6 +62,8 @@ export function askText(title: string, text: string, initial: string, ok: string
       text,
       buttons: [ok, "Cancel"],
       field: initial,
+      prompt: null,
+      never: false,
       resolve: (v: string | null) => {
         ask.open = false;
         resolve(v === ok ? ask.field : null);
@@ -120,7 +148,7 @@ async function deleteKey(ripple: boolean) {
   const tr = app.s?.seq.tracks.find((x) => x.index === target);
   if (!tr) return;
   const n = tr.clips.length;
-  const a = await question(`Delete ${tr.name}?`, n ? `The track and its ${n} clip${n === 1 ? "" : "s"} go. Undo brings them back.` : "The track is empty.", ["Delete track", "Cancel"]);
+  const a = await question(`Delete ${tr.name}?`, n ? `The track and its ${n} clip${n === 1 ? "" : "s"} go. Undo brings them back.` : "The track is empty.", ["Delete track", "Cancel"], "delete_track");
   if (a === "Delete track") run(api.trackOp(target, "delete"));
 }
 
@@ -154,34 +182,10 @@ export function onKey(e: KeyboardEvent) {
     return;
   }
   if (ask.open || app.startOpen || app.exportOpen || app.effectsOpen || app.savePreset || app.pluginsOpen || app.collectOpen || app.pasteAttrsOpen || app.versionsOpen || app.multicamOpen || app.markerEdit != null || app.settingsOpen || prefsDialog.open || (app.s?.recoveries.length ?? 0) > 0) return;
-  const ctrl = e.ctrlKey || e.metaKey;
-  const k = e.key.toLowerCase();
   const go = (f: () => unknown) => {
     e.preventDefault();
     f();
   };
-  if (ctrl) {
-    if (k === "z" && !e.shiftKey) return go(actions.undo);
-    if (k === "y" || (k === "z" && e.shiftKey)) return go(actions.redo);
-    if (k === "s" && e.altKey) return go(() => (app.versionsOpen = true));
-    if (k === "s" && e.shiftKey) return go(actions.saveAs);
-    if (k === "s") return go(actions.save);
-    if (k === "o") return go(actions.open);
-    if (k === "n" && e.shiftKey) return go(() => (app.startOpen = true));
-    if (k === "n") return go(actions.newProject);
-    if (k === "i") return go(actions.importMedia);
-    if (k === "m") return go(actions.exportOpen);
-    if (k === "c") return go(() => actions.act("copy"));
-    if (k === "x") return go(() => actions.act("cut"));
-    if (k === "v" && e.altKey) return go(() => (app.pasteAttrsOpen = true));
-    if (k === "v") return go(() => actions.act("paste"));
-    if (k === "g") return go(() => actions.act("make_composite"));
-    if (k === "a") return go(() => actions.act("select_all"));
-    if (k === "t") return go(actions.addTitle);
-    if (k === "d") return go(() => actions.act(e.shiftKey ? "crossfade" : "dissolve"));
-    if (k === "e" && e.shiftKey) return go(() => run(api.snapshot(false)));
-    return;
-  }
   // Alt+Shift+1…9: switch workspace.
   if (e.altKey && e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
     const w = allWorkspaces()[Number(e.code.slice(5)) - 1];
@@ -189,75 +193,84 @@ export function onKey(e: KeyboardEvent) {
     return;
   }
   // 1…9 (Shift: picture only): cut the multicam clip at the playhead to that angle.
-  if (!e.altKey && /^Digit[1-9]$/.test(e.code) && app.live?.multicam) {
+  if (!e.altKey && !e.ctrlKey && !e.metaKey && /^Digit[1-9]$/.test(e.code) && app.live?.multicam) {
     const angle = Number(e.code.slice(5)) - 1;
     return go(() => run(api.switchAngle(angle, e.shiftKey)));
   }
-  switch (e.key) {
-    case " ":
-      return go(() => actions.act("play"));
-    case "ArrowLeft":
-      return go(() => actions.act(e.altKey ? "nudge_left" : "prev_frame"));
-    case "ArrowRight":
-      return go(() => actions.act(e.altKey ? "nudge_right" : "next_frame"));
-    case "ArrowUp":
-      if (e.altKey) return go(() => stepHighlight(-1));
-      return go(() => actions.act(e.shiftKey ? "prev_marker" : "prev_edit"));
-    case "ArrowDown":
-      if (e.altKey) return go(() => stepHighlight(1));
-      return go(() => actions.act(e.shiftKey ? "next_marker" : "next_edit"));
-    case "Home":
-      return go(() => actions.act("start"));
-    case "End":
-      return go(() => actions.act("end"));
-    case "Delete":
-      return go(() => deleteKey(e.shiftKey));
-    case "Backspace":
-      return go(() => deleteKey(false));
-    case "Escape":
-      if (app.live?.render == null && app.s?.seq.target_track != null) run(api.trackOp(0, "untarget"));
-      return go(() => actions.act(app.live?.render != null ? "stop_render_preview" : "deselect"));
-    case "Enter":
-      if (app.live?.render == null) return go(() => actions.act("render_preview"));
-      return;
-    case ",":
-    case "<":
-      return go(() => actions.act(e.shiftKey ? "nudge_left_10" : "nudge_left"));
-    case ".":
-    case ">":
-      return go(() => actions.act(e.shiftKey ? "nudge_right_10" : "nudge_right"));
-    case "\\":
-      return go(() => (view.fit = true));
+  // Everything else by the keys set for it (Settings → Keyboard shortcuts…).
+  const id = commandFor(comboOf(e));
+  const f = id ? COMMANDS[id] : undefined;
+  if (f) go(f);
+}
+
+/// What each shortcut's command does.
+export const COMMANDS: Record<string, () => unknown> = {
+  new_project: () => actions.newProject(),
+  start_screen: () => (app.startOpen = true),
+  open: () => actions.open(),
+  save: () => actions.save(),
+  save_as: () => actions.saveAs(),
+  save_version: () => (app.versionsOpen = true),
+  import: () => actions.importMedia(),
+  export: () => actions.exportOpen(),
+  snapshot: () => run(api.snapshot(false)),
+  undo: () => actions.undo(),
+  redo: () => actions.redo(),
+  copy: () => actions.act("copy"),
+  cut: () => actions.act("cut"),
+  paste: () => actions.act("paste"),
+  paste_attributes: () => (app.pasteAttrsOpen = true),
+  select_all: () => actions.act("select_all"),
+  deselect: () => {
+    if (app.live?.render == null && app.s?.seq.target_track != null) run(api.trackOp(0, "untarget"));
+    return actions.act(app.live?.render != null ? "stop_render_preview" : "deselect");
+  },
+  delete: () => deleteKey(false),
+  ripple_delete: () => deleteKey(true),
+  split: () => actions.act("split"),
+  make_composite: () => actions.act("make_composite"),
+  add_title: () => actions.addTitle(),
+  dissolve: () => actions.act("dissolve"),
+  crossfade: () => actions.act("crossfade"),
+  mark_in: () => actions.act("mark_in"),
+  mark_out: () => actions.act("mark_out"),
+  add_marker: () => actions.act("add_marker"),
+  freeze_frame: () => actions.act("freeze_frame"),
+  nudge_left: () => actions.act("nudge_left"),
+  nudge_right: () => actions.act("nudge_right"),
+  nudge_left_10: () => actions.act("nudge_left_10"),
+  nudge_right_10: () => actions.act("nudge_right_10"),
+  highlight_up: () => stepHighlight(-1),
+  highlight_down: () => stepHighlight(1),
+  fit_timeline: () => (view.fit = true),
+  tool_select: () => (app.tool = "select"),
+  tool_ripple: () => (app.tool = "ripple"),
+  tool_roll: () => (app.tool = "roll"),
+  tool_slip: () => (app.tool = "slip"),
+  tool_slide: () => (app.tool = "slide"),
+  effects: () => (app.effectsOpen = true),
+  play: () => actions.act("play"),
+  prev_frame: () => actions.act("prev_frame"),
+  next_frame: () => actions.act("next_frame"),
+  prev_edit: () => actions.act("prev_edit"),
+  next_edit: () => actions.act("next_edit"),
+  prev_marker: () => actions.act("prev_marker"),
+  next_marker: () => actions.act("next_marker"),
+  start: () => actions.act("start"),
+  end: () => actions.act("end"),
+  shuttle_back: () => actions.act("shuttle_back"),
+  shuttle_stop: () => actions.act("shuttle_stop"),
+  shuttle_forward: () => actions.act("shuttle_forward"),
+  render_preview: () => app.live?.render == null && actions.act("render_preview"),
+  full_screen: () => toggleFullScreen(),
+};
+
+/// The Viewer full screen (the whole display), or back.
+export function toggleFullScreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+    return;
   }
-  switch (k) {
-    case "s":
-      return go(() => actions.act("split"));
-    case "i":
-      return go(() => actions.act("mark_in"));
-    case "o":
-      return go(() => actions.act("mark_out"));
-    case "v":
-      return go(() => (app.tool = "select"));
-    case "b":
-      return go(() => (app.tool = "ripple"));
-    case "n":
-      return go(() => (app.tool = "roll"));
-    case "y":
-      return go(() => (app.tool = "slip"));
-    case "u":
-      return go(() => (app.tool = "slide"));
-    case "e":
-      return go(() => (app.effectsOpen = true));
-    case "m":
-      return go(() => actions.act("add_marker"));
-    case "j":
-      return go(() => actions.act("shuttle_back"));
-    case "k":
-      return go(() => actions.act("shuttle_stop"));
-    case "l":
-      return go(() => actions.act("shuttle_forward"));
-    case "f":
-      if (e.shiftKey) return go(() => actions.act("freeze_frame"));
-      return;
-  }
+  const stage = document.querySelector(".viewer .stage") as HTMLElement | null;
+  stage?.requestFullscreen().catch(() => say("Full screen isn't available here"));
 }

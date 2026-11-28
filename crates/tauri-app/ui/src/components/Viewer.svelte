@@ -2,7 +2,8 @@
   import { app, run, say, viewer, timecode } from "../lib/session.svelte";
   import { api, type Pt } from "../lib/api";
   import { livePump } from "../lib/live";
-  import { actions } from "../lib/actions.svelte";
+  import { actions, toggleFullScreen } from "../lib/actions.svelte";
+  import { hintOf } from "../lib/shortcuts.svelte";
   import ViewerOverlay from "./ViewerOverlay.svelte";
   import MulticamGrid from "./MulticamGrid.svelte";
   import ViewerTools from "./ViewerTools.svelte";
@@ -268,6 +269,8 @@
     const ins = app.s?.inspector;
     const g = ins?.gizmo;
     if (!ins || !g) return null;
+    // Hidden while playing (Settings → show controls during playback).
+    if (!(app.s?.prefs.controls_while_playing ?? true) && app.live?.playing) return null;
     if ((app.activeMask && app.activeMask.clip === ins.id) || (app.drawing && app.drawing.clip === ins.id) || (app.maskTool && ins.masks.length)) return null;
     return g;
   });
@@ -302,7 +305,10 @@
   let cursor = $state("default");
   let tip = $state("");
   let hoverBusy = false;
+  // The pointer's place on the frame (Settings → show the pointer's position).
+  let mouse = $state<Pt | null>(null);
   async function hover(e: PointerEvent) {
+    if (app.s?.prefs.show_mouse_coords) mouse = framePt(e);
     if (e.buttons || hoverBusy || !giz) {
       if (!giz) (cursor = "default"), (tip = "");
       return;
@@ -452,6 +458,7 @@
     onpointerdown={press}
     onpointermove={hover}
     onwheel={wheel}
+    onpointerleave={() => (mouse = null)}
     onauxclick={(e) => e.button === 1 && e.preventDefault()}
   >
     <canvas
@@ -459,6 +466,20 @@
       style="left:{fit.x}px; top:{fit.y}px; width:{fit.w}px; height:{fit.h}px"
       aria-label="Viewer"
     ></canvas>
+    {#if app.s?.guides && (app.s.guides.floor.length || app.s.guides.path.length) && !((!(app.s.prefs.controls_while_playing ?? true)) && app.live?.playing)}
+      <!-- The floor grid (3D views) and the selected layer's motion path. -->
+      <svg class="guides" aria-hidden="true">
+        {#each app.s.guides.floor as line}<polyline points={ptsAttr(line)} class="floor" />{/each}
+        {#if app.s.guides.path.length > 1}<polyline points={ptsAttr(app.s.guides.path)} class="path" />{/if}
+        {#each app.s.guides.keys as k}{@const [x, y] = toBox(k)}<rect x={x - 3} y={y - 3} width="6" height="6" class="pathkey" />{/each}
+      </svg>
+    {/if}
+    {#if app.s?.prefs.show_mouse_coords && mouse}
+      {@const W = app.s.seq.width}
+      {@const H = app.s.seq.height}
+      <div class="coords" class:off={mouse[0] < 0 || mouse[1] < 0 || mouse[0] > W || mouse[1] > H} aria-live="off">X {Math.round(mouse[0])} · Y {Math.round(mouse[1])}</div>
+    {/if}
+    <button class="fullbtn" onclick={() => toggleFullScreen()} title="Full-screen preview ({hintOf('full_screen') || 'no key'}; Esc leaves)" aria-label="Full-screen preview">⛶</button>
     {#if (app.s?.seq.duration ?? 0) === 0}
       <div class="hint">Drag media to the timeline to see it here</div>
     {/if}
@@ -661,6 +682,62 @@
     position: absolute;
     background: #000;
     image-rendering: auto;
+  }
+  .guides {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+  }
+  .guides .floor {
+    fill: none;
+    stroke: rgba(160, 175, 200, 0.45);
+    stroke-width: 1;
+  }
+  .guides .path {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+  }
+  .guides .pathkey {
+    fill: var(--accent);
+    stroke: #000;
+    stroke-width: 1;
+  }
+  .coords {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    font: 11px var(--font-numbers, monospace);
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    padding: 2px 6px;
+    border-radius: 3px;
+    pointer-events: none;
+  }
+  .coords.off {
+    opacity: 0.55;
+  }
+  .fullbtn {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    opacity: 0.45;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    border: none;
+    border-radius: 3px;
+    padding: 1px 6px;
+    z-index: 3;
+  }
+  .fullbtn:hover {
+    opacity: 1;
+  }
+  .stage:fullscreen {
+    background: #000;
   }
   .hint {
     position: absolute;

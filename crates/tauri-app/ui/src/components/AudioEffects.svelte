@@ -3,6 +3,7 @@
   // limiter, reverb or noise reduction; switch each on or off, reorder,
   // remove; set their parameters, keyframed at the playhead like volume.
   import { api, type AudioEffect, type AudioFxInfo, type AudioFxKind, type ClipAudio } from "../lib/api";
+  import { app } from "../lib/session.svelte";
   import { openMenu } from "../lib/menu.svelte";
   import NumberField from "./NumberField.svelte";
 
@@ -30,6 +31,8 @@
 
   // Folded effects (by position), so a long chain stays tidy.
   let folded = $state<Record<number, boolean>>({});
+  // Not folded or opened by hand: as Settings → expand every section says.
+  const shut = (k: number) => folded[k] ?? !(app.s?.prefs.expand_controls ?? true);
 
   /// Parameter `p` at source time `t`: its keys (straight lines between them), else its value.
   function valueAt(fx: AudioEffect, i: number, t: number): number {
@@ -120,12 +123,12 @@
     {@const meta = info(fx.kind)}
     <div class="effect" class:off={!fx.enabled}>
       <div class="title">
-        <button class="ghost fold" onclick={() => (folded[i] = !folded[i])} aria-expanded={!folded[i]} aria-label="Show settings">{folded[i] ? "▸" : "▾"}</button>
+        <button class="ghost fold" onclick={() => (folded[i] = !shut(i))} aria-expanded={!shut(i)} aria-label="Show settings">{shut(i) ? "▸" : "▾"}</button>
         <label class="check"><input type="checkbox" checked={fx.enabled} onchange={() => once((n) => n.effects && (n.effects[i].enabled = !n.effects[i].enabled))} title="Switch this effect on or off" /> {meta?.label ?? fx.kind}</label>
         <span class="grow"></span>
         <button class="ghost small" onclick={(e) => more(e, i)} aria-label="More for {meta?.label}" title="Move, reset, remove">⋯</button>
       </div>
-      {#if !folded[i] && meta}
+      {#if !shut(i) && meta}
         <div class="params">
           {#each meta.params as spec, p}
             {@const keys = fx.params[p]?.keys ?? []}

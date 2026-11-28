@@ -142,6 +142,24 @@ pub fn delete_unused_proxies_in(dir: &Path, project: &Project) -> (usize, u64) {
     unused_proxies_in(dir, project).into_iter().filter(|(p, _)| std::fs::remove_file(p).is_ok()).fold((0, 0), |(n, b), (_, len)| (n + 1, b + len))
 }
 
+/// Delete the proxies of media not in `project` that haven't been used (read
+/// or written) since `before`: (files, bytes).
+pub fn delete_stale_proxies_in(dir: &Path, project: &Project, before: std::time::SystemTime) -> (usize, u64) {
+    let last_used = |p: &Path| std::fs::metadata(p).ok().and_then(|m| m.accessed().ok().into_iter().chain(m.modified().ok()).max());
+    unused_proxies_in(dir, project)
+        .into_iter()
+        .filter(|(p, _)| last_used(p).is_some_and(|t| t < before) && std::fs::remove_file(p).is_ok())
+        .fold((0, 0), |(n, b), (_, len)| (n + 1, b + len))
+}
+
+/// Delete the unused fill folders not changed since `before`: (folders, bytes).
+pub fn delete_stale_fills_in(dir: &Path, project: &Project, path: Option<&Path>, before: std::time::SystemTime) -> (usize, u64) {
+    fills_in(dir, project, path)
+        .into_iter()
+        .filter(|f| !f.used && std::fs::metadata(&f.path).and_then(|m| m.modified()).is_ok_and(|t| t < before) && std::fs::remove_dir_all(&f.path).is_ok())
+        .fold((0, 0), |(n, b), f| (n + 1, b + f.bytes))
+}
+
 /// An Object removal fill folder in the cache.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FillDir {
@@ -333,6 +351,26 @@ mod tests {
         assert_eq!(delete_unused_proxies_in(&dir, &p), (1, 300));
         assert!(unused_proxies_in(&dir, &p).is_empty());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "its own proxies kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_proxies_unused_for_days_are_cleaned_up() {
+        let dir = std::env::temp_dir().join(format!("rf_disk_stale_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = Project::default();
+        let now = std::time::SystemTime::now();
+        let ten_days = now - std::time::Duration::from_secs(10 * 86_400);
+        let (old, new) = (dir.join("old-0000000000000001.mp4"), dir.join("new-0000000000000002.mp4"));
+        std::fs::write(&old, vec![0u8; 200]).unwrap();
+        std::fs::write(&new, vec![0u8; 50]).unwrap();
+        let f = std::fs::File::options().write(true).open(&old).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_accessed(ten_days).set_modified(ten_days)).unwrap();
+        drop(f);
+        let week = now - std::time::Duration::from_secs(7 * 86_400);
+        assert_eq!(delete_stale_proxies_in(&dir, &p, week), (1, 200));
+        assert!(!old.exists() && new.exists(), "the one used lately stays");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

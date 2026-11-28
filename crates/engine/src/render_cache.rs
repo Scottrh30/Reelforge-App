@@ -213,6 +213,23 @@ impl DiskStore {
         }
     }
 
+    /// Delete the frames not used since `before`: (files, bytes).
+    pub fn forget_older(&self, before: std::time::SystemTime) -> (usize, u64) {
+        self.flush();
+        let keys: Vec<(u64, u64)> = self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().map(|(k, v)| (*k, v.0)).collect();
+        let (mut n, mut bytes) = (0, 0);
+        for (k, len) in keys {
+            let path = self.path(k);
+            let old = std::fs::metadata(&path).and_then(|m| m.modified()).is_ok_and(|m| m < before);
+            if old && std::fs::remove_file(&path).is_ok() {
+                self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&k);
+                n += 1;
+                bytes += len;
+            }
+        }
+        (n, bytes)
+    }
+
     /// Delete every kept frame.
     pub fn clear(&self) {
         self.flush();
@@ -545,6 +562,25 @@ mod tests {
         assert!(store.has(0x333));
         c.clear_all(true);
         assert_eq!((c.stats().1, store.stats().1), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn frames_unused_for_days_are_forgotten() {
+        let dir = std::env::temp_dir().join(format!("rf_render_old_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let frame: Arc<[u8]> = vec![7u8; 16 * 16 * 4].into();
+        let store = DiskStore::open(&dir, 1 << 30);
+        store.store(1, [16, 16], frame.clone());
+        store.store(2, [16, 16], frame);
+        store.flush();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86_400);
+        let f = std::fs::File::options().write(true).open(dir.join(format!("{:016x}.rfc", 1u64))).unwrap();
+        f.set_modified(old).unwrap();
+        drop(f);
+        let (n, bytes) = store.forget_older(std::time::SystemTime::now() - std::time::Duration::from_secs(86_400));
+        assert!(n == 1 && bytes > 0, "{n} {bytes}");
+        assert!(!store.has(1) && store.has(2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

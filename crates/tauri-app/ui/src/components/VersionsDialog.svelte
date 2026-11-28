@@ -35,7 +35,7 @@
     refresh();
   }
   async function restore(v: ProjectVersion) {
-    const a = await question(`Restore "${v.name}"?`, "The project goes back to how it was then. What's there now is kept as a version first, and Undo brings it back too. Nothing is written to the project file until you save.", ["Restore", "Cancel"]);
+    const a = await question(`Restore "${v.name}"?`, "The project goes back to how it was then. What's there now is kept as a version first, and Undo brings it back too. Nothing is written to the project file until you save.", ["Restore", "Cancel"], "restore_version");
     if (a !== "Restore") return;
     if (await run(api.restoreVersion(v.file))) app.versionsOpen = false;
     else refresh();
@@ -58,7 +58,7 @@
     refresh();
   }
   async function remove(v: ProjectVersion) {
-    const a = await question(`Delete "${v.name}"?`, "Its file goes from the versions folder. This can't be undone.", ["Delete", "Cancel"]);
+    const a = await question(`Delete "${v.name}"?`, "Its file goes from the versions folder. This can't be undone.", ["Delete", "Cancel"], "delete_version");
     if (a !== "Delete") return;
     await run(api.deleteVersion(v.file));
     refresh();

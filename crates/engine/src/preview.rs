@@ -155,6 +155,12 @@ pub struct Preview {
     quality: u32,
     /// Show the paused picture at full resolution whatever the playback quality.
     pub full_when_paused: bool,
+    /// What the Viewer leaves out to draw faster while playing, and while paused.
+    pub skip_playing: reelforge_export::scene::Skip,
+    pub skip_paused: reelforge_export::scene::Skip,
+    /// Rendered with transparency where nothing covers the frame (for a
+    /// checkerboard or colour behind, Settings → Viewer background).
+    transparent: bool,
     /// The resolution divisor drawing now (the quality, or 1 while paused).
     active: u32,
     /// Quality 0: chosen by itself while playing.
@@ -176,7 +182,7 @@ impl Preview {
             scene.max_catch_up = Some(250);
             Gpu { device, queue, compositor, scene, cache_render: None }
         });
-        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1, full_when_paused: false, active: 1, auto: AutoQuality::default() }
+        Self { slots: HashMap::new(), titles: HashMap::new(), offline: HashMap::new(), gpu, last_signature: 0, exact: true, error: None, shown_cached: None, from_cache: false, picture_rev: 0, quality: 1, full_when_paused: false, skip_playing: Default::default(), skip_paused: Default::default(), transparent: false, active: 1, auto: AutoQuality::default() }
     }
 
     /// Composite at colour bit depth `d` (from now on: the compositors are made
@@ -201,12 +207,34 @@ impl Preview {
     pub fn replace_gpu(&mut self, gpu: Option<(wgpu::Device, wgpu::Queue)>) {
         let fresh = Preview::new(gpu);
         self.gpu = fresh.gpu;
+        if let Some(g) = &mut self.gpu {
+            g.compositor.transparent = self.transparent;
+        }
         self.slots.clear();
         self.titles.clear();
         self.last_signature = 0;
         self.shown_cached = None;
         self.picture_rev = self.picture_rev.wrapping_add(1);
         self.error = None;
+    }
+
+    /// Render with transparency where nothing covers the frame (the Viewer's
+    /// backdrop then shows there); drawn again when it changes.
+    pub fn set_transparent(&mut self, on: bool) {
+        if on == self.transparent {
+            return;
+        }
+        self.transparent = on;
+        if let Some(g) = &mut self.gpu {
+            g.compositor.transparent = on;
+        }
+        self.last_signature = 0;
+        self.shown_cached = None;
+        self.picture_rev = self.picture_rev.wrapping_add(1);
+    }
+
+    pub fn transparent(&self) -> bool {
+        self.transparent
     }
 
     /// Playback quality: draw the Viewer's picture at 1/`q` of full
@@ -409,7 +437,11 @@ impl Preview {
             blocking: false,
             max,
         };
-        let unchanged = gpu.compositor.output_view().is_some().then_some(self.last_signature);
+        // What's left out while playing, and while paused (Settings → Quality profiles).
+        let skip = if playing { self.skip_playing } else { self.skip_paused };
+        let redo = gpu.scene.skip != skip;
+        gpu.scene.skip = skip;
+        let unchanged = gpu.compositor.output_view().is_some().then_some(self.last_signature).filter(|_| !redo);
         gpu.scene.idle = !playing;
         match gpu.scene.render(project, seq, t, &mut gpu.compositor, &mut frames, unchanged) {
             Ok(sig) => {

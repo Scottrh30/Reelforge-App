@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { hintOf } from "../lib/shortcuts.svelte";
+  import { chosen } from "../lib/quick.svelte";
   import { PANEL_LABEL, showPanel, dock, type PanelId } from "../lib/dock.svelte";
   import { workspaces, allWorkspaces, find, isBuiltIn, isChanged, modified, switchTo, saveAs, remove, rename, resetLayout, sizes } from "../lib/workspace.svelte";
   import { app, run, say, setPanel } from "../lib/session.svelte";
@@ -53,9 +55,9 @@
   }
 
   const file = (recent: RecentView[]): MenuItem[] => [
-    { label: "New project", hint: "Ctrl+N", run: actions.newProject },
-    { label: "Start screen…", hint: "Ctrl+Shift+N", run: () => (app.startOpen = true) },
-    { label: "Open…", hint: "Ctrl+O", run: actions.open },
+    { label: "New project", hint: hintOf("new_project"), run: actions.newProject },
+    { label: "Start screen…", hint: hintOf("start_screen"), run: () => (app.startOpen = true) },
+    { label: "Open…", hint: hintOf("open"), run: actions.open },
     { label: "Open a Premiere Pro, After Effects or HitFilm project…", hint: ".prproj, .aep, .hfp, .hfcs", run: actions.openAdobe },
     {
       label: "Open recent",
@@ -74,16 +76,16 @@
       ],
     },
     { label: "Open an autosave…", run: actions.openAutosave },
-    { label: "Save", hint: "Ctrl+S", run: actions.save },
-    { label: "Save as…", hint: "Ctrl+Shift+S", run: actions.saveAs },
+    { label: "Save", hint: hintOf("save"), run: actions.save },
+    { label: "Save as…", hint: hintOf("save_as"), run: actions.saveAs },
     { label: "Save as template…", run: saveTemplate },
-    { label: "Save version…", hint: "Ctrl+Alt+S", run: () => (app.versionsOpen = true) },
+    { label: "Save version…", hint: hintOf("save_version"), run: () => (app.versionsOpen = true) },
     { label: "Project versions…", run: () => (app.versionsOpen = true) },
     { separator: true },
-    { label: "Import media…", hint: "Ctrl+I", run: actions.importMedia },
+    { label: "Import media…", hint: hintOf("import"), run: actions.importMedia },
     { label: "Add motion graphics template…", run: () => run(api.addTemplate()) },
     { label: "Save sequence as motion graphics template…", run: () => run(api.saveTemplate()) },
-    { label: "Export…", hint: "Ctrl+M", run: actions.exportOpen },
+    { label: "Export…", hint: hintOf("export"), run: actions.exportOpen },
     {
       label: "Export edit for another editor",
       submenu: [
@@ -93,7 +95,7 @@
         { label: "OpenTimelineIO…", hint: "Resolve, Hiero, RV", run: () => run(api.exportEdit("otio")) },
       ],
     },
-    { label: "Snapshot of the frame", hint: "Ctrl+Shift+E", run: () => run(api.snapshot(false)) },
+    { label: "Snapshot of the frame", hint: hintOf("snapshot"), run: () => run(api.snapshot(false)) },
     { label: "Save snapshot as…", run: () => run(api.snapshot(true)) },
     { label: "Export queue", checked: app.queueOpen, run: () => (app.queueOpen = !app.queueOpen) },
     { label: "Collect project…", run: () => (app.collectOpen = true) },
@@ -105,20 +107,20 @@
     const s = app.s;
     const has = (s?.selected.length ?? 0) > 0;
     return [
-      { label: s?.undo ? `Undo ${s.undo}` : "Undo", hint: "Ctrl+Z", disabled: !s?.undo, run: actions.undo },
-      { label: s?.redo ? `Redo ${s.redo}` : "Redo", hint: "Ctrl+Y", disabled: !s?.redo, run: actions.redo },
+      { label: s?.undo ? `Undo ${s.undo}` : "Undo", hint: hintOf("undo"), disabled: !s?.undo, run: actions.undo },
+      { label: s?.redo ? `Redo ${s.redo}` : "Redo", hint: hintOf("redo"), disabled: !s?.redo, run: actions.redo },
       { separator: true },
-      { label: "Cut", hint: "Ctrl+X", disabled: !has, run: () => actions.act("cut") },
-      { label: "Copy", hint: "Ctrl+C", disabled: !has, run: () => actions.act("copy") },
-      { label: "Paste", hint: "Ctrl+V", run: () => actions.act("paste") },
-      { label: "Paste attributes…", hint: "Ctrl+Alt+V", run: () => (app.pasteAttrsOpen = true) },
-      { label: "Delete", hint: "Del", disabled: !has, run: () => actions.act("delete") },
-      { label: "Ripple delete", hint: "Shift+Del", disabled: !has, run: () => actions.act("ripple_delete") },
+      { label: "Cut", hint: hintOf("cut"), disabled: !has, run: () => actions.act("cut") },
+      { label: "Copy", hint: hintOf("copy"), disabled: !has, run: () => actions.act("copy") },
+      { label: "Paste", hint: hintOf("paste"), run: () => actions.act("paste") },
+      { label: "Paste attributes…", hint: hintOf("paste_attributes"), run: () => (app.pasteAttrsOpen = true) },
+      { label: "Delete", hint: hintOf("delete"), disabled: !has, run: () => actions.act("delete") },
+      { label: "Ripple delete", hint: hintOf("ripple_delete"), disabled: !has, run: () => actions.act("ripple_delete") },
       { separator: true },
-      { label: "Select all", hint: "Ctrl+A", run: () => actions.act("select_all") },
+      { label: "Select all", hint: hintOf("select_all"), run: () => actions.act("select_all") },
       { label: "Unlink audio and video", disabled: !s?.inspector?.linked, run: () => actions.act("unlink") },
       { separator: true },
-      { label: "Effects…", hint: "E", run: () => (app.effectsOpen = true) },
+      { label: "Effects…", hint: hintOf("effects"), run: () => (app.effectsOpen = true) },
       { label: "Plugins…", run: () => (app.pluginsOpen = true) },
       { separator: true },
       {
@@ -201,7 +203,7 @@
   async function newWorkspace() {
     const name = (await askText("Save workspace", "A name for this arrangement of panels:", "", "Save"))?.trim();
     if (!name) return;
-    if (find(name) && (await question("Replace workspace?", `There's already a workspace called “${name}”. Replace it with this layout?`, ["Replace", "Cancel"])) !== "Replace") return;
+    if (find(name) && (await question("Replace workspace?", `There's already a workspace called “${name}”. Replace it with this layout?`, ["Replace", "Cancel"], "replace_workspace")) !== "Replace") return;
     saveAs(name);
     say(`Saved the “${name}” workspace`);
   }
@@ -212,7 +214,7 @@
     rename(from, to);
   }
   async function deleteWorkspace(name: string) {
-    if ((await question("Delete workspace?", `Delete the “${name}” workspace? The current layout stays as it is.`, ["Delete", "Cancel"])) !== "Delete") return;
+    if ((await question("Delete workspace?", `Delete the “${name}” workspace? The current layout stays as it is.`, ["Delete", "Cancel"], "delete_workspace")) !== "Delete") return;
     remove(name);
     say(`Deleted the “${name}” workspace`);
   }
@@ -223,11 +225,11 @@
   });
 
   const timeline = (): MenuItem[] => [
-    { label: "Play / pause", hint: "Space", run: () => actions.act("play") },
-    { label: "Split at playhead", hint: "S", run: () => actions.act("split") },
+    { label: "Play / pause", hint: hintOf("play"), run: () => actions.act("play") },
+    { label: "Split at playhead", hint: hintOf("split"), run: () => actions.act("split") },
     { label: "Magnetic timeline", hint: "main track closes up", checked: !!app.s?.seq.magnetic, run: () => run(api.setMagnetic(!app.s?.seq.magnetic)) },
-    { label: "Cross-dissolve at playhead", hint: "Ctrl+D", run: () => actions.act("dissolve") },
-    { label: "Audio crossfade at playhead", hint: "Ctrl+Shift+D", run: () => actions.act("crossfade") },
+    { label: "Cross-dissolve at playhead", hint: hintOf("dissolve"), run: () => actions.act("dissolve") },
+    { label: "Audio crossfade at playhead", hint: hintOf("crossfade"), run: () => actions.act("crossfade") },
     { label: "Duck music under dialogue…", run: () => (app.duckOpen = true) },
     { label: "Match colour…", run: () => (app.matchColorOpen = true) },
     { label: "Stabilise selected clip automatically", hint: "no track to set up", disabled: app.s?.inspector?.id == null, run: () => app.s?.inspector && run(api.autoStabilise(app.s.inspector.id, 15, "Fixed")) },
@@ -235,8 +237,8 @@
     { label: "New multicam source…", run: () => (app.multicamOpen = []) },
     { label: "Multicam: show all angles", hint: "in the Viewer", checked: !!app.live?.multicam?.grid, disabled: !app.live?.multicam, run: () => run(api.setMulticamGrid(!app.live?.multicam?.grid)) },
     { label: "Transitions…", run: () => (app.effectsOpen = true) },
-    { label: "Freeze frame at playhead", hint: "Shift+F", run: () => actions.act("freeze_frame") },
-    { label: "Add title", hint: "Ctrl+T", run: actions.addTitle },
+    { label: "Freeze frame at playhead", hint: hintOf("freeze_frame"), run: () => actions.act("freeze_frame") },
+    { label: "Add title", hint: hintOf("add_title"), run: actions.addTitle },
     { label: "Add 3D text", run: actions.add3dText },
     { label: "Add 3D logo (SVG)…", run: actions.add3dLogo },
     { label: "Add 3D model…", run: actions.add3dModel },
@@ -304,24 +306,24 @@
         { label: "Environment light (HDR panorama)…", run: () => run(api.addEnvironmentLight()) },
       ],
     },
-    { label: "Nudge selected clips earlier", hint: ",", run: () => actions.act("nudge_left") },
-    { label: "Nudge selected clips later", hint: ".", run: () => actions.act("nudge_right") },
+    { label: "Nudge selected clips earlier", hint: hintOf("nudge_left"), run: () => actions.act("nudge_left") },
+    { label: "Nudge selected clips later", hint: hintOf("nudge_right"), run: () => actions.act("nudge_right") },
     { separator: true },
     app.live?.render != null
       ? { label: `Stop rendering the preview (${Math.round((app.live.render ?? 0) * 100)}%)`, hint: "Esc", run: () => actions.act("stop_render_preview") }
-      : { label: "Render preview", hint: "Enter", run: () => actions.act("render_preview") },
+      : { label: "Render preview", hint: hintOf("render_preview"), run: () => actions.act("render_preview") },
     { label: "Clear render cache", run: () => run(api.clearRenderCache()) },
-    { label: "Zoom to fit", hint: "\\", run: () => (view.fit = true) },
+    { label: "Zoom to fit", hint: hintOf("fit_timeline"), run: () => (view.fit = true) },
     { separator: true },
-    { label: "Mark in", hint: "I", run: () => actions.act("mark_in") },
-    { label: "Mark out", hint: "O", run: () => actions.act("mark_out") },
+    { label: "Mark in", hint: hintOf("mark_in"), run: () => actions.act("mark_in") },
+    { label: "Mark out", hint: hintOf("mark_out"), run: () => actions.act("mark_out") },
     { label: "Clear in and out", run: () => actions.act("clear_marks") },
     { separator: true },
-    { label: "Add marker", hint: "M", run: () => actions.act("add_marker") },
-    { label: "Previous marker", hint: "Shift+↑", run: () => actions.act("prev_marker") },
-    { label: "Next marker", hint: "Shift+↓", run: () => actions.act("next_marker") },
-    { label: "Previous edit point", hint: "↑", run: () => actions.act("prev_edit") },
-    { label: "Next edit point", hint: "↓", run: () => actions.act("next_edit") },
+    { label: "Add marker", hint: hintOf("add_marker"), run: () => actions.act("add_marker") },
+    { label: "Previous marker", hint: hintOf("prev_marker"), run: () => actions.act("prev_marker") },
+    { label: "Next marker", hint: hintOf("next_marker"), run: () => actions.act("next_marker") },
+    { label: "Previous edit point", hint: hintOf("prev_edit"), run: () => actions.act("prev_edit") },
+    { label: "Next edit point", hint: hintOf("next_edit"), run: () => actions.act("next_edit") },
     { separator: true },
     { label: "Keyframe curves", checked: app.timelineTab === "curves", run: () => (app.timelineTab = app.timelineTab === "curves" ? (app.s?.active ? "comp" : "edit") : "curves") },
     { separator: true },
@@ -331,7 +333,7 @@
     { label: app.s?.active ? "Composition settings…" : "Sequence settings…", run: () => (app.seqSettingsOpen = true) },
     { separator: true },
     { label: "New composition", run: () => run(api.newComposite()) },
-    { label: "Make composition from selection", hint: "Ctrl+G", run: () => actions.act("make_composite") },
+    { label: "Make composition from selection", hint: hintOf("make_composite"), run: () => actions.act("make_composite") },
   ];
 
   async function copyDiagnostics() {
@@ -379,6 +381,9 @@
   <button class="ghost icon" title={app.s?.redo ? `Redo ${app.s.redo}` : "Nothing to redo"} disabled={!app.s?.redo} onclick={actions.redo} aria-label="Redo">
     <svg viewBox="0 0 16 16" width="15" height="15"><path d="m10 3 4 4-4 4M13.5 7H6a4 4 0 0 0 0 8h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
   </button>
+  {#each chosen() as q (q.id)}
+    <button class="ghost icon quick" title={q.hint ? `${q.label} (${q.hint})` : q.label} aria-label={q.label} onclick={() => q.run()}>{q.icon}</button>
+  {/each}
   <span class="title">
     {app.s?.title ?? ""}{#if app.live?.dirty}<span class="dot" title="Unsaved changes"></span>{/if}
   </span>
@@ -399,6 +404,10 @@
     padding: 0 8px;
     background: var(--panel);
     border-bottom: 1px solid var(--line-soft);
+  }
+  .quick {
+    font-size: 13px;
+    min-width: 26px;
   }
   .mark {
     width: 20px;
