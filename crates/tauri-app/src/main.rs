@@ -271,13 +271,54 @@ pub(crate) fn shrink(rgba: &[u8], w: u32, h: u32, k: u32) -> (Vec<u8>, u32, u32)
     (out, nw, nh)
 }
 
+/// The app's window lost or got focus: with Settings → close media files
+/// in the background, its media files close while it's away.
+#[tauri::command]
+fn app_active(active: bool) -> Res<()> {
+    let released = ed(|e| {
+        e.set_app_active(active);
+        e.media_released
+    })?;
+    if released {
+        THUMB_OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    }
+    Ok(())
+}
+
+/// Keep the interface's layout in the project (saved with it).
+#[tauri::command]
+fn set_project_layout(layout: serde_json::Value) -> Res<()> {
+    ed(|e| e.project.layout = Some(layout))
+}
+
+/// The layout saved in the open project, if it has one.
+#[tauri::command]
+fn project_layout() -> Res<Option<serde_json::Value>> {
+    ed(|e| e.project.layout.clone())
+}
+
+/// The open sequence's least length in seconds (`None` or 0: as long as its clips).
+#[tauri::command]
+fn set_sequence_length(secs: Option<f64>) -> Res<()> {
+    ed(|e| e.set_sequence_length(secs.filter(|s| s.is_finite() && *s > 0.0).map(|s| Time::from_secs_f64(s.min(86_400.0)))))
+}
+
 /// A media item's sound as peaks, `rate` per second, 0–255 (empty until computed).
 #[tauri::command]
 fn waveform(media: u64) -> Res<Response> {
     ed(|e| {
-        let bytes = match e.waveforms.get(&MediaId(media)) {
-            Some(p) => p.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).collect(),
-            None => Vec::new(),
+        // Four bytes a bucket: peak left, right, RMS left, right (each
+        // √level × 255); from plain peaks alone when that's all there is.
+        let bytes = match (e.wave_detail.get(&MediaId(media)), e.waveforms.get(&MediaId(media))) {
+            (Some(d), _) => d.to_vec(),
+            (None, Some(p)) => p
+                .iter()
+                .flat_map(|v| {
+                    let (pk, rms) = ((v.clamp(0.0, 1.0).sqrt() * 255.0).round() as u8, ((v.clamp(0.0, 1.0) * 0.5).sqrt() * 255.0).round() as u8);
+                    [pk, pk, rms, rms]
+                })
+                .collect(),
+            (None, None) => Vec::new(),
         };
         Response::new(bytes)
     })
@@ -285,12 +326,18 @@ fn waveform(media: u64) -> Res<Response> {
 
 /// A small JPEG of `path` at `at` (ticks), for the Media panel and timeline.
 /// Runs off the main thread, so decoding doesn't hold up the interface.
+/// The thumbnail decoders kept open between calls.
+static THUMB_OPEN: Mutex<Vec<(PathBuf, reelforge_media::FrameSource)>> = Mutex::new(Vec::new());
+
 #[tauri::command(async)]
 fn thumbnail(path: String, at: i64) -> Res<Response> {
-    static OPEN: Mutex<Vec<(PathBuf, reelforge_media::FrameSource)>> = Mutex::new(Vec::new());
+    if ed(|e| e.media_released).unwrap_or(false) {
+        // (Its files are closed while the app is in the background.)
+        return Err("the app is in the background".into());
+    }
     let path = PathBuf::from(path);
     let mut src = {
-        let mut open = OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut open = THUMB_OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match open.iter().position(|(p, _)| *p == path) {
             Some(i) => open.remove(i).1,
             None => reelforge_media::FrameSource::open(&path, Some((320, 180))).map_err(|e| format!("{e:#}"))?,
@@ -298,7 +345,7 @@ fn thumbnail(path: String, at: i64) -> Res<Response> {
     };
     let frame = src.frame_at_blocking(Time(at.max(0)), std::time::Duration::from_secs(5));
     {
-        let mut open = OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut open = THUMB_OPEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if open.len() >= 4 {
             open.remove(0);
         }
@@ -1940,6 +1987,11 @@ fn main() {
             modelprops::model_preview,
             modelprops::add_model_layer,
             modelprops::pick_map_file,
+            app_active,
+            set_project_layout,
+            project_layout,
+            set_sequence_length,
+            start::pick_template_file,
             modelprops::pick_texture_folder,
             scene::add_new,
             scene::set_plane_color,

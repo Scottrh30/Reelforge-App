@@ -693,6 +693,11 @@ pub struct Sequence {
     /// in it are squeezed to match, so they look right (see [`PIXEL_ASPECTS`]).
     #[serde(default = "square", skip_serializing_if = "is_square")]
     pub pixel_aspect: (u32, u32),
+    /// The least it lasts, empty or not (Settings → default length of new
+    /// timelines and compositions): its end is that or its last clip's,
+    /// whichever is later. `None`: as long as its clips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<Time>,
 }
 
 fn square() -> (u32, u32) {
@@ -787,6 +792,7 @@ impl Sequence {
             magnetic: false,
             controls: Vec::new(),
             pixel_aspect: (1, 1),
+            length: None,
         }
     }
 
@@ -809,7 +815,8 @@ impl Sequence {
         crate::undo::first_free(|n| format!("Marker {n}"), |name| self.markers.iter().any(|m| m.name == name))
     }
     pub fn duration(&self) -> Time {
-        self.tracks.iter().map(Track::end).max().unwrap_or(Time::ZERO)
+        let clips = self.tracks.iter().map(Track::end).max().unwrap_or(Time::ZERO);
+        self.length.filter(|l| *l > clips).unwrap_or(clips)
     }
 
     /// The marked range `[in, out)`, falling back to the start and end of the
@@ -919,6 +926,10 @@ pub struct Project {
     pub media: Vec<MediaAsset>,
     pub sequences: Vec<Sequence>,
     next_id: u64,
+    /// The interface's layout when it was saved (panels, docks, sizes), kept
+    /// as the app gave it (Settings → save the layout with the project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<serde_json::Value>,
 }
 
 /// A transition between two adjacent clips on one track (an audio crossfade or
@@ -1211,6 +1222,7 @@ impl Project {
             media: Vec::new(),
             sequences: vec![Sequence::new("Sequence 1", 1920, 1080, FrameRate::new(30, 1))],
             next_id: 1,
+            layout: None,
         }
     }
     pub fn alloc_id(&mut self) -> u64 {

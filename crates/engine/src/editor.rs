@@ -81,6 +81,30 @@ pub struct Prefs {
     pub timeline_filmstrip: bool,
     /// A waveform of a video clip's linked sound along its lower edge.
     pub timeline_video_waveforms: bool,
+    /// Timeline waveforms: 0 peaks, 1 RMS (loudness), 2 both (RMS brighter, inside the peaks).
+    pub waveform_style: u8,
+    /// …0 both sides together, 1 left and right in lanes of their own.
+    pub waveform_channels: u8,
+    /// …height by level: 0 square root, 1 linear, 2 logarithmic (dB, −48 to 0).
+    pub waveform_scale: u8,
+    /// The most undo steps kept (10–10 000).
+    pub max_undo: u32,
+    /// How long a still image, title, shape, plane or effect layer lasts when
+    /// it's placed, in seconds.
+    pub still_secs: f32,
+    /// New projects' main timeline lasts at least this long, in seconds (0:
+    /// as long as its clips).
+    pub timeline_secs: f32,
+    /// New compositions last at least this long, in seconds (0: as long as their clips).
+    pub composition_secs: f32,
+    /// File → New starts from this project template (a .rfproj, or "": an empty project).
+    pub default_template: String,
+    /// The interface's layout is saved in the project, and an opened project
+    /// that has one is shown in it.
+    pub layout_in_project: bool,
+    /// While the app is in the background, the media files it has open are
+    /// closed, so other programs can change, move or delete them.
+    pub close_media_in_background: bool,
     /// Playback quality: the Viewer draws at 1/this of full resolution (1, 2,
     /// 4 or 8; 0: automatic, lower while playing falls behind).
     pub playback_quality: u32,
@@ -176,6 +200,16 @@ impl Default for Prefs {
             timeline_thumbnails: true,
             timeline_filmstrip: true,
             timeline_video_waveforms: false,
+            waveform_style: 0,
+            waveform_channels: 0,
+            waveform_scale: 0,
+            max_undo: reelforge_core::UndoStack::MAX_STEPS as u32,
+            still_secs: 5.0,
+            timeline_secs: 0.0,
+            composition_secs: 0.0,
+            default_template: String::new(),
+            layout_in_project: false,
+            close_media_in_background: false,
             playback_quality: 1,
             full_when_paused: false,
             background_render: true,
@@ -234,6 +268,7 @@ impl Editor {
         self.render_cache.set_budget_mb(self.prefs.render_cache_mb);
         self.apply_render_disk();
         self.playback.scrub_audio = self.prefs.scrub_audio;
+        self.undo.set_limit(self.prefs.max_undo as usize);
         reelforge_render::set_shadow_quality(self.prefs.shadow_quality as usize);
         reelforge_render::set_solid_samples(self.prefs.antialias_samples as u32);
         reelforge_render::set_reflection_map_size(self.prefs.reflection_map_size);
@@ -519,12 +554,18 @@ pub struct Editor {
     /// The Viewer shows multicam clips as a grid of their angles.
     pub multicam_grid: bool,
     mixed_rev: u64,
+    /// The app's media files are closed while it's in the background
+    /// (Settings); nothing reopens them until it's back.
+    pub media_released: bool,
     /// Project revision at the last save (or open): anything newer is unsaved.
     pub saved_rev: u64,
     /// Audio peak envelopes for drawing (`WAVEFORM_RATE` per second), computed in the background.
     pub waveforms: HashMap<MediaId, Arc<Vec<f32>>>,
-    waveform_tx: Sender<(MediaId, Vec<f32>)>,
-    waveform_rx: Receiver<(MediaId, Vec<f32>)>,
+    waveform_tx: Sender<(MediaId, Vec<f32>, Vec<u8>)>,
+    waveform_rx: Receiver<(MediaId, Vec<f32>, Vec<u8>)>,
+    /// For drawing: each bucket's left and right peak and RMS (see
+    /// `reelforge_media::waveform_detail`), beside `waveforms`.
+    pub wave_detail: HashMap<MediaId, Arc<Vec<u8>>>,
     /// Installed fonts for titles, found in the background (`None` until then).
     fonts: Arc<Mutex<Option<Arc<Vec<FontEntry>>>>>,
     pub prefs: Prefs,
@@ -613,10 +654,12 @@ impl Editor {
             multicam_grid: false,
             target: None,
             mixed_rev: 0,
+            media_released: false,
             saved_rev: 1,
             waveforms: HashMap::new(),
             waveform_tx,
             waveform_rx,
+            wave_detail: HashMap::new(),
             fonts,
             prefs,
             proxies: Default::default(),
@@ -660,6 +703,7 @@ impl Editor {
         let mut fresh = Editor::blank(Playback::with_audio(self.playback.audio.take()), preview, self.fonts.clone());
         fresh.playback.scrub_audio = self.playback.scrub_audio;
         fresh.prefs = self.prefs.clone();
+        fresh.undo.set_limit(fresh.prefs.max_undo as usize);
         fresh.render_cache.set_budget_mb(fresh.prefs.render_cache_mb);
         // The frames on disk stay (they're for any project).
         fresh.render_cache.disk = self.render_cache.disk.clone();
@@ -678,10 +722,69 @@ impl Editor {
         *self = fresh;
     }
 
-    /// File → New.
+    /// The app went to the background (`active` false) or came back. With
+    /// Settings → close media files in the background, its open media files
+    /// are closed while it's away (unless it's playing), so other programs
+    /// can change, move or delete them; they reopen when it's back.
+    pub fn set_app_active(&mut self, active: bool) {
+        if active {
+            if self.media_released {
+                self.media_released = false;
+                // The sound's clips are given again (their files reopen as needed).
+                self.mixed_rev = self.rev.wrapping_add(1);
+            }
+        } else if self.prefs.close_media_in_background && !self.playback.playing {
+            self.release_media();
+        }
+    }
+
+    /// Close every media file the editor has open: the Viewer's decoders and
+    /// the sound's readers (the picture on screen stays). Exports, proxies and
+    /// conversions already running carry on.
+    pub fn release_media(&mut self) {
+        self.preview.release_sources();
+        if let Some(a) = &self.playback.audio {
+            a.set_clips(Vec::new());
+        }
+        self.render_cache.job = None;
+        reelforge_media::audio::close_windows();
+        self.media_released = true;
+    }
+
+    /// File → New: an empty project, or one from the default template (Settings).
     pub fn new_project(&mut self) {
+        let template = PathBuf::from(self.prefs.default_template.trim());
+        if !template.as_os_str().is_empty() {
+            if template.is_file() {
+                self.new_from_template(&template);
+                return;
+            }
+            self.replace_project(Project::new(), None);
+            self.lengthen_new_timeline();
+            self.status = format!("New project (the default template {} can't be found)", template.display());
+            return;
+        }
         self.replace_project(Project::new(), None);
+        self.lengthen_new_timeline();
         self.status = "New project".into();
+    }
+
+    /// A new project's main timeline at least as long as Settings says.
+    fn lengthen_new_timeline(&mut self) {
+        let length = self.new_length(false);
+        if let Some(s) = self.project.sequences.first_mut() {
+            s.length = length;
+        }
+    }
+
+    /// Set how long the open sequence lasts at the least (`None`: as long as its clips).
+    pub fn set_sequence_length(&mut self, length: Option<Time>) {
+        let length = length.filter(|l| *l > Time::ZERO).map(|l| l.snap(self.seq().frame_rate));
+        let old = self.seq().length;
+        if old == length {
+            return;
+        }
+        self.execute(Box::new(reelforge_core::undo::SetSequenceLength { seq: self.active, old, new: length }));
     }
 
     /// A new project whose sequence is `width` × `height` at `rate` (a
@@ -693,6 +796,7 @@ impl Editor {
     /// The same, with pixels of shape `aspect` (width, height; see `PIXEL_ASPECTS`).
     pub fn new_project_with_aspect(&mut self, width: u32, height: u32, rate: reelforge_core::FrameRate, aspect: (u32, u32)) {
         self.replace_project(crate::start::project_with_aspect(width, height, rate, aspect), None);
+        self.lengthen_new_timeline();
         let s = self.seq();
         self.status = format!("New project: {}", crate::start::summary_of(s));
     }
@@ -918,13 +1022,21 @@ impl Editor {
         }
     }
 
-    /// How long a still image lasts when placed.
-    pub fn still_length() -> Time {
-        Time::from_secs_f64(5.0)
+    /// How long a still image (or a title, shape, plane or effect layer)
+    /// lasts when placed (Settings).
+    pub fn still_length(&self) -> Time {
+        let secs = self.prefs.still_secs;
+        Time::from_secs_f64(if secs.is_finite() && secs > 0.0 { secs.min(86_400.0) as f64 } else { 5.0 })
     }
 
-    fn clip_duration(media: &MediaAsset) -> Time {
-        if media.info.duration > Time::ZERO { media.info.duration } else { Self::still_length() }
+    fn clip_duration(&self, media: &MediaAsset) -> Time {
+        if media.info.duration > Time::ZERO { media.info.duration } else { self.still_length() }
+    }
+
+    /// The least length for a new timeline (`composition`: a new composition), from Settings.
+    fn new_length(&self, composition: bool) -> Option<Time> {
+        let secs = if composition { self.prefs.composition_secs } else { self.prefs.timeline_secs };
+        (secs.is_finite() && secs > 0.0).then(|| Time::from_secs_f64(secs.min(86_400.0) as f64))
     }
 
     /// Place media on the timeline at `at` (or after existing clips if that overlaps).
@@ -962,7 +1074,7 @@ impl Editor {
             return;
         }
         let rate = seq.frame_rate;
-        let duration = Self::clip_duration(&media).snap(rate);
+        let duration = self.clip_duration(&media).snap(rate);
         let free_end = targets.iter().map(|&t| seq.tracks[t].end()).max().unwrap_or_default();
         let mut start = at.unwrap_or(free_end).max(Time::ZERO).snap(rate);
         if targets.iter().any(|&t| seq.overlaps(t, start, duration, &[])) {
@@ -986,9 +1098,9 @@ impl Editor {
             return;
         }
         let (id, path, tx) = (media.id, media.path.clone(), self.waveform_tx.clone());
-        std::thread::spawn(move || match reelforge_media::waveform_peaks(&path, WAVEFORM_RATE) {
-            Ok(p) => {
-                let _ = tx.send((id, p));
+        std::thread::spawn(move || match reelforge_media::waveform_detail(&path, WAVEFORM_RATE) {
+            Ok((p, d)) => {
+                let _ = tx.send((id, p, d));
             }
             Err(e) => log::warn!("waveform for {}: {e:#}", path.display()),
         });
@@ -1331,7 +1443,7 @@ impl Editor {
     fn background_render(&mut self) {
         let now = std::time::Instant::now();
         let woke = self.idle.observe(self.rev, self.playback.playhead, self.playback.playing, self.active, now);
-        let allowed = self.prefs.background_render && !self.other_work() && !self.render_cache.nearly_full();
+        let allowed = self.prefs.background_render && !self.other_work() && !self.render_cache.nearly_full() && !self.media_released;
         if self.background_rendering() {
             if woke || !allowed {
                 self.render_cache.job = None;
@@ -2100,7 +2212,7 @@ impl Editor {
         let s = self.seq();
         let rate = s.frame_rate;
         let start = self.playback.playhead.snap(rate);
-        let dur = Time::from_secs_f64(5.0).snap(rate);
+        let dur = self.still_length().snap(rate);
         let mut spec = TitleSpec::for_frame(s.height);
         let frame_h = s.height as f32;
         if let Some(fonts) = self.fonts() {
@@ -2186,7 +2298,7 @@ impl Editor {
         let rate = s.frame_rate;
         let (start, dur) = match self.selection.and_then(|id| s.find_clip(id)).filter(|(_, c)| c.title.is_none()) {
             Some((_, c)) if c.media != MediaId::GENERATED || c.nested.is_some() => (c.timeline_start, c.duration),
-            _ => (self.playback.playhead.snap(rate), Time::from_secs_f64(5.0).snap(rate)),
+            _ => (self.playback.playhead.snap(rate), self.still_length().snap(rate)),
         };
         let mut spec = TitleSpec::for_frame(s.height);
         spec.text = String::new();
@@ -2212,7 +2324,7 @@ impl Editor {
         let s = self.seq();
         let rate = s.frame_rate;
         let start = self.playback.playhead.snap(rate);
-        let dur = (s.duration() - start).max(Time::from_secs_f64(5.0)).snap(rate);
+        let dur = (s.duration() - start).max(self.still_length()).snap(rate);
         let frame = [s.width as f32, s.height as f32];
         let any_3d = s.tracks.iter().flat_map(|t| &t.clips).any(|c| c.transform.three_d);
         let (add, track) = self.layer_track(start, dur);
@@ -2243,7 +2355,7 @@ impl Editor {
         let s = self.seq();
         let rate = s.frame_rate;
         let start = self.playback.playhead.snap(rate);
-        let dur = (s.duration() - start).max(Time::from_secs_f64(5.0)).snap(rate);
+        let dur = (s.duration() - start).max(self.still_length()).snap(rate);
         let (add, track) = self.layer_track(start, dur);
         let id = ClipId(self.project.alloc_id());
         let mut cmds: Vec<Box<dyn Command>> = add.into_iter().map(|a| Box::new(a) as Box<dyn Command>).collect();
@@ -2403,7 +2515,7 @@ impl Editor {
     pub fn new_composite(&mut self) {
         self.commit_live_edit();
         let s = self.seq();
-        let seq = Sequence::new(reelforge_core::undo::next_composite_name(&self.project), s.width, s.height, s.frame_rate);
+        let seq = Sequence { length: self.new_length(true), ..Sequence::new(reelforge_core::undo::next_composite_name(&self.project), s.width, s.height, s.frame_rate) };
         let cmd = reelforge_core::undo::AddSequence::new(&self.project, seq);
         let index = cmd.index;
         self.execute(Box::new(cmd));
@@ -2414,7 +2526,8 @@ impl Editor {
     pub fn new_composition_from_media(&mut self, media: MediaId) {
         self.commit_live_edit();
         let fallback = self.project.sequences[0].clone();
-        match reelforge_core::undo::composition_from_media(&mut self.project, media, &fallback, Self::still_length()) {
+        let still = self.still_length();
+        match reelforge_core::undo::composition_from_media(&mut self.project, media, &fallback, still) {
             Ok(cmd) => {
                 let index = cmd.index;
                 self.execute(Box::new(Batch { name: "New composition from media".into(), cmds: vec![Box::new(cmd)] }));
@@ -2441,6 +2554,8 @@ impl Editor {
         }
         let has = |k: TrackKind| comp.tracks.iter().any(|t| t.kind == k && !t.clips.is_empty());
         let (video, audio) = (has(TrackKind::Video), has(TrackKind::Audio));
+        // An empty one given a length (Settings) goes on a video track, to fill later.
+        let video = video || !audio;
         let s = self.seq();
         let start = self.playback.playhead.snap(s.frame_rate);
         let dur = dur.snap(s.frame_rate).max(s.frame_rate.frame_duration());
@@ -4299,14 +4414,15 @@ impl Editor {
                 }
             }
         }
-        if self.rev != self.mixed_rev {
+        if self.rev != self.mixed_rev && !self.media_released {
             if let Some(a) = &self.playback.audio {
                 a.set_clips(reelforge_export::mix_clips(&self.project, self.active, a.rate));
             }
             self.mixed_rev = self.rev;
         }
-        while let Ok((id, peaks)) = self.waveform_rx.try_recv() {
+        while let Ok((id, peaks, detail)) = self.waveform_rx.try_recv() {
             self.waveforms.insert(id, Arc::new(peaks));
+            self.wave_detail.insert(id, Arc::new(detail));
         }
         self.poll_tracking();
         self.poll_upscale();
@@ -4377,6 +4493,87 @@ mod tests {
 
     fn editor() -> Editor {
         Editor::new(None, None)
+    }
+
+    /// Settings → General: undo levels, default lengths, the default
+    /// template, the layout saved with the project, and media files closed
+    /// in the background.
+    #[test]
+    fn general_settings_take_effect() {
+        let dir = std::env::temp_dir().join(format!("rf_general_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = editor();
+        let secs = |t: Time| (t.as_secs_f64() * 100.0).round() / 100.0;
+
+        // Undo levels.
+        e.prefs.max_undo = 12;
+        e.apply_prefs();
+        for _ in 0..20 {
+            e.add_title();
+        }
+        assert_eq!(e.undo.entries().len(), 12);
+        e.new_project();
+        assert_eq!(e.undo.limit(), 12, "kept for a new project");
+
+        // Stills and new clips: 3 s.
+        e.prefs.still_secs = 3.0;
+        e.add_title();
+        let title = e.seq().tracks.iter().flat_map(|t| &t.clips).next().unwrap().duration;
+        assert_eq!(secs(title), 3.0);
+
+        // New timelines and compositions with a length; an empty one can go on the timeline.
+        e.prefs.timeline_secs = 60.0;
+        e.prefs.composition_secs = 8.0;
+        e.new_project();
+        assert_eq!(secs(e.seq().duration()), 60.0, "an empty new timeline lasts a minute");
+        assert!(!e.is_dirty());
+        e.new_composite();
+        assert_eq!(secs(e.seq().duration()), 8.0);
+        let comp = e.active;
+        e.open_sequence(0);
+        e.add_composite_to_timeline(comp);
+        let placed = e.seq().tracks.iter().flat_map(|t| &t.clips).find(|c| c.nested.is_some()).map(|c| secs(c.duration));
+        assert_eq!(placed, Some(8.0), "{}", e.status);
+        // A sequence's own length, as one undo step; clips past it still count.
+        e.set_sequence_length(Some(Time::from_secs_f64(2.0)));
+        assert_eq!(secs(e.seq().duration()), 8.0, "its clip is longer");
+        e.undo();
+        assert_eq!(secs(e.seq().duration()), 60.0);
+        e.prefs.timeline_secs = 0.0;
+        e.new_project();
+        assert_eq!(e.seq().duration(), Time::ZERO, "0: as long as its clips");
+
+        // The default template.
+        e.add_title();
+        let tpl = e.save_as_template(&dir, "Look").unwrap();
+        e.prefs.default_template = tpl.to_string_lossy().into_owned();
+        e.new_project();
+        assert_eq!(e.seq().tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 1, "started from the template");
+        assert!(e.project_path.is_none());
+        e.prefs.default_template = dir.join("gone.rfproj").to_string_lossy().into_owned();
+        e.new_project();
+        assert!(e.status.contains("can't be found"), "{}", e.status);
+
+        // The layout goes in the project file and comes back with it.
+        e.prefs.default_template.clear();
+        e.new_project();
+        e.project.layout = Some(serde_json::json!({ "sizes": { "leftW": 410 } }));
+        let path = dir.join("with-layout.rfproj");
+        e.save_to(&path).unwrap();
+        e.new_project();
+        assert!(e.project.layout.is_none());
+        e.open_project_path(path);
+        assert_eq!(e.project.layout.as_ref().and_then(|l| l["sizes"]["leftW"].as_u64()), Some(410));
+
+        // In the background: media files closed (only with the setting), back on return.
+        e.set_app_active(false);
+        assert!(!e.media_released, "off unless asked for");
+        e.prefs.close_media_in_background = true;
+        e.set_app_active(false);
+        assert!(e.media_released);
+        e.set_app_active(true);
+        assert!(!e.media_released);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Sequence settings: name, size, rate and pixel shape change as one

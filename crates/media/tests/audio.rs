@@ -301,3 +301,31 @@ fn mixer_runs_clip_effects_in_sync() {
     let at = |s: f64| rms(&out[(s * RATE as f64) as usize * 2..((s + 0.2) * RATE as f64) as usize * 2]);
     assert!(at(2.6) > at(0.4) * 2.0, "{} vs {}", at(2.6), at(0.4));
 }
+
+#[test]
+fn waveform_detail_has_each_sides_peak_and_loudness() {
+    // A 440 Hz sine on the left only, at half level, for 2 s (stereo WAV).
+    let path = std::env::temp_dir().join(format!("reelforge_left_tone_{}.wav", std::process::id()));
+    let ok = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2"])
+        .args(["-af", "volume=0.5,pan=stereo|c0=c0|c1=0*c0", "-c:a", "pcm_s16le"])
+        .arg(&path)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    }
+    let (peaks, detail) = reelforge_media::waveform_detail(&path, 100).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(detail.len(), peaks.len() * 4);
+    assert!((195..=205).contains(&peaks.len()), "{} buckets for 2 s", peaks.len());
+    let level = |b: u8| (b as f32 / 255.0).powi(2);
+    let mid = &detail[100 * 4..100 * 4 + 4];
+    // Left: peak ½ (ffmpeg's sine is at ⅛ of full scale, then halved: 1/16), RMS peak/√2.
+    let (pl, pr, rl, rr) = (level(mid[0]), level(mid[1]), level(mid[2]), level(mid[3]));
+    assert!(pl > 0.04 && pl < 0.09, "left peak {pl}");
+    assert!((rl / pl - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.08, "left RMS {rl} of peak {pl}");
+    assert!(pr < 0.002 && rr < 0.002, "right is silent: {pr} {rr}");
+    assert!((peaks[100] - pl).abs() < 0.01, "the combined peak is the louder side's");
+}

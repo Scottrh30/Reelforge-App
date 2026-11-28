@@ -95,6 +95,8 @@ pub struct SeqView {
     pub duration: i64,
     pub in_point: Option<i64>,
     pub out_point: Option<i64>,
+    /// The least it lasts, empty or not (ticks; `None`: as long as its clips).
+    pub length: Option<i64>,
     pub markers: Vec<crate::ops::MarkerView>,
     /// Transitions and crossfades at cuts.
     pub transitions: Vec<crate::trans::TransitionMark>,
@@ -772,6 +774,7 @@ pub fn state(e: &Editor) -> State {
         duration: s.duration().0,
         in_point: s.in_point.map(|t| t.0),
         out_point: s.out_point.map(|t| t.0),
+        length: s.length.map(|t| t.0),
         markers: crate::ops::markers(s),
         transitions: crate::trans::marks(p, e.active),
         tracks,

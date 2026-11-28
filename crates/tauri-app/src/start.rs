@@ -234,6 +234,12 @@ pub fn template_remove(path: String) -> Res<()> {
     Ok(())
 }
 
+/// Pick a project file to use as the default template (Settings).
+#[tauri::command]
+pub fn pick_template_file() -> Option<String> {
+    rfd::FileDialog::new().set_directory(templates_dir()).add_filter("Reelforge project", &["rfproj"]).pick_file().map(|p| p.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub fn start_screen_setting(on: bool) -> Res<()> {
     ed(|e| {

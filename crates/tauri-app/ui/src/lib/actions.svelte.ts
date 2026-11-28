@@ -5,7 +5,7 @@ import { api } from "./api";
 import { app, run, say } from "./session.svelte";
 import { prefsDialog } from "./prefs.svelte";
 import { view } from "./timeline.svelte";
-import { allWorkspaces, switchTo } from "./workspace.svelte";
+import { allWorkspaces, snapshot, switchTo, workspaces } from "./workspace.svelte";
 
 /// A question in a dialog: the answer is the label of the button pressed (or null).
 /// With `field` set, the dialog also has a text box (its value is in `field`).
@@ -44,11 +44,18 @@ export function askText(title: string, text: string, initial: string, ok: string
   });
 }
 
+/// Save (or Save as): with Settings → save the screen layout with the
+/// project, the layout goes in first.
+export async function saveProject(saveAs: boolean): Promise<boolean | undefined> {
+  if (app.s?.prefs.layout_in_project) await run(api.setProjectLayout(snapshot(workspaces.current)));
+  return run(api.save(saveAs));
+}
+
 /// Before throwing the project away: offer to save it. True when it's fine to go on.
 export async function checkUnsaved(): Promise<boolean> {
   if (!app.live?.dirty) return true;
   const a = await question("Save changes?", `“${app.s?.title ?? "Untitled"}” has changes that haven't been saved.`, ["Save", "Don't save", "Cancel"]);
-  if (a === "Save") return (await run(api.save(false))) === true;
+  if (a === "Save") return (await saveProject(false)) === true;
   return a === "Don't save";
 }
 
@@ -65,8 +72,8 @@ export const actions = {
   async openAutosave() {
     if (await checkUnsaved()) await run(api.openAutosaveDialog());
   },
-  save: () => run(api.save(false)),
-  saveAs: () => run(api.save(true)),
+  save: () => saveProject(false),
+  saveAs: () => saveProject(true),
   importMedia: () => run(api.importDialog()),
   undo: () => run(api.action("undo")),
   redo: () => run(api.action("redo")),

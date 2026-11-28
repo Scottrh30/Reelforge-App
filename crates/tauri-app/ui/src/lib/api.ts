@@ -207,6 +207,8 @@ export interface SeqView {
   duration: Ticks;
   in_point: Ticks | null;
   out_point: Ticks | null;
+  /// The least it lasts, empty or not (null: as long as its clips).
+  length: Ticks | null;
   markers: MarkerView[];
   transitions: TransitionMark[];
   tracks: TrackView[];
@@ -502,6 +504,23 @@ export interface Prefs {
   reflection_map_size: number;
   /// The Viewer's deep video brought down to 8 bits for speed.
   viewer_8bit: boolean;
+  /// Timeline waveforms: 0 peaks, 1 RMS, 2 both; 0 sides together, 1 per channel; 0 square root, 1 linear, 2 logarithmic.
+  waveform_style: number;
+  waveform_channels: number;
+  waveform_scale: number;
+  /// The most undo steps kept.
+  max_undo: number;
+  /// Stills and new titles, shapes and layers last this long (seconds).
+  still_secs: number;
+  /// New timelines / compositions last at least this long (seconds; 0: as long as their clips).
+  timeline_secs: number;
+  composition_secs: number;
+  /// File → New starts from this template ("" none).
+  default_template: string;
+  /// Save the layout in the project, and show an opened project in its layout.
+  layout_in_project: boolean;
+  /// Close media files while the app is in the background.
+  close_media_in_background: boolean;
   /// Warn below this many GB free (0: never).
   disk_warn_gb: number;
   /// Where proxies and rendered previews go (null: the cache folder).
@@ -1118,6 +1137,11 @@ export const api = {
   addToTimeline: (media: number, track: number | null, at: Ticks | null) => invoke("add_to_timeline", { media, track, at }),
   newCompositionFromMedia: (media: number) => invoke("new_composition_from_media", { media }),
   newComposite: () => invoke("new_composite"),
+  appActive: (active: boolean) => invoke("app_active", { active }),
+  setProjectLayout: (layout: unknown) => invoke("set_project_layout", { layout }),
+  projectLayout: () => invoke<unknown | null>("project_layout"),
+  setSequenceLength: (secs: number | null) => invoke("set_sequence_length", { secs }),
+  pickTemplateFile: () => invoke<string | null>("pick_template_file"),
   addComposite: (index: number) => invoke("add_composite", { index }),
   openSequence: (index: number) => invoke("open_sequence", { index }),
   addTitle: () => invoke("add_title"),

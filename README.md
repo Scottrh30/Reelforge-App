@@ -103,6 +103,11 @@ What works now:
   header → **Sound waveforms under clips** to show or hide them on that track alone (saved with
   the project), or let it follow Settings. **Settings → Clip pictures** picks a
   filmstrip, the first frame only, or none
+- **Waveform style** (Settings → Playback): waveforms show **Peaks** (the loudest sample in each
+  moment), **RMS** (the average loudness, nearer what you hear) or **Peaks and RMS** (the RMS
+  brighter inside the peaks); **Combined** (both sides of stereo together) or **Each channel**
+  (left above right, a lane each); scaled by **Square root** (the default), **Linear**, or
+  **Logarithmic** (decibels from −48 to full, so quiet sound shows clearly)
 
 - **GPU compositor**: every visible video track is blended into the frame on the GPU
   (wgpu), in linear light with float precision
@@ -1748,6 +1753,27 @@ What works now:
   line up. Exports and rendered previews are always of the edit, never the grid
 - **Settings** (**Edit > Settings…**): hardware decoding, frame cache size, render cache size,
   proxies, autosave interval, and the proxy/autosave folders
+- **General settings** (Settings → General):
+  - **Maximum undo levels**: 10 to 10 000 steps (1 000 by default); lowering it forgets the
+    oldest steps at once, their changes staying done
+  - **Stills and new clips last**: how long a still image is when put on the timeline, and new
+    titles, shapes, planes, adjustment and effect layers (5 s by default)
+  - **New timelines last** / **New compositions last**: a new project's main timeline, or a new
+    composition, lasts at least this long, empty or not (it plays, exports and is placed that
+    long, and grows past it as clips go on); 0, the default, is as long as its clips. An empty
+    composition with a length can go on the timeline at once, and planes, lights, cameras and
+    effect layers added to it reach its end. **Timeline → Sequence settings → Length** sets one
+    timeline's or composition's own (one undo step)
+  - **Default project template**: File → New starts from a template (any saved with File → Save
+    as template…, or another project file), or from nothing
+  - **Save the screen layout with the project**: the interface's layout (panels shown, where
+    they dock or float, the docks', timeline's and meters' sizes) is saved in the project, and
+    opening a project that has one shows it that way
+  - **Close media files while Reelforge is in the background**: when another app is active
+    (and nothing's playing), the Viewer's decoders, the sound's readers and the thumbnails'
+    files are closed and background rendering waits, so other programs can change, move,
+    rename or delete the files; they reopen when you come back. Exports, proxies and
+    conversions already running carry on
 - **Limit the Viewer's video to 8 bits** (Settings, off by default): 10-bit and deeper SDR
   video (ProRes, DNxHR, 10-bit H.264 and HEVC…) is brought down to 8 bits as it's decoded for
   the Viewer, rounded, halving the memory and upload each frame takes so heavy footage plays

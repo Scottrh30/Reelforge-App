@@ -1204,7 +1204,10 @@
     return out;
   });
 
-  function wave(canvas: HTMLCanvasElement, p: { media: number; from: number; secs: number; w: number; h: number; speed: number; rev: number; audio: ClipAudio | null; srcIn: number; dur: number; offset: number; trackDb: number }) {
+  // The waveform settings (Settings → Waveforms), so clips redraw when they change.
+  const waveLook = $derived(`${app.s?.prefs.waveform_style ?? 0}/${app.s?.prefs.waveform_channels ?? 0}/${app.s?.prefs.waveform_scale ?? 0}`);
+
+  function wave(canvas: HTMLCanvasElement, p: { media: number; from: number; secs: number; w: number; h: number; speed: number; rev: number; look: string; audio: ClipAudio | null; srcIn: number; dur: number; offset: number; trackDb: number }) {
     const draw = (q: typeof p) => {
       const data = app.waveforms.get(q.media);
       const dpr = window.devicePixelRatio || 1;
@@ -1213,14 +1216,35 @@
       const g = canvas.getContext("2d")!;
       g.clearRect(0, 0, canvas.width, canvas.height);
       if (!data) return;
-      g.fillStyle = "rgba(170, 235, 190, 0.55)";
+      // Four bytes a bucket: peak left, right, RMS left, right, each √level × 255.
+      const buckets = Math.floor(data.length / 4);
+      const pr = app.s?.prefs;
+      const style = pr?.waveform_style ?? 0; // 0 peak, 1 RMS, 2 both
+      const split = (pr?.waveform_channels ?? 0) === 1;
+      const scale = pr?.waveform_scale ?? 0; // 0 square root, 1 linear, 2 logarithmic
+      // A level (0–1) as a share of the lane's half height.
+      const shape = (v: number) => {
+        if (scale === 1) return Math.min(1, v);
+        if (scale === 2) return v <= 0 ? 0 : Math.max(0, Math.min(1, 1 + (20 * Math.log10(v)) / 48));
+        return Math.sqrt(Math.min(1, v));
+      };
       const rate = app.waveformRate;
-      const mid = canvas.height / 2;
+      const lanes = split ? 2 : 1;
+      const laneH = canvas.height / lanes;
+      const level = (b: number) => (b / 255) * (b / 255);
       for (let i = 0; i < canvas.width; i++) {
         const s0 = (q.from + (i / canvas.width) * q.secs * q.speed) * rate;
         const s1 = (q.from + ((i + 1) / canvas.width) * q.secs * q.speed) * rate;
-        let peak = 0;
-        for (let k = Math.floor(s0); k <= Math.max(Math.floor(s0), Math.floor(s1)) && k < data.length; k++) if (k >= 0 && data[k] > peak) peak = data[k];
+        // The loudest of the buckets under this column, per side.
+        const peak = [0, 0];
+        const rms = [0, 0];
+        for (let k = Math.floor(s0); k <= Math.max(Math.floor(s0), Math.floor(s1)) && k < buckets; k++) {
+          if (k < 0) continue;
+          for (const c of [0, 1]) {
+            peak[c] = Math.max(peak[c], data[k * 4 + c]);
+            rms[c] = Math.max(rms[c], data[k * 4 + 2 + c]);
+          }
+        }
         // Gain at this column: seconds into the clip -> its source time.
         let gain = dbGain(q.trackDb);
         const a = q.audio;
@@ -1231,8 +1255,27 @@
           if (fi > 0) gain *= fadeCurve((into * T) / fi);
           if (fo > 0) gain *= fadeCurve((q.dur - into * T) / fo);
         }
-        const h = Math.sqrt(Math.min(1, (peak / 255) * gain)) * mid;
-        g.fillRect(i, mid - h, 1, Math.max(1, 2 * h));
+        for (let lane = 0; lane < lanes; lane++) {
+          // One lane per side, or both sides together (the louder).
+          const pk = level(split ? peak[lane] : Math.max(peak[0], peak[1])) * gain;
+          const rm = level(split ? rms[lane] : Math.max(rms[0], rms[1])) * gain;
+          const mid = laneH * lane + laneH / 2;
+          const half = laneH / 2;
+          if (style !== 1) {
+            const h = shape(pk) * half;
+            g.fillStyle = "rgba(170, 235, 190, 0.55)";
+            g.fillRect(i, mid - h, 1, Math.max(1, 2 * h));
+          }
+          if (style !== 0) {
+            const h = shape(rm) * half;
+            g.fillStyle = style === 2 ? "rgba(225, 255, 232, 0.75)" : "rgba(170, 235, 190, 0.6)";
+            g.fillRect(i, mid - h, 1, Math.max(1, 2 * h));
+          }
+        }
+      }
+      if (split) {
+        g.fillStyle = "rgba(0, 0, 0, 0.35)";
+        g.fillRect(0, Math.floor(laneH), canvas.width, 1);
       }
     };
     draw(p);
@@ -1575,7 +1618,7 @@
                         <canvas
                           class="wave under"
                           style="left:{vis0}px; width:{vis1 - vis0}px; height:{bh}px"
-                          use:wave={{ media: a.media, from: a.source_in / T + ((vis0 - al) / view.pps) * a.speed, secs: (vis1 - vis0) / view.pps, w: vis1 - vis0, h: bh, speed: a.speed, rev: app.waveforms.size, audio: a.audio, srcIn: a.source_in, dur: a.duration, offset: (vis0 - al) / view.pps, trackDb: at.audio.volume_db }}
+                          use:wave={{ media: a.media, from: a.source_in / T + ((vis0 - al) / view.pps) * a.speed, secs: (vis1 - vis0) / view.pps, w: vis1 - vis0, h: bh, speed: a.speed, rev: app.waveforms.size, look: waveLook, audio: a.audio, srcIn: a.source_in, dur: a.duration, offset: (vis0 - al) / view.pps, trackDb: at.audio.volume_db }}
                         ></canvas>
                       {/if}
                     {/if}
@@ -1586,7 +1629,7 @@
                         <canvas
                           class="wave"
                           style="left:{vis0}px; width:{vis1 - vis0}px"
-                          use:wave={{ media: c.media, from: c.source_in / T + (vis0 / view.pps) * c.speed, secs: (vis1 - vis0) / view.pps, w: vis1 - vis0, h: hOf(tr) - 14, speed: c.speed, rev: app.waveforms.size, audio: c.audio, srcIn: c.source_in, dur: c.duration, offset: vis0 / view.pps, trackDb: tr.audio.volume_db }}
+                          use:wave={{ media: c.media, from: c.source_in / T + (vis0 / view.pps) * c.speed, secs: (vis1 - vis0) / view.pps, w: vis1 - vis0, h: hOf(tr) - 14, speed: c.speed, rev: app.waveforms.size, look: waveLook, audio: c.audio, srcIn: c.source_in, dur: c.duration, offset: vis0 / view.pps, trackDb: tr.audio.volume_db }}
                         ></canvas>
                       {/if}
                     {/if}

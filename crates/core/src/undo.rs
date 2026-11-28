@@ -15,6 +15,8 @@ pub trait Command: Send {
 pub struct UndoStack {
     done: Vec<Step>,
     undone: Vec<Step>,
+    /// The most steps kept (Settings → Maximum undo levels); 0: [`Self::MAX_STEPS`].
+    limit: usize,
 }
 
 struct Step {
@@ -30,17 +32,42 @@ pub struct HistoryEntry {
 }
 
 impl UndoStack {
-    /// The most steps kept; older ones are forgotten (their changes stay).
+    /// The most steps kept unless set otherwise; older ones are forgotten (their changes stay).
     pub const MAX_STEPS: usize = 1000;
+    /// The range [`Self::set_limit`] allows.
+    pub const LIMITS: (usize, usize) = (10, 10_000);
+
+    /// Keep at most `n` steps (clamped to [`Self::LIMITS`]); a smaller limit
+    /// forgets the oldest at once (their changes stay).
+    pub fn set_limit(&mut self, n: usize) {
+        self.limit = n.clamp(Self::LIMITS.0, Self::LIMITS.1);
+        self.forget_oldest();
+    }
+
+    pub fn limit(&self) -> usize {
+        if self.limit == 0 { Self::MAX_STEPS } else { self.limit }
+    }
+
+    fn forget_oldest(&mut self) {
+        let keep = self.limit();
+        if self.done.len() > keep {
+            let extra = self.done.len() - keep;
+            self.done.drain(..extra);
+        }
+        // Undone steps count too (they could all be redone).
+        let room = keep.saturating_sub(self.done.len());
+        if self.undone.len() > room {
+            let extra = self.undone.len() - room;
+            // The most recently undone are last: the ones furthest from now go.
+            self.undone.drain(..extra);
+        }
+    }
 
     pub fn execute(&mut self, project: &mut Project, mut cmd: Box<dyn Command>) {
         cmd.apply(project);
         self.done.push(Step { cmd, at: std::time::SystemTime::now() });
         self.undone.clear();
-        if self.done.len() > Self::MAX_STEPS {
-            let extra = self.done.len() - Self::MAX_STEPS;
-            self.done.drain(..extra);
-        }
+        self.forget_oldest();
     }
     pub fn undo(&mut self, project: &mut Project) -> Option<String> {
         let mut step = self.done.pop()?;
@@ -1167,6 +1194,29 @@ impl Command for SetSequenceSettings {
     }
 }
 
+/// Set how long a sequence lasts at the least (`None`: as long as its clips).
+pub struct SetSequenceLength {
+    pub seq: usize,
+    pub old: Option<Time>,
+    pub new: Option<Time>,
+}
+
+impl Command for SetSequenceLength {
+    fn name(&self) -> &str {
+        "Sequence length"
+    }
+    fn apply(&mut self, p: &mut Project) {
+        if let Some(s) = p.sequences.get_mut(self.seq) {
+            s.length = self.new;
+        }
+    }
+    fn undo(&mut self, p: &mut Project) {
+        if let Some(s) = p.sequences.get_mut(self.seq) {
+            s.length = self.old;
+        }
+    }
+}
+
 /// Add, change or remove a clip's motion tracker.
 pub struct SetTracker {
     pub seq: usize,
@@ -1595,6 +1645,28 @@ mod tests {
         assert_eq!(u.entries().len(), UndoStack::MAX_STEPS);
         u.go_to(&mut p, 0);
         assert_eq!(p.sequences[0].tracks[0].clips.len(), 5, "the forgotten steps' changes remain");
+    }
+
+    #[test]
+    fn undo_levels_can_be_set() {
+        let mut p = Project::new();
+        let mut u = UndoStack::default();
+        u.set_limit(3);
+        assert_eq!(u.limit(), UndoStack::LIMITS.0, "at least 10");
+        u.set_limit(12);
+        for i in 0..20u64 {
+            u.execute(&mut p, Box::new(AddClip { seq: 0, track: 0, clip: clip(10 + i, i as f64 * 10.0, 5.0) }));
+        }
+        assert_eq!(u.entries().len(), 12);
+        // Fewer: the oldest go at once, undone steps included.
+        u.go_to(&mut p, 8);
+        u.set_limit(10);
+        assert_eq!(u.position(), 8);
+        assert_eq!(u.entries().len(), 10, "8 done + 2 of the 4 undone");
+        u.go_to(&mut p, 0);
+        assert_eq!(p.sequences[0].tracks[0].clips.len(), 8, "what's forgotten stays done");
+        u.set_limit(usize::MAX);
+        assert_eq!(u.limit(), UndoStack::LIMITS.1);
     }
 
     #[test]

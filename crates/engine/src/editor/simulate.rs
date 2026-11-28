@@ -232,7 +232,7 @@ impl Editor {
         let rate = s.frame_rate;
         let (start, dur) = match self.selection.and_then(|id| s.find_clip(id)).filter(|(_, c)| c.title.is_none()) {
             Some((_, c)) if c.media != MediaId::GENERATED || c.nested.is_some() => (c.timeline_start, c.duration),
-            _ => (self.playback.playhead.snap(rate), Time::from_secs_f64(5.0).snap(rate)),
+            _ => (self.playback.playhead.snap(rate), self.still_length().snap(rate)),
         };
         let height = s.height;
         let (add, track) = self.layer_track(start, dur);

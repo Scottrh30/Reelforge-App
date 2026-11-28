@@ -289,6 +289,12 @@ impl Preview {
     }
 
     /// Forget all decoders (new/opened project). Keeps the GPU side.
+    /// Close every decoder (and so its file); the picture shown stays, and
+    /// they reopen when a frame is next needed.
+    pub fn release_sources(&mut self) {
+        self.slots.clear();
+    }
+
     pub fn reset(&mut self) {
         self.slots.clear();
         self.titles.clear();

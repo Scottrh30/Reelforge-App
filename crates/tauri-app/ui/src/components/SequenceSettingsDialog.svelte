@@ -1,7 +1,7 @@
 <script lang="ts">
   // Timeline > Sequence settings…: the open sequence's (or composition's)
   // name, frame size, frame rate and pixel aspect, changed as one undo step.
-  import { app, run } from "../lib/session.svelte";
+  import { app, run, tps } from "../lib/session.svelte";
   import { api } from "../lib/api";
 
   const RATES: [string, string][] = [
@@ -41,7 +41,7 @@
   ];
 
   let aspects = $state<[string, number, number][]>([]);
-  let f = $state({ name: "", w: 1920, h: 1080, rate: "30/1", aspect: "1/1" });
+  let f = $state({ name: "", w: 1920, h: 1080, rate: "30/1", aspect: "1/1", length: 0 });
   // The frame size's shape kept while typing one side.
   let linked = $state(false);
   // What happens to the layers when the frame changes size (remembered).
@@ -74,7 +74,7 @@
     if (!s) return;
     const rate = `${s.rate_num}/${s.rate_den}`;
     ownRate = RATES.some(([, v]) => v === rate) ? null : [(s.rate_num / s.rate_den).toFixed(3).replace(/\.?0+$/, ""), rate];
-    f = { name: s.name, w: s.width, h: s.height, rate, aspect: `${s.pixel_aspect[0]}/${s.pixel_aspect[1]}` };
+    f = { name: s.name, w: s.width, h: s.height, rate, aspect: `${s.pixel_aspect[0]}/${s.pixel_aspect[1]}`, length: s.length != null ? s.length / tps() : 0 };
     linked = false;
     if (!aspects.length) api.pixelAspects().then((a) => (aspects = a));
   });
@@ -133,7 +133,10 @@
   // The frame's shape on screen changes (size or pixel shape): the layers can follow.
   const resized = $derived(sizeChanged || (!!s && f.aspect !== `${s.pixel_aspect[0]}/${s.pixel_aspect[1]}`));
   const close = () => (app.seqSettingsOpen = false);
+  // The least length, in seconds (0: as long as its clips).
+  const lengthChanged = $derived(!!s && Math.abs(f.length - (s.length != null ? s.length / tps() : 0)) > 1e-6);
   async function ok() {
+    if (lengthChanged) await run(api.setSequenceLength(f.length > 0 ? f.length : null));
     if (changed) {
       const [n, d] = pair(f.rate);
       await run(api.setSequenceSettings(f.name, even(f.w), even(f.h), n, d, pair(f.aspect), resized ? fit : "Keep"));
@@ -180,6 +183,12 @@
             {#if ownRate}<option value={ownRate[1]}>{ownRate[0]} fps</option>{/if}
             {#each RATES as [l, v]}<option value={v}>{l} fps</option>{/each}
           </select>
+
+          <label for="seqset-len">Length</label>
+          <div class="row" title="The least it lasts, empty or not: it ends here or at its last clip, whichever is later. 0: as long as its clips. New ones get Settings' default length">
+            <input id="seqset-len" type="number" min="0" max="86400" step="0.5" value={f.length} oninput={(e) => (f.length = Math.max(0, num(e) || 0))} />
+            <span class="unit">seconds{f.length > 0 ? "" : " (as long as its clips)"}</span>
+          </div>
 
           <label for="seqset-par">Pixel aspect</label>
           <select id="seqset-par" bind:value={f.aspect} title="The shape of each pixel: square for nearly everything made today; DV, HDV, DVCPro HD and anamorphic footage have wider or narrower pixels">

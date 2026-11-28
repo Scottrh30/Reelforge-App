@@ -12,7 +12,7 @@
   import Dock from "./components/Dock.svelte";
   import FloatPanel from "./components/FloatPanel.svelte";
   import { dock } from "./lib/dock.svelte";
-  import { sizes } from "./lib/workspace.svelte";
+  import { applyWorkspace, sizes, workspaces, type Workspace } from "./lib/workspace.svelte";
   import Timeline from "./components/Timeline.svelte";
   import Meters from "./components/Meters.svelte";
   import Splitter from "./components/Splitter.svelte";
@@ -88,6 +88,12 @@
       .then((u) => un.push(u));
     // Closing with unsaved changes asks first.
     const win = getCurrentWindow();
+    // In the background, media files can be closed (Settings).
+    win
+      .onFocusChanged(({ payload: focused }) => {
+        api.appActive(focused).catch(() => {});
+      })
+      .then((u) => un.push(u));
     win
       .onCloseRequested(async (ev) => {
         if (!app.live?.dirty) return;
@@ -99,6 +105,23 @@
   });
 
   void question;
+
+  // A project opened with its own layout saved (Settings → save the screen
+  // layout with the project) is shown in it.
+  let layoutFor: string | null | undefined = undefined;
+  $effect(() => {
+    const path = app.s?.path ?? null;
+    const on = !!app.s?.prefs.layout_in_project;
+    if (path === layoutFor) return;
+    layoutFor = path;
+    if (!on || !path) return;
+    api
+      .projectLayout()
+      .then((l) => {
+        if (l && typeof l === "object") applyWorkspace({ ...(l as Workspace), name: workspaces.current });
+      })
+      .catch(() => {});
+  });
 
   // The window title: the project's name, marked when there are unsaved changes.
   $effect(() => {

@@ -255,20 +255,62 @@ pub fn waveform_peaks(path: &Path, buckets_per_sec: u32) -> Result<Vec<f32>> {
     Ok(peaks)
 }
 
+/// A media file's sound for drawing waveforms, `buckets_per_sec` buckets a
+/// second: each bucket's left and right peak and their RMS (loudness), as
+/// four bytes `[peak L, peak R, rms L, rms R]`, each the square root of the
+/// level (0–1) times 255 so quiet sound keeps its detail (decode as `(b / 255)²`).
+/// Also the plain peaks [`waveform_peaks`] gives, from the same read.
+pub fn waveform_detail(path: &Path, buckets_per_sec: u32) -> Result<(Vec<f32>, Vec<u8>)> {
+    let rate = 8000;
+    let mut r = AudioReader::open(path, rate)?;
+    let per = (rate / buckets_per_sec.max(1)).max(1) as usize;
+    let mut chunk = vec![0.0f32; per * CHANNELS];
+    let (mut peaks, mut detail) = (Vec::new(), Vec::new());
+    let byte = |v: f32| (v.clamp(0.0, 1.0).sqrt() * 255.0).round() as u8;
+    let mut at = 0i64;
+    loop {
+        r.read(at, &mut chunk);
+        let available = r.buf_start.map_or(0, |s| s + r.buf_frames()) - at;
+        let (mut pk, mut sq) = ([0.0f32; 2], [0.0f64; 2]);
+        for frame in chunk.chunks_exact(CHANNELS) {
+            for (c, v) in frame.iter().take(2).enumerate() {
+                let v = if v.is_finite() { *v } else { 0.0 };
+                pk[c] = pk[c].max(v.abs());
+                sq[c] += (v as f64) * (v as f64);
+            }
+        }
+        let rms = sq.map(|q| (q / per as f64).sqrt() as f32);
+        peaks.push(pk[0].max(pk[1]).min(1.0));
+        detail.extend([byte(pk[0]), byte(pk[1]), byte(rms[0]), byte(rms[1])]);
+        at += per as i64;
+        if r.eof && available <= per as i64 {
+            break;
+        }
+    }
+    Ok((peaks, detail))
+}
+
 /// `n` mono samples at `rate` centred on source time `at` of `path` (silence
 /// past its ends), for the audio visualiser. A few files' readers are kept
 /// open, so going on from one frame to the next reads on without seeking.
+type WindowReaders = std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, u32), (AudioReader, u64)>>;
+static WINDOW_READERS: std::sync::OnceLock<WindowReaders> = std::sync::OnceLock::new();
+
+/// Close the files [`audio_window`] keeps open (they reopen when next needed).
+pub fn close_windows() {
+    if let Some(m) = WINDOW_READERS.get() {
+        m.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    }
+}
+
 pub fn audio_window(path: &Path, at: reelforge_core::Time, n: usize, rate: u32) -> Option<Vec<f32>> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock, PoisonError};
-    type Readers = Mutex<HashMap<(std::path::PathBuf, u32), (AudioReader, u64)>>;
-    static READERS: OnceLock<Readers> = OnceLock::new();
+    use std::sync::PoisonError;
     static TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if n == 0 || n > 1 << 16 || rate == 0 {
         return None;
     }
     let tick = TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut map = READERS.get_or_init(Default::default).lock().unwrap_or_else(PoisonError::into_inner);
+    let mut map = WINDOW_READERS.get_or_init(Default::default).lock().unwrap_or_else(PoisonError::into_inner);
     let key = (path.to_path_buf(), rate);
     if !map.contains_key(&key) {
         let r = AudioReader::open(path, rate).ok()?;

@@ -2,16 +2,19 @@
   // The modal windows: Settings, questions, and crash recovery (Export is ExportDialog).
   import { untrack } from "svelte";
   import { app, run } from "../lib/session.svelte";
-  import { api, COLOR_DEPTHS, type Prefs, type SettingsInfo } from "../lib/api";
+  import { api, COLOR_DEPTHS, type Prefs, type SettingsInfo, type UserTemplate } from "../lib/api";
   import { ask } from "../lib/actions.svelte";
 
   let prefs = $state<Prefs | null>(null);
   let info = $state<SettingsInfo | null>(null);
   let rend = $state<Awaited<ReturnType<typeof api.renderers>> | null>(null);
   let nvflow = $state("");
+  // Saved templates, for the default project template.
+  let templates = $state<UserTemplate[]>([]);
   $effect(() => {
     if (app.settingsOpen && app.s) {
       prefs = { ...app.s.prefs };
+      api.startView().then((v) => (templates = v.templates)).catch(() => (templates = []));
       api
         .nvidiaAvailable()
         .then((v) => (nvflow = v?.flow_status ?? ""))
@@ -79,6 +82,37 @@
       </label>
       {#if rend?.device}<p class="info">Drawing on: {rend.device}</p>{/if}
 
+      <h3>General</h3>
+      <label class="field" title="How many steps Edit > Undo can go back (10 to 10 000). Fewer keep less in memory; lowering it forgets the oldest steps now (what they did stays done).">
+        <span>Maximum undo levels</span>
+        <div class="row"><input type="number" min="10" max="10000" step="10" bind:value={prefs.max_undo} style="width:100px" /> steps</div>
+      </label>
+      <label class="field" title="How long a still image lasts when it's put on the timeline, and new titles, shapes, planes, adjustment and effect layers">
+        <span>Stills and new clips last</span>
+        <div class="row"><input type="number" min="0.1" max="86400" step="0.5" bind:value={prefs.still_secs} style="width:100px" /> seconds</div>
+      </label>
+      <label class="field" title="New projects' main timeline lasts at least this long, empty or not (it plays, exports and is placed that long); it can still grow past it. 0: as long as its clips. Change one timeline's own length in Timeline > Sequence settings">
+        <span>New timelines last</span>
+        <div class="row"><input type="number" min="0" max="86400" step="1" bind:value={prefs.timeline_secs} style="width:100px" /> seconds {prefs.timeline_secs > 0 ? "" : "(as long as their clips)"}</div>
+      </label>
+      <label class="field" title="New compositions last at least this long, empty or not, so one can go on the timeline before anything's in it; planes, lights, cameras and effect layers added to it reach its end. 0: as long as their clips">
+        <span>New compositions last</span>
+        <div class="row"><input type="number" min="0" max="86400" step="1" bind:value={prefs.composition_secs} style="width:100px" /> seconds {prefs.composition_secs > 0 ? "" : "(as long as their clips)"}</div>
+      </label>
+      <label class="field" title="File > New (Ctrl+N) starts from this project: its timelines, tracks, titles, effects and media. Save one with File > Save as template…">
+        <span>Default project template</span>
+        <div class="row">
+          <select bind:value={prefs.default_template} style="max-width:220px">
+            <option value="">None (an empty project)</option>
+            {#each templates as t (t.path)}<option value={t.path}>{t.name}</option>{/each}
+            {#if prefs.default_template && !templates.some((t) => t.path === prefs!.default_template)}<option value={prefs.default_template}>{prefs.default_template.split(/[\\/]/).pop()}</option>{/if}
+          </select>
+          <button class="tiny" onclick={async () => { const p = await api.pickTemplateFile(); if (p && prefs) prefs.default_template = p; }}>Choose…</button>
+        </div>
+      </label>
+      <label class="check" title="Each project keeps the interface's layout (which panels are shown, where they're docked or float, and the docks', timeline's and meters' sizes) when it's saved, and opening a project that has one shows it that way"><input type="checkbox" bind:checked={prefs.layout_in_project} /> Save the screen layout with the project</label>
+      <label class="check" title="While Reelforge isn't the active app (and isn't playing), it closes the media files it has open, so other programs can change, move, rename or delete them; they open again when you come back. Exports, proxies and conversions already running carry on"><input type="checkbox" bind:checked={prefs.close_media_in_background} /> Close media files while Reelforge is in the background</label>
+
       <h3>Renders</h3>
       <label class="field" title="How precisely frames are composited, in the Viewer, Render preview and exports, and how layers mix. 8-bit Integer is fastest and lightest on memory, but smooth gradients can band and nothing brighter than white survives. Float keeps highlights above white. Linear Color mixes layers, dissolves, glows and blurs as light does (the most natural, and the standard); without it they mix as display values, the way older editors and most 8-bit work look. 32-bit Float is the most precise, for VFX and grading, and needs a graphics card that can blend 32-bit float (if yours can't, 16-bit is used).">
         <span>Default Color Bit Depth</span>
@@ -113,6 +147,29 @@
           <option value="strip">Filmstrip along each clip</option>
           <option value="first">First frame only</option>
           <option value="off">None</option>
+        </select>
+      </label>
+      <label class="field" title="What the timeline's waveforms show: Peaks (the loudest sample in each moment: every transient), RMS (the average loudness, closer to what you hear), or both (the RMS brighter, inside the peaks)">
+        <span>Waveforms show</span>
+        <select bind:value={prefs.waveform_style}>
+          <option value={0}>Peaks</option>
+          <option value={1}>RMS (loudness)</option>
+          <option value={2}>Peaks and RMS</option>
+        </select>
+      </label>
+      <label class="field" title="One waveform for both sides of stereo sound together, or the left and right each in a lane of its own (left on top)">
+        <span>Waveform channels</span>
+        <select bind:value={prefs.waveform_channels}>
+          <option value={0}>Combined</option>
+          <option value={1}>Each channel (left above right)</option>
+        </select>
+      </label>
+      <label class="field" title="How a level becomes height: Square root (the default, a balance), Linear (true to the sample values: quiet sound looks small) or Logarithmic (in decibels, from −48 dB to full: quiet sound shows clearly, as you hear it)">
+        <span>Waveform scale</span>
+        <select bind:value={prefs.waveform_scale}>
+          <option value={0}>Square root</option>
+          <option value={1}>Linear</option>
+          <option value={2}>Logarithmic (dB)</option>
         </select>
       </label>
       <label class="check" title="A band along the bottom of each video clip that has linked audio, showing that sound (at its volume and fades), so you can cut picture to sound without looking down at the audio tracks. Right-click a video track's header to show or hide them on that track alone"><input type="checkbox" bind:checked={prefs.timeline_video_waveforms} /> Show the linked sound's waveform under video clips</label>
