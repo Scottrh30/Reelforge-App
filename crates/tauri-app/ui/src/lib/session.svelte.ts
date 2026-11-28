@@ -154,6 +154,8 @@ export function say(text: string) {
 
 /// `force`: fetch the full state even if the project didn't change (a new selection, say).
 let lastPicture = -1;
+/// A state fetch for the playhead is under way while playing.
+let catchingUp = false;
 export async function refresh(force = false) {
   const live = await api.tick();
   app.live = live;
@@ -161,7 +163,9 @@ export async function refresh(force = false) {
   // second while playing).
   const ins = app.s?.inspector;
   // (So do expanded tracks' clip properties, and which clip they show.)
-  const keyed = (!!ins && (ins.effects.some((f) => f.animated) || ins.masks.some((m) => m.mask.keys.length > 0) || !!ins.keys)) || !!app.s?.seq.tracks.some((t) => t.expanded);
+  // (Only when something is keyframed: a long track on the clip is a lot to
+  // send and redraw a few times a second for nothing.)
+  const keyed = (!!ins && (ins.effects.some((f) => f.animated) || ins.masks.some((m) => m.mask.keys.length > 0) || !!ins.keys?.props.some((p) => p.animated))) || !!app.s?.seq.tracks.some((t) => t.expanded);
   const now = performance.now();
   const moved =
     (keyed && live.playhead !== lastPlayhead && (!live.playing || now - lastPlayheadFetch > 250)) ||
@@ -170,7 +174,24 @@ export async function refresh(force = false) {
   // A title's outline is known once it has been drawn: fetch it then.
   const outline = !!ins?.visual && !ins.gizmo && !live.playing && live.picture_rev !== lastPicture;
   lastPicture = live.picture_rev;
-  if (force || moved || outline || live.rev !== lastRev || live.plugins_rev !== lastPlugins || live.view_rev !== lastView || live.proxies !== lastProxies || !app.s) {
+  const changed = force || outline || live.rev !== lastRev || live.plugins_rev !== lastPlugins || live.view_rev !== lastView || live.proxies !== lastProxies || !app.s;
+  if (moved && !changed && live.playing) {
+    // Playing: the keyframed values catch up in the background, without
+    // holding up the next picture.
+    lastPlayhead = live.playhead;
+    lastPlayheadFetch = now;
+    if (!catchingUp) {
+      catchingUp = true;
+      api
+        .state()
+        .then((s) => {
+          // (Unless something newer has come in meanwhile.)
+          if (s.rev === lastRev) app.s = s;
+        })
+        .catch(() => {})
+        .finally(() => (catchingUp = false));
+    }
+  } else if (changed || moved) {
     lastProxies = live.proxies;
     lastRev = live.rev;
     lastPlugins = live.plugins_rev;

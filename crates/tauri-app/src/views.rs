@@ -580,6 +580,16 @@ fn matrix(m: &LayerMap) -> [f64; 9] {
     }
 }
 
+/// [`tracker_view`] without the tracked paths: for the Track panel's list of
+/// trackers (the Viewer draws only the selected clip's paths), so a long track
+/// isn't sent twice with every update.
+fn tracker_summary(e: &Editor, c: &Clip) -> Option<TrackerView> {
+    let mut v = tracker_view(e, c)?;
+    v.paths.clear();
+    v.smoothed.clear();
+    Some(v)
+}
+
 fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
     // While it's being tracked: with what's been tracked so far, so it's seen going.
     let live = e.live_tracker(c);
@@ -995,7 +1005,7 @@ pub fn state(e: &Editor) -> State {
         .tracks
         .iter()
         .filter(|t| t.kind == TrackKind::Video)
-        .flat_map(|t| t.clips.iter().filter_map(move |c| Some(TrackSource { id: c.id.0, name: clip_name(p, c), track: t.name.clone(), tracker: tracker_view(e, c)? })))
+        .flat_map(|t| t.clips.iter().filter_map(move |c| Some(TrackSource { id: c.id.0, name: clip_name(p, c), track: t.name.clone(), tracker: tracker_summary(e, c)? })))
         .collect();
     let entries = e.undo.entries();
     State {

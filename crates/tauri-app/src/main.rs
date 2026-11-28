@@ -2309,6 +2309,28 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// The Track panel's list of trackers leaves out the tracked paths (only
+    /// the selected clip's are drawn), so a long track isn't sent twice with
+    /// every update.
+    #[test]
+    fn the_tracker_list_leaves_out_long_paths() {
+        use reelforge_core::track::{TrackMode, TrackSample, Tracker};
+        let mut e = Editor::new(None, None);
+        let mut c = reelforge_core::Clip::new_plane(reelforge_core::ClipId(7), reelforge_core::Time::ZERO, reelforge_core::Time::from_secs_f64(40.0), [0, 0, 0, 255]);
+        let mut t = Tracker::new(TrackMode::Transform, [100.0, 100.0], [1920.0, 1080.0], reelforge_core::Time::ZERO);
+        for p in &mut t.points {
+            p.path = (0..1000).map(|k| TrackSample { at: reelforge_core::Time::from_secs_f64(k as f64 / 25.0), pos: [k as f32, 50.0], score: 1.0 }).collect();
+        }
+        c.tracker = Some(t);
+        let active = e.active;
+        e.project.sequences[active].tracks[0].clips = vec![c];
+        let s = views::state(&e);
+        let listed = &s.trackers.first().expect("listed").tracker;
+        assert_eq!(listed.frames, 1000);
+        assert!(listed.paths.is_empty() && listed.smoothed.is_empty());
+        assert!(serde_json::to_string(&s).unwrap().len() < 60_000);
+    }
+
     #[test]
     fn see_through_parts_show_a_checkerboard_or_a_colour() {
         // 16×1: opaque red, then clear, then half-clear white.
