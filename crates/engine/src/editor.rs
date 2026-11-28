@@ -3717,7 +3717,16 @@ impl Editor {
         }
         let frame = self.seq().frame_rate.frame_duration();
         let Some((_, c)) = self.seq().find_clip(id) else { return };
-        let (Some(track), Some(media)) = (c.tracker.clone(), self.project.media(c.media).cloned()) else { return };
+        let (Some(mut track), Some(media)) = (c.tracker.clone(), self.project.media(c.media).cloned()) else { return };
+        // A tracker from before boxes were sized for the footage, still at the
+        // old 31-pixel default, is too small on big footage (on 4K it sits
+        // inside a pupil): grown to suit it first (one undo step).
+        let grown = media.info.video.as_ref().is_some_and(|v| track.fit_old_defaults([v.width as f32, v.height as f32]));
+        if grown {
+            self.set_tracker(id, Some(track.clone()), "Fit tracker boxes to the footage");
+        }
+        let boxes = track.points.first().map(|p| (p.size, p.search));
+        let Some((_, c)) = self.seq().find_clip(id) else { return };
         let t = self.playback.playhead.max(c.timeline_start).min(c.timeline_end() - frame);
         // Tracking works in media time; for a reversed clip "forward" on the timeline is backwards in the media.
         let from = c.media_at(t);
@@ -3737,7 +3746,11 @@ impl Editor {
             })
             .map_err(|e| log::error!("couldn't start the tracker thread: {e}")).ok();
         self.tracking = Some(TrackJob { seq: self.active, clip: id, rx, cancel, progress: 0.0, mask: None, through: None, camera: false, fill: None, roto: None, ai: None, live: Vec::new(), live_shape: None });
-        self.status = "Tracking…".into();
+        self.status = if let (true, Some((size, search))) = (grown, boxes) {
+            format!("Tracking… (the feature boxes were 31 px, too small for this footage: now {size} px, searching {search} px; change them in the Track panel)")
+        } else {
+            "Tracking…".into()
+        };
     }
 
     /// Rotoscoping: track what's inside mask `index` of clip `id` from the

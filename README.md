@@ -2239,7 +2239,9 @@ What works now:
   say which point it lost, cut back to where it was last found;
   go there, drag it back onto its detail (that corrects the track at that frame) and track on.
   New trackers' boxes are sized for the footage: **Feature box** 31 px and **Search** 24 px at
-  720p, half as much again at 1080p and three times at 4K (by the short side). On a 4K
+  720p, half as much again at 1080p and three times at 4K (by the short side). A tracker
+  made before that, still at the old 31 px default, is grown to suit the footage when you
+  next track with it (one undo step, said in the status line); boxes you've set are kept. On a 4K
   close-up of a woman talking (39 s, blinking, squinting, tilting her head, a hand passing her
   face), a two-point track of her eyes holds the whole clip at 1.4–1.6 px median error on
   the pupils with the eyes open (measured against a face-landmark model); before these

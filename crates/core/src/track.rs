@@ -54,6 +54,31 @@ impl Default for PointTrack {
     }
 }
 
+/// The feature box and search area new trackers get on footage this size:
+/// the defaults suit 720p, and grow with the picture (by its short side, up
+/// to four times); on 4K a 31-pixel box sits inside a pupil, with nothing
+/// to lock on to.
+pub fn footage_sizes(footage: [f32; 2]) -> (f32, f32) {
+    let k = (footage[0].min(footage[1]) / 720.0).clamp(1.0, 4.0);
+    let d = PointTrack::default();
+    ((d.size * k).round(), (d.search * k).round())
+}
+
+impl Tracker {
+    /// Boxes still at the old defaults (31 and 24 px, as every tracker had
+    /// before boxes were sized for the footage) grown to suit `footage`:
+    /// returns whether they were. Boxes someone has set are left alone.
+    pub fn fit_old_defaults(&mut self, footage: [f32; 2]) -> bool {
+        let d = PointTrack::default();
+        let (size, search) = footage_sizes(footage);
+        if self.mode == TrackMode::Planar || self.mode == TrackMode::Mesh || size <= d.size || !self.points.iter().all(|p| p.size == d.size && p.search == d.search) {
+            return false;
+        }
+        self.set_sizes(size, search);
+        true
+    }
+}
+
 /// Matches below this are treated as the feature being lost.
 pub const MIN_SCORE: f32 = 0.6;
 
@@ -796,11 +821,8 @@ impl Tracker {
     /// A new tracker at source time `start`, centred on `centre` (media pixels)
     /// of a `layer`-sized picture.
     pub fn new(mode: TrackMode, centre: [f32; 2], layer: [f32; 2], start: Time) -> Self {
-        // Feature boxes sized for the footage: the defaults suit 720p; on 4K a
-        // 31-pixel box sits inside a pupil, with nothing to lock on to.
-        let k = (layer[0].min(layer[1]) / 720.0).clamp(1.0, 4.0);
-        let d = PointTrack::default();
-        let first = PointTrack { point: centre, start, size: (d.size * k).round(), search: (d.search * k).round(), ..d };
+        let (size, search) = footage_sizes(layer);
+        let first = PointTrack { point: centre, start, size, search, ..Default::default() };
         // A frame's smoothing to start with: it takes out the tracking's
         // jitter without dragging behind real movement (and can be changed).
         let mut t = Tracker { mode: TrackMode::Position, points: vec![first], grid: [0, 0], smooth: 1.0, matching: TrackMatch::Correlation };
@@ -1962,6 +1984,16 @@ mod tests {
         assert_eq!(sizes(1920.0, 1080.0), (47.0, 36.0));
         assert_eq!(sizes(4096.0, 2160.0), (93.0, 72.0));
         assert_eq!(sizes(1080.0, 1920.0), (47.0, 36.0), "portrait: by the short side");
+        // A tracker made before (31 and 24 px whatever the footage) is grown
+        // to suit 4K; one whose boxes were set by hand isn't, nor on 720p.
+        let mut old = Tracker::new(TrackMode::Transform, [50.0, 50.0], [640.0, 360.0], Time::ZERO);
+        assert!(!old.fit_old_defaults([1280.0, 720.0]));
+        assert!(old.fit_old_defaults([4096.0, 2160.0]));
+        assert!(old.points.iter().all(|p| p.size == 93.0 && p.search == 72.0));
+        let mut set = Tracker::new(TrackMode::Position, [50.0, 50.0], [640.0, 360.0], Time::ZERO);
+        set.set_sizes(41.0, 24.0);
+        assert!(!set.fit_old_defaults([4096.0, 2160.0]));
+        assert_eq!(set.points[0].size, 41.0);
     }
 
     #[test]
