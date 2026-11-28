@@ -549,6 +549,8 @@ pub struct TrackerView {
     /// Smoothing, in frames, and (when there is some) each point's smoothed path.
     pub smooth: f32,
     pub smoothed: Vec<Vec<[f32; 2]>>,
+    /// How its points are compared with each frame.
+    pub matching: reelforge_core::track::TrackMatch,
 }
 
 #[derive(Serialize)]
@@ -672,6 +674,7 @@ fn tracker_view(e: &Editor, c: &Clip) -> Option<TrackerView> {
         targets,
         grid: trk.grid,
         smooth: trk.smooth,
+        matching: trk.matching,
         smoothed: if trk.smooth > 0.0 { (0..trk.points.len()).map(|k| frames.iter().map(|f| f.1[k]).collect()).collect() } else { Vec::new() },
     })
 }

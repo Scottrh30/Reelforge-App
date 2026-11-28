@@ -230,6 +230,52 @@ impl DiskStore {
         (n, bytes)
     }
 
+    /// Delete these frames (if kept): (files, bytes).
+    pub fn forget(&self, recipes: impl IntoIterator<Item = u64>) -> (usize, u64) {
+        self.flush();
+        let (mut n, mut bytes) = (0, 0);
+        for k in recipes {
+            let Some((len, _)) = self.index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&k) else { continue };
+            if std::fs::remove_file(self.path(k)).is_ok() {
+                n += 1;
+                bytes += len;
+            }
+        }
+        (n, bytes)
+    }
+
+    /// The list of a project's frames (`owner`: a number standing for it).
+    fn owner_file(&self, owner: u64) -> PathBuf {
+        self.dir.join("projects").join(format!("{owner:016x}.txt"))
+    }
+
+    /// Note these frames as made or used by project `owner`.
+    pub fn note_owner(&self, owner: u64, recipes: &[u64]) {
+        use std::io::Write;
+        if recipes.is_empty() {
+            return;
+        }
+        let path = self.owner_file(owner);
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let text: String = recipes.iter().map(|r| format!("{r:016x}\n")).collect();
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = f.write_all(text.as_bytes());
+        }
+    }
+
+    /// The frames noted for project `owner` (at most a few million lines read).
+    pub fn owned(&self, owner: u64) -> Vec<u64> {
+        let Ok(text) = std::fs::read_to_string(self.owner_file(owner)) else { return Vec::new() };
+        text.lines().take(4_000_000).filter_map(|l| u64::from_str_radix(l.trim(), 16).ok()).collect()
+    }
+
+    /// Forget project `owner`'s list.
+    pub fn drop_owner(&self, owner: u64) {
+        let _ = std::fs::remove_file(self.owner_file(owner));
+    }
+
     /// Delete every kept frame.
     pub fn clear(&self) {
         self.flush();
@@ -328,11 +374,15 @@ pub struct RenderCache {
     pub disk: Option<Arc<DiskStore>>,
     /// Where simulation checkpoints are kept on disk (with the frames).
     pub sims: Option<Arc<DiskStore>>,
+    /// Frames this project made or used (so its own can be deleted), and
+    /// those not yet noted in its list on disk.
+    pub mine: std::collections::HashSet<u64>,
+    pub unnoted: Vec<u64>,
 }
 
 impl RenderCache {
     pub fn new(budget_mb: usize) -> Self {
-        Self { frames: HashMap::new(), lru: BTreeMap::new(), used: 0, budget: budget_mb << 20, clock: 0, generation: 0, job: None, disk: None, sims: None }
+        Self { frames: HashMap::new(), lru: BTreeMap::new(), used: 0, budget: budget_mb << 20, clock: 0, generation: 0, job: None, disk: None, sims: None, mine: Default::default(), unnoted: Vec::new() }
     }
 
     /// Memory nearly full, with nowhere on disk to keep more (rendering on would only push
@@ -352,6 +402,7 @@ impl RenderCache {
         if !self.frames.get(&(seq, frame)).is_some_and(|e| e.recipe == recipe) {
             let (size, rgba) = self.disk.as_ref()?.load(recipe)?;
             self.keep(seq, frame, recipe, size, rgba.into());
+            self.own(recipe);
         }
         self.clock += 1;
         let stamp = self.clock;
@@ -371,8 +422,42 @@ impl RenderCache {
     pub fn insert(&mut self, seq: usize, frame: i64, recipe: u64, size: [u32; 2], rgba: Arc<[u8]>) {
         if let Some(d) = &self.disk {
             d.store(recipe, size, rgba.clone());
+            self.own(recipe);
         }
         self.keep(seq, frame, recipe, size, rgba);
+    }
+
+    /// Count a frame on disk as this project's.
+    fn own(&mut self, recipe: u64) {
+        if self.mine.insert(recipe) {
+            self.unnoted.push(recipe);
+        }
+    }
+
+    /// Note this project's new frames in its list on disk (`owner` stands for
+    /// the project's file; none for one not saved yet, kept till it is).
+    pub fn note_mine(&mut self, owner: Option<u64>) {
+        let (Some(owner), Some(d)) = (owner, &self.disk) else { return };
+        d.note_owner(owner, &self.unnoted);
+        self.unnoted.clear();
+    }
+
+    /// Delete this project's frames from disk (those it made or used, now
+    /// or before, by its list): (files, bytes). Frames another project also
+    /// used go too; they're made again when needed.
+    pub fn delete_mine(&mut self, owner: Option<u64>) -> (usize, u64) {
+        let Some(d) = self.disk.clone() else {
+            self.clear();
+            return (0, 0);
+        };
+        let mut all: std::collections::HashSet<u64> = std::mem::take(&mut self.mine);
+        if let Some(o) = owner {
+            all.extend(d.owned(o));
+            d.drop_owner(o);
+        }
+        self.unnoted.clear();
+        self.clear();
+        d.forget(all)
     }
 
     /// Keep a frame in memory.

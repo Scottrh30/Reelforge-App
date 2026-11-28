@@ -93,7 +93,7 @@ pub fn simulate(e: &Effect, t: Time, size: [f32; 2]) -> Particles {
             life: life_k,
             size: 0.6 + 0.4 * r(5),
             seed: r(6),
-            _pad: [0.0; 2],
+            trail: [0.0; 2],
         });
     }
     Particles { id, list }

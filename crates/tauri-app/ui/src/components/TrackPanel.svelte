@@ -5,7 +5,7 @@
   // then put the motion on any layer, a mask, or the clip itself (stabilise),
   // choosing which parts of the motion to use.
   import { app, run, timecode } from "../lib/session.svelte";
-  import { api, type CamFormat, type CamMake, type StabZoom, type TrackAxes, type TrackMode, type TrackerView } from "../lib/api";
+  import { api, type CamFormat, type CamMake, type StabZoom, type TrackAxes, type TrackMatch, type TrackMode, type TrackerView } from "../lib/api";
   import { livePump } from "../lib/live";
   import NumberField from "./NumberField.svelte";
 
@@ -385,6 +385,13 @@
           {/if}
           <span class="lbl" title="How far it may move between frames. Raise it for fast motion">Search</span>
           <NumberField label="Search area" value={t.search} min={2} max={300} step={0.5} digits={0} suffix=" px" oninput={(v) => sizes(t.size, v)} oncommit={commit} />
+          {#if !areaTracked(t.mode)}
+            <span class="lbl" title="Correlation follows the feature's pattern of light and dark whatever its brightness, and updates its look as it goes: for features that fade, flicker or slowly turn. Template match looks for the feature's exact values as first seen, never updated: it can't drift on a sharp, unchanging mark, but loses it when the light changes. Used on the next run">Matching</span>
+            <select aria-label="Matching method" value={t.matching} onchange={(e) => ins && run(api.trackerMatching(ins.id, e.currentTarget.value as TrackMatch))}>
+              <option value="Correlation">Correlation</option>
+              <option value="Template">Template match</option>
+            </select>
+          {/if}
         </div>
 
         {#if progress !== null}

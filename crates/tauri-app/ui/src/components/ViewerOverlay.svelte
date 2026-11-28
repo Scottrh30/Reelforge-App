@@ -474,6 +474,60 @@
       return [{ index, at: [(v(0) / 100) * size[0], (v(1) / 100) * size[1]] as Pt, dir: v(8), shape: Math.round(v(2)), extent: v(3) }];
     });
   });
+  // Particle forces and slopes: the force's point (a handle like a plugin's
+  // position) and the slope's line through its point at its angle.
+  const particleForces = $derived.by((): FxPoint[] => {
+    if (!ins) return [];
+    return ins.effects.flatMap((fx, index) => {
+      if (fx.kind !== "Particles" || !fx.enabled || fx.params.length < 32 || Math.round(fx.params[24].value) === 0) return [];
+      const v = (k: number) => fx.params[k].value;
+      const what = ["", "attracts", "repels", "swirls"][Math.round(v(24))] ?? "";
+      return [{ index, param: 25, label: `Particle force (${what}): drag it`, at: [(v(25) / 100) * size[0], (v(26) / 100) * size[1]] as Pt, base: [0, 0] as Pt }];
+    });
+  });
+  type Slope = { index: number; at: Pt; angle: number };
+  const slopes = $derived.by((): Slope[] => {
+    if (!ins) return [];
+    return ins.effects.flatMap((fx, index) => {
+      if (fx.kind !== "Particles" || !fx.enabled || fx.params.length < 32 || Math.round(fx.params[20].value) !== 4) return [];
+      const v = (k: number) => fx.params[k].value;
+      return [{ index, at: [(v(29) / 100) * size[0], (v(21) / 100) * size[1]] as Pt, angle: v(30) }];
+    });
+  });
+  /// Drag a slope's point (`"move"`: Slope X and Floor) or the end of its line (`"tilt"`).
+  function dragSlope(e: PointerEvent, m: Slope, part: "move" | "tilt") {
+    if (e.button !== 0 || !ins || !inv || app.live?.playing || busyTracking) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = ins.id;
+    const el = e.currentTarget as SVGElement;
+    el.setPointerCapture(e.pointerId);
+    const start = toLayer(e);
+    const pump = livePump();
+    const move = (ev: PointerEvent) => {
+      const now = toLayer(ev);
+      if (part === "move") {
+        const x = ((m.at[0] + now[0] - start[0]) / size[0]) * 100;
+        const y = ((m.at[1] + now[1] - start[1]) / size[1]) * 100;
+        pump.push(() => Promise.all([api.effectParam(id, m.index, 29, x), api.effectParam(id, m.index, 21, y)]));
+      } else {
+        // Anticlockwise from level, y down the screen, -90° to 90°; Shift snaps to 5°.
+        let deg = (Math.atan2(-(now[1] - m.at[1]), now[0] - m.at[0]) * 180) / Math.PI;
+        if (deg > 90) deg -= 180;
+        if (deg < -90) deg += 180;
+        if (ev.shiftKey) deg = Math.round(deg / 5) * 5;
+        pump.push(() => api.effectParam(id, m.index, 30, deg));
+      }
+    };
+    const up = async () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      await pump.done();
+      await run(api.commit());
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
   // Lens flares of the selected clip: where their light is.
   const flares = $derived.by((): Emitter[] => {
     if (!ins) return [];
@@ -915,6 +969,24 @@
           <circle {cx} {cy} r="8" class="bladeend" stroke="var(--accent)" onpointerdown={(e) => dragEmitter(e, m, "move")} role="presentation"><title>Particle emitter: drag to move it</title></circle>
           <text x={cx} y={cy + 4} text-anchor="middle" class="bladetag">✦</text>
         {/if}
+      {/each}
+    {/if}
+
+    <!-- Particle forces (drag the point) and slopes (drag the point, or the line's end to tilt it). -->
+    {#if !drawing && fxOn}
+      {#each particleForces as m}
+        {@const [cx, cy] = toBox(m.at)}
+        <circle {cx} {cy} r="9" class="bladeend" stroke="#7fd4ff" onpointerdown={(e) => dragFxPoint(e, m)} role="presentation"><title>{m.label}</title></circle>
+        <text x={cx} y={cy + 4} text-anchor="middle" class="bladetag">⊕</text>
+      {/each}
+      {#each slopes as m}
+        {@const [cx, cy] = toBox(m.at)}
+        {@const rad = (m.angle * Math.PI) / 180}
+        {@const reach = 4000}
+        {@const [ex, ey] = [cx + Math.cos(rad) * ARROW * 1.6, cy - Math.sin(rad) * ARROW * 1.6]}
+        <line x1={cx - Math.cos(rad) * reach} y1={cy + Math.sin(rad) * reach} x2={cx + Math.cos(rad) * reach} y2={cy - Math.sin(rad) * reach} class="bladeaxis" />
+        <circle cx={ex} cy={ey} r="5" class="bladeend" stroke="#7fd4ff" onpointerdown={(e) => dragSlope(e, m, "tilt")} role="presentation"><title>Slope: drag to tilt it (Shift snaps to 5°)</title></circle>
+        <circle {cx} {cy} r="8" class="bladeend" stroke="#7fd4ff" onpointerdown={(e) => dragSlope(e, m, "move")} role="presentation"><title>Particle slope: drag to move it</title></circle>
       {/each}
     {/if}
 

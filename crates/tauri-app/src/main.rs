@@ -1445,6 +1445,17 @@ fn tracker_smooth(id: u64, frames: f32) -> Res<()> {
     })
 }
 
+/// How the tracker's points are compared with each frame (for the next run).
+#[tauri::command]
+fn tracker_matching(id: u64, matching: reelforge_core::track::TrackMatch) -> Res<()> {
+    ed(|e| {
+        let Some(mut t) = e.seq().find_clip(clip(id)).and_then(|(_, c)| c.tracker.clone()) else { return };
+        t.matching = matching;
+        e.set_tracker_live(clip(id), Some(t));
+        e.commit_live_edit();
+    })
+}
+
 /// The most frames a correction is eased into on each side.
 const MAX_BLEND: usize = 120;
 
@@ -2014,6 +2025,7 @@ fn main() {
             modelprops::pick_map_file,
             app_active,
             ops::proxies_delete_project,
+            ops::prerenders_delete_project,
             ops::pick_folder,
             set_project_layout,
             project_layout,
@@ -2106,6 +2118,7 @@ fn main() {
             tracker_mode,
             tracker_sizes,
             tracker_smooth,
+            tracker_matching,
             tracker_grid,
             tracker_move_many,
             mesh_remove,
@@ -2286,6 +2299,7 @@ fn main() {
                 if let Some(d) = &e.render_cache.disk {
                     d.flush();
                 }
+                e.note_prerenders();
             });
         }
     });

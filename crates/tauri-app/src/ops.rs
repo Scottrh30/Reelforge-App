@@ -117,6 +117,12 @@ pub fn proxies_delete_project() -> Res<usize> {
     ed(|e| e.delete_project_proxies())
 }
 
+/// Delete the rendered previews this project made or used: (files, bytes).
+#[tauri::command]
+pub fn prerenders_delete_project() -> Res<(usize, u64)> {
+    ed(|e| e.delete_project_prerenders())
+}
+
 /// Pick a folder (for Settings' folders).
 #[tauri::command]
 pub fn pick_folder() -> Option<String> {

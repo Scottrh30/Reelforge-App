@@ -664,6 +664,8 @@ pub struct Editor {
     pub media_released: bool,
     /// When unused cache files were last cleared out (Settings → delete after N days).
     cache_cleaned: Option<std::time::Instant>,
+    /// When this project's rendered frames were last noted in its list.
+    prerenders_noted: Option<std::time::Instant>,
     /// Project revision at the last save (or open): anything newer is unsaved.
     pub saved_rev: u64,
     /// Audio peak envelopes for drawing (`WAVEFORM_RATE` per second), computed in the background.
@@ -763,6 +765,7 @@ impl Editor {
             mixed_rev: 0,
             media_released: false,
             cache_cleaned: None,
+            prerenders_noted: None,
             saved_rev: 1,
             waveforms: HashMap::new(),
             waveform_tx,
@@ -806,6 +809,7 @@ impl Editor {
     /// device, GPU, fonts, settings and session.
     fn replace_project(&mut self, project: Project, path: Option<PathBuf>) {
         self.playback.pause();
+        self.render_cache.note_mine(self.prerender_owner());
         let mut preview = std::mem::replace(&mut self.preview, Preview::new(None));
         preview.reset();
         let mut fresh = Editor::blank(Playback::with_audio(self.playback.audio.take()), preview, self.fonts.clone());
@@ -854,6 +858,31 @@ impl Editor {
             log::info!("deleted {} cache files ({} bytes) unused for {days} days", done.0, done.1);
         }
         done
+    }
+
+    /// A number standing for the project's file, naming its list of
+    /// rendered frames (none while it's not saved).
+    pub fn prerender_owner(&self) -> Option<u64> {
+        let path = self.project_path.as_ref()?;
+        // FNV-1a: the same number every run.
+        Some(path.to_string_lossy().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)))
+    }
+
+    /// Note this project's rendered frames in its list (also on quitting).
+    pub fn note_prerenders(&mut self) {
+        self.render_cache.note_mine(self.prerender_owner());
+        self.prerenders_noted = Some(std::time::Instant::now());
+    }
+
+    /// Delete the rendered previews this project made or used, from disk
+    /// and memory: (files, bytes).
+    pub fn delete_project_prerenders(&mut self) -> (usize, u64) {
+        self.render_cache.job = None;
+        self.preview.reset();
+        let owner = self.prerender_owner();
+        let (n, bytes) = self.render_cache.delete_mine(owner);
+        self.status = format!("Deleted {n} rendered frame{} of this project ({:.1} MB)", if n == 1 { "" } else { "s" }, bytes as f64 / 1_048_576.0);
+        (n, bytes)
     }
 
     /// Delete the proxies of this project's media: how many went.
@@ -4326,6 +4355,7 @@ impl Editor {
         crate::safety::write_atomic(path, json.as_bytes())?;
         self.status = format!("Saved {}", path.display());
         self.project_path = Some(path.to_owned());
+        self.render_cache.note_mine(self.prerender_owner());
         let summary = self.summary();
         self.recent.add(path, summary);
         self.saved_rev = self.rev;
@@ -4538,6 +4568,9 @@ impl Editor {
     /// moves the playhead, pushes edits to the audio engine, collects
     /// waveforms and proxies, autosaves, and renders the picture at the playhead.
     pub fn tick(&mut self) {
+        if !self.render_cache.unnoted.is_empty() && self.prerenders_noted.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(10)) {
+            self.note_prerenders();
+        }
         if self.disk_checked.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(15)) {
             self.check_disk();
         }
@@ -4768,6 +4801,22 @@ mod tests {
         // This project's proxies (it has none).
         assert_eq!(e.delete_project_proxies(), 0);
         assert!(e.status.contains("Deleted 0 proxies"), "{}", e.status);
+        // This project's rendered previews: those it made, noted when saved,
+        // found again after reopening it; another project's stay.
+        let frame: std::sync::Arc<[u8]> = vec![3u8; 256].into();
+        e.render_cache.insert(0, 1, 111, [8, 8], frame.clone());
+        let path = dir.join("mine.rfproj");
+        e.save_to(&path).unwrap();
+        e.render_cache.insert(0, 2, 112, [8, 8], frame.clone());
+        e.new_project();
+        e.render_cache.insert(0, 1, 222, [8, 8], frame.clone());
+        e.save_to(&dir.join("other.rfproj")).unwrap();
+        e.open_project_path(path);
+        let d = e.render_cache.disk.clone().unwrap();
+        d.flush();
+        assert!(d.has(111) && d.has(112) && d.has(222));
+        assert_eq!(e.delete_project_prerenders().0, 2, "{}", e.status);
+        assert!(!d.has(111) && !d.has(112) && d.has(222), "the other project's stays");
         e.prefs.render_cache_disk_mb = 0;
         e.apply_prefs();
         let _ = std::fs::remove_dir_all(&dir);

@@ -272,6 +272,7 @@
         <p class="info">
           {info.render_disk_frames} frames on disk ({info.render_disk_mb} MB)
           <button class="tiny" disabled={!info.render_frames && !info.render_disk_frames} onclick={async () => { await run(api.clearRenderCache()); info = await api.settingsInfo(); }} title="Forget every rendered preview, in memory and on disk">Clear</button>
+          <button class="tiny" disabled={!info.render_frames && !info.render_disk_frames} onclick={async () => { await run(api.prerendersDeleteProject()); info = await api.settingsInfo(); }} title="Delete the rendered previews this project made or used (others' stay; a frame another project shares is made again when needed)">Delete this project's</button>
         </p>
       {/if}
 

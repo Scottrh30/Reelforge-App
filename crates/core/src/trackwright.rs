@@ -218,7 +218,7 @@ fn read_track(text: &str, layer: [f32; 2], rate: Option<FrameRate>) -> Result<Im
     }
     let n = frames.len();
     // Trackwright's track is already clean: no extra smoothing.
-    let tracker = Tracker { mode: TrackMode::Planar, points, grid: [0, 0], smooth: 0.0 };
+    let tracker = Tracker { mode: TrackMode::Planar, points, grid: [0, 0], smooth: 0.0, matching: Default::default() };
     let name = if f.layer.name.is_empty() { file_stem(&f.source.path) } else { f.layer.name };
     Ok(Import::Track { name, tracker, frames: n, size_note: map.size_note })
 }

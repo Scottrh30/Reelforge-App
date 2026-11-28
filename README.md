@@ -848,7 +848,9 @@ What works now:
     keeps edges; or shows the edges), **Camera lens blur** (bokeh: a round or bladed **Iris**,
     **Highlight gain** and **threshold**), **Cross blur** (across and down separately,
     averaged or added as light) and **Vector blur** (smeared along or across the picture's own
-    contours)
+    contours), and **Chroma blur** (only the colour blurred, over a **Radius**, the detail
+    left sharp: smooths the blocky colour of compressed or 4:2:0 footage before keying or
+    grading)
   - **Channel** (a section of its own): **Arithmetic** (and, or, xor, add, subtract,
     difference, min, max, block above or below, slice, multiply, screen — on each channel's
     0–255 value, clipped or wrapping), **Blend** (with a colour: cross-fade, colour only, tint
@@ -861,6 +863,11 @@ What works now:
     **Demultiply** (black made see-through, colours kept: for flares, fire, sparks and smoke
     on black, so they sit over the picture as light without a blend mode; worked out in linear
     light, so laid back over black it looks just as it did; a **Black point** for noisy blacks)
+  - **Hue colourise** (Colour): the whole picture in one **Hue**, its light and shade kept
+    (sepia, a cold blue, green night vision), with **Saturation**, **Lightness** and **Amount**
+  - **Deinterlace** (Repair): the comb lines of interlaced video (old camcorders, broadcast,
+    DV) removed: **Keep field** upper or lower and fill the other's lines by **Interpolating**
+    or **Repeating**, or **Blend both fields**
   - **Colour** (more): **Auto levels**, **Auto contrast** and **Auto colour** (the
     picture's own black and white points found, with **Black** and **White clip**; auto colour
     also neutralises the midtones), **Equalize** (histogram equalisation, by channel or
@@ -1082,6 +1089,16 @@ What works now:
         they slow sliding along; too slow to bounce, they rest. Turbulence dies away once they've
         landed. Each particle's path is walked in steps on the graphics card, so it still needs
         no frame-by-frame simulation
+        **A slope (deflector)** is a line through a point (**Slope X**, and **Floor** for its
+        height) at a **Slope angle**: particles bounce off it, or slide down it, from either
+        side. Drag its point in the Viewer, or the end of its line to tilt it
+      - **Forces**: **Attract to a point**, **Repel from a point** or **Swirl round a point** (a
+        whirlpool: carried round it, drawn slowly in) at **Force X/Y**, with a **Force
+        strength**; drag the point (⊕) in the Viewer, or keyframe it to move it. **Drag** is air
+        resistance: the share of their speed particles lose each second
+      - **Trails** (mobile emitters): each particle gives off this many smaller particles a
+        second, dropped where it is, drifting a little and fading over about a third of its
+        lifetime: sparklers, fireworks, comets, a swirl of embers leaving streaks
       - **Atomic particles**: with the shape **Layer's pixels**, particles are born only where the
         layer's picture shows, each in the picture's colour there, turning to the colour at
         death as they die (the Atomic preset: a picture giving off glowing dust). **Layer's
@@ -1793,8 +1810,10 @@ What works now:
 - **Cache cleanup** (Settings → Disk): **delete cache files unused for N days** (rendered
   previews, proxies and Object removal fills of other projects; checked at start and hourly),
   **delete this project's proxies**, and a folder of its own for **rendered previews**
-  (pre-renders). Rendered frames are kept by recipe, not by project, so they're cleared all at
-  once (Clear)
+  (pre-renders). **Delete this project's** (Settings → Playback, beside Clear) deletes the
+  rendered previews this project made or used (each project keeps a list of them beside the
+  frames); another project's stay, and a frame two projects share is made again when needed.
+  **Clear** deletes them all
 - **Proxies**: a **quality or performance** mode for new proxies, and an **integrated GPU**
   renderer choice (the power-saving graphics of a laptop with two), listed when it differs
   from the main one
@@ -2213,6 +2232,11 @@ What works now:
   **Blend fixes** (frames) eases such a correction into that many tracked frames on each side,
   fading out (a raised cosine), so the path doesn't jump at the corrected frame; it works for
   every kind of track, mesh points included (and with a group of them picked).
+  **Matching** (point, two-point and corner-pin trackers) chooses how each frame is compared
+  with the feature: **Correlation** (the default) follows its pattern of light and dark
+  whatever its brightness, updating its look as it goes, for features that fade, flicker or
+  slowly turn; **Template match** looks for its exact values as first seen, never updated,
+  so it can't drift on a sharp, unchanging mark, but loses it when the light on it changes.
   **Smooth track** (frames) takes the jitter out of the tracked paths without tracking again:
   the Viewer draws the smoothed paths solid and the raw ones faint and dotted, and everything you
   apply the track to (layers, masks, blades, stabilising) uses the smoothed paths. The tracked

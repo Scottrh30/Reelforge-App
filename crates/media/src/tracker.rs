@@ -83,7 +83,7 @@ pub fn track_points_live(
     let mut out = Vec::new();
     for (i, p) in tracker.points.iter().enumerate() {
         let start = p.shown_at(from);
-        let f = FeatureTracker::new(&pyr, [start[0] * sx, start[1] * sy], p.size * sx, p.search * sx);
+        let f = FeatureTracker::new_matching(&pyr, [start[0] * sx, start[1] * sy], p.size * sx, p.search * sx, tracker.matching);
         if f.is_flat() {
             let which = if tracker.points.len() > 1 { format!("point {} has", i + 1) } else { "there's".into() };
             return Err(anyhow!("{which} no detail under it to follow: put it on a corner, a mark or an edge"));

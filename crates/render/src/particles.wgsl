@@ -13,6 +13,8 @@ struct Fx {
     p4: vec4<f32>,        // colour at death, opacity, look, seed
     map: vec4<f32>,       // layer uv = target uv × xy + zw (the target can have a margin)
     p5: vec4<f32>,        // collide with, floor %, bounce %, friction %
+    p6: vec4<f32>,        // force, force x %, force y %, strength (px/s²)
+    p7: vec4<f32>,        // drag %/s, slope x %, slope angle °, trails /s
 };
 
 @group(0) @binding(0) var<uniform> fx: Fx;
@@ -23,7 +25,7 @@ struct Fx {
 struct Inst {
     @location(0) emit: vec4<f32>,   // emitter % (xy), offset px (zw)
     @location(1) motion: vec4<f32>, // velocity px/s (xy), age, life
-    @location(2) more: vec4<f32>,   // size multiplier, seed
+    @location(2) more: vec4<f32>,   // size multiplier, seed, a trail's own age + 1 (0: not one), its lifetime
 };
 
 struct VsOut {
@@ -92,21 +94,62 @@ fn cover_at(q: vec2<f32>, size: vec2<f32>) -> f32 {
     return textureSampleLevel(src, src_sampler, tuv, 0.0).a;
 }
 
+// The force at `q` (layer pixels, moving at `v`): towards or away from its
+// point, full strength from 40 px out and weaker close in (so nothing is
+// flung off to infinity passing through the middle); or a whirlpool, carrying
+// them round the point at the speed that circles it, drawn slowly in.
+fn force_at(q: vec2<f32>, v: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
+    let kind = u32(round(fx.p6.x));
+    if (kind == 0u) {
+        return vec2(0.0);
+    }
+    let d = vec2(fx.p6.y, fx.p6.z) / 100.0 * size - q;
+    let r = length(d);
+    let dir = d / max(r, 1e-3);
+    let s = max(fx.p6.w, 0.0) * r / (r + 40.0);
+    if (kind == 1u) {
+        return dir * s;
+    }
+    if (kind == 2u) {
+        return -dir * s;
+    }
+    let round = vec2(-dir.y, dir.x) * sqrt(max(fx.p6.w, 0.0) * r);
+    return (round - v) * 2.0 + dir * s * 1.15;
+}
+
+// The slope (deflector): a point on it, and its normal (pointing up for a
+// level one).
+fn slope_line(size: vec2<f32>) -> array<vec2<f32>, 2> {
+    let a = radians(fx.p7.z);
+    let along = vec2(cos(a), -sin(a));
+    return array<vec2<f32>, 2>(vec2(fx.p7.y / 100.0 * size.x, fx.p5.y / 100.0 * size.y), vec2(along.y, -along.x));
+}
+
 // Walk the path from `start` (velocity `v0`, acceleration `acc`) for `age`
-// seconds, bouncing off a floor (and the sides), or off the layer's shape.
+// seconds in steps: pushed by the force, slowed by drag, bouncing off a
+// floor (and the sides), the layer's shape or the slope.
 fn collide_path(start: vec2<f32>, v0: vec2<f32>, acc: vec2<f32>, age: f32, size: vec2<f32>, mode: u32) -> Path {
-    let steps = select(24, 48, mode == 3u);
+    let steps = select(32, 48, mode == 3u);
     let dt = age / f32(steps);
     let floor_y = fx.p5.y / 100.0 * size.y;
     let bounce = clamp(fx.p5.z / 100.0, 0.0, 1.0);
     let keep = 1.0 - clamp(fx.p5.w / 100.0, 0.0, 1.0);
+    let slow = pow(1.0 - clamp(fx.p7.x / 100.0, 0.0, 0.999), dt);
+    let forced = u32(round(fx.p6.x)) != 0u;
+    let line = slope_line(size);
+    // Which side of the slope it starts on: it stays there.
+    let side = select(-1.0, 1.0, dot(start - line[0], line[1]) >= 0.0);
     var q = start;
     var v = v0;
     var first = -1.0;
     // Born inside the shape: it can't hit the shape it's in until it's out.
     var inside = mode == 3u && cover_at(start, size) > 0.5;
     for (var i = 0; i < steps; i++) {
-        v += acc * dt;
+        var a = acc;
+        if (forced) {
+            a += force_at(q, v, size);
+        }
+        v = (v + a * dt) * slow;
         var n = q + v * dt;
         if (mode == 1u || mode == 2u) {
             if (n.y > floor_y && v.y > 0.0) {
@@ -149,6 +192,23 @@ fn collide_path(start: vec2<f32>, v0: vec2<f32>, acc: vec2<f32>, age: f32, size:
                 n = q;
                 if (first < 0.0) { first = f32(i) * dt; }
             }
+        } else if (mode == 4u) {
+            // The slope: crossing it, it bounces off (or slides down it).
+            if (dot(n - line[0], line[1]) * side < 0.0) {
+                let nrm = line[1] * side;
+                let vn = dot(v, nrm);
+                if (vn < 0.0) {
+                    let tang = (v - vn * nrm) * keep;
+                    v = tang - select(vn * bounce, 0.0, abs(vn) * bounce < 40.0) * nrm;
+                }
+                // Onto the line, then along it.
+                n = q + v * dt;
+                let over = dot(n - line[0], line[1]) * side;
+                if (over < 0.0) {
+                    n -= nrm * over;
+                }
+                if (first < 0.0) { first = f32(i) * dt; }
+            }
         }
         // Resting: gravity alone mustn't drag it through what it rests on.
         q = n;
@@ -160,38 +220,62 @@ fn collide_path(start: vec2<f32>, v0: vec2<f32>, acc: vec2<f32>, age: f32, size:
     return out;
 }
 
+// Where a particle born at `start` with velocity `v0` is after `age` seconds.
+fn path_at(start: vec2<f32>, v0: vec2<f32>, age: f32, seed: f32, size: vec2<f32>) -> Path {
+    let accel = vec2(fx.p2.w, fx.p2.z);
+    var out: Path;
+    out.pos = start + v0 * age + 0.5 * accel * age * age;
+    out.vel = v0 + accel * age;
+    out.free = 1.0;
+    let collide = u32(round(fx.p5.x));
+    if (collide != 0u || u32(round(fx.p6.x)) != 0u || fx.p7.x > 0.0) {
+        // Forces, drag or bouncing: the path walked in steps.
+        out = collide_path(start, v0, accel, age, size, collide);
+    }
+    // Turbulence builds up over the first half second (and dies down once it
+    // has hit something, which it would push it through).
+    let turb = fx.p3.x * min(age / 0.5, 1.0) * out.free;
+    out.pos += turb * vec2(wander(seed, age), wander(seed + 0.37, age + 11.0));
+    return out;
+}
+
 @vertex
 fn vs_particle(@builtin(vertex_index) vi: u32, p: Inst) -> VsOut {
     var out: VsOut;
     let size = fx.extra.zw;
     let age = p.motion.z;
     let life = max(p.motion.w, 1e-4);
-    let f = clamp(age / life, 0.0, 1.0);
+    var f = clamp(age / life, 0.0, 1.0);
     let seed = p.more.y;
     let accel = vec2(fx.p2.w, fx.p2.z);
 
-    // Thrown, then pulled by gravity and wind, and pushed about by turbulence
-    // (which builds up over the first half second).
+    // Thrown, then pulled by gravity and wind (and the force), pushed about
+    // by turbulence.
     let start = p.emit.xy / 100.0 * size + p.emit.zw;
-    var pos = start + p.motion.xy * age + 0.5 * accel * age * age;
-    var vel = p.motion.xy + accel * age;
-    var turb_k = 1.0;
-    let collide = u32(round(fx.p5.x));
-    if (collide != 0u) {
-        // Bouncing: the path walked in steps, each checked against what it hits.
-        let hit = collide_path(start, p.motion.xy, accel, age, size, collide);
-        pos = hit.pos;
-        vel = hit.vel;
-        // Turbulence dies down once it has hit something (it would push it through).
-        turb_k = hit.free;
+    let hit = path_at(start, p.motion.xy, age, seed, size);
+    var pos = hit.pos;
+    var vel = hit.vel;
+    // A trail particle: dropped where its parent was at `age`, it drifts on
+    // a little and fades over its own (shorter) life.
+    var fade = f;
+    let trail = p.more.z > 0.0;
+    if (trail) {
+        let own = p.more.z - 1.0;
+        let tf = clamp(own / max(p.more.w, 1e-4), 0.0, 1.0);
+        pos += vel * 0.08 * own + 0.1 * accel * own * own + fx.p3.x * 0.3 * min(own / 0.5, 1.0) * vec2(wander(p.more.y, own), wander(p.more.y + 0.37, own + 11.0));
+        vel *= 0.08;
+        f = f + (1.0 - f) * tf;
+        fade = tf;
     }
-    let turb = fx.p3.x * min(age / 0.5, 1.0) * turb_k;
-    pos += turb * vec2(wander(seed, age), wander(seed + 0.37, age + 11.0));
 
     let look = u32(round(fx.p4.z));
     var radius = mix(fx.p3.y, fx.p3.z, f) * 0.5 * p.more.x;
     // Fades in quickly and out over the last third of its life.
-    var alpha = fx.p4.y / 100.0 * clamp(f / 0.06, 0.0, 1.0) * clamp((1.0 - f) / 0.35, 0.0, 1.0);
+    var alpha = fx.p4.y / 100.0 * clamp(fade / 0.06, 0.0, 1.0) * clamp((1.0 - fade) / 0.35, 0.0, 1.0);
+    if (trail) {
+        // Fading from the start, not in.
+        alpha = fx.p4.y / 100.0 * (1.0 - fade) * 0.8;
+    }
     // Target pixels per frame pixel.
     let k = vec2(1.0) / (fx.texel_dir.xy * size);
     let kk = max(k.x, k.y);

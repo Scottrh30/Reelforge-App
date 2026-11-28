@@ -622,6 +622,16 @@ pub enum EffectKind {
     /// white), black, or a colour you pick — leaving smoke, ink, splashes and soft edges with
     /// their own colour and see-through where they're thin, instead of a hard key.
     RemoveStockBackground,
+    /// Gives the whole picture one hue, keeping its light and shade: a single-colour wash such
+    /// as sepia, a cold blue or a green night-vision look.
+    HueColorize,
+    /// Blurs only the colour, leaving the detail (brightness) sharp: smooths the blocky,
+    /// smeared colour of compressed or 4:2:0 footage before keying or grading, and cleans
+    /// colour noise.
+    ChromaBlur,
+    /// Removes the comb-like lines of interlaced video (old camcorders, broadcast, DV): keeps
+    /// one field and fills the other's lines from it, or blends the two fields together.
+    Deinterlace,
     /// Evens out flicker: brightness and colour gains, keyed frame by frame by
     /// Deflicker's analysis (Clip menu), or set by hand.
     Deflicker,
@@ -1451,7 +1461,7 @@ const BLADE: [ParamSpec; 20] = [
     choice("Blend", &["Add (light)", "Screen"]),
 ];
 
-const PARTICLES: [ParamSpec; 24] = [
+const PARTICLES: [ParamSpec; 32] = [
     spec("Emitter X", 50.0, -100.0, 200.0, " %", 0.1),
     spec("Emitter Y", 70.0, -100.0, 200.0, " %", 0.1),
     choice("Shape", &crate::particles::SHAPES),
@@ -1475,7 +1485,14 @@ const PARTICLES: [ParamSpec; 24] = [
     choice("Collide with", &crate::particles::COLLIDE_WITH),
     spec("Floor", 90.0, -100.0, 200.0, " %", 0.1),
     spec("Bounce", 35.0, 0.0, 100.0, " %", 0.5),
-    spec("Friction", 30.0, 0.0, 100.0, " %", 0.5),
+    spec("Friction", 30.0, 0.0, 100.0, " %", 0.5),    choice("Force", &crate::particles::FORCES),
+    spec("Force X", 50.0, -100.0, 200.0, " %", 0.1),
+    spec("Force Y", 40.0, -100.0, 200.0, " %", 0.1),
+    spec("Force strength", 800.0, 0.0, 20000.0, " px/s²", 2.0),
+    spec("Drag", 0.0, 0.0, 100.0, " %/s", 0.3),
+    spec("Slope X", 50.0, -100.0, 200.0, " %", 0.1),
+    spec("Slope angle", -20.0, -90.0, 90.0, "°", 0.3),
+    spec("Trails", 0.0, 0.0, 200.0, " /s", 0.5),
 ];
 
 /// Parameter indices of the stylise effects.
@@ -2916,6 +2933,21 @@ pub mod stock_background {
     pub const COLOR: usize = 1;
     pub const TOLERANCE: usize = 2;
     pub const AMOUNT: usize = 3;
+}
+pub mod hue_colorize {
+    pub const HUE: usize = 0;
+    pub const SATURATION: usize = 1;
+    pub const LIGHTNESS: usize = 2;
+    pub const AMOUNT: usize = 3;
+}
+pub mod chroma_blur {
+    pub const RADIUS: usize = 0;
+    pub const AMOUNT: usize = 1;
+}
+pub mod deinterlace {
+    pub const FIELD: usize = 0;
+    pub const METHOD: usize = 1;
+    pub const AMOUNT: usize = 2;
 }
 pub mod deflicker {
     pub const BRIGHTNESS: usize = 0;
@@ -5552,6 +5584,21 @@ const STOCK_BACKGROUND: [ParamSpec; 4] = [
     spec("Tolerance", 4.0, 0.0, 50.0, " %", 0.1),
     spec("Amount", 100.0, 0.0, 100.0, " %", 0.3),
 ];
+const HUE_COLORIZE: [ParamSpec; 4] = [
+    spec("Hue", 30.0, 0.0, 360.0, "°", 0.5),
+    spec("Saturation", 40.0, 0.0, 100.0, " %", 0.3),
+    spec("Lightness", 0.0, -100.0, 100.0, " %", 0.3),
+    spec("Amount", 100.0, 0.0, 100.0, " %", 0.3),
+];
+const CHROMA_BLUR: [ParamSpec; 2] = [
+    spec("Radius", 4.0, 0.0, 50.0, " px", 0.1),
+    spec("Amount", 100.0, 0.0, 100.0, " %", 0.3),
+];
+const DEINTERLACE: [ParamSpec; 3] = [
+    choice("Keep field", &["Upper (odd lines)", "Lower (even lines)"]),
+    choice("Fill lines by", &["Interpolating", "Repeating", "Blending both fields"]),
+    spec("Amount", 100.0, 0.0, 100.0, " %", 0.3),
+];
 const DEFLICKER: [ParamSpec; 6] = [
     spec("Brightness", 100.0, 0.0, 400.0, " %", 0.2),
     spec("Red", 100.0, 0.0, 400.0, " %", 0.2),
@@ -6256,7 +6303,7 @@ const VIGNETTE: [ParamSpec; 3] = [
 ];
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 247] = [
+    pub const ALL: [EffectKind; 250] = [
         EffectKind::ColorCorrect,
         EffectKind::Levels,
         EffectKind::Curves,
@@ -6504,6 +6551,9 @@ impl EffectKind {
         EffectKind::Drizzle,
         EffectKind::Demultiply,
         EffectKind::RemoveStockBackground,
+        EffectKind::HueColorize,
+        EffectKind::ChromaBlur,
+        EffectKind::Deinterlace,
     ];
 
     /// The one point of an effect that a motion tracker can carry (its x
@@ -6616,6 +6666,9 @@ impl EffectKind {
             EffectKind::Bevel => "Bevel",
             EffectKind::Extrude => "Extrude",
             EffectKind::Rotate3d => "Rotate",
+            EffectKind::HueColorize => "Hue colourise",
+            EffectKind::ChromaBlur => "Chroma blur",
+            EffectKind::Deinterlace => "Deinterlace",
             EffectKind::Demultiply => "Demultiply",
             EffectKind::RemoveStockBackground => "Remove stock background",
             EffectKind::BlockDissolve => "Block dissolve",
@@ -6830,6 +6883,9 @@ impl EffectKind {
             EffectKind::BurnAway => EffectCategory::Stylize,
             EffectKind::Extrusion3d => EffectCategory::Generate,
             EffectKind::Bend | EffectKind::Bevel | EffectKind::Extrude | EffectKind::Rotate3d => EffectCategory::Geometry,
+            EffectKind::HueColorize => EffectCategory::Color,
+            EffectKind::ChromaBlur => EffectCategory::BlurSharpen,
+            EffectKind::Deinterlace => EffectCategory::Repair,
             EffectKind::Demultiply => EffectCategory::Channel,
             EffectKind::RemoveStockBackground => EffectCategory::Keying,
             EffectKind::BlockDissolve => EffectCategory::Transition,
@@ -7045,6 +7101,9 @@ impl EffectKind {
             EffectKind::Bevel => "Bevelled edges: the picture's outline (a logo or a cut-out) or the layer's whole frame lit as if raised, bright on the side towards the light and shaded on the other.",
             EffectKind::Extrude => "Flat-style extrusion: the layer's shape drawn out in a direction (a long-shadow look) or towards a vanishing point, with its sides in a darker shade of the picture or a colour of their own.",
             EffectKind::Rotate3d => "Turns the layer like a card in 3D, round X, Y and Z about a point you choose, with perspective; its back can show the picture, darkened, or nothing. Key the turns to flip or spin it.",
+            EffectKind::HueColorize => "Gives the whole picture one hue, keeping its light and shade: a single-colour wash such as sepia, a cold blue or a green night-vision look. Saturation sets how strong the colour is.",
+            EffectKind::ChromaBlur => "Blurs only the colour, leaving the detail (brightness) sharp: smooths the blocky, smeared colour of compressed or 4:2:0 footage before keying or grading, and cleans colour noise.",
+            EffectKind::Deinterlace => "Removes the comb-like lines of interlaced video (old camcorders, broadcast, DV): keeps one field and fills the other's lines from it, or blends the two fields together.",
             EffectKind::Demultiply => "Makes black see-through, keeping the colours: for flares, fire, sparks, smoke and other elements shot or rendered on black, so they sit over the picture as light without a blend mode. Its brightest channel becomes its opacity.",
             EffectKind::RemoveStockBackground => "Takes the plain background out of stock footage and graphics — white (paper, studio white), black, or a colour you pick — leaving smoke, ink, splashes and soft edges with their own colour and see-through where they're thin, instead of a hard key.",
             EffectKind::BlockDissolve => "The layer disappears in random blocks of a size you set, feathered or hard, as the completion goes from 0 to 100 %.",
@@ -7333,6 +7392,9 @@ impl EffectKind {
             EffectKind::Bevel => &BEVEL,
             EffectKind::Extrude => &EXTRUDE,
             EffectKind::Rotate3d => &ROTATE3D,
+            EffectKind::HueColorize => &HUE_COLORIZE,
+            EffectKind::ChromaBlur => &CHROMA_BLUR,
+            EffectKind::Deinterlace => &DEINTERLACE,
             EffectKind::Demultiply => &DEMULTIPLY,
             EffectKind::RemoveStockBackground => &STOCK_BACKGROUND,
             EffectKind::BlockDissolve => &BLOCK_DISSOLVE,
@@ -7528,7 +7590,7 @@ impl EffectKind {
     pub fn sections(self) -> &'static [(usize, &'static str)] {
         match self {
             EffectKind::EnergyBlade => &[(0, "Blade"), (5, "Colour"), (7, "Core"), (11, "Glow"), (15, "Flicker"), (18, "Motion")],
-            EffectKind::Particles => &[(0, "Emitter"), (4, "Birth"), (7, "Motion"), (13, "Look"), (20, "Collisions")],
+            EffectKind::Particles => &[(0, "Emitter"), (4, "Birth"), (7, "Motion"), (13, "Look"), (20, "Collisions"), (24, "Forces"), (29, "Slope (Collide with: a slope)"), (31, "Trails")],
             EffectKind::Camera => &[(0, "Position"), (3, "Point of interest"), (6, "Lens"), (8, "Depth of field")],
             EffectKind::Point => &[(0, "Position"), (3, "Rotation and scale")],
             EffectKind::ChromaKey => &[(0, "Key"), (4, "Matte")],
@@ -7705,6 +7767,9 @@ impl EffectValues {
             EffectKind::Bevel => v[bevel::WIDTH] <= 0.0 || v[bevel::INTENSITY] == 0.0,
             EffectKind::Extrude => v[extrude::LENGTH] <= 0.0,
             EffectKind::Rotate3d => v[rotate3d::TURN_X] == 0.0 && v[rotate3d::TURN_Y] == 0.0 && v[rotate3d::TURN_Z] == 0.0 && v[rotate3d::SIZE] == 100.0 && v[rotate3d::PUSH] == 0.0,
+            EffectKind::HueColorize => v[hue_colorize::AMOUNT] <= 0.0,
+            EffectKind::ChromaBlur => v[chroma_blur::RADIUS] <= 0.0 || v[chroma_blur::AMOUNT] <= 0.0,
+            EffectKind::Deinterlace => v[deinterlace::AMOUNT] <= 0.0,
             EffectKind::Demultiply => v[demultiply::AMOUNT] <= 0.0,
             EffectKind::RemoveStockBackground => v[stock_background::AMOUNT] <= 0.0,
             EffectKind::BlockDissolve => v[block_dissolve::COMPLETION] <= 0.0,

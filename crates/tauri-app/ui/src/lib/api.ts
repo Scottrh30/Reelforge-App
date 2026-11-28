@@ -482,7 +482,11 @@ export interface TrackerView {
   /// Smoothing in frames, and each point's smoothed path (empty when 0).
   smooth: number;
   smoothed: Pt[][];
+  /// How its points are compared with each frame.
+  matching: TrackMatch;
 }
+
+export type TrackMatch = "Correlation" | "Template";
 
 /// What the Viewer draws while playing, or paused (each off: left out to draw faster).
 export interface QualityProfile {
@@ -1286,6 +1290,7 @@ export const api = {
   trackerMode: (id: number, mode: TrackMode) => invoke("tracker_mode", { id, mode }),
   trackerSizes: (id: number, size: number, search: number) => invoke("tracker_sizes", { id, size, search }),
   trackerSmooth: (id: number, frames: number) => invoke("tracker_smooth", { id, frames }),
+  trackerMatching: (id: number, matching: TrackMatch) => invoke("tracker_matching", { id, matching }),
   trackerGrid: (id: number, cols: number, rows: number) => invoke("tracker_grid", { id, cols, rows }),
   meshRemove: (id: number) => invoke("mesh_remove", { id }),
   trackerMoveMany: (id: number, moves: [number, Pt][], blend = 0) => invoke("tracker_move_many", { id, moves, blend }),
@@ -1426,6 +1431,7 @@ export const api = {
   proxyDelete: (media: number) => invoke("proxy_delete", { media }),
   proxiesDeleteAll: () => invoke("proxies_delete_all"),
   proxiesDeleteProject: () => invoke<number>("proxies_delete_project"),
+  prerendersDeleteProject: () => invoke<[number, number]>("prerenders_delete_project"),
   pickFolder: () => invoke<string | null>("pick_folder"),
   proxiesRemake: (format: ProxyFormat, size: ProxySize) => invoke<number>("proxies_remake", { format, size }),
   proxiesUse: (on: boolean) => invoke("proxies_use", { on }),

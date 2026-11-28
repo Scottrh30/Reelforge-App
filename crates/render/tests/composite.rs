@@ -2460,6 +2460,63 @@ fn simulations_draw_what_they_say() {
     assert!(reds > 300, "{reds}");
     let none = draw(&mut c, &clear, EffectKind::Particles, &atomic, 0.5);
     assert!(none.chunks_exact(4).all(|q| q[0] < 8 && q[1] < 8 && q[2] < 8), "nothing from a clear layer");
+
+    // The simulator: forces, drag, a slope and trails.
+    {
+        let clear = solid(w, h, [0, 0, 0, 0]);
+        let lit = |img: &[u8]| -> (usize, f32, f32) {
+            let pts: Vec<(u32, u32)> = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| lum(px(img, w, x, y)) > 200).collect();
+            let n = pts.len().max(1) as f32;
+            (pts.len(), pts.iter().map(|p| p.0 as f32).sum::<f32>() / n, pts.iter().map(|p| p.1 as f32).sum::<f32>() / n)
+        };
+        let white = [(p::SIZE_START, 2.0), (p::SIZE_END, 2.0), (p::LOOK, 3.0), (p::COLOR_START, 0xffffff as f32), (p::COLOR_END, 0xffffff as f32), (p::GRAVITY, 0.0), (p::RANDOMNESS, 0.0)];
+        // Thrown right from the left edge: drag stops them sooner.
+        let mut throw = white.to_vec();
+        throw.extend([(p::EMIT_X, 5.0), (p::EMIT_Y, 50.0), (p::DIRECTION, 0.0), (p::SPREAD, 20.0), (p::SPEED, 100.0), (p::RATE, 200.0), (p::LIFETIME, 1.5)]);
+        let (_, free_x, _) = lit(&draw(&mut c, &clear, EffectKind::Particles, &throw, 2.0));
+        let mut dragged = throw.clone();
+        dragged.push((p::DRAG, 80.0));
+        let (_, drag_x, _) = lit(&draw(&mut c, &clear, EffectKind::Particles, &dragged, 2.0));
+        assert!(drag_x + 15.0 < free_x, "drag holds them back: {drag_x} vs {free_x}");
+        // Still, from a disc on the left, drawn to a point on the right; pushed away from one there.
+        let mut still = white.to_vec();
+        still.extend([(p::EMIT_X, 25.0), (p::EMIT_Y, 50.0), (p::SHAPE, p::SHAPE_DISC as f32), (p::EMIT_SIZE, 20.0), (p::SPEED, 0.0), (p::RATE, 200.0), (p::LIFETIME, 2.0), (p::FORCE_X, 75.0), (p::FORCE_Y, 50.0), (p::FORCE_STRENGTH, 100.0)]);
+        let (_, none_x, _) = lit(&draw(&mut c, &clear, EffectKind::Particles, &still, 2.5));
+        let mut pulled = still.clone();
+        pulled.push((p::FORCE, p::FORCE_ATTRACT as f32));
+        let (_, pull_x, _) = lit(&draw(&mut c, &clear, EffectKind::Particles, &pulled, 2.5));
+        let mut pushed = still.clone();
+        pushed.push((p::FORCE, p::FORCE_REPEL as f32));
+        let (_, push_x, _) = lit(&draw(&mut c, &clear, EffectKind::Particles, &pushed, 2.5));
+        assert!(pull_x > none_x + 10.0 && push_x < none_x - 5.0, "attracted {pull_x}, none {none_x}, repelled {push_x}");
+        // A swirl round a point above them moves them sideways.
+        let mut swirl = still.clone();
+        swirl.extend([(p::FORCE, p::FORCE_SWIRL as f32), (p::FORCE_X, 25.0), (p::FORCE_Y, 20.0)]);
+        let (_, swirl_x, _) = lit(&draw(&mut c, &clear, EffectKind::Particles, &swirl, 2.5));
+        assert!((swirl_x - none_x).abs() > 8.0, "swirled: {swirl_x} vs {none_x}");
+
+        // Falling onto a slope at 60% down, tilted: none below it, and they slide off sideways.
+        let mut fall = white.to_vec();
+        fall.extend([(p::EMIT_X, 50.0), (p::EMIT_Y, 10.0), (p::SHAPE, p::SHAPE_LINE as f32), (p::EMIT_SIZE, 30.0), (p::DIRECTION, -90.0), (p::SPREAD, 0.0), (p::SPEED, 60.0), (p::GRAVITY, 300.0), (p::RATE, 200.0), (p::LIFETIME, 3.0), (p::COLLIDE, p::COLLIDE_SLOPE as f32), (p::FLOOR, 60.0), (p::SLOPE_X, 50.0), (p::SLOPE_ANGLE, 0.0), (p::BOUNCE, 0.0)]);
+        let level = draw(&mut c, &clear, EffectKind::Particles, &fall, 2.5);
+        let below = |img: &[u8], tilt: f32| (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| { let line = 54.0 - (x as f32 - 80.0) * tilt.to_radians().tan(); y as f32 > line + 3.0 && lum(px(img, w, x, y)) > 200 }).count();
+        assert_eq!(below(&level, 0.0), 0, "none through a level slope");
+        let mut tilted = fall.clone();
+        tilted.push((p::SLOPE_ANGLE, -25.0));
+        let img = draw(&mut c, &clear, EffectKind::Particles, &tilted, 2.5);
+        assert_eq!(below(&img, -25.0), 0, "none through the tilted slope");
+        let (_, slid_x, _) = lit(&img);
+        assert!(slid_x > lit(&level).1 + 8.0, "slid down it to the right: {slid_x}");
+
+        // Trails: a few fast particles leave many more lit pixels behind them.
+        let mut few = throw.clone();
+        few.extend([(p::RATE, 10.0), (p::SPREAD, 60.0)]);
+        let (n0, _, _) = lit(&draw(&mut c, &clear, EffectKind::Particles, &few, 2.0));
+        let mut trails = few.clone();
+        trails.push((p::TRAILS, 60.0));
+        let (n1, _, _) = lit(&draw(&mut c, &clear, EffectKind::Particles, &trails, 2.0));
+        assert!(n1 > n0 * 3, "trails: {n0} → {n1}");
+    }
 }
 
 /// Fractal noise: a pattern across the layer that's the same at the same
@@ -4295,4 +4352,62 @@ fn demultiply_and_stock_background_unmix_the_background() {
     let green: Vec<u8> = (0..w * h).flat_map(|_| [0u8, 200, 0, 255]).collect();
     let gone = draw(&mut c, &green, EffectKind::RemoveStockBackground, &[(stock_background::BACKGROUND, 2.0), (stock_background::COLOR, 0x00c800 as f32)], None);
     assert!(px(&gone, w, 30, 8)[1] < 10, "{:?}", px(&gone, w, 30, 8));
+}
+
+/// From the HitFilm list: Hue colourise washes the picture in one hue keeping
+/// its light and shade; Chroma blur softens colour but not detail;
+/// Deinterlace fills one field's lines from the other's.
+#[test]
+fn hue_colourise_chroma_blur_and_deinterlace() {
+    use reelforge_core::effects::*;
+    let Some(mut c) = setup() else { return };
+    let (w, h) = (64u32, 16u32);
+    let mut key = 18_000u64;
+    let mut draw = |c: &mut reelforge_render::Compositor, px: &[u8], kind: EffectKind, set: &[(usize, f32)]| {
+        let v = fx(kind, set);
+        key += 1;
+        let mut l = layer(1, px, [w, h], [w as f32, h as f32], Transform::default(), BlendMode::Normal);
+        l.content_id = px.as_ptr() as u64 ^ key;
+        c.render([w, h], &[with_fx(l, vec![v])]);
+        c.read_output().unwrap()
+    };
+    // A grey ramp turns orange (30°), darker greys darker.
+    let ramp: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(|x| { let k = (20 + x * 3) as u8; [k, k, k, 255] })).collect();
+    let warm = draw(&mut c, &ramp, EffectKind::HueColorize, &[(hue_colorize::SATURATION, 60.0)]);
+    let (a, b) = (px(&warm, w, 10, 8), px(&warm, w, 55, 8));
+    assert!(b[0] > b[1] + 20 && b[1] > b[2] + 20, "orange: {b:?}");
+    assert!(a[0] < b[0] && a[1] < b[1], "light and shade kept: {a:?} {b:?}");
+    let blue = draw(&mut c, &ramp, EffectKind::HueColorize, &[(hue_colorize::HUE, 220.0), (hue_colorize::SATURATION, 60.0)]);
+    let q = px(&blue, w, 40, 8);
+    assert!(q[2] > q[0] + 30, "blue: {q:?}");
+
+    // A one-pixel red line on grey, and a black/white edge: the line's colour
+    // spreads (much less red), the edge stays as sharp.
+    let pic: Vec<u8> = (0..h)
+        .flat_map(|_| {
+            (0..w).flat_map(|x| match x {
+                20 => [220u8, 40, 40, 255],
+                0..=40 => [100, 100, 100, 255],
+                41..=50 => [0, 0, 0, 255],
+                _ => [255, 255, 255, 255],
+            })
+        })
+        .collect();
+    let soft = draw(&mut c, &pic, EffectKind::ChromaBlur, &[(chroma_blur::RADIUS, 6.0)]);
+    let (before, after) = (px(&pic, w, 20, 8), px(&soft, w, 20, 8));
+    let sat = |p: &[u8]| p[0].max(p[1]).max(p[2]) as i32 - p[0].min(p[1]).min(p[2]) as i32;
+    assert!(sat(&after) * 3 < sat(&before), "colour softened: {before:?} → {after:?}");
+    assert!(px(&soft, w, 50, 8)[1] < 8 && px(&soft, w, 51, 8)[1] > 247, "the edge stays sharp: {:?} {:?}", px(&soft, w, 50, 8), px(&soft, w, 51, 8));
+
+    // Interlaced: even rows white, odd rows black.
+    let comb: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |_| if y % 2 == 0 { [255u8, 255, 255, 255] } else { [0, 0, 0, 255] })).collect();
+    let rows = |img: &[u8]| (0..h).map(|y| px(img, w, 30, y)[0]).collect::<Vec<u8>>();
+    let upper = rows(&draw(&mut c, &comb, EffectKind::Deinterlace, &[]));
+    assert!(upper.iter().all(|&v| v > 245), "the upper field fills the lines: {upper:?}");
+    let lower = rows(&draw(&mut c, &comb, EffectKind::Deinterlace, &[(deinterlace::FIELD, 1.0)]));
+    assert!(lower[1..].iter().all(|&v| v < 10), "the lower field fills them: {lower:?}");
+    let repeat = rows(&draw(&mut c, &comb, EffectKind::Deinterlace, &[(deinterlace::METHOD, 1.0)]));
+    assert!(repeat.iter().all(|&v| v > 245), "{repeat:?}");
+    let blend = rows(&draw(&mut c, &comb, EffectKind::Deinterlace, &[(deinterlace::METHOD, 2.0)]));
+    assert!(blend[2..14].iter().all(|&v| v > 100 && v < 230) && blend[3].abs_diff(blend[4]) < 6, "the fields blended: {blend:?}");
 }

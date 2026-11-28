@@ -40,11 +40,37 @@ pub const FLOOR: usize = 21;
 pub const BOUNCE: usize = 22;
 pub const FRICTION: usize = 23;
 
+/// A force acting on every particle alive (the Force menu).
+pub const FORCE: usize = 24;
+/// Its point, % of the layer.
+pub const FORCE_X: usize = 25;
+pub const FORCE_Y: usize = 26;
+/// Its pull, frame pixels per second² (at a distance; less close in).
+pub const FORCE_STRENGTH: usize = 27;
+/// Air resistance: the share of their speed particles lose a second.
+pub const DRAG: usize = 28;
+/// A slope (deflector): a line through (Slope X, Floor), at Slope angle.
+pub const SLOPE_X: usize = 29;
+pub const SLOPE_ANGLE: usize = 30;
+/// Trails: each particle gives off this many smaller particles a second,
+/// which stay where they're dropped and fade (sparklers, fireworks, comets).
+pub const TRAILS: usize = 31;
+
 /// What particles bounce off (the Collide with menu).
-pub const COLLIDE_WITH: [&str; 4] = ["Nothing", "A floor", "A floor and the sides", "The layer's shape"];
+pub const COLLIDE_WITH: [&str; 5] = ["Nothing", "A floor", "A floor and the sides", "The layer's shape", "A slope (deflector)"];
 pub const COLLIDE_FLOOR: u32 = 1;
 pub const COLLIDE_SIDES: u32 = 2;
 pub const COLLIDE_SHAPE: u32 = 3;
+pub const COLLIDE_SLOPE: u32 = 4;
+
+/// The Force menu.
+pub const FORCES: [&str; 4] = ["None", "Attract to a point", "Repel from a point", "Swirl round a point"];
+pub const FORCE_ATTRACT: u32 = 1;
+pub const FORCE_REPEL: u32 = 2;
+pub const FORCE_SWIRL: u32 = 3;
+
+/// A trail particle lives this share of its parent's lifetime.
+pub const TRAIL_LIFE: f32 = 0.35;
 
 pub const SHAPES: [&str; 9] = ["Point", "Line", "Disc", "Ring (outwards)", "Whole layer", "Layer's pixels", "Layer's pixels, layer hidden", "Inside the layer's shape", "Along the layer's outline"];
 pub const SHAPE_POINT: u32 = 0;
@@ -120,7 +146,10 @@ pub struct Particle {
     pub size: f32,
     /// A random number 0–1 of its own (turbulence phase, flicker).
     pub seed: f32,
-    pub _pad: [f32; 2],
+    /// A trail particle: its own age + 1 (0: not a trail) and lifetime. Its
+    /// parent's state is in the fields above, `age` being the parent's age
+    /// when it was dropped.
+    pub trail: [f32; 2],
 }
 
 /// The particles alive at one moment.
@@ -272,13 +301,54 @@ pub fn simulate(e: &Effect, t: Time) -> Particles {
             life,
             size: 1.0 - vary * 0.5 * r(6),
             seed: r(7),
-            _pad: [0.0; 2],
+            trail: [0.0; 2],
         });
     }
+    add_trails(e, seed, t, &mut list);
     if list.len() > MAX_ALIVE {
         list.drain(..list.len() - MAX_ALIVE);
     }
     Particles { id, list }
+}
+
+/// Trails: particles each particle drops as it goes (`Trails` a second), each
+/// living [`TRAIL_LIFE`] of its parent's lifetime. Put before their parents
+/// (drawn under them), at most as many as there's room for.
+fn add_trails(e: &Effect, seed: u64, t: Time, list: &mut Vec<Particle>) {
+    let rate = e.value_at(TRAILS, t);
+    if rate <= 0.0 || list.is_empty() {
+        return;
+    }
+    let room = MAX_ALIVE.saturating_sub(list.len());
+    let mut trails = Vec::new();
+    // Newest parents first, so if there's not room for all, theirs are kept.
+    'parents: for p in list.iter().rev() {
+        let life = p.life * TRAIL_LIFE;
+        if life <= 0.0 {
+            continue;
+        }
+        // Dropped at the parent's ages (j + jitter) / rate, still alive now.
+        let first = ((p.age - life) * rate).floor().max(0.0) as u64;
+        let last = (p.age * rate).floor().max(0.0) as u64;
+        for j in first..=last.min(first + 4096) {
+            // (The parent's own random number keeps its trail the same from frame to frame.)
+            let k = ((p.seed.to_bits() as u64) << 32) ^ j;
+            let jit = rnd(seed ^ 0x7A11, k, 0) as f32;
+            let at = (j as f32 + jit) / rate;
+            let own = p.age - at;
+            if at < 0.0 || own < 0.0 || own >= life {
+                continue;
+            }
+            if trails.len() >= room {
+                break 'parents;
+            }
+            trails.push(Particle { age: at, size: p.size * 0.6, seed: rnd(seed ^ 0x7A11, k, 1) as f32, trail: [own + 1.0, life], ..*p });
+        }
+    }
+    // Oldest first, like the rest.
+    trails.sort_by(|a, b| (b.trail[0]).total_cmp(&a.trail[0]));
+    trails.append(list);
+    *list = trails;
 }
 
 #[cfg(test)]
@@ -391,6 +461,28 @@ mod tests {
             }
             assert_eq!(specs[SHAPE + v.len() - 1].name, "Look");
         }
+    }
+
+    #[test]
+    fn particles_drop_trails_that_stay_and_fade() {
+        let e = emitter(&[(RATE, 10.0), (LIFETIME, 2.0), (RANDOMNESS, 0.0), (TRAILS, 30.0)]);
+        let p = simulate(&e, secs(3.0));
+        let (trails, parents): (Vec<&Particle>, Vec<&Particle>) = p.list.iter().partition(|q| q.trail[0] > 0.0);
+        assert!((parents.len() as i64 - 20).abs() <= 1, "{}", parents.len());
+        // Each drops 30 a second, living 0.7 s: about 21 each (fewer for the youngest).
+        assert!(trails.len() > 250 && trails.len() < 20 * 22, "{}", trails.len());
+        for q in &trails {
+            let own = q.trail[0] - 1.0;
+            assert!(own >= 0.0 && own < q.trail[1] && (q.trail[1] - 0.7).abs() < 1e-4);
+            assert!(q.age >= 0.0 && q.age + own <= 2.0 + 1e-3, "dropped while the parent lived");
+        }
+        // Drawn under the particles, oldest first; none without the setting.
+        assert!(p.list.iter().take(trails.len()).all(|q| q.trail[0] > 0.0));
+        assert!(simulate(&emitter(&[(RATE, 10.0)]), secs(3.0)).list.iter().all(|q| q.trail == [0.0, 0.0]));
+        // Old effects (before forces and trails) still work.
+        let mut old = emitter(&[(RATE, 10.0)]);
+        old.params.truncate(24);
+        assert!(!simulate(&old, secs(1.0)).list.is_empty());
     }
 
     #[test]

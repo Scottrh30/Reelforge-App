@@ -9095,3 +9095,99 @@ fn fs_stock_background(in: VsOut) -> @location(0) vec4<f32> {
     let o = vec4(u.rgb * u.a * c.a, u.a * c.a);
     return mix(c, o, clamp(fx.p0.w / 100.0, 0.0, 1.0));
 }
+
+// ---- From the HitFilm list: hue colourise, chroma blur, deinterlace ----
+
+// Hue colourise: p0 = (hue °, saturation %, lightness %, amount %).
+@fragment
+fn fs_hue_colorize(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    if (c.a <= 0.0) {
+        return c;
+    }
+    let d = cx_disp(c);
+    var l = cx_rgb2hsl(d).z;
+    let k = clamp(fx.p0.z / 100.0, -1.0, 1.0);
+    l = select(l * (1.0 + k), l + (1.0 - l) * k, k > 0.0);
+    let o = cx_hsl2rgb(vec3(fract(fx.p0.x / 360.0), clamp(fx.p0.y / 100.0, 0.0, 1.0), clamp(l, 0.0, 1.0)));
+    return mix(c, cx_out(o, c.a), clamp(fx.p0.w / 100.0, 0.0, 1.0));
+}
+
+// Display RGB to Rec.709 YCbCr and back.
+fn cb_ycc(c: vec3<f32>) -> vec3<f32> {
+    let y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    return vec3(y, (c.b - y) / 1.8556, (c.r - y) / 1.5748);
+}
+fn cb_rgb(q: vec3<f32>) -> vec3<f32> {
+    let r = q.x + 1.5748 * q.z;
+    let b = q.x + 1.8556 * q.y;
+    let g = (q.x - 0.2126 * r - 0.0722 * b) / 0.7152;
+    return vec3(r, g, b);
+}
+
+// Chroma blur: p0 = (radius px, amount %). A Gaussian over 9×9 taps spread
+// to the radius, of the colour (Cb, Cr) alone, weighted by each tap's opacity.
+@fragment
+fn fs_chroma_blur(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    if (c.a <= 0.0) {
+        return c;
+    }
+    let r = max(fx.p0.x, 0.0);
+    let step = cx_px() * (r / 4.0);
+    var sum = vec2(0.0);
+    var wsum = 0.0;
+    for (var j = -4; j <= 4; j = j + 1) {
+        for (var i = -4; i <= 4; i = i + 1) {
+            let o = vec2(f32(i), f32(j));
+            let s = cx_at(in.uv + o * step);
+            let w = exp(-dot(o, o) / 8.0) * s.a;
+            if (w > 0.0) {
+                sum += cb_ycc(cx_disp(s)).yz * w;
+                wsum += w;
+            }
+        }
+    }
+    let here = cb_ycc(cx_disp(c));
+    let cc = select(here.yz, sum / max(wsum, 1e-6), wsum > 0.0);
+    let o = cb_rgb(vec3(here.x, cc));
+    return mix(c, cx_out(o, c.a), clamp(fx.p0.y / 100.0, 0.0, 1.0));
+}
+
+// Deinterlace: p0 = (field: 0 upper / 1 lower, method: 0 interpolate / 1
+// repeat / 2 blend, amount %). Works on the layer's own rows of pixels.
+fn di_row(t: vec2<f32>, row: f32, h: f32) -> vec4<f32> {
+    let y = (clamp(row, 0.0, h - 1.0) + 0.5) / h;
+    return textureSampleLevel(src, src_sampler, vec2(t.x, y), 0.0);
+}
+
+@fragment
+fn fs_deinterlace(in: VsOut) -> @location(0) vec4<f32> {
+    let c = cx_at(in.uv);
+    if (inside(in.uv) <= 0.0) {
+        return c;
+    }
+    let h = f32(textureDimensions(src).y);
+    let t = to_tex(in.uv);
+    let row = floor(clamp(t.y, 0.0, 0.99999) * h);
+    let keep = u32(round(fx.p0.x));
+    let method = u32(round(fx.p0.y));
+    var o = c;
+    if (method == 2u) {
+        o = di_row(t, row - 1.0, h) * 0.25 + di_row(t, row, h) * 0.5 + di_row(t, row + 1.0, h) * 0.25;
+    } else {
+        // Row 0 is the upper field's first line.
+        let ours = (u32(row) % 2u) == keep;
+        if (!ours) {
+            if (method == 1u) {
+                o = di_row(t, select(row + 1.0, row - 1.0, keep == 0u), h);
+            } else {
+                // At the top and bottom, the one line there is.
+                let up = select(row - 1.0, row + 1.0, row < 1.0);
+                let down = select(row + 1.0, row - 1.0, row + 1.0 >= h);
+                o = (di_row(t, up, h) + di_row(t, down, h)) * 0.5;
+            }
+        }
+    }
+    return mix(c, o, clamp(fx.p0.z / 100.0, 0.0, 1.0));
+}

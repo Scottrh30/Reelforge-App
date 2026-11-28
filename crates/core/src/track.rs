@@ -184,7 +184,10 @@ pub struct Template {
     norm: f32,
     /// How far the feature is from the whole pixel the patch is centred on, so
     /// a refreshed patch doesn't lose (and slowly drift by) the fraction.
-    frac: [f32; 2],
+    frac: [f32; 2],    /// The patch's own values (for template matching).
+    raw: Vec<f32>,
+    /// How it's compared with the picture.
+    kind: TrackMatch,
 }
 
 impl Template {
@@ -206,7 +209,7 @@ impl Template {
         let values: Vec<f32> = raw.iter().zip(&weights).map(|(v, w)| w * (v - mean)).collect();
         // Σ w·(t − mean)²
         let norm = raw.iter().zip(&weights).map(|(v, w)| w * (v - mean) * (v - mean)).sum::<f32>().sqrt();
-        Self { half, weights, values, wsum, norm, frac: [centre[0] - cx as f32, centre[1] - cy as f32] }
+        Self { half, weights, values, wsum, norm, frac: [centre[0] - cx as f32, centre[1] - cy as f32], raw, kind: TrackMatch::Correlation }
     }
 
     /// The patch around `centre` of `img`, as it would look after the local
@@ -233,12 +236,44 @@ impl Template {
         let values: Vec<f32> = raw.iter().zip(&weights).map(|(v, w)| w * (v - mean)).collect();
         let norm = raw.iter().zip(&weights).map(|(v, w)| w * (v - mean) * (v - mean)).sum::<f32>().sqrt();
         // Sampled at the exact centre, so there's no fraction to carry.
-        Self { half, weights, values, wsum, norm, frac: [0.0, 0.0] }
+        Self { half, weights, values, wsum, norm, frac: [0.0, 0.0], raw, kind: TrackMatch::Correlation }
     }
 
     /// Too flat to track (no texture to lock on to)?
     pub fn is_flat(&self) -> bool {
         self.norm / self.wsum.sqrt() < 2.0
+    }
+
+    /// Compared with the picture this way.
+    pub fn matching(mut self, kind: TrackMatch) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// How well the patch of `img` centred at `(cx, cy)` matches: 1 exactly,
+    /// less the less alike.
+    fn score(&self, img: &Luma, cx: isize, cy: isize) -> f32 {
+        match self.kind {
+            TrackMatch::Correlation => self.ncc(img, cx, cy),
+            TrackMatch::Template => self.sad(img, cx, cy),
+        }
+    }
+
+    /// Template matching: the weighted mean difference of the values
+    /// themselves (not their pattern), as a score: 1 the same, 0 a mean
+    /// difference of [`TEMPLATE_RANGE`] levels or more.
+    fn sad(&self, img: &Luma, cx: isize, cy: isize) -> f32 {
+        let h = self.half;
+        let mut diff = 0.0;
+        let mut i = 0;
+        for dy in -h..=h {
+            for dx in -h..=h {
+                let (Some(w), Some(t)) = (self.weights.get(i), self.raw.get(i)) else { return 0.0 };
+                diff += w * (img.at(cx + dx, cy + dy) - t).abs();
+                i += 1;
+            }
+        }
+        (1.0 - diff / self.wsum.max(1e-6) / TEMPLATE_RANGE).max(0.0)
     }
 
     /// Weighted normalised cross-correlation with the patch of `img` centred at `(cx, cy)`.
@@ -289,7 +324,7 @@ impl Template {
         let mut best = (0, 0, f32::MIN);
         for dy in -r..=r {
             for dx in -r..=r {
-                let s = self.ncc(img, cx + dx, cy + dy);
+                let s = self.score(img, cx + dx, cy + dy);
                 scores[((dy + r) as usize) * w + (dx + r) as usize] = s;
                 if s > best.2 {
                     best = (dx, dy, s);
@@ -315,6 +350,34 @@ impl Template {
     }
 }
 
+
+/// Template matching: a mean difference of this many levels (of 255) scores 0.
+const TEMPLATE_RANGE: f32 = 40.0;
+
+/// How a tracker compares a feature with each frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TrackMatch {
+    /// Normalised correlation: the feature's pattern of light and dark,
+    /// whatever its brightness and contrast, and its look refreshed as it
+    /// goes, so it follows features that fade, flicker or slowly turn.
+    #[default]
+    Correlation,
+    /// Template match: the feature's exact values, as first seen, never
+    /// refreshed: no drift on a sharp, unchanging feature, but it's lost when
+    /// the light on it changes.
+    Template,
+}
+
+impl TrackMatch {
+    pub const ALL: [TrackMatch; 2] = [TrackMatch::Correlation, TrackMatch::Template];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TrackMatch::Correlation => "Correlation (copes with light changes)",
+            TrackMatch::Template => "Template match (exact look, no drift)",
+        }
+    }
+}
 
 /// Below this search radius (pixels), search exhaustively at full resolution.
 const DIRECT_SEARCH: f32 = 16.0;
@@ -384,13 +447,19 @@ pub struct FeatureTracker {
     search: f32,
     pub pos: [f32; 2],
     velocity: [f32; 2],
+    matching: TrackMatch,
 }
 
 impl FeatureTracker {
     /// Start following the feature at `pos` (pixels of `pyr`'s full level).
     pub fn new(pyr: &Pyramid, pos: [f32; 2], size: f32, search: f32) -> Self {
-        let original = Template::new(&pyr.level(0), pos, size.max(9.0));
-        let mut t = Self { templates: Vec::new(), original, size, search, pos, velocity: [0.0, 0.0] };
+        Self::new_matching(pyr, pos, size, search, TrackMatch::Correlation)
+    }
+
+    /// [`FeatureTracker::new`], comparing it with each frame as `matching` says.
+    pub fn new_matching(pyr: &Pyramid, pos: [f32; 2], size: f32, search: f32, matching: TrackMatch) -> Self {
+        let original = Template::new(&pyr.level(0), pos, size.max(9.0)).matching(matching);
+        let mut t = Self { templates: Vec::new(), original, size, search, pos, velocity: [0.0, 0.0], matching };
         t.capture(pyr);
         t
     }
@@ -404,7 +473,7 @@ impl FeatureTracker {
         self.templates = (0..self.levels(pyr))
             .map(|l| {
                 let k = (1 << l) as f32;
-                Template::new(&pyr.level(l), [self.pos[0] / k, self.pos[1] / k], (self.size / k).max(9.0))
+                Template::new(&pyr.level(l), [self.pos[0] / k, self.pos[1] / k], (self.size / k).max(9.0)).matching(self.matching)
             })
             .collect();
     }
@@ -484,7 +553,8 @@ impl FeatureTracker {
             self.pos = p;
             // Follow gradual changes (turning, light) by refreshing the patch, but
             // only from good matches, so one poor frame doesn't make it wander off.
-            if score > 0.9 {
+            // (Template matching keeps the look it started with.)
+            if score > 0.9 && self.matching == TrackMatch::Correlation {
                 self.capture(pyr);
             }
         }
@@ -561,6 +631,13 @@ pub struct Tracker {
     /// the motion is used. The tracked samples themselves are kept as they are.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub smooth: f32,
+    /// How its points are compared with each frame.
+    #[serde(default, skip_serializing_if = "is_correlation")]
+    pub matching: TrackMatch,
+}
+
+fn is_correlation(m: &TrackMatch) -> bool {
+    *m == TrackMatch::Correlation
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -583,6 +660,8 @@ enum TrackerRepr {
         grid: [u8; 2],
         #[serde(default)]
         smooth: f32,
+        #[serde(default)]
+        matching: TrackMatch,
     },
     Single(PointTrack),
 }
@@ -590,8 +669,8 @@ enum TrackerRepr {
 impl From<TrackerRepr> for Tracker {
     fn from(r: TrackerRepr) -> Self {
         let mut t = match r {
-            TrackerRepr::Multi { mode, points, grid, smooth } => Tracker { mode, points, grid, smooth: smooth.clamp(0.0, MAX_SMOOTH) },
-            TrackerRepr::Single(p) => Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0], smooth: 0.0 },
+            TrackerRepr::Multi { mode, points, grid, smooth, matching } => Tracker { mode, points, grid, smooth: smooth.clamp(0.0, MAX_SMOOTH), matching },
+            TrackerRepr::Single(p) => Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0], smooth: 0.0, matching: TrackMatch::Correlation },
         };
         if t.points.is_empty() {
             t.points.push(PointTrack::default());
@@ -608,7 +687,7 @@ impl From<TrackerRepr> for Tracker {
 
 impl From<PointTrack> for Tracker {
     fn from(p: PointTrack) -> Self {
-        Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0], smooth: 0.0 }
+        Tracker { mode: TrackMode::Position, points: vec![p], grid: [0, 0], smooth: 0.0, matching: TrackMatch::Correlation }
     }
 }
 
@@ -619,7 +698,7 @@ impl Tracker {
         let first = PointTrack { point: centre, start, ..Default::default() };
         // A frame's smoothing to start with: it takes out the tracking's
         // jitter without dragging behind real movement (and can be changed).
-        let mut t = Tracker { mode: TrackMode::Position, points: vec![first], grid: [0, 0], smooth: 1.0 };
+        let mut t = Tracker { mode: TrackMode::Position, points: vec![first], grid: [0, 0], smooth: 1.0, matching: TrackMatch::Correlation };
         t.set_mode(mode, layer, start);
         if mode == TrackMode::Mesh {
             // A grid filling the box around the centre.
@@ -1768,6 +1847,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn template_matching_holds_exact_looks_and_correlation_copes_with_light() {
+        let (w, h) = (128usize, 96usize);
+        // A textured mark moving 2 px a frame right, on a plain ground; `gain` dims everything.
+        let frame = |k: usize, gain: f32| {
+            let (cx, cy) = (30.0 + 2.0 * k as f32, 48.0);
+            let data: Vec<f32> = (0..w * h)
+                .map(|i| {
+                    let (dx, dy) = ((i % w) as f32 - cx, (i / w) as f32 - cy);
+                    let blob = (-(dx * dx + dy * dy) / 60.0).exp() * (1.0 + 0.5 * (dx * 0.7).sin() * (dy * 0.5).cos());
+                    gain * (60.0 + 120.0 * blob)
+                })
+                .collect();
+            Pyramid::new(data, w, h, 1)
+        };
+        let run = |m: TrackMatch, dim: f32| -> (usize, f32) {
+            let mut f = FeatureTracker::new_matching(&frame(0, 1.0), [30.0, 48.0], 21.0, 12.0, m);
+            for k in 1..=20 {
+                let (p, score) = f.step(&frame(k, dim.powi(k as i32)));
+                if score < MIN_SCORE {
+                    return (k, 0.0);
+                }
+                let err = (p[0] - (30.0 + 2.0 * k as f32)).abs() + (p[1] - 48.0).abs();
+                if k == 20 {
+                    return (21, err);
+                }
+            }
+            (21, 0.0)
+        };
+        // Steady light: both follow it all the way, on the spot.
+        for m in TrackMatch::ALL {
+            let (done, err) = run(m, 1.0);
+            assert!(done == 21 && err < 0.3, "{m:?}: {done} frames, {err} px off");
+        }
+        // Fading 4% a frame: correlation keeps it, template matching loses it.
+        let (done, err) = run(TrackMatch::Correlation, 0.96);
+        assert!(done == 21 && err < 0.5, "correlation: {done} frames, {err} px off");
+        let (lost, _) = run(TrackMatch::Template, 0.96);
+        assert!(lost < 20, "template match lost it as the light changed (frame {lost})");
+        // Saved only when not the default.
+        let mut t = Tracker::new(TrackMode::Position, [0.0, 0.0], [400.0, 300.0], Time::ZERO);
+        assert!(!serde_json::to_string(&t).unwrap().contains("matching"));
+        t.matching = TrackMatch::Template;
+        let back: Tracker = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back.matching, TrackMatch::Template);
+    }
+
+    #[test]
     fn corrections_ease_into_the_frames_around() {
         let f = |k: i64| Time(k * 1000);
         let mut p = PointTrack { path: (0..10).map(|k| TrackSample { at: f(k), pos: [k as f32 * 10.0, 0.0], score: 1.0 }).collect(), ..Default::default() };
@@ -1797,7 +1923,7 @@ mod tests {
 
     #[test]
     fn moving_a_mesh_corner_keeps_the_grids_shape() {
-        let mut t = Tracker { mode: TrackMode::Mesh, points: vec![PointTrack::default()], grid: [4, 4], smooth: 0.0 };
+        let mut t = Tracker { mode: TrackMode::Mesh, points: vec![PointTrack::default()], grid: [4, 4], smooth: 0.0, matching: TrackMatch::Correlation };
         t.fill_mesh([[0.0, 0.0], [400.0, 0.0], [400.0, 400.0], [0.0, 400.0]], Time::ZERO);
         // An inner point dragged by hand off the even grid.
         t.points[6].point = [130.0, 80.0];
@@ -1995,7 +2121,7 @@ mod tests {
         let s = |t: f64, p: [f32; 2]| TrackSample { at: secs(t), pos: p, score: 1.0 };
         let a = PointTrack { path: vec![s(0.0, [100.0, 100.0]), s(1.0, [100.0, 100.0])], ..Default::default() };
         let b = PointTrack { path: vec![s(0.0, [120.0, 100.0]), s(1.0, [100.0, 140.0])], ..Default::default() };
-        Tracker { mode: TrackMode::Transform, points: vec![a, b], grid: [0, 0], smooth: 0.0 }
+        Tracker { mode: TrackMode::Transform, points: vec![a, b], grid: [0, 0], smooth: 0.0, matching: TrackMatch::Correlation }
     }
 
     #[test]
@@ -2033,7 +2159,7 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        Tracker { mode: TrackMode::CornerPin, points, grid: [0, 0], smooth: 0.0 }
+        Tracker { mode: TrackMode::CornerPin, points, grid: [0, 0], smooth: 0.0, matching: TrackMatch::Correlation }
     }
 
     /// A mesh track warps another layer over its grid (on the frame, through the
@@ -2056,7 +2182,7 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        let tr = Tracker { mode: TrackMode::Mesh, points, grid: [2, 1], smooth: 0.0 };
+        let tr = Tracker { mode: TrackMode::Mesh, points, grid: [2, 1], smooth: 0.0, matching: TrackMatch::Correlation };
         let w = follow_mesh(&tracked, &tr, layer, frame, &target, Axes::ALL).unwrap();
         // Keys at the target's source times (it starts at 1 s), shifted by the tracked clip's position.
         assert_eq!(w.keys.len(), 2);
