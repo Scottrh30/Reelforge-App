@@ -3746,6 +3746,7 @@ dependencies = [
  "reelforge-codecs",
  "reelforge-core",
  "serde",
+ "serde_json",
  "windows",
 ]
 

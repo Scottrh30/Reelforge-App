@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use reelforge_core::meshtrack::MeshTracker;
 use reelforge_core::meshwarp::MeshShape;
 use reelforge_core::planar::PlanarTracker;
-use reelforge_core::track::{local_linear, motion_between, FeatureTracker, Luma, PointTrack, Pyramid, TrackMode, TrackSample, Tracker, MIN_SCORE};
+use reelforge_core::track::{local_linear, motion_between, FeatureTracker, Luma, PointTrack, Pyramid, TrackMode, TrackSample, Tracker, MIN_SCORE, REFIND_SCORE};
 use reelforge_core::{MediaInfo, Time};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -83,7 +83,7 @@ pub fn track_points_live(
     let mut out = Vec::new();
     for (i, p) in tracker.points.iter().enumerate() {
         let start = p.shown_at(from);
-        let f = FeatureTracker::new_matching(&pyr, [start[0] * sx, start[1] * sy], p.size * sx, p.search * sx, tracker.matching);
+        let f = FeatureTracker::new_matching(&pyr, [start[0] * sx, start[1] * sy], p.size * sx, p.search * sx, tracker.matching).anchored();
         if f.is_flat() {
             let which = if tracker.points.len() > 1 { format!("point {} has", i + 1) } else { "there's".into() };
             return Err(anyhow!("{which} no detail under it to follow: put it on a corner, a mark or an edge"));
@@ -97,6 +97,10 @@ pub fn track_points_live(
     let total = ((until - from).0.abs() / step.0.max(1)).max(1) as f32;
     let mut t = from;
     let mut n = 0.0;
+    // Frames each point has been carried along without being found (a blink,
+    // a hand passing, a blurred frame), and the time it was last found.
+    let mut missing = vec![0usize; followers.len()];
+    let mut last_found = vec![from; followers.len()];
     loop {
         t = if backwards { t - step } else { t + step };
         if (backwards && t < until) || (!backwards && t > until) || t < Time::ZERO {
@@ -106,18 +110,80 @@ pub fn track_points_live(
             return Ok((out, TrackEnd::Cancelled));
         }
         let (pyr, _, _) = grab(t)?;
+        let before: Vec<[f32; 2]> = followers.iter().map(|f| f.pos).collect();
+        let moving: Vec<[f32; 2]> = followers.iter().map(|f| f.velocity()).collect();
+        let steps: Vec<([f32; 2], f32)> = followers.iter_mut().map(|f| f.step(&pyr)).collect();
+        let mut good: Vec<bool> = steps.iter().zip(&missing).map(|(s, &m)| s.1 >= if m > 0 { REFIND_SCORE } else { MIN_SCORE }).collect();
+        // Points on one surface move together from one frame to the next. When
+        // one jumped somewhere else than the others did (to a look-alike: the
+        // other eye, a brow), the one whose move least fits how it was moving
+        // is the one that's wrong: it's carried with the others instead.
+        let d = |i: usize| [steps[i].0[0] - before[i][0], steps[i].0[1] - before[i][1]];
+        let surprise = |i: usize| {
+            let v = moving.get(i).copied().unwrap_or_default();
+            (d(i)[0] - v[0]).hypot(d(i)[1] - v[1]) - steps[i].1 * 4.0
+        };
+        for i in 0..steps.len() {
+            for j in i + 1..steps.len() {
+                if !good[i] || !good[j] {
+                    continue;
+                }
+                // Allowed: what turning or zooming by a few percent a frame moves it.
+                let apart = (before[i][0] - before[j][0]).hypot(before[i][1] - before[j][1]);
+                let off = (d(i)[0] - d(j)[0]).hypot(d(i)[1] - d(j)[1]);
+                // (A point carried along while hidden may be found again anywhere
+                // it was looked for round where it was carried to.)
+                // (Never as far as the other point: that's where a look-alike, the
+                // other eye, would be.)
+                let back = |k: usize| if missing[k] > 0 { followers.get(k).map_or(0.0, |f| f.reach()).min(apart * 0.4) } else { 0.0 };
+                if off > (apart * 0.06).max(8.0) + back(i).max(back(j)) {
+                    let wrong = if surprise(i) > surprise(j) { i } else { j };
+                    good[wrong] = false;
+                }
+            }
+        }
+        let moved: Vec<[f32; 2]> = (0..followers.len()).filter(|&i| good[i]).map(|i| [steps[i].0[0] - before[i][0], steps[i].0[1] - before[i][1]]).collect();
+        let carried = (!moved.is_empty()).then(|| {
+            let k = moved.len() as f32;
+            [moved.iter().map(|m| m[0]).sum::<f32>() / k, moved.iter().map(|m| m[1]).sum::<f32>() / k]
+        });
         let mut found = Vec::with_capacity(followers.len());
         for (i, f) in followers.iter_mut().enumerate() {
-            let (pos, score) = f.step(&pyr);
-            if score < MIN_SCORE {
-                return Ok((out, TrackEnd::Lost(t, i)));
+            let (pos, score) = steps[i];
+            if good[i] {
+                f.found();
+                missing[i] = 0;
+                last_found[i] = t;
+                found.push(TrackSample { at: t, pos: [pos[0] / sx, pos[1] / sy], score });
+                continue;
             }
-            found.push(TrackSample { at: t, pos: [pos[0] / sx, pos[1] / sy], score });
+            missing[i] += 1;
+            // Carried by points that are still found, it can stay hidden longer.
+            if missing[i] > if carried.is_some() { MAX_CARRIED } else { MAX_MISSING } {
+                // Gone for good: stop where it was last found (the frames it was
+                // carried through are guesses, not tracked).
+                let lf = last_found[i];
+                for o in &mut out {
+                    o.retain(|s| if backwards { s.at >= lf } else { s.at <= lf });
+                }
+                return Ok((out, TrackEnd::Lost(last_found[i] + if backwards { Time(-step.0) } else { step }, i)));
+            }
+            // Not found this frame: carried with the points that were, or on
+            // with its own last movement, and looked for again next frame.
+            // (On its own, slowing down: whatever hid it, it's likelier to
+            // have slowed than to have kept going at full speed.)
+            let d = carried.unwrap_or_else(|| {
+                let was = prev_pos(&out[i], sx, sy, before[i]);
+                [(before[i][0] - was[0]) * COAST_SLOWING, (before[i][1] - was[1]) * COAST_SLOWING]
+            });
+            let p = [before[i][0] + d[0], before[i][1] + d[1]];
+            f.coast(p, d);
+            found.push(TrackSample { at: t, pos: [p[0] / sx, p[1] / sy], score });
         }
         // With several points the surface's motion is known: check each feature
         // against its original look, turned/scaled/tilted to match (see
         // `FeatureTracker::correct`), which stops errors building up.
-        if followers.len() > 1 {
+        if followers.len() > 1 && good.iter().all(|g| *g) {
             let now: Vec<[f32; 2]> = followers.iter().map(|f| f.pos).collect();
             if let Some(hm) = motion_between(tracker.mode, &starts, &now) {
                 let start = Luma { data: &first, width: w, height: h };
@@ -134,6 +200,25 @@ pub fn track_points_live(
         }
         n += 1.0;
         progress((n / total).min(1.0), &out);
+    }
+}
+
+/// The most frames in a row a point may go unfound (a blink, a hand or a
+/// blurred moment passing over it, a squint) and be picked up again: a second.
+const MAX_MISSING: usize = 25;
+/// The same for a point carried along by others that are still found (an eye
+/// squinting while the other stays open): five seconds.
+const MAX_CARRIED: usize = 125;
+
+/// How much of its speed a point carried along on its own keeps each frame.
+const COAST_SLOWING: f32 = 0.8;
+
+/// Where point `path` was the frame before its latest sample (frame pixels of
+/// the tracker, `now` if there's none), for carrying it on at the same speed.
+fn prev_pos(path: &[TrackSample], sx: f32, sy: f32, now: [f32; 2]) -> [f32; 2] {
+    match path.len().checked_sub(2).and_then(|i| path.get(i)) {
+        Some(s) => [s.pos[0] * sx, s.pos[1] * sy],
+        None => now,
     }
 }
 

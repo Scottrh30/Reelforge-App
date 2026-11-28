@@ -2227,8 +2227,23 @@ What works now:
   it). With two or four points the tracker also compares each feature with how it looked at the
   start, warped by the group's motion, so errors don't build up over long shots. Fast motion is
   fine: raise **Search** and big areas are searched coarse-to-fine, starting where the last
-  movement predicts. If a point is lost (blocked, out of frame) tracking stops and says which;
+  movement predicts. Each feature is also held to its first look: searched for over a quarter
+  of the box around where it's tracked, that look pulls back a track that has crept off it,
+  and the feature's patch is only refreshed where that look agrees (drift correction), so a
+  patch refreshed a few pixels off can't carry the error on. A point that can't be found for a
+  moment (a blink, a hand or a blurred frame passing over it) is carried along with the points
+  that still are, or slowing down on its own if none are, looked for over a growing area and
+  picked up again when it matches well (0.75 or better), within a second, or five seconds
+  while other points still carry it. A point that jumps somewhere the others didn't (to a
+  look-alike: the other eye, a brow) is treated the same way. Only then does tracking stop and
+  say which point it lost, cut back to where it was last found;
   go there, drag it back onto its detail (that corrects the track at that frame) and track on.
+  New trackers' boxes are sized for the footage: **Feature box** 31 px and **Search** 24 px at
+  720p, half as much again at 1080p and three times at 4K (by the short side). On a 4K
+  close-up of a woman talking (39 s, blinking, squinting, tilting her head, a hand passing her
+  face), a two-point track of her eyes holds the whole clip at 1.4–1.6 px median error on
+  the pupils with the eyes open (measured against a face-landmark model); before these
+  changes the default box lost it after six frames, and a bigger box drifted up to 25 px.
   **Blend fixes** (frames) eases such a correction into that many tracked frames on each side,
   fading out (a raised cosine), so the path doesn't jump at the corrected frame; it works for
   every kind of track, mesh points included (and with a group of them picked).

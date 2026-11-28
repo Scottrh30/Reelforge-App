@@ -679,3 +679,63 @@ fn solves_the_camera_of_encoded_footage() {
     let stop = AtomicBool::new(true);
     assert!(reelforge_media::track_scene(&path, &info, Time::ZERO, until, &stop, |_| {}).unwrap().is_none());
 }
+
+/// Two textured spots moving together (a pair of eyes); one is covered over
+/// for a few frames (a blink): it's carried along with the other and picked
+/// up again, rather than the whole track stopping at the first frame it
+/// can't be found.
+#[test]
+fn a_point_hidden_for_a_few_frames_is_carried_and_found_again() {
+    let path = std::env::temp_dir().join("rf_track_blink.mp4");
+    let frames = 40usize;
+    let child = Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", &format!("{W}x{H}"), "-r", "25", "-i", "-", "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p"])
+        .arg(&path)
+        .stdin(std::process::Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else {
+        eprintln!("ffmpeg CLI not found; skipping");
+        return;
+    };
+    // The spots' middles at frame k: moving right 3 px and down 1 px a frame.
+    let at = |k: usize, x: f32| [x + 3.0 * k as f32, 110.0 + k as f32];
+    let mut stdin = child.stdin.take().unwrap();
+    for k in 0..frames {
+        let mut img = vec![0u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let mut g = 150.0;
+                for (i, cx) in [150.0f32, 290.0].into_iter().enumerate() {
+                    let c = at(k, cx);
+                    let (u, v) = (x as f32 + 0.5 - c[0], y as f32 + 0.5 - c[1]);
+                    if u.abs() < 22.0 && v.abs() < 16.0 {
+                        // The left one is shut (plain) on frames 15 to 19.
+                        let shut = i == 0 && (15..20).contains(&k);
+                        g = if shut { 140.0 } else { 40.0 + 170.0 * noise(u / 4.0 + 10.0 * i as f32, v / 4.0) };
+                    }
+                }
+                img[y * W + x] = g.clamp(0.0, 255.0) as u8;
+            }
+        }
+        stdin.write_all(&img).unwrap();
+    }
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    let info = probe(&path).unwrap();
+    let mut tr = Tracker::new(TrackMode::Transform, [220.0, 110.0], [W as f32, H as f32], Time::ZERO);
+    tr.points[0].point = at(0, 150.0);
+    tr.points[1].point = at(0, 290.0);
+    tr.set_sizes(41.0, 12.0);
+    let (paths, end) = reelforge_media::track_points(&path, &info, &tr, Time::ZERO, Time::from_secs_f64(1.56), &AtomicBool::new(false), |_| {}).unwrap();
+    assert_eq!(end, TrackEnd::Done, "carried through the blink");
+    assert_eq!(paths[0].len(), frames);
+    for (k, (a, b)) in paths[0].iter().zip(&paths[1]).enumerate() {
+        let (ta, tb) = (at(k, 150.0), at(k, 290.0));
+        let ea = (a.pos[0] - ta[0]).hypot(a.pos[1] - ta[1]);
+        let eb = (b.pos[0] - tb[0]).hypot(b.pos[1] - tb[1]);
+        assert!(eb < 1.0, "frame {k}: the open one {eb:.2} px off");
+        // While shut it's carried with the other (to within a pixel or two), and
+        // found again exactly once it's back.
+        assert!(ea < if (15..20).contains(&k) { 2.5 } else { 1.0 }, "frame {k}: the blinking one {ea:.2} px off");
+    }
+}

@@ -385,6 +385,17 @@ const DIRECT_SEARCH: f32 = 16.0;
 const REFINE: f32 = 3.0;
 /// The original patch is trusted over the latest one above this match score.
 const ORIGINAL_SCORE: f32 = 0.85;
+/// How much wider than its search area a feature carried along unseen is
+/// looked for, at most.
+const MAX_WIDEN: f32 = 3.0;
+/// A feature found again after being lost matches at least this well (the
+/// wider search finds more look-alikes).
+pub const REFIND_SCORE: f32 = 0.75;
+/// The patch is refreshed only where the original look also matches this
+/// well…
+const REFRESH_SCORE: f32 = 0.6;
+/// …within this many pixels of where the refreshed patch says it is.
+const REFRESH_DRIFT: f32 = 1.5;
 /// …and the original warped by the group's motion above this one.
 const WARPED_SCORE: f32 = 0.8;
 
@@ -443,11 +454,20 @@ pub struct FeatureTracker {
     /// it still matches well it has the last word on position, so small errors
     /// don't pile up frame after frame.
     original: Template,
+    /// The same at half, quarter… resolution, so it can be looked for over a
+    /// wider area: a track that has drifted off it is pulled back once the
+    /// feature looks as it did at the start again (after a blink, a turn).
+    originals: Vec<Template>,
     size: f32,
     search: f32,
     pub pos: [f32; 2],
     velocity: [f32; 2],
     matching: TrackMatch,
+    /// The search area grows while the feature is carried along unseen (see
+    /// [`FeatureTracker::coast`]), so it can be found again where it's got to.
+    widen: f32,
+    /// Held to its original look (see [`FeatureTracker::anchored`]).
+    anchor: bool,
 }
 
 impl FeatureTracker {
@@ -459,7 +479,13 @@ impl FeatureTracker {
     /// [`FeatureTracker::new`], comparing it with each frame as `matching` says.
     pub fn new_matching(pyr: &Pyramid, pos: [f32; 2], size: f32, search: f32, matching: TrackMatch) -> Self {
         let original = Template::new(&pyr.level(0), pos, size.max(9.0)).matching(matching);
-        let mut t = Self { templates: Vec::new(), original, size, search, pos, velocity: [0.0, 0.0], matching };
+        let originals = (1..pyr.depth().min(3))
+            .map(|l| {
+                let k = (1 << l) as f32;
+                Template::new(&pyr.level(l), [pos[0] / k, pos[1] / k], (size / k).max(9.0)).matching(matching)
+            })
+            .collect();
+        let mut t = Self { templates: Vec::new(), original, originals, size, search, pos, velocity: [0.0, 0.0], matching, widen: 1.0, anchor: false };
         t.capture(pyr);
         t
     }
@@ -488,6 +514,31 @@ impl FeatureTracker {
         self.velocity = [p[0] - self.pos[0], p[1] - self.pos[1]];
     }
 
+    /// How far from where it's expected it's looked for now (pixels of the
+    /// full level): its search area, wider while it's been unseen.
+    pub fn reach(&self) -> f32 {
+        self.search * self.widen
+    }
+
+    /// Found again after being carried along unseen: back to its usual search area.
+    pub fn found(&mut self) {
+        self.widen = 1.0;
+    }
+
+    /// How it moved last frame (pixels of the full level).
+    pub fn velocity(&self) -> [f32; 2] {
+        self.velocity
+    }
+
+    /// Carry the feature to `p`, moving by `d` a frame, without having found
+    /// it there (it's hidden or blurred for a moment): its look is kept, and
+    /// the next frame searches around where it's expected.
+    pub fn coast(&mut self, p: [f32; 2], d: [f32; 2]) {
+        self.pos = p;
+        self.velocity = d;
+        self.widen = (self.widen + 0.25).min(MAX_WIDEN);
+    }
+
     /// Put the feature at `p` (e.g. where a surface it lies on says it is),
     /// forgetting its last movement.
     pub fn place(&mut self, p: [f32; 2]) {
@@ -499,12 +550,42 @@ impl FeatureTracker {
     fn search_from(&self, pyr: &Pyramid, around: [f32; 2]) -> ([f32; 2], f32) {
         let top = self.templates.len() - 1;
         let k = (1 << top) as f32;
-        let (mut p, mut score) = self.templates[top].find(&pyr.level(top), [around[0] / k, around[1] / k], (self.search / k).ceil());
+        let (mut p, mut score) = self.templates[top].find(&pyr.level(top), [around[0] / k, around[1] / k], (self.search * self.widen / k).ceil());
         for l in (0..top).rev() {
             let up = [p[0] * 2.0, p[1] * 2.0];
             (p, score) = self.templates[l].find(&pyr.level(l), up, REFINE);
         }
         (p, score)
+    }
+
+    /// Held to its original look: searched for over a quarter of the
+    /// feature's size each frame, it pulls back a track that's crept off it,
+    /// and the patch is only refreshed where it agrees (drift correction).
+    /// For features that keep their look (eyes, marks on a face or a prop)
+    /// over long shots; not for ones that keep turning away from it.
+    pub fn anchored(mut self) -> Self {
+        self.anchor = true;
+        self
+    }
+
+    /// The original look searched for round `p`, coarse to fine: within a
+    /// quarter of the feature's size (at least [`REFINE`] pixels).
+    fn find_original(&self, pyr: &Pyramid, p: [f32; 2]) -> ([f32; 2], f32) {
+        let radius = (self.size * 0.25).max(REFINE);
+        // The coarsest level that has the original, and where the radius is small.
+        let mut top = 0;
+        while top < self.originals.len() && top + 1 < pyr.depth() && radius / (1 << top) as f32 > REFINE * 2.0 {
+            top += 1;
+        }
+        let k = (1 << top) as f32;
+        let at = |l: usize| if l == 0 { Some(&self.original) } else { self.originals.get(l - 1) };
+        let Some(t) = at(top) else { return (p, 0.0) };
+        let (mut q, mut score) = t.find(&pyr.level(top), [p[0] / k, p[1] / k], (radius / k).ceil());
+        for l in (0..top).rev() {
+            let Some(t) = at(l) else { break };
+            (q, score) = t.find(&pyr.level(l), [q[0] * 2.0, q[1] * 2.0], REFINE);
+        }
+        (q, score)
     }
 
     /// Re-find the feature with its original look warped by `local` (the
@@ -543,19 +624,39 @@ impl FeatureTracker {
             }
         }
         if score >= MIN_SCORE {
-            // Pin it down with the original look when that still fits closely.
-            let (q, s0) = self.original.find(&pyr.level(0), p, REFINE);
-            if s0 >= ORIGINAL_SCORE && (q[0] - p[0]).abs() < REFINE && (q[1] - p[1]).abs() < REFINE {
-                p = q;
-                score = score.max(s0);
+            if self.anchor {
+                // Pin it down with the original look when that fits as well:
+                // looked for round here (a quarter of the feature's size), so a
+                // track that has crept off it comes back.
+                let (q, s0) = self.find_original(pyr, p);
+                if s0 >= ORIGINAL_SCORE && s0 + 0.03 >= score {
+                    p = q;
+                    score = score.max(s0);
+                }
+            } else {
+                // Pin it down with the original look when that still fits closely.
+                let (q, s0) = self.original.find(&pyr.level(0), p, REFINE);
+                if s0 >= ORIGINAL_SCORE && (q[0] - p[0]).abs() < REFINE && (q[1] - p[1]).abs() < REFINE {
+                    p = q;
+                    score = score.max(s0);
+                }
             }
             self.velocity = [p[0] - self.pos[0], p[1] - self.pos[1]];
             self.pos = p;
             // Follow gradual changes (turning, light) by refreshing the patch, but
-            // only from good matches, so one poor frame doesn't make it wander off.
+            // only from good matches, so one poor frame doesn't make it wander
+            // off; anchored, only where the original look, searched for from
+            // here, lands on the same spot (drift correction): a patch refreshed
+            // a pixel or two off would carry that error into every frame after.
             // (Template matching keeps the look it started with.)
             if score > 0.9 && self.matching == TrackMatch::Correlation {
-                self.capture(pyr);
+                let refresh = !self.anchor || {
+                    let (q0, s1) = self.original.find(&pyr.level(0), p, REFINE);
+                    s1 >= REFRESH_SCORE && (q0[0] - p[0]).hypot(q0[1] - p[1]) <= REFRESH_DRIFT
+                };
+                if refresh {
+                    self.capture(pyr);
+                }
             }
         }
         (p, score)
@@ -695,7 +796,11 @@ impl Tracker {
     /// A new tracker at source time `start`, centred on `centre` (media pixels)
     /// of a `layer`-sized picture.
     pub fn new(mode: TrackMode, centre: [f32; 2], layer: [f32; 2], start: Time) -> Self {
-        let first = PointTrack { point: centre, start, ..Default::default() };
+        // Feature boxes sized for the footage: the defaults suit 720p; on 4K a
+        // 31-pixel box sits inside a pupil, with nothing to lock on to.
+        let k = (layer[0].min(layer[1]) / 720.0).clamp(1.0, 4.0);
+        let d = PointTrack::default();
+        let first = PointTrack { point: centre, start, size: (d.size * k).round(), search: (d.search * k).round(), ..d };
         // A frame's smoothing to start with: it takes out the tracking's
         // jitter without dragging behind real movement (and can be changed).
         let mut t = Tracker { mode: TrackMode::Position, points: vec![first], grid: [0, 0], smooth: 1.0, matching: TrackMatch::Correlation };
@@ -1845,6 +1950,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn new_trackers_have_boxes_sized_for_the_footage() {
+        let sizes = |w: f32, h: f32| {
+            let t = Tracker::new(TrackMode::Transform, [w / 2.0, h / 2.0], [w, h], Time::ZERO);
+            assert!(t.points.iter().all(|p| p.size == t.points[0].size));
+            (t.points[0].size, t.points[0].search)
+        };
+        assert_eq!(sizes(640.0, 360.0), (31.0, 24.0));
+        assert_eq!(sizes(1920.0, 1080.0), (47.0, 36.0));
+        assert_eq!(sizes(4096.0, 2160.0), (93.0, 72.0));
+        assert_eq!(sizes(1080.0, 1920.0), (47.0, 36.0), "portrait: by the short side");
+    }
 
     #[test]
     fn template_matching_holds_exact_looks_and_correlation_copes_with_light() {
